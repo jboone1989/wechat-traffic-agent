@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import tomllib
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -159,10 +159,18 @@ def test_draft_rejects_platform_or_growth_hack_violations(changes) -> None:
 
 def test_packager_creates_copy_ready_files(tmp_path) -> None:
     package = ContentPackager().create(
-        _draft(), _audience(), tmp_path, today=date(2026, 8, 26)
+        _draft(),
+        _audience(),
+        tmp_path,
+        source_refs=(),
+        strategy={"angle": "gentle_rebellion", "topic_mode": "provided_topics"},
+        created_at=datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc),
+        runtime_run_id="run-test",
+        today=date(2026, 8, 26),
     )
-    assert package.root == tmp_path / "2026-08-26"
+    assert package.root == tmp_path / "2026-08-26" / "exp-01"
     assert {item.name for item in package.root.iterdir()} == {
+        "experiment.json",
         "tietu.md",
         "tietu.json",
         "preview.html",
@@ -170,6 +178,9 @@ def test_packager_creates_copy_ready_files(tmp_path) -> None:
     assert "别让副业偷走你的下班" in package.markdown.read_text(encoding="utf-8")
     assert json.loads(package.json_file.read_text(encoding="utf-8"))["topic"] == _topic().title
     assert "你做内容最累的" in package.preview_html.read_text(encoding="utf-8")
+    experiment = json.loads(package.experiment_file.read_text(encoding="utf-8"))
+    assert experiment["experiment_id"] == "2026-08-26-exp-01"
+    assert experiment["runtime_run_id"] == "run-test"
 
 
 def test_agent_version_matches_package_version() -> None:

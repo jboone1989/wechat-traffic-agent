@@ -2,41 +2,85 @@
 from __future__ import annotations
 
 import html
-from datetime import date
+import shutil
+from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
+from .experiments import Experiment, ExperimentLedger
 from .models import AudienceProfile, ContentPackage, TietuDraft
+from .objectives import ObjectiveMetric, policy_for
 
 
 class ContentPackager:
+    def __init__(self, ledger: ExperimentLedger | None = None) -> None:
+        self.ledger = ledger or ExperimentLedger()
+
     def create(
         self,
         draft: TietuDraft,
         audience: AudienceProfile,
         output_root: Path,
         *,
+        source_refs: tuple[dict[str, Any], ...],
+        strategy: dict[str, Any],
+        created_at: datetime,
+        runtime_run_id: str,
         today: date | None = None,
     ) -> ContentPackage:
-        target = output_root / (today or date.today()).isoformat()
-        target.mkdir(parents=True, exist_ok=True)
+        experiment_id, target = self.ledger.allocate(output_root, today or date.today())
+        try:
+            target.mkdir(parents=False, exist_ok=False)  # 槽位冲突直接失败，绝不覆盖
+        except FileExistsError:
+            raise RuntimeError(
+                f"实验槽位 {experiment_id} 已被占用，拒绝覆盖"
+            ) from None
         markdown = target / "tietu.md"
         json_file = target / "tietu.json"
+        experiment_file = target / "experiment.json"
         preview = target / "preview.html"
-        markdown.write_text(_markdown(draft, audience), encoding="utf-8")
-        json_file.write_text(
-            draft.model_dump_json(indent=2), encoding="utf-8"
-        )
-        preview.write_text(_preview(draft), encoding="utf-8")
+        try:
+            markdown.write_text(_markdown(draft, audience), encoding="utf-8")
+            json_file.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
+            preview.write_text(_preview(draft), encoding="utf-8")
+            # experiment.json 最后写：文件存在即代表槽位完整（完成标记）
+            experiment = Experiment(
+                experiment_id=experiment_id,
+                created_at=created_at,
+                audience=audience,
+                objective=audience.objective,
+                strategy=strategy,
+                draft=draft,
+                source_refs=source_refs,
+                runtime_run_id=runtime_run_id,
+            )
+            experiment_file.write_text(experiment.model_dump_json(indent=2), encoding="utf-8")
+        except BaseException:
+            shutil.rmtree(target, ignore_errors=True)  # 不留半写入槽位
+            raise
         return ContentPackage(
             root=target,
             markdown=markdown,
             json_file=json_file,
+            experiment_file=experiment_file,
             preview_html=preview,
         )
 
 
+_METRIC_LABELS = {
+    ObjectiveMetric.READS: "阅读数",
+    ObjectiveMetric.FOLLOWS: "新增关注",
+    ObjectiveMetric.DISCUSSIONS: "评论数",
+    ObjectiveMetric.SHARES: "分享数",
+    ObjectiveMetric.CONVERSIONS: "后端转化数",
+}
+
+
 def _markdown(draft: TietuDraft, audience: AudienceProfile) -> str:
     sources = "\n".join(f"- {url}" for url in draft.source_urls) or "- 无外部事实引用"
+    policy = policy_for(audience.objective)
+    primary = _METRIC_LABELS[policy.primary_metric]
+    secondary = "、".join(_METRIC_LABELS[metric] for metric in policy.secondary_metrics)
     return f"""# 题图内容包
 
 ## 复制到公众号
@@ -62,6 +106,12 @@ def _markdown(draft: TietuDraft, audience: AudienceProfile) -> str:
 - 观点：{draft.viewpoint}
 - 情绪角度：{draft.angle.value}
 - 选择理由：{draft.rationale}
+
+## 回填指标（反馈学习用）
+
+- 主指标：{primary}
+- 次要指标：{secondary}
+- 拿不到的指标在 history.json 里留 null，不要填 0
 
 ## 样本来源
 

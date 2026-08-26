@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from agent_runtime.runtime import AgentRuntime
 
@@ -62,9 +64,23 @@ class WeChatTrafficAgent:
         history: list[PerformanceObservation],
         audience: AudienceProfile,
         output_root: Path,
+        *,
+        today: date | None = None,
+        now: datetime | None = None,
+        run_id: str | None = None,
     ) -> tuple[TietuDraft, ContentPackage]:
         draft = await self.compose(topics, history, audience)
-        return draft, self.packager.create(draft, audience, output_root)
+        strategy = {"angle": draft.angle.value, "topic_mode": "provided_topics"}
+        return draft, self.packager.create(
+            draft,
+            audience,
+            output_root,
+            source_refs=tuple(item.model_dump(mode="json") for item in topics),
+            strategy=strategy,
+            created_at=now or datetime.now(timezone.utc),
+            runtime_run_id=run_id or uuid4().hex,
+            today=today,
+        )
 
 
 def _composition_task(
