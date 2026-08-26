@@ -42,13 +42,15 @@ wechat-tietu-agent --audience examples/audience.json --topics examples/topics.js
 通过 `LegacyProviderBackend` 进入 Runtime 的只读 advisory 边界。模型只返回候选
 内容，不能执行发布动作。
 
-输出目录：
+输出目录（每次运行产生一个不可变实验槽位，同日多次运行互不覆盖）：
 
 ```text
-output/YYYY-MM-DD/
-  tietu.md       # 直接复制与手动发布说明
-  tietu.json     # 结构化记录，后续反馈学习使用
-  preview.html   # 本地文字预览
+output/YYYY-MM-DD/exp-NN/
+  experiment.json  # 实验记录：experiment_id/created_at/audience/objective/
+                   # candidate_id/pattern_id/strategy/draft/source_refs/runtime_run_id
+  tietu.md         # 直接复制与手动发布说明
+  tietu.json       # 题图文案结构化记录
+  preview.html     # 本地文字预览
 ```
 
 示例 `topics.json` 使用用户指定的方法帖作为首轮市场样本。后续应持续替换或补充
@@ -59,3 +61,8 @@ output/YYYY-MM-DD/
 手动把阅读、分享、关注、评论数据整理成 `PerformanceObservation` 后，在下一次
 运行时通过 `--history history.json` 传入。学习器先探索不同情绪角度，再使用平滑
 指标调整方向，避免把一次低样本偶然爆发当成稳定规律。
+
+每次实验的目标（`audience.json` 里的 `objective`：reads/follows/discussion/conversion）
+通过 `ObjectivePolicy` 决定组合指导、主次指标与奖励计算。回填 `PerformanceObservation`
+时拿不到的指标留 `null`——系统把缺失视为"未知"而不是 0，避免学习器把
+"没数据"误判成"表现差"。
