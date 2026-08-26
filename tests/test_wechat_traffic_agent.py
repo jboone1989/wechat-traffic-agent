@@ -14,6 +14,7 @@ from agent_runtime.backends import AgentRunMode, ExecutionPolicy, FixtureAgentBa
 from agent_runtime.runtime import AgentRuntime
 from wechat_traffic_agent import (
     AudienceProfile,
+    ContentObjective,
     EmotionAngle,
     PerformanceObservation,
     TietuDraft,
@@ -188,3 +189,26 @@ def test_agent_version_matches_package_version() -> None:
     manifest = load_agent_manifest(root / "agent.yaml")
     pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     assert manifest.version == pyproject["project"]["version"] == "0.3.0"
+
+
+@pytest.mark.parametrize(
+    ("objective", "guidance_token"),
+    [
+        (ContentObjective.READS, "提高阅读与完读表现"),
+        (ContentObjective.FOLLOWS, "提高关注转化"),
+        (ContentObjective.DISCUSSION, "引发讨论"),
+        (ContentObjective.CONVERSION, "后端转化"),
+    ],
+)
+def test_composition_prompt_reflects_objective_policy(
+    tmp_path, objective, guidance_token
+) -> None:
+    audience = _audience().model_copy(update={"objective": objective})
+    selected_angle = TrafficLearner().recommend([], objective)
+    response = _draft(angle=selected_angle).model_dump_json()
+    runtime, backend = _runtime(tmp_path, response)
+    asyncio.run(WeChatTrafficAgent(runtime).compose([_topic()], [], audience))
+    request = backend.requests[-1]
+    assert guidance_token in request.task
+    assert "主指标" in request.task
+    assert "次要指标：。" not in request.task  # 次要指标必须非空

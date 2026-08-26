@@ -3,6 +3,7 @@
 from .learning import TrafficLearner
 from .models import (
     AudienceProfile,
+    ContentObjective,
     ContentPackage,
     EmotionAngle,
     PerformanceObservation,
@@ -13,6 +14,7 @@ from .service import WeChatTrafficAgent
 
 __all__ = [
     "AudienceProfile",
+    "ContentObjective",
     "ContentPackage",
     "EmotionAngle",
     "PerformanceObservation",
