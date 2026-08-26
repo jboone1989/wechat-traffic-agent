@@ -66,3 +66,15 @@ output/YYYY-MM-DD/exp-NN/
 通过 `ObjectivePolicy` 决定组合指导、主次指标与奖励计算。回填 `PerformanceObservation`
 时拿不到的指标留 `null`——系统把缺失视为"未知"而不是 0，避免学习器把
 "没数据"误判成"表现差"。
+
+## 互联网来源（PR2）
+
+平台访问复用 OSS，不自建 scraper。所有来源通过 `SourceResult` 隔离故障：
+单个平台失败不会中断扫描；平台没有的数据一律 `None`（unavailable），不强迫统一。
+
+- **DailyHotApi**（广撒网热榜，best-effort）：自托管 `docker run -p 6688:6688 imsyy/dailyhotapi`，
+  适配器走 `GET /{platform}`（weibo/zhihu/bilibili/douyin/toutiao 等），防御式解析。
+- **Agent-Reach**（Top-N 深抓，CLI 能力层）：`agent-reach doctor --json` 报各 channel
+  健康与 active_backend；正文读取用其管理的 `curl -s https://r.jina.ai/{url}`；
+  评论/作者协议已定义，等 PR3 接好平台 CLI 后端再解析。
+- **FixtureProvider**：离线三平台数据 + 故障注入，CI 与单元测试专用。
