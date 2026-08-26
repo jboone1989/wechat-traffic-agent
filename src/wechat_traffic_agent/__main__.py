@@ -63,7 +63,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     if args.serve:
-        return _run_serve(runtime, args)
+        from .wecom_router import build_wecom_router
+
+        router = build_wecom_router(args.output_dir.resolve())
+        return _run_serve(runtime, args, message_router=router)
 
     audience = AudienceProfile.model_validate(_read_json(args.audience))
     topics = [TopicSignal.model_validate(item) for item in _read_json(args.topics)]
@@ -83,9 +86,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _run_serve(runtime: AgentRuntime, args: argparse.Namespace) -> int:
+def _run_serve(
+    runtime: AgentRuntime,
+    args: argparse.Namespace,
+    *,
+    message_router=None,
+) -> int:
     """Keep the agent alive and answer the shared mailbox (WeCom entry)."""
-    status = ContinuousRunner(runtime).run(
+    status = ContinuousRunner(runtime, message_router=message_router).run(
         max_ticks=None,
         idle_seconds=args.idle_seconds,
     )
