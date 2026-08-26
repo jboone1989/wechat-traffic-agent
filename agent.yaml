@@ -1,0 +1,24 @@
+manifest_version: "1.0"
+agent_type: wechat-traffic-agent
+name: 微信情绪题图 Agent
+version: 0.3.0
+description: 研究细分人群的已验证选题，生成可直接粘贴到公众号文字海报的题图文案，并根据人工回填数据调整内容策略。
+runtime_api: ">=0.3,<1.0"
+capabilities:
+  - topic_discovery
+  - audience_positioning
+  - emotional_copywriting
+  - platform_text_poster
+  - content_packaging
+  - traffic_feedback_learning
+sensors:
+  - topic_feed
+  - manual_performance_feedback
+actuators:
+  - local_content_package
+mind: null
+metadata:
+  publish_mode: manual
+  primary_metric: reads
+  strategy: specific_audience_scene_pain
+  owner: agent-runtime

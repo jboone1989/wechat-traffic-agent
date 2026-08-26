@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wechat-traffic-agent"
+version = "0.1.0"
+description = "Agent Runtime hosted WeChat 题图 copywriting agent"
+requires-python = ">=3.11"
+dependencies = [
+    "agent-runtime>=0.3,<1.0",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+wechat-tietu-agent = "wechat_traffic_agent.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wechat_traffic_agent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
