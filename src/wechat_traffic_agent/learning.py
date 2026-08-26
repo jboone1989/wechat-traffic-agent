@@ -1,50 +1,67 @@
-"""Evidence-based selection of emotional angles."""
+"""Evidence-based selection of emotional angles, per experiment objective."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .models import EmotionAngle, PerformanceObservation
+from .models import ContentObjective, EmotionAngle, PerformanceObservation
+from .objectives import policy_for
 
 
 @dataclass(frozen=True)
 class AngleEstimate:
     angle: EmotionAngle
     samples: int
+    scored_samples: int
     impressions: int
-    reward: float
+    reward: float | None
 
 
 class TrafficLearner:
     """Pure learner: history is supplied by Runtime sensors, never stored here."""
 
     def estimates(
-        self, history: list[PerformanceObservation]
+        self,
+        history: list[PerformanceObservation],
+        objective: ContentObjective = ContentObjective.READS,
     ) -> list[AngleEstimate]:
+        policy = policy_for(objective)
         estimates: list[AngleEstimate] = []
         for angle in EmotionAngle:
             items = [item for item in history if item.angle is angle]
-            impressions = sum(item.impressions for item in items)
-            if items:
-                weight = sum(max(item.impressions, 20) for item in items)
-                reward = sum(
-                    item.reward * max(item.impressions, 20) for item in items
-                ) / weight
+            impressions = sum(item.impressions or 0 for item in items)
+            scored: list[tuple[float, int]] = []
+            for item in items:
+                reward = policy.reward(item)
+                if reward is not None:
+                    scored.append((reward, max(item.impressions or 0, 20)))
+            if scored:
+                weight = sum(weight for _, weight in scored)
+                reward = sum(r * w for r, w in scored) / weight
             else:
-                reward = 0.0
+                reward = None
             estimates.append(
                 AngleEstimate(
                     angle=angle,
                     samples=len(items),
+                    scored_samples=len(scored),
                     impressions=impressions,
                     reward=reward,
                 )
             )
         return estimates
 
-    def recommend(self, history: list[PerformanceObservation]) -> EmotionAngle:
-        estimates = self.estimates(history)
+    def recommend(
+        self,
+        history: list[PerformanceObservation],
+        objective: ContentObjective = ContentObjective.READS,
+    ) -> EmotionAngle:
+        estimates = self.estimates(history, objective)
         # Explore every angle twice before exploiting measured performance.
-        under_sampled = [item for item in estimates if item.samples < 2]
+        # An angle with samples but no scorable metric is still unexplored:
+        # "no data" must never be read as "bad performance".
+        under_sampled = [
+            item for item in estimates if item.samples < 2 or item.scored_samples == 0
+        ]
         if under_sampled:
             return min(
                 under_sampled,
@@ -52,6 +69,5 @@ class TrafficLearner:
             ).angle
         return max(
             estimates,
-            key=lambda item: (item.reward, item.impressions, item.angle.value),
+            key=lambda item: (item.reward or 0.0, item.impressions, item.angle.value),
         ).angle
-

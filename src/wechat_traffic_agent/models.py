@@ -61,27 +61,13 @@ class PerformanceObservation(BaseModel):
     post_id: str = Field(min_length=1)
     title: str = ""
     angle: EmotionAngle
-    impressions: int = Field(ge=0)
-    reads: int = Field(ge=0)
-    shares: int = Field(default=0, ge=0)
-    follows: int = Field(default=0, ge=0)
-    comments: int = Field(default=0, ge=0)
+    impressions: int | None = Field(default=None, ge=0)
+    reads: int | None = Field(default=None, ge=0)
+    shares: int | None = Field(default=None, ge=0)
+    follows: int | None = Field(default=None, ge=0)
+    comments: int | None = Field(default=None, ge=0)
+    conversions: int | None = Field(default=None, ge=0)
     published_at: datetime | None = None
-
-    @property
-    def estimated_open_rate(self) -> float:
-        return (self.reads + 2.0) / (max(self.impressions, self.reads) + 20.0)
-
-    @property
-    def reward(self) -> float:
-        reached = max(self.impressions, self.reads, 1)
-        return min(
-            1.0,
-            0.65 * self.estimated_open_rate
-            + 0.15 * min(1.0, self.shares / reached)
-            + 0.10 * min(1.0, self.follows / reached)
-            + 0.10 * min(1.0, self.comments / reached),
-        )
 
 
 class TietuDraft(BaseModel):
@@ -143,3 +129,4 @@ class ContentPackage(BaseModel):
     markdown: Path
     json_file: Path
     preview_html: Path
+    experiment_file: Path | None = None
