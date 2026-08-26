@@ -936,6 +936,7 @@ def test_read_failure_returns_failed() -> None:
     result = asyncio.run(provider.read("https://example.com/missing"))
     assert result.status is SourceStatus.FAILED
     assert result.error is not None
+    assert result.items.text == ""  # 标量类型 FAILED 携带退化实例（契约约定）
 
 
 def test_comments_and_author_unconfigured_return_unavailable() -> None:
@@ -949,8 +950,9 @@ def test_comments_and_author_unconfigured_return_unavailable() -> None:
     comments, author = asyncio.run(run())
     for result in (comments, author):
         assert result.status is SourceStatus.UNAVAILABLE
-        assert result.items == ()
         assert result.error is not None
+    assert comments.items == ()
+    assert author.items.author_id == ""
 
 
 def test_doctor_non_json_output_returns_failed() -> None:
@@ -1094,18 +1096,18 @@ class AgentReachProvider:
         try:
             outcome = await self._run("doctor", {})
         except ValueError as exc:
-            return self._failed("doctor", str(exc), observed_at)
+            return self._failed("doctor", str(exc), observed_at, {})
         if outcome is None:
-            return self._failed("doctor", "doctor template not configured", observed_at)
+            return self._failed("doctor", "doctor template not configured", observed_at, {})
         returncode, stdout, stderr = outcome
         if returncode != 0:
             return self._failed(
-                "doctor", stderr.strip() or f"exit code {returncode}", observed_at
+                "doctor", stderr.strip() or f"exit code {returncode}", observed_at, {}
             )
         try:
             data = json.loads(stdout)
         except ValueError:
-            return self._failed("doctor", "doctor output is not JSON", observed_at)
+            return self._failed("doctor", "doctor output is not JSON", observed_at, {})
         return SourceResult(
             source="agent-reach",
             platform="doctor",
@@ -1116,20 +1118,21 @@ class AgentReachProvider:
 
     async def read(self, url: str, *, platform: str = "generic_web") -> SourceResult[ContentSnapshot]:
         observed_at = datetime.now(timezone.utc)
+        degenerate = ContentSnapshot(content_id="", platform=platform, url="", text="")
         try:
             outcome = await self._run("read_web", {"url": url})
         except ValueError as exc:
-            return self._failed(platform, str(exc), observed_at)
+            return self._failed(platform, str(exc), observed_at, degenerate)
         if outcome is None:
-            return self._failed(platform, "read_web template not configured", observed_at)
+            return self._failed(platform, "read_web template not configured", observed_at, degenerate)
         returncode, stdout, stderr = outcome
         if returncode != 0:
             return self._failed(
-                platform, stderr.strip() or f"exit code {returncode}", observed_at
+                platform, stderr.strip() or f"exit code {returncode}", observed_at, degenerate
             )
         text = stdout.strip()
         if not text:
-            return self._failed(platform, "empty content", observed_at)
+            return self._failed(platform, "empty content", observed_at, degenerate)
         return SourceResult(
             source="agent-reach",
             platform=platform,
@@ -1142,30 +1145,32 @@ class AgentReachProvider:
         return self._unavailable(
             platform,
             "comments backend not wired (needs platform CLI output shape; see PR3)",
+            (),
         )
 
     async def author(self, author_id: str, *, platform: str) -> SourceResult[AuthorSnapshot]:
         return self._unavailable(
             platform,
             "author backend not wired (needs platform CLI output shape; see PR3)",
+            AuthorSnapshot(author_id="", platform=platform),
         )
 
-    def _failed(self, platform: str, error: str, observed_at: datetime) -> SourceResult:
+    def _failed(self, platform: str, error: str, observed_at: datetime, items) -> SourceResult:
         return SourceResult(
             source="agent-reach",
             platform=platform,
             status=SourceStatus.FAILED,
-            items=(),
+            items=items,
             error=error,
             observed_at=observed_at,
         )
 
-    def _unavailable(self, platform: str, reason: str) -> SourceResult:
+    def _unavailable(self, platform: str, reason: str, items) -> SourceResult:
         return SourceResult(
             source="agent-reach",
             platform=platform,
             status=SourceStatus.UNAVAILABLE,
-            items=(),
+            items=items,
             error=reason,
             observed_at=datetime.now(timezone.utc),
         )
