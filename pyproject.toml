@@ -9,6 +9,7 @@ description = "Agent Runtime hosted WeChat 题图 copywriting agent"
 requires-python = ">=3.11"
 dependencies = [
     "agent-runtime>=0.3,<1.0",
+    "httpx>=0.27",
     "pydantic>=2.5",
 ]
 
