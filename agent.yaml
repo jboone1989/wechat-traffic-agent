@@ -19,6 +19,5 @@ actuators:
 mind: null
 metadata:
   publish_mode: manual
-  primary_metric: reads
   strategy: specific_audience_scene_pain
   owner: agent-runtime

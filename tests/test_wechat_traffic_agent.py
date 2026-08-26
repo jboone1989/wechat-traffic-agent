@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -169,3 +170,10 @@ def test_packager_creates_copy_ready_files(tmp_path) -> None:
     assert "别让副业偷走你的下班" in package.markdown.read_text(encoding="utf-8")
     assert json.loads(package.json_file.read_text(encoding="utf-8"))["topic"] == _topic().title
     assert "你做内容最累的" in package.preview_html.read_text(encoding="utf-8")
+
+
+def test_agent_version_matches_package_version() -> None:
+    root = Path(__file__).parents[1]
+    manifest = load_agent_manifest(root / "agent.yaml")
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert manifest.version == pyproject["project"]["version"] == "0.3.0"
