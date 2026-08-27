@@ -95,3 +95,18 @@ rank 35% / engagement 25% / breakout 25% / freshness 15%；某项缺失则剔除
 重新归一化剩余项——unavailable 绝不当作 0。breakout = engagement / author_followers，
 "低粉爆款能赢大号普通内容"；absolute_hot_score 单独保存原始热度百分位，
 不与 breakout 混淆；同题出现在多个平台会获得 cross_platform_score。
+
+## 爆款结构拆解（PR4）
+
+`ViralPatternAnalyzer` 只把雷达 Top-K（默认 5，上限 10）候选送入 LLM 深度分析，
+绝不"几百条帖子 × LLM"。分析器确定性收集证据（全文、指标、热门评论），后端输出
+`ViralPattern`（受众/场景/核心欲望/标题模式/钩子/信息增量/互动触发/收藏与分享理由等）。
+
+三条硬性纪律：
+
+- **观察与假设分离**：`observed_facts` 只能写证据里可直接指认的现象；
+  `hypotheses` 用「可能/倾向于」措辞。没有因果证据不得断言因果。
+- **判断必须引用证据**：每条观察/假设都要带 `evidence_refs`，且只能引用
+  分析器实际提供的编号——禁止编造来源；评论抓取失败就是不可用，不是没有评论。
+- **近复刻守卫**：确定性检测标题高度相似、正文连续片段照搬、句式复制
+  （`near_copy.py`），学习 pattern ≠ 改几个字复制原文。
