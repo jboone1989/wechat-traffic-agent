@@ -13,7 +13,27 @@ from agent_runtime.runtime import AgentRuntime
 from agent_runtime.service import ContinuousRunner
 
 from .models import AudienceProfile, PerformanceObservation, TopicSignal
+from .planner import VARIABLES
 from .service import WeChatTrafficAgent
+
+
+def _platforms_arg(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in value.split(",") if part.strip())
+
+
+def _add_source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--platforms",
+        type=_platforms_arg,
+        default=("weibo", "zhihu", "bilibili"),
+    )
+    parser.add_argument("--top-n", type=int, default=20)
+    parser.add_argument(
+        "--dailyhot-url",
+        type=str,
+        default=None,
+        help="启用 DailyHotApi 热榜（默认离线 fixture）。",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -40,11 +60,48 @@ def build_parser() -> argparse.ArgumentParser:
         default=2.0,
         help="Delay between life-loop cycles in serve mode (default: 2).",
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+
+    def _runtime_args(sub):
+        sub.add_argument("--state-dir", type=Path, default=Path("state"))
+        sub.add_argument("--output-dir", type=Path, default=Path("output"))
+
+    scan_parser = subparsers.add_parser("scan", help="热榜扫描 → ViralCandidate 报告")
+    _add_source_args(scan_parser)
+    scan_parser.add_argument("--out", type=Path, default=None)
+
+    analyze_parser = subparsers.add_parser("analyze", help="Top-K 候选 → ViralPattern")
+    analyze_parser.add_argument("--scan", type=Path, required=True)
+    analyze_parser.add_argument("--top-k", type=int, default=5)
+    analyze_parser.add_argument("--out", type=Path, default=None)
+    _runtime_args(analyze_parser)
+
+    create_parser = subparsers.add_parser("create", help="ViralPattern → 实验内容包")
+    create_parser.add_argument("--patterns", type=Path, required=True)
+    create_parser.add_argument("--audience", type=Path, required=True)
+    create_parser.add_argument("--history", type=Path)
+    create_parser.add_argument("--variable", choices=[v.value for v in VARIABLES], default=None)
+    create_parser.add_argument("--rotation-offset", type=int, default=0)
+    _runtime_args(create_parser)
+
+    run_parser = subparsers.add_parser("run", help="scan → analyze → create 串成一趟")
+    _add_source_args(run_parser)
+    run_parser.add_argument("--audience", type=Path, required=True)
+    run_parser.add_argument("--top-k", type=int, default=5)
+    run_parser.add_argument("--variable", choices=[v.value for v in VARIABLES], default=None)
+    run_parser.add_argument("--rotation-offset", type=int, default=0)
+    _runtime_args(run_parser)
+
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if getattr(args, "command", None):
+        from .cli_workflows import dispatch_command
+
+        return dispatch_command(args)
     if not args.serve and (args.audience is None or args.topics is None):
         build_parser().error("--audience and --topics are required (or use --serve)")
     package_root = Path(__file__).resolve().parents[2]

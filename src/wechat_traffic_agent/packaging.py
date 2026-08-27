@@ -26,6 +26,8 @@ class ContentPackager:
         strategy: dict[str, Any],
         created_at: datetime,
         runtime_run_id: str,
+        candidate_id: str | None = None,
+        pattern_id: str | None = None,
         today: date | None = None,
     ) -> ContentPackage:
         experiment_id, target = self.ledger.allocate(output_root, today or date.today())
@@ -49,6 +51,8 @@ class ContentPackager:
                 created_at=created_at,
                 audience=audience,
                 objective=audience.objective,
+                candidate_id=candidate_id,
+                pattern_id=pattern_id,
                 strategy=strategy,
                 draft=draft,
                 source_refs=source_refs,

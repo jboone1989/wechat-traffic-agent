@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 TITLE_SIMILARITY_THRESHOLD = 0.6
 FRAGMENT_CHARS = 12  # 正文中连续复用 ≥12 字视为片段照搬
-SENTENCE_PATTERN_CHARS = 10  # 与样本标题连续重合 ≥10 字视为句式照搬
+SENTENCE_PATTERN_CHARS = 6  # 与样本标题连续重合 ≥6 字即视为句式照搬（宁严勿漏）
 
 
 @dataclass(frozen=True)

@@ -110,3 +110,22 @@ rank 35% / engagement 25% / breakout 25% / freshness 15%；某项缺失则剔除
   分析器实际提供的编号——禁止编造来源；评论抓取失败就是不可用，不是没有评论。
 - **近复刻守卫**：确定性检测标题高度相似、正文连续片段照搬、句式复制
   （`near_copy.py`），学习 pattern ≠ 改几个字复制原文。
+
+## 内容实验（PR5）
+
+新主链路（旧 `--topics` 手动模式继续可用，作为 override / fixture mode）：
+
+```text
+wechat-tietu-agent run     # scan → analyze → create 一趟跑完
+wechat-tietu-agent scan    # 热榜广撒网 → output/scans/scan-*.json
+wechat-tietu-agent analyze --scan <scan.json>      # Top-K → patterns-*.json
+wechat-tietu-agent create --patterns <p.json> --audience a.json
+```
+
+`ExperimentStrategy` 明确记录每次实验唯一被试变量（pattern_id /
+variable_under_test / baseline_value / treatment_value）。首批五个实验变量：
+title_pattern、opening_hook、emotion、information_delta、interaction_hook；
+按槽位轮转保证覆盖，**一篇只测一个变量**——同时改五个变量就永远不知道阅读
+翻倍是因为什么。emotion 是被试变量时允许草稿采用不同情绪角度，其余情况
+角度钉死为学习者推荐值；每篇草稿都过近复刻守卫与不可变 Experiment 存档。
+依然没有任何自动发布执行器。
