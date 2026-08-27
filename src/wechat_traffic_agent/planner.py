@@ -29,6 +29,7 @@ from .near_copy import near_copy_verdict
 from .objectives import policy_for
 from .packaging import ContentPackager
 from .service import _extract_json
+from .strategy_learning import StrategyDecision, StrategyLearner
 from .viral_pattern import ViralPattern, ViralPatternAnalyzer
 from .viral_radar import ScanReport, ViralRadar
 
@@ -109,6 +110,7 @@ class ExperimentStrategy(BaseModel):
 class PlannedExperiment:
     draft: TietuDraft
     strategy: ExperimentStrategy
+    selection_reason: str = "rotation"
 
 
 class ExperimentPlanner:
@@ -119,8 +121,39 @@ class ExperimentPlanner:
         """Round-robin over the five batch variables; deterministic per slot."""
         return VARIABLES[rotation_offset % len(VARIABLES)]
 
-    def __init__(self, *, learner: TrafficLearner | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        learner: TrafficLearner | None = None,
+        strategy_learner: StrategyLearner | None = None,
+        audience_key: str | None = None,
+    ) -> None:
         self.learner = learner or TrafficLearner()
+        self.strategy_learner = strategy_learner or StrategyLearner()
+        self.audience_key = audience_key
+
+    def choose_variable(
+        self,
+        history: Sequence[PerformanceObservation],
+        audience: AudienceProfile,
+        *,
+        rotation_offset: int,
+    ) -> tuple[ExperimentVariable, str]:
+        # 跨人群污染是禁区：没有明确 audience_key 就不做历史推断。
+        annotated = [item for item in history if item.variable_under_test]
+        if not annotated or self.audience_key is None:
+            return self.select_variable(rotation_offset), (
+                "rotation" if not annotated else "rotation: no audience_key for scoped feedback"
+            )
+        decision: StrategyDecision = self.strategy_learner.recommend(
+            annotated,
+            candidate_variables=VARIABLES,
+            audience_key=self.audience_key,
+            objective=audience.objective,
+        )
+        name = getattr(decision.variable, "value", decision.variable)
+        matched = next(item for item in VARIABLES if item.value == name)
+        return matched, f"feedback_history: {decision.reason}"
 
     async def plan(
         self,
@@ -134,13 +167,18 @@ class ExperimentPlanner:
         sample_titles: Sequence[str] = (),
     ) -> PlannedExperiment:
         history = list(history)
-        variable = variable or self.select_variable(rotation_offset)
+        if variable is not None:
+            chosen_variable, selection_reason = variable, "explicit"
+        else:
+            chosen_variable, selection_reason = self.choose_variable(
+                history, audience, rotation_offset=rotation_offset
+            )
         angle = self.learner.recommend(history, audience.objective)
         policy = policy_for(audience.objective)
         raw = await runtime.cognitive_probe(
-            _plan_task(pattern, variable, angle, audience, policy), max_tokens=900
+            _plan_task(pattern, chosen_variable, angle, audience, policy), max_tokens=900
         )
-        draft = self._parse_draft(raw, variable, angle)
+        draft = self._parse_draft(raw, chosen_variable, angle)
         verdict = near_copy_verdict(
             produced_texts=(draft.title, *draft.lines, draft.interaction_hook),
             source_titles=tuple(sample_titles),
@@ -150,7 +188,8 @@ class ExperimentPlanner:
             raise ValueError(f"near-copy detected: {'；'.join(verdict.reasons)}")
         return PlannedExperiment(
             draft=draft,
-            strategy=ExperimentStrategy.build(pattern, draft, variable=variable),
+            strategy=ExperimentStrategy.build(pattern, draft, variable=chosen_variable),
+            selection_reason=selection_reason,
         )
 
     @staticmethod
@@ -227,11 +266,15 @@ async def plan_experiment(
     *,
     history: Sequence[PerformanceObservation] = (),
     learner: TrafficLearner | None = None,
+    strategy_learner: StrategyLearner | None = None,
+    audience_key: str | None = None,
     variable: ExperimentVariable | None = None,
     rotation_offset: int = 0,
     sample_titles: Sequence[str] = (),
 ) -> PlannedExperiment:
-    planner = ExperimentPlanner(learner=learner)
+    planner = ExperimentPlanner(
+        learner=learner, strategy_learner=strategy_learner, audience_key=audience_key
+    )
     return await planner.plan(
         runtime,
         pattern,
@@ -270,6 +313,7 @@ def package_planned(
         strategy={
             **planned.strategy.model_dump(),
             "single_variable_discipline": True,
+            "variable_selection_reason": planned.selection_reason,
         },
         created_at=datetime.now(timezone.utc),
         runtime_run_id=uuid.uuid4().hex,
@@ -292,6 +336,8 @@ async def run_chain(
     rotation_offset: int = 0,
     history: Sequence[PerformanceObservation] = (),
     learner: TrafficLearner | None = None,
+    strategy_learner: StrategyLearner | None = None,
+    audience_key: str | None = None,
     today: date | None = None,
     scan_out: Path | None = None,
 ) -> "ContentPackage":
@@ -314,6 +360,8 @@ async def run_chain(
         audience,
         history=list(history),
         learner=learner,
+        strategy_learner=strategy_learner,
+        audience_key=audience_key,
         variable=variable,
         rotation_offset=rotation_offset,
         sample_titles=sample_titles,

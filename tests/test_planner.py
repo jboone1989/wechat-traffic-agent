@@ -325,3 +325,79 @@ def test_cli_parser_routes_subcommands_and_keeps_legacy_mode() -> None:
     legacy = build_parser().parse_args(["--audience", "a.json", "--topics", "t.json"])
     assert legacy.command is None  # 无子命令 → 旧链路
 
+
+
+def test_feedback_history_drives_variable_selection_when_unset() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    from wechat_traffic_agent.models import PerformanceObservation
+    from wechat_traffic_agent.strategy_learning import StrategyLearner
+
+    def _obs(post_id, variable, reads, offset):
+        return PerformanceObservation(
+            post_id=post_id,
+            angle="relief",
+            variable_under_test=variable,
+            treatment_value=f"{variable}-t",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=reads,
+            published_at=datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc)
+            + timedelta(minutes=offset),
+        )
+
+    history = [
+        _obs("t0", "title_pattern", 500, 0),
+        _obs("t1", "title_pattern", 650, 60),
+        _obs("t2", "title_pattern", 800, 120),
+        _obs("e0", "emotion", 400, 180),
+        _obs("e1", "emotion", 400, 240),
+    ]
+    stub = StubRuntime([_draft_json()])
+    planned = asyncio.run(
+        plan_experiment(
+            stub,
+            _pattern(),
+            _audience(),
+            history=history,
+            audience_key="silver",
+            strategy_learner=StrategyLearner(min_samples=2),
+        )
+    )
+    # 其余三个变量低于最小样本量 → 继续探索 opening_hook
+    assert planned.strategy.variable_under_test is ExperimentVariable.OPENING_HOOK
+    assert planned.selection_reason.startswith("feedback_history")
+
+
+def test_feedback_without_audience_key_never_infers_across_audiences() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    def _obs(post_id, variable, offset):
+        return PerformanceObservation(
+            post_id=post_id,
+            angle="relief",
+            variable_under_test=variable,
+            treatment_value=f"{variable}-t",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=600,
+            published_at=datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc)
+            + timedelta(minutes=offset),
+        )
+
+    history = [
+        _obs("a0", "title_pattern", 0),
+        _obs("a1", "title_pattern", 60),
+        _obs("a2", "title_pattern", 120),
+        _obs("b0", "emotion", 180),
+        _obs("b1", "emotion", 240),
+    ]
+    stub = StubRuntime([_draft_json()])
+    planned = asyncio.run(
+        plan_experiment(stub, _pattern(), _audience(), history=history)
+    )
+    # 未提供 audience_key：宁可轮转也不把 silver 的结论泛化到任何其他人群
+    assert planned.selection_reason == "rotation: no audience_key for scoped feedback"
+    assert planned.strategy.variable_under_test is ExperimentVariable.TITLE_PATTERN

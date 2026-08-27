@@ -129,3 +129,24 @@ title_pattern、opening_hook、emotion、information_delta、interaction_hook；
 翻倍是因为什么。emotion 是被试变量时允许草稿采用不同情绪角度，其余情况
 角度钉死为学习者推荐值；每篇草稿都过近复刻守卫与不可变 Experiment 存档。
 依然没有任何自动发布执行器。
+
+## 反馈学习 2.0（PR6）
+
+`StrategyLearner` 取代只学情绪角度的 `TrafficLearner`（后者仍负责写作角度的
+探索/利用规则），学习维度覆盖 title pattern / hook pattern / emotion /
+information style / interaction style：
+
+- **窗口纪律**：`PerformanceObservation.observation_window` 只允许 24h/48h/7d，
+  不同窗口的数据永不放进同一个统计口径。
+- **Context 隔离**：统计以 (audience_key, objective, window) 为单位——银发人群的
+  nostalgia 胜利不会推导到程序员职场场景；discussion 实验不与 reads 实验共享奖励；
+  未提供 audience_key 时禁止跨人群历史推断，直接回退轮转。
+- **相对表现**：reward 对比 trailing baseline（同一 context 最近 N 次的中位数），
+  学习器学 lift 而不是 raw reads；缺失主指标保持 UNKNOWN（不计分），绝不折算为 0。
+- **策略保持简单**：最小样本量内先探索（VARIABLES 序），样本充足后按平滑后的
+  historical lift 选择下一个被试变量；bandit / Thompson Sampling 等真实数据积累
+  后再讨论。
+
+闭环：experiment 存档 → 手工回填带 `experiment_id` / `variable_under_test` 的
+observations → `--history history.json --audience-key silver` 传入 → 学习器影响
+下一次变量选择，选择理由写进当期 `experiment.json` 可审计。

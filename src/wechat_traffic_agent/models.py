@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -55,6 +56,10 @@ class TopicSignal(BaseModel):
         return interactions / max(self.creator_followers, 100)
 
 
+ObservationWindow = Literal["24h", "48h", "7d"]
+"""只有文档化的数据窗口可以入库；禁止比较『发布 2 小时 vs 发布 7 天』。"""
+
+
 class PerformanceObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -68,6 +73,15 @@ class PerformanceObservation(BaseModel):
     comments: int | None = Field(default=None, ge=0)
     conversions: int | None = Field(default=None, ge=0)
     published_at: datetime | None = None
+    # ---- PR6: 反馈学习 2.0 的实验关联字段（全部可选，旧数据不受影响）----
+    experiment_id: str | None = None
+    variable_under_test: str | None = Field(default=None, max_length=80)
+    treatment_value: str | None = Field(default=None, max_length=200)
+    baseline_value: str | None = Field(default=None, max_length=200)
+    audience_key: str | None = Field(default=None, max_length=120)
+    objective: ContentObjective | None = None
+    observation_window: ObservationWindow | None = None
+    account_baseline: float | None = Field(default=None, ge=0)  # 外部提供的 trailing 基线
 
 
 class TietuDraft(BaseModel):

@@ -159,6 +159,7 @@ def _cmd_create(args) -> int:
             patterns[0],
             audience,
             history=history,
+            audience_key=getattr(args, "audience_key", None),
             variable=_variable(args),
             rotation_offset=args.rotation_offset,
         )
@@ -199,6 +200,8 @@ def _cmd_run(args) -> int:
             top_k=args.top_k,
             variable=_variable(args),
             rotation_offset=args.rotation_offset,
+            history=_read_history(getattr(args, "history", None)),
+            audience_key=getattr(args, "audience_key", None),
             scan_out=scan_out,
         )
     )
