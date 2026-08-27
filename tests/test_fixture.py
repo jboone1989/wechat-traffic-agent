@@ -127,3 +127,36 @@ def test_fixture_engagement_missing_is_unavailable_and_broken_is_failed() -> Non
     assert failed.status is SourceStatus.FAILED
     assert failed.error is not None
     assert failed.items == EngagementSnapshot(content_id="", platform="weibo")
+
+
+def test_fixture_bulk_hot_reaches_100_items() -> None:
+    from wechat_traffic_agent.fixture import FIXTURE_AUTHORS, FIXTURE_ENGAGEMENT, FIXTURE_HOT
+    from wechat_traffic_agent.scoring import normalize_title
+
+    total = sum(len(items) for items in FIXTURE_HOT.values())
+    assert total >= 100
+    # rank % 7 == 0 的 bulk 条目刻意缺失 raw_hot_value（绝对热度缺失路径）
+    assert any(item.raw_hot_value is None for item in FIXTURE_HOT["weibo"])
+
+
+def test_fixture_crafted_deep_fetch_scenarios_exist() -> None:
+    from wechat_traffic_agent.fixture import FIXTURE_AUTHORS, FIXTURE_ENGAGEMENT, FIXTURE_HOT
+    from wechat_traffic_agent.scoring import normalize_title
+
+    # 低粉爆款 vs 纯大号普通内容
+    assert FIXTURE_ENGAGEMENT["weibo-5"].likes == 52000
+    assert FIXTURE_AUTHORS["fixture-weibo-author-5"].followers == 600
+    assert FIXTURE_AUTHORS["fixture-weibo-author-4"].followers == 2_500_000
+    # weibo-6 无互动数据（重归一化）；weibo-7 作者无粉丝数（breakout 缺失）
+    assert "weibo-6" not in FIXTURE_ENGAGEMENT
+    assert FIXTURE_AUTHORS["fixture-weibo-author-7"].followers is None
+    # wb-3 无 url：engagement 需要走 source_id 兜底
+    wb3 = next(item for item in FIXTURE_HOT["weibo"] if item.source_id == "wb-3")
+    assert wb3.url is None
+    assert "wb-3" in FIXTURE_ENGAGEMENT
+    # 同平台重复标题 + 跨平台同题
+    weibo_titles = [normalize_title(item.title) for item in FIXTURE_HOT["weibo"]]
+    assert len(weibo_titles) > len(set(weibo_titles))
+    assert normalize_title("跨平台同题：通勤效率观察") in {
+        normalize_title(item.title) for item in FIXTURE_HOT["zhihu"]
+    }
