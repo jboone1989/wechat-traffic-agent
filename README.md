@@ -81,6 +81,21 @@ output/YYYY-MM-DD/exp-NN/
   envelope 防御解析）；其余平台输出形状未文档化，按需注入 `commands` 模板。
 - **FixtureProvider**：离线三平台数据 + 故障注入 + 深抓场景，CI 与单元测试专用。
 
+## 真实数据面（PR7）
+
+`--source` 显式选择数据平面，live 模式**绝不静默回退 fixture**：
+
+```bash
+wechat-tietu-agent scan --source live --dailyhot-url http://localhost:6688
+wechat-tietu-agent run  --source fixture            # 离线全链（默认行为不变）
+```
+
+live 栈 = DailyHotApi 热榜 + `ReaderRouter` 深抓路由：**bilibili 平台完整**
+（`bili video {id} --json` 元数据补齐 author_id / published_at / engagement，
+于是 breakout / engagement / freshness 三项子分第一次在真实数据上出现），
+其余平台走通用 Jina 正文读取，缺能力按 `unavailable` 暴露并由评分剔除权重。
+`--dailyhot-url` 与 `--source fixture` 同时给出会直接报冲突。
+
 ## 病毒雷达（PR3）
 
 `ViralRadar.scan()` 回答"最近什么内容正在异常成功"：

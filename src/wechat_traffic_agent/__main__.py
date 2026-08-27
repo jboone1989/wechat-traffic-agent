@@ -34,6 +34,43 @@ def _add_source_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="启用 DailyHotApi 热榜（默认离线 fixture）。",
     )
+    parser.add_argument(
+        "--source",
+        choices=("fixture", "live"),
+        default=None,
+        help=(
+            "数据源模式：fixture 全链离线样本；live 接真实 DailyHot 热榜 + "
+            "deep fetch（bilibili 平台完整：正文/作者/互动数据，其余平台走通用"
+            " Jina 正文读取）。live 绝不回退 fixture，缺能力按 unavailable 暴露。"
+            "不传时保持原行为（给了 --dailyhot-url 即视为 live）。"
+        ),
+    )
+
+
+def _add_analyze_source_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--source",
+        choices=("fixture", "live"),
+        default=None,
+        help=(
+            "证据重抓模式：live 会按扫描报告里的 URL 真实重取正文与评论"
+            "（bilibili 走平台完整通道）；默认 fixture 离线。"
+        ),
+    )
+
+
+def _add_feedback_args(sub) -> None:
+    sub.add_argument("--audience-key", type=str, default=None, help="反馈学习的人群隔离键")
+    sub.add_argument(
+        "--observation-window",
+        type=str,
+        choices=("24h", "48h", "7d"),
+        default=None,
+        help=(
+            "反馈学习的观察窗口（24h/48h/7d）。与 --audience-key 同时提供"
+            "才启用历史推断，否则轮转选择被试变量。"
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,13 +112,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("--scan", type=Path, required=True)
     analyze_parser.add_argument("--top-k", type=int, default=5)
     analyze_parser.add_argument("--out", type=Path, default=None)
+    _add_analyze_source_args(analyze_parser)
     _runtime_args(analyze_parser)
 
     create_parser = subparsers.add_parser("create", help="ViralPattern → 实验内容包")
     create_parser.add_argument("--patterns", type=Path, required=True)
     create_parser.add_argument("--audience", type=Path, required=True)
     create_parser.add_argument("--history", type=Path)
-    create_parser.add_argument("--audience-key", type=str, default=None, help="反馈学习的人群隔离键")
+    _add_feedback_args(create_parser)
     create_parser.add_argument("--variable", choices=[v.value for v in VARIABLES], default=None)
     create_parser.add_argument("--rotation-offset", type=int, default=0)
     _runtime_args(create_parser)
@@ -90,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_source_args(run_parser)
     run_parser.add_argument("--audience", type=Path, required=True)
     run_parser.add_argument("--history", type=Path)
-    run_parser.add_argument("--audience-key", type=str, default=None, help="反馈学习的人群隔离键")
+    _add_feedback_args(run_parser)
     run_parser.add_argument("--top-k", type=int, default=5)
     run_parser.add_argument("--variable", choices=[v.value for v in VARIABLES], default=None)
     run_parser.add_argument("--rotation-offset", type=int, default=0)
