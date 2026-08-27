@@ -127,10 +127,12 @@ class ExperimentPlanner:
         learner: TrafficLearner | None = None,
         strategy_learner: StrategyLearner | None = None,
         audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> None:
         self.learner = learner or TrafficLearner()
         self.strategy_learner = strategy_learner or StrategyLearner()
         self.audience_key = audience_key
+        self.observation_window = observation_window
 
     def choose_variable(
         self,
@@ -139,17 +141,29 @@ class ExperimentPlanner:
         *,
         rotation_offset: int,
     ) -> tuple[ExperimentVariable, str]:
-        # 跨人群污染是禁区：没有明确 audience_key 就不做历史推断。
+        # 跨人群/跨窗口污染是禁区：audience_key 与 observation_window
+        # 未同时明确就不做历史推断，宁可轮转。
         annotated = [item for item in history if item.variable_under_test]
-        if not annotated or self.audience_key is None:
+        missing = [
+            name
+            for name, value in (
+                ("audience_key", self.audience_key),
+                ("observation_window", self.observation_window),
+            )
+            if value is None
+        ]
+        if not annotated or missing:
+            if not annotated:
+                return self.select_variable(rotation_offset), "rotation"
             return self.select_variable(rotation_offset), (
-                "rotation" if not annotated else "rotation: no audience_key for scoped feedback"
+                f"rotation: no {'/'.join(missing)} for scoped feedback"
             )
         decision: StrategyDecision = self.strategy_learner.recommend(
             annotated,
             candidate_variables=VARIABLES,
             audience_key=self.audience_key,
             objective=audience.objective,
+            observation_window=self.observation_window,
         )
         name = getattr(decision.variable, "value", decision.variable)
         matched = next(item for item in VARIABLES if item.value == name)
@@ -165,11 +179,13 @@ class ExperimentPlanner:
         variable: ExperimentVariable | None = None,
         rotation_offset: int = 0,
         sample_titles: Sequence[str] = (),
+        observation_window: str | None = None,
     ) -> PlannedExperiment:
         history = list(history)
         if variable is not None:
             chosen_variable, selection_reason = variable, "explicit"
         else:
+            self.observation_window = observation_window
             chosen_variable, selection_reason = self.choose_variable(
                 history, audience, rotation_offset=rotation_offset
             )
@@ -218,6 +234,13 @@ async def scan(
     reader=None,
     top_n: int = 20,
 ) -> ScanReport:
+    """Hot-list -> deep fetch -> ScanReport.
+
+    Defaults are the OFFLINE fixture plane only. Live callers (--source
+    live) must pass both hot_provider and reader explicitly — 单边 live
+    输入造成的「真热榜 + fixture 深抓」静默混合是被禁止的。验证手段：
+    报告里每个 PlatformScan.source 应为 "dailyhot" 而非 "fixture"。
+    """
     hot = hot_provider or FixtureProvider()
     radar = ViralRadar(
         hot_provider=hot, reader=reader or FixtureProvider(), platforms=platforms, top_n=top_n
@@ -253,6 +276,11 @@ def save_patterns(patterns: Sequence[ViralPattern], path: Path) -> Path:
 async def analyze_report(
     runtime, report: ScanReport, *, reader=None, top_k: int = 5
 ) -> tuple[ViralPattern, ...]:
+    """Top-K candidates -> ViralPattern 元组。
+
+    reader 缺省仅限离线面；live 证据重抓须显式传 ReaderRouter，
+    不存在「一半真实一半 fixture」的合法组合。
+    """
     analyzer = ViralPatternAnalyzer(
         runtime=runtime, reader=reader or FixtureProvider(), top_k=top_k
     )
@@ -268,6 +296,7 @@ async def plan_experiment(
     learner: TrafficLearner | None = None,
     strategy_learner: StrategyLearner | None = None,
     audience_key: str | None = None,
+    observation_window: str | None = None,
     variable: ExperimentVariable | None = None,
     rotation_offset: int = 0,
     sample_titles: Sequence[str] = (),
@@ -283,6 +312,7 @@ async def plan_experiment(
         variable=variable,
         rotation_offset=rotation_offset,
         sample_titles=sample_titles,
+        observation_window=observation_window,
     )
 
 
@@ -296,6 +326,15 @@ def package_planned(
     today: date | None = None,
 ) -> "ContentPackage":
     packager = ContentPackager()
+    # 溯源：candidate_ref 里的 candidate_id 必须落到 experiment.candidate_id。
+    # pattern.candidate_id 与来源候选同值，作为兜底（_cmd_create 只有 pattern）。
+    candidate_id = None
+    if candidate_ref is not None:
+        raw_id = candidate_ref.get("candidate_id")
+        if isinstance(raw_id, str):
+            candidate_id = raw_id
+    if candidate_id is None and pattern is not None:
+        candidate_id = pattern.candidate_id
     refs = [item for item in (candidate_ref,) if item]
     if pattern is not None:
         refs.append(
@@ -317,6 +356,7 @@ def package_planned(
         },
         created_at=datetime.now(timezone.utc),
         runtime_run_id=uuid.uuid4().hex,
+        candidate_id=candidate_id,
         pattern_id=planned.strategy.pattern_id,
         today=today,
     )
@@ -338,6 +378,7 @@ async def run_chain(
     learner: TrafficLearner | None = None,
     strategy_learner: StrategyLearner | None = None,
     audience_key: str | None = None,
+    observation_window: str | None = None,
     today: date | None = None,
     scan_out: Path | None = None,
 ) -> "ContentPackage":
@@ -362,6 +403,7 @@ async def run_chain(
         learner=learner,
         strategy_learner=strategy_learner,
         audience_key=audience_key,
+        observation_window=observation_window,
         variable=variable,
         rotation_offset=rotation_offset,
         sample_titles=sample_titles,

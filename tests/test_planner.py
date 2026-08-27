@@ -306,7 +306,37 @@ def test_run_chain_produces_immutable_experiment(tmp_path: Path) -> None:
     assert experiment.strategy["baseline_value"]
     assert experiment.strategy["treatment_value"] == experiment.draft.title
     assert experiment.pattern_id == "pat:" + report.candidates[0].candidate_id
+    assert experiment.candidate_id == report.candidates[0].candidate_id  # 溯源到来源候选
     assert experiment.audience.objective is ContentObjective.READS
+
+
+def test_package_planned_propagates_candidate_id(tmp_path: Path) -> None:
+    from wechat_traffic_agent.planner import PlannedExperiment, package_planned
+
+    pattern = _pattern()
+    draft = TietuDraft.model_validate(_DRAFT)
+    planned = PlannedExperiment(
+        draft=draft,
+        strategy=ExperimentStrategy.build(
+            pattern, draft, variable=ExperimentVariable.TITLE_PATTERN
+        ),
+    )
+    package = package_planned(planned, _audience(), tmp_path, pattern=pattern)
+    experiment = json.loads(package.experiment_file.read_text(encoding="utf-8"))
+    # create 命令只有 pattern 没有 candidate_ref：从 pattern 兜底取候选 id
+    assert experiment["candidate_id"] == pattern.candidate_id
+
+    package_with_ref = package_planned(
+        planned,
+        _audience(),
+        tmp_path / "ref",
+        pattern=pattern,
+        candidate_ref={"candidate_id": "bilibili:BV1xx", "other": "field"},
+    )
+    experiment_from_ref = json.loads(
+        package_with_ref.experiment_file.read_text(encoding="utf-8")
+    )
+    assert experiment_from_ref["candidate_id"] == "bilibili:BV1xx"
 
 
 def test_cli_parser_routes_subcommands_and_keeps_legacy_mode() -> None:
@@ -362,12 +392,49 @@ def test_feedback_history_drives_variable_selection_when_unset() -> None:
             _audience(),
             history=history,
             audience_key="silver",
+            observation_window="24h",
             strategy_learner=StrategyLearner(min_samples=2),
         )
     )
     # 其余三个变量低于最小样本量 → 继续探索 opening_hook
     assert planned.strategy.variable_under_test is ExperimentVariable.OPENING_HOOK
     assert planned.selection_reason.startswith("feedback_history")
+
+
+def test_feedback_without_window_key_falls_back_to_rotation() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    def _obs(post_id, variable, offset):
+        return PerformanceObservation(
+            post_id=post_id,
+            angle="relief",
+            variable_under_test=variable,
+            treatment_value=f"{variable}-t",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=600,
+            published_at=datetime(2026, 8, 27, 8, 0, tzinfo=timezone.utc)
+            + timedelta(minutes=offset),
+        )
+
+    history = [
+        _obs("a0", "title_pattern", 0),
+        _obs("a1", "title_pattern", 60),
+        _obs("a2", "title_pattern", 120),
+        _obs("b0", "emotion", 180),
+        _obs("b1", "emotion", 240),
+    ]
+    stub = StubRuntime([_draft_json()])
+    planned = asyncio.run(
+        plan_experiment(stub, _pattern(), _audience(), history=history, audience_key="silver")
+    )
+    # 只给 audience_key 不给 observation_window：观察窗口不明，历史推断可能
+    # 把 24h 和 7d 的结论混在一个口径里，宁可轮转。
+    assert (
+        planned.selection_reason == "rotation: no observation_window for scoped feedback"
+    )
+    assert planned.strategy.variable_under_test is ExperimentVariable.TITLE_PATTERN
 
 
 def test_feedback_without_audience_key_never_infers_across_audiences() -> None:
@@ -399,5 +466,8 @@ def test_feedback_without_audience_key_never_infers_across_audiences() -> None:
         plan_experiment(stub, _pattern(), _audience(), history=history)
     )
     # 未提供 audience_key：宁可轮转也不把 silver 的结论泛化到任何其他人群
-    assert planned.selection_reason == "rotation: no audience_key for scoped feedback"
+    assert (
+        planned.selection_reason
+        == "rotation: no audience_key/observation_window for scoped feedback"
+    )
     assert planned.strategy.variable_under_test is ExperimentVariable.TITLE_PATTERN

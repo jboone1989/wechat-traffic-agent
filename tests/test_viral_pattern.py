@@ -114,26 +114,41 @@ def test_pattern_has_separate_observation_and_hypothesis() -> None:
     assert ref in pattern.source_refs
 
 
+def _lone_candidate_report() -> ScanReport:
+    """单候选报告：硬规则失败的唯一候选，不引入其他候选的噪音。"""
+    return _single_candidate_report(
+        url="https://fixture.example/weibo/1",
+        excerpt="这是微博样本一的正文，包含一个真实观察。",
+    )
+
+
 def test_observed_fact_without_evidence_reference_is_rejected() -> None:
-    body = json.loads(_valid_response())
+    body = json.loads(_valid_response("hot:weibo:wb-1"))
     body["observed_facts"] = [{"statement": "无证据的断言", "evidence_refs": []}]
     stub = StubRuntime([json.dumps(body, ensure_ascii=False)])
-    with pytest.raises(ValueError, match="evidence"):
-        asyncio.run(_analyzer(stub).analyze(_scan_report()))
+    analyzer = _analyzer(stub)
+    # 单候选失败被隔离后全批皆败：RuntimeError 聚合并保留原始原因
+    with pytest.raises(RuntimeError, match="evidence"):
+        asyncio.run(analyzer.analyze(_lone_candidate_report()))
+    assert len(analyzer.failures) == 1
+    assert analyzer.failures[0].startswith("weibo:wb-1")
 
 
 def test_unsupported_evidence_source_is_rejected() -> None:
-    body = json.loads(_valid_response())
+    body = json.loads(_valid_response("hot:weibo:wb-1"))
     body["observed_facts"] = [
         {"statement": "引用了不存在的来源", "evidence_refs": ["hot:tumblr:not-real"]}
     ]
     stub = StubRuntime([json.dumps(body, ensure_ascii=False)])
-    with pytest.raises(ValueError, match="unsupported source"):
-        asyncio.run(_analyzer(stub).analyze(_scan_report()))
+    analyzer = _analyzer(stub)
+    with pytest.raises(RuntimeError, match="unsupported source"):
+        asyncio.run(analyzer.analyze(_lone_candidate_report()))
+    assert len(analyzer.failures) == 1
+    assert analyzer.failures[0].startswith("weibo:wb-1")
 
 
 def test_near_copy_of_sample_body_is_rejected() -> None:
-    report = _scan_report()
+    report = _lone_candidate_report()
     target = report.candidates[0]
     provider = FixtureProvider()
     if target.url:
@@ -151,8 +166,11 @@ def test_near_copy_of_sample_body_is_rejected() -> None:
         {"statement": "可能由身份认同驱动传播", "evidence_refs": [ref]}
     ]
     stub = StubRuntime([json.dumps(body_json, ensure_ascii=False)])
-    with pytest.raises(ValueError, match="near-copy"):
-        asyncio.run(_analyzer(stub).analyze(_scan_report()))
+    analyzer = _analyzer(stub)
+    with pytest.raises(RuntimeError, match="near-copy"):
+        asyncio.run(analyzer.analyze(_lone_candidate_report()))
+    assert len(analyzer.failures) == 1
+    assert analyzer.failures[0].startswith("weibo:wb-1")
 
 
 def _single_candidate_report(*, url: str | None, excerpt: str) -> ScanReport:
@@ -196,3 +214,26 @@ def test_candidate_without_url_falls_back_to_excerpt() -> None:
         )
     )
     assert "这是微博样本一的正文" in stub.tasks[0]  # 无 url 时用雷达摘要兜底
+
+
+def test_one_bad_candidate_does_not_abort_the_batch() -> None:
+    report = _scan_report(top_n=8)
+    selected = [c for c in report.candidates if c.final_score is not None][:2]
+    bad_ref, good_ref = (sorted(c.evidence_refs)[0] for c in selected)
+    stub = StubRuntime(["这不是 JSON", _valid_response(good_ref)])
+    analyzer = _analyzer(stub, top_k=2)
+    patterns = asyncio.run(analyzer.analyze(report))
+    # 单候选输出不合法只淘汰它自己，其余照常出 pattern
+    assert [p.candidate_id for p in patterns] == [selected[1].candidate_id]
+    assert len(analyzer.failures) == 1
+    assert analyzer.failures[0].startswith(selected[0].candidate_id)
+    assert bad_ref in stub.tasks[0]
+
+
+def test_all_candidates_failing_raises_aggregated_error() -> None:
+    report = _scan_report(top_n=8)
+    selected_count = len([c for c in report.candidates if c.final_score is not None][:2])
+    stub = StubRuntime(["不是 JSON"] * selected_count)
+    analyzer = _analyzer(stub, top_k=2)
+    with pytest.raises(RuntimeError, match=f"all {selected_count} candidate analyses failed"):
+        asyncio.run(analyzer.analyze(report))

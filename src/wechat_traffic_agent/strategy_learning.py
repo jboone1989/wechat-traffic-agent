@@ -185,12 +185,23 @@ class StrategyLearner:
         candidate_variables: Sequence,
         audience_key: str | None = None,
         objective: ContentObjective = ContentObjective.READS,
+        observation_window: str,
     ) -> StrategyDecision:
-        """Explore under-min variables first, then exploit best smoothed lift."""
-        requested = (audience_key, objective.value)
+        """Explore under-min variables first, then exploit best smoothed lift.
+
+        ``observation_window`` 是显式必填参数：探索计数与利用排序都只在
+        ``(audience, objective, window)`` 完全一致的 context 里进行，
+        与 estimates() 的隔离口径一致——24h 和 7d 永不互相污染。
+        缺窗口标注的观察落在 ``(*)`` context，同样不会混入。
+        """
+        requested = (
+            audience_key or CONTEXT_KEY_AUDIENCE,
+            objective.value,
+            observation_window,
+        )
         counts: dict[str, int] = {}
         for parts, observations in self.contexts(history).items():
-            if parts[0] != requested[0] or parts[1] != requested[1]:
+            if parts != requested:
                 continue
             for obs in observations:
                 if obs.variable_under_test is None:
@@ -214,11 +225,11 @@ class StrategyLearner:
                 ),
             )
 
-        prefix = f"({requested[0]}, {requested[1]}"
+        target_key = self._context_key(requested)
         allowed = set(names)
         grouped: dict[str, list[StrategyEstimate]] = {}
         for estimate in self.estimates(history):
-            if not estimate.context_key.startswith(prefix):
+            if estimate.context_key != target_key:
                 continue
             if estimate.variable not in allowed or estimate.smoothed_lift is None:
                 continue

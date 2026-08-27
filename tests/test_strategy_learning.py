@@ -162,7 +162,10 @@ def test_recommend_explores_below_minimum_then_exploits_best_lift() -> None:
             )
         )
     decision = learner.recommend(
-        history, candidate_variables=VARIABLES, audience_key="silver"
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
     )
     # 其余四个变量都低于最小样本量 → 继续探索（按枚举顺序取第一个）
     assert decision.variable.value == "opening_hook"
@@ -187,9 +190,127 @@ def test_recommend_explores_below_minimum_then_exploits_best_lift() -> None:
                 )
             )
     winning_decision = learner.recommend(
-        saturated, candidate_variables=VARIABLES, audience_key="silver"
+        saturated,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
     )
     assert winning_decision.variable.value == "title_pattern"
+
+
+def test_recommend_does_not_mix_observation_windows() -> None:
+    """利用阶段：48h 窗口的高 lift 不得把 24h 窗口的排序带偏。"""
+    learner = StrategyLearner(min_samples=3)
+    from wechat_traffic_agent.planner import VARIABLES
+
+    history = []
+    minute = 0
+    # 24h 窗口：五个变量各 3 个平稳样本，lift 全为 0。
+    for name in (v.value for v in VARIABLES):
+        for index in range(3):
+            history.append(
+                _obs(
+                    f"24h-{name}-{index}",
+                    variable=name,
+                    treatment=f"{name}-t",
+                    reads=500,
+                    minutes_offset=minute,
+                )
+            )
+            minute += 30
+    # 48h 窗口：emotion 表现极好——污染源。
+    for index, reads in enumerate((400, 600, 1000)):
+        history.append(
+            _obs(
+                f"48h-emotion-{index}",
+                variable="emotion",
+                treatment="emotion-t-48h",
+                reads=reads,
+                window="48h",
+                minutes_offset=minute,
+            )
+        )
+        minute += 30
+
+    decision = learner.recommend(
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
+    )
+    # 只看 24h：全员零 lift 并列 ⇒ 按枚举顺序取 title_pattern；
+    # 若窗口被混算，emotion 会凭 48h 的虚高 lift 胜出。
+    assert decision.variable.value == "title_pattern"
+    assert decision.exploration is False
+
+
+def test_recommend_exploration_counts_only_requested_window() -> None:
+    """探索计数：其他窗口的样本不得当作本窗口的已探索证据。"""
+    learner = StrategyLearner(min_samples=3)
+    from wechat_traffic_agent.planner import VARIABLES
+
+    history = []
+    minute = 0
+    # title_pattern 在 24h 只有 2 个样本（< min_samples），另有 5 个在 48h。
+    for index in range(2):
+        history.append(
+            _obs(
+                f"24h-title-{index}",
+                variable="title_pattern",
+                treatment=f"title-t-{index}",
+                reads=500,
+                minutes_offset=minute,
+            )
+        )
+        minute += 30
+    for index, reads in enumerate((400, 450, 520, 600, 700)):
+        history.append(
+            _obs(
+                f"48h-title-{index}",
+                variable="title_pattern",
+                treatment=f"title-t-48h-{index}",
+                reads=reads,
+                window="48h",
+                minutes_offset=minute,
+            )
+        )
+        minute += 30
+    # 其余四个变量在 24h 各补满；emotion 抬升，是「本应的利用赢家」。
+    flat = ("opening_hook", "information_delta", "interaction_hook")
+    for name in flat:
+        for index in range(3):
+            history.append(
+                _obs(
+                    f"24h-{name}-{index}",
+                    variable=name,
+                    treatment=f"{name}-t",
+                    reads=500,
+                    minutes_offset=minute,
+                )
+            )
+            minute += 30
+    for index, reads in enumerate((500, 700, 1100)):
+        history.append(
+            _obs(
+                f"24h-emotion-{index}",
+                variable="emotion",
+                treatment="emotion-t",
+                reads=reads,
+                minutes_offset=minute,
+            )
+        )
+        minute += 30
+
+    decision = learner.recommend(
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
+    )
+    # 跨窗口混算会把 title_pattern 视为已探索并进入利用（选中 emotion）；
+    # 正确口径下 title_pattern 在 24h 欠探索 → 继续探索它。
+    assert decision.variable.value == "title_pattern"
+    assert decision.exploration is True
 
 
 def test_legacy_angle_recommendation_still_works_alongside() -> None:

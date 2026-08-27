@@ -107,13 +107,16 @@ class ViralPatternAnalyzer:
         self.runtime = runtime
         self.reader = reader
         self.top_k = top_k
+        # 最近一次 analyze() 里被淘汰的候选及原因（candidate-level isolation）。
+        self.failures: tuple[str, ...] = ()
 
     async def analyze(self, report_or_candidates) -> tuple[ViralPattern, ...]:
         """Accept a ScanReport or a bare candidate sequence (already ranked).
 
-        Sequential on purpose: ≤MAX_TOP_K backend calls per scan, and a
-        deterministic failure surface — the first offending candidate
-        aborts the batch with a clear error.
+        Sequential on purpose: ≤MAX_TOP_K backend calls per scan. Failure
+        isolation is per candidate: 一个候选的 LLM 输出不合法/被近复刻拒绝
+        只淘汰该候选，其余照常分析；原因记录在 ``self.failures``。
+        全部候选都失败时抛 RuntimeError 带上全部原因，绝不静默返回空。
         """
         candidates = getattr(report_or_candidates, "candidates", report_or_candidates)
         selected = [
@@ -121,9 +124,18 @@ class ViralPatternAnalyzer:
             for candidate in candidates
             if candidate.final_score is not None
         ][: self.top_k]
-        patterns = []
+        patterns: list[ViralPattern] = []
+        failures: list[str] = []
         for candidate in selected:
-            patterns.append(await self._analyze_one(candidate))
+            try:
+                patterns.append(await self._analyze_one(candidate))
+            except Exception as exc:  # 单候选失败不拖垮整批
+                failures.append(f"{candidate.candidate_id}: {exc}")
+        self.failures = tuple(failures)
+        if not patterns and failures:
+            raise RuntimeError(
+                f"all {len(selected)} candidate analyses failed: " + "; ".join(failures)
+            )
         return tuple(patterns)
 
     async def _analyze_one(self, candidate) -> ViralPattern:
