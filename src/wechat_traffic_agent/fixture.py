@@ -1,4 +1,4 @@
-"""Deterministic in-repo fixture implementing all four source contracts.
+"""Deterministic in-repo fixture implementing all source contracts.
 
 Used by CI and unit tests; also lets PR3 build a scan pipeline before any
 real service is reachable. One fixture platform can be marked broken to
@@ -12,6 +12,7 @@ from .sources import (
     AuthorSnapshot,
     Comment,
     ContentSnapshot,
+    EngagementSnapshot,
     HotItem,
     SourceResult,
     SourceStatus,
@@ -53,6 +54,13 @@ FIXTURE_COMMENTS: dict[str, tuple[Comment, ...]] = {
 
 FIXTURE_AUTHORS: dict[str, AuthorSnapshot] = {
     "fixture-author-1": AuthorSnapshot(author_id="fixture-author-1", platform="weibo", followers=18000),
+}
+
+# PR3: deep fetch 的离线互动数据（producer 落在 deep fetch 上）。
+FIXTURE_ENGAGEMENT: dict[str, EngagementSnapshot] = {
+    "wb-1": EngagementSnapshot(
+        content_id="wb-1", platform="weibo", views=250000, likes=8000, comments=900, shares=400
+    ),
 }
 
 
@@ -158,6 +166,33 @@ class FixtureProvider:
                 platform,
                 f"fixture has no author for {author_id!r}",
                 AuthorSnapshot(author_id="", platform=platform),
+            )
+        return SourceResult(
+            source="fixture",
+            platform=platform,
+            status=SourceStatus.OK,
+            items=snapshot,
+            observed_at=self._observed(),
+        )
+
+    async def engagement(
+        self, content_id: str, *, platform: str
+    ) -> SourceResult[EngagementSnapshot]:
+        if platform in self._broken:
+            return SourceResult(
+                source="fixture",
+                platform=platform,
+                status=SourceStatus.FAILED,
+                items=EngagementSnapshot(content_id="", platform=platform),
+                error="fixture: platform marked broken",
+                observed_at=self._observed(),
+            )
+        snapshot = FIXTURE_ENGAGEMENT.get(content_id)
+        if snapshot is None:
+            return self._unavailable(
+                platform,
+                f"fixture has no engagement for {content_id!r}",
+                EngagementSnapshot(content_id="", platform=platform),
             )
         return SourceResult(
             source="fixture",

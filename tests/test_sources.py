@@ -9,6 +9,7 @@ from wechat_traffic_agent.sources import (
     AuthorSnapshot,
     Comment,
     ContentSnapshot,
+    EngagementReader,
     EngagementSnapshot,
     HotItem,
     SourceResult,
@@ -83,3 +84,12 @@ def test_source_result_carries_provenance_and_is_frozen() -> None:
             observed_at=observed_at,
             unknown_field=1,  # extra="forbid"：拼错字段必须炸
         )
+
+
+def test_engagement_reader_protocol_is_structural() -> None:
+    class _Reader:
+        async def engagement(
+            self, content_id: str, *, platform: str
+        ) -> SourceResult[EngagementSnapshot]: ...
+
+    reader: EngagementReader = _Reader()  # 结构化满足协议即可

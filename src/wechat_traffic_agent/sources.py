@@ -127,3 +127,9 @@ class AuthorReader(Protocol):
     async def author(
         self, author_id: str, *, platform: str
     ) -> SourceResult[AuthorSnapshot]: ...
+
+
+class EngagementReader(Protocol):
+    async def engagement(
+        self, content_id: str, *, platform: str
+    ) -> SourceResult[EngagementSnapshot]: ...

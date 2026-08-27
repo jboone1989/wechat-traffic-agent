@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from wechat_traffic_agent.fixture import FixtureProvider
-from wechat_traffic_agent.sources import SourceStatus
+from wechat_traffic_agent.sources import EngagementSnapshot, SourceStatus
 
 
 def test_fixture_supports_at_least_three_platforms() -> None:
@@ -104,3 +104,26 @@ def test_fixture_broken_platform_fails_leaf_methods_too() -> None:
     for result in (read, comments, author):
         assert result.status is SourceStatus.FAILED
         assert result.error is not None
+
+
+def test_fixture_engagement_reads_canned_data() -> None:
+    provider = FixtureProvider()
+    result = asyncio.run(provider.engagement("wb-1", platform="weibo"))
+    assert result.status is SourceStatus.OK
+    assert result.source == "fixture"
+    assert result.platform == "weibo"
+    assert result.observed_at is not None
+    assert result.items.likes == 8000
+
+
+def test_fixture_engagement_missing_is_unavailable_and_broken_is_failed() -> None:
+    provider = FixtureProvider()
+    missing = asyncio.run(provider.engagement("not-in-fixture", platform="weibo"))
+    assert missing.status is SourceStatus.UNAVAILABLE
+    assert missing.error is not None
+    assert missing.items == EngagementSnapshot(content_id="", platform="weibo")  # 退化实例纪律
+    broken_provider = FixtureProvider(broken_platforms=frozenset({"weibo"}))
+    failed = asyncio.run(broken_provider.engagement("wb-1", platform="weibo"))
+    assert failed.status is SourceStatus.FAILED
+    assert failed.error is not None
+    assert failed.items == EngagementSnapshot(content_id="", platform="weibo")
