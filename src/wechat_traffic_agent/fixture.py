@@ -124,27 +124,27 @@ FIXTURE_CONTENT.update({
         title="B站样本二", text="这是B站样本二的正文。", author_id="fixture-bili-author-2",
         published_at=datetime(2026, 8, 25, 14, 0, tzinfo=timezone.utc),
     ),
-    "https://bilibili.com/fixture/3": ContentSnapshot(
+    "https://fixture.example/bilibili/3": ContentSnapshot(
         content_id="bili-3", platform="bilibili", url="https://bilibili.com/fixture/3",
         title="bilibili热点样本003", text="这是B站低粉爆款的正文。", author_id="fixture-bili-author-3",
         published_at=datetime(2026, 8, 26, 8, 0, tzinfo=timezone.utc),
     ),
-    "https://bilibili.com/fixture/4": ContentSnapshot(
+    "https://fixture.example/bilibili/4": ContentSnapshot(
         content_id="bili-4", platform="bilibili", url="https://bilibili.com/fixture/4",
         title="bilibili热点样本004", text="这是B站样本四的正文。", author_id="fixture-bili-author-4",
         published_at=datetime(2026, 8, 24, 22, 0, tzinfo=timezone.utc),
     ),
-    "https://bilibili.com/fixture/5": ContentSnapshot(
+    "https://fixture.example/bilibili/5": ContentSnapshot(
         content_id="bili-5", platform="bilibili", url="https://bilibili.com/fixture/5",
         title="bilibili热点样本005", text="这是B站样本五的正文。", author_id="fixture-bili-author-5",
         published_at=datetime(2026, 8, 25, 20, 0, tzinfo=timezone.utc),
     ),
-    "https://bilibili.com/fixture/6": ContentSnapshot(
+    "https://fixture.example/bilibili/6": ContentSnapshot(
         content_id="bili-6", platform="bilibili", url="https://bilibili.com/fixture/6",
         title="bilibili热点样本006", text="这是B站样本六的正文。", author_id="fixture-bili-author-6",
         published_at=datetime(2026, 8, 26, 11, 0, tzinfo=timezone.utc),
     ),
-    "https://bilibili.com/fixture/7": ContentSnapshot(
+    "https://fixture.example/bilibili/7": ContentSnapshot(
         content_id="bili-7", platform="bilibili", url="https://bilibili.com/fixture/7",
         title="bilibili热点样本007", text="这是B站样本七的正文。", author_id="fixture-bili-author-7",
         published_at=datetime(2026, 8, 23, 18, 0, tzinfo=timezone.utc),
