@@ -75,6 +75,23 @@ output/YYYY-MM-DD/exp-NN/
 - **DailyHotApi**（广撒网热榜，best-effort）：自托管 `docker run -p 6688:6688 imsyy/dailyhotapi`，
   适配器走 `GET /{platform}`（weibo/zhihu/bilibili/douyin/toutiao 等），防御式解析。
 - **Agent-Reach**（Top-N 深抓，CLI 能力层）：`agent-reach doctor --json` 报各 channel
-  健康与 active_backend；正文读取用其管理的 `curl -s https://r.jina.ai/{url}`；
-  评论/作者协议已定义，等 PR3 接好平台 CLI 后端再解析。
-- **FixtureProvider**：离线三平台数据 + 故障注入，CI 与单元测试专用。
+  健康与 active_backend；正文读取用其管理的 `curl -s https://r.jina.ai/{url}`（或注入
+  共享 httpx client 走同一读取端点）；bilibili 有文档化 CLI 模板
+  （`bili video {id} --comments --json` / `bili user {id} --json`，按 `{ok, data, error}`
+  envelope 防御解析）；其余平台输出形状未文档化，按需注入 `commands` 模板。
+- **FixtureProvider**：离线三平台数据 + 故障注入 + 深抓场景，CI 与单元测试专用。
+
+## 病毒雷达（PR3）
+
+`ViralRadar.scan()` 回答"最近什么内容正在异常成功"：
+
+```text
+DailyHotApi/fixture 广撒网 → normalize + dedup → platform-local rank → Top-20
+  → deep fetch（正文 + 作者 + 互动）→ ViralCandidate 排序
+```
+
+数字排序全部 deterministic code，LLM 不碰任何排名。子分只在同平台内做百分位：
+rank 35% / engagement 25% / breakout 25% / freshness 15%；某项缺失则剔除权重并
+重新归一化剩余项——unavailable 绝不当作 0。breakout = engagement / author_followers，
+"低粉爆款能赢大号普通内容"；absolute_hot_score 单独保存原始热度百分位，
+不与 breakout 混淆；同题出现在多个平台会获得 cross_platform_score。
