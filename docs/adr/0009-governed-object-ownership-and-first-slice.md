@@ -209,6 +209,22 @@ Receipt append identity/order:
 - appending the same `receipt_id` is idempotent and must not allocate a new
   sequence
 
+Authoritative observation is **one atomic operation** for a given
+`attempt_id`. In that single protected operation, all of the following
+succeed or none do:
+
+1. allocate the next `receipt_sequence` (or detect an existing `receipt_id`)
+2. append the immutable receipt
+3. set `ApplyAttempt.status` to exactly that receipt’s `outcome`
+
+A crash after committing a receipt but before updating `status` is not a
+legal persisted state. Restart/recovery must not choose between a later
+receipt and a stale `status`; the atomic record is the source of truth.
+
+Replay of an existing `receipt_id` returns the already-committed resolution
+and must not allocate another sequence. Conflicting payload for the same
+immutable `receipt_id` is rejected; history is not modified.
+
 If `UNKNOWN` is later confirmed `APPLIED` (or any other terminal X):
 
 - the original UNKNOWN receipt/event must be retained
