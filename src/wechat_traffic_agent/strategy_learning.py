@@ -116,7 +116,14 @@ class StrategyLearner:
                     if bucket_scored
                     else None
                 )
-                lifts = [self._lift_at(scored_rewards, position) for position, _ in bucket_scored]
+                lifts = [
+                    lift
+                    for lift in (
+                        self._lift_at(scored_rewards, position)
+                        for position, _ in bucket_scored
+                    )
+                    if lift is not None
+                ]
                 mean_lift = sum(lifts) / len(lifts) if lifts else None
                 smoothed = (
                     sum(lifts) / (len(lifts) + SMOOTHING_ALPHA) if lifts else None
@@ -162,17 +169,19 @@ class StrategyLearner:
 
     def _lift_at(
         self, scored_rewards: dict[int, float], position: int
-    ) -> float:
-        """reward minus the median of up to ``baseline_window`` prior rewards."""
+    ) -> float | None:
+        """reward minus the median of up to ``baseline_window`` prior rewards.
+
+        No comparable prior is UNKNOWN, never a synthetic 0.0 lift.
+        """
         prior = [
             reward
             for prior_position, reward in sorted(scored_rewards.items())
             if prior_position < position
         ][-self.baseline_window :]
-        own = scored_rewards[position]
         if not prior:
-            return 0.0  # 没有可比基线时按相对基线为零处理，不虚构落后/领先
-        return own - median(prior)
+            return None
+        return scored_rewards[position] - median(prior)
 
     # ------------------------------------------------------------------ #
     # Recommendation                                                     #
