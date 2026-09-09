@@ -2,7 +2,9 @@
 
 Status: Accepted (GAI v3.1 execution freeze)  
 Date: 2026-09-09  
-Depends on: product-identity freeze in ADR-0008 (P8). This ADR does not replace it.
+
+Related pending work: P8 product-identity freeze.  
+ADR-0009 is self-contained and does not depend on uncommitted ADR-0008.
 
 Architecture status: **READY WITH REQUIRED PROTOCOL FIXES**
 
@@ -162,6 +164,43 @@ not eligible for strict automated governed apply. Mark
 - A later confirmation must not overwrite history. `12:00 UNKNOWN` then
   `12:10` actually applied appends a reconciliation / later observation.
 
+### 3.6.1 Attempt status and receipt outcome
+
+`ApplyAttempt.status` and `ApplyReceipt.outcome` are not independent truths.
+There is one current resolution per attempt. Receipts are observations that
+set that resolution; they do not form a second ledger.
+
+Normative transitions:
+
+```text
+admission:
+  no receipt
+  attempt.current_status = STARTED
+
+authoritative observation:
+  receipt.outcome = X
+  attempt.current_status = X
+
+X ∈ APPLIED / NOT_APPLIED / UNKNOWN / RECOVERY_REQUIRED
+```
+
+Illegal combinations (against the **latest** authoritative receipt, not against
+retained history) include:
+
+- `attempt.current_status = STARTED` with any receipt
+- `attempt.current_status = APPLIED` with latest `receipt.outcome = UNKNOWN`
+- `attempt.current_status = NOT_APPLIED` with latest `receipt.outcome = APPLIED`
+- any current_status / latest-outcome pair that is not the identity mapping
+  above
+
+If `UNKNOWN` is later confirmed `APPLIED` (or any other terminal X):
+
+- the original UNKNOWN receipt/event must be retained
+- append a reconciliation / later observation
+- `attempt.current_status` may update to the new current resolution
+- historical facts must not be overwritten or deleted
+
+
 ### 3.7 Out-of-band modification
 
 An out-of-band change invalidates the old baseline. An old grant must not apply
@@ -203,8 +242,8 @@ boundary, not a GAI field.
 | `ChangeCandidate` | `schema_version`, `candidate_id`, `object_id`, `expected_revision`, `change_artifact_ref`, `submitted_principal`, `submitted_at`, optional non-authoritative `source_metadata` |
 | `EvaluationAttestation` | `schema_version`, `report_id`, `candidate_digest`, `evaluation_profile_ref`, `evaluator_principal`, `report_artifact_ref`, `completed_at` |
 | `AdoptionGrant` | `schema_version`, `grant_id`, `object_id`, `authority_id`, `authority_epoch`, `candidate_digest`, `expected_revision`, `governance_policy_ref`, `evaluation_refs[]`, `issued_principal`, `issued_at`, `execute_before` |
-| `ApplyAttempt` | `schema_version`, `attempt_id`, `grant_id`, `started_at`, `status` ∈ {`STARTED`, `APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`} |
-| `ApplyReceipt` | `schema_version`, `attempt_id`, `executor_id`, `outcome`, optional `observed_revision` / `observed_state_ref`, `observed_at`, optional `details_ref` |
+| `ApplyAttempt` | `schema_version`, `attempt_id`, `grant_id`, `started_at`, `status` ∈ {`STARTED`, `APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}. After admission, `status` is the current resolution and must equal the latest authoritative `ApplyReceipt.outcome`, or remain `STARTED` if there is no receipt. |
+| `ApplyReceipt` | `schema_version`, `attempt_id`, `executor_id`, `outcome` ∈ {`APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}, optional `observed_revision` / `observed_state_ref`, `observed_at`, optional `details_ref`. `outcome` is the observation that sets current attempt status; later receipts append, they do not rewrite earlier ones. |
 | `GrantRevocation` | `schema_version`, `grant_id`, `revoked_principal`, `revoked_at`, optional `reason_ref` |
 
 Runtime actual-use events bind at least: `usage_event_id`, `object_id`,
