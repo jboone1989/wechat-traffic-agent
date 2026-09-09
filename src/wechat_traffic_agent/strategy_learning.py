@@ -119,7 +119,7 @@ class StrategyLearner:
                 lifts = [
                     lift
                     for lift in (
-                        self._lift_at(scored_rewards, position)
+                        self._lift_at(scored_rewards, ordered, position)
                         for position, _ in bucket_scored
                     )
                     if lift is not None
@@ -168,16 +168,24 @@ class StrategyLearner:
         return rewards
 
     def _lift_at(
-        self, scored_rewards: dict[int, float], position: int
+        self,
+        scored_rewards: dict[int, float],
+        ordered: Sequence[tuple[int, PerformanceObservation]],
+        position: int,
     ) -> float | None:
-        """reward minus the median of up to ``baseline_window`` prior rewards.
+        """reward minus the median of strictly earlier comparable rewards.
 
-        No comparable prior is UNKNOWN, never a synthetic 0.0 lift.
+        Sort order and post_id ties are not a baseline. Missing published_at
+        and same-timestamp peers are UNKNOWN, never a synthetic lift.
         """
+        published_at = ordered[position][1].published_at
+        if published_at is None:
+            return None
         prior = [
             reward
             for prior_position, reward in sorted(scored_rewards.items())
-            if prior_position < position
+            if (earlier := ordered[prior_position][1].published_at) is not None
+            and earlier < published_at
         ][-self.baseline_window :]
         if not prior:
             return None

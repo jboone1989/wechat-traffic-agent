@@ -141,6 +141,84 @@ def test_no_comparable_baseline_lift_is_unknown_not_zero() -> None:
     assert estimate.smoothed_lift is None
 
 
+def test_missing_published_at_does_not_fabricate_lift_from_sort_order() -> None:
+    learner = StrategyLearner()
+    history = [
+        PerformanceObservation(
+            post_id="z-high",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="z-high-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=5000,
+        ),
+        PerformanceObservation(
+            post_id="a-low",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="a-low-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=100,
+        ),
+    ]
+    estimate = learner.estimates(history)[0]
+    assert estimate.scored_samples == 2
+    assert estimate.lift_vs_trailing_baseline is None
+    assert estimate.smoothed_lift is None
+
+
+def test_tied_published_at_without_earlier_sample_is_unknown_not_ranked() -> None:
+    learner = StrategyLearner(min_samples=1)
+    from wechat_traffic_agent.planner import VARIABLES
+
+    tied = BASE
+    history = [
+        PerformanceObservation(
+            post_id="emotion-high",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="emotion-high-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=5000,
+            published_at=tied,
+        ),
+        PerformanceObservation(
+            post_id="title-low",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="title-low-exp",
+            variable_under_test="title_pattern",
+            treatment_value="反差式",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=100,
+            published_at=tied,
+        ),
+        _obs("o", variable="opening_hook", treatment="悬念前置", reads=100, minutes_offset=60),
+        _obs("i", variable="information_delta", treatment="反常识数据", reads=100, minutes_offset=120),
+        _obs("h", variable="interaction_hook", treatment="晒图征集", reads=100, minutes_offset=180),
+    ]
+    estimates = {e.variable: e for e in learner.estimates(history)}
+    assert estimates["emotion"].smoothed_lift is None
+    assert estimates["title_pattern"].smoothed_lift is None
+    decision = learner.recommend(
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
+    )
+    assert decision.variable.value not in {"emotion", "title_pattern"}
+
+
 def test_trailing_baseline_flattens_account_growth_constant_series_gives_zero_lift() -> None:
     learner = StrategyLearner()
     # 账号增长后同样 500 阅读，价值更高：收益按与近期中位数的差值衡量。
