@@ -26,6 +26,7 @@ from .learning import TrafficLearner
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
 from .outcome_maturity import outcome_is_scorable
+from .outcome_revision import collapse_outcome_revisions
 
 CONTEXT_KEY_AUDIENCE = "*"
 SMOOTHING_ALPHA = 2.0
@@ -95,6 +96,7 @@ class StrategyLearner:
         as_of: datetime | None = None,
     ) -> list[StrategyEstimate]:
         as_of = as_of or datetime.now(timezone.utc)
+        history = [revision.current for revision in collapse_outcome_revisions(history)]
         rows: list[StrategyEstimate] = []
         for parts, observations in sorted(self.contexts(history).items()):
             policy = (
@@ -225,6 +227,7 @@ class StrategyLearner:
         与 estimates() 的隔离口径一致——24h 和 7d 永不互相污染。
         缺窗口标注的观察落在 ``(*)`` context，同样不会混入。
         """
+        history = [revision.current for revision in collapse_outcome_revisions(history)]
         requested = (
             audience_key or CONTEXT_KEY_AUDIENCE,
             objective.value,
