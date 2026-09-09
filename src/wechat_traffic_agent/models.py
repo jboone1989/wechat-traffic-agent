@@ -82,6 +82,13 @@ class PerformanceObservation(BaseModel):
     objective: ContentObjective | None = None
     observation_window: ObservationWindow | None = None
     account_baseline: float | None = Field(default=None, ge=0)  # 外部提供的 trailing 基线
+    decision_time: datetime | None = None
+    first_observed_at: datetime | None = None
+    source_published_at: datetime | None = None
+    source_revision: str | None = Field(default=None, max_length=120)
+    supersedes: str | None = Field(default=None, max_length=120)
+    withdrawn_at: datetime | None = None
+    upstream_dependency_refs: tuple[str, ...] = ()
 
 
 class TietuDraft(BaseModel):

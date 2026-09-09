@@ -8,7 +8,7 @@ from .editorial_intervention import EditorialIntervention, agent_attributable_hi
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
 from .outcome_maturity import outcome_is_scorable
-from .outcome_revision import collapse_outcome_revisions
+from .outcome_revision import current_active_observations
 
 UNSCOPED_CONTEXT = "*"
 
@@ -75,7 +75,7 @@ class TrafficLearner:
     ) -> list[AngleEstimate]:
         policy = policy_for(objective)
         as_of = as_of or datetime.now(timezone.utc)
-        history = [revision.current for revision in collapse_outcome_revisions(history)]
+        history = current_active_observations(history)
         history = agent_attributable_history(history, editorial_interventions)
         history = self.scoped_history(
             history,
