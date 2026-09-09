@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from statistics import median
 
+from .editorial_intervention import EditorialIntervention, agent_attributable_history
 from .learning import TrafficLearner
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
@@ -94,9 +95,11 @@ class StrategyLearner:
         history: Sequence[PerformanceObservation],
         *,
         as_of: datetime | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
     ) -> list[StrategyEstimate]:
         as_of = as_of or datetime.now(timezone.utc)
         history = [revision.current for revision in collapse_outcome_revisions(history)]
+        history = agent_attributable_history(history, editorial_interventions)
         rows: list[StrategyEstimate] = []
         for parts, observations in sorted(self.contexts(history).items()):
             policy = (
@@ -219,6 +222,7 @@ class StrategyLearner:
         objective: ContentObjective = ContentObjective.READS,
         observation_window: str,
         as_of: datetime | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
     ) -> StrategyDecision:
         """Explore under-min variables first, then exploit best smoothed lift.
 
@@ -228,6 +232,7 @@ class StrategyLearner:
         缺窗口标注的观察落在 ``(*)`` context，同样不会混入。
         """
         history = [revision.current for revision in collapse_outcome_revisions(history)]
+        history = agent_attributable_history(history, editorial_interventions)
         requested = (
             audience_key or CONTEXT_KEY_AUDIENCE,
             objective.value,
@@ -262,7 +267,9 @@ class StrategyLearner:
         target_key = self._context_key(requested)
         allowed = set(names)
         grouped: dict[str, list[StrategyEstimate]] = {}
-        for estimate in self.estimates(history, as_of=as_of):
+        for estimate in self.estimates(
+            history, as_of=as_of, editorial_interventions=editorial_interventions
+        ):
             if estimate.context_key != target_key:
                 continue
             if estimate.variable not in allowed or estimate.smoothed_lift is None:
@@ -297,6 +304,7 @@ class StrategyLearner:
         objective: ContentObjective = ContentObjective.READS,
         audience_key: str | None = None,
         observation_window: str | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
     ) -> EmotionAngle:
         """Emotion dimension still rides the scoped TrafficLearner rule."""
         return TrafficLearner().recommend(
@@ -304,4 +312,5 @@ class StrategyLearner:
             objective,
             audience_key=audience_key,
             observation_window=observation_window,
+            editorial_interventions=editorial_interventions,
         )

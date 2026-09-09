@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .editorial_intervention import EditorialIntervention, agent_attributable_history
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
 from .outcome_maturity import outcome_is_scorable
@@ -70,10 +71,12 @@ class TrafficLearner:
         audience_key: str | None = None,
         observation_window: str | None = None,
         as_of: datetime | None = None,
+        editorial_interventions: list[EditorialIntervention] | tuple[EditorialIntervention, ...] | None = None,
     ) -> list[AngleEstimate]:
         policy = policy_for(objective)
         as_of = as_of or datetime.now(timezone.utc)
         history = [revision.current for revision in collapse_outcome_revisions(history)]
+        history = agent_attributable_history(history, editorial_interventions)
         history = self.scoped_history(
             history,
             objective,
@@ -115,6 +118,7 @@ class TrafficLearner:
         audience_key: str | None = None,
         observation_window: str | None = None,
         as_of: datetime | None = None,
+        editorial_interventions: list[EditorialIntervention] | tuple[EditorialIntervention, ...] | None = None,
     ) -> EmotionAngle:
         estimates = self.estimates(
             history,
@@ -122,6 +126,7 @@ class TrafficLearner:
             audience_key=audience_key,
             observation_window=observation_window,
             as_of=as_of,
+            editorial_interventions=editorial_interventions,
         )
         # Explore every angle twice before exploiting measured performance.
         # An angle with samples but no scorable metric is still unexplored:
