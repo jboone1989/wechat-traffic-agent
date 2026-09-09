@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
+from .outcome_maturity import outcome_is_scorable
 
 UNSCOPED_CONTEXT = "*"
 
@@ -66,8 +68,10 @@ class TrafficLearner:
         *,
         audience_key: str | None = None,
         observation_window: str | None = None,
+        as_of: datetime | None = None,
     ) -> list[AngleEstimate]:
         policy = policy_for(objective)
+        as_of = as_of or datetime.now(timezone.utc)
         history = self.scoped_history(
             history,
             objective,
@@ -80,6 +84,8 @@ class TrafficLearner:
             impressions = sum(item.impressions or 0 for item in items)
             scored: list[tuple[float, int]] = []
             for item in items:
+                if not outcome_is_scorable(item, as_of, objective=objective):
+                    continue
                 reward = policy.reward(item)
                 if reward is not None:
                     scored.append((reward, max(item.impressions or 0, 20)))
@@ -106,12 +112,14 @@ class TrafficLearner:
         *,
         audience_key: str | None = None,
         observation_window: str | None = None,
+        as_of: datetime | None = None,
     ) -> EmotionAngle:
         estimates = self.estimates(
             history,
             objective,
             audience_key=audience_key,
             observation_window=observation_window,
+            as_of=as_of,
         )
         # Explore every angle twice before exploiting measured performance.
         # An angle with samples but no scorable metric is still unexplored:

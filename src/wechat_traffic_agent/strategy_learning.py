@@ -25,6 +25,7 @@ from statistics import median
 from .learning import TrafficLearner
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
+from .outcome_maturity import outcome_is_scorable
 
 CONTEXT_KEY_AUDIENCE = "*"
 SMOOTHING_ALPHA = 2.0
@@ -87,7 +88,13 @@ class StrategyLearner:
     # Estimates                                                          #
     # ------------------------------------------------------------------ #
 
-    def estimates(self, history: Sequence[PerformanceObservation]) -> list[StrategyEstimate]:
+    def estimates(
+        self,
+        history: Sequence[PerformanceObservation],
+        *,
+        as_of: datetime | None = None,
+    ) -> list[StrategyEstimate]:
+        as_of = as_of or datetime.now(timezone.utc)
         rows: list[StrategyEstimate] = []
         for parts, observations in sorted(self.contexts(history).items()):
             policy = (
@@ -96,7 +103,7 @@ class StrategyLearner:
                 else None
             )
             ordered = self._chronological(observations)
-            scored_rewards = self._scored_rewards(policy, observations, ordered)
+            scored_rewards = self._scored_rewards(policy, ordered, as_of)
 
             buckets: dict[tuple[str, str], list[int]] = {}
             for position, (_, obs) in enumerate(ordered):
@@ -156,12 +163,18 @@ class StrategyLearner:
         return indexed
 
     @staticmethod
-    def _scored_rewards(policy, observations, ordered) -> dict[int, float]:
-        """position (in chronological order) -> policy reward; UNKNOWN excluded."""
+    def _scored_rewards(policy, ordered, as_of: datetime) -> dict[int, float]:
+        """position (in chronological order) -> policy reward; UNKNOWN excluded.
+
+        Immature windows are also excluded: a 24h snapshot cannot score as a
+        7d zero, and a premature labeled window is not mature evidence.
+        """
         if policy is None:
             return {}
         rewards: dict[int, float] = {}
         for position, (_, obs) in enumerate(ordered):
+            if not outcome_is_scorable(obs, as_of, objective=policy.objective):
+                continue
             reward = policy.reward(obs)
             if reward is not None:
                 rewards[position] = reward
@@ -203,6 +216,7 @@ class StrategyLearner:
         audience_key: str | None = None,
         objective: ContentObjective = ContentObjective.READS,
         observation_window: str,
+        as_of: datetime | None = None,
     ) -> StrategyDecision:
         """Explore under-min variables first, then exploit best smoothed lift.
 
@@ -245,7 +259,7 @@ class StrategyLearner:
         target_key = self._context_key(requested)
         allowed = set(names)
         grouped: dict[str, list[StrategyEstimate]] = {}
-        for estimate in self.estimates(history):
+        for estimate in self.estimates(history, as_of=as_of):
             if estimate.context_key != target_key:
                 continue
             if estimate.variable not in allowed or estimate.smoothed_lift is None:
