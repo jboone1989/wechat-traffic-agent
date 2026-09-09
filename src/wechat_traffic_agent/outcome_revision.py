@@ -51,13 +51,16 @@ def collapse_outcome_revisions(
             seen_revisions[key] = {obs.source_revision} if obs.source_revision else set()
             ordered_keys.append(key)
             continue
-        if obs.source_revision and obs.source_revision in seen_revisions[key]:
+        if obs.source_revision:
+            if obs.source_revision in seen_revisions[key]:
+                continue
+            seen_revisions[key].add(obs.source_revision)
+            seen[key].add(fingerprint)
+            bucket.append(obs)
             continue
         if fingerprint in seen[key]:
             continue
         seen[key].add(fingerprint)
-        if obs.source_revision:
-            seen_revisions[key].add(obs.source_revision)
         bucket.append(obs)
     return [
         OutcomeRevision(current=bucket[-1], superseded=tuple(bucket[:-1]))

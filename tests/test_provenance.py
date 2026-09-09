@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 from wechat_traffic_agent.learning import TrafficLearner
 from wechat_traffic_agent.models import ContentObjective, EmotionAngle, PerformanceObservation
-from wechat_traffic_agent.outcome_revision import collapse_outcome_revisions
+from wechat_traffic_agent.outcome_revision import (
+    collapse_outcome_revisions,
+    current_active_observations,
+)
 from wechat_traffic_agent.strategy_learning import StrategyLearner
 
 PUBLISHED = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
@@ -110,3 +113,41 @@ def test_withdrawn_current_revision_is_not_scored_as_agent_evidence() -> None:
     relief = next(item for item in traffic if item.angle is EmotionAngle.RELIEF)
     assert relief.samples == 1
     assert relief.scored_samples == 1
+
+
+def test_same_metric_named_revision_supersedes_and_keeps_lineage() -> None:
+    original = _obs(reads=400, source_revision="rev-a")
+    correction = _obs(reads=400, source_revision="rev-b", supersedes="rev-a")
+    collapsed = collapse_outcome_revisions([original, correction])
+    assert collapsed[0].current.source_revision == "rev-b"
+    assert collapsed[0].current.supersedes == "rev-a"
+    assert collapsed[0].superseded[0].source_revision == "rev-a"
+
+
+def test_same_metric_withdrawal_is_not_scored_as_live_evidence() -> None:
+    original = _obs(reads=400, source_revision="rev-a")
+    withdrawn = _obs(
+        reads=400,
+        source_revision="rev-b",
+        supersedes="rev-a",
+        withdrawn_at=FIRST_SEEN,
+    )
+    collapsed = collapse_outcome_revisions([original, withdrawn])
+    assert collapsed[0].current.source_revision == "rev-b"
+    assert collapsed[0].current.withdrawn_at == FIRST_SEEN
+    assert current_active_observations([original, withdrawn]) == []
+
+    strategy = StrategyLearner(min_samples=1).estimates(
+        [original, withdrawn], as_of=AS_OF
+    )
+    assert strategy == []
+    traffic = TrafficLearner().estimates(
+        [original, withdrawn],
+        ContentObjective.READS,
+        audience_key="silver",
+        observation_window="24h",
+        as_of=AS_OF,
+    )
+    relief = next(item for item in traffic if item.angle is EmotionAngle.RELIEF)
+    assert relief.samples == 0
+    assert relief.scored_samples == 0
