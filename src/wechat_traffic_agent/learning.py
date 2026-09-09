@@ -34,12 +34,18 @@ class TrafficLearner:
         return item.objective or ContentObjective.READS
 
     @staticmethod
-    def _scoped_history(
+    def scoped_history(
         history: list[PerformanceObservation],
         objective: ContentObjective,
-        audience_key: str | None,
-        observation_window: str | None,
+        *,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> list[PerformanceObservation]:
+        """Return the same evidence slice used for recommendation.
+
+        Callers that prompt a model with history must use this helper so
+        labeled foreign context cannot leak after the angle is chosen.
+        """
         requested_audience = audience_key or UNSCOPED_CONTEXT
         requested_window = observation_window or UNSCOPED_CONTEXT
         scoped: list[PerformanceObservation] = []
@@ -62,8 +68,11 @@ class TrafficLearner:
         observation_window: str | None = None,
     ) -> list[AngleEstimate]:
         policy = policy_for(objective)
-        history = self._scoped_history(
-            history, objective, audience_key, observation_window
+        history = self.scoped_history(
+            history,
+            objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
         )
         estimates: list[AngleEstimate] = []
         for angle in EmotionAngle:

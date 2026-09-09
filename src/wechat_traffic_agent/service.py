@@ -48,8 +48,15 @@ class WeChatTrafficAgent:
         if not topics:
             raise ValueError("at least one evidenced topic signal is required")
         policy = policy_for(audience.objective)
+        # One filtered slice for both recommendation and the composition prompt.
         # Unspecified audience/window is unlabeled-only, not a silent pool of
-        # PR6 scoped history. Callers that have context must pass it here.
+        # PR6 scoped history.
+        history = self.learner.scoped_history(
+            history,
+            audience.objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
         angle = self.learner.recommend(
             history,
             audience.objective,

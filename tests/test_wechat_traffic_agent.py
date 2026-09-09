@@ -239,7 +239,7 @@ def test_compose_uses_named_audience_and_window_from_labeled_history(tmp_path) -
         "audience-a", EmotionAngle.RESONANCE, 50
     ) + _scoped_emotion_history("audience-b", EmotionAngle.NOSTALGIA, 90)
     response = _draft(angle=EmotionAngle.RESONANCE).model_dump_json()
-    runtime, _ = _runtime(tmp_path, response)
+    runtime, backend = _runtime(tmp_path, response)
     draft = asyncio.run(
         WeChatTrafficAgent(runtime).compose(
             [_topic()],
@@ -250,6 +250,9 @@ def test_compose_uses_named_audience_and_window_from_labeled_history(tmp_path) -
         )
     )
     assert draft.angle is EmotionAngle.RESONANCE
+    task = backend.requests[-1].task
+    assert "audience-a-resonance-0" in task
+    assert "audience-b-" not in task
 
 
 def test_compose_without_scope_only_uses_unlabeled_history(tmp_path) -> None:
@@ -257,8 +260,9 @@ def test_compose_without_scope_only_uses_unlabeled_history(tmp_path) -> None:
     selected = TrafficLearner().recommend(history, ContentObjective.READS)
     assert selected is not EmotionAngle.NOSTALGIA
     response = _draft(angle=selected).model_dump_json()
-    runtime, _ = _runtime(tmp_path, response)
+    runtime, backend = _runtime(tmp_path, response)
     draft = asyncio.run(
         WeChatTrafficAgent(runtime).compose([_topic()], history, _audience())
     )
     assert draft.angle is selected
+    assert "audience-b-" not in backend.requests[-1].task
