@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
 
+UNSCOPED_CONTEXT = "*"
+
 
 @dataclass(frozen=True)
 class AngleEstimate:
@@ -17,14 +19,45 @@ class AngleEstimate:
 
 
 class TrafficLearner:
-    """Pure learner: history is supplied by Runtime sensors, never stored here."""
+    """Pure learner: history is supplied by Runtime sensors, never stored here.
+
+    Recommendation is scoped to ``(audience_key, objective, observation_window)``.
+    Omitting audience/window uses only unlabeled observations — labeled foreign
+    context must never leak into an unscoped call.
+    """
+
+    @staticmethod
+    def _scoped_history(
+        history: list[PerformanceObservation],
+        objective: ContentObjective,
+        audience_key: str | None,
+        observation_window: str | None,
+    ) -> list[PerformanceObservation]:
+        requested_audience = audience_key or UNSCOPED_CONTEXT
+        requested_window = observation_window or UNSCOPED_CONTEXT
+        scoped: list[PerformanceObservation] = []
+        for item in history:
+            item_audience = item.audience_key or UNSCOPED_CONTEXT
+            item_window = item.observation_window or UNSCOPED_CONTEXT
+            if item_audience != requested_audience or item_window != requested_window:
+                continue
+            if item.objective is not None and item.objective is not objective:
+                continue
+            scoped.append(item)
+        return scoped
 
     def estimates(
         self,
         history: list[PerformanceObservation],
         objective: ContentObjective = ContentObjective.READS,
+        *,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> list[AngleEstimate]:
         policy = policy_for(objective)
+        history = self._scoped_history(
+            history, objective, audience_key, observation_window
+        )
         estimates: list[AngleEstimate] = []
         for angle in EmotionAngle:
             items = [item for item in history if item.angle is angle]
@@ -54,8 +87,16 @@ class TrafficLearner:
         self,
         history: list[PerformanceObservation],
         objective: ContentObjective = ContentObjective.READS,
+        *,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> EmotionAngle:
-        estimates = self.estimates(history, objective)
+        estimates = self.estimates(
+            history,
+            objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
         # Explore every angle twice before exploiting measured performance.
         # An angle with samples but no scorable metric is still unexplored:
         # "no data" must never be read as "bad performance".

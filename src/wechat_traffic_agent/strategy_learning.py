@@ -261,6 +261,13 @@ class StrategyLearner:
         history: Sequence[PerformanceObservation],
         *,
         objective: ContentObjective = ContentObjective.READS,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> EmotionAngle:
-        """Emotion dimension still rides the legacy explore/exploit rule."""
-        return TrafficLearner().recommend(list(history), objective)
+        """Emotion dimension still rides the scoped TrafficLearner rule."""
+        return TrafficLearner().recommend(
+            list(history),
+            objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
