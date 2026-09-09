@@ -212,3 +212,53 @@ def test_composition_prompt_reflects_objective_policy(
     assert guidance_token in request.task
     assert "主指标" in request.task
     assert "次要指标：。" not in request.task  # 次要指标必须非空
+
+
+def _scoped_emotion_history(
+    audience_key: str, winner: EmotionAngle, winner_reads: int
+) -> list[PerformanceObservation]:
+    history: list[PerformanceObservation] = []
+    for angle in EmotionAngle:
+        for sample in range(2):
+            history.append(
+                PerformanceObservation(
+                    post_id=f"{audience_key}-{angle.value}-{sample}",
+                    angle=angle,
+                    impressions=100,
+                    reads=winner_reads if angle is winner else 10,
+                    audience_key=audience_key,
+                    objective=ContentObjective.READS,
+                    observation_window="24h",
+                )
+            )
+    return history
+
+
+def test_compose_uses_named_audience_and_window_from_labeled_history(tmp_path) -> None:
+    history = _scoped_emotion_history(
+        "audience-a", EmotionAngle.RESONANCE, 50
+    ) + _scoped_emotion_history("audience-b", EmotionAngle.NOSTALGIA, 90)
+    response = _draft(angle=EmotionAngle.RESONANCE).model_dump_json()
+    runtime, _ = _runtime(tmp_path, response)
+    draft = asyncio.run(
+        WeChatTrafficAgent(runtime).compose(
+            [_topic()],
+            history,
+            _audience(),
+            audience_key="audience-a",
+            observation_window="24h",
+        )
+    )
+    assert draft.angle is EmotionAngle.RESONANCE
+
+
+def test_compose_without_scope_only_uses_unlabeled_history(tmp_path) -> None:
+    history = _scoped_emotion_history("audience-b", EmotionAngle.NOSTALGIA, 90)
+    selected = TrafficLearner().recommend(history, ContentObjective.READS)
+    assert selected is not EmotionAngle.NOSTALGIA
+    response = _draft(angle=selected).model_dump_json()
+    runtime, _ = _runtime(tmp_path, response)
+    draft = asyncio.run(
+        WeChatTrafficAgent(runtime).compose([_topic()], history, _audience())
+    )
+    assert draft.angle is selected

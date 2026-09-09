@@ -81,6 +81,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audience", type=Path)
     parser.add_argument("--topics", type=Path)
     parser.add_argument("--history", type=Path)
+    parser.add_argument(
+        "--audience-key",
+        type=str,
+        default=None,
+        help="反馈学习的人群隔离键。不传则只消费未标注 audience_key 的历史。",
+    )
+    parser.add_argument(
+        "--observation-window",
+        type=str,
+        choices=("24h", "48h", "7d"),
+        default=None,
+        help="反馈学习的观察窗口。不传则只消费未标注 observation_window 的历史。",
+    )
     parser.add_argument("--state-dir", type=Path, default=Path("state"))
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
     parser.add_argument(
@@ -175,7 +188,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     draft, package = asyncio.run(
         WeChatTrafficAgent(runtime).create_content_package(
-            topics, history, audience, args.output_dir.resolve()
+            topics,
+            history,
+            audience,
+            args.output_dir.resolve(),
+            audience_key=args.audience_key,
+            observation_window=args.observation_window,
         )
     )
     runtime.persist()

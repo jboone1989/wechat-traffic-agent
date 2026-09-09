@@ -24,7 +24,14 @@ class TrafficLearner:
     Recommendation is scoped to ``(audience_key, objective, observation_window)``.
     Omitting audience/window uses only unlabeled observations — labeled foreign
     context must never leak into an unscoped call.
+
+    Legacy compatibility: ``objective=None`` means READS (the pre-PR6 default).
+    It is not a wildcard for FOLLOWS / DISCUSSION / CONVERSION.
     """
+
+    @staticmethod
+    def _observation_objective(item: PerformanceObservation) -> ContentObjective:
+        return item.objective or ContentObjective.READS
 
     @staticmethod
     def _scoped_history(
@@ -41,7 +48,7 @@ class TrafficLearner:
             item_window = item.observation_window or UNSCOPED_CONTEXT
             if item_audience != requested_audience or item_window != requested_window:
                 continue
-            if item.objective is not None and item.objective is not objective:
+            if TrafficLearner._observation_objective(item) is not objective:
                 continue
             scoped.append(item)
         return scoped

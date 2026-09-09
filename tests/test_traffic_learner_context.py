@@ -12,7 +12,7 @@ def _saturated(
     winner: EmotionAngle,
     winner_reads: int,
     loser_reads: int = 10,
-    objective: ContentObjective = ContentObjective.READS,
+    objective: ContentObjective | None = ContentObjective.READS,
 ) -> list[PerformanceObservation]:
     history: list[PerformanceObservation] = []
     for angle in EmotionAngle:
@@ -26,6 +26,10 @@ def _saturated(
                     audience_key=audience_key,
                     objective=objective,
                     observation_window=observation_window,
+                    **{
+                        key: (winner_reads if angle is winner else loser_reads)
+                        for key, _ in []
+                    },
                 )
             )
     return history
@@ -162,4 +166,46 @@ def test_estimates_count_only_matching_audience_and_window() -> None:
     assert by_angle[EmotionAngle.RESONANCE].impressions == 200
     assert (by_angle[EmotionAngle.RESONANCE].reward or 0) > (
         by_angle[EmotionAngle.NOSTALGIA].reward or 0
+    )
+
+
+def test_unlabeled_objective_is_legacy_reads_not_a_wildcard() -> None:
+    """Pre-PR6 rows have objective=None. That equals READS, never other objectives."""
+    history: list[PerformanceObservation] = []
+    for angle in EmotionAngle:
+        for sample in range(2):
+            history.append(
+                PerformanceObservation(
+                    post_id=f"legacy-{angle.value}-{sample}",
+                    angle=angle,
+                    impressions=100,
+                    reads=50 if angle is EmotionAngle.RESONANCE else 10,
+                    follows=90 if angle is EmotionAngle.NOSTALGIA else 1,
+                    comments=90 if angle is EmotionAngle.NOSTALGIA else 1,
+                    conversions=90 if angle is EmotionAngle.NOSTALGIA else 1,
+                    audience_key="audience-a",
+                    objective=None,
+                    observation_window="24h",
+                )
+            )
+    learner = TrafficLearner()
+    scoped = dict(
+        audience_key="audience-a",
+        observation_window="24h",
+    )
+    assert (
+        learner.recommend(history, ContentObjective.READS, **scoped)
+        is EmotionAngle.RESONANCE
+    )
+    assert (
+        learner.recommend(history, ContentObjective.FOLLOWS, **scoped)
+        is not EmotionAngle.NOSTALGIA
+    )
+    assert (
+        learner.recommend(history, ContentObjective.DISCUSSION, **scoped)
+        is not EmotionAngle.NOSTALGIA
+    )
+    assert (
+        learner.recommend(history, ContentObjective.CONVERSION, **scoped)
+        is not EmotionAngle.NOSTALGIA
     )
