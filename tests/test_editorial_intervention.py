@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from wechat_traffic_agent.editorial_intervention import (
     EditorDecision,
+    EditorialIntervention,
     bind_editorial_intervention,
     agent_candidate_owns_outcome,
 )
@@ -97,6 +98,35 @@ def test_publish_as_is_keeps_agent_candidate_as_outcome_owner() -> None:
     )
     assert bound.edit_diff == ""
     assert agent_candidate_owns_outcome(bound) is True
+
+
+def test_forged_publish_as_is_with_changed_content_is_not_agent_owned() -> None:
+    original = _draft()
+    published = _draft(title="下班先写清你在替谁说话")
+    with pytest.raises(ValidationError):
+        EditorialIntervention(
+            experiment_id="2026-08-27-exp-04",
+            post_id="post-forged",
+            original_draft=original,
+            published_content=published,
+            edit_diff="",
+            editor_decision=EditorDecision.PUBLISH_AS_IS,
+            policy_version="policy-v3",
+            model_version="composer-2026-08",
+            config_version="cfg-12",
+        )
+    forged = EditorialIntervention.model_construct(
+        experiment_id="2026-08-27-exp-04",
+        post_id="post-forged",
+        original_draft=original,
+        published_content=published,
+        edit_diff="",
+        editor_decision=EditorDecision.PUBLISH_AS_IS,
+        policy_version="policy-v3",
+        model_version="composer-2026-08",
+        config_version="cfg-12",
+    )
+    assert agent_candidate_owns_outcome(forged) is False
 
 
 def test_edited_publish_is_not_attributed_entirely_to_the_agent_candidate() -> None:

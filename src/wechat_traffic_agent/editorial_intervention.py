@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from .models import PerformanceObservation, TietuDraft
 
@@ -35,6 +35,25 @@ class EditorialIntervention(BaseModel):
     model_version: str
     config_version: str
 
+    @model_validator(mode="after")
+    def _decision_matches_content(self) -> EditorialIntervention:
+        if self.editor_decision is EditorDecision.REJECT:
+            if self.published_content is not None:
+                raise ValueError("rejected episodes cannot bind published content")
+            if self.edit_diff:
+                raise ValueError("rejected episodes cannot carry an edit diff")
+            return self
+        if self.published_content is None:
+            raise ValueError("published episodes require published content")
+        canonical = _edit_diff(self.original_draft, self.published_content)
+        if self.edit_diff != canonical:
+            raise ValueError("edit_diff must match original vs published content")
+        if self.editor_decision is EditorDecision.PUBLISH_AS_IS and canonical:
+            raise ValueError("publish_as_is cannot bind a changed draft")
+        if self.editor_decision is EditorDecision.PUBLISH_WITH_EDITS and not canonical:
+            raise ValueError("publish_with_edits requires a content change")
+        return self
+
 
 def _edit_diff(original: TietuDraft, published: TietuDraft) -> str:
     original_dump = original.model_dump()
@@ -58,18 +77,11 @@ def bind_editorial_intervention(
     config_version: str,
 ) -> EditorialIntervention:
     """Record original candidate, published content, diff, decision, and versions."""
-    if editor_decision is EditorDecision.REJECT:
-        if published_content is not None:
-            raise ValueError("rejected episodes cannot bind published content")
-        diff = ""
-    else:
-        if published_content is None:
-            raise ValueError("published episodes require published content")
-        diff = _edit_diff(original_draft, published_content)
-        if editor_decision is EditorDecision.PUBLISH_AS_IS and diff:
-            raise ValueError("publish_as_is cannot bind a changed draft")
-        if editor_decision is EditorDecision.PUBLISH_WITH_EDITS and not diff:
-            raise ValueError("publish_with_edits requires a content change")
+    diff = (
+        ""
+        if published_content is None
+        else _edit_diff(original_draft, published_content)
+    )
     return EditorialIntervention(
         experiment_id=experiment_id,
         post_id=post_id,
@@ -87,8 +99,8 @@ def agent_candidate_owns_outcome(intervention: EditorialIntervention) -> bool:
     """True only when the published artifact is the unmodified agent candidate."""
     return (
         intervention.editor_decision is EditorDecision.PUBLISH_AS_IS
-        and intervention.edit_diff == ""
         and intervention.published_content is not None
+        and intervention.original_draft == intervention.published_content
     )
 
 
