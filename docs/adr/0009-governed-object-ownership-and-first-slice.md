@@ -166,20 +166,23 @@ not eligible for strict automated governed apply. Mark
 
 ### 3.6.1 Attempt status and receipt outcome
 
-`ApplyAttempt.status` and `ApplyReceipt.outcome` are not independent truths.
-There is one current resolution per attempt. Receipts are observations that
-set that resolution; they do not form a second ledger.
+The canonical wire/schema field is `ApplyAttempt.status`. Do not introduce a
+second field named `current_status`. `status` **is** the current resolution.
+
+`ApplyAttempt.status` and the latest authoritative `ApplyReceipt.outcome` are
+not independent truths. Receipts are observations that set that resolution;
+they do not form a second ledger.
 
 Normative transitions:
 
 ```text
 admission:
   no receipt
-  attempt.current_status = STARTED
+  attempt.status = STARTED
 
 authoritative observation:
   receipt.outcome = X
-  attempt.current_status = X
+  attempt.status = X
 
 X ∈ APPLIED / NOT_APPLIED / UNKNOWN / RECOVERY_REQUIRED
 ```
@@ -187,17 +190,31 @@ X ∈ APPLIED / NOT_APPLIED / UNKNOWN / RECOVERY_REQUIRED
 Illegal combinations (against the **latest** authoritative receipt, not against
 retained history) include:
 
-- `attempt.current_status = STARTED` with any receipt
-- `attempt.current_status = APPLIED` with latest `receipt.outcome = UNKNOWN`
-- `attempt.current_status = NOT_APPLIED` with latest `receipt.outcome = APPLIED`
-- any current_status / latest-outcome pair that is not the identity mapping
-  above
+- `attempt.status = STARTED` with any receipt
+- `attempt.status = APPLIED` with latest `receipt.outcome = UNKNOWN`
+- `attempt.status = NOT_APPLIED` with latest `receipt.outcome = APPLIED`
+- any status / latest-outcome pair that is not the identity mapping above
+
+Receipt append identity/order:
+
+- each `ApplyReceipt` has immutable `receipt_id`
+- each receipt for one `attempt_id` gets a monotonic `receipt_sequence`
+  starting at 1, assigned atomically at append
+- “latest authoritative receipt” is the receipt with the highest committed
+  `receipt_sequence` for that `attempt_id`
+- `observed_at` is when the executor observed the target; it is not the
+  ordering key
+- equal `observed_at`, delayed delivery, replay, or storage reordering must
+  not change which receipt is latest
+- appending the same `receipt_id` is idempotent and must not allocate a new
+  sequence
 
 If `UNKNOWN` is later confirmed `APPLIED` (or any other terminal X):
 
 - the original UNKNOWN receipt/event must be retained
-- append a reconciliation / later observation
-- `attempt.current_status` may update to the new current resolution
+- append a reconciliation / later observation with a new `receipt_id` and
+  the next `receipt_sequence`
+- `attempt.status` may update to the new current resolution
 - historical facts must not be overwritten or deleted
 
 
@@ -242,8 +259,8 @@ boundary, not a GAI field.
 | `ChangeCandidate` | `schema_version`, `candidate_id`, `object_id`, `expected_revision`, `change_artifact_ref`, `submitted_principal`, `submitted_at`, optional non-authoritative `source_metadata` |
 | `EvaluationAttestation` | `schema_version`, `report_id`, `candidate_digest`, `evaluation_profile_ref`, `evaluator_principal`, `report_artifact_ref`, `completed_at` |
 | `AdoptionGrant` | `schema_version`, `grant_id`, `object_id`, `authority_id`, `authority_epoch`, `candidate_digest`, `expected_revision`, `governance_policy_ref`, `evaluation_refs[]`, `issued_principal`, `issued_at`, `execute_before` |
-| `ApplyAttempt` | `schema_version`, `attempt_id`, `grant_id`, `started_at`, `status` ∈ {`STARTED`, `APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}. After admission, `status` is the current resolution and must equal the latest authoritative `ApplyReceipt.outcome`, or remain `STARTED` if there is no receipt. |
-| `ApplyReceipt` | `schema_version`, `attempt_id`, `executor_id`, `outcome` ∈ {`APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}, optional `observed_revision` / `observed_state_ref`, `observed_at`, optional `details_ref`. `outcome` is the observation that sets current attempt status; later receipts append, they do not rewrite earlier ones. |
+| `ApplyAttempt` | `schema_version`, `attempt_id`, `grant_id`, `started_at`, `status` ∈ {`STARTED`, `APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}. `status` is the current resolution. After admission it remains `STARTED` until the first receipt; thereafter it must equal the latest authoritative `ApplyReceipt.outcome`. There is no separate `current_status` field. |
+| `ApplyReceipt` | `schema_version`, `receipt_id`, `attempt_id`, `receipt_sequence`, `executor_id`, `outcome` ∈ {`APPLIED`, `NOT_APPLIED`, `UNKNOWN`, `RECOVERY_REQUIRED`}, optional `observed_revision` / `observed_state_ref`, `observed_at`, optional `details_ref`. `receipt_sequence` is monotonic per `attempt_id` and assigned atomically at append. Latest authoritative receipt = highest committed `receipt_sequence`. Later receipts append; they do not rewrite earlier ones. |
 | `GrantRevocation` | `schema_version`, `grant_id`, `revoked_principal`, `revoked_at`, optional `reason_ref` |
 
 Runtime actual-use events bind at least: `usage_event_id`, `object_id`,
