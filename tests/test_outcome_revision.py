@@ -60,6 +60,37 @@ def test_late_correction_supersedes_prior_revision_and_keeps_lineage() -> None:
     assert estimate.avg_reward == only_correction.avg_reward
 
 
+def test_replay_of_superseded_revision_does_not_rewind_current() -> None:
+    original = _obs(reads=100)
+    correction = _obs(reads=400)
+    replay = _obs(reads=100)
+    collapsed = collapse_outcome_revisions([original, correction, replay])
+    assert len(collapsed) == 1
+    assert collapsed[0].current == correction
+    assert collapsed[0].superseded == (original,)
+
+    strategy = StrategyLearner().estimates(
+        [original, correction, replay], as_of=AS_OF
+    )[0]
+    assert strategy.samples == 1
+    assert strategy.scored_samples == 1
+    only_correction = StrategyLearner().estimates([correction], as_of=AS_OF)[0]
+    assert strategy.avg_reward == only_correction.avg_reward
+
+    from wechat_traffic_agent.learning import TrafficLearner
+
+    traffic = TrafficLearner().estimates(
+        [original, correction, replay],
+        ContentObjective.READS,
+        audience_key="silver",
+        observation_window="24h",
+        as_of=AS_OF,
+    )
+    winner = next(row for row in traffic if row.angle is EmotionAngle.RELIEF)
+    assert winner.samples == 1
+    assert winner.scored_samples == 1
+
+
 def test_distinct_windows_remain_independent_samples() -> None:
     day = _obs(window="24h", reads=500)
     week = _obs(window="7d", reads=800)
