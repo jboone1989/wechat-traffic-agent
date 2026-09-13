@@ -1,0 +1,47 @@
+name: Content Site
+
+on:
+  push:
+    branches: ["feat/content-agent-web"]
+  pull_request:
+    paths:
+      - "content/**"
+      - "site/**"
+      - "src/wechat_traffic_agent/channels/web.py"
+      - "src/wechat_traffic_agent/content_artifact.py"
+      - "src/wechat_traffic_agent/site_audit.py"
+      - "src/wechat_traffic_agent/site_cli.py"
+      - "tests/test_web_*.py"
+      - "tests/test_site_*.py"
+      - "tests/test_adsense_readiness.py"
+      - ".github/workflows/content-site.yml"
+
+jobs:
+  site-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install site-only test dependencies
+        run: python -m pip install "pydantic>=2.5" "pytest>=8"
+      - name: Build isolated site package
+        run: |
+          mkdir -p .site-ci/wechat_traffic_agent/channels
+          printf '%s\n' '"""Isolated CI package for static-site tests."""' > .site-ci/wechat_traffic_agent/__init__.py
+          cp src/wechat_traffic_agent/content_artifact.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/site_audit.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/site_cli.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/__init__.py .site-ci/wechat_traffic_agent/channels/
+      - name: Run website quality gate
+        env:
+          PYTHONPATH: .site-ci
+        run: >-
+          python -m pytest -q
+          tests/test_web_channel.py
+          tests/test_web_preview_mode.py
+          tests/test_site_cli.py
+          tests/test_site_audit.py
+          tests/test_adsense_readiness.py
