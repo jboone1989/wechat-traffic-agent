@@ -39,7 +39,7 @@ jobs:
         env:
           PYTHONPATH: .site-ci
         run: >-
-          python -m pytest -q
+          python -m pytest -q -c /dev/null
           tests/test_web_channel.py
           tests/test_web_preview_mode.py
           tests/test_site_cli.py
