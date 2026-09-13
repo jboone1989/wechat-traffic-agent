@@ -1,4 +1,4 @@
-"""Domain contracts for a short WeChat 题图 content agent."""
+"""Domain contracts for Content Agent; legacy WeChat models remain compatible."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -41,6 +41,8 @@ class TopicSignal(BaseModel):
     summary: str = Field(min_length=1, max_length=500)
     source: str = Field(min_length=1, max_length=80)
     source_url: str | None = None
+    source_revision: str | None = Field(default=None, max_length=200)
+    evidence_refs: tuple[str, ...] = ()
     heat: float = Field(default=0.5, ge=0.0, le=1.0)
     observed_at: datetime | None = None
     creator_followers: int | None = Field(default=None, ge=0)
@@ -81,7 +83,7 @@ class PerformanceObservation(BaseModel):
     audience_key: str | None = Field(default=None, max_length=120)
     objective: ContentObjective | None = None
     observation_window: ObservationWindow | None = None
-    account_baseline: float | None = Field(default=None, ge=0)  # 外部提供的 trailing 基线
+    account_baseline: float | None = Field(default=None, ge=0)
     decision_time: datetime | None = None
     first_observed_at: datetime | None = None
     source_published_at: datetime | None = None
