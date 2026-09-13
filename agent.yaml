@@ -1,12 +1,15 @@
 manifest_version: "1.0"
 agent_type: wechat-traffic-agent
-name: 微信情绪题图 Agent
+name: Content Agent
 version: 0.3.0
-description: 研究细分人群的已验证选题，生成可直接粘贴到公众号文字海报的题图文案，并根据人工回填数据调整内容策略。
+description: Evidence-backed content discovery, generation, channel adaptation, and feedback learning.
 runtime_api: ">=0.3,<1.0"
 capabilities:
   - topic_discovery
   - audience_positioning
+  - content_research
+  - web_content_generation
+  - static_website_build
   - emotional_copywriting
   - platform_text_poster
   - content_packaging
@@ -18,6 +21,7 @@ actuators:
   - local_content_package
 mind: null
 metadata:
+  product_identity: content-agent
   publish_mode: manual
-  strategy: specific_audience_scene_pain
+  strategy: evidence_backed_multichannel_content
   owner: agent-runtime
