@@ -78,6 +78,37 @@ def test_content_agent_composes_channel_neutral_artifact(tmp_path):
     assert "Do not write for a specific publishing platform" in request.task
 
 
+def test_content_agent_preserves_upstream_network_evidence(tmp_path):
+    topic = TopicSignal(
+        title=_topic().title,
+        summary=_topic().summary,
+        source="agent-network:persistent-trader",
+        source_revision="artifact-7@2",
+        evidence_refs=(
+            "network-artifact:artifact-7@2:sha256:abc123",
+            "network-contract:contract-5",
+            "trading:discovery-report:report-9",
+        ),
+        observed_at=None,
+    )
+    runtime, _ = _runtime(tmp_path, _response(source_urls=[]))
+
+    artifact = asyncio.run(
+        ContentAgent(runtime).compose(
+            [topic], _audience(), artifact_id="network-research-1",
+            slug="network-research-provenance", kind=ContentKind.RESEARCH,
+        )
+    )
+
+    refs = {ref.ref_id: ref for ref in artifact.source_refs}
+    assert "network-artifact:artifact-7@2:sha256:abc123" in refs
+    assert "network-contract:contract-5" in refs
+    assert "trading:discovery-report:report-9" in refs
+    assert all(ref.source == "agent-network:persistent-trader" for ref in refs.values())
+    assert all(ref.revision == "artifact-7@2" for ref in refs.values())
+    assert artifact.public_safe is False
+
+
 def test_content_agent_rejects_invented_source(tmp_path):
     runtime, _ = _runtime(tmp_path, _response(source_urls=["https://invented.example"]))
     with pytest.raises(ValueError, match="unsupported source URL"):
