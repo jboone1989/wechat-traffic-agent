@@ -1,6 +1,7 @@
 import asyncio
+import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -35,6 +36,10 @@ def _envelope(**extra):
     return payload
 
 
+def _body(payload=None):
+    return json.dumps(payload or _envelope(), ensure_ascii=False).encode()
+
+
 class _Peer:
     def __init__(self, task):
         self.task = task
@@ -61,7 +66,8 @@ class _Network:
         return self.peer
 
 
-def _task():
+def _task(body=None):
+    raw = body or _body()
     return {
         "status": {"state": "completed"},
         "metadata": {"contract": {"contract_id": "contract-1"}},
@@ -76,7 +82,7 @@ def _task():
                             "type": TRADING_RESEARCH_ARTIFACT_TYPE,
                             "media_type": TRADING_RESEARCH_MEDIA_TYPE,
                             "owner": "trading-agent",
-                            "sha256": "abc123",
+                            "sha256": hashlib.sha256(raw).hexdigest(),
                             "revision": 2,
                         },
                     }
@@ -87,10 +93,11 @@ def _task():
 
 
 def test_network_source_discovers_only_public_research_and_keeps_provenance():
-    network = _Network(_task())
+    body = _body()
+    network = _Network(_task(body))
 
     async def loader(_manifest):
-        return json.dumps(_envelope()).encode()
+        return body
 
     topics = asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics(limit=10))
 
@@ -103,35 +110,62 @@ def test_network_source_discovers_only_public_research_and_keeps_provenance():
     assert any(ref.startswith("network-artifact:artifact-1@2:sha256:") for ref in topics[0].evidence_refs)
 
 
-def test_network_source_rejects_private_or_control_fields_before_modeling():
-    network = _Network(_task())
-    poisoned = _envelope()
-    poisoned["items"][0]["position_size"] = 1.0
+def test_network_source_accepts_valid_empty_research_as_empty_topics():
+    body = _body(_envelope(items=[]))
+    network = _Network(_task(body))
 
     async def loader(_manifest):
-        return json.dumps(poisoned).encode()
+        return body
+
+    topics = asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
+    assert topics == []
+
+
+def test_network_source_rejects_private_or_control_fields_before_modeling():
+    poisoned = _envelope()
+    poisoned["items"][0]["position_size"] = 1.0
+    body = _body(poisoned)
+    network = _Network(_task(body))
+
+    async def loader(_manifest):
+        return body
 
     with pytest.raises(ValueError, match="forbidden field"):
         asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
 
 
+def test_network_source_rejects_artifact_hash_mismatch_even_with_injected_loader():
+    body = _body()
+    task = _task(body)
+    task["artifacts"][0]["parts"][0]["data"]["sha256"] = "0" * 64
+    network = _Network(task)
+
+    async def loader(_manifest):
+        return body
+
+    with pytest.raises(ValueError, match="SHA256 mismatch"):
+        asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
+
+
 def test_network_source_rejects_artifact_from_wrong_agent():
-    task = _task()
+    body = _body()
+    task = _task(body)
     task["artifacts"][0]["parts"][0]["data"]["owner"] = "other-agent"
     network = _Network(task)
 
     async def loader(_manifest):
-        return json.dumps(_envelope()).encode()
+        return body
 
     with pytest.raises(ValueError, match="producer"):
         asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
 
 
 def test_network_source_rejects_naive_since_timestamp():
-    network = _Network(_task())
+    body = _body()
+    network = _Network(_task(body))
 
     async def loader(_manifest):
-        return json.dumps(_envelope()).encode()
+        return body
 
     source = TradingResearchNetworkSource(network, artifact_loader=loader)
     with pytest.raises(ValueError, match="timezone-aware"):
@@ -139,12 +173,13 @@ def test_network_source_rejects_naive_since_timestamp():
 
 
 def test_network_source_does_not_treat_failed_task_as_empty_success():
-    task = _task()
+    body = _body()
+    task = _task(body)
     task["status"] = {"state": "failed"}
     network = _Network(task)
 
     async def loader(_manifest):
-        return json.dumps(_envelope()).encode()
+        return body
 
     with pytest.raises(RuntimeError, match="did not complete"):
         asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
