@@ -21,6 +21,7 @@ class StaticWebsiteConfig(BaseModel):
     description: str = Field(min_length=1, max_length=300)
     contact_email: str | None = Field(default=None, max_length=254)
     adsense_client: str | None = Field(default=None, pattern=r"^ca-pub-[0-9]+$")
+    indexable: bool = True
 
     @field_validator("base_url")
     @classmethod
@@ -63,7 +64,8 @@ class StaticWebChannel:
     def _render_site(self, artifacts: list[ContentArtifact], root: Path) -> None:
         ordered = sorted(artifacts, key=lambda item: item.created_at, reverse=True)
         self._write(root / "index.html", self._listing("Latest", ordered, "/"))
-        self._write(root / "articles" / "index.html", self._listing("Articles", ordered, "/articles/"))
+        articles = [item for item in ordered if item.kind is not ContentKind.RESEARCH]
+        self._write(root / "articles" / "index.html", self._listing("Articles", articles, "/articles/"))
         research = [item for item in ordered if item.kind is ContentKind.RESEARCH]
         self._write(root / "research" / "index.html", self._listing("Research", research, "/research/"))
         for item in ordered:
@@ -77,7 +79,11 @@ class StaticWebChannel:
         urls = ["/", "/articles/", "/research/", "/about/", "/privacy/", "/contact/"]
         urls.extend(_route_for(item) for item in ordered)
         self._write(root / "sitemap.xml", self._sitemap(urls))
-        self._write(root / "robots.txt", f"User-agent: *\nAllow: /\nSitemap: {self.config.base_url}/sitemap.xml\n")
+        if self.config.indexable:
+            robots = f"User-agent: *\nAllow: /\nSitemap: {self.config.base_url}/sitemap.xml\n"
+        else:
+            robots = "User-agent: *\nDisallow: /\n"
+        self._write(root / "robots.txt", robots)
         ads = ""
         if self.config.adsense_client:
             ads = f"google.com, {self.config.adsense_client.removeprefix('ca-')}, DIRECT, f08c47fec0942fa0\n"
@@ -115,11 +121,12 @@ class StaticWebChannel:
         if self.config.adsense_client:
             client = html.escape(self.config.adsense_client, quote=True)
             ads = f'<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={client}" crossorigin="anonymous"></script>'
+        robots = "" if self.config.indexable else '<meta name="robots" content="noindex,nofollow">'
         css = "body{font-family:system-ui,sans-serif;max-width:860px;margin:auto;padding:24px;line-height:1.7;color:#171717}nav{display:flex;gap:16px;margin-bottom:40px}a{color:#1255a2}article{margin:32px 0}.summary,.disclosure{color:#555}aside{border-top:1px solid #ddd;margin-top:36px;padding-top:16px}"
         return (
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
             f"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{html.escape(title)} · {html.escape(self.config.site_name)}</title>"
-            f"<meta name=\"description\" content=\"{html.escape(description, quote=True)}\"><link rel=\"canonical\" href=\"{canonical}\">{ads}<style>{css}</style></head>"
+            f"<meta name=\"description\" content=\"{html.escape(description, quote=True)}\"><link rel=\"canonical\" href=\"{canonical}\">{robots}{ads}<style>{css}</style></head>"
             f"<body><nav><a href=\"/\">{html.escape(self.config.site_name)}</a><a href=\"/articles/\">Articles</a><a href=\"/research/\">Research</a><a href=\"/about/\">About</a></nav><main>{body}</main></body></html>"
         )
 
