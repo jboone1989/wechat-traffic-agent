@@ -1,12 +1,13 @@
 """Read-only Trading research source over Agent Network.
 
 This adapter deliberately depends on Network semantics rather than Trading
-implementation modules.  Trading remains responsible for producing the
+implementation modules. Trading remains responsible for producing the
 sanitized artifact; Content Agent verifies the public projection again before
 turning it into topic evidence.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime
@@ -56,7 +57,7 @@ class TradingResearchEnvelope(BaseModel):
     schema_version: Literal["trading.public-research.v1"]
     producer_agent_id: str = Field(min_length=1, max_length=200)
     generated_at: datetime
-    items: tuple[TradingResearchItem, ...] = Field(min_length=1, max_length=100)
+    items: tuple[TradingResearchItem, ...] = Field(max_length=100)
 
     @field_validator("generated_at")
     @classmethod
@@ -130,6 +131,7 @@ class TradingResearchNetworkSource:
         if artifact_provider != provider_id:
             raise ValueError("research artifact producer does not match discovered Trading agent")
         body = await self._load_artifact(manifest)
+        _verify_artifact_hash(manifest, body)
         try:
             raw = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -200,6 +202,13 @@ def _select_research_artifact(task: Mapping[str, Any]) -> dict[str, Any]:
     if any(not manifest.get(field) for field in required):
         raise ValueError("Trading research artifact manifest is incomplete")
     return manifest
+
+
+def _verify_artifact_hash(manifest: Mapping[str, Any], body: bytes) -> None:
+    expected = str(manifest.get("sha256") or "").strip().lower()
+    actual = hashlib.sha256(body).hexdigest()
+    if expected != actual:
+        raise ValueError("Trading research artifact SHA256 mismatch")
 
 
 def _artifact_evidence_ref(manifest: Mapping[str, Any]) -> str:
