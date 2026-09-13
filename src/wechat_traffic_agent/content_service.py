@@ -84,17 +84,30 @@ def _source_refs(
     seen: set[str] = set()
     for item in (*selected, *referenced):
         identity = item.source_url or f"{item.source}:{item.title}"
-        if identity in seen:
-            continue
-        seen.add(identity)
-        refs.append(
-            ContentSourceRef(
-                ref_id=_topic_ref_id(item),
-                source=item.source,
-                locator=item.source_url,
-                observed_at=item.observed_at,
+        if identity not in seen:
+            seen.add(identity)
+            refs.append(
+                ContentSourceRef(
+                    ref_id=_topic_ref_id(item),
+                    source=item.source,
+                    locator=item.source_url,
+                    revision=item.source_revision,
+                    observed_at=item.observed_at,
+                )
             )
-        )
+        for evidence_ref in item.evidence_refs:
+            evidence_identity = f"{item.source}:{evidence_ref}"
+            if evidence_identity in seen:
+                continue
+            seen.add(evidence_identity)
+            refs.append(
+                ContentSourceRef(
+                    ref_id=evidence_ref,
+                    source=item.source,
+                    revision=item.source_revision,
+                    observed_at=item.observed_at,
+                )
+            )
     return tuple(refs)
 
 
@@ -104,6 +117,8 @@ def _topic_ref_id(item: TopicSignal) -> str:
             "title": item.title,
             "source": item.source,
             "source_url": item.source_url,
+            "source_revision": item.source_revision,
+            "evidence_refs": list(item.evidence_refs),
             "observed_at": item.observed_at.isoformat() if item.observed_at else None,
         },
         ensure_ascii=False,
