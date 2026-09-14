@@ -67,6 +67,8 @@ class ContentApplication:
         runtime: Any,
         domain_runtime: Any,
         observation_factory: Callable[..., Any],
+        capability_manager: Any | None = None,
+        capability_binding_report: Any | None = None,
     ) -> None:
         if subject.subject_id != runtime.subject_id:
             raise ValueError("VirtualBrain subject_id and ApplicationRuntime subject_id must match")
@@ -75,6 +77,8 @@ class ContentApplication:
         self.runtime = runtime
         self.domain_runtime = domain_runtime
         self.observation_factory = observation_factory
+        self.capability_manager = capability_manager
+        self.capability_binding_report = capability_binding_report
 
     @property
     def health_path(self) -> Path:
@@ -92,6 +96,12 @@ class ContentApplication:
             "publish_mode": ("website_automatic" if all(os.environ.get(k, "").lower() in {"1", "true", "yes", "on"}
                 for k in ("CONTENT_CONTINUOUS_ENABLED", "CONTENT_AUTO_PUBLISH_ENABLED")) else "manual"),
         })
+
+    def close(self) -> None:
+        manager = self.capability_manager
+        self.capability_manager = None
+        if manager is not None:
+            manager.close()
 
     def run_tick(self, *, as_of_time: str) -> ContentApplicationTickResult:
         _instant(as_of_time)
@@ -135,10 +145,46 @@ class ContentApplication:
         os.replace(tmp, path)
 
 
+def _capability_pack_deployment() -> tuple[tuple[str, ...], dict[str, str], dict[str, dict[str, Any]]]:
+    trusted = tuple(dict.fromkeys(
+        item.strip()
+        for item in os.environ.get("CONTENT_RUNTIME_TRUSTED_PACKS", "").split(",")
+        if item.strip()
+    ))
+    preferred: dict[str, str] = {}
+    configs: dict[str, dict[str, Any]] = {}
+
+    search_pack = os.environ.get("CONTENT_WEB_SEARCH_PACK", "searxng-search").strip()
+    if search_pack and search_pack in trusted:
+        preferred["web.search"] = search_pack
+        if search_pack == "searxng-search":
+            configs[search_pack] = {
+                "base_url": os.environ.get("CONTENT_SEARXNG_URL", "http://127.0.0.1:8080").strip(),
+                "max_results": 8,
+            }
+
+    fetch_pack = os.environ.get("CONTENT_WEB_FETCH_PACK", "jina-reader").strip()
+    if fetch_pack and fetch_pack in trusted:
+        preferred["web.fetch"] = fetch_pack
+        if fetch_pack == "jina-reader":
+            config: dict[str, Any] = {
+                "reader_base_url": os.environ.get("CONTENT_JINA_READER_URL", "https://r.jina.ai").strip(),
+                "max_chars": 100_000,
+            }
+            api_key = os.environ.get("CONTENT_JINA_API_KEY") or os.environ.get("JINA_API_KEY")
+            if api_key:
+                config["api_key"] = api_key
+            configs[fetch_pack] = config
+    return trusted, preferred, configs
+
+
 def build_content_application(*, root: Path, manifest_path: Path) -> ContentApplication:
     """Production composition root; framework imports remain behind this seam."""
     from agent_runtime import ApplicationRuntime
     from agent_runtime.agents import load_agent_manifest
+    from agent_runtime.capabilities import (
+        CapabilityPackManager, CapabilityPolicy, InstalledCapabilityPackCatalog,
+    )
     from agent_runtime.runtime import AgentRuntime
     from virtualbrain import Subject, SubjectObservation
 
@@ -179,24 +225,31 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
         observation_factory=SubjectObservation,
     )
     runtime.register_provider(ContentCapabilityPack(app.status_observation))
-    _register_runtime_web_providers(runtime)
+
+    trusted, preferred, configs = _capability_pack_deployment()
+    policy = CapabilityPolicy()
+    policy.auto_acquire["read_only_skill"] = True
+    manager = CapabilityPackManager(
+        runtime,
+        InstalledCapabilityPackCatalog(trusted_pack_ids=trusted),
+        policy=policy,
+    )
+    try:
+        report = manager.reconcile_manifest(
+            manifest,
+            preferred_pack_by_capability=preferred,
+            config_by_pack=configs,
+        )
+    except Exception:
+        manager.close()
+        raise
+    if not report.ready:
+        manager.close()
+        missing = ",".join(report.missing_required) or "unknown"
+        raise RuntimeError("required Runtime capabilities unavailable: " + missing)
+    app.capability_manager = manager
+    app.capability_binding_report = report
     return app
-
-
-def _register_runtime_web_providers(runtime: Any) -> None:
-    enabled = {"1", "true", "yes", "on"}
-    if os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_ENABLED", "").lower() in enabled:
-        from agent_runtime.integrations import SearXNGSearchProvider
-        runtime.register_provider(SearXNGSearchProvider(
-            base_url=os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_URL", "http://127.0.0.1:8080"),
-            max_results=8,
-        ))
-    if os.environ.get("CONTENT_RUNTIME_WEB_FETCH_ENABLED", "").lower() in enabled:
-        from agent_runtime.integrations import Crawl4AIHTTPProvider
-        runtime.register_provider(Crawl4AIHTTPProvider(
-            base_url=os.environ.get("CONTENT_RUNTIME_WEB_FETCH_URL", "http://127.0.0.1:11235"),
-            api_token=os.environ.get("CRAWL4AI_API_TOKEN") or None,
-        ))
 
 
 def _runtime_authority_key(root: Path) -> bytes:

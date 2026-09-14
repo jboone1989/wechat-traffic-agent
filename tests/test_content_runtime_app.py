@@ -1,9 +1,13 @@
+from pathlib import Path
 from types import SimpleNamespace
+
+import yaml
 
 from wechat_traffic_agent.runtime_app import (
     CAP_CONTENT_STATUS,
     ContentApplication,
     ContentCapabilityPack,
+    _capability_pack_deployment,
 )
 
 
@@ -55,6 +59,14 @@ class _DomainRuntime:
 
     def persist(self):
         self.persisted += 1
+
+
+class _Manager:
+    def __init__(self):
+        self.closed = 0
+
+    def close(self):
+        self.closed += 1
 
 
 def _observation(**kwargs):
@@ -118,33 +130,43 @@ def test_status_reports_only_explicit_website_automatic_mode(tmp_path, monkeypat
     assert app.status_observation()['publish_mode'] == 'website_automatic'
 
 
-def test_runtime_web_providers_are_explicit_and_provider_owned(monkeypatch):
-    import sys
-    from wechat_traffic_agent.runtime_app import _register_runtime_web_providers
+def test_capability_pack_deployment_is_explicit(monkeypatch):
+    monkeypatch.setenv("CONTENT_RUNTIME_TRUSTED_PACKS", "searxng-search,jina-reader")
+    monkeypatch.setenv("CONTENT_SEARXNG_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("CONTENT_JINA_READER_URL", "https://r.jina.ai")
+    monkeypatch.setenv("CONTENT_JINA_API_KEY", "deployment-only-test-key")
+    trusted, preferred, configs = _capability_pack_deployment()
+    assert trusted == ("searxng-search", "jina-reader")
+    assert preferred == {"web.search": "searxng-search", "web.fetch": "jina-reader"}
+    assert configs["searxng-search"]["base_url"] == "http://127.0.0.1:8080"
+    assert configs["jina-reader"]["reader_base_url"] == "https://r.jina.ai"
+    assert configs["jina-reader"]["api_key"] == "deployment-only-test-key"
 
-    created = []
-    class SearchProvider:
-        def __init__(self, **kwargs):
-            self.kind, self.kwargs = 'search', kwargs
-            created.append(self)
-    class FetchProvider:
-        def __init__(self, **kwargs):
-            self.kind, self.kwargs = 'fetch', kwargs
-            created.append(self)
-    monkeypatch.setitem(sys.modules, 'agent_runtime.integrations', SimpleNamespace(
-        SearXNGSearchProvider=SearchProvider, Crawl4AIHTTPProvider=FetchProvider))
-    monkeypatch.setenv('CONTENT_RUNTIME_WEB_SEARCH_ENABLED', '1')
-    monkeypatch.setenv('CONTENT_RUNTIME_WEB_FETCH_ENABLED', '1')
-    monkeypatch.setenv('CONTENT_RUNTIME_WEB_SEARCH_URL', 'http://127.0.0.1:8080')
-    monkeypatch.setenv('CONTENT_RUNTIME_WEB_FETCH_URL', 'http://127.0.0.1:11235')
-    monkeypatch.setenv('CRAWL4AI_API_TOKEN', 'test-secret')
 
-    class Registry:
-        def __init__(self): self.providers = []
-        def register_provider(self, provider): self.providers.append(provider)
-    registry = Registry()
-    _register_runtime_web_providers(registry)
+def test_capability_manager_close_is_idempotent(tmp_path):
+    manager = _Manager()
+    app = ContentApplication(
+        root=tmp_path, subject=_Subject(), runtime=_Runtime({}),
+        domain_runtime=_DomainRuntime(), observation_factory=_observation,
+        capability_manager=manager,
+    )
+    app.close()
+    app.close()
+    assert manager.closed == 1
 
-    assert [p.kind for p in registry.providers] == ['search', 'fetch']
-    assert registry.providers[0].kwargs == {'base_url': 'http://127.0.0.1:8080', 'max_results': 8}
-    assert registry.providers[1].kwargs == {'base_url': 'http://127.0.0.1:11235', 'api_token': 'test-secret'}
+
+def test_manifest_requires_search_and_fetch_but_media_is_optional():
+    manifest = yaml.safe_load(Path("agent.yaml").read_text(encoding="utf-8"))
+    required = {row["capability_id"]: row for row in manifest["required_capabilities"]}
+    optional = {row["capability_id"]: row for row in manifest["optional_capabilities"]}
+    assert set(required) == {"web.search", "web.fetch"}
+    assert all(row["max_side_effect_level"] == "READ_ONLY" for row in required.values())
+    assert set(optional) == {"image.search", "image.generate", "video.generate"}
+    assert optional["image.generate"]["required_permissions"] == ["media.generate"]
+    assert optional["video.generate"]["required_permissions"] == ["media.generate"]
+
+
+def test_runtime_composition_does_not_import_concrete_web_providers():
+    text = (Path(__file__).resolve().parents[1] / "src/wechat_traffic_agent/runtime_app.py").read_text()
+    assert "SearXNGSearchProvider" not in text
+    assert "Crawl4AIHTTPProvider" not in text
