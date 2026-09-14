@@ -7,10 +7,12 @@ on:
     paths:
       - "pyproject.toml"
       - "src/wechat_traffic_agent/runtime_app.py"
+      - "src/wechat_traffic_agent/runtime_backend.py"
       - "src/wechat_traffic_agent/network_service.py"
       - "src/wechat_traffic_agent/sources/trading_network.py"
       - "scripts/run_content_agent.py"
       - "tests/test_content_runtime_app.py"
+      - "tests/test_runtime_backend.py"
       - "tests/test_content_network_service.py"
       - "tests/test_content_runtime_dependencies.py"
       - "tests/test_run_content_agent_entrypoint.py"
@@ -35,6 +37,7 @@ jobs:
           mkdir -p .runtime-ci/wechat_traffic_agent
           printf '%s\n' '"""Isolated persistent Content Agent tests."""' > .runtime-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/runtime_app.py .runtime-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/runtime_backend.py .runtime-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/network_service.py .runtime-ci/wechat_traffic_agent/
       - name: Build isolated Trading source package
         run: |
@@ -49,6 +52,7 @@ jobs:
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_content_runtime_app.py
+          tests/test_runtime_backend.py
           tests/test_content_network_service.py
           tests/test_content_runtime_dependencies.py
           tests/test_run_content_agent_entrypoint.py
