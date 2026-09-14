@@ -19,6 +19,9 @@ on:
       - "tests/test_trading_network_source.py"
       - ".github/workflows/content-site.yml"
 
+permissions:
+  contents: read
+
 jobs:
   site-quality:
     runs-on: ubuntu-latest
@@ -46,8 +49,42 @@ jobs:
           tests/test_web_channel.py
           tests/test_web_preview_mode.py
           tests/test_site_cli.py
+          tests/test_site_topic_quality.py
           tests/test_site_audit.py
           tests/test_adsense_readiness.py
+      - name: Build and audit repository launch candidate
+        env:
+          PYTHONPATH: .site-ci
+        run: |
+          python -m wechat_traffic_agent.site_cli \
+            --config site/production.example.json \
+            --artifacts content/starter \
+            --output "$RUNNER_TEMP/content-site" > "$RUNNER_TEMP/site-build.json"
+          SITE_DIR="$RUNNER_TEMP/content-site" BUILD_JSON="$RUNNER_TEMP/site-build.json" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from wechat_traffic_agent.site_audit import audit_static_site
+          result=json.loads(Path(os.environ["BUILD_JSON"]).read_text())
+          assert result["readiness"]["code_ready"] is True
+          assert set(result["readiness"]["external_dependencies"]) == {
+              "production_https_domain", "public_contact_email", "adsense_publisher_id"
+          }
+          audit=audit_static_site(Path(os.environ["SITE_DIR"]), expect_indexable=True)
+          assert audit.passed, audit
+          print(json.dumps({
+              "artifact_count": result["artifact_count"],
+              "indexed_topic_count": result["indexed_topic_count"],
+              "html_pages": audit.html_pages,
+              "internal_links_checked": audit.internal_links_checked,
+              "external_dependencies": result["readiness"]["external_dependencies"],
+          }, sort_keys=True))
+          PY
+          tar -C "$RUNNER_TEMP/content-site" -czf "$RUNNER_TEMP/content-site-launch-candidate.tgz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: content-site-launch-candidate
+          path: ${{ runner.temp }}/content-site-launch-candidate.tgz
+          if-no-files-found: error
       - name: Build isolated Agent Network source package
         run: |
           mkdir -p .network-ci/wechat_traffic_agent/sources
