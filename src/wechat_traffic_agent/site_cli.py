@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 from typing import Any
@@ -9,9 +10,13 @@ from typing import Any
 from .channels.web import (
     StaticWebChannel,
     StaticWebsiteConfig,
+    _tag_slug,
     assess_adsense_readiness,
 )
 from .content_artifact import ContentArtifact
+
+
+_MIN_INDEXED_TOPIC_ITEMS = 2
 
 
 def build_site(
@@ -21,13 +26,15 @@ def build_site(
 ) -> dict[str, object]:
     config = StaticWebsiteConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
     artifacts = _load_artifacts(artifacts_path)
+    web_artifacts = _curate_web_taxonomy(artifacts)
     readiness = assess_adsense_readiness(config, artifacts)
-    StaticWebChannel(config).build(artifacts, output_dir)
+    StaticWebChannel(config).build(web_artifacts, output_dir)
     return {
         "ok": True,
         "output_dir": str(output_dir),
         "artifact_count": len(artifacts),
         "artifact_ids": [item.artifact_id for item in artifacts],
+        "indexed_topic_count": len(_indexed_topic_slugs(artifacts)),
         "readiness": readiness.model_dump(mode="json"),
     }
 
@@ -39,6 +46,26 @@ def inspect_site_readiness(
     config = StaticWebsiteConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
     artifacts = _load_artifacts(artifacts_path)
     return assess_adsense_readiness(config, artifacts).model_dump(mode="json")
+
+
+def _curate_web_taxonomy(artifacts: list[ContentArtifact]) -> list[ContentArtifact]:
+    """Keep canonical tags but only expose useful multi-item Web topic pages."""
+    allowed = _indexed_topic_slugs(artifacts)
+    curated: list[ContentArtifact] = []
+    for item in artifacts:
+        tags = tuple(tag for tag in item.tags if _tag_slug(tag) in allowed)
+        curated.append(item.model_copy(update={"tags": tags}))
+    return curated
+
+
+def _indexed_topic_slugs(artifacts: list[ContentArtifact]) -> set[str]:
+    counts: Counter[str] = Counter()
+    for item in artifacts:
+        for tag in item.tags:
+            slug = _tag_slug(tag)
+            if slug:
+                counts[slug] += 1
+    return {slug for slug, count in counts.items() if count >= _MIN_INDEXED_TOPIC_ITEMS}
 
 
 def _load_artifacts(path: Path) -> list[ContentArtifact]:
