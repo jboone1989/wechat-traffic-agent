@@ -173,6 +173,7 @@ def main() -> int:
     finally:
         if network_service is not None:
             network_service.stop()
+        app.close()
 
 
 if __name__ == "__main__":
