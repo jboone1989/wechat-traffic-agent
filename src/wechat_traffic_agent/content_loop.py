@@ -295,6 +295,7 @@ class ContinuousContentLoop:
         existing = inputs['previous_titles'] + [r['artifact']['title'] for r in snapshot['articles']]
         if _title_key(selection.title) in {_title_key(t) for t in existing}:
             raise ValueError('selection duplicates an existing title')
+        # One news content revision creates at most one draft across time windows.
         fingerprint = digest({'continuous_content_version': 1, 'news_id': selection.news_id})
         if self.inbox.contains(fingerprint):
             self.inbox.load(fingerprint)
@@ -372,15 +373,13 @@ class ContinuousContentLoop:
                   'source_fingerprint': fingerprint, 'draft_path': str(path), 'lesson_id': lesson_id,
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
                   'mind_plan': mind_plan}
-        if passes and self.publisher:
-            result['publication'] = self.publisher.publish(artifact=artifact, experience=experience, cycle_root=folder)
-            result['status'] = 'PUBLISHED'
         if self.mind is not None:
             refs = [f'cycle:{cycle}', f'news:{selection.news_id}', 'draft-sha256:' + experience['draft_sha256']]
-            if isinstance(result.get('publication'), dict) and result['publication'].get('revision'):
-                refs.append('publication-revision:' + str(result['publication']['revision']))
             mind_experience = self.mind.observe_process_experience(
                 cycle=cycle, topic=selection.topic, passed=bool(passes), model_calls=runtime.index, evidence_refs=refs)
             _put(folder / 'mind_experience.json', mind_experience)
             result['mind_experience'] = mind_experience
+        if passes and self.publisher:
+            result['publication'] = self.publisher.publish(artifact=artifact, experience=experience, cycle_root=folder)
+            result['status'] = 'PUBLISHED'
         return result
