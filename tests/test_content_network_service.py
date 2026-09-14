@@ -56,3 +56,15 @@ def test_network_rejects_unregistered_requested_capability(tmp_path):
         assert "not registered in Runtime" in str(exc)
     else:
         raise AssertionError("missing Runtime capability should fail closed")
+
+
+def test_network_can_advertise_public_https_without_changing_bind(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_NETWORK_PUBLIC_BASE_URL", "https://content.example.test/")
+    service = ContentNetworkService.from_environment(
+        root=tmp_path,
+        application=SimpleNamespace(runtime=_Runtime()),
+    )
+
+    assert service.bind_host == "127.0.0.1"
+    assert service.endpoint == "https://content.example.test/a2a"
+    assert service.card_url == "https://content.example.test/.well-known/agent-card.json"

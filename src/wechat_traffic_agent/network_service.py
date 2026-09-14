@@ -28,6 +28,7 @@ class ContentNetworkService:
         seed_url: str = DEFAULT_SEED_URL,
         bind_host: str = DEFAULT_BIND_HOST,
         advertise_host: str | None = None,
+        public_base_url: str | None = None,
         port: int = DEFAULT_PORT,
         agent_id: str = DEFAULT_AGENT_ID,
         capabilities: tuple[str, ...] = DEFAULT_CAPABILITIES,
@@ -42,6 +43,7 @@ class ContentNetworkService:
         self.seed_url = seed_url.rstrip("/")
         self.bind_host = bind_host
         self.advertise_host = advertise_host or bind_host
+        self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
         self.port = int(port)
         self.agent_id = agent_id
         self.capability_ids = tuple(dict.fromkeys(capabilities))
@@ -64,6 +66,7 @@ class ContentNetworkService:
             seed_url=os.environ.get("CONTENT_NETWORK_SEED_URL", DEFAULT_SEED_URL),
             bind_host=os.environ.get("CONTENT_NETWORK_HOST", DEFAULT_BIND_HOST),
             advertise_host=os.environ.get("CONTENT_NETWORK_ADVERTISE_HOST") or None,
+            public_base_url=os.environ.get("CONTENT_NETWORK_PUBLIC_BASE_URL") or None,
             port=int(os.environ.get("CONTENT_NETWORK_PORT", str(DEFAULT_PORT))),
             agent_id=os.environ.get("CONTENT_NETWORK_AGENT_ID", DEFAULT_AGENT_ID),
             capabilities=caps,
@@ -74,12 +77,18 @@ class ContentNetworkService:
         return self.root / "application" / "network" / "identity.json"
 
     @property
+    def public_base(self) -> str:
+        if self.public_base_url:
+            return self.public_base_url
+        return f"http://{self.advertise_host}:{self.port}"
+
+    @property
     def endpoint(self) -> str:
-        return f"http://{self.advertise_host}:{self.port}/a2a"
+        return f"{self.public_base}/a2a"
 
     @property
     def card_url(self) -> str:
-        return f"http://{self.advertise_host}:{self.port}/.well-known/agent-card.json"
+        return f"{self.public_base}/.well-known/agent-card.json"
 
     def advertised_capabilities(self) -> tuple[dict[str, Any], ...]:
         allowed = set(self.capability_ids)
