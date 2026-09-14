@@ -73,6 +73,7 @@ def test_learn_publish_restart_and_next_cycle_reuses_experience(tmp_path):
     before=list(runtime.calls)
     assert asyncio.run(worker.run_once(now=NOW))['status']=='ALREADY_PROCESSED'
     assert runtime.calls==before
+    # New process, new source, next scheduled window; carry previous practice forward.
     runtime2=Runtime(2);worker.runtime=runtime2
     old_fetch=worker.fetcher
     async def new_fetch(feeds,now):
@@ -256,3 +257,21 @@ def test_virtualbrain_required_topic_changes_selection_behavior(tmp_path):
     draft = json.loads(Path(result['draft_path']).read_text())
     assert draft['artifact']['tags'] == ['common']
     assert result['mind_experience']['topic'] == 'common'
+
+
+def test_mind_persistence_failure_prevents_publication(tmp_path):
+    runtime, worker, publisher = setup(tmp_path)
+    before = (publisher.public / 'current').resolve()
+
+    class FailingMind:
+        def plan_for_cycle(self, *, cycle, available_topics):
+            return {'cycle': cycle, 'goal': None, 'required_topic': None}
+
+        def observe_process_experience(self, **kwargs):
+            raise OSError('simulated mind persistence failure')
+
+    worker.mind = FailingMind()
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result['status'] == 'ERROR'
+    assert result['error_type'] == 'OSError'
+    assert (publisher.public / 'current').resolve() == before
