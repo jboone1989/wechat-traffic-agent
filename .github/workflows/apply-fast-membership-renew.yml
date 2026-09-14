@@ -1,0 +1,80 @@
+name: Apply verified membership lease patch
+
+on:
+  push:
+    branches:
+      - fix/network-fast-membership-renew
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply exact patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          source = Path('src/wechat_traffic_agent/network_service.py')
+          text = source.read_text()
+          replacements = [
+              (
+                  '        startup_timeout_seconds: float = 10.0,\n    ) -> None:',
+                  '        startup_timeout_seconds: float = 10.0,\n        lease_seconds: int = 1800,\n    ) -> None:',
+              ),
+              (
+                  '        if not agent_id.strip():\n            raise ValueError("network agent_id must be non-empty")',
+                  '        if not agent_id.strip():\n            raise ValueError("network agent_id must be non-empty")\n        if lease_seconds < 60:\n            raise ValueError("network lease_seconds must be at least 60")',
+              ),
+              (
+                  '        self.startup_timeout_seconds = float(startup_timeout_seconds)\n',
+                  '        self.startup_timeout_seconds = float(startup_timeout_seconds)\n        self.lease_seconds = int(lease_seconds)\n',
+              ),
+              (
+                  '            capabilities=caps,\n        )',
+                  '            capabilities=caps,\n            lease_seconds=int(os.environ.get("CONTENT_NETWORK_LEASE_SECONDS", "1800")),\n        )',
+              ),
+              (
+                  '            capabilities=[{k: v for k, v in row.items() if k != "description"} for row in rows],\n        )',
+                  '            capabilities=[{k: v for k, v in row.items() if k != "description"} for row in rows],\n            lease_seconds=self.lease_seconds,\n        )',
+              ),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit(f'unexpected source match count for {old!r}: {text.count(old)}')
+              text = text.replace(old, new, 1)
+          source.write_text(text)
+
+          tests = Path('tests/test_content_network_service.py')
+          test_text = tests.read_text()
+          marker = 'def test_network_accepts_membership_lease_from_environment'
+          if marker in test_text:
+              raise SystemExit('lease tests already present unexpectedly')
+          test_text += '''\n\ndef test_network_accepts_membership_lease_from_environment(monkeypatch, tmp_path):\n    monkeypatch.setenv("CONTENT_NETWORK_LEASE_SECONDS", "60")\n    service = ContentNetworkService.from_environment(\n        root=tmp_path,\n        application=SimpleNamespace(runtime=_Runtime()),\n    )\n    assert service.lease_seconds == 60\n\n\ndef test_network_rejects_too_short_membership_lease(tmp_path):\n    try:\n        ContentNetworkService(\n            root=tmp_path,\n            application=SimpleNamespace(runtime=_Runtime()),\n            lease_seconds=59,\n        )\n    except ValueError as exc:\n        assert "at least 60" in str(exc)\n    else:\n        raise AssertionError("too-short membership lease should fail closed")\n'''
+          tests.write_text(test_text)
+
+          expected = {
+              str(source): '0e3f135afdc994e68c9b516be7797d60ff378b08',
+              str(tests): 'bafc9950449069613041f9bd7da9b2b0c7a6639a',
+          }
+          for path, want in expected.items():
+              got = subprocess.check_output(['git', 'hash-object', path], text=True).strip()
+              print(path, got)
+              if got != want:
+                  raise SystemExit(f'blob mismatch for {path}: {got} != {want}')
+          Path('.github/workflows/apply-fast-membership-renew.yml').unlink()
+          PY
+          git diff --check
+      - name: Commit verified patch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix: configurable network membership lease'
+          git push
