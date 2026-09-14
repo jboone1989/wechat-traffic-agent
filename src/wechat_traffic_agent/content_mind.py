@@ -1,0 +1,197 @@
+"""Persistent VirtualBrain interest and endogenous-goal adapter for Content Agent."""
+from __future__ import annotations
+
+from copy import deepcopy
+import json
+import os
+from pathlib import Path
+from typing import Any, Iterable
+
+MIND_SCHEMA = "content-mind:v1"
+# ContractV1AgencySession only accepts capability-backed experience authorities from
+# AutobiographicalSelf.TRUSTED_EXPERIENCE_SOURCES. "session" is the canonical
+# host/session ingestion authority used by VirtualBrain's own experience→goal eval.
+AUTHORITY_ID = "session"
+MAX_PLANS = 128
+MAX_EVENT_IDS = 512
+
+
+class ContentMind:
+    """Keep one VirtualBrain agency session as the Content Agent's longitudinal mind."""
+
+    def __init__(self, *, root: Path, subject_id: str) -> None:
+        from virtualbrain.adapter.service import ContractV1AgencySession
+        from virtualbrain.research.provenance import TrustedIngestionAuthority
+
+        self.root = Path(root) / "application" / "content_mind"
+        self.subject_id = subject_id
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
+        self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
+        self._plans: dict[str, dict[str, Any]] = {}
+        self._observed_event_ids: list[str] = []
+        self._restore()
+
+    @property
+    def checkpoint_path(self) -> Path:
+        return self.root / "checkpoint.json"
+
+    def _authority_key(self) -> bytes:
+        path = self.root / "authority.key"
+        if path.exists():
+            key = path.read_bytes()
+            if len(key) < 32:
+                raise ValueError("Content Mind authority key is invalid")
+            return key
+        key = os.urandom(32)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(key)
+        return key
+
+    def _restore(self) -> None:
+        if not self.checkpoint_path.exists():
+            return
+        row = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+        expected = {"schema_version", "subject_id", "subject", "plans", "observed_event_ids"}
+        if not isinstance(row, dict) or set(row) != expected:
+            raise ValueError("Content Mind checkpoint fields mismatch")
+        if row["schema_version"] != MIND_SCHEMA or row["subject_id"] != self.subject_id:
+            raise ValueError("Content Mind checkpoint identity mismatch")
+        if not isinstance(row["plans"], dict) or not isinstance(row["observed_event_ids"], list):
+            raise ValueError("Content Mind checkpoint collections are invalid")
+        self.session.restore(row["subject"])
+        self._plans = deepcopy(row["plans"])
+        self._observed_event_ids = [str(item) for item in row["observed_event_ids"]]
+
+    def _persist(self) -> None:
+        payload = {
+            "schema_version": MIND_SCHEMA,
+            "subject_id": self.subject_id,
+            "subject": self.session.snapshot(),
+            "plans": self._plans,
+            "observed_event_ids": self._observed_event_ids,
+        }
+        tmp = self.checkpoint_path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, self.checkpoint_path)
+
+    def plan_for_cycle(self, *, cycle: str, available_topics: Iterable[str]) -> dict[str, Any]:
+        """Advance idle cognition once per cycle and bind any endogenous goal to a topic."""
+        if cycle in self._plans:
+            return deepcopy(self._plans[cycle])
+        topics = tuple(sorted({str(item) for item in available_topics if str(item).strip()}))
+        readout = self.session.idle_tick(
+            body_state={}, world_state={"available_content_topics": list(topics)}, recent_events=()
+        )
+        goal = (
+            json.loads(json.dumps(readout["goal_proposals"][0], ensure_ascii=False, sort_keys=True))
+            if readout["goal_proposals"] else None
+        )
+        required_topic = None
+        if goal and goal.get("origin") == "INTEREST":
+            refs = [str(item) for item in goal.get("interest_refs") or ()]
+            required_topic = next((item for item in refs if item in topics), None)
+        plan = {
+            "cycle": cycle,
+            "mind_tick": int(readout["tick"]),
+            "goal": goal,
+            "required_topic": required_topic,
+            "available_topics": list(topics),
+        }
+        self._plans[cycle] = plan
+        if len(self._plans) > MAX_PLANS:
+            oldest = sorted(self._plans)[: len(self._plans) - MAX_PLANS]
+            for key in oldest:
+                self._plans.pop(key, None)
+        self._persist()
+        return deepcopy(plan)
+
+    def observe_process_experience(
+        self,
+        *,
+        cycle: str,
+        topic: str,
+        passed: bool,
+        model_calls: int,
+        evidence_refs: Iterable[str],
+    ) -> dict[str, Any]:
+        """Learn topic preference only from bounded process outcome, never audience claims."""
+        event_id = f"content-process:{cycle}"
+        if event_id in self._observed_event_ids:
+            interest = self.session.interests.get(topic)
+            return {"status": "ALREADY_OBSERVED", "interest": interest.__dict__ if interest else None}
+        topic = str(topic).strip()
+        if not topic:
+            raise ValueError("Content Mind process experience requires a topic")
+        refs = list(dict.fromkeys(str(ref).strip() for ref in evidence_refs if str(ref).strip()))
+        if not refs:
+            raise ValueError("Content Mind process experience requires evidence_refs")
+        before = self.session.interests.get(topic)
+        novelty = 1.0 if before is None else max(0.0, 1.0 - float(before.familiarity))
+        effort = min(1.0, max(0.05, int(model_calls) / 8.0))
+        outcome = 1.0 if passed else 0.0
+        self.session.ingest_life_experience(
+            {
+                "event_id": event_id,
+                "tick": int(self.session.tick),
+                "summary": (
+                    f"Content process cycle {cycle} explored topic {topic}; "
+                    f"automated process checks {'passed' if passed else 'did not pass'}."
+                ),
+                "evidence_refs": refs,
+                "significance": 0.0,
+                "source": "content-process",
+                "confidence": 1.0,
+                "outcome": outcome,
+                "domain": "content-process",
+            },
+            authority_id=AUTHORITY_ID,
+            interest_feedback={
+                "name": topic,
+                "novelty": novelty,
+                "effort": effort,
+                "learning_rate": 0.15,
+            },
+        )
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._persist()
+        interest = self.session.interests.get(topic)
+        return {
+            "status": "OBSERVED",
+            "outcome_kind": "PROCESS_ONLY",
+            "audience_outcome_used": False,
+            "model_calls": int(model_calls),
+            "effort": effort,
+            "interest": interest.__dict__ if interest else None,
+        }
+
+    def public_projection(self) -> dict[str, Any]:
+        """Return bounded inspectable state for later public presentation."""
+        snapshot = self.session.snapshot()
+        interests = []
+        for name, state in snapshot["interests"]["items"].items():
+            interests.append({"name": name, **{k: float(v) for k, v in state.items()}})
+        interests.sort(key=lambda row: (-row["salience"], -row["preference"], row["name"]))
+        inquiries = [
+            {"inquiry_id": key, "question": value.get("question"), "origin": value.get("origin"),
+             "status": value.get("status")}
+            for key, value in snapshot["inquiry"]["inquiries"].items()
+            if value.get("status") == "OPEN"
+        ]
+        latest_plan = self._plans[sorted(self._plans)[-1]] if self._plans else None
+        return {
+            "mind_schema": MIND_SCHEMA,
+            "mind_tick": int(self.session.tick),
+            "interests": interests[:8],
+            "open_inquiries": inquiries[:8],
+            "latest_plan": deepcopy(latest_plan),
+            "learning_boundary": "process experience only; audience outcomes are not connected yet",
+        }
+
+
+__all__ = ["ContentMind", "MIND_SCHEMA"]
