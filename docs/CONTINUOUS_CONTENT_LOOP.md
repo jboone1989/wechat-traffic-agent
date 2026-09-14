@@ -19,7 +19,9 @@ The same Content Agent / Runtime / VirtualBrain service now supports:
    inventory, Topic coverage, article links, learned techniques and prior titles.
 5. Generate a sourced private article applying the lesson. News descriptions do
    not license unstated details. Existing article source references are retained.
-6. Run a separate model self-check. Require >=350 words, every learned technique
+6. Run a separate model self-check. Malformed source IDs, section indices and
+   non-contiguous quotation references share its single schema/semantic repair
+   budget; this never changes a negative substantive verdict to a positive one. Require >=350 words, every learned technique
    linked to an exact article quote, every section linked to an exact supplied
    source quote, and positive grounding/usefulness/privacy/no-investment-advice
    checks. Save the fallible assessment and a next-practice exercise. Failure
@@ -60,6 +62,7 @@ noindex and AdSense configuration are preserved.
 
 ## Budgets and restart semantics
 
+Current production starts with one-hour windows for rapid observation.
 One attempt per fixed UTC window and deployed loop version; one draft per news content fingerprint.
 Loop v2 preserves v1 terminal receipts under their original paths and uses v2-prefixed
 cycle paths. Only an operator-deployed code version can start a new versioned
