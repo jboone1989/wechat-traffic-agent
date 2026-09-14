@@ -47,11 +47,14 @@ class ContentNetworkService:
         agent_id: str = DEFAULT_AGENT_ID,
         capabilities: tuple[str, ...] = DEFAULT_CAPABILITIES,
         startup_timeout_seconds: float = 10.0,
+        lease_seconds: int = 1800,
     ) -> None:
         if port <= 0 or port > 65535:
             raise ValueError("network port is invalid")
         if not agent_id.strip():
             raise ValueError("network agent_id must be non-empty")
+        if lease_seconds < 60:
+            raise ValueError("network lease_seconds must be at least 60")
         raw_seeds = (seed_url,) if seed_urls is None else seed_urls
         cleaned_seeds = tuple(dict.fromkeys(item.strip().rstrip("/") for item in raw_seeds if item.strip()))
         if not cleaned_seeds:
@@ -67,6 +70,7 @@ class ContentNetworkService:
         self.agent_id = agent_id
         self.capability_ids = tuple(dict.fromkeys(capabilities))
         self.startup_timeout_seconds = float(startup_timeout_seconds)
+        self.lease_seconds = int(lease_seconds)
         self.execution_lock = RLock()
         self._server: Any | None = None
         self._thread: Thread | None = None
@@ -90,6 +94,7 @@ class ContentNetworkService:
             port=int(os.environ.get("CONTENT_NETWORK_PORT", str(DEFAULT_PORT))),
             agent_id=os.environ.get("CONTENT_NETWORK_AGENT_ID", DEFAULT_AGENT_ID),
             capabilities=caps,
+            lease_seconds=int(os.environ.get("CONTENT_NETWORK_LEASE_SECONDS", "1800")),
         )
 
     @property
@@ -158,6 +163,7 @@ class ContentNetworkService:
             agent_card_url=self.card_url,
             endpoint=self.endpoint,
             capabilities=[{k: v for k, v in row.items() if k != "description"} for row in rows],
+            lease_seconds=self.lease_seconds,
         )
         self._network = network
         handlers: dict[str, Any] = {}
