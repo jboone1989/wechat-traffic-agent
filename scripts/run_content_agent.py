@@ -89,7 +89,7 @@ def main() -> int:
 
     continuous_loop = None
     if os.environ.get("CONTENT_CONTINUOUS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
-        from wechat_traffic_agent.content_loop import ContinuousContentLoop
+        from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
         publisher = None
         if os.environ.get("CONTENT_AUTO_PUBLISH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
             from wechat_traffic_agent.automatic_website import AutomaticWebsitePublisher
