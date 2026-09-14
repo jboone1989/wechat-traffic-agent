@@ -17,8 +17,8 @@ PARAGRAPH = ' '.join('Explanation of supplied evidence helps readers distinguish
 
 class Runtime:
     agent_manifest = SimpleNamespace(agent_type='content-agent')
-    def __init__(self, number=1, passes=True, badquote=False):
-        self.calls=[]; self.number=number; self.passes=passes; self.badquote=badquote
+    def __init__(self, number=1, passes=True, badquote=False, provenance_ids=False):
+        self.calls=[]; self.number=number; self.passes=passes; self.badquote=badquote; self.provenance_ids=provenance_ids
     async def cognitive_probe(self, task, max_tokens):
         self.calls.append(task)
         if task.startswith('LEARN_WRITING:'):
@@ -30,10 +30,14 @@ class Runtime:
                 'topic':'rare','related_ids':['a0'],'reader_question':'What does this observation actually support?',
                 'gap':'Connect the fresh announcement to existing evidence interpretation.'})
         if task.startswith('CHECK_ARTICLE:'):
+            source_id = 'a0'
+            if self.provenance_ids:
+                import re
+                source_id = re.search(r'content-artifact:a0:sha256:[a-f0-9]+', task).group()
             return json.dumps({'grounded':self.passes,'useful':True,'no_private_data':True,'no_investment_advice':True,
                 'applications':[{'technique_index':0,'article_quote':'Invented application quote' if self.badquote else 'Explanation of supplied evidence',
                     'explanation':'The explanation distinguishes interpretation from evidence.'}],
-                'support':[{'section_index':0,'source_id':'a0','source_quote':'Existing bounded evidence.'}],
+                'support':[{'section_index':0,'source_id':source_id,'source_quote':'Existing bounded evidence.'}],
                 'next_practice':'NEXT_PRACTICE_MARKER: make the opening reader question more specific.',
                 'rationale':'The article explains a mechanism while preserving uncertainty.'})
         return json.dumps({'title':f'Explaining evidence question {self.number}', 'summary':'A bounded interpretation of fresh evidence.',
@@ -135,3 +139,8 @@ def test_audit_failure_does_not_activate_candidate(tmp_path,monkeypatch):
     monkeypatch.setattr('wechat_traffic_agent.automatic_website.audit_static_site',lambda *a,**k:SimpleNamespace(passed=False))
     assert asyncio.run(worker.run_once(now=NOW))['status']=='ERROR'
     assert (publisher.public/'current').resolve()==old
+
+
+def test_real_model_provenance_identifiers_are_resolved_without_weakening_quotes(tmp_path):
+    runtime,worker,publisher=setup(tmp_path,provenance_ids=True)
+    assert asyncio.run(worker.run_once(now=NOW))['status']=='PUBLISHED'
