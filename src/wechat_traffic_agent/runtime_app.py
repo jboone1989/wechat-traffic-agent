@@ -179,13 +179,24 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
         observation_factory=SubjectObservation,
     )
     runtime.register_provider(ContentCapabilityPack(app.status_observation))
-    if os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    _register_runtime_web_providers(runtime)
+    return app
+
+
+def _register_runtime_web_providers(runtime: Any) -> None:
+    enabled = {"1", "true", "yes", "on"}
+    if os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_ENABLED", "").lower() in enabled:
         from agent_runtime.integrations import SearXNGSearchProvider
         runtime.register_provider(SearXNGSearchProvider(
             base_url=os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_URL", "http://127.0.0.1:8080"),
             max_results=8,
         ))
-    return app
+    if os.environ.get("CONTENT_RUNTIME_WEB_FETCH_ENABLED", "").lower() in enabled:
+        from agent_runtime.integrations import Crawl4AIHTTPProvider
+        runtime.register_provider(Crawl4AIHTTPProvider(
+            base_url=os.environ.get("CONTENT_RUNTIME_WEB_FETCH_URL", "http://127.0.0.1:11235"),
+            api_token=os.environ.get("CRAWL4AI_API_TOKEN") or None,
+        ))
 
 
 def _runtime_authority_key(root: Path) -> bytes:
