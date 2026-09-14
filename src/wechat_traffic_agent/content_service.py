@@ -47,10 +47,13 @@ class ContentAgent:
         slug: str | None = None,
         kind: ContentKind = ContentKind.ARTICLE,
         now: datetime | None = None,
+        editorial_brief: str | None = None,
     ) -> ContentArtifact:
         if not topics:
             raise ValueError("at least one evidenced topic signal is required")
         task = _composition_task(topics, audience)
+        if editorial_brief is not None:
+            task += "\nEditorial context (proposal is not evidence; existing source articles are supplied evidence): " + editorial_brief
         raw = await self.runtime.cognitive_probe(
             task,
             max_tokens=2400,
