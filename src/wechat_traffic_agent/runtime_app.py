@@ -141,15 +141,24 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
     from agent_runtime.runtime import AgentRuntime
     from virtualbrain import Subject, SubjectObservation
 
+    from .runtime_backend import load_optional_advisory_backend
+
     root = Path(root)
     manifest = load_agent_manifest(manifest_path)
+    backend = load_optional_advisory_backend()
     domain_state = root / "application" / "domain_runtime"
     if (domain_state / "agent_state.json").exists():
-        domain_runtime = AgentRuntime.restore(domain_state)
+        if backend is None:
+            domain_runtime = AgentRuntime.restore(domain_state)
+        else:
+            domain_runtime = AgentRuntime.restore(domain_state, agent_backend=backend)
         if domain_runtime.agent_manifest is None:
             domain_runtime.agent_manifest = manifest
     else:
-        domain_runtime = AgentRuntime.bootstrap(domain_state, agent_manifest=manifest)
+        kwargs: dict[str, Any] = {"agent_manifest": manifest}
+        if backend is not None:
+            kwargs["agent_backend"] = backend
+        domain_runtime = AgentRuntime.bootstrap(domain_state, **kwargs)
 
     key = _runtime_authority_key(root)
     subject = Subject.bootstrap(
