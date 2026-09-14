@@ -116,3 +116,35 @@ def test_status_reports_only_explicit_website_automatic_mode(tmp_path, monkeypat
     assert app.status_observation()['publish_mode'] == 'manual'
     monkeypatch.setenv('CONTENT_CONTINUOUS_ENABLED', '1')
     assert app.status_observation()['publish_mode'] == 'website_automatic'
+
+
+def test_runtime_web_providers_are_explicit_and_provider_owned(monkeypatch):
+    import sys
+    from wechat_traffic_agent.runtime_app import _register_runtime_web_providers
+
+    created = []
+    class SearchProvider:
+        def __init__(self, **kwargs):
+            self.kind, self.kwargs = 'search', kwargs
+            created.append(self)
+    class FetchProvider:
+        def __init__(self, **kwargs):
+            self.kind, self.kwargs = 'fetch', kwargs
+            created.append(self)
+    monkeypatch.setitem(sys.modules, 'agent_runtime.integrations', SimpleNamespace(
+        SearXNGSearchProvider=SearchProvider, Crawl4AIHTTPProvider=FetchProvider))
+    monkeypatch.setenv('CONTENT_RUNTIME_WEB_SEARCH_ENABLED', '1')
+    monkeypatch.setenv('CONTENT_RUNTIME_WEB_FETCH_ENABLED', '1')
+    monkeypatch.setenv('CONTENT_RUNTIME_WEB_SEARCH_URL', 'http://127.0.0.1:8080')
+    monkeypatch.setenv('CONTENT_RUNTIME_WEB_FETCH_URL', 'http://127.0.0.1:11235')
+    monkeypatch.setenv('CRAWL4AI_API_TOKEN', 'test-secret')
+
+    class Registry:
+        def __init__(self): self.providers = []
+        def register_provider(self, provider): self.providers.append(provider)
+    registry = Registry()
+    _register_runtime_web_providers(registry)
+
+    assert [p.kind for p in registry.providers] == ['search', 'fetch']
+    assert registry.providers[0].kwargs == {'base_url': 'http://127.0.0.1:8080', 'max_results': 8}
+    assert registry.providers[1].kwargs == {'base_url': 'http://127.0.0.1:11235', 'api_token': 'test-secret'}
