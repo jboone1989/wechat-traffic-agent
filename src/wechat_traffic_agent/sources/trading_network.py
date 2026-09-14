@@ -204,8 +204,17 @@ def _select_research_artifact(task: Mapping[str, Any]) -> dict[str, Any]:
     return manifest
 
 
+def _normalized_sha256(value: Any) -> str:
+    digest = str(value or "").strip().lower()
+    if digest.startswith("sha256:"):
+        digest = digest[len("sha256:") :]
+    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+        raise ValueError("Trading research artifact SHA256 is invalid")
+    return digest
+
+
 def _verify_artifact_hash(manifest: Mapping[str, Any], body: bytes) -> None:
-    expected = str(manifest.get("sha256") or "").strip().lower()
+    expected = _normalized_sha256(manifest.get("sha256"))
     actual = hashlib.sha256(body).hexdigest()
     if expected != actual:
         raise ValueError("Trading research artifact SHA256 mismatch")
@@ -213,10 +222,10 @@ def _verify_artifact_hash(manifest: Mapping[str, Any], body: bytes) -> None:
 
 def _artifact_evidence_ref(manifest: Mapping[str, Any]) -> str:
     artifact_id = str(manifest.get("artifact_id") or "")
-    digest = str(manifest.get("sha256") or "")
     revision = manifest.get("revision", 1)
-    if not artifact_id or not digest:
+    if not artifact_id or not manifest.get("sha256"):
         return ""
+    digest = _normalized_sha256(manifest.get("sha256"))
     return f"network-artifact:{artifact_id}@{revision}:sha256:{digest}"
 
 

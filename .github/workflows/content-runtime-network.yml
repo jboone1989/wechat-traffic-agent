@@ -8,11 +8,13 @@ on:
       - "pyproject.toml"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "src/wechat_traffic_agent/network_service.py"
+      - "src/wechat_traffic_agent/sources/trading_network.py"
       - "scripts/run_content_agent.py"
       - "tests/test_content_runtime_app.py"
       - "tests/test_content_network_service.py"
       - "tests/test_content_runtime_dependencies.py"
       - "tests/test_run_content_agent_entrypoint.py"
+      - "tests/test_trading_network_source.py"
       - ".github/workflows/content-runtime-network.yml"
 
 permissions:
@@ -27,13 +29,20 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated test dependency
-        run: python -m pip install "pytest>=8"
+        run: python -m pip install "pytest>=8" "pydantic>=2.5"
       - name: Build isolated runtime package
         run: |
           mkdir -p .runtime-ci/wechat_traffic_agent
           printf '%s\n' '"""Isolated persistent Content Agent tests."""' > .runtime-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/runtime_app.py .runtime-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/network_service.py .runtime-ci/wechat_traffic_agent/
+      - name: Build isolated Trading source package
+        run: |
+          mkdir -p .source-ci/wechat_traffic_agent/sources
+          printf '%s\n' '"""Isolated Trading source tests."""' > .source-ci/wechat_traffic_agent/__init__.py
+          printf '%s\n' '"""Isolated source package."""' > .source-ci/wechat_traffic_agent/sources/__init__.py
+          cp src/wechat_traffic_agent/models.py .source-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/sources/trading_network.py .source-ci/wechat_traffic_agent/sources/
       - name: Run persistent application boundary tests
         env:
           PYTHONPATH: .runtime-ci
@@ -43,8 +52,12 @@ jobs:
           tests/test_content_network_service.py
           tests/test_content_runtime_dependencies.py
           tests/test_run_content_agent_entrypoint.py
+      - name: Run Trading Network source regression
+        env:
+          PYTHONPATH: .source-ci
+        run: python -m pytest -q -c /dev/null tests/test_trading_network_source.py
       - name: Build source bundle
-        run: tar --exclude=.git --exclude=.runtime-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
+        run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
       - uses: actions/upload-artifact@v4
         with:
           name: content-agent-runtime-release
