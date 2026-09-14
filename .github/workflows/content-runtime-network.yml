@@ -5,11 +5,13 @@ on:
     branches: ["feat/content-runtime-vb-network"]
   pull_request:
     paths:
+      - "pyproject.toml"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "src/wechat_traffic_agent/network_service.py"
       - "scripts/run_content_agent.py"
       - "tests/test_content_runtime_app.py"
       - "tests/test_content_network_service.py"
+      - "tests/test_content_runtime_dependencies.py"
       - "tests/test_run_content_agent_entrypoint.py"
       - ".github/workflows/content-runtime-network.yml"
 
@@ -39,6 +41,7 @@ jobs:
           python -m pytest -q -c /dev/null
           tests/test_content_runtime_app.py
           tests/test_content_network_service.py
+          tests/test_content_runtime_dependencies.py
           tests/test_run_content_agent_entrypoint.py
       - name: Build source bundle
         run: tar --exclude=.git --exclude=.runtime-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
