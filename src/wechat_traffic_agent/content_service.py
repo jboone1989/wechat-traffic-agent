@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 
 from agent_runtime.runtime import AgentRuntime
@@ -10,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .content_artifact import ContentArtifact, ContentKind, ContentSection, ContentSourceRef
 from .models import AudienceProfile, TopicSignal
+
+
+_SLUG_PARTS_RE = re.compile(r"[^a-z0-9]+")
 
 
 class _GeneratedContent(BaseModel):
@@ -40,7 +44,7 @@ class ContentAgent:
         audience: AudienceProfile,
         *,
         artifact_id: str,
-        slug: str,
+        slug: str | None = None,
         kind: ContentKind = ContentKind.ARTICLE,
         now: datetime | None = None,
     ) -> ContentArtifact:
@@ -60,7 +64,7 @@ class ContentAgent:
         return ContentArtifact(
             artifact_id=artifact_id,
             kind=kind,
-            slug=slug,
+            slug=slug or _slug_from_title(draft.title, fallback=artifact_id),
             title=draft.title,
             summary=draft.summary,
             sections=draft.sections,
@@ -69,6 +73,14 @@ class ContentAgent:
             disclosure=draft.disclosure,
             public_safe=False,
         )
+
+
+def _slug_from_title(title: str, *, fallback: str) -> str:
+    candidate = _SLUG_PARTS_RE.sub("-", title.lower()).strip("-")[:160].strip("-")
+    if candidate:
+        return candidate
+    fallback_slug = _SLUG_PARTS_RE.sub("-", fallback.lower()).strip("-")[:160].strip("-")
+    return fallback_slug or "content-artifact"
 
 
 def _source_refs(
