@@ -25,6 +25,12 @@ class GoalMind:
     def observe_process_experience(self, **kwargs): return {"status": "OBSERVED", "topic": kwargs["topic"]}
 
 
+class UnboundGoalMind:
+    def plan_for_cycle(self, *, cycle, available_topics):
+        return {"cycle": cycle, "goal": {"origin": "INTEREST", "interest_refs": ["missing-topic"]},
+                "required_topic": None}
+
+
 class Explorer:
     def __init__(self, mind=None, *, empty=False, fail=False):
         self.mind, self.empty, self.fail = mind, empty, fail
@@ -56,6 +62,17 @@ def test_goal_precedes_evidence_and_unrelated_stops(tmp_path):
     assert explorer.collect_calls == explorer.filter_calls == 1
     assert runtime.calls == [] and worker.inbox.list_records() == ()
     assert (publisher.public / "current").resolve() == before
+
+
+def test_unbound_goal_fails_closed_before_evidence(tmp_path):
+    runtime, legacy, publisher = setup(tmp_path)
+    explorer = Explorer()
+    worker = v2(legacy, runtime, publisher, mind=UnboundGoalMind(), explorer=explorer)
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "NO_RELEVANT_EVIDENCE"
+    assert result["reason"] == "UNBOUND_GOAL_TOPIC"
+    assert explorer.collect_calls == explorer.filter_calls == 0
+    assert runtime.calls == []
 
 
 def test_restart_does_not_repeat_exploration_or_publication(tmp_path):
