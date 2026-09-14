@@ -59,3 +59,23 @@ def test_draft_inbox_is_write_once_and_refuses_public_artifacts(tmp_path):
             generated_at=datetime(2026, 9, 14, tzinfo=timezone.utc),
             artifact=_artifact(public_safe=True),
         )
+
+
+def test_fingerprint_ignores_fetch_contract_but_tracks_artifact_revision_and_hash():
+    topic = _topic("Research", "trading:report:1").model_copy(update={
+        "evidence_refs": (
+            "trading:report:1",
+            "network-artifact:research@1:sha256:" + "a" * 64,
+            "network-contract:first-request",
+        ),
+    })
+    fetched_again = topic.model_copy(update={
+        "evidence_refs": (*topic.evidence_refs[:2], "network-contract:second-request"),
+    })
+    assert topic_set_fingerprint([topic]) == topic_set_fingerprint([fetched_again])
+    next_revision = fetched_again.model_copy(update={"source_revision": "artifact-1@2"})
+    assert topic_set_fingerprint([topic]) != topic_set_fingerprint([next_revision])
+    changed_hash = fetched_again.model_copy(update={
+        "evidence_refs": ("trading:report:1", "network-artifact:research@1:sha256:" + "b" * 64),
+    })
+    assert topic_set_fingerprint([topic]) != topic_set_fingerprint([changed_hash])

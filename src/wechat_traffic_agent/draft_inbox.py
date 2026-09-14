@@ -97,7 +97,12 @@ def topic_set_fingerprint(topics: list[TopicSignal]) -> str:
             "source": item.source,
             "source_url": item.source_url,
             "source_revision": item.source_revision,
-            "evidence_refs": sorted(item.evidence_refs),
+            # Network contracts identify fetch attempts, not research revisions.
+            # Keep them in draft provenance, but never in the source identity.
+            "evidence_refs": sorted(
+                ref for ref in item.evidence_refs
+                if not ref.startswith("network-contract:")
+            ),
             "observed_at": item.observed_at.isoformat() if item.observed_at else None,
         })
     rows.sort(key=lambda row: json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")))

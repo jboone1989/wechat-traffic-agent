@@ -37,11 +37,14 @@ class _Runtime:
 
 
 class _Source:
+    requests = 0
+
     def __init__(self, _network):
         pass
 
     async def fetch_topics(self, *, limit: int):
         assert limit == 20
+        type(self).requests += 1
         return [TopicSignal(
             title="Research scan evaluated 5 candidate relationships",
             summary="The scan evaluated five relationships and did not promote unsupported candidates.",
@@ -49,7 +52,7 @@ class _Source:
             source_revision="trading-public-research-abc@1",
             evidence_refs=(
                 "network-artifact:artifact-1@1:sha256:" + "a" * 64,
-                "network-contract:contract-1",
+                f"network-contract:contract-{type(self).requests}",
                 "trading:report:report-1",
             ),
             observed_at=datetime(2026, 9, 14, tzinfo=timezone.utc),
@@ -127,6 +130,7 @@ def test_schema_repair_creates_private_draft_and_restart_skips_model(
     assert len(record.artifact.summary) <= 500
     assert set(record.artifact.sections[0].model_dump()) == {"heading", "paragraphs"}
     assert len(list(worker.inbox.drafts_dir.glob("*.json"))) == 1
+    assert any(ref.ref_id.startswith("network-contract:") for ref in record.artifact.source_refs)
 
     restarted_runtime = _Runtime()
     restarted = TradingResearchDraftWorker(runtime=restarted_runtime, state_root=tmp_path)
