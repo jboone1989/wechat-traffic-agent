@@ -106,3 +106,13 @@ def test_status_capability_is_read_only_and_bounded():
     assert row["side_effect_level"] == "READ_ONLY"
     assert pack.invoke(CAP_CONTENT_STATUS, {})["observation"]["generation_ready"] is True
     assert pack.invoke(CAP_CONTENT_STATUS, {"mutate": True})["status"] == "INVALID_REQUEST"
+
+
+def test_status_reports_only_explicit_website_automatic_mode(tmp_path, monkeypatch):
+    app = ContentApplication(root=tmp_path, subject=_Subject(), runtime=_Runtime({}),
+                             domain_runtime=_DomainRuntime(), observation_factory=_observation)
+    monkeypatch.setenv('CONTENT_AUTO_PUBLISH_ENABLED', '1')
+    monkeypatch.delenv('CONTENT_CONTINUOUS_ENABLED', raising=False)
+    assert app.status_observation()['publish_mode'] == 'manual'
+    monkeypatch.setenv('CONTENT_CONTINUOUS_ENABLED', '1')
+    assert app.status_observation()['publish_mode'] == 'website_automatic'

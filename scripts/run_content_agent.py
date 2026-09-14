@@ -112,7 +112,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    print(f"{APPLICATION_VERSION} publish_mode=manual")
+    print(f"{APPLICATION_VERSION} publish_mode={app.status_observation()['publish_mode']}")
     try:
         while not stopping:
             now = datetime.now(timezone.utc).replace(microsecond=0)

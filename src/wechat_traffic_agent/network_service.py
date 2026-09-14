@@ -119,7 +119,7 @@ class ContentNetworkService:
         card = signed_agent_card(
             identity=identity,
             name="Persistent Content Agent",
-            description="Content Agent with Runtime + VirtualBrain; manual publishing authority",
+            description="Content Agent with Runtime + VirtualBrain; explicit channel publication policy",
             url=self.endpoint,
             skills=[{"id": row["id"], "name": row["id"], "description": row["description"]} for row in rows],
         )

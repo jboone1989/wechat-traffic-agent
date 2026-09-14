@@ -167,12 +167,14 @@ class ReceiptRuntime:
 
 
 async def _structured(runtime, task, contract):
-    prompt = task + '\nReturn JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
+    prompt = task + '\nBE CONCISE: every prose field must be ONE short sentence, aim for at most 150 characters. '
+    prompt += 'In particular gap, adaptation, instruction, next_practice and rationale must stay short. '
+    prompt += 'Character limits are not word limits. Quotes may be short exact excerpts. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
     raw = await runtime.cognitive_probe(prompt, max_tokens=2400)
     try:
         return contract.model_validate_json(_extract_json(raw))
     except ValueError as exc:
-        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Errors: ' + str(exc)[:2000]
+        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Shorten ALL prose to at most 150 characters each; preserve exact IDs and short exact quotes. Errors: ' + str(exc)[:2000]
                                             + '\nPrevious untrusted response: ' + raw, max_tokens=2400)
         return contract.model_validate_json(_extract_json(raw))
 
