@@ -153,7 +153,7 @@ class GoalEvidenceExplorer:
             return {"items": list(unique.values()), "failures": [], "query": query}
         except Exception as exc:
             return {"items": [], "failures": [{
-                "source": "web-search:deepseek+jina-reader", "error_type": type(exc).__name__}],
+                "source": "runtime:web.search", "error_type": type(exc).__name__}],
                 "query": query}
 
     async def filter_for_goal(self, *, runtime, goal_topic: str,
