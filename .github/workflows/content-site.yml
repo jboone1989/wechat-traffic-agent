@@ -46,6 +46,7 @@ jobs:
           tests/test_web_channel.py
           tests/test_web_preview_mode.py
           tests/test_site_cli.py
+          tests/test_site_topic_quality.py
           tests/test_site_audit.py
           tests/test_adsense_readiness.py
       - name: Build isolated Agent Network source package
