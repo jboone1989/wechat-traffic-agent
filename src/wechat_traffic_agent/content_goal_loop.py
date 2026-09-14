@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
-import os
 from pathlib import Path
 
 from pydantic import Field
@@ -19,7 +18,7 @@ from .content_explorer import GoalEvidenceExplorer, collect_trading_evidence
 from .content_service import ContentAgent
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .models import TopicSignal
-from .sources.web_search import DeepSeekJinaWebSearch
+from .sources.runtime_web import RuntimeWebSearch
 from .trading_draft_worker import default_trading_research_audience
 from .web_editorial import digest, website_snapshot, _title_key
 
@@ -46,7 +45,8 @@ def _candidate_fingerprint(candidate):
 
 class ContinuousContentLoop(_BaseContinuousContentLoop):
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
-                 feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None):
+                 feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None,
+                 capability_runtime=None):
         if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
             raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
         self.runtime, self.state = runtime, Path(state_root)
@@ -56,9 +56,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.mind = mind
         if explorer is None:
             web_searcher = None
-            if os.environ.get("CONTENT_GOAL_WEB_SEARCH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
-                provider = DeepSeekJinaWebSearch.from_environment()
-                web_searcher = lambda query, now: provider.search(query=query, now=now)
+            if capability_runtime is not None and "web.search" in capability_runtime.available_capabilities():
+                source = RuntimeWebSearch(capability_runtime)
+                web_searcher = lambda query, now: source.search(query=query, now=now)
             explorer = GoalEvidenceExplorer(
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
