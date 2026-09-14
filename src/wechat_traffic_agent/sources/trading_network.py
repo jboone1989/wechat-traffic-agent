@@ -1,9 +1,8 @@
 """Read-only Trading research source over Agent Network.
 
 This adapter deliberately depends on Network semantics rather than Trading
-implementation modules. Trading remains responsible for producing the
-sanitized artifact; Content Agent verifies the public projection again before
-turning it into topic evidence.
+implementation modules. Trading remains responsible for producing the governed
+public projection; Content Agent validates it again before topic modeling.
 """
 from __future__ import annotations
 
@@ -71,7 +70,7 @@ ArtifactLoader = Callable[[dict[str, Any]], Awaitable[bytes]]
 
 
 class TradingResearchNetworkSource:
-    """Discover Trading via Agent Network and materialize public research artifacts."""
+    """Discover Trading via Agent Network and consume governed public research."""
 
     def __init__(
         self,
@@ -111,7 +110,7 @@ class TradingResearchNetworkSource:
             constraints=[
                 "read-only",
                 "no current positions, orders, credentials, or execution controls",
-                "return only the versioned public research artifact",
+                "return only the versioned public research projection",
             ],
             deliverables=[TRADING_RESEARCH_ARTIFACT_TYPE],
             verification={"required": False},
@@ -122,35 +121,52 @@ class TradingResearchNetworkSource:
         if state != "completed":
             raise RuntimeError(f"Trading research Network task did not complete: {state or 'unknown'}")
 
-        manifest = _select_research_artifact(task)
-        artifact_provider = str(
-            manifest.get("producer_agent_id")
-            or manifest.get("owner")
-            or ""
-        )
-        if artifact_provider != provider_id:
-            raise ValueError("research artifact producer does not match discovered Trading agent")
-        body = await self._load_artifact(manifest)
-        _verify_artifact_hash(manifest, body)
-        try:
-            raw = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Trading research artifact is not valid UTF-8 JSON") from exc
+        metadata = dict((task or {}).get("metadata") or {})
+        runtime_result = metadata.get("result")
+        if isinstance(runtime_result, Mapping) and runtime_result.get("ok") is False:
+            status = str(runtime_result.get("status") or "UNAVAILABLE")
+            raise RuntimeError(f"Trading research unavailable: {status}")
+
+        manifest = _select_research_artifact(task, required=False)
+        if manifest is not None:
+            artifact_provider = str(
+                manifest.get("producer_agent_id") or manifest.get("owner") or ""
+            )
+            if artifact_provider != provider_id:
+                raise ValueError("research artifact producer does not match discovered Trading agent")
+            body = await self._load_artifact(manifest)
+            _verify_artifact_hash(manifest, body)
+            try:
+                raw = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("Trading research artifact is not valid UTF-8 JSON") from exc
+            revision = f"{manifest.get('artifact_id', '')}@{manifest.get('revision', 1)}"
+            artifact_ref = _artifact_evidence_ref(manifest)
+        else:
+            if not isinstance(runtime_result, Mapping) or not isinstance(runtime_result.get("envelope"), Mapping):
+                raise ValueError("Trading research response contains neither artifact nor Runtime envelope")
+            raw = dict(runtime_result["envelope"])
+            receipt_id = str(metadata.get("receipt_id") or "")
+            if not receipt_id:
+                raise ValueError("Trading research Runtime receipt_id is required")
+            revision = receipt_id
+            artifact_ref = f"runtime-receipt:{receipt_id}"
+
         _reject_forbidden_fields(raw)
         envelope = TradingResearchEnvelope.model_validate(raw)
         if envelope.producer_agent_id != provider_id:
             raise ValueError("research envelope producer does not match discovered Trading agent")
 
-        artifact_ref = _artifact_evidence_ref(manifest)
-        contract = ((task or {}).get("metadata") or {}).get("contract") or {}
+        contract = metadata.get("contract") or {}
         contract_id = str(contract.get("contract_id") or "")
         network_refs = tuple(
             ref for ref in (artifact_ref, f"network-contract:{contract_id}" if contract_id else "") if ref
         )
-        revision = f"{manifest.get('artifact_id', '')}@{manifest.get('revision', 1)}"
         source_name = f"agent-network:{provider_id}"[:80]
         topics: list[TopicSignal] = []
-        for item in envelope.items[:limit]:
+        for item in envelope.items:
+            if since is not None and item.observed_at < since:
+                continue
             refs = tuple(dict.fromkeys((*network_refs, *item.evidence_refs)))
             summary = item.summary
             if item.limitations:
@@ -166,6 +182,8 @@ class TradingResearchNetworkSource:
                     observed_at=item.observed_at,
                 )
             )
+            if len(topics) >= limit:
+                break
         return topics
 
     async def _load_artifact(self, manifest: dict[str, Any]) -> bytes:
@@ -183,7 +201,9 @@ class TradingResearchNetworkSource:
         return await fetch_artifact(manifest, identity=identity)
 
 
-def _select_research_artifact(task: Mapping[str, Any]) -> dict[str, Any]:
+def _select_research_artifact(
+    task: Mapping[str, Any], *, required: bool = True
+) -> dict[str, Any] | None:
     matches: list[dict[str, Any]] = []
     for artifact in task.get("artifacts") or []:
         for part in artifact.get("parts") or []:
@@ -195,17 +215,21 @@ def _select_research_artifact(task: Mapping[str, Any]) -> dict[str, Any]:
                 and manifest.get("media_type") == TRADING_RESEARCH_MEDIA_TYPE
             ):
                 matches.append(manifest)
+    if not matches and not required:
+        return None
     if len(matches) != 1:
         raise ValueError(f"expected exactly one Trading research artifact, found {len(matches)}")
     manifest = matches[0]
-    required = ("artifact_id", "sha256", "revision")
-    if any(not manifest.get(field) for field in required):
+    required_fields = ("artifact_id", "sha256", "revision")
+    if any(not manifest.get(field) for field in required_fields):
         raise ValueError("Trading research artifact manifest is incomplete")
     return manifest
 
 
 def _verify_artifact_hash(manifest: Mapping[str, Any], body: bytes) -> None:
     expected = str(manifest.get("sha256") or "").strip().lower()
+    if expected.startswith("sha256:"):
+        expected = expected.split(":", 1)[1]
     actual = hashlib.sha256(body).hexdigest()
     if expected != actual:
         raise ValueError("Trading research artifact SHA256 mismatch")
@@ -214,6 +238,8 @@ def _verify_artifact_hash(manifest: Mapping[str, Any], body: bytes) -> None:
 def _artifact_evidence_ref(manifest: Mapping[str, Any]) -> str:
     artifact_id = str(manifest.get("artifact_id") or "")
     digest = str(manifest.get("sha256") or "")
+    if digest.startswith("sha256:"):
+        digest = digest.split(":", 1)[1]
     revision = manifest.get("revision", 1)
     if not artifact_id or not digest:
         return ""
