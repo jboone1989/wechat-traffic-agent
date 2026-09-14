@@ -85,3 +85,25 @@ def test_network_accepts_multiple_seed_urls_from_environment(monkeypatch, tmp_pa
         "https://seed-b.example/a2a",
     )
     assert service.seed_url == "https://seed-a.example/a2a"
+
+
+def test_network_accepts_membership_lease_from_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_NETWORK_LEASE_SECONDS", "60")
+    service = ContentNetworkService.from_environment(
+        root=tmp_path,
+        application=SimpleNamespace(runtime=_Runtime()),
+    )
+    assert service.lease_seconds == 60
+
+
+def test_network_rejects_too_short_membership_lease(tmp_path):
+    try:
+        ContentNetworkService(
+            root=tmp_path,
+            application=SimpleNamespace(runtime=_Runtime()),
+            lease_seconds=59,
+        )
+    except ValueError as exc:
+        assert "at least 60" in str(exc)
+    else:
+        raise AssertionError("too-short membership lease should fail closed")
