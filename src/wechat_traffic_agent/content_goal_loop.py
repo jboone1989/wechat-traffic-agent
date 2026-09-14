@@ -90,6 +90,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                          if self.mind is not None else {'cycle': cycle, 'goal': None, 'required_topic': None})
             _put(plan_path, mind_plan)
         required_topic = mind_plan.get('required_topic')
+        if mind_plan.get('goal') is not None and required_topic is None:
+            return {'status': 'NO_RELEVANT_EVIDENCE', 'cycle': cycle, 'mind_plan': mind_plan,
+                    'candidate_count': 0, 'source_failures': [], 'reason': 'UNBOUND_GOAL_TOPIC'}
         goal_active = required_topic is not None
 
         candidates_path = folder / 'evidence_candidates.json'
