@@ -144,3 +144,45 @@ def test_audit_failure_does_not_activate_candidate(tmp_path,monkeypatch):
 def test_real_model_provenance_identifiers_are_resolved_without_weakening_quotes(tmp_path):
     runtime,worker,publisher=setup(tmp_path,provenance_ids=True)
     assert asyncio.run(worker.run_once(now=NOW))['status']=='PUBLISHED'
+
+
+@pytest.mark.parametrize('repaired', [True, False])
+def test_semantic_topic_mismatch_gets_one_bounded_repair(tmp_path, repaired):
+    runtime,worker,publisher=setup(tmp_path)
+    original=runtime.cognitive_probe
+    selection_calls=[]
+    async def mismatch(task,max_tokens):
+        raw=await original(task,max_tokens)
+        if task.startswith('SELECT_NEWS:'):
+            selection_calls.append(task)
+            value=json.loads(raw)
+            if len(selection_calls)==1 or not repaired:
+                value['topic']='common'
+            raw=json.dumps(value)
+        return raw
+    runtime.cognitive_probe=mismatch
+    result=asyncio.run(worker.run_once(now=NOW))
+    assert len(selection_calls)==2
+    assert 'Allowed IDs for this topic' in selection_calls[1]
+    assert result['status']==('PUBLISHED' if repaired else 'ERROR')
+    if not repaired:
+        assert worker.inbox.list_records()==()
+
+
+def test_automatic_release_readable_with_restrictive_service_umask(tmp_path):
+    import os
+    runtime,worker,publisher=setup(tmp_path)
+    old=os.umask(0o077)
+    try:
+        assert asyncio.run(worker.run_once(now=NOW))['status']=='PUBLISHED'
+    finally:
+        os.umask(old)
+    root=(publisher.public/'current').resolve()
+    assert root.parent.stat().st_mode & 0o005 == 0o005
+    assert root.stat().st_mode & 0o005 == 0o005
+    assert all(p.stat().st_mode & (0o005 if p.is_dir() else 0o004)
+               for p in root.rglob('*'))
+    home=(root/'index.html').read_text()
+    assert 'The website is the interface. The agent is the product.' in home
+    assert 'Audited automatic publishing' in home
+    assert 'Human-gated' not in home
