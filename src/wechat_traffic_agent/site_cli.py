@@ -61,10 +61,8 @@ def _curate_web_taxonomy(artifacts: list[ContentArtifact]) -> list[ContentArtifa
 def _indexed_topic_slugs(artifacts: list[ContentArtifact]) -> set[str]:
     counts: Counter[str] = Counter()
     for item in artifacts:
-        for tag in item.tags:
-            slug = _tag_slug(tag)
-            if slug:
-                counts[slug] += 1
+        slugs = {_tag_slug(tag) for tag in item.tags}
+        counts.update(slug for slug in slugs if slug)
     return {slug for slug, count in counts.items() if count >= _MIN_INDEXED_TOPIC_ITEMS}
 
 
