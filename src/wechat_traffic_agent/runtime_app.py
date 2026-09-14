@@ -179,6 +179,12 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
         observation_factory=SubjectObservation,
     )
     runtime.register_provider(ContentCapabilityPack(app.status_observation))
+    if os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        from agent_runtime.integrations import SearXNGSearchProvider
+        runtime.register_provider(SearXNGSearchProvider(
+            base_url=os.environ.get("CONTENT_RUNTIME_WEB_SEARCH_URL", "http://127.0.0.1:8080"),
+            max_results=8,
+        ))
     return app
 
 
