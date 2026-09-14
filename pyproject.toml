@@ -22,6 +22,7 @@ dev = ["pytest>=8.0"]
 [project.scripts]
 wechat-tietu-agent = "wechat_traffic_agent.__main__:main"
 content-agent-site = "wechat_traffic_agent.site_cli:main"
+content-agent-evidence = "wechat_traffic_agent.content_evidence_cli:main"
 content-agent-review = "wechat_traffic_agent.admission_cli:main"
 
 [tool.hatch.build.targets.wheel]

@@ -75,6 +75,16 @@ def main() -> int:
             raise RuntimeError("Trading draft worker requires Agent Network membership")
         draft_worker = TradingResearchDraftWorker(runtime=app.domain_runtime, state_root=state_root)
 
+    web_worker = None
+    if os.environ.get("CONTENT_WEB_DRAFTS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        from wechat_traffic_agent.web_editorial import WebEditorialWorker
+        web_worker = WebEditorialWorker(
+            runtime=app.domain_runtime, state_root=state_root,
+            artifacts_path=Path(os.environ.get("CONTENT_WEB_ARTIFACTS", str(ROOT / "content/starter"))),
+            site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]),
+            base_url=os.environ["CONTENT_WEB_BASE_URL"],
+        )
+
     stopping = False
 
     def _stop(_signum, _frame):
@@ -117,6 +127,14 @@ def main() -> int:
                             "message": str(exc),
                         }
                     }, sort_keys=True), file=sys.stderr)
+
+            if not tick_failed and web_worker is not None and result.generation_ready:
+                try:
+                    web_result = asyncio.run(web_worker.run_once(now=now))
+                    print(json.dumps({"web_editorial": web_result}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:
+                    draft_failed = True
+                    print(json.dumps({"web_editorial": {"status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}}, sort_keys=True), file=sys.stderr)
 
             if args.once:
                 return 1 if tick_failed or draft_failed else 0

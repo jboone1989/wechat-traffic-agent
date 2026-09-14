@@ -10,6 +10,11 @@ on:
       - "src/wechat_traffic_agent/runtime_backend.py"
       - "src/wechat_traffic_agent/network_service.py"
       - "src/wechat_traffic_agent/content_artifact.py"
+      - "src/wechat_traffic_agent/web_editorial.py"
+      - "src/wechat_traffic_agent/channel_evidence.py"
+      - "src/wechat_traffic_agent/content_evidence_cli.py"
+      - "tests/test_web_editorial.py"
+      - "tests/test_channel_evidence.py"
       - "src/wechat_traffic_agent/content_admission.py"
       - "src/wechat_traffic_agent/admission_cli.py"
       - "tests/test_content_admission.py"
@@ -86,8 +91,20 @@ jobs:
         env:
           PYTHONPATH: .draft-ci
         run: python -m pytest -q -c /dev/null tests/test_draft_inbox.py tests/test_trading_draft_worker.py
+      - name: Build isolated editorial and channel evidence package
+        run: |
+          mkdir -p .editorial-ci/agent_runtime
+          cp -r src/wechat_traffic_agent .editorial-ci/
+          printf '%s\n' '' > .editorial-ci/wechat_traffic_agent/__init__.py
+          printf '%s\n' '' > .editorial-ci/wechat_traffic_agent/sources/__init__.py
+          printf '%s\n' '' > .editorial-ci/agent_runtime/__init__.py
+          printf '%s\n' 'class AgentRuntime: pass' > .editorial-ci/agent_runtime/runtime.py
+      - name: Run Website editorial and scoped feedback regressions
+        env:
+          PYTHONPATH: .editorial-ci
+        run: python -m pytest -q -c /dev/null tests/test_web_editorial.py tests/test_channel_evidence.py
       - name: Build source bundle
-        run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=.draft-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
+        run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=.draft-ci --exclude=.editorial-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
       - uses: actions/upload-artifact@v4
         with:
           name: content-agent-runtime-release

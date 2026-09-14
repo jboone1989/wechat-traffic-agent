@@ -21,10 +21,12 @@ This is the existing migration plan; the phases below remain the canonical scope
 
 Remaining work in phase order:
 
-1. Phase 2: connect broader web topic discovery/planning to the canonical draft
-   workflow; add channel-neutral outcome observations and attribution before
-   feeding Website outcomes into learning. Existing WeChat metrics must not be
-   relabeled as comparable Website metrics.
+1. Phase 2: Website inventory/Topic/link-aware editorial selection now enters the
+   private draft workflow, with persisted selection reasons and evidence needs.
+   Channel-scoped, version-bound observations and descriptive comparison reports
+   are implemented (see `WEB_EDITORIAL_AND_FEEDBACK.md`). Real analytics inputs,
+   independent evidence acquisition for blocked proposals and causal evaluation
+   of strategy improvements remain future work. No outcomes are fabricated.
 2. Phases 3–4: perform actual editorial review of generated research; demonstrate
    public-content parity before retiring any Trading presentation. Do not infer
    permission to remove Trading endpoints from draft creation or export.
