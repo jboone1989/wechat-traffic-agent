@@ -137,3 +137,13 @@ The product identity changes now to **Content Agent**. The GitHub repository nam
 7. Missing evidence is unknown, not zero or PASS.
 8. Website/WeChat performance signals may inform content strategy but cannot mutate Trading policy.
 9. Deployment is reversible; do not cut over the current Trading endpoint until the Content site passes independent smoke tests.
+
+### 2026-09-14 priority update: autonomous minimum loop
+
+Operator authorized automatic Website publishing for the current minimum loop.
+Implement learn → fresh public coverage → Website-aware selection → write →
+self-check → audited automatic Website activation → next-cycle practice.
+The persistent single Content Agent owns the loop; source/model receipts and
+versioned practice experience are retained. Real per-channel outcome ingestion
+is deferred. See `CONTINUOUS_CONTENT_LOOP.md` for precise budgets, automatic
+admission scope, restart semantics and limitations of self-assessment.

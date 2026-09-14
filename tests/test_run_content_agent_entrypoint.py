@@ -15,5 +15,5 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "draft_worker.run_once" in text
     assert 'add_argument("--once"' in text
     assert 'add_argument("--health"' in text
-    assert "publish_mode=manual" in text
+    assert "app.status_observation()['publish_mode']" in text
     assert "live" not in text.lower()

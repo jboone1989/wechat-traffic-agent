@@ -89,7 +89,8 @@ class ContentApplication:
             "domain_agent_id": getattr(identity, "agent_id", "unknown"),
             "domain_runtime_cycle": int(getattr(self.domain_runtime, "cycle", 0)),
             "generation_ready": bool(getattr(self.domain_runtime, "has_advisory_backend", False)),
-            "publish_mode": "manual",
+            "publish_mode": ("website_automatic" if all(os.environ.get(k, "").lower() in {"1", "true", "yes", "on"}
+                for k in ("CONTENT_CONTINUOUS_ENABLED", "CONTENT_AUTO_PUBLISH_ENABLED")) else "manual"),
         })
 
     def run_tick(self, *, as_of_time: str) -> ContentApplicationTickResult:

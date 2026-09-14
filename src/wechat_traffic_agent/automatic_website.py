@@ -1,0 +1,130 @@
+"""Explicit Website-only automatic admission, audited builds and atomic activation."""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+from .channels.agent_web import ContentAgentWebChannel
+from .channels.web import StaticWebsiteConfig
+from .content_artifact import ContentArtifact
+from .site_audit import audit_static_site
+from .site_cli import _load_artifacts, _curate_web_taxonomy
+from .web_editorial import digest
+from .content_admission import _write_once
+
+
+class AutomaticWebsitePublisher:
+    policy_version = 'website-automatic-admission:v1'
+
+    def __init__(self, *, state_root, public_root, starter_path, config):
+        self.state = Path(state_root) / 'content/automatic_website'
+        self.public = Path(public_root)
+        self.starter = Path(starter_path)
+        self.config = config
+        private, public = Path(state_root).resolve(), self.public.resolve()
+        if private == public or private in public.parents or public in private.parents:
+            raise ValueError('private state and public site must be separate')
+
+    def inventory_path(self):
+        current = self.public / 'current'
+        if not current.is_symlink():
+            raise ValueError('operator must initialize current site symlink')
+        revision = current.resolve().name
+        path = self.state / 'inventories' / (revision + '.json')
+        return path if path.exists() else self.starter
+
+    def publish(self, *, artifact: ContentArtifact, experience: dict, cycle_root: Path):
+        if artifact.public_safe or not experience.get('automated_checks_passed'):
+            raise ValueError('automatic admission requires a private draft with passing checks')
+        if experience['draft_sha256'] != digest(artifact.model_dump(mode='json')):
+            raise ValueError('self-check is not bound to this draft')
+        # This is a distinct machine policy, never a fabricated human review.
+        public_artifact = artifact.model_copy(update={'public_safe': True})
+        artifacts = _load_artifacts(self.inventory_path())
+        existing = next((a for a in artifacts if a.artifact_id == artifact.artifact_id), None)
+        if existing:
+            if existing != public_artifact:
+                raise ValueError('published artifact ID conflict')
+        else:
+            artifacts.append(public_artifact)
+        payload = [a.model_dump(mode='json') for a in artifacts]
+        revision = digest({'artifacts': payload, 'config': self.config.model_dump(mode='json'), 'policy': self.policy_version})
+        target = self.public / 'releases' / revision
+        if not target.exists():
+            AutomaticAgentWebChannel(self.config).build(_curate_web_taxonomy(artifacts), target)
+        audit = audit_static_site(target, expect_indexable=self.config.indexable)
+        if not audit.passed:
+            raise ValueError('automatic website candidate audit failed')
+        inventory = self.state / 'inventories' / (revision + '.json')
+        _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+        receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
+                   'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
+                   'revision': revision, 'artifact_id': artifact.artifact_id,
+                   'audit': audit.model_dump(mode='json'), 'public_root': str(target)}
+        _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+        pending = self.public / 'current.next'
+        pending.unlink(missing_ok=True)
+        pending.symlink_to(target)
+        os.replace(pending, self.public / 'current')
+        return receipt
+
+
+class AutomaticAgentWebChannel(ContentAgentWebChannel):
+    """Retain the agent-first presentation while describing this active policy."""
+
+    def _home(self, artifacts, categories):
+        page = super()._home(artifacts, categories)
+        page = page.replace('public admission remains a separate human-controlled decision',
+                            'public admission is a separate automated source and Website quality gate')
+        page = page.replace('Human-gated publishing', 'Audited automatic publishing')
+        page = page.replace('Use outcomes to improve the next choice', 'Practice, review, and adapt the next article')
+        page = page.replace('Channel-scoped outcomes become durable evidence for future strategy decisions instead of silently rewriting past results.',
+                            'Versioned writing exercises and article self-checks inform the next run. Real channel outcomes will be added later.')
+        page = page.replace('Outcome evidence can change future content strategy, but it cannot bypass editorial admission.',
+                            'Writing experience informs the next attempt. Automatic publication requires a separate source check and complete Website audit.')
+        return page
+
+    def _static_pages(self):
+        pages = super()._static_pages()
+        pages['/about/'] = (
+            'About the Content Agent',
+            '<p>This website is the public interface of a persistent Content Agent. It reads current public coverage, '
+            'uses existing Topic coverage and links to choose questions, practices writing techniques, and creates original explanations.</p>'
+            '<h2>What self-learning means here</h2><p>The current loop retains writing exercises, article self-checks and '
+            'specific next-practice tasks across runs. Later writing receives those experiences as input. '
+            'This is recorded practice and adaptation, not proof of improved audience outcomes.</p>'
+            '<h2>Automatic Website publication</h2><p>The operator has enabled automatic Website publication after '
+            'source-grounding, technique-application and Website integrity checks. These automated checks can be wrong. '
+            'Original drafts and their review history remain separate from admitted public copies.</p>'
+            '<h2>Persistent identity</h2><p>Runtime, VirtualBrain and Agent Network preserve the agent identity and '
+            'research continuity. This connection does not grant Trading execution permissions.</p>',
+            'The persistent agent, its writing practice and automatic Website output.'
+        )
+        pages['/editorial-policy/'] = (
+            'Editorial Policy',
+            '<p>Content Agent selects topics and writes articles using attributed public evidence. It must distinguish '
+            'reported observations, interpretation and hypothetical examples.</p>'
+            '<h2>Separate automated admission</h2><p>The operator authorized automatic Website publication. A separate '
+            'machine policy checks the exact draft, source quotations and writing-technique applications, then builds '
+            'and audits the complete Website before activation. Failed checks hold the draft and retain the existing Website.</p>'
+            '<h2>Limits and corrections</h2><p>Automated checks are fallible and do not establish factual certainty. '
+            'Material errors should be corrected with a traceable updated artifact. Articles disclose automated authorship.</p>'
+            '<h2>No trading authority</h2><p>Articles are explanations, not investment recommendations. Website publishing '
+            'does not authorize trades or posting to other channels.</p>',
+            'Automatic Website admission, evidence checks and correction boundaries.'
+        )
+        pages['/methodology/'] = (
+            'Agent Learning Methodology',
+            '<p>The running loop is: practice a writing technique, observe recent publisher coverage, select a reader '
+            'question, write, self-check, audit and publish, then carry specific practice feedback into the next run.</p>'
+            '<h2>What is recorded</h2><p>Source snapshots, versioned lessons, before-and-after practice examples, model '
+            'response receipts, article quotations, self-check results and publication audits are retained.</p>'
+            '<h2>What the evidence does not prove</h2><p>Recent publisher coverage is not measured popularity. A model '
+            'self-check is not independent proof of skill improvement. Real channel outcomes are not yet connected, '
+            'so claims about readership, conversion or causal improvement remain unknown.</p>'
+            '<h2>Continuity</h2><p>Existing source content is deduplicated across restarts. A bounded scheduled attempt '
+            'cannot turn a failed self-check into an unlimited rewrite or publication loop.</p>',
+            'Writing practice, experience reuse and the limits of automated self-assessment.'
+        )
+        return pages
