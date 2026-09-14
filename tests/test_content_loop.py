@@ -87,7 +87,7 @@ def test_learn_publish_restart_and_next_cycle_reuses_experience(tmp_path):
     assert not (tmp_path/'state/content/reviews').exists()
 
 
-@pytest.mark.parametrize('options',[{'passes':False},{'badquote':True}])
+@pytest.mark.parametrize('options',[{'passes':False}])
 def test_failed_selfcheck_keeps_private_draft_and_previous_website(tmp_path,options):
     runtime,worker,publisher=setup(tmp_path,**options)
     before=(publisher.public/'current').resolve()
@@ -186,3 +186,33 @@ def test_automatic_release_readable_with_restrictive_service_umask(tmp_path):
     assert 'The website is the interface. The agent is the product.' in home
     assert 'Audited automatic publishing' in home
     assert 'Human-gated' not in home
+
+
+@pytest.mark.parametrize('fault', ['noncontiguous_quote', 'section_index', 'unknown_source'])
+def test_selfcheck_reference_format_is_repaired_once_without_loosening_evidence(tmp_path, fault):
+    runtime,worker,publisher=setup(tmp_path)
+    original=runtime.cognitive_probe
+    checks=[]
+    async def response(task,max_tokens):
+        raw=await original(task,max_tokens)
+        if task.startswith('CHECK_ARTICLE:'):
+            checks.append(task)
+            row=json.loads(raw)
+            if len(checks)==1:
+                if fault=='noncontiguous_quote': row['applications'][0]['article_quote']='Explanation ... distinguish observations'
+                elif fault=='section_index': row['support'][0]['section_index']=1
+                else: row['support'][0]['source_id']='invented-source'
+            raw=json.dumps(row)
+        return raw
+    runtime.cognitive_probe=response
+    assert asyncio.run(worker.run_once(now=NOW))['status']=='PUBLISHED'
+    assert len(checks)==2 and 'One repair only' in checks[1]
+
+
+def test_persistently_invented_check_quote_is_error_and_never_published(tmp_path):
+    runtime,worker,publisher=setup(tmp_path,badquote=True)
+    before=(publisher.public/'current').resolve()
+    assert asyncio.run(worker.run_once(now=NOW))['status']=='ERROR'
+    assert sum(t.startswith('CHECK_ARTICLE:') for t in runtime.calls)==2
+    assert worker.inbox.list_records()==()
+    assert (publisher.public/'current').resolve()==before
