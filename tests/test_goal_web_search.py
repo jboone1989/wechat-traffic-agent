@@ -27,15 +27,27 @@ class CapabilityRuntime:
         self.calls = []
         self.persisted = 0
 
+    def available_capabilities(self):
+        return ("web.search", "web.fetch")
+
     def invoke(self, capability_id, payload):
         self.calls.append((capability_id, dict(payload)))
+        if capability_id == "web.search":
+            return SimpleNamespace(
+                receipt_id="capability-receipt:v1:search", provider="searxng",
+                payload={"ok": True, "capability_id": "web.search", "results": [{
+                    "title": "Useful result", "url": "https://example.org/a",
+                    "snippet": "Discovery only.", "engine": "duckduckgo",
+                }]},
+            )
+        assert capability_id == "web.fetch"
         return SimpleNamespace(
-            receipt_id="capability-receipt:v1:test", provider="searxng",
-            payload={"ok": True, "capability_id": "web.search", "results": [{
-                "title": "Useful result", "url": "https://example.org/a",
-                "snippet": "Model evaluation reliability evidence under distribution shift.",
-                "engine": "duckduckgo",
-            }]},
+            receipt_id="capability-receipt:v1:fetch", provider="crawl4ai",
+            payload={"ok": True, "capability_id": "web.fetch",
+                     "canonical_capability_id": "web.fetch", "page": {
+                "url": "https://example.org/a", "success": True,
+                "markdown": "Model evaluation reliability evidence under distribution shift. " * 8,
+            }},
         )
 
     def persist(self):
@@ -48,11 +60,31 @@ def test_runtime_web_search_uses_application_runtime_receipt():
         query="model evaluation AI trading research evidence", now=NOW))
 
     assert len(rows) == 1
-    assert rows[0]["source"] == "runtime:web.search:searxng"
-    assert rows[0]["evidence_refs"][0] == "capability-receipt:v1:test"
+    assert rows[0]["source"] == "runtime:web.fetch:crawl4ai"
+    assert rows[0]["evidence_refs"][:2] == [
+        "capability-receipt:v1:search", "capability-receipt:v1:fetch"]
     assert runtime.calls[0][0] == "web.search"
+    assert runtime.calls[1][0] == "web.fetch"
     assert runtime.calls[0][1]["limit"] == 8
-    assert runtime.persisted == 1
+    assert runtime.persisted == 2
+
+
+class SearchOnlyRuntime(CapabilityRuntime):
+    def available_capabilities(self):
+        return ("web.search",)
+
+
+def test_search_snippet_is_never_promoted_without_runtime_fetch():
+    from wechat_traffic_agent.sources.runtime_web import RuntimeWebEvidenceError
+    runtime = SearchOnlyRuntime()
+    try:
+        asyncio.run(RuntimeWebSearch(runtime).search(
+            query="model evaluation AI trading research evidence", now=NOW))
+    except RuntimeWebEvidenceError as exc:
+        assert exc.source == "runtime:web.fetch"
+    else:
+        raise AssertionError("search-only discovery must fail closed")
+    assert [call[0] for call in runtime.calls] == ["web.search"]
 
 
 def test_goal_loop_contains_no_direct_llm_web_provider():
