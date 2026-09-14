@@ -7,7 +7,7 @@ from wechat_traffic_agent.site_cli import build_site
 def test_build_site_from_json_directory(tmp_path):
     config = tmp_path / "site.json"
     config.write_text(
-        '{"site_name":"Content Lab","base_url":"https://example.com","description":"Evidence-backed content."}',
+        '{"site_name":"Content Lab","base_url":"https://example.com","description":"A persistent self-learning Content Agent that improves content strategy from evidence and outcomes.","tagline":"The website is the interface. The agent is the product."}',
         encoding="utf-8",
     )
     artifacts = tmp_path / "artifacts"
@@ -30,3 +30,14 @@ def test_build_site_from_json_directory(tmp_path):
     assert result["artifact_count"] == 1
     assert result["artifact_ids"] == ["article-1"]
     assert (output / "articles" / "first-article" / "index.html").exists()
+
+    home = (output / "index.html").read_text(encoding="utf-8")
+    about = (output / "about" / "index.html").read_text(encoding="utf-8")
+    editorial = (output / "editorial-policy" / "index.html").read_text(encoding="utf-8")
+    methodology = (output / "methodology" / "index.html").read_text(encoding="utf-8")
+    assert "Persistent self-learning Content Agent" in home
+    assert "The website is the interface. The agent is the product." in home
+    assert "Human-gated publishing" in home
+    assert "What self-learning means here" in about
+    assert "Learning does not equal publishing authority" in editorial
+    assert "What counts as learning" in methodology

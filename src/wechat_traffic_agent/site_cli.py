@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .channels.agent_web import ContentAgentWebChannel
 from .channels.web import (
-    StaticWebChannel,
     StaticWebsiteConfig,
     _tag_slug,
     assess_adsense_readiness,
@@ -35,7 +35,7 @@ def build_site(
     artifacts = _site_artifacts(artifacts_path, approved_content_root)
     web_artifacts = _curate_web_taxonomy(artifacts)
     readiness = assess_adsense_readiness(config, artifacts)
-    StaticWebChannel(config).build(web_artifacts, output_dir)
+    ContentAgentWebChannel(config).build(web_artifacts, output_dir)
     return {
         "ok": True,
         "output_dir": str(output_dir),
