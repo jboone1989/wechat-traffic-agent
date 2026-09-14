@@ -103,20 +103,38 @@ class TradingResearchNetworkSource:
         request: dict[str, Any] = {"limit": limit}
         if since is not None:
             request["since"] = since.isoformat()
-        task = await peer.propose_task(
-            capability=CAP_TRADING_PUBLIC_RESEARCH,
-            capability_version=CAP_TRADING_PUBLIC_RESEARCH_VERSION,
-            objective="Provide delayed, public-safe Trading research evidence for editorial use.",
-            constraints=[
-                "read-only",
-                "no current positions, orders, credentials, or execution controls",
-                "return only the versioned public research projection",
-            ],
-            deliverables=[TRADING_RESEARCH_ARTIFACT_TYPE],
-            verification={"required": False},
-            metadata={"content_agent_request": request},
-            side_effects="NONE",
-        )
+
+        a2a = getattr(peer, "a2a", None)
+        message_send = getattr(a2a, "message_send", None)
+        if callable(message_send):
+            requester_id = str(
+                getattr(getattr(self._network, "identity", None), "agent_id", "") or ""
+            )
+            task = await message_send(
+                {
+                    "role": "user",
+                    "parts": [{"kind": "data", "data": request}],
+                    "metadata": {
+                        "capability": CAP_TRADING_PUBLIC_RESEARCH,
+                        "requester_agent_id": requester_id,
+                    },
+                }
+            )
+        else:
+            task = await peer.propose_task(
+                capability=CAP_TRADING_PUBLIC_RESEARCH,
+                capability_version=CAP_TRADING_PUBLIC_RESEARCH_VERSION,
+                objective="Provide delayed, public-safe Trading research evidence for editorial use.",
+                constraints=[
+                    "read-only",
+                    "no current positions, orders, credentials, or execution controls",
+                    "return only the versioned public research projection",
+                ],
+                deliverables=[TRADING_RESEARCH_ARTIFACT_TYPE],
+                verification={"required": False},
+                metadata={"content_agent_request": request},
+                side_effects="NONE",
+            )
         state = str(((task or {}).get("status") or {}).get("state") or "").lower()
         if state != "completed":
             raise RuntimeError(f"Trading research Network task did not complete: {state or 'unknown'}")
