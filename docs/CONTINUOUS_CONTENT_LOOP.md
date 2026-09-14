@@ -38,6 +38,7 @@ The same Content Agent / Runtime / VirtualBrain service now supports:
 All new flags default off. Existing Trading ingestion is unchanged.
 
 ```
+CONTENT_NETWORK_SEED_URL=http://127.0.0.1:8001/a2a
 CONTENT_CONTINUOUS_ENABLED=1
 CONTENT_CONTINUOUS_INTERVAL_HOURS=6
 CONTENT_NEWS_FEEDS='["https://feeds.bbci.co.uk/news/business/rss.xml","https://www.federalreserve.gov/feeds/press_all.xml"]'
@@ -59,9 +60,18 @@ noindex and AdSense configuration are preserved.
 
 ## Budgets and restart semantics
 
-One attempt per fixed UTC window; one draft per news content fingerprint. Feed
+One attempt per fixed UTC window and deployed loop version; one draft per news content fingerprint.
+Loop v2 preserves v1 terminal receipts under their original paths and uses v2-prefixed
+cycle paths. Only an operator-deployed code version can start a new versioned
+attempt; successful source fingerprints remain deduplicated across versions. Feed
 publication timestamp changes do not change content identity. News already
-written is excluded before any model call. Each cycle freezes its input snapshot,
+written is excluded before any model call. Use the explicit local seed `/a2a` transport so a public Agent Network card does
+not redirect a same-host client to an unreachable public ingress. This does not
+change signed enrollment or research permissions. Audited public releases and
+their release parent are explicitly world-readable/traversable for Nginx, even
+under a restrictive service umask. Private receipts are never placed there.
+
+Each cycle freezes its input snapshot,
 lesson, raw model response receipts and terminal status. Every schema phase has
 at most one repair. No schema downgrade or unrestricted retry exists.
 

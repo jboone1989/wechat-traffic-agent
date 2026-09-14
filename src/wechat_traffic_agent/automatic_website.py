@@ -56,6 +56,11 @@ class AutomaticWebsitePublisher:
         audit = audit_static_site(target, expect_indexable=self.config.indexable)
         if not audit.passed:
             raise ValueError('automatic website candidate audit failed')
+        # tempfile build roots start at 0700; audited public output must be readable by Nginx.
+        for entry in target.rglob('*'):
+            entry.chmod(0o755 if entry.is_dir() else 0o644)
+        target.chmod(0o755)
+        target.parent.chmod(0o755)
         inventory = self.state / 'inventories' / (revision + '.json')
         _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
