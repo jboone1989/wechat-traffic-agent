@@ -68,3 +68,20 @@ def test_network_can_advertise_public_https_without_changing_bind(monkeypatch, t
     assert service.bind_host == "127.0.0.1"
     assert service.endpoint == "https://content.example.test/a2a"
     assert service.card_url == "https://content.example.test/.well-known/agent-card.json"
+
+
+def test_network_accepts_multiple_seed_urls_from_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv(
+        "CONTENT_NETWORK_SEED_URLS",
+        "https://seed-a.example/a2a,https://seed-b.example/a2a/, https://seed-a.example/a2a",
+    )
+    service = ContentNetworkService.from_environment(
+        root=tmp_path,
+        application=SimpleNamespace(runtime=_Runtime()),
+    )
+
+    assert service.seed_urls == (
+        "https://seed-a.example/a2a",
+        "https://seed-b.example/a2a",
+    )
+    assert service.seed_url == "https://seed-a.example/a2a"

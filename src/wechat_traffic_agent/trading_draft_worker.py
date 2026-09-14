@@ -105,13 +105,26 @@ def trading_draft_worker_enabled() -> bool:
     }
 
 
+def _network_seed_urls_from_environment() -> tuple[str, ...]:
+    raw_seed_urls = os.environ.get("CONTENT_NETWORK_SEED_URLS")
+    seed_values = (
+        tuple(item.strip() for item in raw_seed_urls.split(",") if item.strip())
+        if raw_seed_urls is not None
+        else (os.environ.get("CONTENT_NETWORK_SEED_URL", "http://127.0.0.1:8001"),)
+    )
+    seed_urls = tuple(dict.fromkeys(item.strip().rstrip("/") for item in seed_values if item.strip()))
+    if not seed_urls:
+        raise ValueError("CONTENT_NETWORK_SEED_URLS must contain at least one non-empty URL")
+    return seed_urls
+
+
 def _network_client(state_root: Path):
     """Create an outbound-only Network client using Content's persistent identity."""
     from agent_network.crypto import Identity
     from agent_network.network import AgentNetwork
 
     agent_id = os.environ.get("CONTENT_NETWORK_AGENT_ID", "content.cai.001")
-    seed_url = os.environ.get("CONTENT_NETWORK_SEED_URL", "http://127.0.0.1:8001").rstrip("/")
+    seed_urls = _network_seed_urls_from_environment()
     host = os.environ.get("CONTENT_NETWORK_ADVERTISE_HOST") or os.environ.get("CONTENT_NETWORK_HOST", "127.0.0.1")
     port = int(os.environ.get("CONTENT_NETWORK_PORT", "8103"))
     endpoint = f"http://{host}:{port}/a2a"
@@ -122,7 +135,7 @@ def _network_client(state_root: Path):
     )
     return AgentNetwork(
         identity=identity,
-        seeds=[seed_url],
+        seeds=list(seed_urls),
         agent_card_url=card_url,
         endpoint=endpoint,
         capabilities=[],
