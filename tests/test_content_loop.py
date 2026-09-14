@@ -216,3 +216,62 @@ def test_persistently_invented_check_quote_is_error_and_never_published(tmp_path
     assert sum(t.startswith('CHECK_ARTICLE:') for t in runtime.calls)==2
     assert worker.inbox.list_records()==()
     assert (publisher.public/'current').resolve()==before
+
+
+def test_virtualbrain_required_topic_changes_selection_behavior(tmp_path):
+    runtime, worker, _publisher = setup(tmp_path)
+    original = runtime.cognitive_probe
+    selection_calls = []
+
+    class Mind:
+        def plan_for_cycle(self, *, cycle, available_topics):
+            assert 'common' in available_topics
+            return {'cycle': cycle, 'goal': {'origin': 'INTEREST', 'interest_refs': ['common']},
+                    'required_topic': 'common'}
+
+        def observe_process_experience(self, **kwargs):
+            return {'status': 'OBSERVED', 'topic': kwargs['topic']}
+
+    worker.mind = Mind()
+
+    async def obey_goal(task, max_tokens):
+        raw = await original(task, max_tokens)
+        if task.startswith('SELECT_NEWS:'):
+            selection_calls.append(task)
+            row = json.loads(raw)
+            if len(selection_calls) > 1:
+                row.update(topic='common', related_ids=['a1'])
+            return json.dumps(row)
+        if task.startswith('CHECK_ARTICLE:'):
+            row = json.loads(raw)
+            row['support'][0]['source_id'] = 'a1'
+            return json.dumps(row)
+        return raw
+
+    runtime.cognitive_probe = obey_goal
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result['status'] == 'PUBLISHED'
+    assert len(selection_calls) == 2
+    assert 'VirtualBrain endogenous goal requires topic: common' in selection_calls[1]
+    assert result['mind_plan']['required_topic'] == 'common'
+    draft = json.loads(Path(result['draft_path']).read_text())
+    assert draft['artifact']['tags'] == ['common']
+    assert result['mind_experience']['topic'] == 'common'
+
+
+def test_mind_persistence_failure_prevents_publication(tmp_path):
+    runtime, worker, publisher = setup(tmp_path)
+    before = (publisher.public / 'current').resolve()
+
+    class FailingMind:
+        def plan_for_cycle(self, *, cycle, available_topics):
+            return {'cycle': cycle, 'goal': None, 'required_topic': None}
+
+        def observe_process_experience(self, **kwargs):
+            raise OSError('simulated mind persistence failure')
+
+    worker.mind = FailingMind()
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result['status'] == 'ERROR'
+    assert result['error_type'] == 'OSError'
+    assert (publisher.public / 'current').resolve() == before

@@ -63,6 +63,8 @@ def main() -> int:
 
     state_root = _state_root()
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
+    from wechat_traffic_agent.content_mind import ContentMind
+    content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     network_service: ContentNetworkService | None = None
     if network_enabled():
         network_service = ContentNetworkService.from_environment(root=state_root, application=app)
@@ -102,7 +104,8 @@ def main() -> int:
             artifacts_path=ROOT / "content/starter", site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]),
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
             feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]),
-            interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), publisher=publisher)
+            interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), publisher=publisher,
+            mind=content_mind)
 
     stopping = False
 
