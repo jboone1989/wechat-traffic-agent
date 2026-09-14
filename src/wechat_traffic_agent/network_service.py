@@ -17,6 +17,19 @@ DEFAULT_PORT = 8103
 DEFAULT_CAPABILITIES = (CAP_CONTENT_STATUS,)
 
 
+def content_network_seed_urls_from_environment() -> tuple[str, ...]:
+    raw = os.environ.get("CONTENT_NETWORK_SEED_URLS")
+    values = (
+        tuple(item.strip() for item in raw.split(",") if item.strip())
+        if raw is not None
+        else (os.environ.get("CONTENT_NETWORK_SEED_URL", DEFAULT_SEED_URL),)
+    )
+    cleaned = tuple(dict.fromkeys(item.strip().rstrip("/") for item in values if item.strip()))
+    if not cleaned:
+        raise ValueError("CONTENT_NETWORK_SEED_URLS must contain at least one non-empty URL")
+    return cleaned
+
+
 class ContentNetworkService:
     """Run Content Agent's signed A2A endpoint inside its application process."""
 
@@ -26,6 +39,7 @@ class ContentNetworkService:
         root: Path,
         application: Any,
         seed_url: str = DEFAULT_SEED_URL,
+        seed_urls: tuple[str, ...] | None = None,
         bind_host: str = DEFAULT_BIND_HOST,
         advertise_host: str | None = None,
         public_base_url: str | None = None,
@@ -36,11 +50,16 @@ class ContentNetworkService:
     ) -> None:
         if port <= 0 or port > 65535:
             raise ValueError("network port is invalid")
-        if not agent_id.strip() or not seed_url.strip():
-            raise ValueError("network agent_id and seed_url must be non-empty")
+        if not agent_id.strip():
+            raise ValueError("network agent_id must be non-empty")
+        raw_seeds = (seed_url,) if seed_urls is None else seed_urls
+        cleaned_seeds = tuple(dict.fromkeys(item.strip().rstrip("/") for item in raw_seeds if item.strip()))
+        if not cleaned_seeds:
+            raise ValueError("network seed_urls must contain at least one non-empty URL")
         self.root = Path(root)
         self.application = application
-        self.seed_url = seed_url.rstrip("/")
+        self.seed_urls = cleaned_seeds
+        self.seed_url = cleaned_seeds[0]
         self.bind_host = bind_host
         self.advertise_host = advertise_host or bind_host
         self.public_base_url = public_base_url.rstrip("/") if public_base_url else None
@@ -64,6 +83,7 @@ class ContentNetworkService:
             root=root,
             application=application,
             seed_url=os.environ.get("CONTENT_NETWORK_SEED_URL", DEFAULT_SEED_URL),
+            seed_urls=content_network_seed_urls_from_environment(),
             bind_host=os.environ.get("CONTENT_NETWORK_HOST", DEFAULT_BIND_HOST),
             advertise_host=os.environ.get("CONTENT_NETWORK_ADVERTISE_HOST") or None,
             public_base_url=os.environ.get("CONTENT_NETWORK_PUBLIC_BASE_URL") or None,
@@ -134,7 +154,7 @@ class ContentNetworkService:
         )
         network = AgentNetwork(
             identity=identity,
-            seeds=[self.seed_url],
+            seeds=list(self.seed_urls),
             agent_card_url=self.card_url,
             endpoint=self.endpoint,
             capabilities=[{k: v for k, v in row.items() if k != "description"} for row in rows],

@@ -11,6 +11,7 @@ from .content_artifact import ContentKind
 from .content_service import ContentAgent
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord, topic_set_fingerprint
 from .models import AudienceProfile, ContentObjective
+from .network_service import content_network_seed_urls_from_environment
 from .sources.trading_network import TradingResearchNetworkSource
 
 
@@ -111,7 +112,7 @@ def _network_client(state_root: Path):
     from agent_network.network import AgentNetwork
 
     agent_id = os.environ.get("CONTENT_NETWORK_AGENT_ID", "content.cai.001")
-    seed_url = os.environ.get("CONTENT_NETWORK_SEED_URL", "http://127.0.0.1:8001").rstrip("/")
+    seed_urls = content_network_seed_urls_from_environment()
     host = os.environ.get("CONTENT_NETWORK_ADVERTISE_HOST") or os.environ.get("CONTENT_NETWORK_HOST", "127.0.0.1")
     port = int(os.environ.get("CONTENT_NETWORK_PORT", "8103"))
     endpoint = f"http://{host}:{port}/a2a"
@@ -122,7 +123,7 @@ def _network_client(state_root: Path):
     )
     return AgentNetwork(
         identity=identity,
-        seeds=[seed_url],
+        seeds=list(seed_urls),
         agent_card_url=card_url,
         endpoint=endpoint,
         capabilities=[],

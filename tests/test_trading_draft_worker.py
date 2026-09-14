@@ -158,3 +158,18 @@ def test_schema_repair_failure_stops_after_two_calls_without_draft(
     assert runtime.persisted == 0
     assert worker.inbox.list_records() == ()
     assert not list(tmp_path.rglob("*.json"))
+
+
+def test_outbound_trading_worker_uses_all_configured_seeds(monkeypatch, tmp_path):
+    from wechat_traffic_agent import trading_draft_worker as module
+
+    monkeypatch.setenv(
+        "CONTENT_NETWORK_SEED_URLS",
+        "https://seed-a.example/a2a,https://seed-b.example/a2a",
+    )
+    network = module._network_client(tmp_path)
+
+    assert network.seeds == [
+        "https://seed-a.example/a2a",
+        "https://seed-b.example/a2a",
+    ]
