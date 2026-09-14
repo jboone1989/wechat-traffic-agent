@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
@@ -19,6 +20,10 @@ from wechat_traffic_agent.network_service import ContentNetworkService, network_
 from wechat_traffic_agent.runtime_app import (  # noqa: E402
     APPLICATION_VERSION,
     build_content_application,
+)
+from wechat_traffic_agent.trading_draft_worker import (  # noqa: E402
+    TradingResearchDraftWorker,
+    trading_draft_worker_enabled,
 )
 
 
@@ -64,6 +69,12 @@ def main() -> int:
         network_service.start()
         print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
 
+    draft_worker: TradingResearchDraftWorker | None = None
+    if trading_draft_worker_enabled():
+        if network_service is None:
+            raise RuntimeError("Trading draft worker requires Agent Network membership")
+        draft_worker = TradingResearchDraftWorker(runtime=app.domain_runtime, state_root=state_root)
+
     stopping = False
 
     def _stop(_signum, _frame):
@@ -75,23 +86,40 @@ def main() -> int:
     print(f"{APPLICATION_VERSION} publish_mode=manual")
     try:
         while not stopping:
-            as_of = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            as_of = now.isoformat()
+            tick_failed = False
             try:
                 guard = network_service.execution_lock if network_service is not None else nullcontext()
                 with guard:
                     result = app.run_tick(as_of_time=as_of)
                 print(json.dumps(result.to_payload(), ensure_ascii=False, sort_keys=True))
             except Exception as exc:  # noqa: BLE001
+                tick_failed = True
                 print(json.dumps({
                     "application_version": APPLICATION_VERSION,
                     "status": "ERROR",
                     "error_type": type(exc).__name__,
                     "message": str(exc),
                 }, sort_keys=True), file=sys.stderr)
-                if args.once:
-                    return 1
+
+            draft_failed = False
+            if not tick_failed and draft_worker is not None and result.generation_ready:
+                try:
+                    draft_result = asyncio.run(draft_worker.run_once(now=now))
+                    print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    draft_failed = True
+                    print(json.dumps({
+                        "draft_worker": {
+                            "status": "ERROR",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                        }
+                    }, sort_keys=True), file=sys.stderr)
+
             if args.once:
-                return 0
+                return 1 if tick_failed or draft_failed else 0
             deadline = time.monotonic() + args.poll_seconds
             while not stopping and time.monotonic() < deadline:
                 time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
