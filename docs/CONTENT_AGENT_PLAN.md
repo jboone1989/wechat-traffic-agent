@@ -2,7 +2,41 @@
 
 Status: ACTIVE  
 Date: 2026-09-14  
-Branch: `feat/content-agent-web`
+Canonical branch: `feat/content-runtime-vb-network`
+
+## Execution status — continued after PR #8
+
+This is the existing migration plan; the phases below remain the canonical scope.
+
+- Foundation, Website renderer, 12 substantive starter artifacts, 8 useful topic
+  pages, and the audited 34-page / 531-link launch candidate are implemented.
+- Runtime + VirtualBrain + Agent Network deployment and persistent reasoning are
+  verified. PR #8 production release `431d71a0` adds the private Trading draft
+  inbox, one schema repair attempt, and restart-safe research deduplication.
+  Network fetch contract IDs remain provenance but do not change source identity.
+- The next implemented slice adds explicit local editorial review, hash-bound
+  immutable decisions, separate admitted exports and opt-in website candidate
+  builds. See `CONTENT_REVIEW.md`. Production drafts remain pending until an
+  operator actually reviews their evidence; shipping this feature is not approval.
+
+Remaining work in phase order:
+
+1. Phase 2: connect broader web topic discovery/planning to the canonical draft
+   workflow; add channel-neutral outcome observations and attribution before
+   feeding Website outcomes into learning. Existing WeChat metrics must not be
+   relabeled as comparable Website metrics.
+2. Phases 3–4: perform actual editorial review of generated research; demonstrate
+   public-content parity before retiring any Trading presentation. Do not infer
+   permission to remove Trading endpoints from draft creation or export.
+3. Phase 5: production HTTPS domain, public contact email and AdSense publisher
+   ID remain external blockers. Search Console/analytics and any applicable
+   consent setup follow real deployment configuration and account access.
+4. Phase 6: add channel-specific adapters and delivery credentials after the
+   shared editorial/outcome path is exercised. Preserve existing WeChat behavior.
+
+Automatic publication/admission, revision of final reviews, and revocation are
+separate follow-up capabilities. The persistent worker retains manual publishing
+mode and no publication actuator.
 
 ## Goal
 
