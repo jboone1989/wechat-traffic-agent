@@ -9,6 +9,9 @@ on:
       - "site/**"
       - "src/wechat_traffic_agent/channels/web.py"
       - "src/wechat_traffic_agent/content_artifact.py"
+      - "src/wechat_traffic_agent/content_admission.py"
+      - "src/wechat_traffic_agent/admission_cli.py"
+      - "tests/test_content_admission.py"
       - "src/wechat_traffic_agent/content_service.py"
       - "src/wechat_traffic_agent/draft_inbox.py"
       - "src/wechat_traffic_agent/trading_draft_worker.py"
@@ -40,6 +43,10 @@ jobs:
           mkdir -p .site-ci/wechat_traffic_agent/channels
           printf '%s\n' '"""Isolated CI package for static-site tests."""' > .site-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/content_artifact.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/content_admission.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/admission_cli.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/draft_inbox.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/models.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/site_audit.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/site_cli.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
@@ -52,6 +59,7 @@ jobs:
           tests/test_web_channel.py
           tests/test_web_preview_mode.py
           tests/test_site_cli.py
+          tests/test_content_admission.py
           tests/test_site_topic_quality.py
           tests/test_site_audit.py
           tests/test_adsense_readiness.py

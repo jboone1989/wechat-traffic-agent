@@ -23,9 +23,16 @@ def build_site(
     config_path: Path,
     artifacts_path: Path,
     output_dir: Path,
+    *,
+    approved_content_root: Path | None = None,
 ) -> dict[str, object]:
+    if approved_content_root is not None:
+        private = approved_content_root.resolve()
+        public = output_dir.resolve()
+        if private == public or private in public.parents or public in private.parents:
+            raise ValueError("website output must be separate from private content state")
     config = StaticWebsiteConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
-    artifacts = _load_artifacts(artifacts_path)
+    artifacts = _site_artifacts(artifacts_path, approved_content_root)
     web_artifacts = _curate_web_taxonomy(artifacts)
     readiness = assess_adsense_readiness(config, artifacts)
     StaticWebChannel(config).build(web_artifacts, output_dir)
@@ -42,10 +49,24 @@ def build_site(
 def inspect_site_readiness(
     config_path: Path,
     artifacts_path: Path,
+    *,
+    approved_content_root: Path | None = None,
 ) -> dict[str, object]:
     config = StaticWebsiteConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
-    artifacts = _load_artifacts(artifacts_path)
+    artifacts = _site_artifacts(artifacts_path, approved_content_root)
     return assess_adsense_readiness(config, artifacts).model_dump(mode="json")
+
+
+def _site_artifacts(path: Path, approved_content_root: Path | None) -> list[ContentArtifact]:
+    artifacts = _load_artifacts(path)
+    if approved_content_root is not None:
+        from .content_admission import ContentAdmission
+
+        artifacts.extend(ContentAdmission(approved_content_root).approved_artifacts())
+    ids = [item.artifact_id for item in artifacts]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate artifact_id across starter and admitted content")
+    return artifacts
 
 
 def _curate_web_taxonomy(artifacts: list[ContentArtifact]) -> list[ContentArtifact]:
@@ -95,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--artifacts", required=True, type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--approved-content-root", type=Path,
+                        help="Explicitly include hash-bound, manually approved drafts")
     parser.add_argument(
         "--check-readiness",
         action="store_true",
@@ -103,11 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.check_readiness:
-        result = inspect_site_readiness(args.config, args.artifacts)
+        result = inspect_site_readiness(args.config, args.artifacts,
+                                        approved_content_root=args.approved_content_root)
     else:
         if args.output is None:
             parser.error("--output is required unless --check-readiness is used")
-        result = build_site(args.config, args.artifacts, args.output)
+        result = build_site(args.config, args.artifacts, args.output,
+                            approved_content_root=args.approved_content_root)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 
