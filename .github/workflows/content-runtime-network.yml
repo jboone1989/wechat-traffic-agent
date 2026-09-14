@@ -106,7 +106,7 @@ jobs:
           printf '%s\n' '' > .editorial-ci/wechat_traffic_agent/__init__.py
           printf '%s\n' '' > .editorial-ci/wechat_traffic_agent/sources/__init__.py
           printf '%s\n' '' > .editorial-ci/agent_runtime/__init__.py
-          printf '%s\n' 'class AgentRuntime: pass' > .editorial-ci/agent_runtime.py
+          printf '%s\n' 'class AgentRuntime: pass' > .editorial-ci/agent_runtime/runtime.py
       - name: Run Website editorial and scoped feedback regressions
         env:
           PYTHONPATH: .editorial-ci
