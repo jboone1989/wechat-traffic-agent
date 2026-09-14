@@ -165,11 +165,10 @@ def test_outbound_trading_worker_uses_all_configured_seeds(monkeypatch, tmp_path
 
     monkeypatch.setenv(
         "CONTENT_NETWORK_SEED_URLS",
-        "https://seed-a.example/a2a,https://seed-b.example/a2a",
+        "https://seed-a.example/a2a,https://seed-b.example/a2a/,https://seed-a.example/a2a",
     )
-    network = module._network_client(tmp_path)
 
-    assert network.seeds == [
+    assert module._network_seed_urls_from_environment() == (
         "https://seed-a.example/a2a",
         "https://seed-b.example/a2a",
-    ]
+    )
