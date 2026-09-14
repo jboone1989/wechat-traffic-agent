@@ -82,7 +82,7 @@ def _task(body=None):
                             "type": TRADING_RESEARCH_ARTIFACT_TYPE,
                             "media_type": TRADING_RESEARCH_MEDIA_TYPE,
                             "owner": "trading-agent",
-                            "sha256": hashlib.sha256(raw).hexdigest(),
+                            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
                             "revision": 2,
                         },
                     }
@@ -101,13 +101,32 @@ def test_network_source_discovers_only_public_research_and_keeps_provenance():
 
     topics = asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics(limit=10))
 
+    digest = hashlib.sha256(body).hexdigest()
     assert network.required == [(CAP_TRADING_PUBLIC_RESEARCH, CAP_TRADING_PUBLIC_RESEARCH_VERSION)]
     assert network.peer.calls[0]["side_effects"] == "NONE"
     assert topics[0].source == "agent-network:trading-agent"
     assert topics[0].source_revision == "artifact-1@2"
     assert "network-contract:contract-1" in topics[0].evidence_refs
     assert "trading:report:report-1" in topics[0].evidence_refs
-    assert any(ref.startswith("network-artifact:artifact-1@2:sha256:") for ref in topics[0].evidence_refs)
+    assert f"network-artifact:artifact-1@2:sha256:{digest}" in topics[0].evidence_refs
+    assert not any("sha256:sha256:" in ref for ref in topics[0].evidence_refs)
+
+
+def test_network_source_accepts_sdk_prefixed_and_legacy_bare_sha256():
+    body = _body()
+    task = _task(body)
+    digest = hashlib.sha256(body).hexdigest()
+    network = _Network(task)
+
+    async def loader(_manifest):
+        return body
+
+    prefixed = asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
+    assert len(prefixed) == 1
+
+    task["artifacts"][0]["parts"][0]["data"]["sha256"] = digest
+    bare = asyncio.run(TradingResearchNetworkSource(_Network(task), artifact_loader=loader).fetch_topics())
+    assert len(bare) == 1
 
 
 def test_network_source_accepts_valid_empty_research_as_empty_topics():
@@ -137,13 +156,26 @@ def test_network_source_rejects_private_or_control_fields_before_modeling():
 def test_network_source_rejects_artifact_hash_mismatch_even_with_injected_loader():
     body = _body()
     task = _task(body)
-    task["artifacts"][0]["parts"][0]["data"]["sha256"] = "0" * 64
+    task["artifacts"][0]["parts"][0]["data"]["sha256"] = "sha256:" + "0" * 64
     network = _Network(task)
 
     async def loader(_manifest):
         return body
 
     with pytest.raises(ValueError, match="SHA256 mismatch"):
+        asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
+
+
+def test_network_source_rejects_malformed_artifact_digest():
+    body = _body()
+    task = _task(body)
+    task["artifacts"][0]["parts"][0]["data"]["sha256"] = "sha256:not-a-digest"
+    network = _Network(task)
+
+    async def loader(_manifest):
+        return body
+
+    with pytest.raises(ValueError, match="SHA256 is invalid"):
         asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics())
 
 
