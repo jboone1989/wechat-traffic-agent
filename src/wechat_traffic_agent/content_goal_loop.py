@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 
 from pydantic import Field
@@ -18,6 +19,7 @@ from .content_explorer import GoalEvidenceExplorer, collect_trading_evidence
 from .content_service import ContentAgent
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .models import TopicSignal
+from .sources.web_search import DeepSeekJinaWebSearch
 from .trading_draft_worker import default_trading_research_audience
 from .web_editorial import digest, website_snapshot, _title_key
 
@@ -52,11 +54,18 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.curriculum_path, self.feeds = Path(curriculum_path), tuple(feeds)
         self.interval_hours, self.fetcher, self.publisher = interval_hours, fetcher, publisher
         self.mind = mind
-        self.explorer = explorer or GoalEvidenceExplorer(
-            state_root=self.state, feeds=self.feeds,
-            rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
-            trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
-        )
+        if explorer is None:
+            web_searcher = None
+            if os.environ.get("CONTENT_GOAL_WEB_SEARCH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+                provider = DeepSeekJinaWebSearch.from_environment()
+                web_searcher = lambda query, now: provider.search(query=query, now=now)
+            explorer = GoalEvidenceExplorer(
+                state_root=self.state, feeds=self.feeds,
+                rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
+                trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
+                web_searcher=web_searcher,
+            )
+        self.explorer = explorer
         self.root = self.state / 'content/continuous'
         self.inbox = ContentDraftInbox(self.state / 'content')
 
@@ -118,12 +127,43 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'summary': artifact['summary'][:500],
                     })
             explorer_runtime = ReceiptRuntime(self.runtime, folder / 'explorer_calls')
-            exploration = await self.explorer.filter_for_goal(
+            initial = await self.explorer.filter_for_goal(
                 runtime=explorer_runtime,
                 goal_topic=str(required_topic or ''),
                 topic_context=topic_context,
                 candidates=evidence_pool['items'],
             )
+            exploration = dict(initial)
+            source_failures = list(evidence_pool.get('failures', []))
+            if goal_active and not initial['items']:
+                web_path = folder / 'web_search.json'
+                if web_path.exists():
+                    web_pool = json.loads(web_path.read_text())
+                else:
+                    search_web = getattr(self.explorer, 'search_web', None)
+                    web_pool = (await search_web(goal_topic=str(required_topic), now=now)
+                                if search_web is not None else
+                                {'items': [], 'failures': [], 'query': None})
+                    web_pool['items'] = [row for row in web_pool['items']
+                                         if not self.inbox.contains(_candidate_fingerprint(row))]
+                    _put(web_path, web_pool)
+                source_failures.extend(web_pool.get('failures', []))
+                if web_pool['items']:
+                    web_filtered = await self.explorer.filter_for_goal(
+                        runtime=explorer_runtime, goal_topic=str(required_topic),
+                        topic_context=topic_context, candidates=web_pool['items'],
+                    )
+                    exploration = dict(web_filtered)
+                    exploration['initial_candidate_count'] = initial.get('candidate_count', 0)
+                    exploration['web_candidate_count'] = web_filtered.get('candidate_count', 0)
+                    exploration['candidate_count'] = (exploration['initial_candidate_count'] +
+                                                      exploration['web_candidate_count'])
+                    exploration['fallback'] = 'web-search'
+                elif search_web is not None:
+                    exploration['initial_candidate_count'] = initial.get('candidate_count', 0)
+                    exploration['web_candidate_count'] = 0
+                    exploration['fallback'] = 'web-search'
+            exploration['source_failures'] = source_failures
             _put(exploration_path, exploration)
 
         evidence = exploration['items']
@@ -131,7 +171,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             status = 'NO_RELEVANT_EVIDENCE' if goal_active else 'NO_FRESH_EVIDENCE'
             return {'status': status, 'cycle': cycle, 'mind_plan': mind_plan,
                     'candidate_count': exploration.get('candidate_count', 0),
-                    'source_failures': evidence_pool.get('failures', [])}
+                    'source_failures': exploration.get('source_failures', evidence_pool.get('failures', []))}
         runtime = ReceiptRuntime(self.runtime, folder / 'model_calls')
         lesson = await _structured(runtime, 'LEARN_WRITING: Practice one to three writing techniques from the curriculum. '
              'Adapt the previous techniques using prior self-check weaknesses; supply hypothetical before/after examples. '
@@ -261,7 +301,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         result = {'status': 'DRAFT_CREATED' if passes else 'HELD_BY_CHECKS', 'cycle': cycle,
                   'source_fingerprint': fingerprint, 'draft_path': str(path), 'lesson_id': lesson_id,
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
-                  'mind_plan': mind_plan, 'source_failures': evidence_pool.get('failures', []),
+                  'mind_plan': mind_plan, 'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
                   'exploration': {'candidate_count': exploration.get('candidate_count', 0),
                                   'match_count': len(exploration.get('matches', [])),
                                   'selected_evidence_id': selected['evidence_id'],

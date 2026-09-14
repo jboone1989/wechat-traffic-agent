@@ -113,6 +113,7 @@ jobs:
           printf '%s\n' '"""Isolated CI package for source-contract tests."""' > .network-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/models.py .network-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/sources/__init__.py .network-ci/wechat_traffic_agent/sources/
+          cp src/wechat_traffic_agent/sources/contracts.py .network-ci/wechat_traffic_agent/sources/
           cp src/wechat_traffic_agent/sources/trading_network.py .network-ci/wechat_traffic_agent/sources/
       - name: Run Trading Network source contract gate
         env:

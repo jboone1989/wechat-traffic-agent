@@ -18,7 +18,7 @@ class EvidenceCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: str = Field(min_length=1, max_length=200)
-    source_kind: Literal["rss", "agent-network"]
+    source_kind: Literal["rss", "agent-network", "web-search"]
     source: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=2, max_length=300)
     summary: str = Field(min_length=1, max_length=2000)
@@ -28,6 +28,8 @@ class EvidenceCandidate(BaseModel):
     evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=50)
     publisher_feed: str | None = None
     published_at: str | None = None
+    search_query: str | None = None
+    search_rank: int | None = None
 
 
 class EvidenceMatch(BaseModel):
@@ -45,6 +47,7 @@ class EvidenceFilter(BaseModel):
 
 
 TradingFetcher = Callable[[datetime], Awaitable[list[dict[str, Any]]]]
+WebSearcher = Callable[[str, datetime], Awaitable[list[dict[str, Any]]]]
 
 
 def _candidate_text(candidate: dict[str, Any]) -> str:
@@ -88,6 +91,19 @@ def _topic_candidate(topic: Any) -> dict[str, Any]:
     return candidate.model_dump(mode="json")
 
 
+def _web_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    revision = str(row["source_revision"])
+    candidate = EvidenceCandidate(
+        evidence_id="web:" + revision, source_kind="web-search",
+        source=str(row["source"]), title=str(row["title"]),
+        summary=str(row["summary"]), url=row.get("url"),
+        observed_at=row.get("observed_at"), source_revision=revision,
+        evidence_refs=tuple(row["evidence_refs"]),
+        search_query=row.get("search_query"), search_rank=row.get("search_rank"),
+    )
+    return candidate.model_dump(mode="json")
+
+
 async def collect_trading_evidence(state_root: Path, now: datetime) -> list[dict[str, Any]]:
     """Read recent public-safe Trading research through Agent Network."""
     network = _network_client(Path(state_root))
@@ -101,11 +117,13 @@ class GoalEvidenceExplorer:
     """Collect candidate evidence, then filter it against an endogenous topic goal."""
 
     def __init__(self, *, state_root: Path, feeds, rss_fetcher,
-                 trading_fetcher: TradingFetcher | None = None) -> None:
+                 trading_fetcher: TradingFetcher | None = None,
+                 web_searcher: WebSearcher | None = None) -> None:
         self.state_root = Path(state_root)
         self.feeds = tuple(feeds)
         self.rss_fetcher = rss_fetcher
         self.trading_fetcher = trading_fetcher
+        self.web_searcher = web_searcher
 
     async def collect(self, *, now: datetime, active: bool) -> dict[str, Any]:
         rss = await self.rss_fetcher(self.feeds, now)
@@ -123,6 +141,20 @@ class GoalEvidenceExplorer:
             "observed_at": now.isoformat(),
             "signal_kind": "goal candidate evidence; relevance is evaluated separately",
         }
+
+    async def search_web(self, *, goal_topic: str, now: datetime) -> dict[str, Any]:
+        if not goal_topic or self.web_searcher is None:
+            return {"items": [], "failures": [], "query": None}
+        query = " ".join(goal_topic.replace("-", " ").split()) + " AI trading research evidence"
+        try:
+            rows = await self.web_searcher(query, now)
+            items = [_web_candidate(row) for row in rows[:12]]
+            unique = {row["evidence_id"]: row for row in items}
+            return {"items": list(unique.values()), "failures": [], "query": query}
+        except Exception as exc:
+            return {"items": [], "failures": [{
+                "source": "web-search:deepseek+jina-reader", "error_type": type(exc).__name__}],
+                "query": query}
 
     async def filter_for_goal(self, *, runtime, goal_topic: str,
                               topic_context: list[dict[str, str]],
