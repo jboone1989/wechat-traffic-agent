@@ -71,6 +71,7 @@ jobs:
           mkdir -p .runtime-ci/wechat_traffic_agent
           printf '%s\n' '"""Isolated persistent Content Agent tests."""' > .runtime-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/runtime_app.py .runtime-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/network_capabilities.py .runtime-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/runtime_backend.py .runtime-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/network_service.py .runtime-ci/wechat_traffic_agent/
       - name: Build isolated Trading source package

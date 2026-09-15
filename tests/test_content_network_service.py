@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from wechat_traffic_agent.network_service import ContentNetworkService
+from wechat_traffic_agent.network_service import ContentNetworkService, _request_data
 from wechat_traffic_agent.runtime_app import CAP_CONTENT_STATUS
 from wechat_traffic_agent.network_capabilities import (
     CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW, capability_specs,
@@ -115,3 +115,26 @@ def test_network_rejects_too_short_membership_lease(tmp_path):
         assert "at least 60" in str(exc)
     else:
         raise AssertionError("too-short membership lease should fail closed")
+
+
+def test_signed_contract_capability_input_overrides_unsigned_message_body():
+    payload = {
+        "metadata": {
+            "contract": {
+                "contract_id": "contract-1",
+                "metadata": {"capability_input": {"topic": "signed topic"}},
+            }
+        },
+        "message": {
+            "parts": [{"kind": "data", "data": {"topic": "tampered topic"}}],
+        },
+    }
+    assert _request_data(payload) == {"topic": "signed topic"}
+
+
+def test_signed_contract_without_capability_input_fails_closed_to_empty_payload():
+    payload = {
+        "metadata": {"contract": {"contract_id": "contract-1", "metadata": {}}},
+        "message": {"parts": [{"kind": "data", "data": {"topic": "unsigned"}}]},
+    }
+    assert _request_data(payload) == {}

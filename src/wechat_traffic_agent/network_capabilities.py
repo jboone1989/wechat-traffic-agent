@@ -7,10 +7,6 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .content_service import ContentAgent, _extract_json
-from .models import TopicSignal
-from .sources.runtime_web import RuntimeWebSearch
-from .trading_draft_worker import default_trading_research_audience
 
 CAP_CONTENT_RESEARCH = "content.research"
 CAP_CONTENT_EVIDENCE = "content.evidence"
@@ -87,6 +83,7 @@ async def execute_network_capability(application: Any, capability_id: str, paylo
 
 
 async def _research(application: Any, args: Mapping[str, Any], *, claim_mode: bool) -> dict[str, Any]:
+    from .sources.runtime_web import RuntimeWebSearch
     key = "claim" if claim_mode else "query"
     query = _bounded(args.get(key), MAX_QUERY)
     if len(query) < 2:
@@ -129,6 +126,9 @@ def _provided_evidence(args: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 async def _draft(application: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    from .content_service import ContentAgent
+    from .models import TopicSignal
+    from .trading_draft_worker import default_trading_research_audience
     topic = _bounded(args.get("topic"), 80)
     if len(topic) < 2:
         raise ValueError("topic must contain 2..80 characters")
@@ -171,6 +171,7 @@ async def _draft(application: Any, args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _review(application: Any, args: Mapping[str, Any]) -> dict[str, Any]:
+    from .content_service import _extract_json
     text = str(args.get("text") or "").strip()
     if not 20 <= len(text) <= MAX_TEXT:
         raise ValueError(f"text must contain 20..{MAX_TEXT} characters")
