@@ -21,6 +21,7 @@ from .content_admission import _write_once
 from .content_artifact import ContentArtifact
 from .content_service import ContentAgent, _extract_json
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
+from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor
 from .models import TopicSignal
 from .trading_draft_worker import default_trading_research_audience
 from .web_editorial import digest, website_snapshot, _title_key
@@ -320,6 +321,12 @@ class ContinuousContentLoop:
               editorial_brief=json.dumps(brief, ensure_ascii=False))
         artifact = artifact.model_copy(update={'tags': (selection.topic,),
              'disclosure': 'Written by Content Agent using public source material. Automated source and writing checks are fallible; this is not investment advice.'})
+        floor_cues = artifact_risk_cues(artifact, topic=selection.topic)
+        floor_plan = EvidenceFloorPlan(
+            topic=selection.topic, required=bool(floor_cues), trigger_cues=floor_cues,
+            status='MISSING' if floor_cues else 'NOT_REQUIRED',
+        )
+        _put(folder / 'evidence_floor_plan.json', floor_plan.model_dump(mode='json'))
         text = '\n'.join([artifact.title, artifact.summary] + [value for section in artifact.sections for value in (section.heading, *section.paragraphs)])
         if _title_key(artifact.title) in {_title_key(t) for t in existing}:
             raise ValueError('generated title duplicates existing content')
@@ -355,14 +362,19 @@ class ContinuousContentLoop:
               + json.dumps({'article': artifact.model_dump(mode='json'), 'source_registry': source_text, 'lesson': lesson_payload}, ensure_ascii=False), SelfCheck, validate=validate_check)
         application_valid = {a.technique_index for a in check.applications if a.article_quote in text and a.technique_index < len(lesson.techniques)}
         support_valid = {s.section_index for s in check.support if s.source_quote in source_text.get(s.source_id, '')}
+        floor_check = evaluate_evidence_floor(artifact=artifact, plan=floor_plan, supports=check.support)
+        _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
-                  and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350)
+                  and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
+                  and floor_check.status == 'PASS')
         path = self.inbox.save(ContentDraftRecord(source_fingerprint=fingerprint,
                               generated_at=datetime.fromisoformat(inputs['now']), artifact=artifact))
         experience = {'cycle': cycle, 'lesson_id': lesson_id, 'lesson': lesson_payload,
                       'draft_sha256': digest(artifact.model_dump(mode='json')), 'source_fingerprint': fingerprint,
                       'self_check': check.model_dump(mode='json'), 'automated_checks_passed': passes,
+                      'evidence_floor_plan': floor_plan.model_dump(mode='json'),
+                      'evidence_floor_check': floor_check.model_dump(mode='json'),
                       'missing_technique_applications': sorted(set(range(len(lesson.techniques))) - application_valid),
                       'missing_section_support': sorted(set(range(len(artifact.sections))) - support_valid),
                       'word_count': len(text.split()),
@@ -371,6 +383,7 @@ class ContinuousContentLoop:
         self.runtime.persist()
         result = {'status': 'DRAFT_CREATED' if passes else 'HELD_BY_CHECKS', 'cycle': cycle,
                   'source_fingerprint': fingerprint, 'draft_path': str(path), 'lesson_id': lesson_id,
+                  'evidence_floor': floor_check.model_dump(mode='json'),
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
                   'mind_plan': mind_plan}
         if self.mind is not None:
