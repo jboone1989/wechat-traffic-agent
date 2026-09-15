@@ -8,6 +8,9 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict
 
 
+RUNTIME_INTERNAL_ROUTES = frozenset({"/live", "/live/"})
+
+
 class StaticSiteAudit(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -116,6 +119,8 @@ def _internal_target(root: Path, href: str) -> Path | None:
     if not href.startswith("/") or href.startswith("//"):
         return None
     path = urlsplit(href).path
+    if path in RUNTIME_INTERNAL_ROUTES:
+        return None
     if not path:
         return root / "index.html"
     if path == "/":
