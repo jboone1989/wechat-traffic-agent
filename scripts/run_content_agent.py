@@ -87,6 +87,15 @@ def main() -> int:
             base_url=os.environ["CONTENT_WEB_BASE_URL"],
         )
 
+    web_outcome_collector = None
+    if os.environ.get("CONTENT_WEB_OUTCOMES_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        from wechat_traffic_agent.web_outcome_evidence import WebsiteOutcomeCollector
+        web_outcome_collector = WebsiteOutcomeCollector(
+            state_root=state_root,
+            access_log=Path(os.environ.get("CONTENT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log")),
+            account=os.environ["CONTENT_WEB_BASE_URL"],
+        )
+
     continuous_loop = None
     if os.environ.get("CONTENT_CONTINUOUS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
         from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
@@ -163,6 +172,21 @@ def main() -> int:
                 print(json.dumps({"continuous_content": continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR":
                     draft_failed = True
+
+            if web_outcome_collector is not None:
+                try:
+                    outcome_result = web_outcome_collector.collect(now=now)
+                    print(json.dumps({"website_outcomes": outcome_result}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({
+                        "website_outcomes": {
+                            "status": "ERROR",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                            "publication_authority": False,
+                            "learning_authority": False,
+                        }
+                    }, sort_keys=True), file=sys.stderr)
 
             if args.once:
                 return 1 if tick_failed or draft_failed else 0
