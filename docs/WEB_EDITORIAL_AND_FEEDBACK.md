@@ -69,3 +69,24 @@ perform significance testing, establish adequate sample size, or prove causality
 There is no automatic strategy mutation, editorial admission or publication path.
 Real outcome collection still requires platform access and actually published
 content; the current private drafts have no fabricated performance history.
+
+## Prospective Website writing experiments
+
+When `CONTENT_WEBSITE_EXPERIMENTS_ENABLED=1`, a continuous Website cycle binds
+one `opening_mode` treatment before evidence selection or generation begins.
+The first contract uses deterministic `sha256-cycle:v1` assignment between
+`reader_question_first` and `evidence_first`. The binding is immutable and
+restart-stable; changing its cycle-derived treatment is rejected.
+
+The treatment only constrains the first paragraph. A code-level compliance
+check must pass in addition to the existing source, technique and Website
+audit checks. A failed experiment constraint holds the private draft and cannot
+activate the candidate Website. The publisher independently validates the
+binding/compliance pair instead of trusting the loop result.
+
+Eligible experiment publications use `website-publication-attribution.v2`.
+Their stable `strategy_version` identifies the experiment treatment, while the
+per-run writing lesson is retained separately as `practice_version`. Mature
+pageview evidence keeps the experiment ID in its evidence references. This
+creates prospectively comparable samples; it does not yet select a winner,
+mutate future strategy, establish adequate sample size, or claim causality.
