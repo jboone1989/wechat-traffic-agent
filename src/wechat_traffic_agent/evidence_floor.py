@@ -27,10 +27,8 @@ DOMAIN_TERMS = (
 )
 CLAIM_TERMS = (
     "will ", "should ", "buy", "sell", "outperform", "beat ", "profitable",
-    "return", "edge", "alpha", "predict", "forecast", "increase", "decrease",
-    "win rate", "sharpe", "performance", "live trading", "expected value",
-    "expectancy", "reduce risk", "reduces risk", "improve returns",
-    "improves returns",
+    "alpha", "predict", "forecast", "win rate", "sharpe",
+    "reduce risk", "reduces risk", "improve returns", "improves returns",
 )
 
 
@@ -114,10 +112,12 @@ def risk_cues(*, topic: str, text: str) -> tuple[str, ...]:
     normalized = " ".join(str(text).lower().split())
     cues: list[str] = []
     topic = str(topic).strip()
-    if topic in HIGH_RISK_TOPICS:
-        cues.append("topic:" + topic)
     domains = [term for term in DOMAIN_TERMS if term in normalized]
     claims = [term.strip() for term in CLAIM_TERMS if term in normalized]
+    # Topic membership alone is not a claim. A neutral methodology article about trading or
+    # backtesting should remain publishable; the floor is for substantive performance/advice claims.
+    if topic in HIGH_RISK_TOPICS and claims:
+        cues.append("topic:" + topic)
     if domains and claims:
         cues.extend("domain:" + value for value in domains[:4])
         cues.extend("claim:" + value for value in claims[:4])

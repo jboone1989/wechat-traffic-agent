@@ -122,14 +122,16 @@ def test_goal_loop_high_risk_content_requires_and_uses_counter_evidence(tmp_path
     assert any("counter_evidence" in call for call in runtime.calls if not call.startswith("LEARN_WRITING:"))
 
 
-def test_goal_loop_high_risk_content_holds_before_compose_without_counter(tmp_path):
+def test_goal_loop_missing_counter_does_not_kill_production_before_drafting(tmp_path):
     runtime, loop = worker(tmp_path, counter=False)
     result = asyncio.run(loop.run_once(now=NOW))
-    assert result["status"] == "HELD_BY_EVIDENCE_FLOOR"
-    assert result["evidence_floor"]["status"] == "MISSING"
-    assert result["evidence_floor"]["required"] is True
-    assert not any(call.startswith("CHECK_ARTICLE:") for call in runtime.calls)
-    assert loop.inbox.list_records() == ()
+    assert result["status"] in {"DRAFT_CREATED", "HELD_BY_CHECKS"}
+    assert result["status"] != "ERROR"
+    assert any(call.startswith("CHECK_ARTICLE:") for call in runtime.calls)
+    assert len(loop.inbox.list_records()) == 1
+    attempt = json.loads((tmp_path / "state/content/continuous/cycles" / result["cycle"] / "evidence_floor_attempt.json").read_text())
+    assert attempt["status"] == "MISSING"
+    assert attempt["required"] is True
 
 
 def test_real_search_demand_controls_topic_when_virtualbrain_has_no_goal(tmp_path):

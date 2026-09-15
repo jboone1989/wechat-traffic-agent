@@ -10,12 +10,18 @@ import time
 from typing import Any, Mapping
 
 from .runtime_app import CAP_CONTENT_STATUS
+from .network_capabilities import (
+    CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
+    NETWORK_WORK_CAPABILITIES, execute_network_capability,
+)
 
 DEFAULT_AGENT_ID = "content.cai.001"
 DEFAULT_SEED_URL = "http://127.0.0.1:8001"
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8103
-DEFAULT_CAPABILITIES = (CAP_CONTENT_STATUS,)
+DEFAULT_CAPABILITIES = (
+    CAP_CONTENT_STATUS, CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
+)
 
 
 def content_network_seed_urls_from_environment() -> tuple[str, ...]:
@@ -147,8 +153,9 @@ class ContentNetworkService:
             raise RuntimeError("ContentNetworkService already started")
         import uvicorn
         from agent_network.a2a_card import signed_agent_card
-        from agent_network.a2a_server import A2AServer, HandlerResult
+        from agent_network.a2a_server import A2AServer, HandlerResult, json_artifact
         from agent_network.crypto import Identity
+        from agent_network.models import utc_now
         from agent_network.network import AgentNetwork
 
         rows = self.advertised_capabilities()
@@ -157,7 +164,7 @@ class ContentNetworkService:
         card = signed_agent_card(
             identity=identity,
             name="Persistent Content Agent",
-            description="Content Agent with Runtime + VirtualBrain; explicit channel publication policy",
+            description="Persistent research and content agent: evidence research, bounded drafting, review, and observable runtime state.",
             url=self.endpoint,
             skills=[{"id": row["id"], "name": row["id"], "description": row["description"]} for row in rows],
         )
@@ -171,6 +178,7 @@ class ContentNetworkService:
         )
         self._network = network
         handlers: dict[str, Any] = {}
+        work_lock = asyncio.Lock()
         for row in rows:
             capability_id = row["id"]
             version = row["version"]
@@ -179,6 +187,73 @@ class ContentNetworkService:
                 payload: dict[str, Any], *, _capability_id: str = capability_id, _version: str = version
             ) -> Any:
                 args = _request_data(payload)
+                if _capability_id in NETWORK_WORK_CAPABILITIES:
+                    contract = _request_contract(payload)
+                    if contract and not isinstance((contract.get("metadata") or {}).get("capability_input"), Mapping):
+                        raise ValueError("signed content task requires contract metadata capability_input")
+                    async with work_lock:
+                        executing = False
+                        try:
+                            if contract:
+                                await network.submit_lifecycle_event(
+                                    contract_id=str(contract["contract_id"]), status="EXECUTING",
+                                    contract_hash=str(contract.get("contract_hash") or "") or None,
+                                )
+                                executing = True
+                            result = await execute_network_capability(self.application, _capability_id, args)
+                            metadata = {
+                                "capability_id": _capability_id,
+                                "capability_version": _version,
+                                "provider": self.agent_id,
+                                "execution_id": result.get("execution_id"),
+                                "result": result,
+                            }
+                            artifacts = []
+                            if contract:
+                                manifest = json_artifact(
+                                    task_id=str(payload.get("task_id") or contract["contract_id"]),
+                                    artifact_type="content-capability-result", payload=result,
+                                    owner=self.agent_id, directory=self.root / "application" / "network" / "artifacts",
+                                    identity=identity, public_base=self.public_base_url,
+                                )
+                                # Evidence binds the artifact to this exact signed contract. The public
+                                # A2A artifact remains a normal ArtifactManifest, while the immutable
+                                # Evidence record carries the causal contract binding used by acceptance.
+                                artifact_evidence = manifest.to_dict()
+                                artifact_evidence.update({
+                                    "contract_id": str(contract["contract_id"]),
+                                    "contract_hash": str(contract.get("contract_hash") or ""),
+                                    "key_id": identity.key_id,
+                                    "timestamp": utc_now(),
+                                })
+                                artifact_evidence["signature"] = identity.sign_object(artifact_evidence)
+                                artifact_receipt = await network.reference_artifact(artifact_evidence)
+                                manifest_hash = str(artifact_receipt.get("object_hash") or "")
+                                if not manifest_hash:
+                                    raise RuntimeError("Agent Network did not persist the delivered artifact reference")
+                                await network.submit_lifecycle_event(
+                                    contract_id=str(contract["contract_id"]), status="DELIVERED",
+                                    artifact_hashes=[manifest.sha256],
+                                    contract_hash=str(contract.get("contract_hash") or "") or None,
+                                )
+                                metadata["delivery"] = {
+                                    "artifact_id": manifest.artifact_id,
+                                    "artifact_manifest_hash": manifest_hash,
+                                    "artifact_sha256": manifest.sha256,
+                                    "status": "DELIVERED",
+                                }
+                                artifacts = [manifest]
+                            return HandlerResult(metadata=metadata, artifacts=artifacts)
+                        except Exception:
+                            if contract and executing:
+                                try:
+                                    await network.submit_lifecycle_event(
+                                        contract_id=str(contract["contract_id"]), status="FAILED",
+                                        contract_hash=str(contract.get("contract_hash") or "") or None,
+                                    )
+                                except Exception:
+                                    pass
+                            raise
                 with self.execution_lock:
                     receipt = self.application.runtime.invoke(_capability_id, args)
                     self.application.runtime.persist()
@@ -279,7 +354,22 @@ def network_enabled() -> bool:
     return (os.environ.get("CONTENT_NETWORK_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
 
 
+def _request_contract(payload: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = payload.get("metadata") or {}
+    if not isinstance(metadata, Mapping):
+        return {}
+    contract = metadata.get("contract") or {}
+    return dict(contract) if isinstance(contract, Mapping) else {}
+
+
 def _request_data(payload: Mapping[str, Any]) -> dict[str, Any]:
+    # A signed contract is authoritative for delegated work. Do not let an unsigned
+    # message body override capability_input after both parties signed the contract.
+    contract = _request_contract(payload)
+    if contract:
+        metadata = contract.get("metadata") or {}
+        bound = metadata.get("capability_input") if isinstance(metadata, Mapping) else None
+        return dict(bound) if isinstance(bound, Mapping) else {}
     message = dict(payload.get("message") or {})
     for part in message.get("parts") or []:
         if isinstance(part, Mapping) and part.get("kind") == "data" and isinstance(part.get("data"), Mapping):
