@@ -240,6 +240,43 @@ def test_planner_uses_history_for_recommendation() -> None:
     assert planned.draft.angle.value == "relief"
 
 
+def test_planner_emotion_recommendation_does_not_leak_across_audiences() -> None:
+    def _saturated(audience_key: str, winner: str, winner_reads: int) -> list[PerformanceObservation]:
+        history = []
+        for angle in ("resonance", "relief", "nostalgia", "gentle_rebellion", "lonely_night"):
+            for index in range(2):
+                history.append(
+                    PerformanceObservation(
+                        post_id=f"{audience_key}-{angle}-{index}",
+                        angle=angle,
+                        impressions=100,
+                        reads=winner_reads if angle == winner else 10,
+                        audience_key=audience_key,
+                        objective=ContentObjective.READS,
+                        observation_window="24h",
+                    )
+                )
+        return history
+
+    pooled = _saturated("audience-a", "resonance", 50) + _saturated(
+        "audience-b", "nostalgia", 90
+    )
+    stub = StubRuntime([_draft_json(angle="resonance")])
+    planned = asyncio.run(
+        plan_experiment(
+            stub,
+            _pattern(),
+            _audience(),
+            history=pooled,
+            audience_key="audience-a",
+            observation_window="24h",
+            variable=ExperimentVariable.TITLE_PATTERN,
+            learner=TrafficLearner(),
+        )
+    )
+    assert planned.draft.angle.value == "resonance"
+
+
 def test_scan_offline_defaults_to_fixture_provider() -> None:
     report = asyncio.run(scan(platforms=("weibo",), top_n=5))
     assert report.platforms[0].source == "fixture"

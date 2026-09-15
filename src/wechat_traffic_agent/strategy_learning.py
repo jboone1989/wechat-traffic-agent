@@ -22,9 +22,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from statistics import median
 
+from .editorial_intervention import EditorialIntervention, agent_attributable_history
 from .learning import TrafficLearner
 from .models import ContentObjective, EmotionAngle, PerformanceObservation
 from .objectives import policy_for
+from .outcome_maturity import outcome_is_scorable
+from .outcome_revision import current_active_observations
 
 CONTEXT_KEY_AUDIENCE = "*"
 SMOOTHING_ALPHA = 2.0
@@ -87,7 +90,16 @@ class StrategyLearner:
     # Estimates                                                          #
     # ------------------------------------------------------------------ #
 
-    def estimates(self, history: Sequence[PerformanceObservation]) -> list[StrategyEstimate]:
+    def estimates(
+        self,
+        history: Sequence[PerformanceObservation],
+        *,
+        as_of: datetime | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
+    ) -> list[StrategyEstimate]:
+        as_of = as_of or datetime.now(timezone.utc)
+        history = current_active_observations(history)
+        history = agent_attributable_history(history, editorial_interventions)
         rows: list[StrategyEstimate] = []
         for parts, observations in sorted(self.contexts(history).items()):
             policy = (
@@ -96,7 +108,7 @@ class StrategyLearner:
                 else None
             )
             ordered = self._chronological(observations)
-            scored_rewards = self._scored_rewards(policy, observations, ordered)
+            scored_rewards = self._scored_rewards(policy, ordered, as_of)
 
             buckets: dict[tuple[str, str], list[int]] = {}
             for position, (_, obs) in enumerate(ordered):
@@ -116,7 +128,14 @@ class StrategyLearner:
                     if bucket_scored
                     else None
                 )
-                lifts = [self._lift_at(scored_rewards, position) for position, _ in bucket_scored]
+                lifts = [
+                    lift
+                    for lift in (
+                        self._lift_at(scored_rewards, ordered, position)
+                        for position, _ in bucket_scored
+                    )
+                    if lift is not None
+                ]
                 mean_lift = sum(lifts) / len(lifts) if lifts else None
                 smoothed = (
                     sum(lifts) / (len(lifts) + SMOOTHING_ALPHA) if lifts else None
@@ -149,30 +168,46 @@ class StrategyLearner:
         return indexed
 
     @staticmethod
-    def _scored_rewards(policy, observations, ordered) -> dict[int, float]:
-        """position (in chronological order) -> policy reward; UNKNOWN excluded."""
+    def _scored_rewards(policy, ordered, as_of: datetime) -> dict[int, float]:
+        """position (in chronological order) -> policy reward; UNKNOWN excluded.
+
+        Immature windows are also excluded: a 24h snapshot cannot score as a
+        7d zero, and a premature labeled window is not mature evidence.
+        """
         if policy is None:
             return {}
         rewards: dict[int, float] = {}
         for position, (_, obs) in enumerate(ordered):
+            if not outcome_is_scorable(obs, as_of, objective=policy.objective):
+                continue
             reward = policy.reward(obs)
             if reward is not None:
                 rewards[position] = reward
         return rewards
 
     def _lift_at(
-        self, scored_rewards: dict[int, float], position: int
-    ) -> float:
-        """reward minus the median of up to ``baseline_window`` prior rewards."""
+        self,
+        scored_rewards: dict[int, float],
+        ordered: Sequence[tuple[int, PerformanceObservation]],
+        position: int,
+    ) -> float | None:
+        """reward minus the median of strictly earlier comparable rewards.
+
+        Sort order and post_id ties are not a baseline. Missing published_at
+        and same-timestamp peers are UNKNOWN, never a synthetic lift.
+        """
+        published_at = ordered[position][1].published_at
+        if published_at is None:
+            return None
         prior = [
             reward
             for prior_position, reward in sorted(scored_rewards.items())
-            if prior_position < position
+            if (earlier := ordered[prior_position][1].published_at) is not None
+            and earlier < published_at
         ][-self.baseline_window :]
-        own = scored_rewards[position]
         if not prior:
-            return 0.0  # 没有可比基线时按相对基线为零处理，不虚构落后/领先
-        return own - median(prior)
+            return None
+        return scored_rewards[position] - median(prior)
 
     # ------------------------------------------------------------------ #
     # Recommendation                                                     #
@@ -186,6 +221,8 @@ class StrategyLearner:
         audience_key: str | None = None,
         objective: ContentObjective = ContentObjective.READS,
         observation_window: str,
+        as_of: datetime | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
     ) -> StrategyDecision:
         """Explore under-min variables first, then exploit best smoothed lift.
 
@@ -194,6 +231,8 @@ class StrategyLearner:
         与 estimates() 的隔离口径一致——24h 和 7d 永不互相污染。
         缺窗口标注的观察落在 ``(*)`` context，同样不会混入。
         """
+        history = current_active_observations(history)
+        history = agent_attributable_history(history, editorial_interventions)
         requested = (
             audience_key or CONTEXT_KEY_AUDIENCE,
             objective.value,
@@ -228,7 +267,9 @@ class StrategyLearner:
         target_key = self._context_key(requested)
         allowed = set(names)
         grouped: dict[str, list[StrategyEstimate]] = {}
-        for estimate in self.estimates(history):
+        for estimate in self.estimates(
+            history, as_of=as_of, editorial_interventions=editorial_interventions
+        ):
             if estimate.context_key != target_key:
                 continue
             if estimate.variable not in allowed or estimate.smoothed_lift is None:
@@ -261,6 +302,15 @@ class StrategyLearner:
         history: Sequence[PerformanceObservation],
         *,
         objective: ContentObjective = ContentObjective.READS,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
+        editorial_interventions: Sequence[EditorialIntervention] | None = None,
     ) -> EmotionAngle:
-        """Emotion dimension still rides the legacy explore/exploit rule."""
-        return TrafficLearner().recommend(list(history), objective)
+        """Emotion dimension still rides the scoped TrafficLearner rule."""
+        return TrafficLearner().recommend(
+            list(history),
+            objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+            editorial_interventions=editorial_interventions,
+        )

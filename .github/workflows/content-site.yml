@@ -1,0 +1,127 @@
+name: Content Site
+
+on:
+  push:
+    branches: ["feat/content-agent-web"]
+  pull_request:
+    paths:
+      - "content/**"
+      - "site/**"
+      - "src/wechat_traffic_agent/channels/web.py"
+      - "src/wechat_traffic_agent/channels/agent_web.py"
+      - "src/wechat_traffic_agent/channels/agent_home_experience.py"
+      - "src/wechat_traffic_agent/channels/agent_three_scene.py"
+      - "src/wechat_traffic_agent/channels/agent_static_hero_asset.py"
+      - "src/wechat_traffic_agent/content_artifact.py"
+      - "src/wechat_traffic_agent/web_editorial.py"
+      - "src/wechat_traffic_agent/content_loop.py"
+      - "src/wechat_traffic_agent/automatic_website.py"
+      - "content/learning/**"
+      - "tests/test_content_loop.py"
+      - "src/wechat_traffic_agent/channel_evidence.py"
+      - "src/wechat_traffic_agent/content_evidence_cli.py"
+      - "tests/test_web_editorial.py"
+      - "tests/test_channel_evidence.py"
+      - "src/wechat_traffic_agent/content_admission.py"
+      - "src/wechat_traffic_agent/admission_cli.py"
+      - "tests/test_content_admission.py"
+      - "src/wechat_traffic_agent/content_service.py"
+      - "src/wechat_traffic_agent/draft_inbox.py"
+      - "src/wechat_traffic_agent/trading_draft_worker.py"
+      - "src/wechat_traffic_agent/models.py"
+      - "src/wechat_traffic_agent/site_audit.py"
+      - "src/wechat_traffic_agent/site_cli.py"
+      - "src/wechat_traffic_agent/sources/**"
+      - "tests/test_web_*.py"
+      - "tests/test_site_*.py"
+      - "tests/test_adsense_readiness.py"
+      - "tests/test_trading_network_source.py"
+      - ".github/workflows/content-site.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  site-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated test dependencies
+        run: python -m pip install "pydantic>=2.5" "pytest>=8"
+      - name: Build isolated site package
+        run: |
+          mkdir -p .site-ci/wechat_traffic_agent/channels
+          printf '%s\n' '"""Isolated CI package for static-site tests."""' > .site-ci/wechat_traffic_agent/__init__.py
+          cp src/wechat_traffic_agent/content_artifact.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/content_admission.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/admission_cli.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/draft_inbox.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/models.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/site_audit.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/site_cli.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_web.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_home_experience.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_three_scene.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_static_hero_asset.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/__init__.py .site-ci/wechat_traffic_agent/channels/
+      - name: Run website quality gate
+        env:
+          PYTHONPATH: .site-ci
+        run: >-
+          python -m pytest -q -c /dev/null
+          tests/test_web_channel.py
+          tests/test_web_preview_mode.py
+          tests/test_site_cli.py
+          tests/test_content_admission.py
+          tests/test_site_topic_quality.py
+          tests/test_site_audit.py
+          tests/test_adsense_readiness.py
+      - name: Build and audit repository launch candidate
+        env:
+          PYTHONPATH: .site-ci
+        run: |
+          python -m wechat_traffic_agent.site_cli \
+            --config site/production.example.json \
+            --artifacts content/starter \
+            --output "$RUNNER_TEMP/content-site" > "$RUNNER_TEMP/site-build.json"
+          SITE_DIR="$RUNNER_TEMP/content-site" BUILD_JSON="$RUNNER_TEMP/site-build.json" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from wechat_traffic_agent.site_audit import audit_static_site
+          result=json.loads(Path(os.environ["BUILD_JSON"]).read_text())
+          assert result["readiness"]["code_ready"] is True
+          assert set(result["readiness"]["external_dependencies"]) == {
+              "production_https_domain", "public_contact_email", "adsense_publisher_id"
+          }
+          audit=audit_static_site(Path(os.environ["SITE_DIR"]), expect_indexable=True)
+          assert audit.passed, audit
+          print(json.dumps({
+              "artifact_count": result["artifact_count"],
+              "indexed_topic_count": result["indexed_topic_count"],
+              "html_pages": audit.html_pages,
+              "internal_links_checked": audit.internal_links_checked,
+              "external_dependencies": result["readiness"]["external_dependencies"],
+          }, sort_keys=True))
+          PY
+          tar -C "$RUNNER_TEMP/content-site" -czf "$RUNNER_TEMP/content-site-launch-candidate.tgz" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: content-site-launch-candidate
+          path: ${{ runner.temp }}/content-site-launch-candidate.tgz
+          if-no-files-found: error
+      - name: Build isolated Agent Network source package
+        run: |
+          mkdir -p .network-ci/wechat_traffic_agent/sources
+          printf '%s\n' '"""Isolated CI package for source-contract tests."""' > .network-ci/wechat_traffic_agent/__init__.py
+          cp src/wechat_traffic_agent/models.py .network-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/sources/__init__.py .network-ci/wechat_traffic_agent/sources/
+          cp src/wechat_traffic_agent/sources/contracts.py .network-ci/wechat_traffic_agent/sources/
+          cp src/wechat_traffic_agent/sources/trading_network.py .network-ci/wechat_traffic_agent/sources/
+      - name: Run Trading Network source contract gate
+        env:
+          PYTHONPATH: .network-ci
+        run: python -m pytest -q -c /dev/null tests/test_trading_network_source.py

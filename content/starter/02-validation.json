@@ -1,0 +1,174 @@
+[
+  {
+    "artifact_id": "guide-sample-size-005",
+    "kind": "guide",
+    "slug": "how-many-trades-before-you-trust-a-strategy",
+    "title": "How Many Trades Do You Need Before You Trust a Strategy?",
+    "summary": "There is no universal magic trade count. The useful question is how much independent evidence you have, how noisy the outcome is, and what decision you are trying to justify.",
+    "sections": [
+      {
+        "heading": "A trade count is not the same as an evidence count",
+        "paragraphs": [
+          "It is tempting to ask for one threshold: 30 trades, 100 trades, or 1,000 trades. The problem is that observations can be strongly related. One hundred trades opened by the same signal during one market regime may contain much less independent information than a smaller set spread across different conditions. Counting rows is therefore only a starting point. You also need to understand how the observations were produced and what common exposures they share.",
+          "The decision being made matters too. Evidence that is sufficient to continue paper testing may be far too weak to justify meaningful live risk. A sensible validation process uses progressively stronger gates. Early evidence asks whether the idea is coherent enough to keep testing; later evidence asks whether the expected benefit is large and stable enough to survive costs, changing conditions, and execution uncertainty."
+        ]
+      },
+      {
+        "heading": "Estimate uncertainty, not just the average",
+        "paragraphs": [
+          "An average return or win rate without uncertainty can look more precise than the data deserves. If outcomes vary widely, a small sample can produce a very attractive average by chance. Confidence intervals, resampling, and sensitivity checks are useful because they show how much the estimate could move if the observed sequence had been slightly different. The goal is not to manufacture one perfect statistical test, but to make uncertainty visible before capital is committed.",
+          "Pay special attention to strategies whose apparent edge is small compared with the natural variation of outcomes. When the signal is weak and the noise is large, many observations may be required before the estimate stabilizes. Conversely, a dramatic result from a handful of events should usually increase curiosity rather than confidence, because rare conditions and selection effects can dominate a tiny sample."
+        ]
+      },
+      {
+        "heading": "Look for coverage across conditions",
+        "paragraphs": [
+          "Sample quality improves when the evidence covers the conditions in which the strategy is expected to operate. A system designed for both trending and range-bound markets should not be trusted after collecting almost all of its observations in one persistent trend. The same idea applies to volatility, liquidity, time of day, exchange conditions, and other factors that can materially change execution or signal behavior.",
+          "Coverage does not mean forcing every possible regime into a checklist. It means knowing which parts of the operating domain have actually been observed and which remain unknown. A good report can say that a strategy has accumulated substantial evidence in ordinary conditions while still lacking evidence during severe volatility. That is more useful than collapsing all observations into one total trade count."
+        ]
+      },
+      {
+        "heading": "Let the next decision determine the threshold",
+        "paragraphs": [
+          "Instead of asking when a strategy becomes proven, define what evidence is required for the next reversible step. Moving from historical research to paper trading may require basic robustness and clean out-of-sample behavior. Moving from paper to a tiny live experiment should require operational stability, prospective observations, conservative cost assumptions, and explicit risk limits. Increasing live size should demand still stronger evidence from actual execution.",
+          "This decision-based approach avoids two common errors: declaring victory because an arbitrary count was reached, and waiting forever for certainty that markets can never provide. A strategy becomes more trustworthy when evidence accumulates across independent observations, relevant conditions, and increasingly realistic environments. The number of trades matters, but only as one part of that larger evidence story."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["sample size", "validation", "statistics"],
+    "created_at": "2026-08-26T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "article-validation-ladder-006",
+    "kind": "article",
+    "slug": "backtest-vs-paper-vs-live-trading",
+    "title": "Backtest vs. Paper vs. Live Trading: What Each Stage Can Actually Prove",
+    "summary": "Backtests, paper trading, and live trading answer different questions. Treating them as interchangeable is one of the easiest ways to overstate strategy evidence.",
+    "sections": [
+      {
+        "heading": "Backtests test a historical reconstruction",
+        "paragraphs": [
+          "A backtest asks how a defined rule would have behaved on historical data under a set of modeling assumptions. It is the fastest place to reject obviously weak ideas and explore sensitivity to parameters, costs, and market conditions. It is also where look-ahead bias, survivorship bias, data cleaning choices, and repeated parameter search can create results that would not survive outside the research environment.",
+          "Because the historical record is already known, even careful researchers can adapt ideas to it. Out-of-sample and walk-forward methods reduce this risk but do not eliminate it. A good backtest should therefore be interpreted as evidence that an idea deserves a more realistic experiment, not as proof that the strategy will earn the same return in the future."
+        ]
+      },
+      {
+        "heading": "Paper trading tests a running decision system",
+        "paragraphs": [
+          "Paper trading introduces real time. Data arrives on a schedule, signals must be generated before outcomes are known, processes can crash, and state must survive restarts. This makes it valuable for testing whether the implemented system behaves consistently outside a static notebook. It can reveal stale inputs, duplicate events, clock mistakes, and logic that worked only because historical data was clean and complete.",
+          "The limitation is execution realism. Simulated orders do not necessarily experience queue position, partial fills, exchange restrictions, latency, market impact, or the psychological pressure of real losses. A paper engine may approximate spread and fees, but it cannot automatically reproduce every feature of an actual order book or account. Paper evidence is stronger than historical reconstruction for operational behavior, but still incomplete economically."
+        ]
+      },
+      {
+        "heading": "Live trading reveals execution and operational reality",
+        "paragraphs": [
+          "A controlled live experiment adds the things simulation cannot fully guarantee: actual fills, account rules, venue behavior, real network delays, and the consequences of placing orders into the market. This makes live evidence uniquely useful, but it also makes defects expensive. The purpose of the earlier stages is to eliminate avoidable uncertainty before financial risk is introduced.",
+          "Live trading does not magically solve the statistical problem. A small number of profitable live trades can still be luck, and a small number of losses can still be ordinary variance. Live observations are valuable because they are realistic, not because every live outcome is informative enough to change the strategy. Evidence still needs accumulation, context, and a clear rule for deciding when the data supports a change."
+        ]
+      },
+      {
+        "heading": "Use a ladder instead of a pass/fail label",
+        "paragraphs": [
+          "The safest interpretation is a ladder: historical plausibility, robustness, prospective paper evidence, controlled live evidence, and ongoing monitoring. Each rung removes a different source of uncertainty. Failure at one stage should send the idea back for revision or rejection rather than be hidden by a stronger-looking result from another stage.",
+          "This framing also prevents a common reporting mistake: saying a strategy is validated without specifying how. A reader should be able to distinguish a historical simulation from prospective paper observation and actual execution. When the evidence type is explicit, claims become easier to compare, limitations become harder to ignore, and the next experiment becomes easier to design."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["backtesting", "paper trading", "live trading", "validation"],
+    "created_at": "2026-08-28T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "guide-overfitting-007",
+    "kind": "guide",
+    "slug": "how-to-spot-overfitting-in-a-trading-strategy",
+    "title": "How to Spot Overfitting in a Trading Strategy",
+    "summary": "Overfitting happens when a rule learns the accidents of a historical sample instead of a durable relationship. Several practical tests can expose that fragility before live risk is added.",
+    "sections": [
+      {
+        "heading": "Start by counting choices, not indicators",
+        "paragraphs": [
+          "Overfitting is often described as having too many parameters, but the deeper issue is the number of choices made while searching. Trying hundreds of indicators, timeframes, filters, exits, assets, and date ranges creates many opportunities to discover an apparently strong result by chance. Even a final strategy with only two parameters can be heavily overfit if it was selected from a huge hidden search process.",
+          "Keep a research log that records failed attempts as well as the winner. This makes the effective search space visible and discourages retrospective storytelling. If the final rule appeared only after repeated inspection of the same data, treat the reported performance with more skepticism and demand stronger evidence from untouched or later data."
+        ]
+      },
+      {
+        "heading": "Test neighboring choices",
+        "paragraphs": [
+          "A durable relationship should usually tolerate small changes in implementation. If a moving-average length of 37 is excellent while 35, 36, 38, and 39 are poor, the strategy may be exploiting a historical accident. Parameter surfaces, alternative entry times, nearby thresholds, and reasonable cost assumptions help reveal whether the result is a broad plateau or a narrow spike.",
+          "Robustness does not mean every parameter must perform equally well. It means the logic should not collapse under changes too small to have a convincing economic explanation. When a tiny numerical adjustment flips a strategy from excellent to useless, confidence should fall unless there is strong independent evidence for why that exact boundary matters."
+        ]
+      },
+      {
+        "heading": "Preserve data the model has never seen",
+        "paragraphs": [
+          "An untouched validation period is valuable because it limits the ability to tune against known outcomes. The key word is untouched. If the researcher checks the validation set after every change and then keeps modifying the strategy, that data has effectively become part of development. Repeated peeking gradually removes the independence the holdout was supposed to provide.",
+          "Walk-forward testing can help when markets change over time: develop on an earlier window, evaluate on the next period, then roll forward using only information available at each step. The method still needs discipline, but it produces a sequence of prospective-like historical tests instead of one convenient split chosen after seeing the full chart."
+        ]
+      },
+      {
+        "heading": "Demand a mechanism and later evidence",
+        "paragraphs": [
+          "A plausible economic or behavioral mechanism is not proof, but it raises the bar above pattern matching. Ask why the relationship should exist, who is on the other side, what would cause it to weaken, and what observable conditions should make performance change. A mechanism gives future failures something to test instead of encouraging endless parameter repair.",
+          "Finally, let time create new evidence. Prospective paper or shadow observations are powerful because they were not available when the rule was designed. A strategy that continues to behave sensibly after the research choices are frozen is much harder to explain as pure historical overfitting. The goal is not to eliminate adaptation; it is to prevent adaptation from erasing the distinction between prediction and explanation."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["overfitting", "backtesting", "validation", "research process"],
+    "created_at": "2026-08-30T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "article-restarts-008",
+    "kind": "article",
+    "slug": "why-restart-continuity-matters-for-trading-bots",
+    "title": "Why Restart Continuity Matters for Trading Bots",
+    "summary": "A trading system that gives a different answer after a harmless restart has a research problem as well as an operations problem.",
+    "sections": [
+      {
+        "heading": "A restart is a hidden reproducibility test",
+        "paragraphs": [
+          "Long-running trading software will eventually restart because of deployment, maintenance, crashes, infrastructure changes, or operating-system updates. If the system cannot reconstruct the same relevant state afterward, later decisions may depend on whether a process happened to stay alive. That makes performance difficult to interpret because software uptime becomes an unrecorded input to the strategy.",
+          "Restart continuity does not require every cache or temporary object to survive. It requires decision-relevant state to have a clear source of truth. Open experiments, observation windows, model versions, pending outcomes, and deduplication identities are examples of state that may need durable representation so the next process can continue without inventing a new history."
+        ]
+      },
+      {
+        "heading": "Duplicate actions are especially dangerous",
+        "paragraphs": [
+          "A common failure mode is replaying work after restart without knowing whether the earlier attempt completed. In a content system that may create a duplicate post; in a trading system it can create duplicate orders or repeated state transitions. Durable idempotency keys, append-only evidence, and explicit claim or completion records help distinguish safe replay from unintended repetition.",
+          "The same principle applies to learning. If an outcome is processed twice after a crash, the system may overweight one event and mistakenly believe it has stronger evidence than it does. A reliable learning pipeline should be able to restart, re-read durable records, and reach the same logical state without silently counting the same observation again."
+        ]
+      },
+      {
+        "heading": "Time boundaries must survive too",
+        "paragraphs": [
+          "Research systems often care about what was known at a particular time. If a restarted process rebuilds a decision using newer data, it can accidentally introduce look-ahead information even though the code path appears correct. Persisting event time, decision time, observation time, and the version of relevant inputs makes later reconstruction possible without smuggling future knowledge into the past.",
+          "This is particularly important for prospective evaluation. The credibility of a result depends on showing that the decision existed before its outcome. A restart should not erase that ordering. Durable timestamps and immutable evidence references make it possible to audit the sequence even when the process that originally created the decision no longer exists."
+        ]
+      },
+      {
+        "heading": "Operational reliability improves research quality",
+        "paragraphs": [
+          "It is easy to treat restart handling as a purely engineering concern, but unreliable state weakens every later performance conclusion. When the system sometimes loses observations, duplicates decisions, or changes versions without a durable record, the resulting dataset no longer cleanly represents one strategy operating under known rules.",
+          "A strong trading bot therefore needs more than profitable logic. It needs repeatable state transitions, clear provenance, crash-safe persistence, and tests that deliberately interrupt the process. If the system can stop and resume while preserving the same evidence boundary, both operations and research become easier to trust."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["reliability", "trading bots", "evidence", "restarts"],
+    "created_at": "2026-09-01T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  }
+]

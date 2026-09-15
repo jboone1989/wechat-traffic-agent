@@ -1,0 +1,174 @@
+[
+  {
+    "artifact_id": "research-evidence-ladder-009",
+    "kind": "research",
+    "slug": "evidence-ladder-for-self-improving-trading-systems",
+    "title": "An Evidence Ladder for Self-Improving Trading Systems",
+    "summary": "A self-modifying system needs stronger evidence than a one-off model because every accepted change can alter future decisions. This note outlines a staged evidence ladder for governing those changes.",
+    "sections": [
+      {
+        "heading": "Improvement claims need a reference point",
+        "paragraphs": [
+          "A system cannot meaningfully say it improved unless the comparison identifies what changed, what stayed fixed, and which outcome is being measured. Comparing a new strategy with an old strategy on different data or under different costs mixes the effect of the change with the effect of the environment. A useful evaluation therefore freezes the target, metric definition, cohort, time boundary, and relevant execution assumptions before interpreting the result.",
+          "This sounds procedural, but it is central to learning. Without a stable reference point, a system can appear to improve simply because the evaluation moved in a favorable direction. Versioned experiments and immutable evaluation definitions make the comparison auditable and allow later reviewers to distinguish a genuine candidate improvement from a changed scoring rule."
+        ]
+      },
+      {
+        "heading": "Historical evidence should be cheap and skeptical",
+        "paragraphs": [
+          "Historical evaluation is useful for filtering ideas quickly. It can reject candidates that fail basic performance, robustness, or cost tests without waiting for new market outcomes. Because the candidate was designed with historical information available, however, historical success should remain a weak form of evidence for promotion. The same data ecosystem that inspired the change can also reward it.",
+          "A strong historical gate therefore asks for robustness rather than one optimized score. Nearby parameters, alternate windows, conservative costs, and untouched validation periods reduce the chance that a candidate survives only because it matches one accidental path. Passing this gate earns a prospective test; it does not justify treating the candidate as demonstrated improvement."
+        ]
+      },
+      {
+        "heading": "Prospective evidence separates prediction from explanation",
+        "paragraphs": [
+          "Prospective paper or shadow evaluation freezes the candidate before later outcomes are known. That ordering matters because it blocks a common source of accidental hindsight. The system records what it expected, waits for the outcome, and then evaluates the already-recorded decision. Restart-safe timestamps and immutable evidence identifiers help prove that the observation was not rewritten after the result arrived.",
+          "Prospective evidence should also compare the candidate with an appropriate baseline. A candidate that improves one metric while degrading another may not represent a useful capability gain. Direction accuracy, magnitude error, turnover, cost sensitivity, and risk can answer different questions, so the promotion rule should identify which tradeoffs are allowed before observing the result."
+        ]
+      },
+      {
+        "heading": "Promotion should be rarer than proposal",
+        "paragraphs": [
+          "An adaptive system should be allowed to generate many hypotheses while requiring much stronger evidence to change the active policy. This asymmetry makes experimentation cheap and deployment conservative. Rejection is not a system failure; it is evidence that the evaluation process prevented an unsupported change from affecting later decisions.",
+          "The ladder can continue after promotion. Small live exposure, execution comparison, regime monitoring, and the possibility of rollback provide evidence that the improvement survives contact with real operations. The central principle is that learning should be represented as a sequence of increasingly realistic tests with preserved evidence, not as a single score that gives the system permission to rewrite itself."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["machine learning", "self improvement", "validation", "evidence"],
+    "created_at": "2026-09-03T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Methodology research note. It describes an evaluation framework and does not claim any particular strategy has achieved these results.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "research-prediction-profit-010",
+    "kind": "research",
+    "slug": "prediction-accuracy-is-not-trading-profitability",
+    "title": "Prediction Accuracy Is Not the Same as Trading Profitability",
+    "summary": "Forecast error, directional accuracy, and trading profit measure different things. A useful trading evaluation needs to explain how a prediction becomes an executable decision after costs and risk.",
+    "sections": [
+      {
+        "heading": "A forecast can be accurate but economically useless",
+        "paragraphs": [
+          "Suppose a model predicts the next price very closely most of the time, but its errors become largest during the few moves that matter most. The average forecast error may look excellent while the resulting trades lose money. Another model may have larger numerical error but consistently identify moves large enough to cover costs. The usefulness of a prediction therefore depends on the decision rule built around it, not only the statistical distance between forecast and outcome.",
+          "This is why mean absolute error, signed error, directional accuracy, calibration, and realized strategy return should not be treated as interchangeable scoreboards. Each exposes a different failure mode. Magnitude error asks how far the forecast missed, signed error reveals systematic bias, direction asks whether the sign was right, and trading outcomes include thresholds, sizing, costs, and execution."
+        ]
+      },
+      {
+        "heading": "Thresholds transform continuous forecasts into actions",
+        "paragraphs": [
+          "Many systems do not trade every prediction. They act only when expected movement is large enough to justify risk and friction. That means a model can improve its average error by getting many small, irrelevant moves right without improving the subset of decisions that actually trigger trades. Evaluation should therefore inspect performance around the action boundary rather than assume that better aggregate forecasting automatically creates better orders.",
+          "Threshold behavior also creates asymmetry. A small forecast change can move one observation from no-trade to trade while leaving another unchanged. If the research metric ignores that discontinuity, the model may appear smoothly better while the executed policy changes sharply. Reporting both prediction quality and downstream decision behavior makes that transformation visible."
+        ]
+      },
+      {
+        "heading": "Costs and sizing can reverse the ranking",
+        "paragraphs": [
+          "Two models with similar forecast quality can produce very different trading outcomes if one trades more often, concentrates risk, or tends to act when spread is wide. The economically relevant comparison therefore needs realistic fees, slippage assumptions, and position rules. A model that generates fewer but more robust opportunities can outperform a more statistically accurate model once implementation friction is included.",
+          "Sizing introduces another layer. Forecast confidence is not automatically position size, and poorly calibrated confidence can magnify the worst errors. A research process should test the mapping from prediction to exposure separately from the prediction itself. This helps identify whether a disappointing result comes from forecasting, decision thresholds, or risk allocation."
+        ]
+      },
+      {
+        "heading": "Keep capability metrics and outcome metrics separate",
+        "paragraphs": [
+          "A good evaluation report can say that a model improved forecast calibration without claiming the trading system improved. It can also say that trading results improved while the evidence is not yet strong enough to attribute the change to better forecasting. Separating these statements prevents a favorable downstream outcome from being used as retroactive proof that every upstream component became smarter.",
+          "For self-improving systems, this separation is especially important. Promotion rules should specify whether they are testing prediction capability, decision quality, execution quality, or full-system economic outcomes. When each layer has its own evidence, the system can learn where improvement actually occurred instead of compressing every success into one vague claim that the AI learned to trade."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["prediction", "metrics", "profitability", "model evaluation"],
+    "created_at": "2026-09-05T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Methodology research note. It does not report live returns or recommend a trading model.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "article-calibration-011",
+    "kind": "article",
+    "slug": "what-probability-calibration-means-for-trading-models",
+    "title": "What Probability Calibration Means for Trading Models",
+    "summary": "A model that says 70% should be right about seven times in ten across comparable cases. Calibration asks whether confidence means what the model claims it means.",
+    "sections": [
+      {
+        "heading": "Confidence should have an observable meaning",
+        "paragraphs": [
+          "A classifier can rank opportunities correctly while still being badly calibrated. If events labeled 80% occur only half the time, the confidence number is too aggressive even if the highest scores remain better than the lowest scores. This matters when downstream rules use probability to decide whether to trade, how much risk to take, or which opportunities deserve attention.",
+          "Calibration is evaluated across groups of comparable predictions rather than one forecast at a time. Predictions near 60%, 70%, or 80% can be binned and compared with the fraction of outcomes that actually occurred. More flexible methods avoid hard bins, but the core question remains simple: when the model expresses a level of confidence, does reality support that interpretation over time?"
+        ]
+      },
+      {
+        "heading": "Good calibration does not guarantee useful ranking",
+        "paragraphs": [
+          "A trivial model can be calibrated while offering little discrimination. If an event happens 55% of the time, predicting 55% for every case may look well calibrated but does not identify which individual opportunities are stronger. That is why calibration should be considered alongside ranking or discrimination metrics and, ultimately, the decisions the model enables.",
+          "The opposite can happen too. A model may rank events very well but produce probabilities that are systematically too high or too low. In that case, the ordering may still be useful for selection while the raw confidence is dangerous for sizing. Separating these properties lets the system repair the confidence mapping without discarding useful ranking information."
+        ]
+      },
+      {
+        "heading": "Market regimes can change the meaning of confidence",
+        "paragraphs": [
+          "Calibration is not necessarily stable when the data-generating process changes. A confidence mapping learned during calm conditions may become unreliable during extreme volatility, structural market changes, or a shift in the instruments being traded. Global calibration statistics can hide this if the unstable regime is rare relative to the full sample.",
+          "Monitoring by time and relevant market state helps reveal drift. The goal is not to create dozens of tiny bins with noisy statistics, but to check whether the model's stated confidence remains approximately truthful in the conditions where it is being used. When evidence is sparse, the honest answer may be that calibration in that regime is unknown."
+        ]
+      },
+      {
+        "heading": "Use calibrated confidence conservatively",
+        "paragraphs": [
+          "Even well-calibrated probabilities are estimates, not guarantees. Position sizing based on them should account for estimation error, execution costs, correlation, and the possibility that future conditions differ from the calibration sample. Confidence can inform risk, but it should not bypass hard exposure limits or turn a statistical estimate into certainty.",
+          "For research reporting, calibration is valuable because it makes model confidence testable. Instead of saying the system was very confident, the evaluator can ask whether similarly confident historical predictions were realized at a matching rate. That transforms confidence from a narrative adjective into an observable property that can improve, degrade, and be monitored over time."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["calibration", "probability", "model evaluation", "risk"],
+    "created_at": "2026-09-07T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational model-evaluation content; not investment advice.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "research-evidence-ledger-012",
+    "kind": "research",
+    "slug": "why-a-trading-research-system-needs-an-evidence-ledger",
+    "title": "Why a Trading Research System Needs an Evidence Ledger",
+    "summary": "When models, strategies, and evaluations change over time, an append-only evidence trail helps distinguish genuine prospective learning from a history rewritten after outcomes are known.",
+    "sections": [
+      {
+        "heading": "Learning creates a provenance problem",
+        "paragraphs": [
+          "An adaptive system changes versions, generates hypotheses, rejects candidates, and sometimes promotes new behavior. If only the latest state is preserved, it becomes difficult to reconstruct why a change happened or what evidence was available when the decision was made. The resulting history can look cleaner than the process that actually produced it, especially when failed experiments disappear.",
+          "An evidence ledger addresses this by recording important events as durable facts rather than overwriting one mutable summary. The exact storage design can vary, but the useful properties are stable identity, timestamps, version references, and enough context to connect a decision with the later outcome used to evaluate it."
+        ]
+      },
+      {
+        "heading": "Append-only records make correction explicit",
+        "paragraphs": [
+          "Append-only does not mean mistakes can never be corrected. It means a correction becomes another event instead of silently changing the original record. This preserves the distinction between what the system believed then and what was learned later. That distinction is essential when evaluating prospective claims because hindsight should not be allowed to alter the evidence that supposedly existed before the outcome.",
+          "Hash chaining or signatures can strengthen tamper evidence, but cryptography is not a substitute for good semantics. A perfectly signed record can still be misleading if the metric definition changed without being versioned or if an outcome was linked to the wrong decision. Integrity mechanisms are most useful when combined with explicit contracts for what each record means."
+        ]
+      },
+      {
+        "heading": "The ledger should record failures too",
+        "paragraphs": [
+          "A research history containing only promoted candidates creates survivorship bias. Rejected revisions, inconclusive samples, data-quality failures, and contradictory outcomes are part of the evidence about how the learning process behaves. Keeping them makes it possible to measure how often proposals fail and whether the system is becoming better at generating useful candidates rather than merely generating more candidates.",
+          "Failure records also improve debugging. When a later model behaves unexpectedly, reviewers can trace whether the problem began in data ingestion, hypothesis generation, evaluation, promotion, or execution. Without intermediate evidence, many different failure modes collapse into the same final observation that performance changed."
+        ]
+      },
+      {
+        "heading": "Public content should consume a narrower projection",
+        "paragraphs": [
+          "The internal evidence ledger can contain information that should never be exposed publicly, including operational state, account details, or control information. A public content system should therefore consume a deliberately sanitized, versioned projection rather than reading the research database directly. This reduces the chance that a publishing feature becomes an accidental path into execution systems.",
+          "The public projection can still retain valuable provenance: stable evidence identifiers, delayed aggregate metrics, methodology version, limitations, and the status of an experiment. That is enough to create useful research content without exposing current positions or credentials. The design principle is simple: preserve the evidence needed to support the public claim, and omit everything the claim does not require."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": ["evidence ledger", "provenance", "security", "research process"],
+    "created_at": "2026-09-09T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Architecture and methodology research note; no private trading state is included.",
+    "public_safe": true
+  }
+]

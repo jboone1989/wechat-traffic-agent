@@ -41,11 +41,28 @@ class WeChatTrafficAgent:
         topics: list[TopicSignal],
         history: list[PerformanceObservation],
         audience: AudienceProfile,
+        *,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> TietuDraft:
         if not topics:
             raise ValueError("at least one evidenced topic signal is required")
         policy = policy_for(audience.objective)
-        angle = self.learner.recommend(history, audience.objective)
+        # One filtered slice for both recommendation and the composition prompt.
+        # Unspecified audience/window is unlabeled-only, not a silent pool of
+        # PR6 scoped history.
+        history = self.learner.scoped_history(
+            history,
+            audience.objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
+        angle = self.learner.recommend(
+            history,
+            audience.objective,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
         raw = await self.runtime.cognitive_probe(
             _composition_task(topics, history, angle.value, audience, policy),
             max_tokens=900,
@@ -70,8 +87,16 @@ class WeChatTrafficAgent:
         today: date | None = None,
         now: datetime | None = None,
         run_id: str | None = None,
+        audience_key: str | None = None,
+        observation_window: str | None = None,
     ) -> tuple[TietuDraft, ContentPackage]:
-        draft = await self.compose(topics, history, audience)
+        draft = await self.compose(
+            topics,
+            history,
+            audience,
+            audience_key=audience_key,
+            observation_window=observation_window,
+        )
         strategy = {"angle": draft.angle.value, "topic_mode": "provided_topics"}
         return draft, self.packager.create(
             draft,

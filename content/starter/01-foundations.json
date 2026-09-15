@@ -1,0 +1,190 @@
+[
+  {
+    "artifact_id": "guide-backtest-reading-001",
+    "kind": "guide",
+    "slug": "how-to-read-a-backtest-without-fooling-yourself",
+    "title": "How to Read a Backtest Without Fooling Yourself",
+    "summary": "A practical framework for separating a promising historical result from a result that merely looks convincing on a chart.",
+    "sections": [
+      {
+        "heading": "Start with the question, not the equity curve",
+        "paragraphs": [
+          "A backtest is useful only when it answers a question that was defined before the result was inspected. If the question keeps changing after every chart, the researcher can unconsciously search for a story that fits the data. Write down the hypothesis, the market, the decision rule, the time horizon, and the failure condition first. That turns the backtest from a picture into an experiment.",
+          "The first pass should ask what information was available at each decision point. Future prices, revised fundamentals, survivorship-biased symbol lists, or indicators calculated with data that had not yet closed can all make historical results look better than a strategy could have achieved. A realistic backtest recreates the information boundary of the decision, not merely the sequence of prices."
+        ]
+      },
+      {
+        "heading": "Separate fit from evidence",
+        "paragraphs": [
+          "Every strategy has parameters, explicit or hidden. The more combinations you try, the easier it becomes to find one that looks excellent by chance. A strong result therefore needs evidence outside the data used to choose the rule. A simple split between development data and untouched validation data is better than evaluating everything on the same history, and rolling or walk-forward tests are stronger when market conditions change over time.",
+          "Do not treat a single out-of-sample score as a magic seal of approval. Ask whether the result survives nearby parameter choices, different starting dates, alternative cost assumptions, and reasonable data-cleaning choices. Robustness does not prove that the future will resemble the past, but it reduces the chance that the reported edge is just one fragile point in a huge search space."
+        ]
+      },
+      {
+        "heading": "Make costs and execution part of the model",
+        "paragraphs": [
+          "A strategy that trades frequently can be dominated by spread, fees, slippage, latency, and market impact. These are not cosmetic deductions to add after the fact. They change which trades would have been attractive and can alter the strategy's shape. Cost assumptions should be written down, stressed, and tied to the actual venue or instrument whenever possible.",
+          "Execution realism also includes order type, fill logic, trading hours, partial fills, unavailable liquidity, and the delay between signal creation and order placement. If a backtest assumes every order receives the last displayed price, the test may be measuring an idealized data series rather than an executable process. Paper trading is a useful next step precisely because it exposes some of these gaps."
+        ]
+      },
+      {
+        "heading": "Judge the distribution, not one headline number",
+        "paragraphs": [
+          "Total return is only one summary of a path. Review drawdown depth and duration, trade count, turnover, concentration, exposure, loss clustering, and the contribution of the best few trades. A result that depends on a tiny number of outliers deserves a different level of confidence from a result supported by many reasonably independent observations.",
+          "The final question is not whether the backtest is impressive. It is whether the evidence is strong enough to justify the next experiment. A good backtest earns a more realistic test; it does not automatically earn live capital. Treat that progression as a ladder, and it becomes much harder to confuse historical fit with demonstrated operating performance."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": [
+      "backtesting",
+      "research process",
+      "risk"
+    ],
+    "created_at": "2026-08-18T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "article-paper-live-002",
+    "kind": "article",
+    "slug": "why-paper-trading-is-not-live-trading",
+    "title": "Why Paper Trading Is Not Live Trading",
+    "summary": "Paper trading is valuable because it tests a running system, but it still leaves important execution, liquidity, and behavioral risks unresolved.",
+    "sections": [
+      {
+        "heading": "What paper trading actually proves",
+        "paragraphs": [
+          "Paper trading moves a strategy out of a static historical file and into a clock that keeps running. Signals must arrive on time, data must be available when expected, processes must survive restarts, and decisions must be recorded before outcomes are known. That makes paper trading a meaningful step beyond a backtest because it can expose wiring, scheduling, stale-data, and state-continuity problems.",
+          "What it does not prove is equally important. A simulated order can be accepted instantly even when a real order would wait, partially fill, cross the spread, or fail. The simulation may not experience exchange throttling, queue position, venue outages, account restrictions, or the market impact created by its own size. Paper results therefore test the decision pipeline more than the full economic reality of execution."
+        ]
+      },
+      {
+        "heading": "The gap between quoted and executable prices",
+        "paragraphs": [
+          "Charts are built from observed prices, while trading happens through orders. The price visible when a decision is made is not guaranteed to be the price received. Bid-ask spread, latency, order type, volatility, and available depth all matter. A paper engine that fills every order at a convenient midpoint can create a stable advantage that disappears as soon as real orders interact with the book.",
+          "This gap grows when the strategy depends on speed or trades instruments with limited liquidity. Even a strategy with a long holding period can be sensitive to execution if its expected edge per trade is small. The right comparison is therefore not simply paper return versus historical return, but expected edge versus realistic friction under the size and venue the system would actually use."
+        ]
+      },
+      {
+        "heading": "Operational risk becomes visible before financial risk",
+        "paragraphs": [
+          "One of the best uses of paper trading is to test operations without paying for every defect. A live-running system must handle duplicated events, missing candles, process crashes, clock drift, delayed APIs, configuration changes, and restarts without silently changing its state. Those failures can be difficult to discover in a backtest because historical data is already complete and ordered.",
+          "A paper phase should record enough evidence to answer whether the same decision would be reconstructed after a restart and whether inputs were known at the time. That record is more valuable than a screenshot of a simulated profit curve. It establishes that the system behaved consistently under real time, which is a prerequisite for learning anything from its later outcomes."
+        ]
+      },
+      {
+        "heading": "Use paper trading as a gate, not a victory lap",
+        "paragraphs": [
+          "A strong paper result should lead to narrower questions: Did the strategy behave as designed? Were costs modeled conservatively? Were there enough independent observations? Did performance depend on one market regime? Are failures explainable from recorded evidence? The answers determine whether a limited live experiment is justified.",
+          "Moving to live trading should reduce uncertainty gradually rather than switch from simulation to full risk. Small size, explicit loss limits, kill switches, and comparison between expected and realized execution can reveal the final gaps. Paper trading is successful when it makes the next stage safer and more informative, not when it produces the largest virtual account balance."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": [
+      "paper trading",
+      "execution",
+      "validation"
+    ],
+    "created_at": "2026-08-20T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "guide-drawdown-003",
+    "kind": "guide",
+    "slug": "what-drawdown-actually-tells-you",
+    "title": "What Drawdown Actually Tells You About a Strategy",
+    "summary": "Drawdown is more than a scary percentage: depth, duration, recovery, and clustering reveal different kinds of strategy risk.",
+    "sections": [
+      {
+        "heading": "Depth is only the first dimension",
+        "paragraphs": [
+          "Maximum drawdown measures the largest peak-to-trough decline in an equity path. It is intuitive, but it compresses a long experience into one number. Two strategies can report the same maximum drawdown while feeling completely different in practice. One may suffer a fast shock and recover; the other may grind lower for months. The capital requirement, confidence burden, and opportunity cost are not the same.",
+          "That is why drawdown analysis should include duration and recovery time. A strategy that remains below its previous high for a long period can consume patience even if the decline is numerically modest. Long underwater periods also raise an important research question: has the edge temporarily struggled, or has the process changed in a way that makes the old model less relevant?"
+        ]
+      },
+      {
+        "heading": "Look for loss clustering",
+        "paragraphs": [
+          "Independent losses are uncomfortable, but clusters can be more informative. If losses arrive together during certain volatility, liquidity, or trend conditions, the strategy may have a hidden regime exposure. Grouping drawdowns by market state can reveal whether the strategy is diversified across conditions or simply making the same economic bet repeatedly under different labels.",
+          "Clustering also matters across strategies. A portfolio can contain many models and still have one dominant risk if they all react similarly during stress. Correlation measured during normal periods may understate this problem. Reviewing how strategies behave in their worst windows is often more useful than relying on an average correlation calculated over the entire sample."
+        ]
+      },
+      {
+        "heading": "Historical drawdown is not a guaranteed ceiling",
+        "paragraphs": [
+          "The worst drawdown observed so far is not a hard boundary on future losses. Historical data is finite, the market changes, and a live system can encounter execution problems that the research period never contained. Treating the previous maximum as the most the strategy can lose creates false precision precisely where uncertainty is largest.",
+          "A more useful approach is to stress assumptions. Ask what happens if expected returns shrink, losses become more correlated, costs rise, or a bad sequence lasts longer than before. The goal is not to invent an apocalyptic number. It is to see whether position sizing and risk limits still make sense when the future is somewhat worse than the historical record."
+        ]
+      },
+      {
+        "heading": "Use drawdown to design behavior before stress arrives",
+        "paragraphs": [
+          "Risk policy is easiest to write when the account is calm. Define what size changes, review steps, or stop conditions are triggered by different drawdown states before they occur. A prewritten rule does not guarantee the right decision, but it reduces the temptation to improvise under pressure or to reinterpret every loss as either meaningless noise or proof that the strategy is broken.",
+          "Drawdown is therefore both a measurement and an operating input. It tells you how painful the path has been, highlights where risk may be concentrated, and forces an explicit conversation about how much uncertainty the process can tolerate. A strategy is not ready simply because its historical drawdown looks small; it is better prepared when the response to future drawdown has already been designed."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": [
+      "drawdown",
+      "risk",
+      "portfolio"
+    ],
+    "created_at": "2026-08-22T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  },
+  {
+    "artifact_id": "article-expectancy-004",
+    "kind": "article",
+    "slug": "win-rate-vs-expectancy",
+    "title": "Win Rate vs. Expectancy: Why More Winning Trades Can Still Lose Money",
+    "summary": "A high win rate feels reassuring, but the size of wins, size of losses, and trading costs determine whether the process has positive expectancy.",
+    "sections": [
+      {
+        "heading": "Win rate answers only one question",
+        "paragraphs": [
+          "Win rate is the fraction of trades that finish positive. It is easy to understand and easy to market, which is exactly why it can become misleading. A strategy can win frequently and still lose money if its occasional losses are much larger than its routine gains. Another strategy can lose more often than it wins and still be profitable when its winners are sufficiently large.",
+          "The arithmetic starts with average outcome, not emotional comfort. Expected value combines the probability and average size of gains and losses. Costs then reduce that expectation further. This framing prevents the researcher from rewarding a strategy simply because it produces many small positive trades while hiding a tail of infrequent but destructive losses."
+        ]
+      },
+      {
+        "heading": "Pay attention to the shape of outcomes",
+        "paragraphs": [
+          "Averages can also hide important structure. If most profits come from a few extreme winners, removing or shrinking those observations may change the conclusion. If losses have a long tail, the average loss may underestimate what happens in stressed conditions. Looking at the distribution of trade outcomes gives more information than comparing two single averages.",
+          "Sequence matters operationally even when it does not change the arithmetic mean. Long losing streaks can trigger risk limits, reduce usable capital, or cause a human operator to abandon a valid process. A strategy with acceptable long-run expectancy may still be impractical if its path demands more capital or patience than the operating plan can support."
+        ]
+      },
+      {
+        "heading": "Costs can flip a small edge",
+        "paragraphs": [
+          "When expected profit per trade is small, fees and spread deserve the same attention as the signal. A one-line change in a cost assumption can move expectancy from positive to negative without changing the nominal win rate at all. This is especially relevant for high-turnover strategies, but it also matters whenever the strategy's expected edge is only a small fraction of the instrument's normal trading friction.",
+          "Researchers should therefore report expectancy after reasonable costs and stress those costs. If a strategy remains attractive only under the most favorable fill assumption, the evidence is fragile. A lower-frequency strategy with a smaller headline win rate can be economically stronger if its payoff distribution leaves more room for imperfect execution."
+        ]
+      },
+      {
+        "heading": "Choose metrics that match the decision",
+        "paragraphs": [
+          "There is no single metric that replaces judgment. Win rate can be useful for understanding the cadence of feedback, expectancy for economic value, drawdown for path risk, turnover for implementation burden, and exposure for concentration. The right report shows enough of these dimensions to explain how the strategy makes and loses money.",
+          "The practical lesson is simple: never use win rate as a synonym for quality. Ask what an average winner looks like, what an average and extreme loser look like, how many observations support the estimate, and what remains after costs. A good metric should make the mechanism easier to inspect, not give the strategy a more flattering headline."
+        ]
+      }
+    ],
+    "source_refs": [],
+    "tags": [
+      "expectancy",
+      "statistics",
+      "risk"
+    ],
+    "created_at": "2026-08-24T00:00:00+00:00",
+    "updated_at": null,
+    "disclosure": "Educational research only; not investment advice or a recommendation to trade any asset.",
+    "public_safe": true
+  }
+]

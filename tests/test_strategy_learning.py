@@ -131,10 +131,99 @@ def test_missing_primary_metric_is_not_zero_but_unscored() -> None:
     assert by_treatment["悬念前置"].scored_samples == 1
 
 
+def test_no_comparable_baseline_lift_is_unknown_not_zero() -> None:
+    learner = StrategyLearner()
+    history = [_obs("only", variable="emotion", treatment="relief", reads=900)]
+    estimate = learner.estimates(history)[0]
+    assert estimate.scored_samples == 1
+    assert estimate.avg_reward is not None
+    assert estimate.lift_vs_trailing_baseline is None
+    assert estimate.smoothed_lift is None
+
+
+def test_missing_published_at_does_not_fabricate_lift_from_sort_order() -> None:
+    learner = StrategyLearner()
+    history = [
+        PerformanceObservation(
+            post_id="z-high",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="z-high-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=5000,
+        ),
+        PerformanceObservation(
+            post_id="a-low",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="a-low-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=100,
+        ),
+    ]
+    estimate = learner.estimates(history)[0]
+    assert estimate.scored_samples == 2
+    assert estimate.lift_vs_trailing_baseline is None
+    assert estimate.smoothed_lift is None
+
+
+def test_tied_published_at_without_earlier_sample_is_unknown_not_ranked() -> None:
+    learner = StrategyLearner(min_samples=1)
+    from wechat_traffic_agent.planner import VARIABLES
+
+    tied = BASE
+    history = [
+        PerformanceObservation(
+            post_id="emotion-high",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="emotion-high-exp",
+            variable_under_test="emotion",
+            treatment_value="relief",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=5000,
+            published_at=tied,
+        ),
+        PerformanceObservation(
+            post_id="title-low",
+            angle=EmotionAngle.RELIEF,
+            experiment_id="title-low-exp",
+            variable_under_test="title_pattern",
+            treatment_value="反差式",
+            audience_key="silver",
+            objective=ContentObjective.READS,
+            observation_window="24h",
+            reads=100,
+            published_at=tied,
+        ),
+        _obs("o", variable="opening_hook", treatment="悬念前置", reads=100, minutes_offset=60),
+        _obs("i", variable="information_delta", treatment="反常识数据", reads=100, minutes_offset=120),
+        _obs("h", variable="interaction_hook", treatment="晒图征集", reads=100, minutes_offset=180),
+    ]
+    estimates = {e.variable: e for e in learner.estimates(history)}
+    assert estimates["emotion"].smoothed_lift is None
+    assert estimates["title_pattern"].smoothed_lift is None
+    decision = learner.recommend(
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
+    )
+    assert decision.variable.value not in {"emotion", "title_pattern"}
+
+
 def test_trailing_baseline_flattens_account_growth_constant_series_gives_zero_lift() -> None:
     learner = StrategyLearner()
     # 账号增长后同样 500 阅读，价值更高：收益按与近期中位数的差值衡量。
     # 恒定序列里每个点都等于 trailing 中位数 ⇒ lift 全为 0。
+    # 序列第一点没有可比基线，不进入 lift 平均（UNKNOWN，不是 0.0）。
     history = [
         _obs(f"c{i}", variable="information_delta", treatment="反常识数据", reads=500, minutes_offset=i * 60)
         for i in range(5)
@@ -143,6 +232,32 @@ def test_trailing_baseline_flattens_account_growth_constant_series_gives_zero_li
     target = estimates[0]
     assert target.lift_vs_trailing_baseline == pytest.approx(0.0)
     assert target.smoothed_lift == pytest.approx(0.0)
+
+
+def test_recommend_does_not_treat_unknown_baseline_as_neutral_zero() -> None:
+    """First-in-context high reward has no trailing baseline.
+
+    Coercing that UNKNOWN lift to 0.0 makes it look neutral and beat later
+    treatments whose true lift vs the high opener is negative.
+    """
+    learner = StrategyLearner(min_samples=1)
+    from wechat_traffic_agent.planner import VARIABLES
+
+    history = [
+        _obs("first", variable="emotion", treatment="relief", reads=5000, minutes_offset=0),
+        _obs("t", variable="title_pattern", treatment="反差式", reads=100, minutes_offset=60),
+        _obs("o", variable="opening_hook", treatment="悬念前置", reads=100, minutes_offset=120),
+        _obs("i", variable="information_delta", treatment="反常识数据", reads=100, minutes_offset=180),
+        _obs("h", variable="interaction_hook", treatment="晒图征集", reads=100, minutes_offset=240),
+    ]
+    decision = learner.recommend(
+        history,
+        candidate_variables=VARIABLES,
+        audience_key="silver",
+        observation_window="24h",
+    )
+    assert decision.exploration is False
+    assert decision.variable.value != "emotion"
 
 
 def test_recommend_explores_below_minimum_then_exploits_best_lift() -> None:

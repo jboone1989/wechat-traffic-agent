@@ -182,14 +182,20 @@ class ExperimentPlanner:
         observation_window: str | None = None,
     ) -> PlannedExperiment:
         history = list(history)
+        if observation_window is not None:
+            self.observation_window = observation_window
         if variable is not None:
             chosen_variable, selection_reason = variable, "explicit"
         else:
-            self.observation_window = observation_window
             chosen_variable, selection_reason = self.choose_variable(
                 history, audience, rotation_offset=rotation_offset
             )
-        angle = self.learner.recommend(history, audience.objective)
+        angle = self.learner.recommend(
+            history,
+            audience.objective,
+            audience_key=self.audience_key,
+            observation_window=self.observation_window,
+        )
         policy = policy_for(audience.objective)
         raw = await runtime.cognitive_probe(
             _plan_task(pattern, chosen_variable, angle, audience, policy), max_tokens=900
@@ -302,7 +308,10 @@ async def plan_experiment(
     sample_titles: Sequence[str] = (),
 ) -> PlannedExperiment:
     planner = ExperimentPlanner(
-        learner=learner, strategy_learner=strategy_learner, audience_key=audience_key
+        learner=learner,
+        strategy_learner=strategy_learner,
+        audience_key=audience_key,
+        observation_window=observation_window,
     )
     return await planner.plan(
         runtime,

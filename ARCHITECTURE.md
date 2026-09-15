@@ -5,13 +5,19 @@ This repository is a domain agent hosted by Agent Runtime.
 It owns only:
 
 - audience and topic inputs;
-- WeChat 题图 copy constraints;
-- traffic-feedback interpretation;
-- local content packaging.
+- canonical content artifacts, provenance and editorial decisions;
+- channel-specific formatting (Website and legacy WeChat 题图);
+- channel-scoped traffic-feedback interpretation;
+- local content packaging and static website candidates.
 
 It must consume, rather than reimplement, Agent Runtime facilities for identity,
 goals, durable memory, context projection, model backends, authorization,
 evidence, recovery, and execution policy.
 
-The first release has no publishing actuator. Its only actuator is a local,
-copy-ready content package for a human operator.
+The persistent generation worker has no publishing actuator. Its output is an
+immutable private draft. Local operator review can admit a separate projection
+for an explicitly requested website build; it does not deploy the build.
+
+ADR-0010 and `docs/CONTENT_AGENT_PLAN.md` define the current product boundary.
+Trading evidence enters through Agent Network only. Editorial approval cannot
+grant Trading execution permissions or mutate the source draft.

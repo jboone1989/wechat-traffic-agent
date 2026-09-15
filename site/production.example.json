@@ -1,0 +1,14 @@
+{
+  "site_name": "Content Research Lab",
+  "base_url": "https://example.com",
+  "description": "A persistent self-learning Content Agent that researches, drafts, measures channel outcomes, and improves future content strategy from durable evidence.",
+  "tagline": "The website is the interface. The agent is the product.",
+  "contact_email": null,
+  "publisher_name": "Content Research Lab",
+  "adsense_client": null,
+  "google_site_verification": null,
+  "analytics_measurement_id": null,
+  "language": "en",
+  "locale": "en_US",
+  "indexable": true
+}
