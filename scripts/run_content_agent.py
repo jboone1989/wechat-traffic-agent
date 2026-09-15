@@ -17,14 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from wechat_traffic_agent.network_service import ContentNetworkService, network_enabled  # noqa: E402
-from wechat_traffic_agent.runtime_app import (  # noqa: E402
-    APPLICATION_VERSION,
-    build_content_application,
-)
-from wechat_traffic_agent.trading_draft_worker import (  # noqa: E402
-    TradingResearchDraftWorker,
-    trading_draft_worker_enabled,
-)
+from wechat_traffic_agent.runtime_app import APPLICATION_VERSION, build_content_application  # noqa: E402
+from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker, trading_draft_worker_enabled  # noqa: E402
 
 
 def _state_root() -> Path:
@@ -53,13 +47,14 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
+
+
 def main() -> int:
-    parser = _parser()
-    args = parser.parse_args()
-    if args.health:
-        return _show_health()
-    if args.poll_seconds <= 0:
-        parser.error("poll-seconds must be positive")
+    parser = _parser(); args = parser.parse_args()
+    if args.health: return _show_health()
+    if args.poll_seconds <= 0: parser.error("poll-seconds must be positive")
 
     state_root = _state_root()
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
@@ -73,177 +68,119 @@ def main() -> int:
 
     draft_worker: TradingResearchDraftWorker | None = None
     if trading_draft_worker_enabled():
-        if network_service is None:
-            raise RuntimeError("Trading draft worker requires Agent Network membership")
+        if network_service is None: raise RuntimeError("Trading draft worker requires Agent Network membership")
         draft_worker = TradingResearchDraftWorker(runtime=app.domain_runtime, state_root=state_root)
 
     web_worker = None
-    if os.environ.get("CONTENT_WEB_DRAFTS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    if _enabled("CONTENT_WEB_DRAFTS_ENABLED"):
         from wechat_traffic_agent.web_editorial import WebEditorialWorker
-        web_worker = WebEditorialWorker(
-            runtime=app.domain_runtime, state_root=state_root,
+        web_worker = WebEditorialWorker(runtime=app.domain_runtime, state_root=state_root,
             artifacts_path=Path(os.environ.get("CONTENT_WEB_ARTIFACTS", str(ROOT / "content/starter"))),
-            site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]),
-            base_url=os.environ["CONTENT_WEB_BASE_URL"],
-        )
+            site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]), base_url=os.environ["CONTENT_WEB_BASE_URL"])
 
     web_outcome_collector = None
-    if os.environ.get("CONTENT_WEB_OUTCOMES_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    if _enabled("CONTENT_WEB_OUTCOMES_ENABLED"):
         from wechat_traffic_agent.web_outcome_evidence import WebsiteOutcomeCollector
-        web_outcome_collector = WebsiteOutcomeCollector(
-            state_root=state_root,
+        web_outcome_collector = WebsiteOutcomeCollector(state_root=state_root,
             access_log=Path(os.environ.get("CONTENT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log")),
-            account=os.environ["CONTENT_WEB_BASE_URL"],
-        )
+            account=os.environ["CONTENT_WEB_BASE_URL"])
+
+    engagement_outcome_collector = None
+    if _enabled("CONTENT_WEB_ENGAGEMENT_ENABLED"):
+        from wechat_traffic_agent.website_engagement import WebsiteEngagementOutcomeCollector
+        engagement_outcome_collector = WebsiteEngagementOutcomeCollector(
+            state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"])
 
     website_experiment_evaluator = None
-    if os.environ.get("CONTENT_WEBSITE_EXPERIMENTS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    if _enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"):
         from wechat_traffic_agent.website_experiment_evaluation import WebsiteExperimentEvaluator
-        website_experiment_evaluator = WebsiteExperimentEvaluator(
-            state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
-        )
+        website_experiment_evaluator = WebsiteExperimentEvaluator(state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"])
 
     gsc_collector = None
-    if os.environ.get("CONTENT_GSC_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    if _enabled("CONTENT_GSC_ENABLED"):
         from wechat_traffic_agent.gsc_search_console import GoogleSearchConsoleCollector
-        gsc_collector = GoogleSearchConsoleCollector.from_environment(
-            state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
-        )
+        gsc_collector = GoogleSearchConsoleCollector.from_environment(state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"])
 
     continuous_loop = None
-    if os.environ.get("CONTENT_CONTINUOUS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+    if _enabled("CONTENT_CONTINUOUS_ENABLED"):
         from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
         publisher = None
-        if os.environ.get("CONTENT_AUTO_PUBLISH_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        if _enabled("CONTENT_AUTO_PUBLISH_ENABLED"):
             from wechat_traffic_agent.automatic_website import AutomaticWebsitePublisher
             from wechat_traffic_agent.channels.web import StaticWebsiteConfig
             config = StaticWebsiteConfig.model_validate_json(Path(os.environ["CONTENT_AUTO_SITE_CONFIG"]).read_text())
             if config.base_url != os.environ["CONTENT_WEB_BASE_URL"].rstrip("/"):
                 raise ValueError("automatic publisher and source inventory base URLs must match")
-            publisher = AutomaticWebsitePublisher(state_root=state_root,
-                public_root=Path(os.environ["CONTENT_AUTO_PUBLIC_ROOT"]),
+            publisher = AutomaticWebsitePublisher(state_root=state_root, public_root=Path(os.environ["CONTENT_AUTO_PUBLIC_ROOT"]),
                 starter_path=ROOT / "content/starter", config=config)
         continuous_loop = ContinuousContentLoop(runtime=app.domain_runtime, state_root=state_root,
             artifacts_path=ROOT / "content/starter", site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]),
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
-            feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]),
-            interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), publisher=publisher,
-            mind=content_mind, capability_runtime=app.runtime,
-            website_experiments=os.environ.get("CONTENT_WEBSITE_EXPERIMENTS_ENABLED", "").lower()
-                in {"1", "true", "yes", "on"})
+            feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
+            publisher=publisher, mind=content_mind, capability_runtime=app.runtime,
+            website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"))
 
     stopping = False
-
     def _stop(_signum, _frame):
-        nonlocal stopping
-        stopping = True
-
-    signal.signal(signal.SIGTERM, _stop)
-    signal.signal(signal.SIGINT, _stop)
+        nonlocal stopping; stopping = True
+    signal.signal(signal.SIGTERM, _stop); signal.signal(signal.SIGINT, _stop)
     print(f"{APPLICATION_VERSION} publish_mode={app.status_observation()['publish_mode']}")
     try:
         while not stopping:
-            now = datetime.now(timezone.utc).replace(microsecond=0)
-            as_of = now.isoformat()
-            tick_failed = False
+            now = datetime.now(timezone.utc).replace(microsecond=0); as_of = now.isoformat(); tick_failed = False
             try:
                 guard = network_service.execution_lock if network_service is not None else nullcontext()
-                with guard:
-                    result = app.run_tick(as_of_time=as_of)
+                with guard: result = app.run_tick(as_of_time=as_of)
                 print(json.dumps(result.to_payload(), ensure_ascii=False, sort_keys=True))
             except Exception as exc:  # noqa: BLE001
                 tick_failed = True
-                print(json.dumps({
-                    "application_version": APPLICATION_VERSION,
-                    "status": "ERROR",
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                }, sort_keys=True), file=sys.stderr)
+                print(json.dumps({"application_version": APPLICATION_VERSION, "status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}, sort_keys=True), file=sys.stderr)
 
             draft_failed = False
             if not tick_failed and draft_worker is not None and result.generation_ready:
                 try:
-                    draft_result = asyncio.run(draft_worker.run_once(now=now))
-                    print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
+                    draft_result = asyncio.run(draft_worker.run_once(now=now)); print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
-                    draft_failed = True
-                    print(json.dumps({
-                        "draft_worker": {
-                            "status": "ERROR",
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                        }
-                    }, sort_keys=True), file=sys.stderr)
+                    draft_failed = True; print(json.dumps({"draft_worker": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
 
             if not tick_failed and web_worker is not None and result.generation_ready:
                 try:
-                    web_result = asyncio.run(web_worker.run_once(now=now))
-                    print(json.dumps({"web_editorial": web_result}, ensure_ascii=False, sort_keys=True))
+                    web_result = asyncio.run(web_worker.run_once(now=now)); print(json.dumps({"web_editorial": web_result}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:
-                    draft_failed = True
-                    print(json.dumps({"web_editorial": {"status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}}, sort_keys=True), file=sys.stderr)
+                    draft_failed = True; print(json.dumps({"web_editorial":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
 
             if not tick_failed and gsc_collector is not None:
                 try:
-                    gsc_result = gsc_collector.collect(now=now)
-                    print(json.dumps({"google_search_console": gsc_result}, ensure_ascii=False, sort_keys=True))
+                    print(json.dumps({"google_search_console": gsc_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({
-                        "google_search_console": {
-                            "status": "ERROR",
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                            "publication_authority": False,
-                        }
-                    }, sort_keys=True), file=sys.stderr)
+                    print(json.dumps({"google_search_console":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
 
             if not tick_failed and continuous_loop is not None and result.generation_ready:
-                continuous_result = asyncio.run(continuous_loop.run_once(now=now))
-                print(json.dumps({"continuous_content": continuous_result}, ensure_ascii=False, sort_keys=True))
-                if continuous_result["status"] == "ERROR":
-                    draft_failed = True
+                continuous_result = asyncio.run(continuous_loop.run_once(now=now)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
+                if continuous_result["status"] == "ERROR": draft_failed = True
 
             if web_outcome_collector is not None:
-                try:
-                    outcome_result = web_outcome_collector.collect(now=now)
-                    print(json.dumps({"website_outcomes": outcome_result}, ensure_ascii=False, sort_keys=True))
+                try: print(json.dumps({"website_outcomes": web_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({
-                        "website_outcomes": {
-                            "status": "ERROR",
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                            "publication_authority": False,
-                            "learning_authority": False,
-                        }
-                    }, sort_keys=True), file=sys.stderr)
+                    print(json.dumps({"website_outcomes":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False,"learning_authority":False}}, sort_keys=True), file=sys.stderr)
+
+            if engagement_outcome_collector is not None:
+                try: print(json.dumps({"website_engagement": engagement_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({"website_engagement":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False,"learning_authority":False}}, sort_keys=True), file=sys.stderr)
 
             if website_experiment_evaluator is not None:
-                try:
-                    evaluation = website_experiment_evaluator.evaluate(as_of=now)
-                    print(json.dumps({"website_experiment_evaluation": evaluation}, ensure_ascii=False, sort_keys=True))
+                try: print(json.dumps({"website_experiment_evaluation": website_experiment_evaluator.evaluate(as_of=now)}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({
-                        "website_experiment_evaluation": {
-                            "status": "ERROR",
-                            "error_type": type(exc).__name__,
-                            "message": str(exc),
-                            "learning_authority": False,
-                            "strategy_control": False,
-                        }
-                    }, sort_keys=True), file=sys.stderr)
+                    print(json.dumps({"website_experiment_evaluation":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"learning_authority":False,"strategy_control":False}}, sort_keys=True), file=sys.stderr)
 
-            if args.once:
-                return 1 if tick_failed or draft_failed else 0
+            if args.once: return 1 if tick_failed or draft_failed else 0
             deadline = time.monotonic() + args.poll_seconds
-            while not stopping and time.monotonic() < deadline:
-                time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+            while not stopping and time.monotonic() < deadline: time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         return 0
     finally:
-        if gsc_collector is not None:
-            gsc_collector.close()
-        if network_service is not None:
-            network_service.stop()
+        if gsc_collector is not None: gsc_collector.close()
+        if network_service is not None: network_service.stop()
         app.close()
 
 
