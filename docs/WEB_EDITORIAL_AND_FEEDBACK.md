@@ -90,3 +90,25 @@ per-run writing lesson is retained separately as `practice_version`. Mature
 pageview evidence keeps the experiment ID in its evidence references. This
 creates prospectively comparable samples; it does not yet select a winner,
 mutate future strategy, establish adequate sample size, or claim causality.
+
+## Website experiment evaluation
+
+The runner can summarize mature experiment evidence without changing strategy.
+Only 24-hour `http_pageviews` from the Website account, canonical Nginx source,
+unchanged agent content, and the v2 opening experiment are eligible. Every sample
+must also reconcile to its local validated v2 publication receipt; an imported
+row with a matching-looking strategy label is not enough. Other windows,
+channels, cohorts and editor-modified samples stay isolated.
+
+Each treatment must have at least 12 mature samples before comparison. The
+primary decision cohort is then frozen to the earliest 12 mature samples per
+treatment, preventing repeated peeking from eventually crossing a significance
+threshold by chance. The primary estimate is the difference in mean 24-hour
+pageviews. A deterministic randomization-test diagnostic and a minimum 10%
+observed lift are both required before the report may say that evidence favors a
+treatment. Otherwise the state remains `OBSERVING` or `NO_CLEAR_DIFFERENCE`.
+
+Evaluation snapshots are immutable for a fixed evidence set. They explicitly
+carry `learning_authority=false`, `strategy_control=false`, and
+`causal_claim=false`. The diagnostic does not itself promote a treatment or
+rewrite future assignments; adoption remains a separate governed step.

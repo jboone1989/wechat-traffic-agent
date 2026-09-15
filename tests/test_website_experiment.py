@@ -7,16 +7,19 @@ import pytest
 from pydantic import ValidationError
 
 from wechat_traffic_agent.automatic_website import AutomaticWebsitePublisher
-from wechat_traffic_agent.channel_evidence import ChannelEvidenceStore
+from wechat_traffic_agent.channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from wechat_traffic_agent.channels.web import StaticWebsiteConfig
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
 from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop as GoalContentLoop
 from wechat_traffic_agent.web_editorial import digest
 from wechat_traffic_agent.web_outcome_evidence import WebsiteOutcomeCollector
 from wechat_traffic_agent.website_experiment import (
-    WebsiteExperimentBinding,
-    bind_website_experiment,
-    experiment_compliance,
+    EXPERIMENT_VERSION, WebsiteExperimentBinding,
+    bind_website_experiment, experiment_compliance,
+)
+import wechat_traffic_agent.website_experiment_evaluation as evaluation_module
+from wechat_traffic_agent.website_experiment_evaluation import (
+    WebsiteExperimentEvaluator, MIN_SAMPLES_PER_TREATMENT,
 )
 from test_content_loop import NOW, PARAGRAPH
 from test_web_editorial import site
@@ -325,3 +328,211 @@ def test_goal_loop_holds_noncompliant_treatment_without_site_activation(tmp_path
     assert (publisher.public / "current").resolve() == before
     cycle = next((worker.root / "cycles").iterdir())
     assert not (cycle / "publication.json").exists()
+
+
+def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,
+                              candidate_matches=True, write_publication=True,
+                              observed_delay_hours=0):
+    published_at = NOW + timedelta(hours=index)
+    binding = None
+    for salt in range(32):
+        cycle = f"eval-{treatment}-{index}-{salt}"
+        candidate = bind_website_experiment(
+            root / "eval-bindings" / f"{cycle}.json",
+            cycle=cycle, decided_at=published_at - timedelta(minutes=5),
+        )
+        if candidate.treatment_value == treatment:
+            binding = candidate
+            break
+    assert binding is not None
+    publication_id = f"pub-{treatment}-{index}-{window_hours}"
+    content_hash = ("a" if candidate_matches else "b") * 64
+    if write_publication:
+        cycle_root = root / "content/continuous/cycles" / binding.cycle
+        cycle_root.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            "revision": publication_id,
+            "artifact_id": f"artifact-{treatment}-{index}",
+            "outcome_attribution": {
+                "schema_version": "website-publication-attribution.v2",
+                "published_at": published_at.isoformat(),
+                "public_route": f"/articles/{publication_id}/",
+                "published_content_sha256": "a" * 64,
+                "agent_candidate_sha256": content_hash,
+                "topic": "evidence", "title_version": "title-v1",
+                "structure_version": "structure-v1",
+                "strategy_version": binding.strategy_version,
+                "practice_version": "lesson:test",
+                "experiment": binding.model_dump(mode="json"),
+            },
+        }
+        (cycle_root / "publication.json").write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    row = ChannelEvidence(
+        channel="website", account="https://example.com", publication_id=publication_id,
+        artifact_id=f"artifact-{treatment}-{index}", published_content_sha256="a" * 64,
+        agent_candidate_sha256=content_hash, topic="evidence", title_version="title-v1",
+        structure_version="structure-v1", strategy_version=binding.strategy_version,
+        objective="website_pageviews", distribution_cohort="public-web-http-requests:v1",
+        metric="http_pageviews", metric_definition="bounded pageviews", unit="count",
+        value=float(value), published_at=published_at, window_start=published_at,
+        window_end=published_at + timedelta(hours=window_hours),
+        observed_at=published_at + timedelta(hours=window_hours + observed_delay_hours), revision=1,
+        source="nginx-access-log:v1",
+        evidence_refs=(f"website-experiment:{binding.experiment_id}",),
+    )
+    ChannelEvidenceStore(root / "content/channel_evidence").record(row)
+    return row
+
+
+def test_experiment_evaluator_observes_until_both_arms_reach_minimum(tmp_path):
+    evaluator = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    )
+    empty = evaluator.evaluate(as_of=NOW + timedelta(days=10))
+    assert empty["status"] == "NO_EVIDENCE"
+    assert empty["strategy_control"] is False
+    for index in range(MIN_SAMPLES_PER_TREATMENT - 1):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=10,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=1,
+        )
+    observing = evaluator.evaluate(as_of=NOW + timedelta(days=20))
+    assert observing["status"] == "OBSERVING"
+    assert [row["samples"] for row in observing["treatments"]] == [
+        MIN_SAMPLES_PER_TREATMENT - 1, MIN_SAMPLES_PER_TREATMENT - 1,
+    ]
+    assert observing["favored_treatment"] is None
+
+
+def test_experiment_evaluator_can_flag_clear_treatment_evidence(tmp_path):
+    for index in range(MIN_SAMPLES_PER_TREATMENT):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=12,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=1,
+        )
+    evaluator = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    )
+    first = evaluator.evaluate(as_of=NOW + timedelta(days=20))
+    # Later contradictory samples cannot create repeated-peeking decisions in v1;
+    # the first 12 mature observations per arm are the fixed primary cohort.
+    for index in range(3):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=1000 + index, value=0,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=1100 + index, value=100,
+        )
+    second = evaluator.evaluate(as_of=NOW + timedelta(days=100))
+    assert first["status"] == "EVIDENCE_FAVORS_TREATMENT"
+    assert first["favored_treatment"] == "reader_question_first"
+    assert first["permutation_p_value"] <= 0.05
+    assert first["relative_lift_of_higher"] >= 0.10
+    assert first["evaluation_ref"] == second["evaluation_ref"]
+    assert second["favored_treatment"] == "reader_question_first"
+    assert [row["samples"] for row in second["treatments"]] == [12, 12]
+    assert first["learning_authority"] is False
+    assert first["strategy_control"] is False
+    assert first["causal_claim"] is False
+
+
+def test_experiment_evaluator_reports_no_clear_difference_for_equal_outcomes(tmp_path):
+    for index in range(MIN_SAMPLES_PER_TREATMENT):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=5,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=5,
+        )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    assert result["status"] == "NO_CLEAR_DIFFERENCE"
+    assert result["permutation_p_value"] == 1.0
+    assert result["favored_treatment"] is None
+
+
+def test_experiment_evaluator_excludes_wrong_window_and_editor_modified_samples(tmp_path):
+    _record_evaluation_sample(
+        tmp_path, treatment="reader_question_first", index=1, value=99, window_hours=48,
+    )
+    _record_evaluation_sample(
+        tmp_path, treatment="evidence_first", index=2, value=99, candidate_matches=False,
+    )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    assert result["status"] == "NO_EVIDENCE"
+    assert all(row["samples"] == 0 for row in result["treatments"])
+
+
+def test_experiment_evaluator_rejects_evidence_without_v2_publication_receipt(tmp_path):
+    _record_evaluation_sample(
+        tmp_path, treatment="reader_question_first", index=1, value=99,
+        write_publication=False,
+    )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com", min_samples_per_treatment=2,
+    ).evaluate(as_of=NOW + timedelta(days=10))
+    assert result["status"] == "NO_EVIDENCE"
+    assert all(row["samples"] == 0 for row in result["treatments"])
+
+
+def test_fixed_horizon_uses_publication_order_not_delayed_collection_order(tmp_path):
+    _record_evaluation_sample(
+        tmp_path, treatment="reader_question_first", index=0, value=100,
+        observed_delay_hours=200,
+    )
+    _record_evaluation_sample(
+        tmp_path, treatment="reader_question_first", index=1, value=100,
+        observed_delay_hours=100,
+    )
+    _record_evaluation_sample(
+        tmp_path, treatment="reader_question_first", index=2, value=0,
+    )
+    _record_evaluation_sample(
+        tmp_path, treatment="evidence_first", index=100, value=1,
+    )
+    _record_evaluation_sample(
+        tmp_path, treatment="evidence_first", index=101, value=1,
+    )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com", min_samples_per_treatment=2,
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    reader = next(
+        row for row in result["treatments"] if row["treatment"] == "reader_question_first"
+    )
+    assert reader["publication_ids"] == [
+        "pub-reader_question_first-0-24",
+        "pub-reader_question_first-1-24",
+    ]
+    assert reader["mean_pageviews"] == 100.0
+    assert result["favored_treatment"] is None
+
+
+def test_experiment_evaluator_budget_exceeded_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(evaluation_module, "MAX_SAMPLES_PER_TREATMENT", 2)
+    for index in range(3):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=10,
+        )
+    _record_evaluation_sample(
+        tmp_path, treatment="evidence_first", index=100, value=1,
+    )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com", min_samples_per_treatment=2,
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    assert result["status"] == "INPUT_BUDGET_EXCEEDED"
+    reader = next(
+        row for row in result["treatments"] if row["treatment"] == "reader_question_first"
+    )
+    assert reader["samples"] == 3
+    assert len(reader["publication_ids"]) == 2
+    assert reader["mean_pageviews"] is None
+    assert result["strategy_control"] is False
