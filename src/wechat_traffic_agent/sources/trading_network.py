@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,9 +27,13 @@ TRADING_RESEARCH_MEDIA_TYPE = "application/vnd.trading.public-research+json"
 class _NetworkLike(Protocol):
     identity: Any
 
-    async def require(self, capability: str, version: str | None = None) -> Any: ...
+    async def discover_with_context(
+        self, capability: str, *, version: str | None = None, max_results: int = 10
+    ) -> Any: ...
 
     async def connect(self, agent: Any) -> Any: ...
+
+    async def submit_acceptance(self, acceptance: Any) -> dict[str, Any]: ...
 
 
 class TradingResearchItem(BaseModel):
@@ -93,10 +97,15 @@ class TradingResearchNetworkSource:
         if since is not None and (since.tzinfo is None or since.utcoffset() is None):
             raise ValueError("since must be timezone-aware")
 
-        agent = await self._network.require(
+        discovery = await self._network.discover_with_context(
             CAP_TRADING_PUBLIC_RESEARCH,
             version=CAP_TRADING_PUBLIC_RESEARCH_VERSION,
+            max_results=10,
         )
+        agents = list(getattr(discovery, "agents", None) or [])
+        if not agents:
+            raise RuntimeError("Agent Network returned no Trading public research provider")
+        agent = agents[0]
         provider_id = str(getattr(agent, "agent_id", "") or "")
         if not provider_id:
             raise ValueError("Agent Network returned a provider without agent_id")
@@ -104,6 +113,8 @@ class TradingResearchNetworkSource:
         request: dict[str, Any] = {"limit": limit}
         if since is not None:
             request["since"] = since.isoformat()
+        contract_metadata = {"content_agent_request": request}
+        contract_metadata.update(dict(discovery.contract_metadata(provider_id)))
         task = await peer.propose_task(
             capability=CAP_TRADING_PUBLIC_RESEARCH,
             capability_version=CAP_TRADING_PUBLIC_RESEARCH_VERSION,
@@ -115,7 +126,7 @@ class TradingResearchNetworkSource:
             ],
             deliverables=[TRADING_RESEARCH_ARTIFACT_TYPE],
             verification={"required": False},
-            metadata={"content_agent_request": request},
+            metadata=contract_metadata,
             side_effects="NONE",
         )
         state = str(((task or {}).get("status") or {}).get("state") or "").lower()
@@ -141,8 +152,14 @@ class TradingResearchNetworkSource:
         if envelope.producer_agent_id != provider_id:
             raise ValueError("research envelope producer does not match discovered Trading agent")
 
+        contract = dict(((task or {}).get("metadata") or {}).get("contract") or {})
+        network_evidence = dict(((task or {}).get("metadata") or {}).get("network_evidence") or {})
+        await self._accept_delivery(
+            contract=contract,
+            manifest=manifest,
+            network_evidence=network_evidence,
+        )
         artifact_ref = _artifact_evidence_ref(manifest)
-        contract = ((task or {}).get("metadata") or {}).get("contract") or {}
         contract_id = str(contract.get("contract_id") or "")
         network_refs = tuple(
             ref for ref in (artifact_ref, f"network-contract:{contract_id}" if contract_id else "") if ref
@@ -167,6 +184,51 @@ class TradingResearchNetworkSource:
                 )
             )
         return topics
+
+    async def _accept_delivery(
+        self,
+        *,
+        contract: dict[str, Any],
+        manifest: dict[str, Any],
+        network_evidence: dict[str, Any],
+    ) -> None:
+        contract_id = str(contract.get("contract_id") or "")
+        contract_hash = str(contract.get("contract_hash") or "")
+        if not contract_id or not contract_hash:
+            raise ValueError("Trading task is missing signed contract evidence")
+        if network_evidence.get("lifecycle") != "DELIVERED":
+            raise ValueError("Trading task is missing DELIVERED Network evidence")
+        if str(network_evidence.get("contract_id") or "") != contract_id:
+            raise ValueError("Trading delivery evidence contract_id mismatch")
+        if str(network_evidence.get("contract_hash") or "") != contract_hash:
+            raise ValueError("Trading delivery evidence contract_hash mismatch")
+        if str(network_evidence.get("artifact_id") or "") != str(manifest.get("artifact_id") or ""):
+            raise ValueError("Trading delivery evidence artifact_id mismatch")
+        if _normalized_sha256(network_evidence.get("artifact_hash")) != _normalized_sha256(manifest.get("sha256")):
+            raise ValueError("Trading delivery evidence artifact hash mismatch")
+        manifest_hash = str(network_evidence.get("artifact_manifest_hash") or "")
+        if not manifest_hash.startswith("sha256:"):
+            raise ValueError("Trading delivery evidence manifest hash is invalid")
+        identity = getattr(self._network, "identity", None)
+        if identity is None or not getattr(identity, "agent_id", None) or not getattr(identity, "key_id", None):
+            raise RuntimeError("Content Agent Network identity is required for acceptance")
+        acceptance = {
+            "schema_version": "0.2",
+            "contract_id": contract_id,
+            "requester_agent_id": str(identity.agent_id),
+            "requester_key_id": str(identity.key_id),
+            "result": "ACCEPTED",
+            "artifact_id": str(manifest["artifact_id"]),
+            "artifact_manifest_hash": manifest_hash,
+            "verification_id": None,
+            "contract_hash": contract_hash,
+            "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "signature": "",
+        }
+        acceptance["signature"] = identity.sign_object(acceptance)
+        stored = await self._network.submit_acceptance(acceptance)
+        if stored.get("stored") is not True:
+            raise RuntimeError("Content Agent acceptance was not persisted by Agent Network")
 
     async def _load_artifact(self, manifest: dict[str, Any]) -> bytes:
         if self._artifact_loader is not None:
