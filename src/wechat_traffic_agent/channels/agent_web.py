@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 
 from ..content_artifact import ContentArtifact
+from .agent_home_experience import agent_home_css, agent_home_script, render_agent_home
 from .web import StaticWebChannel
 
 
@@ -22,47 +23,18 @@ class ContentAgentWebChannel(StaticWebChannel):
             f'<a class="text-link" href="/{name.lower()}/">Browse {html.escape(name)} →</a></section>'
             for name, items in categories.items()
         )
-        loop_cards = (
-            '<article class="card"><p class="eyebrow">Observe</p><h3>Find what is worth understanding</h3>'
-            '<p>The agent reads site coverage, content gaps, source evidence, and research signals before choosing what to investigate.</p></article>'
-            '<article class="card"><p class="eyebrow">Decide</p><h3>Form and rank content hypotheses</h3>'
-            '<p>Topic, structure, and channel choices are treated as hypotheses with explicit evidence rather than as one-off prompts.</p></article>'
-            '<article class="card"><p class="eyebrow">Create</p><h3>Draft with provenance and uncertainty</h3>'
-            '<p>The agent produces evidence-aware drafts, while public admission remains a separate human-controlled decision.</p></article>'
-            '<article class="card"><p class="eyebrow">Learn</p><h3>Use outcomes to improve the next choice</h3>'
-            '<p>Channel-scoped outcomes become durable evidence for future strategy decisions instead of silently rewriting past results.</p></article>'
-        )
-        body = (
-            '<section class="hero">'
-            '<p class="eyebrow">Persistent self-learning Content Agent</p>'
-            f'<h1>{html.escape(self.config.tagline)}</h1>'
-            f'<p>{html.escape(self.config.description)}</p>'
-            '<div class="hero-actions"><a class="button" href="/about/">Meet the agent</a>'
-            '<a class="text-link" href="/methodology/">How its learning is evaluated →</a></div>'
-            '</section>'
-            '<section class="trust-strip"><span>Persistent identity</span><span>Evidence-driven learning</span>'
-            '<span>Human-gated publishing</span><span>No trading execution access</span></section>'
-            '<section class="section-head"><div><p class="eyebrow">The agent loop</p>'
-            '<h2>The website is the interface. The agent is the product.</h2></div></section>'
-            f'<div class="card-grid">{loop_cards}</div>'
-            '<section class="section-head"><div><p class="eyebrow">Latest</p><h2>Recent publishing</h2></div>'
-            '<a class="text-link" href="/archive/">View archive →</a></section>'
-            f'<div class="card-grid">{latest_html}</div>'
-            '<section class="section-head"><div><p class="eyebrow">Explore</p><h2>What the agent has published</h2></div></section>'
-            f'<div class="category-grid">{category_html}</div>'
-            '<section class="method-card"><div><p class="eyebrow">Governed learning</p>'
-            '<h2>Learning is continuous. Publishing is gated.</h2>'
-            '<p>Outcome evidence can change future content strategy, but it cannot bypass editorial admission. '
-            'Draft generation, learning, and public publication remain separate authority boundaries.</p></div>'
-            '<a class="button secondary" href="/editorial-policy/">Editorial policy</a></section>'
-        )
-        return self._layout(
-            self.config.site_name,
-            self.config.description,
-            "/",
-            body,
-            structured_data=self._website_schema(),
-        )
+        body = render_agent_home(self.config, latest_html, category_html)
+        return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
+
+    def _layout(self, *args, **kwargs) -> str:
+        route = args[2] if len(args) > 2 else kwargs.get("route")
+        page = super()._layout(*args, **kwargs)
+        if route != "/":
+            return page
+        return page.replace("<body>", '<body class="agent-home">', 1).replace("</body>", agent_home_script() + "</body>", 1)
+
+    def _css(self) -> str:
+        return super()._css() + agent_home_css()
 
     def _static_pages(self) -> dict[str, tuple[str, str, str]]:
         pages = super()._static_pages()
