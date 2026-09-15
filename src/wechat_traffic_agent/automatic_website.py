@@ -75,10 +75,15 @@ class AutomaticWebsitePublisher:
         published_content = _public_content_digest(public_artifact)
         if candidate_content != published_content:
             raise ValueError('automatic admission changed reader-visible content')
+        pending = self.public / 'current.next'
+        pending.unlink(missing_ok=True)
+        pending.symlink_to(target)
         published_at = self.clock()
         if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
+            pending.unlink(missing_ok=True)
             raise ValueError('publication clock must return a timezone-aware datetime')
         published_at = published_at.astimezone(timezone.utc)
+        os.replace(pending, self.public / 'current')
         attribution = {
             'schema_version': 'website-publication-attribution.v1',
             'published_at': published_at.isoformat(),
@@ -98,10 +103,6 @@ class AutomaticWebsitePublisher:
                    'revision': revision, 'artifact_id': artifact.artifact_id,
                    'audit': audit.model_dump(mode='json'), 'public_root': str(target),
                    'outcome_attribution': attribution}
-        pending = self.public / 'current.next'
-        pending.unlink(missing_ok=True)
-        pending.symlink_to(target)
-        os.replace(pending, self.public / 'current')
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         return receipt
 
