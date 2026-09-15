@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -48,6 +49,7 @@ class ContentNetworkService:
         capabilities: tuple[str, ...] = DEFAULT_CAPABILITIES,
         startup_timeout_seconds: float = 10.0,
         lease_seconds: int = 1800,
+        engagement_enabled: bool = False,
     ) -> None:
         if port <= 0 or port > 65535:
             raise ValueError("network port is invalid")
@@ -71,6 +73,7 @@ class ContentNetworkService:
         self.capability_ids = tuple(dict.fromkeys(capabilities))
         self.startup_timeout_seconds = float(startup_timeout_seconds)
         self.lease_seconds = int(lease_seconds)
+        self.engagement_enabled = bool(engagement_enabled)
         self.execution_lock = RLock()
         self._server: Any | None = None
         self._thread: Thread | None = None
@@ -95,6 +98,7 @@ class ContentNetworkService:
             agent_id=os.environ.get("CONTENT_NETWORK_AGENT_ID", DEFAULT_AGENT_ID),
             capabilities=caps,
             lease_seconds=int(os.environ.get("CONTENT_NETWORK_LEASE_SECONDS", "1800")),
+            engagement_enabled=(os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
         )
 
     @property
@@ -199,6 +203,27 @@ class ContentNetworkService:
             self._joined.set()
 
         app = A2AServer(identity=identity, card=card, handlers=handlers).starlette_app(on_start=startup)
+        if self.engagement_enabled:
+            from starlette.responses import JSONResponse, Response
+            from starlette.routing import Route
+            from .website_engagement import MAX_BODY_BYTES, WebsiteEngagementStore, ingest_engagement_body
+
+            engagement_store = WebsiteEngagementStore(self.root / "content" / "website_engagement")
+
+            async def engagement_endpoint(request):
+                content_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if content_type != "application/json":
+                    return JSONResponse({"status": "UNSUPPORTED_MEDIA_TYPE"}, status_code=415)
+                body = await request.body()
+                if len(body) > MAX_BODY_BYTES:
+                    return Response(status_code=413)
+                try:
+                    result = ingest_engagement_body(engagement_store, body, observed_at=datetime.now(timezone.utc))
+                except ValueError as exc:
+                    return JSONResponse({"status": "INVALID", "error_type": type(exc).__name__}, status_code=400)
+                return JSONResponse(result, status_code=202)
+
+            app.routes.append(Route("/events", engagement_endpoint, methods=["POST"]))
         server = uvicorn.Server(uvicorn.Config(app, host=self.bind_host, port=self.port, log_level="info"))
         self._server = server
         self._thread = Thread(target=server.run, name="content-agent-network", daemon=True)

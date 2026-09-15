@@ -2,7 +2,7 @@ name: Content Runtime Network
 
 on:
   push:
-    branches: ["feat/content-runtime-vb-network"]
+    branches: ["main"]
   pull_request:
     paths:
       - "pyproject.toml"
