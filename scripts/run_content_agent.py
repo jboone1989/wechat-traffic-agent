@@ -103,6 +103,13 @@ def main() -> int:
             state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
         )
 
+    gsc_collector = None
+    if os.environ.get("CONTENT_GSC_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        from wechat_traffic_agent.gsc_search_console import GoogleSearchConsoleCollector
+        gsc_collector = GoogleSearchConsoleCollector.from_environment(
+            state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
+        )
+
     continuous_loop = None
     if os.environ.get("CONTENT_CONTINUOUS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
         from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
@@ -176,6 +183,20 @@ def main() -> int:
                     draft_failed = True
                     print(json.dumps({"web_editorial": {"status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}}, sort_keys=True), file=sys.stderr)
 
+            if not tick_failed and gsc_collector is not None:
+                try:
+                    gsc_result = gsc_collector.collect(now=now)
+                    print(json.dumps({"google_search_console": gsc_result}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({
+                        "google_search_console": {
+                            "status": "ERROR",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                            "publication_authority": False,
+                        }
+                    }, sort_keys=True), file=sys.stderr)
+
             if not tick_failed and continuous_loop is not None and result.generation_ready:
                 continuous_result = asyncio.run(continuous_loop.run_once(now=now))
                 print(json.dumps({"continuous_content": continuous_result}, ensure_ascii=False, sort_keys=True))
@@ -219,6 +240,8 @@ def main() -> int:
                 time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         return 0
     finally:
+        if gsc_collector is not None:
+            gsc_collector.close()
         if network_service is not None:
             network_service.stop()
         app.close()
