@@ -97,6 +97,18 @@ def test_future_publication_freezes_activation_time_and_attribution(tmp_path):
     assert persisted["outcome_attribution"] == attr
 
 
+def test_invalid_publication_clock_does_not_activate_candidate(tmp_path):
+    runtime, worker, publisher = setup(tmp_path)
+    before = (publisher.public / "current").resolve()
+    publisher.clock = lambda: NOW.replace(tzinfo=None)
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "ERROR"
+    assert result["error_type"] == "ValueError"
+    assert (publisher.public / "current").resolve() == before
+    assert not (publisher.public / "current.next").exists()
+    assert not list((tmp_path / "state/content/continuous/cycles").glob("*/publication.json"))
+
+
 def test_legacy_publications_are_not_backfilled(tmp_path):
     legacy = tmp_path / "state/content/continuous/cycles/v2-old"
     legacy.mkdir(parents=True)
