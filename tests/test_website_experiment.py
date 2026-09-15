@@ -332,7 +332,7 @@ def test_goal_loop_holds_noncompliant_treatment_without_site_activation(tmp_path
 
 def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,
                               candidate_matches=True, write_publication=True,
-                              observed_delay_hours=0):
+                              observed_delay_hours=0, extra_refs=()):
     published_at = NOW + timedelta(hours=index)
     binding = None
     for salt in range(32):
@@ -380,7 +380,7 @@ def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,
         window_end=published_at + timedelta(hours=window_hours),
         observed_at=published_at + timedelta(hours=window_hours + observed_delay_hours), revision=1,
         source="nginx-access-log:v1",
-        evidence_refs=(f"website-experiment:{binding.experiment_id}",),
+        evidence_refs=(f"website-experiment:{binding.experiment_id}", *tuple(extra_refs)),
     )
     ChannelEvidenceStore(root / "content/channel_evidence").record(row)
     return row
@@ -535,4 +535,20 @@ def test_experiment_evaluator_budget_exceeded_is_bounded(tmp_path, monkeypatch):
     assert reader["samples"] == 3
     assert len(reader["publication_ids"]) == 2
     assert reader["mean_pageviews"] is None
+    assert result["strategy_control"] is False
+
+
+def test_observing_evidence_refs_are_bounded_and_report_truncation(tmp_path):
+    for index in range(21):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=10,
+            extra_refs=tuple(f"support:{index}:{part}" for part in range(49)),
+        )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com", min_samples_per_treatment=22,
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    assert result["status"] == "OBSERVING"
+    assert result["evidence_ref_count"] > 1000
+    assert len(result["evidence_refs"]) == 1000
+    assert result["evidence_refs_truncated"] is True
     assert result["strategy_control"] is False

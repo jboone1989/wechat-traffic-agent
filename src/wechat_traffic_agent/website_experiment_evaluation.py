@@ -67,6 +67,8 @@ class WebsiteExperimentEvaluation(BaseModel):
     permutation_p_value: float | None = Field(default=None, ge=0, le=1)
     favored_treatment: Literal["reader_question_first", "evidence_first"] | None = None
     evidence_refs: tuple[str, ...] = Field(max_length=1000)
+    evidence_ref_count: int = Field(ge=0)
+    evidence_refs_truncated: bool = False
     learning_authority: Literal[False] = False
     strategy_control: Literal[False] = False
     causal_claim: Literal[False] = False
@@ -230,10 +232,14 @@ class WebsiteExperimentEvaluator:
             ))
             for sample in bucket:
                 cutoff = sample.observed_at if cutoff is None or sample.observed_at > cutoff else cutoff
+        all_refs = sorted({
+            ref for name in TREATMENTS for sample in grouped[name] for ref in sample.evidence_refs
+        })
         return WebsiteExperimentEvaluation(
             account=self.account, evidence_cutoff=cutoff, status="INPUT_BUDGET_EXCEEDED",
             min_samples_per_treatment=self.min_samples, treatments=tuple(summaries),
-            evidence_refs=(),
+            evidence_refs=tuple(all_refs[:1000]), evidence_ref_count=len(all_refs),
+            evidence_refs_truncated=len(all_refs) > 1000,
         )
 
     def _build(self, grouped, *, status, favored, difference, relative_lift, p_value):
@@ -253,6 +259,7 @@ class WebsiteExperimentEvaluator:
             for sample in bucket:
                 refs.extend(sample.evidence_refs)
                 cutoff = sample.observed_at if cutoff is None or sample.observed_at > cutoff else cutoff
+        all_refs = sorted(set(refs))
         return WebsiteExperimentEvaluation(
             account=self.account,
             evidence_cutoff=cutoff,
@@ -263,7 +270,9 @@ class WebsiteExperimentEvaluator:
             relative_lift_of_higher=relative_lift,
             permutation_p_value=p_value,
             favored_treatment=favored,
-            evidence_refs=tuple(sorted(set(refs))),
+            evidence_refs=tuple(all_refs[:1000]),
+            evidence_ref_count=len(all_refs),
+            evidence_refs_truncated=len(all_refs) > 1000,
         )
 
     def _persist(self, evaluation: WebsiteExperimentEvaluation) -> dict:
