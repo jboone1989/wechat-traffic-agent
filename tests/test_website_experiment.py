@@ -119,6 +119,23 @@ def test_publisher_rejects_mismatched_or_failed_experiment(tmp_path):
     assert (publisher.public / "current").resolve() == before
 
 
+def test_publisher_publishes_genuine_experiment_miss_without_enrolling_sample(tmp_path):
+    binding = bind_website_experiment(
+        tmp_path / "binding.json", cycle="v2-789b", decided_at=NOW
+    )
+    artifact = _artifact(binding, compliant=False)
+    publisher = _publisher(tmp_path)
+    before = (publisher.public / "current").resolve()
+    receipt = publisher.publish(
+        artifact=artifact,
+        experience=_experience(artifact, binding, compliance_status="FAIL"),
+        cycle_root=tmp_path / "state/content/continuous/cycles/v2-789b",
+    )
+    assert (publisher.public / "current").resolve() != before
+    assert receipt["outcome_attribution"]["schema_version"] == "website-publication-attribution.v1"
+    assert "experiment" not in receipt["outcome_attribution"]
+
+
 def test_publisher_recomputes_compliance_and_rejects_forged_pass(tmp_path):
     binding = bind_website_experiment(
         tmp_path / "binding.json", cycle="v2-790", decided_at=NOW
@@ -127,7 +144,7 @@ def test_publisher_recomputes_compliance_and_rejects_forged_pass(tmp_path):
     publisher = _publisher(tmp_path)
     before = (publisher.public / "current").resolve()
     forged = _experience(artifact, binding, compliance_status="PASS")
-    with pytest.raises(ValueError, match="actual Website experiment compliance"):
+    with pytest.raises(ValueError, match="persisted Website experiment compliance"):
         publisher.publish(
             artifact=artifact, experience=forged,
             cycle_root=tmp_path / "state/content/continuous/cycles/v2-790",
@@ -317,17 +334,20 @@ def test_goal_loop_binds_before_selection_and_publishes_compliant_treatment(tmp_
     assert result["publication"]["outcome_attribution"]["schema_version"] == "website-publication-attribution.v2"
 
 
-def test_goal_loop_holds_noncompliant_treatment_without_site_activation(tmp_path):
+def test_goal_loop_publishes_noncompliant_treatment_without_enrolling_experiment(tmp_path):
     runtime, worker, publisher = _goal_worker(tmp_path, compliant=False)
     before = (publisher.public / "current").resolve()
     result = asyncio.run(worker.run_once(now=NOW))
     assert runtime.binding_seen_before_selection is True
-    assert result["status"] == "HELD_BY_CHECKS"
+    assert result["status"] == "PUBLISHED"
     assert result["website_experiment_compliance"]["status"] == "FAIL"
-    assert result["automated_checks_passed"] is False
-    assert (publisher.public / "current").resolve() == before
+    assert result["website_experiment_eligible"] is False
+    assert result["automated_checks_passed"] is True
+    assert result["publication"]["outcome_attribution"]["schema_version"] == "website-publication-attribution.v1"
+    assert "experiment" not in result["publication"]["outcome_attribution"]
+    assert (publisher.public / "current").resolve() != before
     cycle = next((worker.root / "cycles").iterdir())
-    assert not (cycle / "publication.json").exists()
+    assert (cycle / "publication.json").exists()
 
 
 def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,

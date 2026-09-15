@@ -135,8 +135,7 @@ def _validated_content_strategy(artifact: ContentArtifact, experience: dict,
     topic = artifact.tags[0] if artifact.tags else None
     if binding.topic != topic or binding.cycle != experience.get('cycle'):
         raise ValueError('content strategy is not bound to this cycle/topic')
-    expected_opening = experiment.treatment_value if experiment is not None else None
-    if binding.opening_mode != expected_opening:
+    if experiment is not None and binding.opening_mode != experiment.treatment_value:
         raise ValueError('content strategy opening mode disagrees with Website experiment')
     return binding
 
@@ -169,10 +168,13 @@ def _validated_experiment(
         return None
     binding = WebsiteExperimentBinding.model_validate(raw)
     recomputed = experiment_compliance(artifact, binding)
-    if recomputed['status'] != 'PASS':
-        raise ValueError('automatic publication requires actual Website experiment compliance')
     if not isinstance(compliance, dict) or compliance != recomputed:
         raise ValueError('persisted Website experiment compliance does not match recomputation')
+    # Experiment compliance controls experiment enrollment, not publication. A genuine
+    # treatment miss is published under the non-experimental v1 attribution so it cannot
+    # contaminate the prospective experiment. Forged or stale compliance still fails closed.
+    if recomputed['status'] != 'PASS':
+        return None
     return binding
 
 
