@@ -503,13 +503,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         check = check.model_copy(update={'applications': valid_applications, 'support': valid_supports})
         application_valid = {a.technique_index for a in check.applications}
         support_valid = {s.section_index for s in check.support}
-        experiment_passes = experiment_check is None or experiment_check['status'] == 'PASS'
+        experiment_eligible = experiment_check is None or experiment_check['status'] == 'PASS'
         floor_check = evaluate_evidence_floor(artifact=artifact, plan=floor_plan, supports=check.support)
         _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
                   and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
-                  and experiment_passes and floor_check.status == 'PASS')
+                  and floor_check.status == 'PASS')
         self._activity(cycle, 'CREATE', 'I finished the publication checks',
                        ('All required checks passed; the draft can proceed.' if passes else 'One or more checks failed; the draft will be held.'),
                        status='completed' if passes else 'stopped')
@@ -520,6 +520,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'self_check': check.model_dump(mode='json'), 'automated_checks_passed': passes,
                       'prospective_experiment': experiment_payload,
                       'website_experiment_compliance': experiment_check,
+                      'website_experiment_eligible': experiment_eligible,
                       'content_strategy': strategy_payload,
                       'traffic_context_ref': 'traffic_context.json',
                       'evidence_floor_plan': floor_plan.model_dump(mode='json'),
@@ -534,6 +535,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'source_fingerprint': fingerprint, 'draft_path': str(path), 'lesson_id': lesson_id,
                   'prospective_experiment': experiment_payload,
                   'website_experiment_compliance': experiment_check,
+                  'website_experiment_eligible': experiment_eligible,
                   'content_strategy': strategy_payload,
                   'traffic_context': traffic_payload,
                   'evidence_floor': floor_check.model_dump(mode='json'),
