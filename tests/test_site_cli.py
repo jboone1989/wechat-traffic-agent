@@ -38,12 +38,13 @@ def test_build_site_from_json_directory(tmp_path):
     assert "Persistent self-learning Content Agent" in home
     assert "The website is the interface. The agent is the product." in home
     assert "Human-gated publishing" in home
-    assert 'id="agent-canvas"' in home
-    assert "three@0.180.0" in home
-    assert "rpm-female.glb" in home
-    assert "targetYaw+=dx*.0105" in home
-    assert "head.rotation.y=headBaseY-.82*(1-ease(t))" in home
-    assert "webgl-active" in home
+    assert "data:image/webp;base64," in home
+    assert "crl-static-art" in home
+    assert "LIVE AGENT" in home
+    assert 'fetchpriority="high"' in home
+    assert 'id="agent-canvas"' not in home
+    assert "three@0.180.0" not in home
+    assert "rpm-female.glb" not in home
     assert "What self-learning means here" in about
     assert "Learning does not equal publishing authority" in editorial
     assert "What counts as learning" in methodology

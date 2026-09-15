@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import html
 
-from .agent_three_scene import three_scene_css, three_scene_script
+from .agent_static_hero_asset import STATIC_HERO_DATA_URI
 
 
 def render_agent_home(config, latest_html: str, category_html: str) -> str:
@@ -19,14 +19,9 @@ def render_agent_home(config, latest_html: str, category_html: str) -> str:
 <div class="crl-actions"><a class="crl-primary" href="#agent-loop">▶ <span>Watch the loop</span></a><a class="crl-secondary" href="/about/">Meet the agent <span>→</span></a></div>
 <p class="crl-meta"><span>Persistent</span><span>Self-learning</span><span>Evidence-based</span><span>Published automatically</span></p>
 </div>
-<div class="crl-visual" id="agent-scene" data-parallax="-0.018" aria-label="Interactive Content Agent visual">
-<div class="crl-planet" aria-hidden="true"></div><div class="crl-orbit orbit-a" aria-hidden="true"></div><div class="crl-orbit orbit-b" aria-hidden="true"></div>
-<div class="crl-head" id="agent-head"><canvas id="agent-canvas" aria-hidden="true"></canvas><div class="crl-head-fallback" aria-hidden="true"><span></span></div></div>
-<div class="hud hud-observe"><div class="hud-thumb thumb-mountain"></div><div><b>◎ OBSERVE</b><span>Monitor trends</span><span>Find signals</span><span>Spot opportunities</span></div></div>
-<div class="hud hud-decide"><div class="hud-thumb thumb-city"></div><div><b>◉ DECIDE</b><span>Set goals</span><span>Prioritize topics</span><span>Plan research</span></div></div>
-<div class="hud hud-learn"><div class="hud-thumb thumb-forest"></div><div><b>▥ LEARN</b><span>Absorb feedback</span><span>Refine beliefs</span><span>Evolve over time</span></div></div>
-<div class="hud hud-create"><div><b>▤ CREATE</b><span>Research with evidence</span><span>Write with clarity</span><span>Publish to the world</span></div><div class="hud-thumb thumb-ocean"></div></div>
-<div class="drag-hint">☝ <span>Drag to explore</span></div>
+<div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Content Agent observing, deciding, creating and learning">
+<div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="Humanoid Content Agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
+<div class="crl-live-pill" aria-hidden="true"><b>● LIVE AGENT</b><span>Observe · Decide · Create · Learn</span></div>
 </div></div></section>'''+_loop()+_editorial(latest_html, category_html)
 
 
@@ -79,10 +74,25 @@ def agent_home_css() -> str:
 @media(max-width:620px){.home-shell{width:min(calc(100% - 28px),1370px)}.agent-home .nav-wrap nav{display:none}.agent-home .brand:after{font-size:19px}.crl-copy h1{font-size:clamp(3rem,15vw,4.9rem)}.crl-visual{height:410px;margin-top:0}.crl-head{width:330px;height:370px}.crl-planet{width:310px;height:310px}.orbit-a{width:390px;height:190px;right:50%;transform:translateX(50%) rotate(-8deg)}.orbit-b{width:330px;height:330px;right:50%;transform:translateX(50%)}.hud{display:none}.drag-hint{right:50%;top:auto;bottom:18px;transform:translateX(50%);white-space:nowrap}.crl-actions{flex-wrap:wrap}.crl-meta{gap:8px}.crl-meta span+span:before{margin-right:8px}.loop-steps{grid-template-columns:1fr}.crl-loop{padding:28px 0}.editorial-grid{display:block}.editorial-intro{margin-bottom:30px}.latest-grid{grid-template-columns:1fr!important}.latest-grid .card:nth-child(n+4){display:none}.editorial-more{display:none}}
 @media(prefers-reduced-motion:reduce){.orbit-b{animation:none}.crl-head,.crl-copy,.crl-visual{transform:none!important}.agent-home *{scroll-behavior:auto!important}}
 '''
-    return css + three_scene_css()
+    css += r'''
+.crl-static-visual{cursor:default;perspective:none;overflow:visible;isolation:isolate}.crl-static-art{position:absolute;inset:-10px -78px -6px -82px;transform:translate3d(0,0,0) scale(1.015);transform-origin:center;transition:transform .55s cubic-bezier(.2,.7,.2,1);filter:drop-shadow(0 30px 45px rgba(0,0,0,.38));will-change:transform}.crl-static-art img{width:100%;height:100%;object-fit:cover;object-position:center;display:block;pointer-events:none;border-radius:20px;filter:saturate(.98) contrast(1.035) brightness(.97)}.crl-static-art:before{content:"";position:absolute;z-index:2;inset:0;pointer-events:none;border-radius:20px;background:linear-gradient(90deg,#07110f 0%,rgba(7,17,15,.74) 4%,rgba(7,17,15,.1) 15%,transparent 27%,transparent 86%,rgba(7,17,15,.18) 96%,#07110f 100%)}.crl-static-art:after{content:"";position:absolute;z-index:2;inset:0;pointer-events:none;border-radius:20px;background:linear-gradient(180deg,rgba(7,17,15,.22),transparent 13%,transparent 86%,rgba(7,17,15,.45))}.crl-live-pill{position:absolute;z-index:5;left:61%;top:55%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:2px;min-width:150px;padding:8px 13px;border:1px solid rgba(108,242,174,.42);border-radius:999px;background:rgba(3,14,11,.94);box-shadow:0 8px 32px rgba(0,0,0,.38),0 0 24px rgba(79,232,160,.08);backdrop-filter:blur(10px);text-align:center}.crl-live-pill b{color:#72f2b2;font:700 .61rem ui-monospace,monospace;letter-spacing:.08em}.crl-live-pill span{color:#a9bbb1;font-size:.52rem;white-space:nowrap}.crl-hero-inner{grid-template-columns:minmax(430px,.82fr) minmax(650px,1.18fr);gap:8px}
+@media(max-width:1120px){.crl-static-art{inset:18px -66px 18px -52px}.crl-live-pill{left:62%;top:55%}}
+@media(max-width:860px){.crl-hero-inner{grid-template-columns:1fr}.crl-static-visual{height:440px!important;order:-1;margin-top:12px}.crl-static-art{inset:0 -48px}.crl-live-pill{left:61%;top:55%}}
+@media(max-width:620px){.crl-static-visual{height:315px!important}.crl-static-art{inset:0 -95px}.crl-static-art img{border-radius:14px}.crl-live-pill{display:none}}
+@media(prefers-reduced-motion:reduce){.crl-static-art{transform:none!important;transition:none!important}}
+'''
+    return css
 
 
 def agent_home_script() -> str:
-    return r'''<script>(()=>{const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const ps=[...document.querySelectorAll('[data-parallax]')];let sr=0;const scrollDraw=()=>{const y=scrollY;ps.forEach(el=>el.style.translate=`0 ${(y*parseFloat(el.dataset.parallax||0)).toFixed(1)}px`);sr=0};addEventListener('scroll',()=>{if(!sr)sr=requestAnimationFrame(scrollDraw)},{passive:true});scrollDraw();
-if(reduce)return;})();</script>''' + three_scene_script()
+    return r'''<script>(()=>{
+const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const ps=[...document.querySelectorAll('[data-parallax]')];let sr=0;
+const scrollDraw=()=>{const y=scrollY;ps.forEach(el=>el.style.translate=`0 ${(y*parseFloat(el.dataset.parallax||0)).toFixed(1)}px`);sr=0};
+addEventListener('scroll',()=>{if(!sr)sr=requestAnimationFrame(scrollDraw)},{passive:true});scrollDraw();
+const visual=document.querySelector('.crl-static-visual'),art=visual?.querySelector('.crl-static-art');
+if(!reduce&&visual&&art&&matchMedia('(pointer:fine)').matches){
+visual.addEventListener('pointermove',e=>{const r=visual.getBoundingClientRect(),x=(e.clientX-r.left)/r.width-.5,y=(e.clientY-r.top)/r.height-.5;art.style.transform=`translate3d(${(x*-9).toFixed(1)}px,${(y*-6).toFixed(1)}px,0) scale(1.025)`});
+visual.addEventListener('pointerleave',()=>{art.style.transform='translate3d(0,0,0) scale(1.015)'});
+}
+})();</script>'''
