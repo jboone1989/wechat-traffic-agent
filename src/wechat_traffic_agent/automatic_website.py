@@ -15,7 +15,9 @@ from .site_audit import audit_static_site
 from .site_cli import _load_artifacts, _curate_web_taxonomy
 from .web_editorial import digest
 from .content_admission import _write_once
-from .evidence_floor import EvidenceFloorCheck, EvidenceFloorPlan, verify_evidence_floor_publication
+from .evidence_floor import (
+    EvidenceFloorCheck, EvidenceFloorPlan, artifact_risk_cues, verify_evidence_floor_publication,
+)
 from .website_experiment import WebsiteExperimentBinding, experiment_compliance
 
 
@@ -142,8 +144,11 @@ def _validated_content_strategy(artifact: ContentArtifact, experience: dict,
 def _validated_evidence_floor(artifact: ContentArtifact, experience: dict) -> None:
     raw_plan = experience.get('evidence_floor_plan')
     raw_check = experience.get('evidence_floor_check')
+    topic = artifact.tags[0] if artifact.tags else ''
+    if raw_plan is None and raw_check is None and not artifact_risk_cues(artifact, topic=topic):
+        return
     if not isinstance(raw_plan, dict) or not isinstance(raw_check, dict):
-        raise ValueError('automatic publication requires persisted Evidence Floor plan and check')
+        raise ValueError('automatic publication requires persisted Evidence Floor plan and check for high-risk content')
     self_check = experience.get('self_check')
     supports = self_check.get('support') if isinstance(self_check, dict) else None
     if not isinstance(supports, (list, tuple)):
