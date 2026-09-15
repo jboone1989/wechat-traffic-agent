@@ -1,0 +1,47 @@
+name: Content Traffic Learning
+
+on:
+  pull_request:
+    paths:
+      - "src/wechat_traffic_agent/gsc_search_console.py"
+      - "src/wechat_traffic_agent/traffic_learning.py"
+      - "scripts/run_content_agent.py"
+      - "tests/test_gsc_search_console.py"
+      - "tests/test_traffic_learning.py"
+      - "tests/test_run_content_agent_entrypoint.py"
+      - ".github/workflows/content-traffic-learning.yml"
+  push:
+    branches: ["feat/content-runtime-vb-network"]
+    paths:
+      - "src/wechat_traffic_agent/gsc_search_console.py"
+      - "src/wechat_traffic_agent/traffic_learning.py"
+      - "scripts/run_content_agent.py"
+      - "tests/test_gsc_search_console.py"
+      - "tests/test_traffic_learning.py"
+      - "tests/test_run_content_agent_entrypoint.py"
+      - ".github/workflows/content-traffic-learning.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  traffic-learning:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install "pytest>=8" "pydantic>=2.5" "httpx>=0.27"
+      - name: Compile traffic learning boundary
+        run: python -m py_compile src/wechat_traffic_agent/gsc_search_console.py src/wechat_traffic_agent/traffic_learning.py scripts/run_content_agent.py
+      - name: Build isolated Agent Runtime stub
+        run: |
+          mkdir -p .traffic-ci/agent_runtime
+          printf '%s\n' '' > .traffic-ci/agent_runtime/__init__.py
+          printf '%s\n' 'class AgentRuntime: pass' > .traffic-ci/agent_runtime/runtime.py
+      - name: Run traffic learning regressions
+        env:
+          PYTHONPATH: .traffic-ci:src
+        run: python -m pytest -q -c /dev/null tests/test_gsc_search_console.py tests/test_traffic_learning.py tests/test_run_content_agent_entrypoint.py
