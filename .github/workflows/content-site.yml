@@ -9,6 +9,8 @@ on:
       - "site/**"
       - "src/wechat_traffic_agent/channels/web.py"
       - "src/wechat_traffic_agent/channels/agent_web.py"
+      - "src/wechat_traffic_agent/channels/agent_home_experience.py"
+      - "src/wechat_traffic_agent/channels/agent_three_scene.py"
       - "src/wechat_traffic_agent/content_artifact.py"
       - "src/wechat_traffic_agent/web_editorial.py"
       - "src/wechat_traffic_agent/content_loop.py"
@@ -61,6 +63,8 @@ jobs:
           cp src/wechat_traffic_agent/site_cli.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_web.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_home_experience.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_three_scene.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/__init__.py .site-ci/wechat_traffic_agent/channels/
       - name: Run website quality gate
         env:
