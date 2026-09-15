@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from wechat_traffic_agent.network_service import ContentNetworkService, network_enabled  # noqa: E402
 from wechat_traffic_agent.runtime_app import APPLICATION_VERSION, build_content_application  # noqa: E402
 from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker, trading_draft_worker_enabled  # noqa: E402
+from wechat_traffic_agent.public_activity import emit_public_activity  # noqa: E402
 
 
 def _state_root() -> Path:
@@ -65,6 +66,13 @@ def main() -> int:
         network_service = ContentNetworkService.from_environment(root=state_root, application=app)
         network_service.start()
         print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
+
+    live_agent_service = None
+    from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
+    if live_agent_enabled():
+        live_agent_service = build_live_agent_service(state_root=state_root, application=app, mind=content_mind, poll_seconds=args.poll_seconds)
+        live_agent_service.start()
+        print(f"live-agent endpoint=http://{live_agent_service.host}:{live_agent_service.port}")
 
     draft_worker: TradingResearchDraftWorker | None = None
     if trading_draft_worker_enabled():
@@ -128,6 +136,10 @@ def main() -> int:
     try:
         while not stopping:
             now = datetime.now(timezone.utc).replace(microsecond=0); as_of = now.isoformat(); tick_failed = False
+            runtime_event_cycle = 'runtime-' + str(int(now.timestamp()))
+            emit_public_activity(state_root, cycle=runtime_event_cycle, phase='RUNTIME',
+                                 title='I’m awake — checking for new work',
+                                 detail='I’m checking health, network membership, fresh evidence, traffic outcomes, and whether a new content cycle is due.')
             try:
                 guard = network_service.execution_lock if network_service is not None else nullcontext()
                 with guard: result = app.run_tick(as_of_time=as_of)
@@ -174,12 +186,18 @@ def main() -> int:
                 except Exception as exc:  # noqa: BLE001
                     print(json.dumps({"website_experiment_evaluation":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"learning_authority":False,"strategy_control":False}}, sort_keys=True), file=sys.stderr)
 
+            emit_public_activity(state_root, cycle=runtime_event_cycle, phase='RUNTIME',
+                                 title='Check complete',
+                                 detail=('The check completed with an error; the service will retry.' if tick_failed or draft_failed
+                                         else f'Nothing else is running in the background. I’ll wake for the next scheduled check in about {args.poll_seconds} seconds.'),
+                                 status='stopped' if tick_failed or draft_failed else 'completed')
             if args.once: return 1 if tick_failed or draft_failed else 0
             deadline = time.monotonic() + args.poll_seconds
             while not stopping and time.monotonic() < deadline: time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         return 0
     finally:
         if gsc_collector is not None: gsc_collector.close()
+        if live_agent_service is not None: live_agent_service.stop()
         if network_service is not None: network_service.stop()
         app.close()
 
