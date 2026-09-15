@@ -116,6 +116,22 @@ def test_publisher_rejects_mismatched_or_failed_experiment(tmp_path):
     assert (publisher.public / "current").resolve() == before
 
 
+def test_publisher_recomputes_compliance_and_rejects_forged_pass(tmp_path):
+    binding = bind_website_experiment(
+        tmp_path / "binding.json", cycle="v2-790", decided_at=NOW
+    )
+    artifact = _artifact(binding, compliant=False)
+    publisher = _publisher(tmp_path)
+    before = (publisher.public / "current").resolve()
+    forged = _experience(artifact, binding, compliance_status="PASS")
+    with pytest.raises(ValueError, match="actual Website experiment compliance"):
+        publisher.publish(
+            artifact=artifact, experience=forged,
+            cycle_root=tmp_path / "state/content/continuous/cycles/v2-790",
+        )
+    assert (publisher.public / "current").resolve() == before
+
+
 def test_v2_publication_and_outcome_keep_stable_treatment_identity(tmp_path):
     published_at = NOW + timedelta(minutes=5)
     binding = bind_website_experiment(

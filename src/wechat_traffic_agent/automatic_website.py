@@ -14,7 +14,7 @@ from .site_audit import audit_static_site
 from .site_cli import _load_artifacts, _curate_web_taxonomy
 from .web_editorial import digest
 from .content_admission import _write_once
-from .website_experiment import WebsiteExperimentBinding
+from .website_experiment import WebsiteExperimentBinding, experiment_compliance
 
 
 class AutomaticWebsitePublisher:
@@ -44,7 +44,7 @@ class AutomaticWebsitePublisher:
             raise ValueError('automatic admission requires a private draft with passing checks')
         if experience['draft_sha256'] != digest(artifact.model_dump(mode='json')):
             raise ValueError('self-check is not bound to this draft')
-        experiment = _validated_experiment(experience)
+        experiment = _validated_experiment(artifact, experience)
         # This is a distinct machine policy, never a fabricated human review.
         public_artifact = artifact.model_copy(update={'public_safe': True})
         artifacts = _load_artifacts(self.inventory_path())
@@ -114,7 +114,9 @@ class AutomaticWebsitePublisher:
         return receipt
 
 
-def _validated_experiment(experience: dict) -> WebsiteExperimentBinding | None:
+def _validated_experiment(
+    artifact: ContentArtifact, experience: dict
+) -> WebsiteExperimentBinding | None:
     raw = experience.get('prospective_experiment')
     compliance = experience.get('website_experiment_compliance')
     if raw is None:
@@ -122,15 +124,11 @@ def _validated_experiment(experience: dict) -> WebsiteExperimentBinding | None:
             raise ValueError('experiment compliance exists without a binding')
         return None
     binding = WebsiteExperimentBinding.model_validate(raw)
-    if not isinstance(compliance, dict) or compliance.get('status') != 'PASS':
-        raise ValueError('automatic publication requires passing Website experiment compliance')
-    expected = {
-        'experiment_id': binding.experiment_id,
-        'variable_under_test': binding.variable_under_test,
-        'treatment_value': binding.treatment_value,
-    }
-    if any(compliance.get(key) != value for key, value in expected.items()):
-        raise ValueError('Website experiment compliance does not match its binding')
+    recomputed = experiment_compliance(artifact, binding)
+    if recomputed['status'] != 'PASS':
+        raise ValueError('automatic publication requires actual Website experiment compliance')
+    if not isinstance(compliance, dict) or compliance != recomputed:
+        raise ValueError('persisted Website experiment compliance does not match recomputation')
     return binding
 
 
