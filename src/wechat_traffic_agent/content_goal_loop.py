@@ -21,6 +21,9 @@ from .models import TopicSignal
 from .sources.runtime_web import RuntimeWebSearch
 from .trading_draft_worker import default_trading_research_audience
 from .web_editorial import digest, website_snapshot, _title_key
+from .website_experiment import (
+    bind_website_experiment, experiment_compliance, experiment_instruction,
+)
 
 
 class EvidenceSelection(Contract):
@@ -46,7 +49,7 @@ def _candidate_fingerprint(candidate):
 class ContinuousContentLoop(_BaseContinuousContentLoop):
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
                  feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None,
-                 capability_runtime=None):
+                 capability_runtime=None, website_experiments=False):
         if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
             raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
         self.runtime, self.state = runtime, Path(state_root)
@@ -54,6 +57,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.curriculum_path, self.feeds = Path(curriculum_path), tuple(feeds)
         self.interval_hours, self.fetcher, self.publisher = interval_hours, fetcher, publisher
         self.mind = mind
+        self.website_experiments = bool(website_experiments)
         if explorer is None:
             web_searcher = None
             if capability_runtime is not None and "web.search" in capability_runtime.available_capabilities():
@@ -91,6 +95,15 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'curriculum': curriculum, 'previous_titles': previous, 'now': now.isoformat()}
             _put(inputs_path, inputs)
         snapshot = inputs['website']
+        experiment = None
+        if self.website_experiments:
+            experiment_path = folder / 'website_experiment.json'
+            if not experiment_path.exists() and any(
+                (folder / name).exists() for name in ('evidence_candidates.json', 'exploration.json', 'model_calls')
+            ):
+                raise ValueError('cannot bind Website experiment after evidence/model selection has begun')
+            experiment = bind_website_experiment(experiment_path, cycle=cycle, decided_at=now)
+        experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
         if plan_path.exists():
             mind_plan = json.loads(plan_path.read_text())
@@ -220,11 +233,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         if self.inbox.contains(fingerprint):
             self.inbox.load(fingerprint)
             return {'status': 'ALREADY_DRAFTED', 'cycle': cycle, 'source_fingerprint': fingerprint}
+        experiment_requirement = experiment_instruction(experiment) if experiment is not None else None
         brief = {'selection': selection.model_dump(mode='json'), 'learned_techniques': lesson_payload,
+                 'prospective_experiment': experiment_payload,
                  'source_material': {'evidence': selected, 'existing_articles': related},
                  'writing_requirements': 'Write at least 350 words. Explain one mechanism, separate reported facts and interpretation. '
                      'No personal investment advice, fabricated numbers, private details, or unsupported predictions. '
-                     'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying.'}
+                     'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying.'
+                     + ((' ' + experiment_requirement) if experiment_requirement else '')}
         observed_at = datetime.fromisoformat(selected.get('observed_at') or inputs['now'])
         topics = [TopicSignal(
             title=selection.title,
@@ -246,6 +262,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
               editorial_brief=json.dumps(brief, ensure_ascii=False))
         artifact = artifact.model_copy(update={'tags': (selection.topic,),
              'disclosure': 'Written by Content Agent using public source material. Automated source and writing checks are fallible; this is not investment advice.'})
+        experiment_check = experiment_compliance(artifact, experiment) if experiment is not None else None
+        if experiment_check is not None:
+            _put(folder / 'website_experiment_compliance.json', experiment_check)
         text = '\n'.join([artifact.title, artifact.summary] + [value for section in artifact.sections for value in (section.heading, *section.paragraphs)])
         if _title_key(artifact.title) in {_title_key(t) for t in existing}:
             raise ValueError('generated title duplicates existing content')
@@ -284,14 +303,18 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
               + json.dumps({'article': artifact.model_dump(mode='json'), 'source_registry': source_text, 'lesson': lesson_payload}, ensure_ascii=False), SelfCheck, validate=validate_check)
         application_valid = {a.technique_index for a in check.applications if a.article_quote in text and a.technique_index < len(lesson.techniques)}
         support_valid = {s.section_index for s in check.support if s.source_quote in source_text.get(s.source_id, '')}
+        experiment_passes = experiment_check is None or experiment_check['status'] == 'PASS'
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
-                  and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350)
+                  and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
+                  and experiment_passes)
         path = self.inbox.save(ContentDraftRecord(source_fingerprint=fingerprint,
                               generated_at=datetime.fromisoformat(inputs['now']), artifact=artifact))
         experience = {'cycle': cycle, 'lesson_id': lesson_id, 'lesson': lesson_payload,
                       'draft_sha256': digest(artifact.model_dump(mode='json')), 'source_fingerprint': fingerprint,
                       'self_check': check.model_dump(mode='json'), 'automated_checks_passed': passes,
+                      'prospective_experiment': experiment_payload,
+                      'website_experiment_compliance': experiment_check,
                       'missing_technique_applications': sorted(set(range(len(lesson.techniques))) - application_valid),
                       'missing_section_support': sorted(set(range(len(artifact.sections))) - support_valid),
                       'word_count': len(text.split()),
@@ -300,6 +323,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.runtime.persist()
         result = {'status': 'DRAFT_CREATED' if passes else 'HELD_BY_CHECKS', 'cycle': cycle,
                   'source_fingerprint': fingerprint, 'draft_path': str(path), 'lesson_id': lesson_id,
+                  'prospective_experiment': experiment_payload,
+                  'website_experiment_compliance': experiment_check,
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
                   'mind_plan': mind_plan, 'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
                   'exploration': {'candidate_count': exploration.get('candidate_count', 0),

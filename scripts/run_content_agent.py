@@ -114,7 +114,9 @@ def main() -> int:
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
             feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]),
             interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), publisher=publisher,
-            mind=content_mind, capability_runtime=app.runtime)
+            mind=content_mind, capability_runtime=app.runtime,
+            website_experiments=os.environ.get("CONTENT_WEBSITE_EXPERIMENTS_ENABLED", "").lower()
+                in {"1", "true", "yes", "on"})
 
     stopping = False
 

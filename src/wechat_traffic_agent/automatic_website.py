@@ -14,6 +14,7 @@ from .site_audit import audit_static_site
 from .site_cli import _load_artifacts, _curate_web_taxonomy
 from .web_editorial import digest
 from .content_admission import _write_once
+from .website_experiment import WebsiteExperimentBinding, experiment_compliance
 
 
 class AutomaticWebsitePublisher:
@@ -43,6 +44,7 @@ class AutomaticWebsitePublisher:
             raise ValueError('automatic admission requires a private draft with passing checks')
         if experience['draft_sha256'] != digest(artifact.model_dump(mode='json')):
             raise ValueError('self-check is not bound to this draft')
+        experiment = _validated_experiment(artifact, experience)
         # This is a distinct machine policy, never a fabricated human review.
         public_artifact = artifact.model_copy(update={'public_safe': True})
         artifacts = _load_artifacts(self.inventory_path())
@@ -85,7 +87,8 @@ class AutomaticWebsitePublisher:
         published_at = published_at.astimezone(timezone.utc)
         os.replace(pending, self.public / 'current')
         attribution = {
-            'schema_version': 'website-publication-attribution.v1',
+            'schema_version': ('website-publication-attribution.v2' if experiment is not None
+                               else 'website-publication-attribution.v1'),
             'published_at': published_at.isoformat(),
             'public_route': _route_for(public_artifact),
             'published_content_sha256': published_content,
@@ -96,8 +99,12 @@ class AutomaticWebsitePublisher:
                 'kind': artifact.kind.value,
                 'headings': [section.heading for section in artifact.sections],
             }),
-            'strategy_version': 'lesson:' + lesson_id.strip(),
+            'strategy_version': (experiment.strategy_version if experiment is not None
+                                 else 'lesson:' + lesson_id.strip()),
+            'practice_version': 'lesson:' + lesson_id.strip(),
         }
+        if experiment is not None:
+            attribution['experiment'] = experiment.model_dump(mode='json')
         receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
                    'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
                    'revision': revision, 'artifact_id': artifact.artifact_id,
@@ -105,6 +112,24 @@ class AutomaticWebsitePublisher:
                    'outcome_attribution': attribution}
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         return receipt
+
+
+def _validated_experiment(
+    artifact: ContentArtifact, experience: dict
+) -> WebsiteExperimentBinding | None:
+    raw = experience.get('prospective_experiment')
+    compliance = experience.get('website_experiment_compliance')
+    if raw is None:
+        if compliance is not None:
+            raise ValueError('experiment compliance exists without a binding')
+        return None
+    binding = WebsiteExperimentBinding.model_validate(raw)
+    recomputed = experiment_compliance(artifact, binding)
+    if recomputed['status'] != 'PASS':
+        raise ValueError('automatic publication requires actual Website experiment compliance')
+    if not isinstance(compliance, dict) or compliance != recomputed:
+        raise ValueError('persisted Website experiment compliance does not match recomputation')
+    return binding
 
 
 def _public_content_digest(artifact: ContentArtifact) -> str:

@@ -18,9 +18,13 @@ from urllib.parse import urlsplit
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from .content_admission import _write_once
 from .web_editorial import digest
+from .website_experiment import WebsiteExperimentBinding
 
 SOURCE = "nginx-access-log:v1"
-ATTRIBUTION_SCHEMA = "website-publication-attribution.v1"
+ATTRIBUTION_SCHEMAS = {
+    "website-publication-attribution.v1",
+    "website-publication-attribution.v2",
+}
 SNAPSHOT_SCHEMA = "website-pageview-snapshot:v1"
 METRIC = "http_pageviews"
 METRIC_DEFINITION = (
@@ -117,6 +121,9 @@ class WebsiteOutcomeCollector:
                 "observed_at": now.isoformat(),
                 "pageviews": pageviews,
                 "metric_definition": METRIC_DEFINITION,
+                "strategy_version": attr["strategy_version"],
+                "practice_version": attr.get("practice_version"),
+                "experiment": attr.get("experiment"),
                 "coverage": {
                     "first_seen": logs.first_seen.isoformat(),
                     "last_seen": logs.last_seen.isoformat(),
@@ -156,6 +163,10 @@ class WebsiteOutcomeCollector:
                 evidence_refs=(
                     f"website-publication:{publication['revision']}",
                     f"nginx-pageview-snapshot:sha256:{snapshot_id}",
+                    *(
+                        (f"website-experiment:{attr['experiment']['experiment_id']}",)
+                        if isinstance(attr.get('experiment'), dict) else ()
+                    ),
                 ),
             )
             path = self.store.record(row)
@@ -178,7 +189,7 @@ class WebsiteOutcomeCollector:
         for path in sorted(root.glob("*/publication.json")):
             raw = json.loads(path.read_text(encoding="utf-8"))
             attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
-            if not isinstance(attr, dict) or attr.get("schema_version") != ATTRIBUTION_SCHEMA:
+            if not isinstance(attr, dict) or attr.get("schema_version") not in ATTRIBUTION_SCHEMAS:
                 legacy += 1
                 continue
             required = {
@@ -188,9 +199,15 @@ class WebsiteOutcomeCollector:
             }
             if not required <= set(attr):
                 raise ValueError("publication outcome attribution is incomplete")
-            _aware_utc(datetime.fromisoformat(attr["published_at"]))
+            published_at = _aware_utc(datetime.fromisoformat(attr["published_at"]))
             if not str(attr["public_route"]).startswith("/"):
                 raise ValueError("publication route must be absolute")
+            if attr.get("schema_version") == "website-publication-attribution.v2":
+                binding = WebsiteExperimentBinding.model_validate(attr.get("experiment"))
+                if binding.decided_at.astimezone(timezone.utc) > published_at:
+                    raise ValueError("Website experiment was decided after publication")
+                if attr["strategy_version"] != binding.strategy_version:
+                    raise ValueError("Website experiment strategy attribution does not match binding")
             rows.append(raw)
         return rows, legacy
 
