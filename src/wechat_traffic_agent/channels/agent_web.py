@@ -5,7 +5,7 @@ import html
 import os
 
 from ..content_artifact import ContentArtifact
-from ..website_engagement import first_party_engagement_script
+from ..website_engagement_client import first_party_engagement_script
 from .agent_home_experience import agent_home_css, agent_home_script, render_agent_home
 from .web import StaticWebChannel
 
