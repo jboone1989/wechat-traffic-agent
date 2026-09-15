@@ -96,6 +96,13 @@ def main() -> int:
             account=os.environ["CONTENT_WEB_BASE_URL"],
         )
 
+    website_experiment_evaluator = None
+    if os.environ.get("CONTENT_WEBSITE_EXPERIMENTS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
+        from wechat_traffic_agent.website_experiment_evaluation import WebsiteExperimentEvaluator
+        website_experiment_evaluator = WebsiteExperimentEvaluator(
+            state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
+        )
+
     continuous_loop = None
     if os.environ.get("CONTENT_CONTINUOUS_ENABLED", "").lower() in {"1", "true", "yes", "on"}:
         from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
@@ -187,6 +194,21 @@ def main() -> int:
                             "message": str(exc),
                             "publication_authority": False,
                             "learning_authority": False,
+                        }
+                    }, sort_keys=True), file=sys.stderr)
+
+            if website_experiment_evaluator is not None:
+                try:
+                    evaluation = website_experiment_evaluator.evaluate(as_of=now)
+                    print(json.dumps({"website_experiment_evaluation": evaluation}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({
+                        "website_experiment_evaluation": {
+                            "status": "ERROR",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc),
+                            "learning_authority": False,
+                            "strategy_control": False,
                         }
                     }, sort_keys=True), file=sys.stderr)
 

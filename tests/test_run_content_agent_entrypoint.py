@@ -13,6 +13,8 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "TradingResearchDraftWorker" in text
     assert "trading_draft_worker_enabled" in text
     assert "draft_worker.run_once" in text
+    assert "WebsiteExperimentEvaluator" in text
+    assert "website_experiment_evaluator.evaluate" in text
     assert 'add_argument("--once"' in text
     assert 'add_argument("--health"' in text
     assert "app.status_observation()['publish_mode']" in text
