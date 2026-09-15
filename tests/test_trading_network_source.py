@@ -50,27 +50,76 @@ class _Peer:
         return self.task
 
 
+class _Identity:
+    agent_id = "content-agent"
+    key_id = "content-key"
+
+    def sign_object(self, _payload):
+        return "ed25519:content-signature"
+
+
+class _Discovery:
+    def __init__(self, agent):
+        self.agents = [agent]
+
+    def contract_metadata(self, provider_id):
+        return {
+            "agent_network": {
+                "discovery_query_id": "q-test-1",
+                "discovery_capability": CAP_TRADING_PUBLIC_RESEARCH,
+                "selected_agent_id": provider_id,
+                "shadow_policy": "provider-reputation-shadow-v1",
+                "shadow_state": "READY",
+                "shadow_recommended_agent_id": provider_id,
+                "selected_shadow_rank": 1,
+                "controls_production": False,
+                "discovery_observed_at": "2026-09-15T12:00:00Z",
+            }
+        }
+
+
 class _Network:
     def __init__(self, task):
-        self.identity = object()
+        self.identity = _Identity()
         self.agent = SimpleNamespace(agent_id="trading-agent")
         self.peer = _Peer(task)
-        self.required = []
+        self.discovered = []
+        self.acceptances = []
 
-    async def require(self, capability, version=None):
-        self.required.append((capability, version))
-        return self.agent
+    async def discover_with_context(self, capability, *, version=None, max_results=10):
+        self.discovered.append((capability, version, max_results))
+        return _Discovery(self.agent)
 
     async def connect(self, agent):
         assert agent is self.agent
         return self.peer
 
+    async def submit_acceptance(self, acceptance):
+        self.acceptances.append(dict(acceptance))
+        return {"stored": True, "object_hash": "sha256:acceptance"}
+
 
 def _task(body=None):
     raw = body or _body()
+    digest = "sha256:" + hashlib.sha256(raw).hexdigest()
     return {
         "status": {"state": "completed"},
-        "metadata": {"contract": {"contract_id": "contract-1"}},
+        "metadata": {
+            "contract": {
+                "contract_id": "contract-1",
+                "contract_hash": "sha256:contract-1",
+                "requester": "content-agent",
+                "executor": "trading-agent",
+            },
+            "network_evidence": {
+                "contract_id": "contract-1",
+                "contract_hash": "sha256:contract-1",
+                "artifact_id": "artifact-1",
+                "artifact_hash": digest,
+                "artifact_manifest_hash": "sha256:artifact-manifest-1",
+                "lifecycle": "DELIVERED",
+            },
+        },
         "artifacts": [
             {
                 "parts": [
@@ -82,7 +131,7 @@ def _task(body=None):
                             "type": TRADING_RESEARCH_ARTIFACT_TYPE,
                             "media_type": TRADING_RESEARCH_MEDIA_TYPE,
                             "owner": "trading-agent",
-                            "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
+                            "sha256": digest,
                             "revision": 2,
                         },
                     }
@@ -102,8 +151,12 @@ def test_network_source_discovers_only_public_research_and_keeps_provenance():
     topics = asyncio.run(TradingResearchNetworkSource(network, artifact_loader=loader).fetch_topics(limit=10))
 
     digest = hashlib.sha256(body).hexdigest()
-    assert network.required == [(CAP_TRADING_PUBLIC_RESEARCH, CAP_TRADING_PUBLIC_RESEARCH_VERSION)]
+    assert network.discovered == [(CAP_TRADING_PUBLIC_RESEARCH, CAP_TRADING_PUBLIC_RESEARCH_VERSION, 10)]
     assert network.peer.calls[0]["side_effects"] == "NONE"
+    assert network.peer.calls[0]["metadata"]["agent_network"]["discovery_query_id"] == "q-test-1"
+    assert len(network.acceptances) == 1
+    assert network.acceptances[0]["result"] == "ACCEPTED"
+    assert network.acceptances[0]["artifact_manifest_hash"] == "sha256:artifact-manifest-1"
     assert topics[0].source == "agent-network:trading-agent"
     assert topics[0].source_revision == "artifact-1@2"
     assert "network-contract:contract-1" in topics[0].evidence_refs
