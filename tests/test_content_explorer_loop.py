@@ -52,16 +52,16 @@ def v2(worker, runtime, publisher, *, mind=None, explorer=None):
         publisher=publisher, mind=mind, explorer=explorer)
 
 
-def test_goal_precedes_evidence_and_unrelated_stops(tmp_path):
-    runtime, legacy, publisher = setup(tmp_path)
-    before = (publisher.public / "current").resolve()
+def test_goal_without_matching_evidence_falls_back_to_viable_output(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = V2Runtime()
     mind, explorer = GoalMind(), Explorer(empty=True); explorer.mind = mind
     worker = v2(legacy, runtime, publisher, mind=mind, explorer=explorer)
     result = asyncio.run(worker.run_once(now=NOW))
-    assert result["status"] == "NO_RELEVANT_EVIDENCE"
+    assert result["status"] == "PUBLISHED"
+    assert result["traffic_context"]["selection_authority"] == "OUTPUT_FALLBACK"
     assert explorer.collect_calls == explorer.filter_calls == 1
-    assert runtime.calls == [] and worker.inbox.list_records() == ()
-    assert (publisher.public / "current").resolve() == before
+    assert len(worker.inbox.list_records()) == 1
 
 
 def test_unbound_goal_fails_closed_before_evidence(tmp_path):

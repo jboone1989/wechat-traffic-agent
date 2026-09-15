@@ -3,6 +3,9 @@ from types import SimpleNamespace
 
 from wechat_traffic_agent.network_service import ContentNetworkService
 from wechat_traffic_agent.runtime_app import CAP_CONTENT_STATUS
+from wechat_traffic_agent.network_capabilities import (
+    CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW, capability_specs,
+)
 
 
 class _Runtime:
@@ -10,23 +13,28 @@ class _Runtime:
         self.side_effect = side_effect
 
     def capability_manifest(self):
-        return ({
+        rows = [{
             "capability_id": CAP_CONTENT_STATUS,
             "description": "status",
             "input_schema": {"type": "object"},
             "output_schema": {"type": "object"},
             "side_effect_level": self.side_effect,
-        },)
+        }]
+        for row in capability_specs():
+            rows.append({**row, "output_schema": {"type": "object"}, "side_effect_level": self.side_effect})
+        return tuple(rows)
 
 
-def test_network_advertises_only_explicit_read_only_runtime_capability(tmp_path):
+def test_network_advertises_content_work_capabilities_as_read_only(tmp_path):
     service = ContentNetworkService(
         root=tmp_path,
         application=SimpleNamespace(runtime=_Runtime()),
     )
     rows = service.advertised_capabilities()
-    assert [row["id"] for row in rows] == [CAP_CONTENT_STATUS]
-    assert rows[0]["side_effects"] == "NONE"
+    assert [row["id"] for row in rows] == [
+        CAP_CONTENT_STATUS, CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
+    ]
+    assert all(row["side_effects"] == "NONE" for row in rows)
     assert service.endpoint == "http://127.0.0.1:8103/a2a"
     assert service.identity_path == Path(tmp_path) / "application/network/identity.json"
 

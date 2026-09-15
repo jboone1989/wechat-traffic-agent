@@ -10,12 +10,18 @@ import time
 from typing import Any, Mapping
 
 from .runtime_app import CAP_CONTENT_STATUS
+from .network_capabilities import (
+    CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
+    NETWORK_WORK_CAPABILITIES, execute_network_capability,
+)
 
 DEFAULT_AGENT_ID = "content.cai.001"
 DEFAULT_SEED_URL = "http://127.0.0.1:8001"
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8103
-DEFAULT_CAPABILITIES = (CAP_CONTENT_STATUS,)
+DEFAULT_CAPABILITIES = (
+    CAP_CONTENT_STATUS, CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
+)
 
 
 def content_network_seed_urls_from_environment() -> tuple[str, ...]:
@@ -157,7 +163,7 @@ class ContentNetworkService:
         card = signed_agent_card(
             identity=identity,
             name="Persistent Content Agent",
-            description="Content Agent with Runtime + VirtualBrain; explicit channel publication policy",
+            description="Persistent research and content agent: evidence research, bounded drafting, review, and observable runtime state.",
             url=self.endpoint,
             skills=[{"id": row["id"], "name": row["id"], "description": row["description"]} for row in rows],
         )
@@ -171,6 +177,7 @@ class ContentNetworkService:
         )
         self._network = network
         handlers: dict[str, Any] = {}
+        work_lock = asyncio.Lock()
         for row in rows:
             capability_id = row["id"]
             version = row["version"]
@@ -179,6 +186,16 @@ class ContentNetworkService:
                 payload: dict[str, Any], *, _capability_id: str = capability_id, _version: str = version
             ) -> Any:
                 args = _request_data(payload)
+                if _capability_id in NETWORK_WORK_CAPABILITIES:
+                    async with work_lock:
+                        result = await execute_network_capability(self.application, _capability_id, args)
+                    return HandlerResult(metadata={
+                        "capability_id": _capability_id,
+                        "capability_version": _version,
+                        "provider": self.agent_id,
+                        "execution_id": result.get("execution_id"),
+                        "result": result,
+                    })
                 with self.execution_lock:
                     receipt = self.application.runtime.invoke(_capability_id, args)
                     self.application.runtime.persist()

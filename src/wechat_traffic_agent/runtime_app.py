@@ -10,6 +10,9 @@ from typing import Any, Callable, Mapping
 
 APPLICATION_VERSION = "content-application:v1"
 CAP_CONTENT_STATUS = "content.agent.status"
+from .network_capabilities import (
+    CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW, capability_specs,
+)
 SUBJECT_ID = "content-agent"
 
 
@@ -34,26 +37,38 @@ class ContentCapabilityPack:
         self._status_observer = status_observer
 
     def manifest(self) -> dict[str, Any]:
+        work = []
+        for row in capability_specs():
+            work.append({
+                **row,
+                "output_schema": {"type": "object"},
+                "side_effect_level": "READ_ONLY",
+            })
         return {
             "provider": "content-agent",
-            "version": "1.0",
-            "description": "Read-only Content Agent operational status.",
+            "version": "1.1",
+            "description": "Read-only Content Agent status plus delegated research/content capabilities.",
             "capabilities": [{
                 "capability_id": CAP_CONTENT_STATUS,
                 "description": "Observe bounded Content Agent readiness and lifecycle state.",
                 "input_schema": {"type": "object", "additionalProperties": False},
                 "output_schema": {"type": "object"},
                 "side_effect_level": "READ_ONLY",
-            }],
+            }, *work],
         }
 
     def invoke(self, capability_id: str, payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
         args = dict(payload or {})
-        if capability_id != CAP_CONTENT_STATUS:
-            return {"ok": False, "status": "UNKNOWN_CAPABILITY", "capability_id": capability_id}
-        if args:
-            return {"ok": False, "status": "INVALID_REQUEST", "reason": "content status takes no arguments"}
-        return {"ok": True, "observation": _normalize_status(self._status_observer())}
+        if capability_id == CAP_CONTENT_STATUS:
+            if args:
+                return {"ok": False, "status": "INVALID_REQUEST", "reason": "content status takes no arguments"}
+            return {"ok": True, "observation": _normalize_status(self._status_observer())}
+        if capability_id in {CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW}:
+            return {
+                "ok": False, "status": "NETWORK_ENDPOINT_REQUIRED", "capability_id": capability_id,
+                "reason": "delegated content work executes through the signed Agent Network endpoint",
+            }
+        return {"ok": False, "status": "UNKNOWN_CAPABILITY", "capability_id": capability_id}
 
 
 class ContentApplication:
