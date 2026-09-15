@@ -10,15 +10,19 @@ from typing import Callable
 from .channels.agent_web import ContentAgentWebChannel
 from .channels.web import StaticWebsiteConfig, _route_for
 from .content_artifact import ContentArtifact
+from .content_strategy import ContentStrategyBinding
 from .site_audit import audit_static_site
 from .site_cli import _load_artifacts, _curate_web_taxonomy
 from .web_editorial import digest
 from .content_admission import _write_once
+from .evidence_floor import (
+    EvidenceFloorCheck, EvidenceFloorPlan, artifact_risk_cues, verify_evidence_floor_publication,
+)
 from .website_experiment import WebsiteExperimentBinding, experiment_compliance
 
 
 class AutomaticWebsitePublisher:
-    policy_version = 'website-automatic-admission:v1'
+    policy_version = 'website-automatic-admission:v3'
 
     def __init__(self, *, state_root, public_root, starter_path, config,
                  clock: Callable[[], datetime] | None = None):
@@ -45,6 +49,8 @@ class AutomaticWebsitePublisher:
         if experience['draft_sha256'] != digest(artifact.model_dump(mode='json')):
             raise ValueError('self-check is not bound to this draft')
         experiment = _validated_experiment(artifact, experience)
+        content_strategy = _validated_content_strategy(artifact, experience, experiment)
+        _validated_evidence_floor(artifact, experience)
         # This is a distinct machine policy, never a fabricated human review.
         public_artifact = artifact.model_copy(update={'public_safe': True})
         artifacts = _load_artifacts(self.inventory_path())
@@ -103,6 +109,10 @@ class AutomaticWebsitePublisher:
                                  else 'lesson:' + lesson_id.strip()),
             'practice_version': 'lesson:' + lesson_id.strip(),
         }
+        if content_strategy is not None:
+            attribution['content_strategy'] = content_strategy.model_dump(mode='json')
+            if content_strategy.decided_at.astimezone(timezone.utc) > published_at:
+                raise ValueError('content strategy was decided after publication')
         if experiment is not None:
             attribution['experiment'] = experiment.model_dump(mode='json')
         receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
@@ -112,6 +122,40 @@ class AutomaticWebsitePublisher:
                    'outcome_attribution': attribution}
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         return receipt
+
+
+def _validated_content_strategy(artifact: ContentArtifact, experience: dict,
+                                experiment: WebsiteExperimentBinding | None) -> ContentStrategyBinding | None:
+    raw = experience.get('content_strategy')
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError('content strategy must be an object when present')
+    binding = ContentStrategyBinding.model_validate(raw)
+    topic = artifact.tags[0] if artifact.tags else None
+    if binding.topic != topic or binding.cycle != experience.get('cycle'):
+        raise ValueError('content strategy is not bound to this cycle/topic')
+    expected_opening = experiment.treatment_value if experiment is not None else None
+    if binding.opening_mode != expected_opening:
+        raise ValueError('content strategy opening mode disagrees with Website experiment')
+    return binding
+
+
+def _validated_evidence_floor(artifact: ContentArtifact, experience: dict) -> None:
+    raw_plan = experience.get('evidence_floor_plan')
+    raw_check = experience.get('evidence_floor_check')
+    topic = artifact.tags[0] if artifact.tags else ''
+    if raw_plan is None and raw_check is None and not artifact_risk_cues(artifact, topic=topic):
+        return
+    if not isinstance(raw_plan, dict) or not isinstance(raw_check, dict):
+        raise ValueError('automatic publication requires persisted Evidence Floor plan and check for high-risk content')
+    self_check = experience.get('self_check')
+    supports = self_check.get('support') if isinstance(self_check, dict) else None
+    if not isinstance(supports, (list, tuple)):
+        raise ValueError('automatic publication requires persisted self-check support')
+    plan = EvidenceFloorPlan.model_validate(raw_plan)
+    check = EvidenceFloorCheck.model_validate(raw_check)
+    verify_evidence_floor_publication(artifact=artifact, plan=plan, check=check, supports=supports)
 
 
 def _validated_experiment(

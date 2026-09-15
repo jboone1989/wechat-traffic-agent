@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
+from .traffic_learning import SearchDemandObservation, SearchDemandStore
 
 
 def main(argv=None):
@@ -12,6 +13,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     record = commands.add_parser("import")
     record.add_argument("--input", type=Path, required=True)
+    search_record = commands.add_parser("import-search")
+    search_record.add_argument("--input", type=Path, required=True)
     report = commands.add_parser("report")
     report.add_argument("--channel", required=True)
     report.add_argument("--account", required=True)
@@ -23,6 +26,10 @@ def main(argv=None):
         if args.command == "import":
             row = ChannelEvidence.model_validate_json(args.input.read_text())
             result = {"status": "RECORDED", "path": str(store.record(row))}
+        elif args.command == "import-search":
+            row = SearchDemandObservation.model_validate_json(args.input.read_text())
+            result = {"status": "RECORDED", "path": str(SearchDemandStore(args.root).record(row)),
+                      "source": row.source, "query": row.query}
         else:
             result = store.report(channel=args.channel, account=args.account,
                                   cutoff=datetime.fromisoformat(args.as_of.replace("Z", "+00:00")), dimension=args.dimension)
