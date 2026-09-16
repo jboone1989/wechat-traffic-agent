@@ -104,6 +104,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "LIVE ACTIVITY" in live.text
     assert "What changed in me" in live.text
     assert "REAL-WORLD VALIDATION" in live.text
+    assert "What I believe — and what changed my mind" in live.text
+    assert "belief-change-list" in live.text
     assert "/api/agent/stream" in live.text
     assert "runtime cadence" in live.text
     assert "/api/agent/status" in live.text
@@ -124,6 +126,12 @@ class _Mind:
             "interests": [{"name": "model-evaluation", "salience": 1.0,
                            "preference": 0.54, "familiarity": 0.68}],
             "open_inquiries": [],
+            "beliefs": [{"proposition": "Higher long-term yields tighten crypto financial conditions.",
+                         "stance": 0.18, "confidence": 0.22, "revision_count": 2}],
+            "recent_belief_changes": [{"proposition": "Higher long-term yields tighten crypto financial conditions.",
+                                       "before": {"stance": 0.10, "confidence": 0.12},
+                                       "after": {"stance": 0.18, "confidence": 0.22},
+                                       "evidence_refs": ["world-evidence:1"]}],
             "latest_plan": None,
             "learning_boundary": "process experience only",
         }
@@ -161,4 +169,6 @@ def test_public_snapshot_exposes_live_goal_evidence_strategy_and_mind(tmp_path):
     assert snapshot["activity"]["strategy"]["name"] == "explainer-question"
     assert snapshot["activity"]["traffic"]["search_data_status"] == "NO_DATA"
     assert snapshot["learning"]["mind"]["interests"][0]["name"] == "model-evaluation"
+    assert snapshot["learning"]["mind"]["beliefs"][0]["revision_count"] == 2
+    assert snapshot["learning"]["mind"]["recent_belief_changes"][0]["after"]["stance"] == 0.18
     assert snapshot["boundaries"]["private_reasoning_exposed"] is False

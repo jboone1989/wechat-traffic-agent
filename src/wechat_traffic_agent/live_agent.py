@@ -345,6 +345,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
     profile = strategy.get("profile") if isinstance(strategy.get("profile"), dict) else {}
     mind_projection = mind.public_projection() if mind is not None else {
         "mind_tick": int(plan.get("mind_tick") or 0), "interests": [], "open_inquiries": [],
+        "beliefs": [], "recent_belief_changes": [],
         "latest_plan": plan or None, "learning_boundary": "public mind projection unavailable",
     }
     last_publication = _latest_publication(state_root)
