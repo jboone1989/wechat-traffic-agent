@@ -102,20 +102,23 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         reply = client.post("/api/agent/chat", json={"message": "What are you doing now?"})
 
     assert live.status_code == 200
-    assert "Watch the agent" in live.text
-    assert "LIVE ACTIVITY" in live.text
-    assert "What changed in me" in live.text
+    assert "NOW · CURRENT AGENT STATE" in live.text
+    assert "What is actually happening" in live.text
+    assert "Just happened / next" in live.text
     assert "REAL-WORLD VALIDATION" in live.text
-    assert "What I believe — and what changed my mind" in live.text
-    assert "How yesterday became today" in live.text
+    assert "Worldview & predictions" in live.text
+    assert "Life history" in live.text
     assert "Things I found, not things I have adopted" in live.text
     assert "belief-change-list" in live.text
-    assert "What I expect next — and what reality decided" in live.text
+    assert "AWAITING REALITY" in live.text
     assert "prediction-outcome-list" in live.text
     assert "/api/agent/stream" in live.text
-    assert "runtime cadence" in live.text
+    assert "NEXT CHECK" in live.text
     assert "/api/agent/status" in live.text
     assert "NO PRIVATE CHAIN-OF-THOUGHT" in live.text
+    assert live.text.index("NOW · CURRENT AGENT STATE") < live.text.index("Learning details")
+    assert "<details class=\"detail\">" in live.text
+    assert "agent-core" not in live.text
     assert status.status_code == 200
     assert reply.status_code == 200
     assert reply.json()["learning_effect"] == "none"
