@@ -76,3 +76,21 @@ def test_static_web_channel_build_is_immutable(tmp_path):
     channel.build([_artifact()], target)
     with pytest.raises(FileExistsError):
         channel.build([_artifact()], target)
+
+
+
+def test_notes_are_first_class_public_content_without_longform_length_requirement(tmp_path):
+    note = ContentArtifact(
+        artifact_id="note-1", kind=ContentKind.NOTE, slug="one-small-thought",
+        title="One small thought", summary="A short evidence-grounded reflection.",
+        sections=(ContentSection(heading="Thought", paragraphs=("I noticed one bounded thing, and I am not padding it into an article.",)),),
+        source_refs=(ContentSourceRef(ref_id="world:1", source="world-feed", revision="v1"),),
+        created_at=datetime(2026, 9, 16, tzinfo=timezone.utc), public_safe=True,
+    )
+    target = tmp_path / "site"
+    StaticWebChannel(_config()).build([note], target)
+    assert (target / "notes" / "one-small-thought" / "index.html").exists()
+    listing = (target / "notes" / "index.html").read_text(encoding="utf-8")
+    assert "One small thought" in listing
+    assert "Notes" in (target / "index.html").read_text(encoding="utf-8")
+    assert "/notes/" in (target / "sitemap.xml").read_text(encoding="utf-8")

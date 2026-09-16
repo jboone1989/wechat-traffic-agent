@@ -16,6 +16,7 @@ from .content_loop import (
     Contract, ContinuousContentLoop as _BaseContinuousContentLoop,
     Lesson, ReceiptRuntime, SelfCheck, _put, _structured, collect_news,
 )
+from .content_artifact import ContentKind
 from .content_explorer import GoalEvidenceExplorer, collect_trading_evidence
 from .content_service import ContentAgent
 from .content_strategy import bind_content_strategy, strategy_instruction
@@ -57,7 +58,7 @@ class WorldviewDecision(Contract):
 class CognitionDecision(Contract):
     cognition_state: Literal["BELIEF_CHANGED", "INVESTIGATING", "NO_MATERIAL_CHANGE"]
     worth_saying: bool
-    expression_kind: Literal["LONGFORM", "NONE"]
+    expression_kind: Literal["LONGFORM", "RESEARCH_NOTE", "METHOD_NOTE", "THOUGHT", "NONE"]
     what_changed: str = Field(min_length=5, max_length=600)
     what_matters: str = Field(min_length=5, max_length=600)
     belief_proposition: str | None = Field(default=None, max_length=500)
@@ -501,16 +502,20 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                'A completed cognition cycle does not create a publication obligation.')
                 current_projection = self.mind.public_projection()
                 def validate_cognition(value):
-                    if value.worth_saying != (value.expression_kind == 'LONGFORM'):
+                    if value.worth_saying != (value.expression_kind != 'NONE'):
                         raise ValueError('worth_saying must match expression_kind')
                     changed = isinstance(worldview_update, dict) and worldview_update.get('status') in {'FORMED', 'REVISED'}
                     if value.cognition_state == 'BELIEF_CHANGED' and not changed:
                         raise ValueError('BELIEF_CHANGED requires a persisted worldview change')
+                    if value.expression_kind == 'METHOD_NOTE' and selected.get('learning_kind') not in {'METHOD', 'TOOL'}:
+                        raise ValueError('METHOD_NOTE requires METHOD or TOOL evidence')
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
-                    'The persistent agent is expected to think continuously, but publication is never a quota. NONE is correct when the evidence merely repeats what is already known, remains too weak, or produces no useful interpretation. '
-                    'LONGFORM is appropriate for a material belief formation/revision, a high-salience event with a non-trivial interpretation, or a useful research result that would help a reader understand the world. '
+                    'The persistent agent is expected to think continuously, but publication is never a quota. NONE is correct only when there is no meaningful information gain or useful public trace. '
+                    'LONGFORM is appropriate for a material belief formation/revision or substantial research result. RESEARCH_NOTE is appropriate when the evidence is real and the investigation itself is useful, but the durable worldview correctly remains unresolved. '
+                    'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
+                    'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a durable belief or full research note. '
                     'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.\n'
                     + json.dumps({
                         'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
@@ -534,6 +539,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                     'selected_source_kind': selected['source_kind'],
                                     'evidence_refs': selected['evidence_refs']},
                 }
+
+        expression_kind = cognition_decision.expression_kind if cognition_decision is not None else 'LONGFORM'
+        is_short_note = expression_kind in {'RESEARCH_NOTE', 'METHOD_NOTE', 'THOUGHT'}
+        minimum_words = None if is_short_note else 350
 
         self._activity(cycle, 'LEARN', 'I’m reviewing what I learned from recent writing',
                        'Now that I chose to express this thought, I’m selecting a small set of writing techniques to practice.')
@@ -651,11 +660,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                  'agent_expression_context': expression_context,
                  'source_material': {'evidence': selected, 'counter_evidence': counter_payload,
                                      'existing_articles': related},
-                 'writing_requirements': 'Write at least 350 words. Explain one mechanism, separate reported facts and interpretation. '
-                     'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '
+                 'writing_requirements': (
+                     (f'Write a concise {expression_kind.lower().replace("_", " ")}. Do not pad it to reach a length target; stop when the thought is complete. ' if is_short_note else f'Write at least {minimum_words} words. ')
+                     + ('For a research note, clearly state what is known, what remains unresolved, and what evidence would resolve it. ' if expression_kind == 'RESEARCH_NOTE' else '')
+                     + ('For a method note, describe the discovered method/tool as a learning candidate, why it may matter, and how this agent would test it before adoption. Do not claim it has already been learned or installed. ' if expression_kind == 'METHOD_NOTE' else '')
+                     + ('For a thought, make one clear evidence-grounded observation or question in the agent’s own voice; brevity is a feature, not a failure. ' if expression_kind == 'THOUGHT' else '')
+                     + 'Explain one mechanism, separate reported facts and interpretation. '
+                     + 'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '
                      'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying. '
                      'When agent_expression_context is present, make that cognition the reason the piece exists: express the agent’s own view in first person while keeping source facts attributed. '
-                     'Do not hide a belief change behind neutral encyclopedia prose, and do not invent stronger conviction than the stored worldview update supports. If agent_expression_context contains a dated_prediction, it may be stated only as the agent’s explicit forecast with its stored confidence/horizon/falsifier, never as an observed fact. '
+                     + 'Do not hide a belief change behind neutral encyclopedia prose, and do not invent stronger conviction than the stored worldview update supports. If agent_expression_context contains a dated_prediction, it may be stated only as the agent’s explicit forecast with its stored confidence/horizon/falsifier, never as an observed fact. ')
                      + strategy_instruction(content_strategy)
                      + floor_requirement + ((' ' + experiment_requirement) if experiment_requirement else '')}
         observed_at = datetime.fromisoformat(selected.get('observed_at') or inputs['now'])
@@ -689,7 +703,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
               editorial_brief=json.dumps(brief, ensure_ascii=False))
         self._activity(cycle, 'CREATE', 'The draft is ready',
                        f"Drafted {artifact.title}. Running source, safety, and usefulness checks next.", status='completed')
-        artifact = artifact.model_copy(update={'tags': (selection.topic,),
+        artifact = artifact.model_copy(update={
+             'kind': ContentKind.NOTE if is_short_note else artifact.kind, 'tags': (selection.topic,),
              'disclosure': 'Written by Content Agent using public source material. Automated source and writing checks are fallible; this is not investment advice.'})
         if scope_downgraded and artifact_risk_cues(artifact, topic=selection.topic):
             self._activity(cycle, 'CREATE', 'The first draft still makes a stronger claim than the evidence allows',
@@ -703,7 +718,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             artifact = await ContentAgent(runtime).compose(
                 topics, default_trading_research_audience(), artifact_id='continuous-' + fingerprint[:20],
                 now=datetime.fromisoformat(inputs['now']), editorial_brief=json.dumps(safer_brief, ensure_ascii=False))
-            artifact = artifact.model_copy(update={'tags': (selection.topic,),
+            artifact = artifact.model_copy(update={'kind': ContentKind.NOTE if is_short_note else artifact.kind, 'tags': (selection.topic,),
                  'disclosure': 'Written by Content Agent using public source material. Automated source and writing checks are fallible; this is not investment advice.'})
             self._activity(cycle, 'CREATE', 'I rewrote the draft to fit the evidence I actually have',
                            f"Reframed as {artifact.title}. Final checks will still fail closed if risky claims remain.", status='completed')
@@ -765,7 +780,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
-                  and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
+                  and support_valid == set(range(len(artifact.sections)))
+                  and (minimum_words is None or len(text.split()) >= minimum_words)
                   and floor_check.status == 'PASS' and perspective_expression)
         self._activity(cycle, 'CREATE', 'I finished the publication checks',
                        ('All required checks passed; the draft can proceed.' if passes else 'One or more checks failed; the draft will be held.'),
@@ -785,6 +801,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'missing_technique_applications': sorted(set(range(len(lesson.techniques))) - application_valid),
                       'missing_section_support': sorted(set(range(len(artifact.sections))) - support_valid),
                       'perspective_expression': perspective_expression,
+                      'expression_kind': expression_kind, 'minimum_words': minimum_words,
                       'word_count': len(text.split()),
                       'assessment_kind': 'model self-check with exact-quote validation; no audience outcome claim'}
         _put(folder / 'experience.json', experience)

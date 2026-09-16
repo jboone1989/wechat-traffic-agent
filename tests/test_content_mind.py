@@ -268,3 +268,23 @@ def test_prediction_outcome_becomes_restart_stable_virtualbrain_experience(tmp_p
         evidence_refs=("prediction:abc", "web:fresh-outcome"),
     )
     assert duplicate["status"] == "ALREADY_OBSERVED"
+
+
+
+def test_method_discovery_can_raise_salience_without_rewriting_preference(tmp_path: Path):
+    mind = ContentMind(root=tmp_path / "state", subject_id="content-agent")
+    observation = {
+        "evidence_id": "web:x-method-1", "topic": "continuous-eval-loop",
+        "question": "Would this practitioner evaluation loop improve my own research discipline?",
+        "importance": 0.86, "novelty": 0.94,
+        "why_now": "The method is concrete enough to investigate but has not been tested by this agent.",
+        "learning_kind": "METHOD", "evidence_refs": ("web:x-method-1", "fetch:x-method-1"),
+    }
+    plan = mind.plan_for_cycle(cycle="v2-method-1", available_topics=("model-evaluation",), world_observations=(observation,))
+    update = next(row for row in plan["world_interest_updates"] if row["topic"] == "continuous-eval-loop")
+    assert update["learning_kind"] == "METHOD"
+    assert update["interest"]["preference"] == 0.5
+    assert update["interest"]["familiarity"] > 0.0
+    assert plan["world_observations"][0]["learning_kind"] == "METHOD"
+    # Discovery may create curiosity/inquiry, but it is not proof that the method works or has been adopted.
+    assert all(row["proposition"] != "continuous-eval-loop" for row in mind.public_projection()["beliefs"])
