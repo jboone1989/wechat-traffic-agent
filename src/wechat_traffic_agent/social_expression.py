@@ -11,21 +11,26 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .content_loop import ReceiptRuntime, _put, _structured
 from .public_activity import emit_public_activity
 
+OKX_SHORT_POST_MAX_CHARS = 500
+SOCIAL_LONG_TEXT_MAX_CHARS = 8000
+
 
 class ChannelSocialDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     channel: Literal["OKX", "X"]
-    format: Literal["SHORT_POST", "LONG_POST", "ARTICLE_TEASER"]
-    text: str = Field(min_length=20, max_length=1200)
+    format: Literal["SHORT_POST", "LONG_POST", "ARTICLE"]
+    text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
     style_observation_ids: tuple[str, ...] = Field(max_length=4)
     rationale: str = Field(min_length=10, max_length=400)
 
     @model_validator(mode="after")
     def channel_bounds(self) -> "ChannelSocialDraft":
-        if self.channel == "X" and len(self.text) > 280:
-            raise ValueError("X draft must be at most 280 characters")
-        if self.channel == "OKX" and len(self.text) > 1200:
-            raise ValueError("OKX draft must be at most 1200 characters")
+        if self.channel == "OKX" and self.format == "SHORT_POST" and len(self.text) > OKX_SHORT_POST_MAX_CHARS:
+            raise ValueError(f"OKX short post must be at most {OKX_SHORT_POST_MAX_CHARS} characters")
+        if self.channel == "OKX" and self.format == "LONG_POST":
+            raise ValueError("OKX should use SHORT_POST for feed posts or ARTICLE for long-form content")
+        if len(self.text) > SOCIAL_LONG_TEXT_MAX_CHARS:
+            raise ValueError(f"social draft must be at most {SOCIAL_LONG_TEXT_MAX_CHARS} characters")
         return self
 
 
@@ -77,9 +82,9 @@ class SocialExpressionDraftWorker:
         prompt = (
             "SOCIAL_EXPRESSION_DRAFT: Render the same persisted cognition for two social channels. Do not invent a new topic or new facts. "
             "The website artifact is factual/context input, not a template to copy. social_style_context is STYLE_ONLY: use structure and pacing only, never copy wording, persona, certainty, or calls to action. "
-            "For OKX, write like a current market/community post: direct hook, current bounded view, then what to watch or what would change the view; use short paragraphs and no formal article sections. Max 1200 characters. "
-            "For X, compress the same useful idea to at most 280 characters. Prefer conditional language over unsupported prediction. "
-            "If the cognition is LONGFORM, ARTICLE_TEASER is allowed; otherwise prefer SHORT_POST or LONG_POST. No private data, personalized investment advice, fabricated numbers, or unsupported causation. Return JSON only.\n"
+            "For OKX, choose SHORT_POST for an immediate feed update and keep that format at most 500 characters. If the cognition has enough evidence, mechanism, counterpoint, or durable value to justify long-form treatment, choose ARTICLE instead of stretching a feed post into a mini-article. "
+            "For X, this account supports long posts and Articles. Choose SHORT_POST when the idea is simple, LONG_POST when one social post genuinely benefits from more context, and ARTICLE when the cognition deserves a structured long-form treatment. Prefer conditional language over unsupported prediction. "
+            "ARTICLE is a real long-form channel artifact, not a teaser. Do not choose it merely because more text is available; choose it only when the cognition supports depth. No private data, personalized investment advice, fabricated numbers, or unsupported causation. Return JSON only.\n"
             + json.dumps({
                 "cycle": cycle, "cognition": cognition, "artifact": artifact,
                 "publication": publication, "social_style_context": style,

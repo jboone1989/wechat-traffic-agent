@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from wechat_traffic_agent.social_expression import SocialExpressionDraftWorker
+from pydantic import ValidationError
+
+from wechat_traffic_agent.social_expression import (
+    ChannelSocialDraft, OKX_SHORT_POST_MAX_CHARS, SOCIAL_LONG_TEXT_MAX_CHARS, SocialExpressionDraftWorker,
+)
 
 NOW = datetime(2026, 9, 16, 13, 20, tzinfo=timezone.utc)
 
@@ -76,7 +80,11 @@ def test_social_expression_drafts_are_channel_specific_and_non_publishing(tmp_pa
     assert saved["style_performance_claim"] == "UNVERIFIED"
     assert saved["drafts"]["okx"]["channel"] == "OKX"
     assert saved["drafts"]["x"]["channel"] == "X"
-    assert len(saved["drafts"]["x"]["text"]) <= 280
+    assert len(saved["drafts"]["okx"]["text"]) <= OKX_SHORT_POST_MAX_CHARS
+    assert len(saved["drafts"]["x"]["text"]) <= SOCIAL_LONG_TEXT_MAX_CHARS
+    assert "at most 500 characters" in runtime.calls[0]
+    assert "supports long posts and Articles" in runtime.calls[0]
+    assert "choose ARTICLE" in runtime.calls[0]
     assert "STYLE_ONLY" in runtime.calls[0]
     replay = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
     assert replay["status"] == "ALREADY_DRAFTED"
@@ -87,3 +95,37 @@ def test_social_expression_requires_published_worth_saying_cycle(tmp_path):
     state, _cycle, result = setup_cycle(tmp_path)
     worker = SocialExpressionDraftWorker(runtime=Runtime(), state_root=state)
     assert asyncio.run(worker.after_content_cycle(result={**result, "status": "HELD_BY_CHECKS"}, now=NOW))["status"] == "NO_PUBLISHED_EXPRESSION"
+
+
+def test_channel_formats_allow_articles_but_keep_okx_feed_short():
+    okx = ChannelSocialDraft(
+        channel="OKX", format="SHORT_POST", text="x" * OKX_SHORT_POST_MAX_CHARS,
+        style_observation_ids=(), rationale="Compact OKX boundary test.",
+    )
+    assert len(okx.text) == OKX_SHORT_POST_MAX_CHARS
+    try:
+        ChannelSocialDraft(
+            channel="OKX", format="SHORT_POST", text="x" * (OKX_SHORT_POST_MAX_CHARS + 1),
+            style_observation_ids=(), rationale="Too long for OKX feed.",
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("OKX over-limit feed post was accepted")
+
+    okx_article = ChannelSocialDraft(
+        channel="OKX", format="ARTICLE", text="x" * 1200,
+        style_observation_ids=(), rationale="Long-form OKX article is a separate format.",
+    )
+    x_long = ChannelSocialDraft(
+        channel="X", format="LONG_POST", text="x" * 1200,
+        style_observation_ids=(), rationale="Premium X can carry a longer social post.",
+    )
+    x_article = ChannelSocialDraft(
+        channel="X", format="ARTICLE", text="x" * 2500,
+        style_observation_ids=(), rationale="X Article is a separate long-form expression.",
+    )
+    assert len(okx_article.text) == 1200
+    assert len(x_long.text) == 1200
+    assert len(x_article.text) == 2500
+    assert len(x_article.text) <= SOCIAL_LONG_TEXT_MAX_CHARS
