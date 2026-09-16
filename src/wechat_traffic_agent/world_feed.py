@@ -108,9 +108,11 @@ class WorldFeed:
             raise ValueError("world scan produced no usable query")
         return plan.model_copy(update={"queries": queries})
 
-    async def _observe(self, *, runtime: Any, now: datetime, items: list[dict[str, Any]], mind_projection: dict[str, Any]) -> tuple[WorldObservation, ...]:
+    async def _observe(
+        self, *, runtime: Any, now: datetime, items: list[dict[str, Any]], mind_projection: dict[str, Any]
+    ) -> tuple[tuple[WorldObservation, ...], tuple[dict[str, str], ...]]:
         if not items:
-            return ()
+            return (), ()
         registry = {row["evidence_id"]: row for row in items}
         compact = [{
             "evidence_id": row["evidence_id"], "source_kind": row["source_kind"],
@@ -127,24 +129,40 @@ class WorldFeed:
             + "\nSchema: " + json.dumps(WorldObservationSet.model_json_schema())
         )
         raw = await runtime.cognitive_probe(task, max_tokens=1800)
-        result = WorldObservationSet.model_validate_json(_extract_json(raw))
+        payload = json.loads(_extract_json(raw))
+        rows = payload.get("observations") if isinstance(payload, dict) else None
+        if not isinstance(rows, list) or len(rows) > 6:
+            raise ValueError("world attention observations must be a list with at most 6 items")
         seen: set[str] = set()
         checked: list[WorldObservation] = []
-        for observation in result.observations:
-            if observation.evidence_id in seen or observation.evidence_id not in registry:
-                raise ValueError("world observation must reference one supplied evidence_id exactly once")
+        rejected: list[dict[str, str]] = []
+        for row in rows:
+            evidence_id = str(row.get("evidence_id") or "") if isinstance(row, dict) else ""
+            try:
+                observation = WorldObservation.model_validate(row)
+            except Exception:
+                rejected.append({"evidence_id": evidence_id, "reason": "INVALID_SCHEMA"})
+                continue
+            if observation.evidence_id in seen:
+                rejected.append({"evidence_id": observation.evidence_id, "reason": "DUPLICATE_EVIDENCE_ID"})
+                continue
+            if observation.evidence_id not in registry:
+                rejected.append({"evidence_id": observation.evidence_id, "reason": "UNKNOWN_EVIDENCE_ID"})
+                continue
             source = registry[observation.evidence_id]
             text = str(source["title"]) + "\n" + str(source["summary"])
             if observation.evidence_quote not in text:
-                raise ValueError("world observation quote must be an exact source substring")
+                rejected.append({"evidence_id": observation.evidence_id, "reason": "QUOTE_NOT_EXACT"})
+                continue
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", observation.topic):
-                raise ValueError("world observation topic is invalid")
+                rejected.append({"evidence_id": observation.evidence_id, "reason": "INVALID_TOPIC"})
+                continue
             seen.add(observation.evidence_id)
             refs = tuple(dict.fromkeys(
                 [observation.evidence_id, *[str(ref) for ref in source.get("evidence_refs") or () if str(ref).strip()]]
             ))
             checked.append(observation.model_copy(update={"evidence_refs": refs}))
-        return tuple(checked)
+        return tuple(checked), tuple(rejected)
 
     def _update_registry(self, *, items: list[dict[str, Any]], observations: tuple[WorldObservation, ...], now: datetime) -> None:
         registry = self._registry()
@@ -187,8 +205,11 @@ class WorldFeed:
                 failures.append({"source": source, "query": query, "error_type": type(exc).__name__})
         unique = {row["evidence_id"]: row for row in items}
         items = list(unique.values())[:60]
+        attention_rejections: tuple[dict[str, str], ...] = ()
         try:
-            observations = await self._observe(runtime=runtime, now=now, items=items, mind_projection=mind_projection)
+            observations, attention_rejections = await self._observe(
+                runtime=runtime, now=now, items=items, mind_projection=mind_projection
+            )
         except Exception as exc:
             failures.append({"source": "world-attention", "query": "", "error_type": type(exc).__name__})
             observations = ()
@@ -200,6 +221,7 @@ class WorldFeed:
             "verification_queries": list(forced_queries),
             "items": items,
             "observations": [row.model_dump(mode="json") for row in observations],
+            "attention_rejections": list(attention_rejections),
             "failures": failures,
             "known_sources": self._known_sources(),
             "learning_authority": False,
