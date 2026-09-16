@@ -5,7 +5,7 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
@@ -79,28 +79,76 @@ class ContentMind:
         )
         os.replace(tmp, self.checkpoint_path)
 
-    def plan_for_cycle(self, *, cycle: str, available_topics: Iterable[str]) -> dict[str, Any]:
-        """Advance idle cognition once per cycle and bind any endogenous goal to a topic."""
+    def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
+        for key in reversed(sorted(self._plans)):
+            topic = (self._plans[key].get("world_inquiry_topics") or {}).get(inquiry_id)
+            if isinstance(topic, str) and topic.strip():
+                return topic
+        return None
+
+    def plan_for_cycle(
+        self, *, cycle: str, available_topics: Iterable[str],
+        world_observations: Iterable[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        """Advance cognition after exposing the mind to bounded real-world observations."""
         if cycle in self._plans:
             return deepcopy(self._plans[cycle])
-        topics = tuple(sorted({str(item) for item in available_topics if str(item).strip()}))
+        observations = []
+        for raw in world_observations:
+            if not isinstance(raw, Mapping):
+                continue
+            topic, question = str(raw.get("topic") or "").strip(), str(raw.get("question") or "").strip()
+            if not topic or not question:
+                continue
+            observations.append({
+                "evidence_id": str(raw.get("evidence_id") or ""),
+                "topic": topic, "question": question,
+                "importance": min(1.0, max(0.0, float(raw.get("importance") or 0.0))),
+                "novelty": min(1.0, max(0.0, float(raw.get("novelty") or 0.0))),
+                "why_now": str(raw.get("why_now") or "")[:300],
+            })
+        topics = tuple(sorted(
+            {str(item) for item in available_topics if str(item).strip()}
+            | {row["topic"] for row in observations}
+        ))
+        before = self.session.inquiry.inquiries
+        open_questions = {state.get("question") for state in before.values() if state.get("status") == "OPEN"}
+        recent_events = tuple({
+            "kind": "curiosity",
+            "data": {
+                "question": row["question"],
+                "intensity": row["importance"],
+                "personal_relevance": max(row["importance"], row["novelty"]),
+                "hypotheses": {"worth-investigating": 0.5},
+            },
+        } for row in observations if row["question"] not in open_questions)
         readout = self.session.idle_tick(
-            body_state={}, world_state={"available_content_topics": list(topics)}, recent_events=()
+            body_state={},
+            world_state={"available_content_topics": list(topics), "world_observations": observations},
+            recent_events=recent_events,
         )
         goal = (
             json.loads(json.dumps(readout["goal_proposals"][0], ensure_ascii=False, sort_keys=True))
             if readout["goal_proposals"] else None
         )
+        after = self.session.inquiry.inquiries
+        inquiry_topics: dict[str, str] = {}
+        by_question = {row["question"]: row["topic"] for row in observations}
+        for inquiry_id, state in after.items():
+            if inquiry_id not in before and state.get("question") in by_question:
+                inquiry_topics[inquiry_id] = by_question[state["question"]]
         required_topic = None
         if goal and goal.get("origin") == "INTEREST":
             refs = [str(item) for item in goal.get("interest_refs") or ()]
             required_topic = next((item for item in refs if item in topics), None)
+        elif goal and goal.get("origin") == "INQUIRY":
+            refs = [str(item) for item in goal.get("inquiry_refs") or ()]
+            if refs:
+                required_topic = inquiry_topics.get(refs[0]) or self._prior_inquiry_topic(refs[0])
         plan = {
-            "cycle": cycle,
-            "mind_tick": int(readout["tick"]),
-            "goal": goal,
-            "required_topic": required_topic,
-            "available_topics": list(topics),
+            "cycle": cycle, "mind_tick": int(readout["tick"]), "goal": goal,
+            "required_topic": required_topic, "available_topics": list(topics),
+            "world_observations": observations, "world_inquiry_topics": inquiry_topics,
         }
         self._plans[cycle] = plan
         if len(self._plans) > MAX_PLANS:

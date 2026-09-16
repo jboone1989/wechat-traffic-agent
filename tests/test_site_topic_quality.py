@@ -18,7 +18,7 @@ def _artifact(artifact_id: str, slug: str, title: str, tags: tuple[str, ...]) ->
     )
 
 
-def test_site_only_indexes_topics_supported_by_multiple_content_items(tmp_path):
+def test_site_indexes_topics_from_their_first_published_item(tmp_path):
     config = tmp_path / "site.json"
     config.write_text(
         '{"site_name":"Content Lab","base_url":"https://example.com","description":"Evidence-backed content."}',
@@ -34,14 +34,15 @@ def test_site_only_indexes_topics_supported_by_multiple_content_items(tmp_path):
     output = tmp_path / "site-output"
     result = build_site(config, artifacts, output)
 
-    assert result["indexed_topic_count"] == 1
+    assert result["indexed_topic_count"] == 3
     assert (output / "topics" / "shared" / "index.html").exists()
-    assert not (output / "topics" / "singleton" / "index.html").exists()
-    assert not (output / "topics" / "duplicate" / "index.html").exists()
+    assert (output / "topics" / "singleton" / "index.html").exists()
+    assert (output / "topics" / "duplicate" / "index.html").exists()
     page = (output / "articles" / "first-article" / "index.html").read_text(encoding="utf-8")
     assert "/topics/shared/" in page
-    assert "/topics/singleton/" not in page
-    assert "/topics/duplicate/" not in page
+    assert "/topics/singleton/" in page
+    assert "/topics/duplicate/" in page
     sitemap = (output / "sitemap.xml").read_text(encoding="utf-8")
     assert "/topics/shared/" in sitemap
-    assert "/topics/singleton/" not in sitemap
+    assert "/topics/singleton/" in sitemap
+    assert "/topics/duplicate/" in sitemap
