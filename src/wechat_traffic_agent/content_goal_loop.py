@@ -123,6 +123,21 @@ def _market_expression_instruction(selected):
         'Do not invent a catalyst, price target, certainty, or personalized trading instruction.'
     )
 
+def _market_companion_evidence(selected, candidates):
+    """Pair a live catalyst with current market data, or vice versa, for a market pulse."""
+    if not _market_expression_instruction(selected):
+        return None
+    selected_id = str(selected.get('evidence_id') or '')
+    rows = [row for row in candidates if isinstance(row, dict) and str(row.get('evidence_id') or '') != selected_id]
+    if str(selected.get('source_kind') or '') == 'public-api':
+        return next((row for row in rows
+                     if str(row.get('source_kind') or '') == 'web-search'
+                     and _market_expression_instruction(row)), None)
+    return next((row for row in rows
+                 if str(row.get('source_kind') or '') == 'public-api'
+                 and _market_expression_instruction(row)), None)
+
+
 def _repair_related_ids(selection, snapshot):
     """Keep only real navigation IDs; a newly born Topic does not need a pre-existing member."""
     existing = {row['artifact']['artifact_id'] for row in snapshot['articles']}
@@ -484,6 +499,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         related = [r['artifact'] for r in snapshot['articles'] if r['artifact']['artifact_id'] in selection.related_ids]
         if selected is None or len(related) != len(selection.related_ids):
             raise ValueError('selection references unknown or duplicate evidence')
+        market_companion = _market_companion_evidence(selected, evidence)
         existing = inputs['previous_titles'] + [r['artifact']['title'] for r in snapshot['articles']]
         if _title_key(selection.title) in {_title_key(t) for t in existing}:
             raise ValueError('selection duplicates an existing title')
@@ -593,6 +609,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
                         'worldview_update': worldview_update, 'prediction': prediction_record, 'mind_goal': mind_plan.get('goal'),
                         'current_mind': self.mind.public_projection(), 'recent_titles': inputs['previous_titles'][-20:],
+                        'market_context_evidence': market_companion,
                     }
                     _put(cognition_context_path, cognition_context)
                 def validate_cognition(value):
@@ -610,6 +627,12 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     if getattr(self, '_focus_topic', None) else ''
                 )
                 market_instruction = _market_expression_instruction(selected)
+                if market_instruction and market_companion is not None:
+                    market_instruction += (
+                        ' Use the supplied market_context_evidence together with the primary source to form the current bounded market view. '
+                        'Do not make source-taxonomy or media-critique the main point unless the evidence is too weak to support any market interpretation. '
+                        'In what_matters, prefer the agent’s current interpretation plus the next observation that would confirm, weaken, or reverse it.'
+                    )
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
@@ -740,10 +763,12 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 demand_score=0.0, priority_score=0.0, exposure_status='UNKNOWN',
             )
         strategy_path = folder / 'content_strategy.json'
+        market_pulse = bool(_market_expression_instruction(selected))
         content_strategy = bind_content_strategy(
             strategy_path, state_root=self.state, account=self.base_url, cycle=cycle,
             topic=selection.topic, traffic_signal=traffic_signal, decided_at=cycle_now,
             opening_mode=(experiment.treatment_value if experiment is not None else None),
+            preferred_profile_name=('follow-up-update' if market_pulse else None),
         )
         strategy_payload = content_strategy.model_dump(mode='json')
         self._activity(cycle, 'DECIDE', 'I chose the content strategy',
@@ -826,8 +851,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                  'prospective_experiment': experiment_payload, 'content_strategy': strategy_payload,
                  'evidence_floor': floor_plan.model_dump(mode='json'),
                  'agent_expression_context': expression_context,
-                 'source_material': {'evidence': selected, 'counter_evidence': counter_payload,
-                                     'existing_articles': related},
+                 'source_material': {'evidence': selected, 'market_context_evidence': market_companion,
+                                     'counter_evidence': counter_payload, 'existing_articles': related},
                  'writing_requirements': (
                      (f'Write a concise {expression_kind.lower().replace("_", " ")}. Do not pad it to reach a length target; stop when the thought is complete. ' if is_short_note else f'Write at least {minimum_words} words. ')
                      + ('For a research note, clearly state what is known, what remains unresolved, and what evidence would resolve it. ' if expression_kind == 'RESEARCH_NOTE' else '')
@@ -851,6 +876,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             observed_at=observed_at,
             evidence_refs=tuple(selected['evidence_refs']),
         )]
+        if market_companion is not None:
+            companion_observed = datetime.fromisoformat(market_companion.get('observed_at') or inputs['now'])
+            topics.append(TopicSignal(
+                title=market_companion['title'][:300], summary=market_companion['summary'][:500],
+                source=market_companion['source'][:80], source_url=market_companion.get('url'),
+                source_revision=market_companion['source_revision'], observed_at=companion_observed,
+                evidence_refs=tuple(market_companion['evidence_refs']),
+            ))
         if counter_payload is not None:
             counter_observed = datetime.fromisoformat(counter_payload.get('observed_at') or inputs['now'])
             topics.append(TopicSignal(
@@ -905,6 +938,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         source_text = {selected['evidence_id']: selected_text}
         for evidence_ref in selected['evidence_refs']:
             source_text[evidence_ref] = selected_text
+        if market_companion is not None:
+            companion_text = market_companion['title'] + '\n' + market_companion['summary']
+            source_text[market_companion['evidence_id']] = companion_text
+            for evidence_ref in market_companion['evidence_refs']:
+                source_text[evidence_ref] = companion_text
         if counter_payload is not None:
             counter_text = counter_payload['title'] + '\n' + counter_payload['summary']
             source_text[counter_payload['evidence_id']] = counter_text
@@ -996,6 +1034,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                   'match_count': len(exploration.get('matches', [])),
                                   'selected_evidence_id': selected['evidence_id'],
                                   'selected_source_kind': selected['source_kind'],
+                                  'market_context_evidence_id': (market_companion.get('evidence_id') if market_companion else None),
                                   'evidence_refs': selected['evidence_refs']}}
         if self.mind is not None:
             self._activity(cycle, 'LEARN', 'I’m recording what happened in this cycle',
