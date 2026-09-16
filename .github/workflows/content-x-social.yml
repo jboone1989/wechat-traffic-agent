@@ -5,6 +5,7 @@ on:
     paths:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
+      - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -14,6 +15,7 @@ on:
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
       - "tests/test_x_*.py"
+      - "tests/test_social_expression.py"
       - "tests/test_world_feed.py"
       - "tests/test_live_agent.py"
       - ".github/workflows/content-x-social.yml"
@@ -22,6 +24,7 @@ on:
     paths:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
+      - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -31,6 +34,7 @@ on:
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
       - "tests/test_x_*.py"
+      - "tests/test_social_expression.py"
       - "tests/test_world_feed.py"
       - "tests/test_live_agent.py"
       - ".github/workflows/content-x-social.yml"
@@ -52,6 +56,7 @@ jobs:
           python -m py_compile
           src/wechat_traffic_agent/x_mcp.py
           src/wechat_traffic_agent/x_social.py
+          src/wechat_traffic_agent/social_expression.py
           src/wechat_traffic_agent/sources/runtime_x.py
           src/wechat_traffic_agent/world_feed.py
           src/wechat_traffic_agent/live_agent.py
@@ -69,6 +74,6 @@ jobs:
           PYTHONPATH: .x-ci:src
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_site.py
+          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_site.py tests/test_social_expression.py
           tests/test_world_feed.py tests/test_live_agent.py
           tests/test_run_content_agent_entrypoint.py
