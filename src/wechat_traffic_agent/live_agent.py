@@ -72,7 +72,7 @@ def _phase_state(cycle_dir: Path | None, result: dict[str, Any]) -> tuple[str, s
         if status == "HELD_BY_CHECKS":
             return "IDLE", "CREATE", "Last cycle stopped after automated draft checks; waiting for the next runtime check"
         if status == "ERROR":
-            return "IDLE", "RECOVER", "Last cycle ended with an error; the runtime will retry on its next check"
+            return "IDLE", "RECOVER", "Last eligible content cycle ended with an error; the failed cycle is preserved and the agent will wait for the next eligible cycle"
         if status in {"NO_FRESH_EVIDENCE", "NO_RELEVANT_EVIDENCE", "ALREADY_PROCESSED"}:
             return "IDLE", "OBSERVE", "No new work was admitted in the last cycle; waiting for the next runtime check"
         return "IDLE", "DECIDE", f"Last cycle finished with {status or 'a terminal result'}; waiting for the next runtime check"
