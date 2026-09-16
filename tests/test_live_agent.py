@@ -366,3 +366,16 @@ def test_live_page_shows_social_expression_preview(tmp_path):
     assert "OKX ORBIT" in live.text
     assert "okx-draft-text" in live.text
     assert "x-draft-text" in live.text
+
+
+def test_live_skips_newer_unreadable_cycle(monkeypatch, tmp_path):
+    import wechat_traffic_agent.live_agent as live_module
+    root = _state(tmp_path)
+    blocked = root / "content/continuous/cycles/v2-acceptance-999"
+    blocked.mkdir(parents=True)
+    _write(blocked / "result.json", {"status": "PUBLISHED", "cycle": blocked.name})
+    real_access = live_module.os.access
+    monkeypatch.setattr(live_module.os, "access", lambda path, mode: False if Path(path) == blocked else real_access(path, mode))
+    snapshot = public_agent_snapshot(root, _Application())
+    assert snapshot["activity"]["cycle"] == "v2-123"
+    assert all(row["cycle"] != blocked.name for row in snapshot["recent_cycles"])

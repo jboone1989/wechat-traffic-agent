@@ -29,14 +29,35 @@ def _read_json(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _safe_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _cycle_readable(path: Path) -> bool:
+    try:
+        return path.is_dir() and os.access(path, os.R_OK | os.X_OK)
+    except OSError:
+        return False
+
+
+def _cycle_dirs(state_root: Path) -> list[Path]:
+    root = state_root / "content" / "continuous" / "cycles"
+    try:
+        return [path for path in root.glob("v2-*") if _cycle_readable(path)]
+    except OSError:
+        return []
+
+
 def _cycle_epoch(path: Path) -> int:
     match = re.search(r"(\d+)$", path.name)
     return int(match.group(1)) if match else 0
 
 
 def _latest_cycle_dir(state_root: Path) -> Path | None:
-    root = state_root / "content" / "continuous" / "cycles"
-    rows = [p for p in root.glob("v2-*") if p.is_dir()]
+    rows = _cycle_dirs(state_root)
     return max(rows, key=_cycle_epoch, default=None)
 
 
@@ -56,7 +77,7 @@ def _cycle_timing(cycle_dir: Path | None) -> dict[str, Any]:
             return {"started_at": None, "finished_at": None, "duration_seconds": None}
         started = min(row.stat().st_mtime for row in files)
         result_path = cycle_dir / "result.json"
-        finished = result_path.stat().st_mtime if result_path.exists() else None
+        finished = result_path.stat().st_mtime if _safe_exists(result_path) else None
         return {
             "started_at": datetime.fromtimestamp(started, tz=timezone.utc).isoformat(),
             "finished_at": datetime.fromtimestamp(finished, tz=timezone.utc).isoformat() if finished else None,
@@ -82,13 +103,13 @@ def _phase_state(cycle_dir: Path | None, result: dict[str, Any]) -> tuple[str, s
         if status in {"NO_FRESH_EVIDENCE", "NO_RELEVANT_EVIDENCE", "ALREADY_PROCESSED"}:
             return "IDLE", "OBSERVE", "No new work was admitted in the last cycle; waiting for the next runtime check"
         return "IDLE", "DECIDE", f"Last cycle finished with {status or 'a terminal result'}; waiting for the next runtime check"
-    if (cycle_dir / "experience.json").exists() or (cycle_dir / "model_calls").exists():
+    if _safe_exists(cycle_dir / "experience.json") or _safe_exists(cycle_dir / "model_calls"):
         return "WORKING", "CREATE", "Drafting and running bounded automated checks"
-    if (cycle_dir / "content_strategy.json").exists() or (cycle_dir / "traffic_context.json").exists():
+    if _safe_exists(cycle_dir / "content_strategy.json") or _safe_exists(cycle_dir / "traffic_context.json"):
         return "WORKING", "DECIDE", "Choosing an angle, structure, and evidence gate"
-    if (cycle_dir / "exploration.json").exists() or (cycle_dir / "evidence_candidates.json").exists():
+    if _safe_exists(cycle_dir / "exploration.json") or _safe_exists(cycle_dir / "evidence_candidates.json"):
         return "WORKING", "OBSERVE", "Scanning and ranking current evidence"
-    if (cycle_dir / "mind_plan.json").exists():
+    if _safe_exists(cycle_dir / "mind_plan.json"):
         return "WORKING", "GOAL", "Turning the persistent mind state into a concrete goal"
     return "WORKING", "OBSERVE", "Starting a new content cycle"
 
@@ -174,9 +195,7 @@ def _draft_title(state_root: Path, result: dict[str, Any]) -> str | None:
 
 
 def _latest_publication(state_root: Path) -> dict[str, Any] | None:
-    root = state_root / "content" / "continuous" / "cycles"
-    rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=_cycle_epoch, reverse=True)
+    rows = sorted(_cycle_dirs(state_root), key=_cycle_epoch, reverse=True)
     for cycle_dir in rows[:64]:
         result = _read_json(cycle_dir / "result.json")
         publication = result.get("publication") if isinstance(result.get("publication"), dict) else None
@@ -188,9 +207,7 @@ def _latest_publication(state_root: Path) -> dict[str, Any] | None:
 
 
 def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
-    root = state_root / "content" / "continuous" / "cycles"
-    rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=_cycle_epoch, reverse=True)
+    rows = sorted(_cycle_dirs(state_root), key=_cycle_epoch, reverse=True)
     history: list[dict[str, Any]] = []
     for cycle_dir in rows[:24]:
         result = _read_json(cycle_dir / "result.json")
@@ -277,9 +294,7 @@ def _world_learning_candidates(state_root: Path, *, limit: int = 8) -> list[dict
 
 
 def _learning_summary(state_root: Path, current_cycle: Path | None) -> dict[str, Any]:
-    root = state_root / "content" / "continuous" / "cycles"
-    rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=_cycle_epoch, reverse=True)
+    rows = sorted(_cycle_dirs(state_root), key=_cycle_epoch, reverse=True)
 
     current_lesson = _read_json(current_cycle / "lesson.json") if current_cycle else {}
     current_body = current_lesson.get("lesson") if isinstance(current_lesson.get("lesson"), dict) else {}
@@ -367,8 +382,7 @@ def _learning_summary(state_root: Path, current_cycle: Path | None) -> dict[str,
     }
 
 def _social_draft_projection(state_root: Path, current_cycle: Path | None) -> dict[str, Any]:
-    root = state_root / "content" / "continuous" / "cycles"
-    rows = sorted((p for p in root.glob("v2-*") if p.is_dir()), key=_cycle_epoch, reverse=True)
+    rows = sorted(_cycle_dirs(state_root), key=_cycle_epoch, reverse=True)
     ordered = ([current_cycle] if current_cycle is not None else []) + [p for p in rows if p != current_cycle]
     for cycle_dir in ordered[:64]:
         payload = _read_json(cycle_dir / "social_expression_drafts.json")
