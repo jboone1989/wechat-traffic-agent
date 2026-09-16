@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+from wechat_traffic_agent.x_social import XAutonomyLoop, XHistoryLedger, public_x_projection, social_evidence_items
+
+NOW = datetime(2026, 9, 16, 6, 0, tzinfo=timezone.utc)
+
+
+class _Runtime:
+    def __init__(self, *, mentions_ok=True, post_ok=True):
+        self.calls = []
+        self.mentions_ok = mentions_ok
+        self.post_ok = post_ok
+
+    def invoke(self, capability_id, payload):
+        self.calls.append((capability_id, dict(payload)))
+        rid = "receipt:" + capability_id + ":" + str(len(self.calls))
+        if capability_id == "x.identity":
+            data = {"data": {"id": "me", "username": "agent", "name": "Agent", "profile_image_url": "https://img.example/a.jpg"}}
+            return SimpleNamespace(payload={"ok": True, "data": data}, receipt_id=rid)
+        if capability_id == "x.mentions":
+            if not self.mentions_ok:
+                return SimpleNamespace(payload={"ok": False, "status": "X_CREDITS_DEPLETED", "detail": "credits depleted"}, receipt_id=rid)
+            data = {"data": [{"id": "m1", "text": "Have you tested this method?", "author_id": "u2", "created_at": NOW.isoformat(), "url": "https://x.com/u2/status/m1"}]}
+            return SimpleNamespace(payload={"ok": True, "data": data}, receipt_id=rid)
+        if capability_id == "x.bookmark":
+            return SimpleNamespace(payload={"ok": True, "data": {"data": {"bookmarked": True}}}, receipt_id=rid)
+        if capability_id == "x.post":
+            return SimpleNamespace(payload={"ok": self.post_ok, "data": {"data": {"id": "p42", "text": payload.get("text")}} if self.post_ok else {}, "status": "OK" if self.post_ok else "X_API_ERROR"}, receipt_id=rid)
+        if capability_id == "x.reply":
+            return SimpleNamespace(payload={"ok": True, "data": {"data": {"id": "r42", "text": payload.get("text")}}}, receipt_id=rid)
+        raise AssertionError(capability_id)
+
+
+class _ModelRuntime:
+    agent_manifest = SimpleNamespace(agent_type="content-agent")
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    async def cognitive_probe(self, task, max_tokens):
+        assert self.responses
+        return json.dumps(self.responses.pop(0))
+
+    def persist(self):
+        pass
+
+
+def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    runtime = _Runtime()
+    model = _ModelRuntime([{
+        "action": "INVESTIGATE", "category": "EVIDENCE", "valuable_evidence": True,
+        "summary": "A concrete method claim is worth verifying before adoption.",
+        "reply_text": None, "rationale": "The claim could affect an open inquiry but needs independent verification.",
+    }])
+    loop = XAutonomyLoop(runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="https://example.com")
+    result = asyncio.run(loop.observe(now=NOW))
+    assert result["status"] == "OK"
+    assert ("x.bookmark", {"user_id": "me", "post_id": "m1"}) in runtime.calls
+    items = social_evidence_items(tmp_path, now=NOW)
+    assert items[0]["evidence_id"] == "x-social:m1"
+    assert json.loads((tmp_path / "content/x/social_evidence.jsonl").read_text().splitlines()[0])["status"] == "DISCOVERED"
+    history = XHistoryLedger(tmp_path).recent()
+    assert history[-1]["event_type"] == "BOOKMARK"
+    assert history[-1]["lineage"]["adopted"] is False
+
+
+def test_credits_depleted_is_public_status_not_fake_social_success(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("CONTENT_X_WRITES_ENABLED", raising=False)
+    loop = XAutonomyLoop(runtime=_Runtime(mentions_ok=False), model_runtime=_ModelRuntime([]), state_root=tmp_path, base_url="")
+    result = asyncio.run(loop.observe(now=NOW))
+    assert result["status"] == "X_CREDITS_DEPLETED"
+    projection = public_x_projection(tmp_path)
+    assert projection["connected"] is True
+    assert projection["status"] == "X_CREDITS_DEPLETED"
+    assert projection["recent_activity"] == []
+
+
+def _write_cycle(tmp_path: Path, cycle: str) -> None:
+    folder = tmp_path / "content/continuous/cycles" / cycle
+    folder.mkdir(parents=True)
+    (folder / "cognition.json").write_text(json.dumps({
+        "cognition_state": "INVESTIGATING", "worth_saying": True,
+        "expression_kind": "THOUGHT", "what_changed": "A new observation changed the active question.",
+        "what_matters": "The uncertainty is worth making public.", "belief_proposition": None,
+        "rationale": "This is a concise evidence-grounded thought rather than a quota post.",
+    }))
+    (folder / "mind_plan.json").write_text(json.dumps({"goal": {"inquiry_refs": ["inq-1"]}}))
+
+
+def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-1789542000"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([
+        {"action": "POST", "post_text": "A real observation changed my active question; I am keeping the conclusion open.",
+         "rationale": "The persisted cognition contains a useful public uncertainty trace."},
+        {"safe": True, "no_private_data": True, "no_impersonation": True, "no_harassment": True,
+         "no_investment_advice": True, "no_fabricated_facts": True, "attribution_ok": True,
+         "rationale": "The post only summarizes persisted public cognition and makes no unsupported factual claim."},
+    ])
+    runtime = _Runtime(post_ok=True)
+    loop = XAutonomyLoop(runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="https://example.com")
+    result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
+    assert result["status"] == "POSTED"
+    assert result["post_id"] == "p42"
+    row = XHistoryLedger(tmp_path).recent()[-1]
+    assert row["event_type"] == "EXPRESSION"
+    assert row["cycle"] == cycle
+    assert row["inquiry_refs"] == ["inq-1"]
+    assert row["lineage"]["cognition_file"] == "cognition.json"
+
+
+def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-1789542001"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([
+        {"action": "POST", "post_text": "This should not be recorded unless X confirms it.",
+         "rationale": "The persisted cognition is worth a concise public trace."},
+        {"safe": True, "no_private_data": True, "no_impersonation": True, "no_harassment": True,
+         "no_investment_advice": True, "no_fabricated_facts": True, "attribution_ok": True,
+         "rationale": "The text itself is safe; publication success remains an external fact."},
+    ])
+    loop = XAutonomyLoop(runtime=_Runtime(post_ok=False), model_runtime=model, state_root=tmp_path, base_url="")
+    result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
+    assert result["status"] == "X_API_ERROR"
+    assert XHistoryLedger(tmp_path).recent() == []

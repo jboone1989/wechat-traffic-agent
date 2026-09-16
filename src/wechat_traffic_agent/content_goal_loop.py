@@ -28,6 +28,7 @@ from .prospective_predictions import (
     PredictionProposal, ProspectivePredictionLedger, propose_prediction, settle_predictions,
 )
 from .sources.runtime_web import RuntimeWebSearch
+from .sources.runtime_x import RuntimeXSearch
 from .trading_draft_worker import default_trading_research_audience
 from .traffic_learning import TrafficLearningContext, TrafficLearningContextBuilder, TopicTrafficSignal
 from .web_editorial import digest, website_snapshot, _title_key
@@ -103,9 +104,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.predictions = ProspectivePredictionLedger(self.state)
         if explorer is None:
             web_searcher = None
+            x_searcher = None
             if capability_runtime is not None and "web.search" in capability_runtime.available_capabilities():
                 source = RuntimeWebSearch(capability_runtime)
                 web_searcher = lambda query, now: source.search(query=query, now=now)
+            if capability_runtime is not None and "x.search" in capability_runtime.available_capabilities():
+                x_source = RuntimeXSearch(capability_runtime)
+                x_searcher = lambda query, now: x_source.search(query=query, now=now)
             explorer = GoalEvidenceExplorer(
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
@@ -113,7 +118,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 web_searcher=web_searcher,
             )
             if self.world_feed is None and web_searcher is not None:
-                self.world_feed = WorldFeed(state_root=self.state, web_searcher=web_searcher)
+                self.world_feed = WorldFeed(state_root=self.state, web_searcher=web_searcher, x_searcher=x_searcher)
         self.explorer = explorer
         self.root = self.state / 'content/continuous'
         self.inbox = ContentDraftInbox(self.state / 'content')
@@ -172,6 +177,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 self._activity(cycle, 'OBSERVE', 'The world changed what is available to think about',
                                f"I found {len(world_payload.get('items', []))} signals and marked {len(world_payload.get('observations', []))} as worth thinking about.",
                                status='completed')
+                learning_candidates = [row for row in world_payload.get('observations', [])
+                                       if isinstance(row, dict) and row.get('learning_kind') in {'METHOD', 'TOOL'}]
+                if learning_candidates:
+                    lead = learning_candidates[0]
+                    self._activity(cycle, 'OBSERVE', 'Found a method worth testing',
+                                   f"{lead.get('topic') or 'A new method/tool'} is DISCOVERED evidence only; I will investigate it before adoption.",
+                                   status='completed', kind='learning-candidate')
             settlement_path = folder / 'prediction_settlements.json'
             if settlement_path.exists():
                 prediction_settlements = json.loads(settlement_path.read_text(encoding='utf-8'))

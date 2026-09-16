@@ -281,3 +281,49 @@ def test_world_scan_plan_failure_records_bounded_detail_without_erasing_seed_rea
     assert failure["error_type"] == "ValueError"
     assert "query" in failure["detail"].lower()
     assert [row["evidence_id"] for row in result["items"]] == ["seed-detail"]
+
+
+def test_world_feed_prefers_official_x_source_over_site_search(tmp_path: Path):
+    web_calls, x_calls = [], []
+    async def web(query, now):
+        web_calls.append(query)
+        return []
+    async def xsearch(query, now):
+        x_calls.append(query)
+        return [{
+            "evidence_id": "x-post:123", "source": "X @practitioner", "source_kind": "social-x",
+            "title": "A small eval loop catches regressions before they spread",
+            "summary": "A small eval loop catches regressions before they spread and is worth testing.",
+            "url": "https://x.com/practitioner/status/123", "source_revision": "x123",
+            "published_at": now.isoformat(), "observed_at": now.isoformat(),
+            "evidence_refs": ("x-post:123", "capability-receipt:v1:x123"),
+        }]
+    feed = WorldFeed(state_root=tmp_path, web_searcher=web, x_searcher=xsearch)
+    result = asyncio.run(feed.collect(runtime=SocialLearningRuntime(), now=NOW, base_items=[], mind_projection={}))
+    assert x_calls == ["agent evaluation workflow ideas"]
+    assert not any(query.startswith("site:x.com") for query in web_calls)
+    assert result["x_source"]["mode"] == "official-mcp"
+    assert result["x_source"]["items"] == 1
+    assert any(row["evidence_id"] == "x-post:123" for row in result["items"])
+
+
+def test_world_feed_uses_web_x_fallback_when_official_x_is_unavailable(tmp_path: Path):
+    web_calls = []
+    async def web(query, now):
+        web_calls.append(query)
+        if query.startswith("site:x.com"):
+            return [{
+                "title": "A small eval loop catches regressions before they spread",
+                "summary": "A practitioner describes a concrete evaluation loop worth investigating.",
+                "url": "https://x.com/practitioner/status/456", "source": "runtime:web.fetch:test",
+                "source_revision": "x456", "evidence_refs": ["web-fallback:x456"], "observed_at": now.isoformat(),
+            }]
+        return []
+    async def broken_x(query, now):
+        raise RuntimeError("X_CREDITS_DEPLETED")
+    feed = WorldFeed(state_root=tmp_path, web_searcher=web, x_searcher=broken_x)
+    result = asyncio.run(feed.collect(runtime=SocialLearningRuntime(), now=NOW, base_items=[], mind_projection={}))
+    assert any(query.startswith("site:x.com") for query in web_calls)
+    assert result["x_source"]["mode"] == "official-mcp+web-fallback"
+    assert any(row["source"] == "x-official-mcp" for row in result["failures"])
+    assert any(row["source_kind"] == "social-x" for row in result["items"])

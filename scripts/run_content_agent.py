@@ -61,6 +61,13 @@ def main() -> int:
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
+    x_loop = None
+    if _enabled("CONTENT_X_ENABLED"):
+        from wechat_traffic_agent.x_social import XAutonomyLoop
+        x_loop = XAutonomyLoop(
+            runtime=app.runtime, model_runtime=app.domain_runtime, state_root=state_root,
+            base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
+        )
     network_service: ContentNetworkService | None = None
     if network_enabled():
         network_service = ContentNetworkService.from_environment(root=state_root, application=app)
@@ -149,6 +156,13 @@ def main() -> int:
                 print(json.dumps({"application_version": APPLICATION_VERSION, "status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}, sort_keys=True), file=sys.stderr)
 
             draft_failed = False
+            if not tick_failed and x_loop is not None and result.generation_ready:
+                try:
+                    x_observation = asyncio.run(x_loop.observe(now=now))
+                    print(json.dumps({"x_social_observation": x_observation}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({"x_social_observation":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
+
             if not tick_failed and draft_worker is not None and result.generation_ready:
                 try:
                     draft_result = asyncio.run(draft_worker.run_once(now=now)); print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
@@ -170,6 +184,12 @@ def main() -> int:
             if not tick_failed and continuous_loop is not None and result.generation_ready:
                 continuous_result = asyncio.run(continuous_loop.run_once(now=now)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
+                if x_loop is not None and continuous_result["status"] != "ERROR":
+                    try:
+                        x_expression = asyncio.run(x_loop.after_content_cycle(result=continuous_result, now=now))
+                        print(json.dumps({"x_social_expression": x_expression}, ensure_ascii=False, sort_keys=True))
+                    except Exception as exc:  # noqa: BLE001
+                        print(json.dumps({"x_social_expression":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
 
             if web_outcome_collector is not None:
                 try: print(json.dumps({"website_outcomes": web_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))

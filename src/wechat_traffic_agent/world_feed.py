@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .content_service import _extract_json
 from .content_explorer import _web_candidate
+from .x_social import social_evidence_items
 
 
 class WorldScanPlan(BaseModel):
@@ -48,10 +49,12 @@ class WorldObservationSet(BaseModel):
 class WorldFeed:
     """Discover and persist reality signals without granting publication authority."""
 
-    def __init__(self, *, state_root: Path, web_searcher: Any) -> None:
-        self.root = Path(state_root) / "content" / "world"
+    def __init__(self, *, state_root: Path, web_searcher: Any, x_searcher: Any | None = None) -> None:
+        self.state_root = Path(state_root)
+        self.root = self.state_root / "content" / "world"
         self.root.mkdir(parents=True, exist_ok=True)
         self.web_searcher = web_searcher
+        self.x_searcher = x_searcher
 
     @property
     def registry_path(self) -> Path:
@@ -267,7 +270,9 @@ class WorldFeed:
     async def collect(self, *, runtime: Any, now: datetime, base_items: list[dict[str, Any]], mind_projection: dict[str, Any],
                       verification_queries: tuple[str, ...] = ()) -> dict[str, Any]:
         items = list(base_items)
+        items.extend(social_evidence_items(self.state_root, now=now))
         failures: list[dict[str, str]] = []
+        x_source = {"requested": False, "mode": "not-requested", "queries": 0, "items": 0}
         scan_plan: WorldScanPlan | None = None
         forced_queries = tuple(dict.fromkeys(
             " ".join(str(query).split())[:240] for query in verification_queries if len(" ".join(str(query).split())) >= 2
@@ -281,16 +286,42 @@ class WorldFeed:
             })
         planned_queries = tuple(scan_plan.queries if scan_plan else ())
         source_spaces = tuple(scan_plan.source_spaces if scan_plan else ("web",))
-        source_queries = list(planned_queries)
-        if planned_queries and "x" in source_spaces:
-            source_queries.append("site:x.com " + planned_queries[0])
+        source_queries: list[str] = []
+        if "web" in source_spaces:
+            source_queries.extend(planned_queries)
         if planned_queries and "github" in source_spaces:
             source_queries.append("site:github.com " + planned_queries[0])
-        search_queries = tuple(dict.fromkeys((*forced_queries, *source_queries)))
+
+        x_fallback_queries: list[str] = []
+        if planned_queries and "x" in source_spaces:
+            x_source["requested"] = True
+            if self.x_searcher is not None:
+                x_source["mode"] = "official-mcp"
+                for query in planned_queries:
+                    x_source["queries"] += 1
+                    try:
+                        rows = await self.x_searcher(query, now)
+                        x_source["items"] += len(rows)
+                        items.extend(rows)
+                    except Exception as exc:
+                        failures.append({"source": "x-official-mcp", "query": query, "error_type": type(exc).__name__})
+                        x_fallback_queries.append("site:x.com " + query)
+                if x_source["items"] == 0 and not x_fallback_queries:
+                    x_fallback_queries.append("site:x.com " + planned_queries[0])
+            else:
+                x_source["mode"] = "web-fallback"
+                x_fallback_queries.append("site:x.com " + planned_queries[0])
+
+        search_queries = tuple(dict.fromkeys((*forced_queries, *source_queries, *x_fallback_queries)))
         for query in search_queries:
             try:
                 rows = await self.web_searcher(query, now)
                 items.extend(self._classify_web_candidate(row) for row in rows)
+                if query.startswith("site:x.com") and rows:
+                    if x_source["mode"] == "official-mcp":
+                        x_source["mode"] = "official-mcp+web-fallback"
+                    elif x_source["requested"]:
+                        x_source["mode"] = "web-fallback"
             except Exception as exc:  # discovery failure must not erase seed reality
                 source = "prediction-verification" if query in forced_queries else "agent-discovered-web"
                 failures.append({"source": source, "query": query, "error_type": type(exc).__name__})
@@ -320,6 +351,7 @@ class WorldFeed:
             "attention_rejections": list(attention_rejections),
             "failures": failures,
             "known_sources": self._known_sources(),
+            "x_source": x_source,
             "learning_authority": False,
             "publication_authority": False,
         }

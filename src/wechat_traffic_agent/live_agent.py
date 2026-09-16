@@ -222,6 +222,26 @@ def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
             "publication": publication,
             "prediction": prediction,
         })
+    try:
+        from .x_social import XHistoryLedger
+        x_rows = XHistoryLedger(state_root).recent(limit=160)
+    except Exception:
+        x_rows = []
+    by_cycle: dict[str, list[dict[str, Any]]] = {}
+    for xrow in x_rows:
+        cycle = str(xrow.get("cycle") or "")
+        if not cycle:
+            continue
+        by_cycle.setdefault(cycle, []).append({
+            "event_type": str(xrow.get("event_type") or ""),
+            "expression_kind": str(xrow.get("expression_kind") or ""),
+            "text": str(xrow.get("text") or "")[:320],
+            "url": xrow.get("x_url"),
+            "recorded_at": xrow.get("recorded_at"),
+            "target_post_id": xrow.get("target_post_id"),
+        })
+    for row in history:
+        row["x_activity"] = by_cycle.get(str(row.get("cycle") or ""), [])[-4:]
     return history
 
 
@@ -407,6 +427,11 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
             prediction_projection = {"open_predictions": [], "recent_outcomes": [], "status": "UNAVAILABLE"}
     last_publication = _latest_publication(state_root)
     learning_summary = _learning_summary(state_root, cycle_dir)
+    try:
+        from .x_social import public_x_projection
+        x_projection = public_x_projection(state_root)
+    except Exception:
+        x_projection = {"connected": False, "status": "UNAVAILABLE", "recent_activity": []}
 
     return {
         "schema_version": "public-agent-snapshot:v3",
@@ -486,6 +511,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
             **learning_summary,
         },
         "recent_cycles": _recent_cycles(state_root),
+        "social": {"x": x_projection},
         "boundaries": {
             "chat_is_learning_evidence": False,
             "chat_can_publish": False,
