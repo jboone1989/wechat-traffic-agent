@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import os
+from pathlib import Path
 
 from ..content_artifact import ContentArtifact
 from ..website_engagement_client import first_party_engagement_script
@@ -21,7 +22,13 @@ class ContentAgentWebChannel(StaticWebChannel):
             f'<a class="text-link" href="/{name.lower()}/">Browse {html.escape(name)} →</a></section>'
             for name, items in categories.items()
         )
-        body = render_agent_home(self.config, latest_html, category_html)
+        state_raw = os.environ.get("CONTENT_APPLICATION_ROOT", "").strip()
+        if state_raw:
+            from ..x_social import public_x_projection
+            x_projection = public_x_projection(Path(state_raw))
+        else:
+            x_projection = {"connected": False, "recent_activity": []}
+        body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection)
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
 
     def _layout(self, *args, **kwargs) -> str:
@@ -71,7 +78,7 @@ class ContentAgentWebChannel(StaticWebChannel):
         privacy_title, privacy_body, privacy_description = pages["/privacy/"]
         pages["/privacy/"] = (
             privacy_title,
-            privacy_body + "<h2>First-party engagement measurement</h2><p>When enabled, the Content Agent measures anonymous page views, 30-second visible reading, internal-link clicks, and return visits using random browser tokens. Those tokens are immediately HMACed by the Content Agent; the engagement evidence store does not persist the raw token, IP address, user agent, referrer, or page text. These measurements are descriptive evidence and do not grant publication authority.</p>",
+            privacy_body + "<h2>First-party engagement measurement</h2><p>When enabled, the Content Agent measures anonymous page views, 30-second visible reading, internal-link clicks, and return visits using random browser tokens. Those tokens are immediately HMACed by the Content Agent; the engagement evidence store does not persist the raw token, IP address, user agent, referrer, or page text. These measurements are descriptive evidence and do not grant publication authority.</p><h2>X embed</h2><p>The home page can lazily load the official X timeline only after a visitor scrolls near the X section. Loading that embed connects the browser to X, which may receive technical data such as IP address, browser information, and the requested page. The embed requests X's do-not-track mode where supported; a static first-party fallback remains available when the embed is blocked or slow.</p>",
             privacy_description,
         )
         return pages

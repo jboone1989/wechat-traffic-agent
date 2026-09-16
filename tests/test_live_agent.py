@@ -273,3 +273,33 @@ def test_live_snapshot_projects_world_learning_candidates_without_adopting_them(
     assert row["source_kind"] == "social-x"
     assert row["status"] == "DISCOVERED"
     assert path.read_bytes() == before
+
+
+def test_live_snapshot_and_life_history_include_x_identity_and_lineage(tmp_path):
+    root = _state(tmp_path)
+    _write(root / "content/x/public_profile.json", {
+        "schema_version": "content-agent-x-profile.v1", "id": "158", "handle": "agent",
+        "name": "Agent", "avatar_url": "https://pbs.twimg.com/profile_images/a.jpg",
+        "url": "https://x.com/agent", "synced_at": "2026-09-16T06:00:00+00:00",
+    })
+    _write(root / "content/x/status.json", {
+        "schema_version": "content-agent-x-status.v1", "status": "OK", "as_of": "2026-09-16T06:00:00+00:00",
+    })
+    history = root / "content/x/history.jsonl"
+    history.parent.mkdir(parents=True, exist_ok=True)
+    history.write_text(json.dumps({
+        "schema_version": "content-agent-x-history.v1", "recorded_at": "2026-09-16T06:01:00+00:00",
+        "event_type": "EXPRESSION", "cycle": "v2-123", "expression_kind": "THOUGHT",
+        "text": "A public thought from a persisted cognition cycle.", "x_post_id": "42",
+        "x_url": "https://x.com/agent/status/42",
+    }) + "\n")
+    snapshot = public_agent_snapshot(root, _Application())
+    assert snapshot["social"]["x"]["connected"] is True
+    assert snapshot["social"]["x"]["handle"] == "agent"
+    assert snapshot["social"]["x"]["recent_activity"][0]["post_id"] == "42"
+    assert snapshot["recent_cycles"][0]["x_activity"][0]["event_type"] == "EXPRESSION"
+    page = LiveAgentService(state_root=root, application=_Application(), backend=None)._app()
+    with TestClient(page) as client:
+        html = client.get("/live/").text
+    assert "X · PUBLIC SOCIAL IDENTITY" in html
+    assert "x-activity-list" in html

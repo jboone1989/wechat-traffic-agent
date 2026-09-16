@@ -226,11 +226,14 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
     subject = Subject.bootstrap(
         root / "application" / "subject", subject_id=SUBJECT_ID, trusted_runtime_key=key
     )
+    from .x_mcp import XCapabilityProvider, x_enabled, x_writes_enabled
+    x_active = x_enabled()
+    x_write_active = x_active and x_writes_enabled()
     runtime = ApplicationRuntime.bootstrap(
         root / "application" / "runtime",
         subject_id=SUBJECT_ID,
-        max_side_effect_level="READ_ONLY",
-        allowed_permissions=frozenset(),
+        max_side_effect_level="EXTERNAL_SIDE_EFFECT" if x_write_active else "READ_ONLY",
+        allowed_permissions=(frozenset({"social.publish", "social.interact"}) if x_write_active else frozenset()),
     )
     app = ContentApplication(
         root=root,
@@ -240,6 +243,8 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
         observation_factory=SubjectObservation,
     )
     runtime.register_provider(ContentCapabilityPack(app.status_observation))
+    if x_active:
+        runtime.register_provider(XCapabilityProvider())
 
     trusted, preferred, configs = _capability_pack_deployment()
     policy = CapabilityPolicy()
