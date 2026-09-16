@@ -20,6 +20,9 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "website_experiment_evaluator.evaluate" in text
     assert 'add_argument("--once"' in text
     assert 'add_argument("--health"' in text
+    assert 'add_argument("--focus-topic"' in text
+    assert '--focus-topic requires --once' in text
+    assert 'continuous_loop.run_once(now=now, focus_topic=args.focus_topic)' in text
     assert "app.status_observation()['publish_mode']" in text
     assert "build_live_agent_service" in text
     assert "live_agent_service.start()" in text

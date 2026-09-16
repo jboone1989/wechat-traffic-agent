@@ -45,6 +45,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="persistent Content Agent")
     parser.add_argument("--once", action="store_true", help="Run one application tick and exit")
     parser.add_argument("--health", action="store_true", help="Print persisted application health")
+    parser.add_argument("--focus-topic", help="One-shot content focus slug; requires --once and does not replace the persisted autonomous goal")
     parser.add_argument("--poll-seconds", type=int, default=300)
     return parser
 
@@ -56,6 +57,7 @@ def _enabled(name: str) -> bool:
 def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
+    if args.focus_topic and not args.once: parser.error("--focus-topic requires --once")
     if args.poll_seconds <= 0: parser.error("poll-seconds must be positive")
 
     state_root = _state_root()
@@ -189,7 +191,7 @@ def main() -> int:
                     print(json.dumps({"google_search_console":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
 
             if not tick_failed and continuous_loop is not None and result.generation_ready:
-                continuous_result = asyncio.run(continuous_loop.run_once(now=now)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
+                continuous_result = asyncio.run(continuous_loop.run_once(now=now, focus_topic=args.focus_topic)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
                 if continuous_result["status"] != "ERROR":
                     try:
