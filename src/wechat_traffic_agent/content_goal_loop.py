@@ -111,7 +111,11 @@ def _market_expression_instruction(selected):
         or any(cue in title for cue in ('news today', 'why btc is down', 'why bitcoin is down', 'market update'))
         or ('bitcoin' in summary and any(cue in summary for cue in ('today', 'trading near', '24 hours', 'catalyst')))
     )
-    if not (public_market or live_web_market):
+    publisher_feed = str(selected.get('publisher_feed') or '').lower()
+    crypto_feed = source_kind == 'rss' and any(domain in publisher_feed for domain in (
+        'coindesk.com', 'cointelegraph.com', 'decrypt.co', 'theblock.co',
+    ))
+    if not (public_market or live_web_market or crypto_feed):
         return ''
     return (
         ' Time-sensitive market evidence: treat this as a market pulse rather than defaulting to an academic research essay. '
@@ -131,7 +135,7 @@ def _market_companion_evidence(selected, candidates):
     rows = [row for row in candidates if isinstance(row, dict) and str(row.get('evidence_id') or '') != selected_id]
     if str(selected.get('source_kind') or '') == 'public-api':
         return next((row for row in rows
-                     if str(row.get('source_kind') or '') == 'web-search'
+                     if str(row.get('source_kind') or '') in {'rss', 'web-search'}
                      and _market_expression_instruction(row)), None)
     return next((row for row in rows
                  if str(row.get('source_kind') or '') == 'public-api'
@@ -519,7 +523,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         related = [r['artifact'] for r in snapshot['articles'] if r['artifact']['artifact_id'] in selection.related_ids]
         if selected is None or len(related) != len(selection.related_ids):
             raise ValueError('selection references unknown or duplicate evidence')
-        market_companion = _market_companion_evidence(selected, evidence)
+        market_companion = _market_companion_evidence(
+            selected, [*evidence, *list(evidence_pool.get('items', []))]
+        )
         # A live spot snapshot answers what moved, but not what the market may be reacting to.
         # For Market Pulse output, deliberately add one current public catalyst when the local
         # evidence set contains only market data. This supplements rather than replaces the

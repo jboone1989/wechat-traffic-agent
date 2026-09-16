@@ -826,6 +826,24 @@ def test_non_live_crypto_research_is_not_forced_into_market_pulse():
     }) == ""
 
 
+def test_crypto_publisher_rss_is_current_market_context_without_search_engine():
+    rss = {
+        "evidence_id": "rss:coindesk", "source_kind": "rss", "source": "public-news-feed",
+        "publisher_feed": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "title": "Fed decision lands as bitcoin trades lower",
+        "summary": "A current crypto event reported by the publisher.",
+        "source_revision": "rss-r1", "evidence_refs": ["news:rss-r1"],
+    }
+    instruction = _market_expression_instruction(rss)
+    assert "market pulse" in instruction
+    snapshot = {
+        "evidence_id": "okx:now", "source_kind": "public-api", "source": "OKX public market API",
+        "source_revision": "market-r1", "evidence_refs": ["okx:now"],
+    }
+    assert _market_companion_evidence(snapshot, [snapshot, rss]) == rss
+    assert _market_companion_evidence(rss, [snapshot, rss]) == snapshot
+
+
 def test_market_pulse_pairs_live_news_with_current_public_market_snapshot():
     primary = {
         "evidence_id": "web:news", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
