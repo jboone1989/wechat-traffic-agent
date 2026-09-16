@@ -6,6 +6,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone
 import json
 import os
+import re
 from pathlib import Path
 from threading import Thread
 import time
@@ -28,10 +29,15 @@ def _read_json(path: Path) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _cycle_epoch(path: Path) -> int:
+    match = re.search(r"(\d+)$", path.name)
+    return int(match.group(1)) if match else 0
+
+
 def _latest_cycle_dir(state_root: Path) -> Path | None:
     root = state_root / "content" / "continuous" / "cycles"
     rows = [p for p in root.glob("v2-*") if p.is_dir()]
-    return max(rows, key=lambda p: int(p.name.removeprefix("v2-")), default=None)
+    return max(rows, key=_cycle_epoch, default=None)
 
 
 def _mtime_iso(path: Path) -> str | None:
@@ -170,7 +176,7 @@ def _draft_title(state_root: Path, result: dict[str, Any]) -> str | None:
 def _latest_publication(state_root: Path) -> dict[str, Any] | None:
     root = state_root / "content" / "continuous" / "cycles"
     rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=lambda p: int(p.name.removeprefix("v2-")), reverse=True)
+                  key=_cycle_epoch, reverse=True)
     for cycle_dir in rows[:64]:
         result = _read_json(cycle_dir / "result.json")
         publication = result.get("publication") if isinstance(result.get("publication"), dict) else None
@@ -184,7 +190,7 @@ def _latest_publication(state_root: Path) -> dict[str, Any] | None:
 def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
     root = state_root / "content" / "continuous" / "cycles"
     rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=lambda p: int(p.name.removeprefix("v2-")), reverse=True)
+                  key=_cycle_epoch, reverse=True)
     history: list[dict[str, Any]] = []
     for cycle_dir in rows[:24]:
         result = _read_json(cycle_dir / "result.json")
@@ -193,7 +199,7 @@ def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
         cognition = _read_json(cycle_dir / "cognition.json")
         worldview = _read_json(cycle_dir / "worldview_update.json")
         world = _read_json(cycle_dir / "world_feed.json")
-        epoch = int(cycle_dir.name.removeprefix("v2-"))
+        epoch = _cycle_epoch(cycle_dir)
         observations = [
             {"topic": str(row.get("topic") or ""), "why_now": str(row.get("why_now") or "")[:260],
              "learning_kind": str(row.get("learning_kind") or "WORLD_EVENT")}
@@ -273,7 +279,7 @@ def _world_learning_candidates(state_root: Path, *, limit: int = 8) -> list[dict
 def _learning_summary(state_root: Path, current_cycle: Path | None) -> dict[str, Any]:
     root = state_root / "content" / "continuous" / "cycles"
     rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
-                  key=lambda p: int(p.name.removeprefix("v2-")), reverse=True)
+                  key=_cycle_epoch, reverse=True)
 
     current_lesson = _read_json(current_cycle / "lesson.json") if current_cycle else {}
     current_body = current_lesson.get("lesson") if isinstance(current_lesson.get("lesson"), dict) else {}
@@ -360,6 +366,40 @@ def _learning_summary(state_root: Path, current_cycle: Path | None) -> dict[str,
         },
     }
 
+def _social_draft_projection(state_root: Path, current_cycle: Path | None) -> dict[str, Any]:
+    root = state_root / "content" / "continuous" / "cycles"
+    rows = sorted((p for p in root.glob("v2-*") if p.is_dir()), key=_cycle_epoch, reverse=True)
+    ordered = ([current_cycle] if current_cycle is not None else []) + [p for p in rows if p != current_cycle]
+    for cycle_dir in ordered[:64]:
+        payload = _read_json(cycle_dir / "social_expression_drafts.json")
+        drafts = payload.get("drafts") if isinstance(payload.get("drafts"), dict) else {}
+        if not drafts:
+            continue
+        clean: dict[str, Any] = {}
+        for key in ("okx", "x"):
+            row = drafts.get(key) if isinstance(drafts.get(key), dict) else {}
+            if not row:
+                continue
+            clean[key] = {
+                "channel": str(row.get("channel") or key.upper()),
+                "format": str(row.get("format") or ""),
+                "text": str(row.get("text") or "")[:1400],
+                "rationale": str(row.get("rationale") or "")[:500],
+                "style_observation_ids": [str(v)[:120] for v in (row.get("style_observation_ids") or [])[:4]],
+            }
+        if clean:
+            return {
+                "status": "DRAFT_READY",
+                "cycle": cycle_dir.name,
+                "created_at": payload.get("created_at"),
+                "publication_authority": bool(payload.get("publication_authority")),
+                "style_status": str(payload.get("style_status") or ""),
+                "style_performance_claim": str(payload.get("style_performance_claim") or "UNVERIFIED"),
+                "drafts": clean,
+            }
+    return {"status": "NO_DRAFT", "publication_authority": False, "drafts": {}}
+
+
 def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None = None, *, poll_seconds: int = 300) -> dict[str, Any]:
     """Project only persisted, inspectable state. Never expose hidden reasoning."""
     state_root = Path(state_root)
@@ -432,6 +472,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         x_projection = public_x_projection(state_root)
     except Exception:
         x_projection = {"connected": False, "status": "UNAVAILABLE", "recent_activity": []}
+    social_drafts = _social_draft_projection(state_root, cycle_dir)
 
     return {
         "schema_version": "public-agent-snapshot:v3",
@@ -511,7 +552,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
             **learning_summary,
         },
         "recent_cycles": _recent_cycles(state_root),
-        "social": {"x": x_projection},
+        "social": {"x": x_projection, "drafts": social_drafts},
         "boundaries": {
             "chat_is_learning_evidence": False,
             "chat_can_publish": False,
