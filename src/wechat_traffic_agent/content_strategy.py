@@ -66,7 +66,7 @@ class ContentStrategyBinding(BaseModel):
     decided_at: datetime
     profile: StrategyProfile
     opening_mode: Literal["reader_question_first", "evidence_first"] | None = None
-    selection_mode: Literal["TRAFFIC_HEURISTIC", "EXPLORE", "EXPLOIT"]
+    selection_mode: Literal["TRAFFIC_HEURISTIC", "CONTEXT_HEURISTIC", "EXPLORE", "EXPLOIT"]
     decision_reason: str = Field(min_length=1, max_length=500)
     samples_by_profile: dict[str, int]
     mean_pageviews_24h_by_profile: dict[str, float | None]
@@ -153,15 +153,25 @@ def _traffic_profile(signal: TopicTrafficSignal) -> StrategyProfile | None:
 
 def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic: str,
                             traffic_signal: TopicTrafficSignal, as_of: datetime,
-                            opening_mode: str | None = None) -> ContentStrategyBinding:
+                            opening_mode: str | None = None,
+                            preferred_profile_name: str | None = None) -> ContentStrategyBinding:
     if as_of.utcoffset() is None:
         raise ValueError("strategy cutoff must be timezone-aware")
     as_of = as_of.astimezone(timezone.utc)
     history = _historical_pageviews(state_root=state_root, account=account, topic=topic, as_of=as_of)
     counts = {name: len(values) for name, values in history.items()}
     means = {name: (sum(values) / len(values) if values else None) for name, values in history.items()}
-    heuristic = _traffic_profile(traffic_signal)
-    if heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
+    if preferred_profile_name is not None:
+        if preferred_profile_name not in PROFILE_BY_NAME:
+            raise ValueError("unknown preferred content strategy profile")
+        profile = PROFILE_BY_NAME[preferred_profile_name]
+        mode = "CONTEXT_HEURISTIC"
+        reason = f"context requires {preferred_profile_name} structure"
+    else:
+        heuristic = _traffic_profile(traffic_signal)
+    if preferred_profile_name is not None:
+        pass
+    elif heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
         profile = heuristic
         mode = "TRAFFIC_HEURISTIC"
         reason = f"traffic signal {traffic_signal.exposure_status}; profile still under-sampled"
@@ -198,16 +208,20 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
 
 def bind_content_strategy(path: Path, *, state_root: Path, account: str, cycle: str,
                           topic: str, traffic_signal: TopicTrafficSignal, decided_at: datetime,
-                          opening_mode: str | None = None) -> ContentStrategyBinding:
+                          opening_mode: str | None = None,
+                          preferred_profile_name: str | None = None) -> ContentStrategyBinding:
     path = Path(path)
     if path.exists():
         saved = ContentStrategyBinding.model_validate_json(path.read_text(encoding="utf-8"))
         if saved.cycle != cycle or saved.topic != topic or saved.opening_mode != opening_mode:
             raise ValueError("persisted content strategy disagrees with prospective context")
+        if preferred_profile_name is not None and saved.profile.name != preferred_profile_name:
+            raise ValueError("persisted content strategy disagrees with preferred profile")
         return saved
     binding = choose_content_strategy(
         state_root=state_root, account=account, cycle=cycle, topic=topic,
         traffic_signal=traffic_signal, as_of=decided_at, opening_mode=opening_mode,
+        preferred_profile_name=preferred_profile_name,
     )
     _write_once(path, binding.model_dump_json(indent=2) + "\n")
     return binding

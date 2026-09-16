@@ -4,6 +4,7 @@ from pathlib import Path
 
 from wechat_traffic_agent.content_goal_loop import (
     ContinuousContentLoop, _explicit_hypothetical_note_sections, _market_expression_instruction,
+    _market_companion_evidence,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -777,3 +778,26 @@ def test_non_live_crypto_research_is_not_forced_into_market_pulse():
         "summary": "A retrospective methodology paper with no current market update.",
         "search_query": "bitcoin research evidence",
     }) == ""
+
+
+def test_market_pulse_pairs_live_news_with_current_public_market_snapshot():
+    primary = {
+        "evidence_id": "web:news", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
+        "title": "Bitcoin News Today: Why BTC Is Down", "summary": "Bitcoin fell today and is trading near a catalyst.",
+        "search_query": "crypto market reaction funding rates basis", "evidence_refs": ["web:news"],
+    }
+    snapshot = {
+        "evidence_id": "okx:now", "source_kind": "public-api", "source": "OKX public market API",
+        "title": "Major crypto current OKX market snapshot", "summary": "BTC -1%, ETH -2%, SOL -3%.",
+        "evidence_refs": ["okx:now"],
+    }
+    assert _market_companion_evidence(primary, [primary, snapshot]) == snapshot
+    assert _market_companion_evidence(snapshot, [primary, snapshot]) == primary
+
+
+def test_non_market_evidence_does_not_gain_market_companion():
+    primary = {"evidence_id": "paper", "source_kind": "web-search", "source": "reader",
+               "title": "Historical validation study", "summary": "Retrospective methods only.",
+               "search_query": "validation paper"}
+    snapshot = {"evidence_id": "okx:now", "source_kind": "public-api", "source": "OKX public market API"}
+    assert _market_companion_evidence(primary, [primary, snapshot]) is None
