@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
 from test_content_explorer import candidate
@@ -98,3 +99,96 @@ def test_explorer_failure_never_publishes(tmp_path):
     assert result["status"] == "ERROR" and result["error_type"] == "RuntimeError"
     assert runtime.calls == [] and worker.inbox.list_records() == ()
     assert (publisher.public / "current").resolve() == before
+
+
+class NewTopicMind:
+    def plan_for_cycle(self, *, cycle, available_topics, **kwargs):
+        assert "monetary-policy" not in available_topics
+        return {
+            "cycle": cycle,
+            "goal": {"origin": "INQUIRY", "inquiry_refs": ["fed-question"]},
+            "required_topic": "monetary-policy",
+        }
+
+    def observe_process_experience(self, **kwargs):
+        return {"status": "OBSERVED", "topic": kwargs["topic"]}
+
+
+class NewTopicExplorer:
+    def __init__(self):
+        self.row = {
+            "evidence_id": "news-new-topic", "source_kind": "rss", "source": "public-news-feed",
+            "title": "Central bank policy path changed",
+            "summary": "A fresh central-bank policy signal matters for crypto liquidity.",
+            "url": "https://example.org/policy", "observed_at": NOW.isoformat(),
+            "source_revision": "news-new-topic", "evidence_refs": ["news:news-new-topic"],
+            "publisher_feed": "https://example.org/feed", "published_at": NOW.isoformat(),
+            "search_query": None, "search_rank": None,
+        }
+
+    async def collect(self, *, now, active):
+        return {"items": [self.row], "failures": [], "observed_at": now.isoformat()}
+
+    async def filter_for_goal(self, **kwargs):
+        return {"items": [self.row], "matches": [], "candidate_count": 1}
+
+
+class NewTopicRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SELECT_EVIDENCE:"):
+            self.calls.append(task)
+            return json.dumps({
+                "title": "What a changed policy path means for crypto liquidity",
+                "evidence_id": "news-new-topic", "topic": "monetary-policy", "related_ids": [],
+                "reader_question": "How could a changed policy path affect crypto liquidity?",
+                "gap": "Explain the mechanism without pretending the market outcome is already known.",
+            })
+        if task.startswith("CHECK_ARTICLE:"):
+            self.calls.append(task)
+            return json.dumps({
+                "grounded": True, "useful": True, "no_private_data": True,
+                "no_investment_advice": True,
+                "applications": [{
+                    "technique_index": 0,
+                    "article_quote": "Explanation of supplied evidence",
+                    "explanation": "The article visibly separates evidence from interpretation.",
+                }],
+                "support": [{
+                    "section_index": 0, "source_id": "news-new-topic",
+                    "source_quote": "A fresh central-bank policy signal matters for crypto liquidity.",
+                }],
+                "next_practice": "Track whether later evidence changes the policy-liquidity interpretation.",
+                "rationale": "The draft is grounded in the supplied policy observation and stays non-advisory.",
+            })
+        if task.startswith("LEARN_WRITING:"):
+            return await super().cognitive_probe(task, max_tokens)
+        self.calls.append(task)
+        paragraph = " ".join([
+            "Explanation of supplied evidence separates the observed policy signal from interpretation and keeps uncertainty explicit."
+            for _ in range(45)
+        ])
+        return json.dumps({
+            "title": "What a changed policy path means for crypto liquidity",
+            "summary": "A bounded explanation of how monetary policy can alter crypto liquidity conditions.",
+            "sections": [{"heading": "What changed", "paragraphs": [paragraph]}],
+            "topic": "What a changed policy path means for crypto liquidity",
+            "source_urls": ["https://example.org/policy"],
+            "disclosure": None,
+        })
+
+
+def test_virtualbrain_can_create_new_topic_and_website_materializes_it(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    worker = v2(
+        legacy, NewTopicRuntime(), publisher,
+        mind=NewTopicMind(), explorer=NewTopicExplorer(),
+    )
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    assert result["traffic_context"]["selected_topic"] == "monetary-policy"
+    assert result["content_strategy"]["topic"] == "monetary-policy"
+    assert result["mind_experience"]["topic"] == "monetary-policy"
+    published = json.loads(publisher.inventory_path().read_text())
+    assert published[-1]["tags"] == ["monetary-policy"]
+    public_root = Path(result["publication"]["public_root"])
+    assert (public_root / "topics" / "monetary-policy" / "index.html").exists()

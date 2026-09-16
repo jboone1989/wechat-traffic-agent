@@ -16,7 +16,7 @@ from .channels.web import (
 from .content_artifact import ContentArtifact
 
 
-_MIN_INDEXED_TOPIC_ITEMS = 2
+_MIN_INDEXED_TOPIC_ITEMS = 1
 
 
 def build_site(
@@ -70,7 +70,7 @@ def _site_artifacts(path: Path, approved_content_root: Path | None) -> list[Cont
 
 
 def _curate_web_taxonomy(artifacts: list[ContentArtifact]) -> list[ContentArtifact]:
-    """Keep canonical tags but only expose useful multi-item Web topic pages."""
+    """Expose every non-empty canonical Topic from its first real published artifact."""
     allowed = _indexed_topic_slugs(artifacts)
     curated: list[ContentArtifact] = []
     for item in artifacts:
