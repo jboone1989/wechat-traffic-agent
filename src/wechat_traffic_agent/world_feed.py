@@ -35,6 +35,7 @@ class WorldObservation(BaseModel):
     importance: float = Field(ge=0.0, le=1.0)
     novelty: float = Field(ge=0.0, le=1.0)
     why_now: str = Field(min_length=10, max_length=300)
+    evidence_refs: tuple[str, ...] = ()
 
 
 class WorldObservationSet(BaseModel):
@@ -139,7 +140,10 @@ class WorldFeed:
             if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", observation.topic):
                 raise ValueError("world observation topic is invalid")
             seen.add(observation.evidence_id)
-            checked.append(observation)
+            refs = tuple(dict.fromkeys(
+                [observation.evidence_id, *[str(ref) for ref in source.get("evidence_refs") or () if str(ref).strip()]]
+            ))
+            checked.append(observation.model_copy(update={"evidence_refs": refs}))
         return tuple(checked)
 
     def _update_registry(self, *, items: list[dict[str, Any]], observations: tuple[WorldObservation, ...], now: datetime) -> None:

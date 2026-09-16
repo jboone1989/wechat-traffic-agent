@@ -61,6 +61,9 @@ def test_world_feed_agent_discovers_source_and_surfaces_reality_signal(tmp_path:
     assert {row["source_kind"] for row in result["items"]} == {"rss", "web-search"}
     assert result["observations"][0]["topic"] == "monetary-policy"
     assert result["observations"][0]["evidence_id"] == "web:revision-fed"
+    assert result["observations"][0]["evidence_refs"] == [
+        "web:revision-fed", "capability-receipt:v1:search", "capability-receipt:v1:fetch"
+    ]
     registry = json.loads(feed.registry_path.read_text())
     assert registry["new-source.example"]["seen_count"] == 1
     assert registry["new-source.example"]["attention_count"] == 1
