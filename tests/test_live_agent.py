@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
 from starlette.testclient import TestClient
 
 from wechat_traffic_agent.live_agent import LiveAgentService, public_agent_snapshot
+from wechat_traffic_agent.prospective_predictions import PredictionEvidence, ProspectivePredictionLedger
 
 
 class _Application:
@@ -80,6 +81,7 @@ def test_public_snapshot_is_bounded_and_truthful(tmp_path):
     assert snapshot["learning"]["latest_verified"]["applied_techniques"][0]["name"] == "Question opener"
     assert snapshot["learning"]["memory_history"][-1]["familiarity"] == 0.68
     assert snapshot["learning"]["audience_validation"]["status"] == "WAITING_FOR_MATURE_AUDIENCE_EVIDENCE"
+    assert snapshot["learning"]["predictions"] == {"open_predictions": [], "recent_outcomes": []}
     assert snapshot["boundaries"] == {
         "chat_is_learning_evidence": False,
         "chat_can_publish": False,
@@ -106,6 +108,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "REAL-WORLD VALIDATION" in live.text
     assert "What I believe — and what changed my mind" in live.text
     assert "belief-change-list" in live.text
+    assert "What I expect next — and what reality decided" in live.text
+    assert "prediction-outcome-list" in live.text
     assert "/api/agent/stream" in live.text
     assert "runtime cadence" in live.text
     assert "/api/agent/status" in live.text
@@ -172,3 +176,39 @@ def test_public_snapshot_exposes_live_goal_evidence_strategy_and_mind(tmp_path):
     assert snapshot["learning"]["mind"]["beliefs"][0]["revision_count"] == 2
     assert snapshot["learning"]["mind"]["recent_belief_changes"][0]["after"]["stance"] == 0.18
     assert snapshot["boundaries"]["private_reasoning_exposed"] is False
+
+
+def test_public_snapshot_exposes_open_predictions_and_resolved_outcomes(tmp_path):
+    root = _state(tmp_path)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    ledger = ProspectivePredictionLedger(root)
+    open_row = ledger.record(
+        cycle="v2-open", topic="rates-regime", proposition="Yields remain restrictive for crypto liquidity.",
+        proposition_stance=0.25, statement="The 10-year Treasury yield will remain above 4.8% for the next 24 hours.",
+        confidence=0.64, created_at=now, due_at=now + timedelta(hours=24),
+        verification_query="10-year Treasury yield tomorrow", falsifier="The 10-year yield closes below 4.8% before the horizon.",
+        source_evidence_refs=("world-evidence:open",),
+    )
+    resolved = ledger.record(
+        cycle="v2-resolved", topic="liquidity", proposition="Funding conditions remain tight for crypto.",
+        proposition_stance=0.2, statement="Crypto funding rates will stay positive through the next six hours.",
+        confidence=0.7, created_at=now - timedelta(hours=12), due_at=now - timedelta(hours=6),
+        verification_query="crypto funding rates today", falsifier="Aggregate funding turns non-positive before the horizon.",
+        source_evidence_refs=("world-evidence:resolved",),
+    )
+    ledger.check(
+        resolved.prediction_id, checked_at=now,
+        status="REFUTED",
+        evidence=(PredictionEvidence(
+            evidence_id="future-evidence", evidence_quote="Aggregate funding turned negative during the window.",
+            observed_at=now - timedelta(hours=1), source="test", title="Funding update", source_revision="rev-1",
+        ),),
+        reliability=0.9, rationale="Fresh post-prediction evidence directly falsified the dated claim.",
+    )
+
+    snapshot = public_agent_snapshot(root, _Application())
+    projection = snapshot["learning"]["predictions"]
+    assert projection["open_predictions"][0]["prediction_id"] == open_row.prediction_id
+    assert projection["recent_outcomes"][0]["prediction_id"] == resolved.prediction_id
+    assert projection["recent_outcomes"][0]["checks"][-1]["status"] == "REFUTED"
+    assert projection["recent_outcomes"][0]["checks"][-1]["prediction_error"] == 0.7
