@@ -1,0 +1,67 @@
+{
+  "schema_version": "social-writing-observations.v1",
+  "purpose": "STYLE_ONLY",
+  "status": "DISCOVERED",
+  "performance_claim": "UNVERIFIED",
+  "observations": [
+    {
+      "observation_id": "x-conditional-market-levels-v1",
+      "channel": "X",
+      "format": "SHORT_POST",
+      "source_url": "https://x.com/KillaXBT/status/2009325831643185214",
+      "features": [
+        "Open with the instrument and current market state.",
+        "Use explicit if-then conditions instead of unconditional prediction.",
+        "Name the next level or observation that would confirm or invalidate the view.",
+        "Keep background explanation secondary to the immediate market read."
+      ]
+    },
+    {
+      "observation_id": "x-single-data-hook-v1",
+      "channel": "X",
+      "format": "SHORT_POST",
+      "source_url": "https://x.com/Cointelegraph/status/2043245316497891641",
+      "features": [
+        "Lead with one quantified observation when that is the whole useful update.",
+        "Do not pad a single-data update into an essay.",
+        "Let a chart or linked source carry detail when available."
+      ]
+    },
+    {
+      "observation_id": "x-market-recap-watch-v1",
+      "channel": "X",
+      "format": "MARKET_RECAP",
+      "source_url": "https://x.com/DeItaone/status/2019746874614321173",
+      "features": [
+        "Start with the event and the size of the move.",
+        "Separate reported drivers from the writer's own interpretation.",
+        "Add cross-asset or positioning context only when it changes the read.",
+        "Finish with the concrete level or signal the market is watching next."
+      ]
+    },
+    {
+      "observation_id": "x-metric-explainer-v1",
+      "channel": "X",
+      "format": "EXPLAINER_POST",
+      "source_url": "https://x.com/Kriptomessi/status/2024200002721943573",
+      "features": [
+        "Define an unfamiliar metric before interpreting it.",
+        "Use one chart or metric as the organizing object rather than stacking unrelated facts.",
+        "Move from definition to present reading to bounded interpretation."
+      ]
+    },
+    {
+      "observation_id": "x-article-thesis-evidence-risk-v1",
+      "channel": "X",
+      "format": "ARTICLE",
+      "source_url": "https://x.com/MiningMiranda/status/1950940772196372608",
+      "features": [
+        "Use a debatable question or thesis as the title.",
+        "Define the model or heuristic before evaluating it.",
+        "Organize evidence into a small number of distinct forces rather than a chronology dump.",
+        "Include counter-risks and limits before implications.",
+        "End with what the reader should monitor, not a certainty claim."
+      ]
+    }
+  ]
+}
