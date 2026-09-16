@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -157,6 +158,9 @@ class ContentMind:
                 "importance": min(1.0, max(0.0, float(raw.get("importance") or 0.0))),
                 "novelty": min(1.0, max(0.0, float(raw.get("novelty") or 0.0))),
                 "why_now": str(raw.get("why_now") or "")[:300],
+                "evidence_refs": list(dict.fromkeys(
+                    str(ref).strip() for ref in (raw.get("evidence_refs") or ()) if str(ref).strip()
+                )),
             })
         world_interest_updates = self._observe_world_attention(observations)
         persistent_interests = set(self.session.interests.snapshot()["items"])
@@ -212,6 +216,94 @@ class ContentMind:
                 self._plans.pop(key, None)
         self._persist()
         return deepcopy(plan)
+
+    def record_research_belief(
+        self, *, cycle: str, topic: str, question: str, source_evidence: Mapping[str, Any],
+        proposition: str, stance: float, reliability: float, support: float,
+        inquiry_id: str | None = None, commit: bool = True,
+    ) -> dict[str, Any]:
+        """Attach trusted research evidence to an inquiry and optionally revise worldview."""
+        topic, question, proposition = (str(value).strip() for value in (topic, question, proposition))
+        if not topic or not question or not proposition:
+            raise ValueError("research belief requires topic, question, and proposition")
+        stance, reliability, support = float(stance), float(reliability), float(support)
+        if not -1.0 <= stance <= 1.0 or not 0.0 <= reliability <= 1.0 or not 0.0 <= support <= 1.0:
+            raise ValueError("research belief scores are out of range")
+        raw_id = str(source_evidence.get("evidence_id") or "").strip()
+        title = str(source_evidence.get("title") or "").strip()
+        revision = str(source_evidence.get("source_revision") or "").strip()
+        if not raw_id or not title or not revision:
+            raise ValueError("research belief requires identified source evidence")
+        evidence_key = json.dumps(
+            {"evidence_id": raw_id, "source_revision": revision},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        )
+        evidence_id = "world-evidence:" + sha256(evidence_key.encode()).hexdigest()[:24]
+        epistemic = self.session.epistemic
+        for revision_row in self.session.worldview.snapshot()["history"]:
+            if (revision_row["proposition"] == proposition
+                    and evidence_id in revision_row["payload"]["evidence_refs"]):
+                existing = self.session.worldview.claim(proposition)
+                return {
+                    "status": "ALREADY_RECORDED", "topic": topic,
+                    "inquiry_id": str(revision_row["provenance"]["source_event_id"]).removeprefix("inquiry:"),
+                    "evidence_id": evidence_id, "proposition": proposition,
+                    "stance": float(existing.stance) if existing else 0.0,
+                    "confidence": float(existing.confidence) if existing else 0.0,
+                }
+        if evidence_id not in epistemic.evidence:
+            # This claim is deliberately about observation, not source truth. Trust here means
+            # ContentMind can prove what source material it actually consumed.
+            epistemic_claim = "Observed source material: " + title[:300]
+            self.session.ingest_trusted_evidence({
+                "evidence_id": evidence_id, "source": AUTHORITY_ID,
+                "claim": epistemic_claim, "value": 1.0, "reliability": 1.0,
+            }, authority_id=AUTHORITY_ID)
+
+        inquiries = self.session.inquiry.inquiries
+        active_id = str(inquiry_id or "").strip()
+        if active_id and active_id in inquiries and inquiries[active_id]["status"] != "OPEN":
+            active_id = ""
+        if not active_id:
+            digest = sha256(f"{cycle}|{topic}|{question}".encode()).hexdigest()[:16]
+            active_id = f"research-{digest}"
+            if active_id not in inquiries:
+                self.session.inquiry.open(
+                    inquiry_id=active_id, question=question, origin="self_question",
+                    personal_relevance=0.7, hypotheses={proposition: 0.5},
+                )
+        state = self.session.inquiry.inquiries[active_id]
+        if proposition not in state["hypotheses"]:
+            self.session.add_inquiry_hypothesis(active_id, hypothesis=proposition, confidence=0.5)
+            state = self.session.inquiry.inquiries[active_id]
+        if evidence_id not in state["evidence_refs"]:
+            self.session.inquiry.add_evidence(
+                inquiry_id=active_id, evidence_ref=evidence_id,
+                hypothesis=proposition, support=support,
+            )
+        if not commit:
+            self._persist()
+            return {
+                "status": "DEFERRED", "topic": topic, "inquiry_id": active_id,
+                "evidence_id": evidence_id, "proposition": proposition,
+            }
+
+        state = self.session.inquiry.inquiries[active_id]
+        if state["status"] == "OPEN":
+            self.session.inquiry.resolve(inquiry_id=active_id)
+        before = self.session.worldview.claim(proposition)
+        claim = self.session.resolve_inquiry_to_worldview(
+            active_id, proposition=proposition, stance=stance, reliability=reliability,
+            authority_id=AUTHORITY_ID,
+        )
+        self._persist()
+        return {
+            "status": "REVISED" if before is not None else "FORMED",
+            "topic": topic, "inquiry_id": active_id, "evidence_id": evidence_id,
+            "proposition": claim.proposition, "stance": float(claim.stance),
+            "confidence": float(claim.confidence),
+            "previous": (before.__dict__ if before is not None else None),
+        }
 
     def observe_process_experience(
         self,
@@ -286,12 +378,31 @@ class ContentMind:
             for key, value in snapshot["inquiry"]["inquiries"].items()
             if value.get("status") == "OPEN"
         ]
+        worldview = snapshot["worldview"]
+        revisions_by_claim: dict[str, int] = {}
+        for row in worldview["history"]:
+            proposition = str(row["proposition"])
+            revisions_by_claim[proposition] = revisions_by_claim.get(proposition, 0) + 1
+        beliefs = [
+            {"proposition": proposition, "stance": float(state["stance"]),
+             "confidence": float(state["confidence"]),
+             "revision_count": revisions_by_claim.get(proposition, 0)}
+            for proposition, state in worldview["claims"].items()
+        ]
+        beliefs.sort(key=lambda row: (-row["confidence"], -abs(row["stance"]), row["proposition"]))
+        recent_belief_changes = [
+            {"proposition": row["proposition"], "before": row["before"], "after": row["after"],
+             "evidence_refs": list(row["payload"]["evidence_refs"])}
+            for row in worldview["history"][-8:]
+        ]
         latest_plan = self._plans[sorted(self._plans)[-1]] if self._plans else None
         return {
             "mind_schema": MIND_SCHEMA,
             "mind_tick": int(self.session.tick),
             "interests": interests[:8],
             "open_inquiries": inquiries[:8],
+            "beliefs": beliefs[:8],
+            "recent_belief_changes": recent_belief_changes,
             "latest_plan": deepcopy(latest_plan),
             "learning_boundary": "world attention and process experience are connected; audience outcomes are not connected yet",
         }

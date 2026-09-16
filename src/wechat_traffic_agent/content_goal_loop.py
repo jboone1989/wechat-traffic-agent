@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
@@ -39,6 +40,15 @@ class EvidenceSelection(Contract):
     related_ids: tuple[str, ...] = Field(max_length=3)
     reader_question: str = Field(min_length=10, max_length=400)
     gap: str = Field(min_length=10, max_length=500)
+
+
+class WorldviewDecision(Contract):
+    action: Literal["DEFER", "COMMIT"]
+    proposition: str = Field(min_length=10, max_length=500)
+    stance: float = Field(ge=-1.0, le=1.0)
+    reliability: float = Field(ge=0.0, le=1.0)
+    support: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=10, max_length=600)
 
 
 def _candidate_fingerprint(candidate):
@@ -359,6 +369,50 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         existing = inputs['previous_titles'] + [r['artifact']['title'] for r in snapshot['articles']]
         if _title_key(selection.title) in {_title_key(t) for t in existing}:
             raise ValueError('selection duplicates an existing title')
+
+        worldview_update = None
+        record_belief = getattr(self.mind, 'record_research_belief', None) if self.mind is not None else None
+        if record_belief is not None:
+            belief_path = folder / 'worldview_decision.json'
+            update_path = folder / 'worldview_update.json'
+            if belief_path.exists():
+                belief_decision = WorldviewDecision.model_validate_json(belief_path.read_text(encoding='utf-8'))
+            else:
+                current_beliefs = self.mind.public_projection().get('beliefs', [])
+                self._activity(cycle, 'DECIDE', 'I’m deciding what this evidence changes in my worldview',
+                               'I may form a bounded working view, revise an existing one, or defer if the evidence is not enough.')
+                belief_decision = await _structured(
+                    runtime,
+                    'FORM_WORLDVIEW: Decide whether this selected evidence justifies a durable working belief for the persistent agent. '
+                    'This is cognition, not article writing. DEFER is valid and preferred when the evidence is insufficient. '
+                    'A proposition must be a concise, testable world claim that can be revisited by future evidence; do not make it source-specific. '
+                    'If the evidence revises an existing proposition, copy that proposition EXACTLY rather than paraphrasing it. '
+                    'stance ranges from -1 (evidence argues strongly against the proposition) to +1 (strongly supports it). '
+                    'reliability is how fit this evidence is for updating that proposition, not a claim of truth. support is the evidence support used inside the inquiry. '
+                    'Separate observed facts from interpretation and do not invent facts beyond source_evidence. Return JSON only.\n'
+                    + json.dumps({
+                        'topic': selection.topic, 'reader_question': selection.reader_question,
+                        'source_evidence': selected, 'current_beliefs': current_beliefs,
+                        'mind_goal': mind_plan.get('goal'),
+                    }, ensure_ascii=False),
+                    WorldviewDecision,
+                )
+                _put(belief_path, belief_decision.model_dump(mode='json'))
+            inquiry_refs = list((mind_plan.get('goal') or {}).get('inquiry_refs') or ())
+            worldview_update = record_belief(
+                cycle=cycle, topic=selection.topic, question=selection.reader_question,
+                source_evidence=selected, proposition=belief_decision.proposition,
+                stance=belief_decision.stance, reliability=belief_decision.reliability,
+                support=belief_decision.support, inquiry_id=(str(inquiry_refs[0]) if inquiry_refs else None),
+                commit=belief_decision.action == 'COMMIT',
+            )
+            _put(update_path, worldview_update)
+            self._activity(
+                cycle, 'LEARN',
+                ('I updated a long-term belief' if belief_decision.action == 'COMMIT' else 'I kept the question open'),
+                belief_decision.rationale, status='completed',
+            )
+
         fingerprint = _candidate_fingerprint(selected)
         if self.inbox.contains(fingerprint):
             self.inbox.load(fingerprint)
@@ -587,7 +641,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'traffic_context': traffic_payload,
                   'evidence_floor': floor_check.model_dump(mode='json'),
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
-                  'mind_plan': mind_plan, 'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
+                  'mind_plan': mind_plan, 'worldview_update': worldview_update,
+                  'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
                   'exploration': {'candidate_count': exploration.get('candidate_count', 0),
                                   'match_count': len(exploration.get('matches', [])),
                                   'selected_evidence_id': selected['evidence_id'],

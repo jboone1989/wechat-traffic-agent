@@ -192,3 +192,59 @@ def test_virtualbrain_can_create_new_topic_and_website_materializes_it(tmp_path)
     assert published[-1]["tags"] == ["monetary-policy"]
     public_root = Path(result["publication"]["public_root"])
     assert (public_root / "topics" / "monetary-policy" / "index.html").exists()
+
+class BeliefRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("FORM_WORLDVIEW:"):
+            self.calls.append(task)
+            return json.dumps({
+                "action": "COMMIT",
+                "proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                "stance": 0.7,
+                "reliability": 0.65,
+                "support": 0.75,
+                "rationale": "The selected evidence is relevant enough for a bounded working belief, not certainty.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+class BeliefMind:
+    def __init__(self):
+        self.recorded = []
+
+    def plan_for_cycle(self, *, cycle, available_topics):
+        return {"cycle": cycle, "goal": {"origin": "INTEREST", "interest_refs": ["rare"]},
+                "required_topic": "rare"}
+
+    def public_projection(self):
+        return {"beliefs": []}
+
+    def record_research_belief(self, **kwargs):
+        self.recorded.append(kwargs)
+        return {"status": "FORMED", "topic": kwargs["topic"],
+                "proposition": kwargs["proposition"], "stance": 0.07, "confidence": 0.065}
+
+    def observe_process_experience(self, **kwargs):
+        return {"status": "OBSERVED", "topic": kwargs["topic"]}
+
+
+def test_selected_evidence_updates_persistent_mind_before_expression(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, mind, evidence_explorer = BeliefRuntime(), BeliefMind(), Explorer()
+    worker = v2(legacy, runtime, publisher, mind=mind, explorer=evidence_explorer)
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    assert result["worldview_update"]["status"] == "FORMED"
+    assert len(mind.recorded) == 1
+    recorded = mind.recorded[0]
+    assert recorded["topic"] == "rare"
+    assert recorded["source_evidence"]["evidence_id"] == "news-1"
+    assert recorded["commit"] is True
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    decision = json.loads((cycle / "worldview_decision.json").read_text())
+    update = json.loads((cycle / "worldview_update.json").read_text())
+    assert decision["action"] == "COMMIT"
+    assert update["proposition"] == decision["proposition"]
+    form_call = next(call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:"))
+    compose_call = next(call for call in runtime.calls if 'Create one original, useful web-ready content artifact' in call)
+    assert runtime.calls.index(form_call) < runtime.calls.index(compose_call)
