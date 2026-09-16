@@ -743,6 +743,52 @@ def test_one_shot_crypto_bootstrap_sets_direction_without_replacing_future_auton
     published = json.loads(publisher.inventory_path().read_text())[-1]
     assert published["kind"] != "note"
     assert published["tags"] == ["crypto-market"]
+    check_call = next(call for call in runtime.calls if call.startswith("CHECK_ARTICLE:"))
+    assert '"public_safe"' not in check_call
+    assert "workflow/admission metadata is not private data" in check_call
+
+
+class CatalystCryptoExplorer(CryptoMissionExplorer):
+    catalyst = candidate("crypto-catalyst-1", "Bitcoin News Today: Fed decision is the immediate catalyst") | {
+        "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
+        "summary": "Bitcoin is trading lower today as markets await the Fed decision; the causal interpretation remains attributed.",
+        "source_revision": "crypto-catalyst-r1", "evidence_refs": ["web:crypto-catalyst-r1"],
+        "search_query": "crypto market BTC ETH SOL latest market catalyst today", "search_rank": 1,
+    }
+    def __init__(self):
+        super().__init__()
+        self.search_calls = 0
+    async def search_web(self, *, goal_topic, now):
+        assert goal_topic == "crypto-market"
+        self.search_calls += 1
+        return {"items": [self.catalyst], "failures": [],
+                "query": "crypto market BTC ETH SOL latest market catalyst today"}
+    async def filter_for_goal(self, **kwargs):
+        assert kwargs["goal_topic"] == "crypto-market"
+        self.filter_calls += 1
+        rows = kwargs["candidates"]
+        return {"items": list(rows), "matches": [], "candidate_count": len(rows)}
+
+
+def test_market_snapshot_supplements_current_catalyst_before_writing(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, explorer = CryptoMissionRuntime(), CatalystCryptoExplorer()
+    worker = ContinuousContentLoop(
+        runtime=runtime, state_root=legacy.state, artifacts_path=legacy.artifacts_path,
+        site_root=legacy.site_root, base_url=legacy.base_url, curriculum_path=legacy.curriculum_path,
+        feeds=legacy.feeds, interval_hours=legacy.interval_hours, fetcher=legacy.fetcher,
+        publisher=publisher, explorer=explorer,
+    )
+    result = asyncio.run(worker.run_once(now=NOW, cycle_id="v2-catalyst-1789491602", focus_topic="crypto-market"))
+    assert result["status"] == "PUBLISHED"
+    assert explorer.search_calls == 1
+    assert result["exploration"]["market_context_evidence_id"] == "crypto-catalyst-1"
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    catalyst = json.loads((cycle / "market_catalyst_search.json").read_text())
+    assert catalyst["query"].endswith("latest market catalyst today")
+    compose_call = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert "crypto-catalyst-1" in compose_call
+    assert "crypto-market-1" in compose_call
 
 
 def test_public_market_evidence_gets_market_pulse_guidance_without_forcing_length():
