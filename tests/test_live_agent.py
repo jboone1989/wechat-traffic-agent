@@ -6,7 +6,7 @@ from pathlib import Path
 
 from starlette.testclient import TestClient
 
-from wechat_traffic_agent.live_agent import LiveAgentService, public_agent_snapshot
+from wechat_traffic_agent.live_agent import LiveAgentService, public_agent_snapshot, _phase_state
 from wechat_traffic_agent.prospective_predictions import PredictionEvidence, ProspectivePredictionLedger
 
 
@@ -89,6 +89,16 @@ def test_public_snapshot_is_bounded_and_truthful(tmp_path):
         "private_reasoning_exposed": False,
     }
 
+
+
+def test_error_phase_describes_preserved_failure_not_per_tick_retry(tmp_path):
+    cycle = tmp_path / "cycle"
+    cycle.mkdir()
+    run_state, phase, focus = _phase_state(cycle, {"status": "ERROR"})
+    assert run_state == "IDLE"
+    assert phase == "RECOVER"
+    assert "failed cycle is preserved" in focus
+    assert "retry on its next check" not in focus
 
 def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     root = _state(tmp_path)

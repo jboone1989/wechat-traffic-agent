@@ -59,7 +59,7 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
     if len(routes) != len(artifacts):
         raise ValueError("duplicate inventory routes")
     rendered = {"/" + str(p.parent.relative_to(site_root)) + "/"
-                for category in ("articles", "guides", "research")
+                for category in ("articles", "guides", "research", "notes")
                 for p in (site_root / category).glob("*/index.html")}
     if rendered != set(routes):
         raise ValueError("rendered website and canonical article inventory disagree")

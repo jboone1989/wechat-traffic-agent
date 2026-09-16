@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from wechat_traffic_agent.content_artifact import ContentArtifact, ContentSection
+from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
 from wechat_traffic_agent.channels.web import StaticWebChannel, StaticWebsiteConfig
 from wechat_traffic_agent.web_editorial import WebEditorialWorker, website_snapshot, rank_proposals, _Proposals
 
@@ -60,6 +60,30 @@ def test_snapshot_and_ranking_use_coverage_and_article_links(tmp_path):
     (root/'articles/article-0/index.html').unlink()
     with pytest.raises(ValueError,match='inventory disagree'): website_snapshot(artifacts,root,'https://example.com')
 
+
+
+def test_snapshot_treats_notes_as_first_class_inventory(tmp_path):
+    rows = [
+        ContentArtifact(
+            artifact_id="article-1", kind=ContentKind.ARTICLE, slug="article-one",
+            title="Article one", summary="A bounded article.",
+            sections=(ContentSection(heading="Facts", paragraphs=("Grounded article text.",)),),
+            tags=("shared",), created_at=datetime(2026, 9, 16, tzinfo=timezone.utc), public_safe=True,
+        ),
+        ContentArtifact(
+            artifact_id="note-1", kind=ContentKind.NOTE, slug="note-one",
+            title="Note one", summary="A bounded note.",
+            sections=(ContentSection(heading="Thought", paragraphs=("Grounded note text.",)),),
+            tags=("shared",), created_at=datetime(2026, 9, 16, tzinfo=timezone.utc), public_safe=True,
+        ),
+    ]
+    artifacts = tmp_path / "inventory.json"
+    artifacts.write_text(json.dumps([row.model_dump(mode="json") for row in rows]))
+    root = tmp_path / "site"
+    StaticWebChannel(StaticWebsiteConfig(site_name="Lab", description="Evidence", base_url="https://example.com")).build(rows, root)
+    snap = website_snapshot(artifacts, root, "https://example.com")
+    assert {row["route"] for row in snap["articles"]} == {"/articles/article-one/", "/notes/note-one/"}
+    assert snap["topics"]["shared"] == ["article-1", "note-1"]
 
 def test_real_compose_path_drafts_once_and_restored_plan_skips_both_models(tmp_path):
     artifacts,root=site(tmp_path)
