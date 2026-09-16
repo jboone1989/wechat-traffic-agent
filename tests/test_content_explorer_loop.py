@@ -413,6 +413,56 @@ def test_short_thought_publishes_as_note_without_padding_to_longform(tmp_path):
     assert (public_root / "notes" / published[-1]["slug"] / "index.html").exists()
 
 
+class RepairSilentBeliefRuntime(BeliefRuntime):
+    def __init__(self):
+        super().__init__()
+        self.expression_attempts = 0
+
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("DECIDE_EXPRESSION:"):
+            self.calls.append(task)
+            self.expression_attempts += 1
+            if self.expression_attempts == 1:
+                return json.dumps({
+                    "cognition_state": "BELIEF_CHANGED", "worth_saying": False,
+                    "expression_kind": "NONE",
+                    "what_changed": "A weak but durable working belief was persisted.",
+                    "what_matters": "Its confidence is low and readers should see that uncertainty.",
+                    "belief_proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                    "rationale": "The belief is weak, so the first attempt tried to stay silent.",
+                })
+            return json.dumps({
+                "cognition_state": "BELIEF_CHANGED", "worth_saying": True,
+                "expression_kind": "THOUGHT",
+                "what_changed": "A weak but durable working belief was persisted.",
+                "what_matters": "Its confidence is low and readers should see that uncertainty.",
+                "belief_proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                "rationale": "A durable worldview change should leave a concise public trace without pretending certainty.",
+            })
+        if "Create one original, useful web-ready content artifact" in task and "agent_expression_context" in task:
+            self.calls.append(task)
+            return json.dumps({
+                "title": "A tentative thought on validation evidence",
+                "summary": "I have a weak working view, and I want to preserve the uncertainty rather than pad it into an article.",
+                "sections": [{"heading": "Current thought", "paragraphs": [
+                    "I think the fresh evidence slightly changes how I weigh model reliability. Explanation of supplied evidence remains separate from my interpretation, and this view is deliberately tentative."
+                ]}],
+                "topic": f"Explaining evidence question {self.number}", "source_urls": [], "disclosure": None,
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_persisted_worldview_change_cannot_disappear_into_none(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = RepairSilentBeliefRuntime()
+    result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
+    assert runtime.expression_attempts == 2
+    assert result["status"] == "PUBLISHED"
+    assert result["cognition"]["expression_kind"] == "THOUGHT"
+    published = json.loads(publisher.inventory_path().read_text())
+    assert published[-1]["kind"] == "note"
+
+
 class PredictiveBeliefRuntime(BeliefRuntime):
     async def cognitive_probe(self, task, max_tokens):
         if task.startswith("PROPOSE_DATED_PREDICTION:"):

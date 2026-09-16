@@ -507,6 +507,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     changed = isinstance(worldview_update, dict) and worldview_update.get('status') in {'FORMED', 'REVISED'}
                     if value.cognition_state == 'BELIEF_CHANGED' and not changed:
                         raise ValueError('BELIEF_CHANGED requires a persisted worldview change')
+                    if changed and value.expression_kind == 'NONE':
+                        raise ValueError('persisted worldview change requires a public expression trace')
                     if value.expression_kind == 'METHOD_NOTE' and selected.get('learning_kind') not in {'METHOD', 'TOOL'}:
                         raise ValueError('METHOD_NOTE requires METHOD or TOOL evidence')
                 cognition_decision = await _structured(
@@ -515,7 +517,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'The persistent agent is expected to think continuously, but publication is never a quota. NONE is correct only when there is no meaningful information gain or useful public trace. '
                     'LONGFORM is appropriate for a material belief formation/revision or substantial research result. RESEARCH_NOTE is appropriate when the evidence is real and the investigation itself is useful, but the durable worldview correctly remains unresolved. '
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
-                    'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a durable belief or full research note. '
+                    'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a full research note. A persisted Worldview FORMATION or REVISION must leave at least a THOUGHT public trace; low confidence should be stated, not hidden by NONE. '
                     'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.\n'
                     + json.dumps({
                         'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
