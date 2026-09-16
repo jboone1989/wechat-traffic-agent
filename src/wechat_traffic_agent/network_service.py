@@ -63,6 +63,8 @@ class ContentNetworkService:
             raise ValueError("network agent_id must be non-empty")
         if lease_seconds < 60:
             raise ValueError("network lease_seconds must be at least 60")
+        if float(startup_timeout_seconds) <= 0:
+            raise ValueError("network startup_timeout_seconds must be positive")
         raw_seeds = (seed_url,) if seed_urls is None else seed_urls
         cleaned_seeds = tuple(dict.fromkeys(item.strip().rstrip("/") for item in raw_seeds if item.strip()))
         if not cleaned_seeds:
@@ -103,6 +105,7 @@ class ContentNetworkService:
             port=int(os.environ.get("CONTENT_NETWORK_PORT", str(DEFAULT_PORT))),
             agent_id=os.environ.get("CONTENT_NETWORK_AGENT_ID", DEFAULT_AGENT_ID),
             capabilities=caps,
+            startup_timeout_seconds=float(os.environ.get("CONTENT_NETWORK_STARTUP_TIMEOUT_SECONDS", "10")),
             lease_seconds=int(os.environ.get("CONTENT_NETWORK_LEASE_SECONDS", "1800")),
             engagement_enabled=(os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
         )
