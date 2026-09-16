@@ -4,7 +4,7 @@ Keeps the legacy loop import-compatible while production uses goal-first evidenc
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import re
 from pathlib import Path
@@ -23,6 +23,9 @@ from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
 from .models import TopicSignal
 from .public_activity import emit_public_activity
+from .prospective_predictions import (
+    PredictionProposal, ProspectivePredictionLedger, propose_prediction, settle_predictions,
+)
 from .sources.runtime_web import RuntimeWebSearch
 from .trading_draft_worker import default_trading_research_audience
 from .traffic_learning import TrafficLearningContext, TrafficLearningContextBuilder, TopicTrafficSignal
@@ -96,6 +99,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.website_experiments = bool(website_experiments)
         self.world_feed = world_feed
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
+        self.predictions = ProspectivePredictionLedger(self.state)
         if explorer is None:
             web_searcher = None
             if capability_runtime is not None and "web.search" in capability_runtime.available_capabilities():
@@ -156,19 +160,35 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                       if not self.inbox.contains(_candidate_fingerprint(row))]
                 world_runtime = ReceiptRuntime(self.runtime, folder / 'world_model_calls')
                 projection = self.mind.public_projection() if self.mind is not None else {}
+                due_predictions = self.predictions.due(now)
                 world_payload = await self.world_feed.collect(
                     runtime=world_runtime, now=now, base_items=base_pool['items'],
                     mind_projection=projection,
+                    verification_queries=tuple(row.verification_query for row in due_predictions),
                 )
                 world_payload['failures'] = list(base_pool.get('failures', [])) + list(world_payload.get('failures', []))
-                world_payload['items'] = [row for row in world_payload['items']
-                                          if not self.inbox.contains(_candidate_fingerprint(row))]
                 _put(world_path, world_payload)
                 self._activity(cycle, 'OBSERVE', 'The world changed what is available to think about',
                                f"I found {len(world_payload.get('items', []))} signals and marked {len(world_payload.get('observations', []))} as worth thinking about.",
                                status='completed')
+            settlement_path = folder / 'prediction_settlements.json'
+            if settlement_path.exists():
+                prediction_settlements = json.loads(settlement_path.read_text(encoding='utf-8'))
+            else:
+                prediction_runtime = ReceiptRuntime(self.runtime, folder / 'prediction_model_calls')
+                prediction_settlements = list(await settle_predictions(
+                    ledger=self.predictions, runtime=prediction_runtime, items=list(world_payload.get('items', [])),
+                    now=now, mind=self.mind, cycle=cycle,
+                ))
+                _put(settlement_path, prediction_settlements)
+                terminal = [row for row in prediction_settlements if row.get('learning_status') == 'APPLIED']
+                if terminal:
+                    self._activity(cycle, 'LEARN', 'Past predictions met the real world',
+                                   f"Applied {len(terminal)} matured prediction outcome(s) to persistent experience and worldview.",
+                                   status='completed')
             prefetched_evidence_pool = {
-                'items': list(world_payload.get('items', [])),
+                'items': [row for row in world_payload.get('items', [])
+                          if not self.inbox.contains(_candidate_fingerprint(row))],
                 'failures': list(world_payload.get('failures', [])),
                 'observed_at': world_payload.get('observed_at') or now.isoformat(),
                 'signal_kind': 'world feed: seed, agent-network, and agent-discovered public evidence',
@@ -411,19 +431,65 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 )
                 _put(belief_path, belief_decision.model_dump(mode='json'))
             inquiry_refs = list((mind_plan.get('goal') or {}).get('inquiry_refs') or ())
-            worldview_update = record_belief(
-                cycle=cycle, topic=selection.topic, question=selection.reader_question,
-                source_evidence=selected, proposition=belief_decision.proposition,
-                stance=belief_decision.stance, reliability=belief_decision.reliability,
-                support=belief_decision.support, inquiry_id=(str(inquiry_refs[0]) if inquiry_refs else None),
-                commit=belief_decision.action == 'COMMIT',
-            )
-            _put(update_path, worldview_update)
+            if update_path.exists():
+                worldview_update = json.loads(update_path.read_text(encoding='utf-8'))
+            else:
+                worldview_update = record_belief(
+                    cycle=cycle, topic=selection.topic, question=selection.reader_question,
+                    source_evidence=selected, proposition=belief_decision.proposition,
+                    stance=belief_decision.stance, reliability=belief_decision.reliability,
+                    support=belief_decision.support, inquiry_id=(str(inquiry_refs[0]) if inquiry_refs else None),
+                    commit=belief_decision.action == 'COMMIT',
+                )
+                _put(update_path, worldview_update)
             self._activity(
                 cycle, 'LEARN',
                 ('I updated a long-term belief' if belief_decision.action == 'COMMIT' else 'I kept the question open'),
                 belief_decision.rationale, status='completed',
             )
+
+        prediction_record = None
+        if (record_belief is not None and isinstance(worldview_update, dict)
+                and worldview_update.get('status') in {'FORMED', 'REVISED'}):
+            proposal_path = folder / 'prediction_proposal.json'
+            prediction_path = folder / 'prediction.json'
+            try:
+                if proposal_path.exists():
+                    prediction_proposal = PredictionProposal.model_validate_json(proposal_path.read_text(encoding='utf-8'))
+                else:
+                    prediction_proposal = await propose_prediction(
+                        runtime=runtime, cycle=cycle, topic=selection.topic,
+                        proposition=str(worldview_update['proposition']),
+                        proposition_stance=float(worldview_update['stance']),
+                        worldview_confidence=float(worldview_update['confidence']),
+                        source_evidence=selected, now=cycle_now,
+                    )
+                    _put(proposal_path, prediction_proposal.model_dump(mode='json'))
+                if prediction_proposal.action == 'RECORD':
+                    if prediction_path.exists():
+                        prediction_record = json.loads(prediction_path.read_text(encoding='utf-8'))
+                    else:
+                        prediction = self.predictions.record(
+                            cycle=cycle, topic=selection.topic, proposition=str(worldview_update['proposition']),
+                            proposition_stance=float(worldview_update['stance']),
+                            statement=str(prediction_proposal.statement), confidence=float(prediction_proposal.confidence),
+                            created_at=cycle_now, due_at=cycle_now + timedelta(hours=int(prediction_proposal.horizon_hours)),
+                            verification_query=str(prediction_proposal.verification_query),
+                            falsifier=str(prediction_proposal.falsifier),
+                            source_evidence_refs=tuple(dict.fromkeys(
+                                str(ref).strip() for ref in [
+                                    worldview_update.get('evidence_id'), selected['evidence_id'],
+                                    *selected.get('evidence_refs', ()),
+                                ] if str(ref or '').strip()
+                            )),
+                        )
+                        prediction_record = prediction.model_dump(mode='json')
+                        _put(prediction_path, prediction_record)
+                    self._activity(cycle, 'LEARN', 'I made a dated prediction that future evidence can judge',
+                                   str(prediction_record.get('statement') or ''), status='completed')
+            except Exception as exc:
+                _put(folder / 'prediction_proposal_error.json', {'status': 'PROPOSAL_ERROR', 'error_type': type(exc).__name__})
+                prediction_record = None
 
         cognition_decision = None
         if record_belief is not None:
@@ -448,7 +514,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.\n'
                     + json.dumps({
                         'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
-                        'worldview_update': worldview_update, 'mind_goal': mind_plan.get('goal'),
+                        'worldview_update': worldview_update, 'prediction': prediction_record, 'mind_goal': mind_plan.get('goal'),
                         'current_mind': current_projection, 'recent_titles': inputs['previous_titles'][-20:],
                     }, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
@@ -459,7 +525,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                cognition_decision.rationale, status='completed')
                 return {
                     'status': 'COGNITION_ONLY', 'cycle': cycle, 'mind_plan': mind_plan,
-                    'worldview_update': worldview_update,
+                    'worldview_update': worldview_update, 'prediction': prediction_record,
                     'cognition': cognition_decision.model_dump(mode='json'),
                     'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
                     'exploration': {'candidate_count': exploration.get('candidate_count', 0),
@@ -570,6 +636,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             'agent_cognition': cognition_decision.model_dump(mode='json'),
             'worldview_decision': belief_decision.model_dump(mode='json'),
             'worldview_update': worldview_update,
+            'dated_prediction': prediction_record,
             'voice_contract': {
                 'identity': 'persistent Content Agent',
                 'facts': 'Attribute observed facts to supplied sources; do not narrate sourced facts as personal memory.',
@@ -585,10 +652,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                  'source_material': {'evidence': selected, 'counter_evidence': counter_payload,
                                      'existing_articles': related},
                  'writing_requirements': 'Write at least 350 words. Explain one mechanism, separate reported facts and interpretation. '
-                     'No personal investment advice, fabricated numbers, private details, or unsupported predictions. '
+                     'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '
                      'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying. '
                      'When agent_expression_context is present, make that cognition the reason the piece exists: express the agent’s own view in first person while keeping source facts attributed. '
-                     'Do not hide a belief change behind neutral encyclopedia prose, and do not invent stronger conviction than the stored worldview update supports. '
+                     'Do not hide a belief change behind neutral encyclopedia prose, and do not invent stronger conviction than the stored worldview update supports. If agent_expression_context contains a dated_prediction, it may be stated only as the agent’s explicit forecast with its stored confidence/horizon/falsifier, never as an observed fact. '
                      + strategy_instruction(content_strategy)
                      + floor_requirement + ((' ' + experiment_requirement) if experiment_requirement else '')}
         observed_at = datetime.fromisoformat(selected.get('observed_at') or inputs['now'])
@@ -732,7 +799,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'evidence_floor': floor_check.model_dump(mode='json'),
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
                   'perspective_expression': perspective_expression,
-                  'mind_plan': mind_plan, 'worldview_update': worldview_update,
+                  'mind_plan': mind_plan, 'worldview_update': worldview_update, 'prediction': prediction_record,
                   'cognition': (cognition_decision.model_dump(mode='json') if cognition_decision is not None else None),
                   'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
                   'exploration': {'candidate_count': exploration.get('candidate_count', 0),

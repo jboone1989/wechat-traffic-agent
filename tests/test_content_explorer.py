@@ -61,3 +61,15 @@ def test_agent_network_candidate_preserves_provenance():
     assert row["source_kind"] == "agent-network"
     assert row["source_revision"] == "artifact-1@2"
     assert row["evidence_refs"] == ["network-contract:contract-1", "trading:report:scan-1"]
+
+
+def test_web_candidate_preserves_search_publication_time_for_prospective_use():
+    from wechat_traffic_agent.content_explorer import _web_candidate
+    row = _web_candidate({
+        "source_revision": "rev-date", "source": "runtime:web.fetch:test",
+        "title": "Fresh dated story", "summary": "Fresh dated evidence.",
+        "url": "https://example.org/fresh", "observed_at": "2026-09-16T03:00:00+00:00",
+        "published_at": "2026-09-16T02:55:00+00:00",
+        "evidence_refs": ["receipt:1"], "search_query": "fresh evidence", "search_rank": 1,
+    })
+    assert row["published_at"] == "2026-09-16T02:55:00+00:00"

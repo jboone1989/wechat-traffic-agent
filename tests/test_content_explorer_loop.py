@@ -368,3 +368,42 @@ def test_agent_perspective_expression_is_required_for_publication(tmp_path):
     assert result["status"] == "HELD_BY_CHECKS"
     assert result["perspective_expression"] is False
     assert len(json.loads(publisher.inventory_path().read_text())) == before
+
+
+class PredictiveBeliefRuntime(BeliefRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("PROPOSE_DATED_PREDICTION:"):
+            self.calls.append(task)
+            return json.dumps({
+                "action": "RECORD",
+                "statement": "Within 24 hours, an additional validation result will reduce uncertainty about the same reliability question.",
+                "horizon_hours": 24,
+                "confidence": 0.62,
+                "verification_query": "latest model validation reliability evidence",
+                "falsifier": "No additional validation result appears, or new evidence increases rather than reduces uncertainty.",
+                "rationale": "The durable belief has a bounded near-term implication that later public evidence can test.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_worldview_change_can_create_restart_stable_dated_prediction_before_expression(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = PredictiveBeliefRuntime()
+    worker = v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer())
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    prediction = result["prediction"]
+    assert prediction["status"] == "OPEN"
+    assert prediction["statement"].startswith("Within 24 hours")
+    assert prediction["proposition"] == result["worldview_update"]["proposition"]
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    assert json.loads((cycle / "prediction.json").read_text())["prediction_id"] == prediction["prediction_id"]
+    from wechat_traffic_agent.prospective_predictions import ProspectivePredictionLedger
+    restarted = ProspectivePredictionLedger(legacy.state)
+    assert restarted.open()[0].prediction_id == prediction["prediction_id"]
+    form = next(call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:"))
+    predict = next(call for call in runtime.calls if call.startswith("PROPOSE_DATED_PREDICTION:"))
+    decide = next(call for call in runtime.calls if call.startswith("DECIDE_EXPRESSION:"))
+    assert runtime.calls.index(form) < runtime.calls.index(predict) < runtime.calls.index(decide)
+    compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert prediction["statement"] in compose

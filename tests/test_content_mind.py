@@ -241,3 +241,30 @@ def test_deferred_research_adds_evidence_but_does_not_invent_belief(tmp_path: Pa
     assert mind.session.inquiry.inquiries[result["inquiry_id"]]["status"] == "OPEN"
     assert mind.session.worldview.claim(proposition) is None
     assert mind.public_projection()["beliefs"] == []
+
+
+def test_prediction_outcome_becomes_restart_stable_virtualbrain_experience(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    result = mind.observe_prediction_outcome(
+        prediction_id="prediction:abc", topic="rates-regime",
+        statement="Funding conditions will remain tighter through the horizon.",
+        status="REFUTED", confidence=0.72, prediction_error=0.72, reliability=0.9,
+        evidence_refs=("prediction:abc", "web:fresh-outcome"),
+    )
+    assert result["status"] == "OBSERVED"
+    snapshot = mind.session.snapshot()
+    event = next(row for row in snapshot["autobiography"]["events"] if row["event_id"] == "prediction-outcome:prediction:abc")
+    assert event["source"] == "session"
+    assert event["provenance_kind"] == "OBSERVED_TRUSTED"
+    assert event["outcome"] == 0.0
+    reflection = next(row for row in snapshot["development_reflections"] if row["event_id"] == event["event_id"])
+    assert reflection["factors"]["prediction_error"] == 0.72
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    duplicate = restarted.observe_prediction_outcome(
+        prediction_id="prediction:abc", topic="rates-regime",
+        statement="Funding conditions will remain tighter through the horizon.",
+        status="REFUTED", confidence=0.72, prediction_error=0.72, reliability=0.9,
+        evidence_refs=("prediction:abc", "web:fresh-outcome"),
+    )
+    assert duplicate["status"] == "ALREADY_OBSERVED"

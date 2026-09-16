@@ -165,20 +165,26 @@ class WorldFeed:
             registry = dict(keep)
         self._write_registry(registry)
 
-    async def collect(self, *, runtime: Any, now: datetime, base_items: list[dict[str, Any]], mind_projection: dict[str, Any]) -> dict[str, Any]:
+    async def collect(self, *, runtime: Any, now: datetime, base_items: list[dict[str, Any]], mind_projection: dict[str, Any],
+                      verification_queries: tuple[str, ...] = ()) -> dict[str, Any]:
         items = list(base_items)
         failures: list[dict[str, str]] = []
         scan_plan: WorldScanPlan | None = None
+        forced_queries = tuple(dict.fromkeys(
+            " ".join(str(query).split())[:240] for query in verification_queries if len(" ".join(str(query).split())) >= 2
+        ))[:8]
         try:
             scan_plan = await self._scan_plan(runtime=runtime, now=now, mind_projection=mind_projection)
-            for query in scan_plan.queries:
-                try:
-                    rows = await self.web_searcher(query, now)
-                    items.extend(_web_candidate(row) for row in rows)
-                except Exception as exc:  # discovery failure must not erase seed reality
-                    failures.append({"source": "agent-discovered-web", "query": query, "error_type": type(exc).__name__})
         except Exception as exc:
             failures.append({"source": "world-scan-plan", "query": "", "error_type": type(exc).__name__})
+        search_queries = tuple(dict.fromkeys((*forced_queries, *((scan_plan.queries if scan_plan else ())))))
+        for query in search_queries:
+            try:
+                rows = await self.web_searcher(query, now)
+                items.extend(_web_candidate(row) for row in rows)
+            except Exception as exc:  # discovery failure must not erase seed reality
+                source = "prediction-verification" if query in forced_queries else "agent-discovered-web"
+                failures.append({"source": source, "query": query, "error_type": type(exc).__name__})
         unique = {row["evidence_id"]: row for row in items}
         items = list(unique.values())[:60]
         try:
@@ -191,6 +197,7 @@ class WorldFeed:
             "schema_version": "content-world-feed.v1",
             "observed_at": now.isoformat(),
             "scan_plan": scan_plan.model_dump(mode="json") if scan_plan else None,
+            "verification_queries": list(forced_queries),
             "items": items,
             "observations": [row.model_dump(mode="json") for row in observations],
             "failures": failures,

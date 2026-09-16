@@ -26,8 +26,8 @@ DOMAIN_TERMS = (
     "drawdown", "leverage", "position",
 )
 CLAIM_TERMS = (
-    "will ", "should ", "buy", "sell", "outperform", "beat ", "profitable",
-    "alpha", "predict", "forecast", "win rate", "sharpe",
+    "buy", "sell", "outperform", "beat ", "profitable",
+    "alpha", "win rate", "sharpe",
     "reduce risk", "reduces risk", "improve returns", "improves returns",
 )
 

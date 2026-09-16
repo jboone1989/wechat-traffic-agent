@@ -147,3 +147,15 @@ def test_publication_revalidation_rejects_tampered_passing_check():
                 "source_quote": "costs, latency, and regime changes can erase an apparent edge",
             }],
         )
+
+
+def test_explicit_dated_forecast_is_opinion_not_performance_claim():
+    draft = artifact(
+        title="My 24-hour Bitcoin liquidity view",
+        paragraph="I forecast that Bitcoin liquidity will remain tight over the next 24 hours; this is a 62% confidence prediction, not an observed fact or investment recommendation.",
+    )
+    plan = EvidenceFloorPlan(topic="prediction", required=False, trigger_cues=(), status="NOT_REQUIRED")
+    assert artifact_risk_cues(draft, topic="prediction") == ()
+    check = evaluate_evidence_floor(artifact=draft, plan=plan, supports=[])
+    assert check.status == "PASS"
+    assert check.required is False
