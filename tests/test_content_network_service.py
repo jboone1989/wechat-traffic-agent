@@ -95,6 +95,15 @@ def test_network_accepts_multiple_seed_urls_from_environment(monkeypatch, tmp_pa
     assert service.seed_url == "https://seed-a.example/a2a"
 
 
+def test_network_accepts_startup_timeout_from_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_NETWORK_STARTUP_TIMEOUT_SECONDS", "30")
+    service = ContentNetworkService.from_environment(
+        root=tmp_path,
+        application=SimpleNamespace(runtime=_Runtime()),
+    )
+    assert service.startup_timeout_seconds == 30.0
+
+
 def test_network_accepts_membership_lease_from_environment(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTENT_NETWORK_LEASE_SECONDS", "60")
     service = ContentNetworkService.from_environment(
