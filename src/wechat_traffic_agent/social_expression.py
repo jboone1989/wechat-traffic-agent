@@ -33,6 +33,8 @@ class ChannelSocialDraft(BaseModel):
             raise ValueError("OKX should use SHORT_POST for feed posts or ARTICLE for long-form content")
         if len(self.text) > SOCIAL_LONG_TEXT_MAX_CHARS:
             raise ValueError(f"social draft must be at most {SOCIAL_LONG_TEXT_MAX_CHARS} characters")
+        if self.intent == "QUESTION" and "?" not in self.text and "？" not in self.text:
+            raise ValueError("QUESTION social intent requires an explicit question")
         return self
 
 
@@ -120,6 +122,8 @@ class SocialExpressionDraftWorker:
             "For OKX, choose SHORT_POST for an immediate feed update and keep that format at most 500 characters. If the cognition has enough evidence, mechanism, counterpoint, or durable value to justify long-form treatment, choose ARTICLE instead of stretching a feed post into a mini-article. "
             "For X, this account supports long posts and Articles. Choose SHORT_POST when the idea is simple, LONG_POST when one social post genuinely benefits from more context, and ARTICLE when the cognition deserves a structured long-form treatment. Prefer conditional language over unsupported prediction. "
             "Posts may be assertions, questions, observations, updates, or explainers; choose the form that matches the evidence rather than forcing a market call. "
+            "Treat social_evidence_decision.resolution.useful_facts as the information-value boundary: a non-question post must lead with at least one of those supported facts or a direct inference they support. Missing-data caveats may qualify a claim, but must never be the main payload of a DRAFT. "
+            "If intent is QUESTION, anchor it in a known fact and ask a genuine unresolved question rather than engagement bait. "
             "ARTICLE is a real long-form channel artifact, not a teaser. Do not choose it merely because more text is available; choose it only when the cognition supports depth. No private data, personalized investment advice, fabricated numbers, or unsupported causation. Return JSON only."
             + question_instruction + "\n"
             + json.dumps({
@@ -135,6 +139,8 @@ class SocialExpressionDraftWorker:
                     raise ValueError("social draft references an unknown style observation")
                 if evidence_action == "QUESTION" and channel.intent != "QUESTION":
                     raise ValueError("QUESTION evidence resolution requires QUESTION social intent")
+                if channel.intent == "QUESTION" and "?" not in channel.text and "？" not in channel.text:
+                    raise ValueError("QUESTION social intent requires an explicit question")
 
         bundle = await _structured(model_runtime, prompt, SocialExpressionBundle, validate=validate)
         payload = {
