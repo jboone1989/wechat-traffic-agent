@@ -109,12 +109,49 @@ class WorldFeed:
             + json.dumps({"now": now.isoformat(), "mind": compact_mind, "known_sources": self._known_sources()}, ensure_ascii=False)
             + "\nSchema: " + json.dumps(WorldScanPlan.model_json_schema())
         )
+        def parse_plan(raw: str) -> WorldScanPlan:
+            payload = json.loads(_extract_json(raw))
+            if not isinstance(payload, dict):
+                raise ValueError("world scan plan must be an object")
+            raw_queries = payload.get("queries")
+            if isinstance(raw_queries, str):
+                raw_queries = [raw_queries]
+            if not isinstance(raw_queries, (list, tuple)):
+                raise ValueError("world scan queries must be a list")
+            queries = tuple(dict.fromkeys(
+                " ".join(str(q).split())[:180] for q in raw_queries
+                if len(" ".join(str(q).split())) >= 2
+            ))[:3]
+            if not queries:
+                raise ValueError("world scan produced no usable query")
+            raw_spaces = payload.get("source_spaces", ["web"])
+            if isinstance(raw_spaces, str):
+                raw_spaces = [raw_spaces]
+            if not isinstance(raw_spaces, (list, tuple)):
+                raw_spaces = ["web"]
+            allowed = {"web", "x", "github"}
+            source_spaces = tuple(dict.fromkeys(
+                str(space).strip().lower() for space in raw_spaces
+                if str(space).strip().lower() in allowed
+            )) or ("web",)
+            normalized = {
+                "queries": queries,
+                "source_spaces": source_spaces,
+                "rationale": str(payload.get("rationale") or "").strip(),
+            }
+            return WorldScanPlan.model_validate(normalized)
+
         raw = await runtime.cognitive_probe(task, max_tokens=1000)
-        plan = WorldScanPlan.model_validate_json(_extract_json(raw))
-        queries = tuple(dict.fromkeys(" ".join(q.split())[:180] for q in plan.queries if len(" ".join(q.split())) >= 2))
-        if not queries:
-            raise ValueError("world scan produced no usable query")
-        return plan.model_copy(update={"queries": queries})
+        try:
+            return parse_plan(raw)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            repaired = await runtime.cognitive_probe(
+                task + "\nOne repair only. Keep 1-3 concise queries; source_spaces may contain only web, x, github. "
+                + "Fix the schema error and return JSON only. Error: " + str(exc)[:600]
+                + "\nPrevious untrusted response: " + raw[:2000],
+                max_tokens=1000,
+            )
+            return parse_plan(repaired)
 
     async def _observe(
         self, *, runtime: Any, now: datetime, items: list[dict[str, Any]], mind_projection: dict[str, Any]
@@ -238,7 +275,10 @@ class WorldFeed:
         try:
             scan_plan = await self._scan_plan(runtime=runtime, now=now, mind_projection=mind_projection)
         except Exception as exc:
-            failures.append({"source": "world-scan-plan", "query": "", "error_type": type(exc).__name__})
+            failures.append({
+                "source": "world-scan-plan", "query": "", "error_type": type(exc).__name__,
+                "detail": str(exc)[:400],
+            })
         planned_queries = tuple(scan_plan.queries if scan_plan else ())
         source_spaces = tuple(scan_plan.source_spaces if scan_plan else ("web",))
         source_queries = list(planned_queries)

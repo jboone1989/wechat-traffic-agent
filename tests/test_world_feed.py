@@ -216,3 +216,68 @@ def test_world_feed_can_choose_x_and_github_as_learning_source_spaces(tmp_path: 
     opportunities = json.loads(feed.learning_path.read_text())
     assert opportunities["web:x-method-1"]["status"] == "DISCOVERED"
     assert opportunities["web:x-method-1"]["learning_kind"] == "METHOD"
+
+
+class RepairingScanRuntime(Runtime):
+    def __init__(self):
+        super().__init__()
+        self.scan_attempts = 0
+
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        if task.startswith("WORLD_SCAN_PLAN:"):
+            self.scan_attempts += 1
+            if self.scan_attempts == 1:
+                return json.dumps({
+                    "queries": ["agent evaluation methods", "open source eval harness", "extra query", "too many"],
+                    "source_spaces": ["WEB", "X", "github", "reddit"],
+                    "rationale": "short",
+                })
+            return json.dumps({
+                "queries": ["agent evaluation methods", "open source eval harness"],
+                "source_spaces": ["web", "x", "github"],
+                "rationale": "Look across practitioners and open-source implementations for concrete methods worth testing.",
+            })
+        if task.startswith("WORLD_ATTENTION:"):
+            return json.dumps({"observations": []})
+        raise AssertionError(task[:80])
+
+
+def test_world_scan_plan_normalizes_allowlist_and_repairs_once(tmp_path: Path):
+    calls = []
+    async def search(query, now):
+        calls.append(query)
+        return []
+    runtime = RepairingScanRuntime()
+    result = asyncio.run(WorldFeed(state_root=tmp_path, web_searcher=search).collect(
+        runtime=runtime, now=NOW, base_items=[], mind_projection={},
+    ))
+    assert runtime.scan_attempts == 2
+    assert result["scan_plan"]["source_spaces"] == ["web", "x", "github"]
+    assert result["scan_plan"]["queries"] == ["agent evaluation methods", "open source eval harness"]
+    assert "site:x.com agent evaluation methods" in calls
+    assert "site:github.com agent evaluation methods" in calls
+    assert not any(row["source"] == "world-scan-plan" for row in result["failures"])
+
+
+class PermanentlyBadScanRuntime(Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("WORLD_SCAN_PLAN:"):
+            return json.dumps({"queries": [], "source_spaces": ["reddit"], "rationale": "bad"})
+        if task.startswith("WORLD_ATTENTION:"):
+            return json.dumps({"observations": []})
+        raise AssertionError(task[:80])
+
+
+def test_world_scan_plan_failure_records_bounded_detail_without_erasing_seed_reality(tmp_path: Path):
+    async def search(query, now):
+        raise AssertionError("invalid scan plan must not create discovery queries")
+    feed = WorldFeed(state_root=tmp_path, web_searcher=search)
+    result = asyncio.run(feed.collect(
+        runtime=PermanentlyBadScanRuntime(), now=NOW,
+        base_items=[candidate("seed-detail", "Seed reality remains available")], mind_projection={},
+    ))
+    failure = next(row for row in result["failures"] if row["source"] == "world-scan-plan")
+    assert failure["error_type"] == "ValueError"
+    assert "query" in failure["detail"].lower()
+    assert [row["evidence_id"] for row in result["items"]] == ["seed-detail"]
