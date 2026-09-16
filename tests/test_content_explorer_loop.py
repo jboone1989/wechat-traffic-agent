@@ -531,3 +531,162 @@ def test_note_grounding_exempts_only_explicit_hypothetical_sections():
         ),
     })
     assert _explicit_hypothetical_note_sections(not_explicit) == set()
+
+class MethodExpressionMind:
+    def __init__(self):
+        self.world_observations = []
+
+    def plan_for_cycle(self, *, cycle, available_topics, world_observations=()):
+        self.world_observations = list(world_observations)
+        return {
+            "cycle": cycle,
+            "goal": {"origin": "INQUIRY", "inquiry_refs": ["missing-goal"]},
+            "required_topic": "missing-goal-topic",
+            "world_observations": self.world_observations,
+        }
+
+    def public_projection(self):
+        return {"beliefs": [], "inquiries": []}
+
+    def record_research_belief(self, **kwargs):
+        return {"status": "DEFERRED", "topic": kwargs["topic"], "proposition": kwargs["proposition"]}
+
+    def observe_process_experience(self, **kwargs):
+        return {"status": "OBSERVED", "topic": kwargs["topic"]}
+
+
+class MethodExpressionExplorer:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def collect(self, *, now, active):
+        return {"items": list(self.rows), "failures": [], "observed_at": now.isoformat()}
+
+    async def filter_for_goal(self, **kwargs):
+        return {"items": [], "matches": [], "candidate_count": len(kwargs.get("candidates") or [])}
+
+
+class MethodExpressionWorld:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def collect(self, **kwargs):
+        method = self.rows[1]
+        return {
+            "items": list(self.rows), "failures": [], "observed_at": NOW.isoformat(),
+            "observations": [{
+                "evidence_id": method["evidence_id"], "topic": "term-premium-decomposition-model",
+                "learning_kind": "METHOD", "importance": 0.9, "novelty": 0.8,
+                "why_now": "This turns an unresolved decomposition question into a testable method.",
+                "question": "How should I test this method before adopting it?",
+                "evidence_refs": method["evidence_refs"],
+            }],
+        }
+
+
+class MethodExpressionRuntime(Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        if task.startswith("SELECT_EVIDENCE:"):
+            return json.dumps({
+                "title": "What the inflation report does not answer",
+                "evidence_id": "rss-fallback", "topic": "inflation-fallback", "related_ids": [],
+                "reader_question": "What does this inflation report actually establish?",
+                "gap": "Keep the fallback story bounded to what its source really reports.",
+            })
+        if task.startswith("FORM_WORLDVIEW:"):
+            return json.dumps({
+                "action": "DEFER", "proposition": "The fallback report identifies the binding research limitation.",
+                "stance": 0.0, "reliability": 0.0, "support": 0.0,
+                "rationale": "The fallback source does not contain evidence about the unresolved method question.",
+            })
+        if task.startswith("DECIDE_EXPRESSION:"):
+            return json.dumps({
+                "cognition_state": "INVESTIGATING", "worth_saying": True,
+                "expression_kind": "METHOD_NOTE",
+                "what_changed": "A concrete term-premium decomposition appeared as a method candidate worth testing.",
+                "what_matters": "It can turn an unresolved decomposition question into a reproducible test before adoption.",
+                "belief_proposition": None,
+                "rationale": "The useful output is the discovered method candidate, not a new durable belief.",
+            })
+        if task.startswith("BIND_METHOD_EXPRESSION:"):
+            return json.dumps({
+                "title": "Testing a term-premium decomposition before adopting it",
+                "evidence_id": "method-1", "topic": "term-premium-decomposition-model", "related_ids": [],
+                "reader_question": "How should I test this term-premium decomposition before adopting it?",
+                "gap": "Separate discovery of the method from evidence that it works for this agent's inquiry.",
+            })
+        if task.startswith("LEARN_WRITING:"):
+            return json.dumps({"techniques": [{
+                "name": "Separate observations", "instruction": "Separate source facts from interpretation.",
+                "before": "This method works.", "after": "I found a candidate method; I still need to test it.",
+                "check": "Keep discovery distinct from adoption.",
+            }], "adaptation": "Keep method discovery explicitly provisional."})
+        if "Create one original, useful web-ready content artifact" in task:
+            return json.dumps({
+                "title": "Testing a term-premium decomposition before adopting it",
+                "summary": "I found a concrete decomposition method, but discovery is not adoption.",
+                "sections": [{"heading": "Candidate method", "paragraphs": [
+                    "I found a candidate method worth testing. A concrete term-premium model separates expected short rates from term premium. My next step is to reproduce its inputs and test the stated assumptions before I adopt it."
+                ]}],
+                "topic": "Testing a term-premium decomposition before adopting it",
+                "source_urls": ["https://example.org/method"], "disclosure": None,
+            })
+        if task.startswith("CHECK_ARTICLE:"):
+            return json.dumps({
+                "grounded": True, "useful": True, "no_private_data": True, "no_investment_advice": True,
+                "applications": [{
+                    "technique_index": 0, "article_quote": "I found a candidate method worth testing.",
+                    "explanation": "The note explicitly separates discovery from adoption.",
+                }],
+                "support": [{
+                    "section_index": 0, "source_id": "method-1",
+                    "source_quote": "A concrete term-premium model separates expected short rates from term premium.",
+                }],
+                "next_practice": "Reproduce the model inputs before any adoption decision.",
+                "rationale": "The method note is grounded in the method evidence and remains provisional.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_method_note_rebinds_to_observed_method_evidence_instead_of_unrelated_output_fallback(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    rss = {
+        "evidence_id": "rss-fallback", "source_kind": "rss", "source": "public-news-feed",
+        "title": "Inflation rose", "summary": "A publisher reports that inflation rose.",
+        "url": "https://example.org/inflation", "observed_at": NOW.isoformat(), "published_at": NOW.isoformat(),
+        "source_revision": "rss-fallback", "evidence_refs": ["news:rss-fallback"],
+        "publisher_feed": "https://example.org/feed", "search_query": None, "search_rank": None,
+        "learning_kind": "WORLD_EVENT",
+    }
+    method = {
+        "evidence_id": "method-1", "source_kind": "web-search", "source": "runtime:web.fetch",
+        "title": "Term premium model",
+        "summary": "A concrete term-premium model separates expected short rates from term premium.",
+        "url": "https://example.org/method", "observed_at": NOW.isoformat(), "published_at": None,
+        "source_revision": "method-1", "evidence_refs": ["web:method-1"],
+        "publisher_feed": None, "search_query": "term premium model", "search_rank": 1,
+        "learning_kind": "METHOD",
+    }
+    rows = [rss, method]
+    runtime = MethodExpressionRuntime()
+    worker = ContinuousContentLoop(
+        runtime=runtime, state_root=legacy.state, artifacts_path=legacy.artifacts_path,
+        site_root=legacy.site_root, base_url=legacy.base_url, curriculum_path=legacy.curriculum_path,
+        feeds=legacy.feeds, interval_hours=legacy.interval_hours, fetcher=legacy.fetcher,
+        publisher=publisher, mind=MethodExpressionMind(), explorer=MethodExpressionExplorer(rows),
+        world_feed=MethodExpressionWorld(rows),
+    )
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    assert result["cognition"]["expression_kind"] == "METHOD_NOTE"
+    assert result["traffic_context"]["selection_authority"] == "COGNITION_EVIDENCE_REBIND"
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    binding = json.loads((cycle / "expression_binding.json").read_text())
+    assert binding["original_evidence_id"] == "rss-fallback"
+    assert binding["selection"]["evidence_id"] == "method-1"
+    experience = json.loads((cycle / "experience.json").read_text())
+    assert experience["source_fingerprint"] != "rss-fallback"
+    compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert '"evidence_id": "method-1"' in compose
+    assert '"evidence_id": "rss-fallback"' not in compose.split('"source_material":', 1)[1]

@@ -529,7 +529,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             else:
                 self._activity(cycle, 'DECIDE', 'I’m deciding whether I actually have something worth saying',
                                'A completed cognition cycle does not create a publication obligation.')
-                current_projection = self.mind.public_projection()
+                cognition_context_path = folder / 'cognition_context.json'
+                if cognition_context_path.exists():
+                    cognition_context = json.loads(cognition_context_path.read_text(encoding='utf-8'))
+                else:
+                    cognition_context = {
+                        'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
+                        'worldview_update': worldview_update, 'prediction': prediction_record, 'mind_goal': mind_plan.get('goal'),
+                        'current_mind': self.mind.public_projection(), 'recent_titles': inputs['previous_titles'][-20:],
+                    }
+                    _put(cognition_context_path, cognition_context)
                 def validate_cognition(value):
                     if value.worth_saying != (value.expression_kind != 'NONE'):
                         raise ValueError('worth_saying must match expression_kind')
@@ -546,16 +555,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
                     'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a full research note. A persisted Worldview FORMATION or REVISION must leave at least a THOUGHT public trace; low confidence should be stated, not hidden by NONE. '
                     'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.\n'
-                    + json.dumps({
-                        'source_evidence': selected, 'worldview_decision': belief_decision.model_dump(mode='json'),
-                        'worldview_update': worldview_update, 'prediction': prediction_record, 'mind_goal': mind_plan.get('goal'),
-                        'current_mind': current_projection, 'recent_titles': inputs['previous_titles'][-20:],
-                    }, ensure_ascii=False),
+                    + json.dumps(cognition_context, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
-                if (cognition_decision.expression_kind == 'METHOD_NOTE'
-                        and selected.get('learning_kind') not in {'METHOD', 'TOOL'}):
-                    cognition_decision = cognition_decision.model_copy(update={'expression_kind': 'RESEARCH_NOTE'})
                 _put(cognition_path, cognition_decision.model_dump(mode='json'))
             if not cognition_decision.worth_saying:
                 self._activity(cycle, 'DECIDE', 'I completed the thought without forcing a publication',
@@ -571,6 +573,76 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                     'selected_source_kind': selected['source_kind'],
                                     'evidence_refs': selected['evidence_refs']},
                 }
+
+        if (cognition_decision is not None and cognition_decision.expression_kind == 'METHOD_NOTE'
+                and selected.get('learning_kind') not in {'METHOD', 'TOOL'}):
+            observed_methods = {}
+            observed_topics = {
+                str(row.get('evidence_id')): str(row.get('topic') or '')
+                for row in (mind_plan.get('world_observations') or []) if isinstance(row, dict)
+                and row.get('learning_kind') in {'METHOD', 'TOOL'} and row.get('evidence_id')
+            }
+            for row in ((world_payload or {}).get('items') or []):
+                if not isinstance(row, dict):
+                    continue
+                evidence_id = str(row.get('evidence_id') or '')
+                if evidence_id in observed_topics and row.get('learning_kind') in {'METHOD', 'TOOL'}:
+                    observed_methods[evidence_id] = {'evidence': row, 'topic': observed_topics[evidence_id]}
+            if not observed_methods:
+                self._activity(cycle, 'DECIDE', 'I found a method idea but cannot bind it to evidence',
+                               'The method thought is not being published because no METHOD/TOOL evidence observed in this cycle can be proven to support it.',
+                               status='stopped')
+                return {
+                    'status': 'HELD_BY_EXPRESSION_EVIDENCE', 'cycle': cycle,
+                    'reason': 'METHOD_NOTE_WITHOUT_OBSERVED_METHOD_EVIDENCE',
+                    'cognition': cognition_decision.model_dump(mode='json'),
+                    'selected_evidence_id': selected.get('evidence_id'),
+                }
+            binding_path = folder / 'expression_binding.json'
+            if binding_path.exists():
+                binding_payload = json.loads(binding_path.read_text(encoding='utf-8'))
+                expression_selection = EvidenceSelection.model_validate(binding_payload['selection'])
+            else:
+                allowed = list(observed_methods.values())
+                def validate_expression_binding(value):
+                    entry = observed_methods.get(value.evidence_id)
+                    if entry is None:
+                        raise ValueError('expression evidence must be an observed METHOD/TOOL item from this cycle')
+                    if value.topic != entry['topic']:
+                        raise ValueError('method expression topic must match the persisted world observation')
+                    if _title_key(value.title) in {_title_key(t) for t in existing}:
+                        raise ValueError('method expression title duplicates existing content')
+                expression_selection = await _structured(
+                    runtime,
+                    'BIND_METHOD_EXPRESSION: The cognition decided a METHOD_NOTE is worth saying, but the earlier Website selection is about a different source. '
+                    'Bind the public method note to the exact METHOD/TOOL evidence that supports the supplied cognition. Use an exact evidence_id and its exact persisted topic. '
+                    'The method/tool is DISCOVERED only: frame the reader question and gap around how to test it before adoption. Do not treat it as already learned, installed, or true. '
+                    'Choose related_ids only as optional navigation context. Return JSON only.\n'
+                    + json.dumps({
+                        'cognition': cognition_decision.model_dump(mode='json'),
+                        'method_evidence': [entry['evidence'] | {'persisted_topic': entry['topic']} for entry in allowed],
+                        'website': inputs['website'], 'recent_titles': existing[-100:],
+                    }, ensure_ascii=False),
+                    EvidenceSelection, validate=validate_expression_binding,
+                )
+                expression_selection = _repair_related_ids(expression_selection, snapshot)
+                _put(binding_path, {
+                    'schema_version': 'content-agent-expression-binding.v1',
+                    'reason': 'METHOD_NOTE_REBOUND_TO_OBSERVED_METHOD_EVIDENCE',
+                    'original_evidence_id': selected.get('evidence_id'),
+                    'selection': expression_selection.model_dump(mode='json'),
+                })
+            entry = observed_methods.get(expression_selection.evidence_id)
+            if entry is None or expression_selection.topic != entry['topic']:
+                raise ValueError('persisted method expression binding no longer matches observed evidence')
+            selected = entry['evidence']
+            selection = expression_selection
+            related = [r['artifact'] for r in snapshot['articles'] if r['artifact']['artifact_id'] in selection.related_ids]
+            traffic_payload['selected_topic'] = selection.topic
+            traffic_payload['selection_authority'] = 'COGNITION_EVIDENCE_REBIND'
+            self._activity(cycle, 'DECIDE', 'I rebound the method note to the evidence that caused it',
+                           f"{selection.title} now cites {selected.get('title') or selection.evidence_id} instead of the unrelated Website fallback source.",
+                           status='completed')
 
         expression_kind = cognition_decision.expression_kind if cognition_decision is not None else 'LONGFORM'
         is_short_note = expression_kind in {'RESEARCH_NOTE', 'METHOD_NOTE', 'THOUGHT'}
