@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from wechat_traffic_agent.okx_orbit import OKXOrbitPublisher, OrbitPublishResult, OrbitSessionUnavailable
+from wechat_traffic_agent.okx_orbit import OKXOrbitPublisher, OrbitPublishResult, OrbitSessionUnavailable, _post_id_from_url
 
 NOW = datetime(2026, 9, 16, 16, 0, tzinfo=timezone.utc)
 
@@ -75,3 +75,9 @@ def test_okx_orbit_receipt_is_bound_to_exact_draft(tmp_path):
     (folder / "social_expression_drafts.json").write_text(json.dumps(payload), encoding="utf-8")
     value = asyncio.run(publisher.after_content_cycle(cycle="v2-test", now=NOW))
     assert value["status"] == "RECEIPT_DRAFT_MISMATCH"
+
+
+def test_public_orbit_post_and_insight_urls_are_verifiable():
+    assert _post_id_from_url("https://www.okx.com/orbit/post/87555650159168") == "87555650159168"
+    assert _post_id_from_url("https://www.okx.com/orbit/insight/87545920759584") == "87545920759584"
+    assert _post_id_from_url("https://www.okx.com/orbit") is None

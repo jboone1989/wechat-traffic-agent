@@ -72,7 +72,7 @@ def _draft_sha256(*, cycle: str, draft: dict[str, Any]) -> str:
 
 
 def _post_id_from_url(url: str) -> str | None:
-    match = re.search(r"/orbit/insight/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)", url)
+    match = re.search(r"/orbit/(?:post|insight)/(?:[^/?#]*-)?(\d+)(?:[/?#]|$)", url)
     return match.group(1) if match else None
 
 
@@ -178,14 +178,14 @@ class PlaywrightOrbitTransport:
 
     async def _verified_post_url(self, page: Any, *, text: str) -> str:
         try:
-            await page.wait_for_url(re.compile(r"/orbit/insight/"), timeout=min(self.timeout_ms, 12_000))
+            await page.wait_for_url(re.compile(r"/orbit/(?:post|insight)/"), timeout=min(self.timeout_ms, 12_000))
         except Exception:  # UI may remain on the feed after submit.
             pass
-        if "/orbit/insight/" in page.url and _post_id_from_url(page.url):
+        if _post_id_from_url(page.url):
             return page.url
         prefix = text[:48].strip()
         if prefix:
-            post = page.locator("a[href*='/orbit/insight/']").filter(has_text=prefix).first
+            post = page.locator("a[href*='/orbit/post/'], a[href*='/orbit/insight/']").filter(has_text=prefix).first
             if await post.count():
                 href = await post.get_attribute("href")
                 if href:
