@@ -138,6 +138,26 @@ def _market_companion_evidence(selected, candidates):
                  and _market_expression_instruction(row)), None)
 
 
+def _market_expression_fingerprint(selected, companion=None):
+    """Deduplicate market pulses by catalyst plus live market state, not catalyst alone."""
+    if not _market_expression_instruction(selected) or companion is None:
+        return _candidate_fingerprint(selected)
+    return digest({
+        "continuous_content_version": 3,
+        "primary_evidence_id": selected.get("evidence_id"),
+        "primary_source_revision": selected.get("source_revision"),
+        "market_context_evidence_id": companion.get("evidence_id"),
+        "market_context_source_revision": companion.get("source_revision"),
+    })
+
+
+def _candidate_available_for_pool(inbox, row):
+    """Keep time-sensitive market evidence eligible until paired with current market context."""
+    if _market_expression_instruction(row):
+        return True
+    return not inbox.contains(_candidate_fingerprint(row))
+
+
 def _repair_related_ids(selection, snapshot):
     """Keep only real navigation IDs; a newly born Topic does not need a pre-existing member."""
     existing = {row['artifact']['artifact_id'] for row in snapshot['articles']}
@@ -235,7 +255,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                'I’m checking seed signals, other agents, and sources I discover myself before deciding what deserves attention.')
                 base_pool = await self.explorer.collect(now=now, active=True)
                 base_pool['items'] = [row for row in base_pool['items']
-                                      if not self.inbox.contains(_candidate_fingerprint(row))]
+                                      if _candidate_available_for_pool(self.inbox, row)]
                 world_runtime = ReceiptRuntime(self.runtime, folder / 'world_model_calls')
                 projection = self.mind.public_projection() if self.mind is not None else {}
                 due_predictions = self.predictions.due(now)
@@ -273,7 +293,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                    status='completed')
             prefetched_evidence_pool = {
                 'items': [row for row in world_payload.get('items', [])
-                          if not self.inbox.contains(_candidate_fingerprint(row))],
+                          if _candidate_available_for_pool(self.inbox, row)],
                 'failures': list(world_payload.get('failures', [])),
                 'observed_at': world_payload.get('observed_at') or now.isoformat(),
                 'signal_kind': 'world feed: seed, agent-network, and agent-discovered public evidence',
@@ -338,7 +358,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                            'I’m checking configured feeds, local evidence, and available research sources for something worth pursuing.')
             evidence_pool = await self.explorer.collect(now=now, active=mind_goal_active)
             evidence_pool['items'] = [row for row in evidence_pool['items']
-                                      if not self.inbox.contains(_candidate_fingerprint(row))]
+                                      if _candidate_available_for_pool(self.inbox, row)]
             _put(candidates_path, evidence_pool)
             self._activity(cycle, 'OBSERVE', 'I finished the first scan',
                            f"Collected {len(evidence_pool.get('items', []))} usable candidate signals.", status='completed')
@@ -401,7 +421,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                 if search_web is not None else
                                 {'items': [], 'failures': [], 'query': None})
                     web_pool['items'] = [row for row in web_pool['items']
-                                         if not self.inbox.contains(_candidate_fingerprint(row))]
+                                         if _candidate_available_for_pool(self.inbox, row)]
                     _put(web_path, web_pool)
                 source_failures.extend(web_pool.get('failures', []))
                 if web_pool['items']:
@@ -749,7 +769,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self._activity(cycle, 'LEARN', 'I chose how to express the thought',
                        f"Selected {len(lesson_payload.get('techniques', []))} writing techniques for this expression.", status='completed')
 
-        fingerprint = _candidate_fingerprint(selected)
+        fingerprint = _market_expression_fingerprint(selected, market_companion)
         if self.inbox.contains(fingerprint):
             self.inbox.load(fingerprint)
             return {'status': 'ALREADY_DRAFTED', 'cycle': cycle, 'source_fingerprint': fingerprint}

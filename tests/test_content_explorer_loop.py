@@ -4,7 +4,7 @@ from pathlib import Path
 
 from wechat_traffic_agent.content_goal_loop import (
     ContinuousContentLoop, _explicit_hypothetical_note_sections, _market_expression_instruction,
-    _market_companion_evidence,
+    _market_companion_evidence, _market_expression_fingerprint, _candidate_available_for_pool,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -801,3 +801,41 @@ def test_non_market_evidence_does_not_gain_market_companion():
                "search_query": "validation paper"}
     snapshot = {"evidence_id": "okx:now", "source_kind": "public-api", "source": "OKX public market API"}
     assert _market_companion_evidence(primary, [primary, snapshot]) is None
+
+
+class _AlwaysSeenInbox:
+    def contains(self, _fingerprint):
+        return True
+
+
+def test_market_candidates_remain_pool_eligible_until_live_context_is_bound():
+    market = {
+        "evidence_id": "web:fed", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
+        "title": "Bitcoin News Today: Why BTC Is Down", "summary": "Bitcoin is trading near a catalyst today.",
+        "search_query": "crypto market reaction funding rates basis", "source_revision": "news-r1",
+    }
+    ordinary = {
+        "evidence_id": "web:paper", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
+        "title": "Historical validation study", "summary": "Retrospective methodology only.",
+        "search_query": "validation study", "source_revision": "paper-r1",
+    }
+    inbox = _AlwaysSeenInbox()
+    assert _candidate_available_for_pool(inbox, market) is True
+    assert _candidate_available_for_pool(inbox, ordinary) is False
+
+
+def test_market_expression_fingerprint_changes_only_when_catalyst_or_market_state_changes():
+    primary = {
+        "evidence_id": "web:fed", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
+        "title": "Bitcoin News Today: Why BTC Is Down", "summary": "Bitcoin fell today ahead of a catalyst.",
+        "search_query": "crypto market reaction", "source_revision": "news-r1",
+    }
+    snapshot1 = {
+        "evidence_id": "okx:1", "source_kind": "public-api", "source": "OKX public market API",
+        "source_revision": "market-r1",
+    }
+    snapshot2 = {**snapshot1, "evidence_id": "okx:2", "source_revision": "market-r2"}
+    first = _market_expression_fingerprint(primary, snapshot1)
+    assert first == _market_expression_fingerprint(primary, snapshot1)
+    assert first != _market_expression_fingerprint(primary, snapshot2)
+    assert first != _market_expression_fingerprint({**primary, "source_revision": "news-r2"}, snapshot1)
