@@ -21,6 +21,7 @@ from wechat_traffic_agent.runtime_app import APPLICATION_VERSION, build_content_
 from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker, trading_draft_worker_enabled  # noqa: E402
 from wechat_traffic_agent.public_activity import emit_public_activity  # noqa: E402
 from wechat_traffic_agent.social_expression import SocialExpressionDraftWorker  # noqa: E402
+from wechat_traffic_agent.okx_orbit import OKXOrbitPublisher  # noqa: E402
 
 
 def _state_root() -> Path:
@@ -65,6 +66,7 @@ def main() -> int:
     from wechat_traffic_agent.content_mind import ContentMind
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     social_expression_loop = SocialExpressionDraftWorker(runtime=app.domain_runtime, state_root=state_root)
+    okx_orbit_publisher = OKXOrbitPublisher(state_root=state_root)
     x_loop = None
     if _enabled("CONTENT_X_ENABLED"):
         from wechat_traffic_agent.x_social import XAutonomyLoop
@@ -172,7 +174,11 @@ def main() -> int:
                     draft_result = asyncio.run(draft_worker.run_once(now=now)); print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
                     network_code = str(getattr(exc, "code", "") or "")
-                    if network_code == "INVALID_SIGNATURE" or (type(exc).__name__ == "NetworkError" and str(exc).strip().lower() == "unsigned evidence"):
+                    network_message = str(exc).strip()
+                    if (
+                        network_code in {"INVALID_SIGNATURE", "TAMPER_DETECTED"}
+                        or (type(exc).__name__ == "NetworkError" and network_message.upper() in {"UNSIGNED EVIDENCE", "TAMPER_DETECTED"})
+                    ):
                         print(json.dumps({"draft_worker": {"status":"BLOCKED_BY_NETWORK_TRUST","error_type":type(exc).__name__,"code":network_code,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
                     else:
                         draft_failed = True
@@ -200,6 +206,13 @@ def main() -> int:
                         print(json.dumps({"social_expression_drafts": social_expression}, ensure_ascii=False, sort_keys=True))
                     except Exception as exc:  # noqa: BLE001
                         print(json.dumps({"social_expression_drafts":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
+                    try:
+                        okx_publication = asyncio.run(okx_orbit_publisher.after_content_cycle(
+                            cycle=str(continuous_result.get("cycle") or ""), now=now,
+                        ))
+                        print(json.dumps({"okx_orbit_publication": okx_publication}, ensure_ascii=False, sort_keys=True))
+                    except Exception as exc:  # noqa: BLE001
+                        print(json.dumps({"okx_orbit_publication":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
                 if x_loop is not None and continuous_result["status"] != "ERROR":
                     try:
                         x_expression = asyncio.run(x_loop.after_content_cycle(result=continuous_result, now=now))

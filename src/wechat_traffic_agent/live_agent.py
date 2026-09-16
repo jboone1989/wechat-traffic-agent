@@ -402,6 +402,9 @@ def _social_draft_projection(state_root: Path, current_cycle: Path | None) -> di
                 "style_observation_ids": [str(v)[:120] for v in (row.get("style_observation_ids") or [])[:4]],
             }
         if clean:
+            okx_publication = _read_json(cycle_dir / "okx_orbit_publication.json")
+            if okx_publication.get("status") != "POSTED":
+                okx_publication = {}
             return {
                 "status": "DRAFT_READY",
                 "cycle": cycle_dir.name,
@@ -409,6 +412,13 @@ def _social_draft_projection(state_root: Path, current_cycle: Path | None) -> di
                 "publication_authority": bool(payload.get("publication_authority")),
                 "style_status": str(payload.get("style_status") or ""),
                 "style_performance_claim": str(payload.get("style_performance_claim") or "UNVERIFIED"),
+                "okx_publication": {
+                    "status": str(okx_publication.get("status") or ""),
+                    "published_at": okx_publication.get("published_at"),
+                    "post_id": str(okx_publication.get("post_id") or ""),
+                    "url": str(okx_publication.get("url") or ""),
+                    "moderation_status": str(okx_publication.get("moderation_status") or ""),
+                } if okx_publication else {},
                 "drafts": clean,
             }
     return {"status": "NO_DRAFT", "publication_authority": False, "drafts": {}}
