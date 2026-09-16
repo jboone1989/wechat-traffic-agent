@@ -122,6 +122,40 @@ def test_interrupted_model_call_is_not_repeated(tmp_path):
     with pytest.raises(ValueError,match='interrupted'): asyncio.run(ReceiptRuntime(Runtime(),tmp_path/'receipts').cognitive_probe('task',100))
 
 
+def test_receipt_recovery_can_skip_persisted_phase_only_by_exact_request_fingerprint(tmp_path):
+    root = tmp_path / "receipts"
+    root.mkdir()
+    wanted_task = "phase-b"
+    (root / "0.json").write_text(json.dumps({
+        "request_sha256": digest({"task": "phase-a", "max_tokens": 100}),
+        "response": "old-response",
+    }))
+    (root / "1.json").write_text(json.dumps({
+        "request_sha256": digest({"task": wanted_task, "max_tokens": 100}),
+        "response": "wanted-response",
+    }))
+    runtime = Runtime()
+    receipts = ReceiptRuntime(runtime, root)
+    assert asyncio.run(receipts.cognitive_probe(wanted_task, 100)) == "wanted-response"
+    assert receipts.index == 2
+    assert runtime.calls == []
+
+
+def test_receipt_recovery_does_not_guess_when_no_exact_later_request_exists(tmp_path):
+    root = tmp_path / "receipts"
+    root.mkdir()
+    (root / "0.json").write_text(json.dumps({
+        "request_sha256": digest({"task": "phase-a", "max_tokens": 100}),
+        "response": "old-response",
+    }))
+    (root / "1.json").write_text(json.dumps({
+        "request_sha256": digest({"task": "other-phase", "max_tokens": 100}),
+        "response": "other-response",
+    }))
+    with pytest.raises(ValueError, match="input changed"):
+        asyncio.run(ReceiptRuntime(Runtime(), root).cognitive_probe("phase-b", 100))
+
+
 def test_feed_freshness_content_identity_and_xml_budget():
     def feed(date): return f'<rss><channel><item><title>News</title><link>https://example.org/story</link><description>Reported evidence</description><pubDate>{date}</pubDate></item></channel></rss>'.encode()
     a=parse_feed(feed('Sun, 13 Sep 2026 00:00:00 GMT'),'https://example.org/rss',NOW)

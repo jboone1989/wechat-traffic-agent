@@ -153,9 +153,19 @@ class ReceiptRuntime:
         fingerprint = digest({'task': task, 'max_tokens': max_tokens})
         if path.exists():
             row = json.loads(path.read_text())
-            if row['request_sha256'] != fingerprint:
-                raise ValueError('model phase input changed during recovery')
-            return row['response']
+            if row['request_sha256'] == fingerprint:
+                return row['response']
+            # A completed earlier phase may now be represented by its own durable artifact,
+            # so recovery can legitimately skip that phase. Reuse only an exact later
+            # request fingerprint; never guess, reorder, or call the model again.
+            for candidate in sorted(self.root.glob('*.json'), key=lambda item: int(item.stem) if item.stem.isdigit() else 10**9):
+                if not candidate.stem.isdigit() or int(candidate.stem) <= int(key):
+                    continue
+                later = json.loads(candidate.read_text())
+                if later.get('request_sha256') == fingerprint:
+                    self.index = int(candidate.stem) + 1
+                    return later['response']
+            raise ValueError('model phase input changed during recovery')
         if started.exists():
             raise ValueError('model call interrupted without receipt; skip this cycle')
         _put(started, {'request_sha256': fingerprint})
