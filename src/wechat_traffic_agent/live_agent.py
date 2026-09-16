@@ -348,6 +348,14 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         "beliefs": [], "recent_belief_changes": [],
         "latest_plan": plan or None, "learning_boundary": "public mind projection unavailable",
     }
+    prediction_projection = {"open_predictions": [], "recent_outcomes": []}
+    prediction_path = state_root / "content" / "predictions" / "ledger.json"
+    if prediction_path.exists():
+        try:
+            from .prospective_predictions import ProspectivePredictionLedger
+            prediction_projection = ProspectivePredictionLedger(state_root).projection()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            prediction_projection = {"open_predictions": [], "recent_outcomes": [], "status": "UNAVAILABLE"}
     last_publication = _latest_publication(state_root)
     learning_summary = _learning_summary(state_root, cycle_dir)
 
@@ -413,6 +421,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         },
         "learning": {
             "mind": mind_projection,
+            "predictions": prediction_projection,
             "adaptation": str(lesson_body.get("adaptation") or "")[:600],
             "techniques": techniques[:3],
             "next_practice": str(self_check.get("next_practice") or "")[:700],
