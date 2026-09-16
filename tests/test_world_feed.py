@@ -112,3 +112,46 @@ def test_due_prediction_query_is_forced_alongside_free_exploration(tmp_path: Pat
     assert result["verification_queries"] == ["verify my dated crypto funding prediction"]
     assert calls[0] == "verify my dated crypto funding prediction"
     assert "latest crypto macro liquidity market developments" in calls
+
+
+def test_bad_attention_item_does_not_erase_valid_observations(tmp_path: Path):
+    async def no_search(query, now):
+        return []
+
+    class PartialRuntime(Runtime):
+        async def cognitive_probe(self, task, max_tokens):
+            if task.startswith("WORLD_SCAN_PLAN:"):
+                return json.dumps({
+                    "queries": ["check current market evidence"],
+                    "rationale": "Check whether fresh evidence should change the current research direction.",
+                })
+            if task.startswith("WORLD_ATTENTION:"):
+                return json.dumps({"observations": [
+                    {
+                        "evidence_id": "valid-1",
+                        "evidence_quote": "Valid evidence title",
+                        "topic": "rates-regime-shift",
+                        "question": "Does this valid evidence change the current rates-regime assessment?",
+                        "importance": 0.9, "novelty": 0.8,
+                        "why_now": "The supplied evidence is both current and directly relevant to an open inquiry.",
+                    },
+                    {
+                        "evidence_id": "bad-1",
+                        "evidence_quote": "1 rejected and 1 GOOD",
+                        "topic": "bad-quote",
+                        "question": "Should a hallucinated quote ever enter long-term cognition?",
+                        "importance": 0.9, "novelty": 0.9,
+                        "why_now": "This intentionally malformed quote verifies per-observation fail-closed behavior.",
+                    },
+                ]})
+            raise AssertionError(task)
+
+    feed = WorldFeed(state_root=tmp_path, web_searcher=no_search)
+    result = asyncio.run(feed.collect(
+        runtime=PartialRuntime(), now=NOW,
+        base_items=[candidate("valid-1", "Valid evidence title"), candidate("bad-1", "Real source says 5 rejected and 3 GOOD")],
+        mind_projection={},
+    ))
+    assert [row["evidence_id"] for row in result["observations"]] == ["valid-1"]
+    assert result["attention_rejections"] == [{"evidence_id": "bad-1", "reason": "QUOTE_NOT_EXACT"}]
+    assert not any(row["source"] == "world-attention" for row in result["failures"])
