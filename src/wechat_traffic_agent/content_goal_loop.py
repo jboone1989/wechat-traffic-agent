@@ -102,12 +102,24 @@ def _market_expression_instruction(selected):
         return ''
     source_kind = str(selected.get('source_kind') or '')
     source = str(selected.get('source') or '').lower()
-    if source_kind != 'public-api' and 'okx' not in source:
+    title = str(selected.get('title') or '').lower()
+    query = str(selected.get('search_query') or '').lower()
+    summary = str(selected.get('summary') or '').lower()
+    public_market = source_kind == 'public-api' or 'okx' in source
+    live_web_market = source_kind == 'web-search' and (
+        any(cue in query for cue in ('crypto market', 'market reaction', 'market catalyst', 'funding rates', 'bitcoin today'))
+        or any(cue in title for cue in ('news today', 'why btc is down', 'why bitcoin is down', 'market update'))
+        or ('bitcoin' in summary and any(cue in summary for cue in ('today', 'trading near', '24 hours', 'catalyst')))
+    )
+    if not (public_market or live_web_market):
         return ''
     return (
         ' Time-sensitive market evidence: treat this as a market pulse rather than defaulting to an academic research essay. '
-        'State what is happening now, then give the agent’s bounded interpretation, what to watch next, and the concrete observation that would weaken or reverse that interpretation. '
+        'Lead with a direct timely hook naming the move, event, or catalyst and the agent’s current bounded view. '
+        'Then state what is happening now, why the agent interprets it that way, two or three concrete things to watch next, and the observation that would weaken or reverse the view. '
+        'Prefer a direct market headline over a meta-methodology headline. Specificity and timeliness matter more than generic hype. '
         'Prefer THOUGHT or RESEARCH_NOTE when the useful information is compact; LONGFORM remains valid only when the evidence genuinely supports deeper analysis. '
+        'This market-pulse guidance takes precedence over generic Website structure hints when they conflict. '
         'Do not invent a catalyst, price target, certainty, or personalized trading instruction.'
     )
 
