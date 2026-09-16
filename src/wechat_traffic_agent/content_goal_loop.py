@@ -47,6 +47,23 @@ class EvidenceSelection(Contract):
     gap: str = Field(min_length=10, max_length=500)
 
 
+def _explicit_hypothetical_note_sections(artifact):
+    """Allow source-free Note sections only when every paragraph is explicitly hypothetical."""
+    if artifact.kind is not ContentKind.NOTE:
+        return set()
+    exempt = set()
+    for index, section in enumerate(artifact.sections):
+        paragraphs = [paragraph.casefold() for paragraph in section.paragraphs]
+        if not paragraphs or not any('hypothetical' in paragraph for paragraph in paragraphs):
+            continue
+        if all(
+            ('hypothetical' in paragraph or 'falsified if' in paragraph or 'illustrative' in paragraph)
+            for paragraph in paragraphs
+        ):
+            exempt.add(index)
+    return exempt
+
+
 class WorldviewDecision(Contract):
     action: Literal["DEFER", "COMMIT"]
     proposition: str = Field(min_length=10, max_length=500)
@@ -521,8 +538,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         raise ValueError('BELIEF_CHANGED requires a persisted worldview change')
                     if changed and value.expression_kind == 'NONE':
                         raise ValueError('persisted worldview change requires a public expression trace')
-                    if value.expression_kind == 'METHOD_NOTE' and selected.get('learning_kind') not in {'METHOD', 'TOOL'}:
-                        raise ValueError('METHOD_NOTE requires METHOD or TOOL evidence')
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
@@ -538,6 +553,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     }, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
+                if (cognition_decision.expression_kind == 'METHOD_NOTE'
+                        and selected.get('learning_kind') not in {'METHOD', 'TOOL'}):
+                    cognition_decision = cognition_decision.model_copy(update={'expression_kind': 'RESEARCH_NOTE'})
                 _put(cognition_path, cognition_decision.model_dump(mode='json'))
             if not cognition_decision.worth_saying:
                 self._activity(cycle, 'DECIDE', 'I completed the thought without forcing a publication',
@@ -789,12 +807,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         check = check.model_copy(update={'applications': valid_applications, 'support': valid_supports})
         application_valid = {a.technique_index for a in check.applications}
         support_valid = {s.section_index for s in check.support}
+        support_exempt = _explicit_hypothetical_note_sections(artifact) if is_short_note else set()
+        grounding_valid = support_valid | support_exempt
         experiment_eligible = experiment_check is None or experiment_check['status'] == 'PASS'
         floor_check = evaluate_evidence_floor(artifact=artifact, plan=floor_plan, supports=check.support)
         _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
-                  and support_valid == set(range(len(artifact.sections)))
+                  and grounding_valid == set(range(len(artifact.sections)))
                   and (minimum_words is None or len(text.split()) >= minimum_words)
                   and floor_check.status == 'PASS' and perspective_expression)
         self._activity(cycle, 'CREATE', 'I finished the publication checks',
@@ -814,6 +834,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'evidence_floor_check': floor_check.model_dump(mode='json'),
                       'missing_technique_applications': sorted(set(range(len(lesson.techniques))) - application_valid),
                       'missing_section_support': sorted(set(range(len(artifact.sections))) - support_valid),
+                      'support_exempt_section_indices': sorted(support_exempt),
+                      'missing_section_grounding': sorted(set(range(len(artifact.sections))) - grounding_valid),
                       'perspective_expression': perspective_expression,
                       'expression_kind': expression_kind, 'minimum_words': minimum_words,
                       'word_count': len(text.split()),

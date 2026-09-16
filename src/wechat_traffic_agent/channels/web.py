@@ -298,6 +298,7 @@ class StaticWebChannel:
             body,
             og_type="article",
             structured_data=self._article_schema(item, route, published, modified),
+            ads_eligible=(item.kind is not ContentKind.NOTE and words >= 350),
         )
 
     def _source_row(self, source: str, ref_id: str, locator: str | None) -> str:
@@ -453,6 +454,7 @@ class StaticWebChannel:
         og_type: str = "website",
         structured_data: dict[str, object] | None = None,
         noindex: bool = False,
+        ads_eligible: bool = False,
     ) -> str:
         canonical_url = f"{self.config.base_url}{route}"
         canonical = html.escape(canonical_url, quote=True)
@@ -461,7 +463,7 @@ class StaticWebChannel:
         )
         meta_description = html.escape(description, quote=True)
         ads = ""
-        if self.config.adsense_client:
+        if self.config.adsense_client and ads_eligible:
             client = html.escape(self.config.adsense_client, quote=True)
             ads = (
                 '<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js'
