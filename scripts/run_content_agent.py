@@ -20,6 +20,7 @@ from wechat_traffic_agent.network_service import ContentNetworkService, network_
 from wechat_traffic_agent.runtime_app import APPLICATION_VERSION, build_content_application  # noqa: E402
 from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker, trading_draft_worker_enabled  # noqa: E402
 from wechat_traffic_agent.public_activity import emit_public_activity  # noqa: E402
+from wechat_traffic_agent.social_expression import SocialExpressionDraftWorker  # noqa: E402
 
 
 def _state_root() -> Path:
@@ -61,6 +62,7 @@ def main() -> int:
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
+    social_expression_loop = SocialExpressionDraftWorker(runtime=app.domain_runtime, state_root=state_root)
     x_loop = None
     if _enabled("CONTENT_X_ENABLED"):
         from wechat_traffic_agent.x_social import XAutonomyLoop
@@ -189,6 +191,12 @@ def main() -> int:
             if not tick_failed and continuous_loop is not None and result.generation_ready:
                 continuous_result = asyncio.run(continuous_loop.run_once(now=now)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
+                if continuous_result["status"] != "ERROR":
+                    try:
+                        social_expression = asyncio.run(social_expression_loop.after_content_cycle(result=continuous_result, now=now))
+                        print(json.dumps({"social_expression_drafts": social_expression}, ensure_ascii=False, sort_keys=True))
+                    except Exception as exc:  # noqa: BLE001
+                        print(json.dumps({"social_expression_drafts":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
                 if x_loop is not None and continuous_result["status"] != "ERROR":
                     try:
                         x_expression = asyncio.run(x_loop.after_content_cycle(result=continuous_result, now=now))
