@@ -305,6 +305,51 @@ class ContentMind:
             "previous": (before.__dict__ if before is not None else None),
         }
 
+    def observe_prediction_outcome(
+        self, *, prediction_id: str, topic: str, statement: str, status: str,
+        confidence: float, prediction_error: float, reliability: float, evidence_refs: Iterable[str],
+    ) -> dict[str, Any]:
+        """Turn a matured external-world prediction into owned VirtualBrain experience."""
+        prediction_id, topic, statement = (str(value).strip() for value in (prediction_id, topic, statement))
+        if not prediction_id or not topic or not statement:
+            raise ValueError("prediction outcome requires prediction id, topic, and statement")
+        if status not in {"CONFIRMED", "REFUTED"}:
+            raise ValueError("prediction outcome must be terminal")
+        confidence, prediction_error, reliability = float(confidence), float(prediction_error), float(reliability)
+        if any(not 0.0 <= value <= 1.0 for value in (confidence, prediction_error, reliability)):
+            raise ValueError("prediction outcome scores are out of range")
+        refs = list(dict.fromkeys(str(ref).strip() for ref in evidence_refs if str(ref).strip()))
+        if not refs:
+            raise ValueError("prediction outcome requires evidence_refs")
+        event_id = "prediction-outcome:" + prediction_id
+        if event_id in self._observed_event_ids:
+            return {
+                "status": "ALREADY_OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
+                "outcome_status": status, "prediction_error": prediction_error,
+            }
+        outcome = 1.0 if status == "CONFIRMED" else 0.0
+        self.session.ingest_life_experience(
+            {
+                "event_id": event_id, "tick": int(self.session.tick),
+                "summary": f"Dated world prediction {status.lower()}: {statement[:500]}",
+                "evidence_refs": refs, "significance": reliability,
+                "source": "prospective-world-outcome", "confidence": reliability,
+                "outcome": outcome, "domain": "crypto-finance-world",
+                "prediction_error": prediction_error,
+                "identity_relevance": 0.5,
+                "emotional_intensity": 0.0,
+            },
+            authority_id=AUTHORITY_ID,
+        )
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._persist()
+        return {
+            "status": "OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
+            "outcome_status": status, "prediction_confidence": confidence,
+            "prediction_error": prediction_error, "reliability": reliability,
+        }
+
     def observe_process_experience(
         self,
         *,

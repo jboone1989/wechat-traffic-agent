@@ -114,6 +114,7 @@ def _web_candidate(row: dict[str, Any]) -> dict[str, Any]:
         observed_at=row.get("observed_at"), source_revision=revision,
         evidence_refs=tuple(row["evidence_refs"]),
         search_query=row.get("search_query"), search_rank=row.get("search_rank"),
+        published_at=row.get("published_at"),
     )
     return candidate.model_dump(mode="json")
 

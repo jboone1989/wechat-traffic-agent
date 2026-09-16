@@ -92,3 +92,23 @@ def test_world_feed_discovery_failure_keeps_seed_reality(tmp_path: Path):
     ))
     assert [row["evidence_id"] for row in result["items"]] == ["seed-2"]
     assert result["failures"][0]["source"] == "agent-discovered-web"
+
+
+def test_due_prediction_query_is_forced_alongside_free_exploration(tmp_path: Path):
+    calls = []
+    async def search(query, now):
+        calls.append(query)
+        return [{
+            "url": "https://example.com/" + str(len(calls)), "title": "Fresh verification evidence",
+            "snippet": "A fresh post-prediction observation for the due claim.", "observed_at": now.isoformat(),
+            "source_revision": "rev-" + str(len(calls)),
+        }]
+    feed = WorldFeed(state_root=tmp_path, web_searcher=search)
+    runtime = Runtime()
+    result = asyncio.run(feed.collect(
+        runtime=runtime, now=NOW, base_items=[], mind_projection={"interests": [], "open_inquiries": []},
+        verification_queries=("verify my dated crypto funding prediction",),
+    ))
+    assert result["verification_queries"] == ["verify my dated crypto funding prediction"]
+    assert calls[0] == "verify my dated crypto funding prediction"
+    assert "latest crypto macro liquidity market developments" in calls

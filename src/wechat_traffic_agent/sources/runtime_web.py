@@ -88,6 +88,7 @@ class RuntimeWebSearch:
                     "web-content-sha256:" + content_hash,
                 ],
                 "search_query": normalized, "search_rank": rank,
+                "published_at": (str(result.get("published_at") or "").strip() or None),
                 "observed_at": now.isoformat(),
             })
         if not rows:
