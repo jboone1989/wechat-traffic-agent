@@ -215,6 +215,19 @@ class BeliefRuntime(V2Runtime):
                 "belief_proposition": "Better validation evidence reduces uncertainty about model reliability.",
                 "rationale": "A newly persisted working belief is materially different enough to explain now.",
             })
+        if "Create one original, useful web-ready content artifact" in task and "agent_expression_context" in task:
+            self.calls.append(task)
+            paragraph = " ".join([
+                "I think this evidence matters because it changes how I weigh model reliability; Explanation of supplied evidence separates observation from my interpretation."
+                for _ in range(40)
+            ])
+            return json.dumps({
+                "title": f"Explaining evidence question {self.number}",
+                "summary": "My bounded interpretation of fresh validation evidence.",
+                "sections": [{"heading": "My current view", "paragraphs": [paragraph]}],
+                "topic": f"Explaining evidence question {self.number}",
+                "source_urls": [], "disclosure": None,
+            })
         return await super().cognitive_probe(task, max_tokens)
 
 
@@ -313,3 +326,45 @@ def test_expression_decision_precedes_writing_learning_and_composition(tmp_path)
     learn = next(call for call in runtime.calls if call.startswith("LEARN_WRITING:"))
     compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
     assert runtime.calls.index(decide) < runtime.calls.index(learn) < runtime.calls.index(compose)
+
+
+def test_published_expression_is_grounded_in_persisted_agent_perspective(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = BeliefRuntime()
+    result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert 'agent_expression_context' in compose
+    assert 'persistent Content Agent' in compose
+    assert 'Better validation evidence reduces uncertainty about model reliability.' in compose
+    assert 'Use first person' in compose
+    assert 'not an academic paper' in compose
+    assert 'do not invent stronger conviction' in compose
+
+
+class NeutralExpressionRuntime(BeliefRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if "Create one original, useful web-ready content artifact" in task and "agent_expression_context" in task:
+            self.calls.append(task)
+            paragraph = " ".join([
+                "Explanation of supplied evidence separates the observed validation result from interpretation while preserving uncertainty."
+                for _ in range(40)
+            ])
+            return json.dumps({
+                "title": f"Explaining evidence question {self.number}",
+                "summary": "A bounded interpretation of fresh validation evidence.",
+                "sections": [{"heading": "Current interpretation", "paragraphs": [paragraph]}],
+                "topic": f"Explaining evidence question {self.number}",
+                "source_urls": [], "disclosure": None,
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_agent_perspective_expression_is_required_for_publication(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = NeutralExpressionRuntime()
+    before = len(json.loads(publisher.inventory_path().read_text()))
+    result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
+    assert result["status"] == "HELD_BY_CHECKS"
+    assert result["perspective_expression"] is False
+    assert len(json.loads(publisher.inventory_path().read_text())) == before
