@@ -2,9 +2,10 @@ import asyncio
 import json
 from pathlib import Path
 
-from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
+from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop, _explicit_hypothetical_note_sections
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
+from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
 
 
 class V2Runtime(Runtime):
@@ -500,3 +501,33 @@ def test_worldview_change_can_create_restart_stable_dated_prediction_before_expr
     assert runtime.calls.index(form) < runtime.calls.index(predict) < runtime.calls.index(decide)
     compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
     assert prediction["statement"] in compose
+
+
+def test_note_grounding_exempts_only_explicit_hypothetical_sections():
+    note = ContentArtifact(
+        artifact_id="note-hypothetical",
+        kind=ContentKind.NOTE,
+        slug="hypothetical-check",
+        title="A bounded hypothetical check",
+        summary="A clearly labeled hypothetical section.",
+        sections=(
+            ContentSection(heading="Observed", paragraphs=("The source reports a measurable observation.",)),
+            ContentSection(heading="Example", paragraphs=(
+                "The following values are hypothetical and only illustrate the check.",
+                "Count, hypothetical: 10. Falsified if the real count differs.",
+            )),
+        ),
+        created_at=NOW,
+        public_safe=False,
+    )
+    assert _explicit_hypothetical_note_sections(note) == {1}
+    not_explicit = note.model_copy(update={
+        "sections": (
+            note.sections[0],
+            ContentSection(heading="Example", paragraphs=(
+                "Suppose the count were 10.",
+                "This would change the interpretation.",
+            )),
+        ),
+    })
+    assert _explicit_hypothetical_note_sections(not_explicit) == set()

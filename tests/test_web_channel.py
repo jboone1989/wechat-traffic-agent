@@ -50,7 +50,7 @@ def test_static_web_channel_builds_public_site(tmp_path):
     assert article.exists()
     assert "trading:evidence:1" in article.read_text(encoding="utf-8")
     assert "https://example.com/research/backtest-vs-paper-trading/" in article.read_text(encoding="utf-8")
-    assert "ca-pub-1234567890" in article.read_text(encoding="utf-8")
+    assert "ca-pub-1234567890" not in article.read_text(encoding="utf-8")
     assert "pub-1234567890" in (target / "ads.txt").read_text(encoding="utf-8")
     assert "https://example.com/sitemap.xml" in (target / "robots.txt").read_text(encoding="utf-8")
     assert "https://example.com/research/backtest-vs-paper-trading/" in (target / "sitemap.xml").read_text(encoding="utf-8")
@@ -94,3 +94,31 @@ def test_notes_are_first_class_public_content_without_longform_length_requiremen
     assert "One small thought" in listing
     assert "Notes" in (target / "index.html").read_text(encoding="utf-8")
     assert "/notes/" in (target / "sitemap.xml").read_text(encoding="utf-8")
+
+
+def test_adsense_code_only_appears_on_substantive_longform_detail_pages(tmp_path):
+    longform = _artifact().model_copy(update={
+        "sections": (ContentSection(
+            heading="Evidence",
+            paragraphs=(("grounded explanation " * 380).strip(),),
+        ),),
+    })
+    note = _artifact(title="One bounded note").model_copy(update={
+        "artifact_id": "note-2",
+        "kind": ContentKind.NOTE,
+        "slug": "one-bounded-note",
+        "sections": (ContentSection(
+            heading="Thought",
+            paragraphs=(("grounded note " * 380).strip(),),
+        ),),
+    })
+    target = tmp_path / "site"
+    StaticWebChannel(_config()).build([longform, note], target)
+
+    longform_html = (target / "research" / "backtest-vs-paper-trading" / "index.html").read_text(encoding="utf-8")
+    note_html = (target / "notes" / "one-bounded-note" / "index.html").read_text(encoding="utf-8")
+    assert "ca-pub-1234567890" in longform_html
+    assert "ca-pub-1234567890" not in note_html
+    assert "ca-pub-1234567890" not in (target / "notes" / "index.html").read_text(encoding="utf-8")
+    assert "ca-pub-1234567890" not in (target / "contact" / "index.html").read_text(encoding="utf-8")
+    assert "ca-pub-1234567890" not in (target / "index.html").read_text(encoding="utf-8")
