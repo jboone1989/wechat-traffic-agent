@@ -168,7 +168,7 @@ def main() -> int:
                     draft_result = asyncio.run(draft_worker.run_once(now=now)); print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
                     network_code = str(getattr(exc, "code", "") or "")
-                    if network_code == "INVALID_SIGNATURE":
+                    if network_code == "INVALID_SIGNATURE" or (type(exc).__name__ == "NetworkError" and str(exc).strip().lower() == "unsigned evidence"):
                         print(json.dumps({"draft_worker": {"status":"BLOCKED_BY_NETWORK_TRUST","error_type":type(exc).__name__,"code":network_code,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
                     else:
                         draft_failed = True
