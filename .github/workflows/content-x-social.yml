@@ -6,6 +6,7 @@ on:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
+      - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -25,6 +26,7 @@ on:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
+      - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -57,6 +59,7 @@ jobs:
           src/wechat_traffic_agent/x_mcp.py
           src/wechat_traffic_agent/x_social.py
           src/wechat_traffic_agent/social_expression.py
+          src/wechat_traffic_agent/social_evidence.py
           src/wechat_traffic_agent/sources/runtime_x.py
           src/wechat_traffic_agent/world_feed.py
           src/wechat_traffic_agent/live_agent.py
