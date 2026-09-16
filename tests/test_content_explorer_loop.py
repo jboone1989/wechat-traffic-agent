@@ -205,6 +205,16 @@ class BeliefRuntime(V2Runtime):
                 "support": 0.75,
                 "rationale": "The selected evidence is relevant enough for a bounded working belief, not certainty.",
             })
+        if task.startswith("DECIDE_EXPRESSION:"):
+            self.calls.append(task)
+            return json.dumps({
+                "cognition_state": "BELIEF_CHANGED", "worth_saying": True,
+                "expression_kind": "LONGFORM",
+                "what_changed": "The selected evidence created a bounded new working belief.",
+                "what_matters": "The change is useful because it clarifies how evidence should affect reliability judgments.",
+                "belief_proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                "rationale": "A newly persisted working belief is materially different enough to explain now.",
+            })
         return await super().cognitive_probe(task, max_tokens)
 
 
@@ -221,6 +231,9 @@ class BeliefMind:
 
     def record_research_belief(self, **kwargs):
         self.recorded.append(kwargs)
+        if not kwargs["commit"]:
+            return {"status": "DEFERRED", "topic": kwargs["topic"],
+                    "proposition": kwargs["proposition"]}
         return {"status": "FORMED", "topic": kwargs["topic"],
                 "proposition": kwargs["proposition"], "stance": 0.07, "confidence": 0.065}
 
@@ -248,3 +261,55 @@ def test_selected_evidence_updates_persistent_mind_before_expression(tmp_path):
     form_call = next(call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:"))
     compose_call = next(call for call in runtime.calls if 'Create one original, useful web-ready content artifact' in call)
     assert runtime.calls.index(form_call) < runtime.calls.index(compose_call)
+
+
+class QuietBeliefRuntime(BeliefRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("FORM_WORLDVIEW:"):
+            self.calls.append(task)
+            return json.dumps({
+                "action": "DEFER",
+                "proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                "stance": 0.2, "reliability": 0.4, "support": 0.45,
+                "rationale": "One observation is worth retaining in the inquiry but not enough for a durable conclusion.",
+            })
+        if task.startswith("DECIDE_EXPRESSION:"):
+            self.calls.append(task)
+            return json.dumps({
+                "cognition_state": "INVESTIGATING", "worth_saying": False,
+                "expression_kind": "NONE",
+                "what_changed": "The inquiry gained evidence but no durable worldview claim was formed.",
+                "what_matters": "More evidence is needed before turning the observation into a public interpretation.",
+                "belief_proposition": None,
+                "rationale": "The agent learned something without having enough new understanding to justify publication.",
+            })
+        return await V2Runtime.cognitive_probe(self, task, max_tokens)
+
+
+def test_cognition_can_finish_without_forcing_publication(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, mind = QuietBeliefRuntime(), BeliefMind()
+    worker = v2(legacy, runtime, publisher, mind=mind, explorer=Explorer())
+    before = len(json.loads(publisher.inventory_path().read_text()))
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "COGNITION_ONLY"
+    assert result["worldview_update"]["status"] == "DEFERRED"
+    assert result["cognition"]["expression_kind"] == "NONE"
+    assert len(json.loads(publisher.inventory_path().read_text())) == before
+    assert worker.inbox.list_records() == ()
+    assert not any("Create one original, useful web-ready content artifact" in call for call in runtime.calls)
+    assert not any(call.startswith("LEARN_WRITING:") for call in runtime.calls)
+    replay = asyncio.run(v2(legacy, QuietBeliefRuntime(), publisher, mind=mind, explorer=Explorer()).run_once(now=NOW))
+    assert replay["status"] == "ALREADY_PROCESSED"
+    assert replay["previous_status"] == "COGNITION_ONLY"
+
+
+def test_expression_decision_precedes_writing_learning_and_composition(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = BeliefRuntime()
+    result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    decide = next(call for call in runtime.calls if call.startswith("DECIDE_EXPRESSION:"))
+    learn = next(call for call in runtime.calls if call.startswith("LEARN_WRITING:"))
+    compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert runtime.calls.index(decide) < runtime.calls.index(learn) < runtime.calls.index(compose)
