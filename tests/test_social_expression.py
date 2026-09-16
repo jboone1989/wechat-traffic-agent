@@ -51,8 +51,10 @@ class Runtime:
                 "rationale": "The supplied evidence supports one bounded and useful observation."
             })
         if task.startswith("SOCIAL_EVIDENCE_RESOLUTION"):
-            action = "QUESTION" if self.mode in {"seek_question", "question_direct"} else "DRAFT"
-            facts = (["XRP is falling more than BTC in the current snapshot."] if action == "QUESTION" else
+            action = ("SKIP" if self.mode == "seek_skip" else
+                      "QUESTION" if self.mode in {"seek_question", "question_direct"} else "DRAFT")
+            facts = ([] if action == "SKIP" else
+                     ["XRP is falling more than BTC in the current snapshot."] if action == "QUESTION" else
                      ["XRP has higher 24h spot volume and negative funding in the supplemental snapshot."])
             return json.dumps({
                 "action": action, "useful_facts": facts,
@@ -349,6 +351,21 @@ def test_non_crypto_seek_uses_runtime_web_search_and_fetch(tmp_path):
     assert decision["supplemental_evidence"]["source"] == "runtime:web.search+fetch"
     assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
     assert [cap for cap, _ in runtime.invocations] == ["web.search", "web.fetch"]
+
+
+def test_crypto_seek_with_fresh_market_structure_downgrades_skip_to_question(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    runtime = Runtime("seek_skip")
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state, evidence_collector=fake_market_evidence)
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    assert value["status"] == "DRAFTED"
+    saved = json.loads((state / "content/continuous/cycles" / cycle / "social_expression_drafts.json").read_text())
+    decision = saved["evidence_decision"]
+    assert decision["plan"]["action"] == "SEEK"
+    assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
+    assert decision["resolution"]["action"] == "QUESTION"
+    assert saved["drafts"]["okx"]["intent"] == "QUESTION"
+    assert saved["drafts"]["x"]["intent"] == "QUESTION"
 
 
 def test_crypto_question_seeks_market_structure_before_asking(tmp_path):

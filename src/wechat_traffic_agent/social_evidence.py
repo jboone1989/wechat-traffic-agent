@@ -76,6 +76,17 @@ def _crypto_market_question_can_be_narrowed(cognition: dict[str, Any], artifact:
     )
     return any(cue in text for cue in cues)
 
+def _crypto_market_uncertainty_is_questionable(plan: SocialEvidencePlan, cognition: dict[str, Any], artifact: dict[str, Any]) -> bool:
+    if not _crypto_context(cognition, artifact):
+        return False
+    text = " ".join((*plan.missing_evidence, plan.rationale, str(plan.search_query or ""))).lower()
+    cues = (
+        "lead", "lag", "ordering", "intraday", "cause", "causal", "driver", "flow",
+        "premium", "basis", "funding", "open interest", "volume", "positioning", "dispersion",
+    )
+    return any(cue in text for cue in cues)
+
+
 def _mentioned_crypto_symbols(cognition: dict[str, Any], artifact: dict[str, Any]) -> tuple[str, ...]:
     text = json.dumps({"cognition": cognition, "artifact": artifact}, ensure_ascii=False).upper()
     known = ("BTC", "ETH", "SOL", "XRP", "BNB")
@@ -296,6 +307,27 @@ async def resolve_social_evidence(*, runtime: Any, folder: Path, cognition: dict
                           "artifact": artifact, "supplemental_evidence": supplemental}, ensure_ascii=False)
         )
         resolution = await _structured(model_runtime, resolution_prompt, SocialEvidenceResolution)
+        if (
+            resolution.action == "SKIP"
+            and _crypto_market_uncertainty_is_questionable(plan, cognition, artifact)
+            and isinstance(supplemental, dict)
+            and supplemental.get("status") == "AVAILABLE"
+            and supplemental.get("evidence_refs")
+        ):
+            anchors = list(plan.supported_facts) + list(resolution.useful_facts)
+            summary = str(supplemental.get("summary") or "").strip()
+            if summary:
+                anchors.append(summary)
+            useful_facts = tuple(dict.fromkeys(str(item) for item in anchors if str(item).strip()))[:6]
+            if useful_facts:
+                resolution = SocialEvidenceResolution(
+                    action="QUESTION",
+                    useful_facts=useful_facts,
+                    rationale=(
+                        "Fresh public crypto market-structure evidence exists, but causal ordering remains unresolved. "
+                        "Preserve that uncertainty as a bounded question instead of turning it into an assertion or suppressing it."
+                    ),
+                )
     elif plan.action == "READY":
         resolution = SocialEvidenceResolution(action="DRAFT", useful_facts=plan.supported_facts, rationale=plan.rationale)
     elif plan.action == "QUESTION":
