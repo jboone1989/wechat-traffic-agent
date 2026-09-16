@@ -65,6 +65,17 @@ def _crypto_context(cognition: dict[str, Any], artifact: dict[str, Any]) -> bool
     return any(cue in text for cue in cues)
 
 
+
+def _crypto_market_question_can_be_narrowed(cognition: dict[str, Any], artifact: dict[str, Any]) -> bool:
+    if not _crypto_context(cognition, artifact):
+        return False
+    text = json.dumps({"cognition": cognition, "artifact": artifact}, ensure_ascii=False).lower()
+    cues = (
+        "who sold", "who de-risk", "de-risk", "derisk", "unwind", "positioning",
+        "correlated selling", "selling pressure", "funding", "open interest", "dispersion",
+    )
+    return any(cue in text for cue in cues)
+
 def _mentioned_crypto_symbols(cognition: dict[str, Any], artifact: dict[str, Any]) -> tuple[str, ...]:
     text = json.dumps({"cognition": cognition, "artifact": artifact}, ensure_ascii=False).upper()
     known = ("BTC", "ETH", "SOL", "XRP", "BNB")
@@ -230,6 +241,19 @@ async def resolve_social_evidence(*, runtime: Any, folder: Path, cognition: dict
         + json.dumps({"cognition": cognition, "artifact": artifact}, ensure_ascii=False)
     )
     plan = await _structured(model_runtime, plan_prompt, SocialEvidencePlan)
+    if plan.action == "QUESTION" and _crypto_market_question_can_be_narrowed(cognition, artifact):
+        plan = SocialEvidencePlan(
+            action="SEEK",
+            supported_facts=plan.supported_facts,
+            missing_evidence=(
+                "recent price path", "current participation/volume",
+                "funding direction", "open-interest change",
+            ),
+            search_query=plan.search_query or "crypto price volume funding open interest current market structure",
+            rationale=(
+                "A bounded public market-structure lookup can materially narrow this crypto question before asking it publicly."
+            ),
+        )
     supplemental: dict[str, Any] | None = None
     if plan.action == "SEEK":
         collector = evidence_collector

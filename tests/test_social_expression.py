@@ -24,6 +24,14 @@ class Runtime:
     async def cognitive_probe(self, task, max_tokens):
         self.calls.append(task)
         if task.startswith("SOCIAL_EVIDENCE_PLAN"):
+            if self.mode == "question_direct":
+                return json.dumps({
+                    "action": "QUESTION",
+                    "supported_facts": ["XRP is falling much more than BTC in the same OKX snapshot."],
+                    "missing_evidence": ["who is de-risking"],
+                    "search_query": None,
+                    "rationale": "The causal attribution is unresolved and could be asked publicly."
+                })
             if self.mode.startswith("seek"):
                 return json.dumps({
                     "action": "SEEK",
@@ -43,7 +51,7 @@ class Runtime:
                 "rationale": "The supplied evidence supports one bounded and useful observation."
             })
         if task.startswith("SOCIAL_EVIDENCE_RESOLUTION"):
-            action = "QUESTION" if self.mode == "seek_question" else "DRAFT"
+            action = "QUESTION" if self.mode in {"seek_question", "question_direct"} else "DRAFT"
             facts = (["XRP is falling more than BTC in the current snapshot."] if action == "QUESTION" else
                      ["XRP has higher 24h spot volume and negative funding in the supplemental snapshot."])
             return json.dumps({
@@ -341,3 +349,18 @@ def test_non_crypto_seek_uses_runtime_web_search_and_fetch(tmp_path):
     assert decision["supplemental_evidence"]["source"] == "runtime:web.search+fetch"
     assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
     assert [cap for cap, _ in runtime.invocations] == ["web.search", "web.fetch"]
+
+
+def test_crypto_question_seeks_market_structure_before_asking(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    runtime = Runtime("question_direct")
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state, evidence_collector=fake_market_evidence)
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    assert value["status"] == "DRAFTED"
+    saved = json.loads((state / "content/continuous/cycles" / cycle / "social_expression_drafts.json").read_text())
+    decision = saved["evidence_decision"]
+    assert decision["plan"]["action"] == "SEEK"
+    assert "funding direction" in decision["plan"]["missing_evidence"]
+    assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
+    assert decision["resolution"]["action"] == "QUESTION"
+    assert len(runtime.calls) == 3
