@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import asyncio
+import hashlib
 import json
+import urllib.request
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
@@ -18,7 +21,7 @@ class EvidenceCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: str = Field(min_length=1, max_length=200)
-    source_kind: Literal["rss", "agent-network", "web-search"]
+    source_kind: Literal["rss", "agent-network", "web-search", "public-api"]
     source: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=2, max_length=300)
     summary: str = Field(min_length=1, max_length=2000)
@@ -61,6 +64,7 @@ class CounterEvidenceFilter(BaseModel):
 
 
 TradingFetcher = Callable[[datetime], Awaitable[list[dict[str, Any]]]]
+MarketFetcher = Callable[[datetime], Awaitable[list[dict[str, Any]]]]
 WebSearcher = Callable[[str, datetime], Awaitable[list[dict[str, Any]]]]
 
 
@@ -119,6 +123,40 @@ def _web_candidate(row: dict[str, Any]) -> dict[str, Any]:
     return candidate.model_dump(mode="json")
 
 
+async def collect_okx_public_market(now: datetime) -> list[dict[str, Any]]:
+    """Collect a small, public, no-auth OKX market snapshot as bounded evidence."""
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("OKX market timestamp must be timezone-aware")
+    endpoint = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
+    def load():
+        request = urllib.request.Request(endpoint, headers={"User-Agent": "LivingRuntime-Content-Agent/1.0"})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.load(response)
+    payload = await asyncio.to_thread(load)
+    wanted = {"BTC-USDT", "ETH-USDT", "SOL-USDT"}
+    rows = {row.get("instId"): row for row in payload.get("data", []) if row.get("instId") in wanted}
+    if set(rows) != wanted:
+        raise RuntimeError("OKX public market snapshot missing BTC/ETH/SOL")
+    observations = []
+    max_ts = 0
+    for inst_id in sorted(wanted):
+        row = rows[inst_id]
+        last, opened = float(row["last"]), float(row["open24h"])
+        change = ((last / opened) - 1.0) * 100.0 if opened else 0.0
+        max_ts = max(max_ts, int(row.get("ts") or 0))
+        observations.append(f"{inst_id}: last {last:g} USDT; 24h change {change:+.2f}%")
+    summary = "; ".join(observations) + ". This is a point-in-time market snapshot, not a trading signal."
+    revision_payload = {"rows": {key: {"last": rows[key]["last"], "open24h": rows[key]["open24h"], "ts": rows[key]["ts"]} for key in sorted(wanted)}}
+    revision = hashlib.sha256(json.dumps(revision_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    candidate = EvidenceCandidate(
+        evidence_id="okx-market:" + revision[:32], source_kind="public-api", source="OKX public market API",
+        title="BTC, ETH and SOL current OKX market snapshot", summary=summary, url=endpoint,
+        observed_at=now.isoformat(), source_revision="sha256:" + revision,
+        evidence_refs=("okx-public-api:sha256:" + revision,), published_at=None,
+    )
+    return [candidate.model_dump(mode="json")]
+
+
 async def collect_trading_evidence(state_root: Path, now: datetime) -> list[dict[str, Any]]:
     """Read recent public-safe Trading research through Agent Network."""
     network = _network_client(Path(state_root))
@@ -133,17 +171,24 @@ class GoalEvidenceExplorer:
 
     def __init__(self, *, state_root: Path, feeds, rss_fetcher,
                  trading_fetcher: TradingFetcher | None = None,
+                 market_fetcher: MarketFetcher | None = None,
                  web_searcher: WebSearcher | None = None) -> None:
         self.state_root = Path(state_root)
         self.feeds = tuple(feeds)
         self.rss_fetcher = rss_fetcher
         self.trading_fetcher = trading_fetcher
+        self.market_fetcher = market_fetcher
         self.web_searcher = web_searcher
 
     async def collect(self, *, now: datetime, active: bool) -> dict[str, Any]:
         rss = await self.rss_fetcher(self.feeds, now)
         items = [_rss_candidate(row, rss["observed_at"]) for row in rss["items"][:40]]
         failures = list(rss.get("failures") or ())
+        if active and self.market_fetcher is not None:
+            try:
+                items.extend(await self.market_fetcher(now))
+            except Exception as exc:
+                failures.append({"source": "okx-public-api", "error_type": type(exc).__name__})
         if active and self.trading_fetcher is not None:
             try:
                 items.extend(await self.trading_fetcher(now))

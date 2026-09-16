@@ -17,7 +17,7 @@ from .content_loop import (
     Lesson, ReceiptRuntime, SelfCheck, _put, _structured, collect_news,
 )
 from .content_artifact import ContentKind
-from .content_explorer import GoalEvidenceExplorer, collect_trading_evidence
+from .content_explorer import GoalEvidenceExplorer, collect_okx_public_market, collect_trading_evidence
 from .content_service import ContentAgent
 from .content_strategy import bind_content_strategy, strategy_instruction
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
@@ -131,6 +131,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             explorer = GoalEvidenceExplorer(
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
+                market_fetcher=collect_okx_public_market,
                 trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
                 web_searcher=web_searcher,
             )
@@ -143,6 +144,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
     def _activity(self, cycle, phase, title, detail='', status='working', kind='progress'):
         return emit_public_activity(self.state, cycle=cycle, phase=phase, title=title, detail=detail,
                                     status=status, kind=kind)
+
+    async def run_once(self, *, now=None, cycle_id=None, focus_topic=None):
+        topic = str(focus_topic or '').strip()
+        if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
+            raise ValueError('focus_topic must be a lowercase kebab-case slug')
+        self._focus_topic = topic or None
+        try:
+            return await super().run_once(now=now, cycle_id=cycle_id)
+        finally:
+            self._focus_topic = None
 
     async def _run(self, folder, cycle, now):
         self._activity(cycle, 'CYCLE', 'I’m starting a new content cycle',
@@ -245,6 +256,22 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 )
             else:
                 mind_plan = self.mind.plan_for_cycle(cycle=cycle, available_topics=snapshot['topics'])
+            if getattr(self, '_focus_topic', None):
+                endogenous_goal = mind_plan.get('goal')
+                mind_plan = {
+                    **mind_plan,
+                    'endogenous_goal': endogenous_goal,
+                    'bootstrap_focus': self._focus_topic,
+                    'goal': {
+                        'goal_id': 'bootstrap-focus:' + self._focus_topic,
+                        'origin': 'BOOTSTRAP_FOCUS',
+                        'description': 'Bootstrap one useful piece around ' + self._focus_topic + ' while preserving the autonomous goal for later cycles.',
+                        'confidence': 1.0, 'expected_value': 1.0,
+                        'interest_refs': [self._focus_topic], 'inquiry_refs': [], 'value_refs': [],
+                    },
+                    'required_topic': self._focus_topic,
+                }
+                _put(folder / 'bootstrap_focus.json', {'topic': self._focus_topic, 'endogenous_goal': endogenous_goal})
             _put(plan_path, mind_plan)
         required_topic = mind_plan.get('required_topic')
         public_goal = mind_plan.get('goal') if isinstance(mind_plan.get('goal'), dict) else {}
@@ -547,6 +574,12 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         raise ValueError('BELIEF_CHANGED requires a persisted worldview change')
                     if changed and value.expression_kind == 'NONE':
                         raise ValueError('persisted worldview change requires a public expression trace')
+                mission_instruction = (
+                    ' Bootstrap focus: this one cycle was deliberately pointed at a topic to establish initial output. '
+                    'Choose LONGFORM, RESEARCH_NOTE, METHOD_NOTE, THOUGHT, or NONE according to the actual information gain and evidence. '
+                    'Do not force a length or format merely because the cycle was bootstrapped.'
+                    if getattr(self, '_focus_topic', None) else ''
+                )
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
@@ -554,7 +587,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'LONGFORM is appropriate for a material belief formation/revision or substantial research result. RESEARCH_NOTE is appropriate when the evidence is real and the investigation itself is useful, but the durable worldview correctly remains unresolved. '
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
                     'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a full research note. A persisted Worldview FORMATION or REVISION must leave at least a THOUGHT public trace; low confidence should be stated, not hidden by NONE. '
-                    'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.\n'
+                    'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.'
+                    + mission_instruction + '\n'
                     + json.dumps(cognition_context, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
