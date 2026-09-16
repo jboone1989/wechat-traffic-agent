@@ -191,7 +191,8 @@ def main() -> int:
                     print(json.dumps({"google_search_console":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
 
             if not tick_failed and continuous_loop is not None and result.generation_ready:
-                continuous_result = asyncio.run(continuous_loop.run_once(now=now, focus_topic=args.focus_topic)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
+                focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if args.focus_topic else None
+                continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
                 if continuous_result["status"] != "ERROR":
                     try:
