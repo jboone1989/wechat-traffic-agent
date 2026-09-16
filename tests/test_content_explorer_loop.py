@@ -2,7 +2,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop, _explicit_hypothetical_note_sections
+from wechat_traffic_agent.content_goal_loop import (
+    ContinuousContentLoop, _explicit_hypothetical_note_sections, _market_expression_instruction,
+)
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
@@ -740,3 +742,14 @@ def test_one_shot_crypto_bootstrap_sets_direction_without_replacing_future_auton
     published = json.loads(publisher.inventory_path().read_text())[-1]
     assert published["kind"] != "note"
     assert published["tags"] == ["crypto-market"]
+
+
+def test_public_market_evidence_gets_market_pulse_guidance_without_forcing_length():
+    instruction = _market_expression_instruction({
+        "source_kind": "public-api", "source": "OKX public market API",
+    })
+    assert "what is happening now" in instruction
+    assert "what to watch next" in instruction
+    assert "weaken or reverse" in instruction
+    assert "LONGFORM remains valid" in instruction
+    assert _market_expression_instruction({"source_kind": "rss", "source": "public-news-feed"}) == ""

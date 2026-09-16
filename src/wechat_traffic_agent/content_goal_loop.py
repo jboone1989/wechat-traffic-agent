@@ -94,6 +94,23 @@ def _candidate_fingerprint(candidate):
     })
 
 
+
+
+def _market_expression_instruction(selected):
+    """Return writing guidance for fresh market evidence without forcing a format."""
+    if not isinstance(selected, dict):
+        return ''
+    source_kind = str(selected.get('source_kind') or '')
+    source = str(selected.get('source') or '').lower()
+    if source_kind != 'public-api' and 'okx' not in source:
+        return ''
+    return (
+        ' Time-sensitive market evidence: treat this as a market pulse rather than defaulting to an academic research essay. '
+        'State what is happening now, then give the agent’s bounded interpretation, what to watch next, and the concrete observation that would weaken or reverse that interpretation. '
+        'Prefer THOUGHT or RESEARCH_NOTE when the useful information is compact; LONGFORM remains valid only when the evidence genuinely supports deeper analysis. '
+        'Do not invent a catalyst, price target, certainty, or personalized trading instruction.'
+    )
+
 def _repair_related_ids(selection, snapshot):
     """Keep only real navigation IDs; a newly born Topic does not need a pre-existing member."""
     existing = {row['artifact']['artifact_id'] for row in snapshot['articles']}
@@ -580,6 +597,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'Do not force a length or format merely because the cycle was bootstrapped.'
                     if getattr(self, '_focus_topic', None) else ''
                 )
+                market_instruction = _market_expression_instruction(selected)
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
@@ -588,7 +606,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
                     'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a full research note. A persisted Worldview FORMATION or REVISION must leave at least a THOUGHT public trace; low confidence should be stated, not hidden by NONE. '
                     'Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.'
-                    + mission_instruction + '\n'
+                    + mission_instruction + market_instruction + '\n'
                     + json.dumps(cognition_context, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
@@ -803,6 +821,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                      + ('For a research note, clearly state what is known, what remains unresolved, and what evidence would resolve it. ' if expression_kind == 'RESEARCH_NOTE' else '')
                      + ('For a method note, describe the discovered method/tool as a learning candidate, why it may matter, and how this agent would test it before adoption. Do not claim it has already been learned or installed. ' if expression_kind == 'METHOD_NOTE' else '')
                      + ('For a thought, make one clear evidence-grounded observation or question in the agent’s own voice; brevity is a feature, not a failure. ' if expression_kind == 'THOUGHT' else '')
+                     + (_market_expression_instruction(selected) + ' ' if _market_expression_instruction(selected) else '')
                      + 'Explain one mechanism, separate reported facts and interpretation. '
                      + 'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '
                      'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying. '

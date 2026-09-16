@@ -82,6 +82,8 @@ def test_okx_public_market_snapshot_becomes_bounded_crypto_evidence(monkeypatch)
         {"instId": "BTC-USDT", "last": "76000", "open24h": "77000", "ts": "1789550000000"},
         {"instId": "ETH-USDT", "last": "2400", "open24h": "2460", "ts": "1789550000001"},
         {"instId": "SOL-USDT", "last": "97", "open24h": "100", "ts": "1789550000002"},
+        {"instId": "XRP-USDT", "last": "1.29", "open24h": "1.40", "ts": "1789550000003"},
+        {"instId": "BNB-USDT", "last": "713", "open24h": "719", "ts": "1789550000004"},
     ]}
     monkeypatch.setattr(module.urllib.request, "urlopen",
         lambda *_args, **_kwargs: io.BytesIO(json.dumps(payload).encode()))
@@ -90,7 +92,7 @@ def test_okx_public_market_snapshot_becomes_bounded_crypto_evidence(monkeypatch)
     row = rows[0]
     assert row["source_kind"] == "public-api"
     assert row["source"] == "OKX public market API"
-    assert "BTC-USDT" in row["summary"] and "ETH-USDT" in row["summary"] and "SOL-USDT" in row["summary"]
+    assert all(symbol in row["summary"] for symbol in ("BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "BNB-USDT"))
     assert "not a trading signal" in row["summary"]
     assert row["evidence_refs"][0].startswith("okx-public-api:sha256:")
 
@@ -107,3 +109,29 @@ def test_active_explorer_includes_market_source_without_requiring_trading(tmp_pa
     active = asyncio.run(worker.collect(now=NOW, active=True))
     assert passive["items"] == [] and calls == [NOW]
     assert active["items"][0]["source_kind"] == "public-api"
+
+
+def test_crypto_goal_web_search_uses_current_market_catalyst_query(tmp_path):
+    calls = []
+    async def rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+    async def web(query, now):
+        calls.append((query, now))
+        return []
+    worker = GoalEvidenceExplorer(state_root=tmp_path, feeds=("https://example.org/feed",), rss_fetcher=rss, web_searcher=web)
+    result = asyncio.run(worker.search_web(goal_topic="crypto-market", now=NOW))
+    assert result["query"] == "crypto market BTC ETH SOL latest market catalyst today"
+    assert calls == [(result["query"], NOW)]
+
+
+def test_non_crypto_goal_keeps_research_search_shape(tmp_path):
+    calls = []
+    async def rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+    async def web(query, now):
+        calls.append(query)
+        return []
+    worker = GoalEvidenceExplorer(state_root=tmp_path, feeds=("https://example.org/feed",), rss_fetcher=rss, web_searcher=web)
+    result = asyncio.run(worker.search_web(goal_topic="model-evaluation", now=NOW))
+    assert result["query"] == "model evaluation AI trading research evidence"
+    assert calls == [result["query"]]

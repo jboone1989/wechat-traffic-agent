@@ -159,3 +159,20 @@ def test_explicit_dated_forecast_is_opinion_not_performance_claim():
     check = evaluate_evidence_floor(artifact=draft, plan=plan, supports=[])
     assert check.status == "PASS"
     assert check.required is False
+
+
+def test_sharper_word_does_not_trigger_sharpe_ratio_floor():
+    draft = artifact(
+        title="A sharper way to frame one market observation",
+        paragraph="The evidence makes a sharper point about uncertainty without making a performance claim.",
+    )
+    assert artifact_risk_cues(draft, topic="crypto-market") == ()
+
+
+def test_actual_sharpe_term_still_triggers_floor():
+    draft = artifact(
+        title="A crypto Sharpe comparison",
+        paragraph="The strategy reports a higher Sharpe ratio in this market sample.",
+    )
+    cues = artifact_risk_cues(draft, topic="crypto-market")
+    assert "claim:sharpe" in cues
