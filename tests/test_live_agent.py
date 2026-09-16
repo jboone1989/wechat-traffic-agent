@@ -379,3 +379,16 @@ def test_live_skips_newer_unreadable_cycle(monkeypatch, tmp_path):
     snapshot = public_agent_snapshot(root, _Application())
     assert snapshot["activity"]["cycle"] == "v2-123"
     assert all(row["cycle"] != blocked.name for row in snapshot["recent_cycles"])
+
+
+def test_live_social_preview_has_copy_handoff_without_publish_action(tmp_path):
+    root = _state(tmp_path)
+    service = LiveAgentService(state_root=root, application=_Application(), backend=_Backend())
+    with TestClient(service._app()) as client:
+        live = client.get("/live/")
+    assert live.status_code == 200
+    assert "Copy OKX draft" in live.text
+    assert "https://www.okx.com/orbit" in live.text
+    assert "Copy X draft" in live.text
+    assert "navigator.clipboard.writeText" in live.text
+    assert "Publish to OKX" not in live.text
