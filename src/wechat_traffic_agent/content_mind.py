@@ -14,6 +14,7 @@ MIND_SCHEMA = "content-mind:v1"
 AUTHORITY_ID = "session"
 MAX_PLANS = 128
 MAX_EVENT_IDS = 512
+MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
 
 
 class ContentMind:
@@ -92,6 +93,12 @@ class ContentMind:
         for row in observations:
             topic = row["topic"]
             evidence_id = row["evidence_id"]
+            if row["importance"] < MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE:
+                updates.append({
+                    "topic": topic, "status": "SHORT_TERM_ONLY", "interest": None,
+                    "importance": row["importance"],
+                })
+                continue
             event_id = f"world-attention:{topic}:{evidence_id}"
             if event_id in self._observed_event_ids:
                 interest = self.session.interests.get(topic)
@@ -290,4 +297,4 @@ class ContentMind:
         }
 
 
-__all__ = ["ContentMind", "MIND_SCHEMA"]
+__all__ = ["ContentMind", "MIND_SCHEMA", "MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE"]

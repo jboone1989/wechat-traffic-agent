@@ -144,3 +144,21 @@ def test_replayed_world_attention_does_not_reinforce_interest_twice(tmp_path: Pa
     second = mind.plan_for_cycle(cycle="v2-200", available_topics=(), world_observations=(observation,))
     assert second["world_interest_updates"][0]["status"] == "ALREADY_OBSERVED"
     assert second["world_interest_updates"][0]["interest"] == state
+
+
+def test_low_importance_world_attention_stays_short_term(tmp_path: Path):
+    mind = ContentMind(root=tmp_path / "state", subject_id="content-agent")
+    observation = {
+        "evidence_id": "web:peripheral-1", "topic": "peripheral-macro-signal",
+        "question": "Could this peripheral macro signal become relevant if it repeats?",
+        "importance": 0.55, "novelty": 0.9,
+        "why_now": "It is novel but not important enough yet to shape a long-term interest.",
+        "evidence_refs": ("web:peripheral-1",),
+    }
+    plan = mind.plan_for_cycle(cycle="v2-100", available_topics=(), world_observations=(observation,))
+    assert plan["world_interest_updates"] == [{
+        "topic": "peripheral-macro-signal", "status": "SHORT_TERM_ONLY",
+        "interest": None, "importance": 0.55,
+    }]
+    assert mind.session.interests.get("peripheral-macro-signal") is None
+    assert plan["goal"] is None
