@@ -346,6 +346,26 @@ def test_public_snapshot_exposes_social_drafts_without_granting_publish_authorit
     assert drafts["drafts"]["x"]["text"].startswith("X draft")
 
 
+def test_public_snapshot_exposes_verified_okx_publication_receipt(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-okx-posted-1001"
+    _write(cycle / "result.json", {"status": "PUBLISHED", "cycle": cycle.name})
+    _write(cycle / "social_expression_drafts.json", {
+        "status": "DRAFT_READY", "cycle": cycle.name, "publication_authority": False,
+        "drafts": {"okx": {"channel": "OKX", "format": "SHORT_POST", "text": "A persisted OKX draft with a verified publication receipt.", "rationale": "Bounded post."}},
+    })
+    _write(cycle / "okx_orbit_publication.json", {
+        "status": "POSTED", "post_id": "87428678410784",
+        "url": "https://www.okx.com/orbit/insight/87428678410784",
+        "published_at": "2026-09-16T16:00:00+00:00", "moderation_status": "PENDING_OR_UNKNOWN",
+    })
+    snapshot = public_agent_snapshot(root, _Application())
+    pub = snapshot["social"]["drafts"]["okx_publication"]
+    assert pub["status"] == "POSTED"
+    assert pub["post_id"] == "87428678410784"
+    assert pub["url"].endswith("/87428678410784")
+
+
 def test_directed_cycle_names_are_supported_by_live_snapshot(tmp_path):
     root = _state(tmp_path)
     cycle = root / "content/continuous/cycles/v2-market-pulse-1000"
@@ -389,6 +409,8 @@ def test_live_social_preview_has_copy_handoff_without_publish_action(tmp_path):
     assert live.status_code == 200
     assert "Copy OKX draft" in live.text
     assert "https://www.okx.com/orbit" in live.text
+    assert "okx-orbit-link" in live.text
+    assert "OKX POSTED" in live.text
     assert "Copy X draft" in live.text
     assert "navigator.clipboard.writeText" in live.text
     assert "Publish to OKX" not in live.text

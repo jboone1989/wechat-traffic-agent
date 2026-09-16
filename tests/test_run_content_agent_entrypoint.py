@@ -14,9 +14,12 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "trading_draft_worker_enabled" in text
     assert "draft_worker.run_once" in text
     assert "BLOCKED_BY_NETWORK_TRUST" in text
-    assert 'network_code == "INVALID_SIGNATURE"' in text
-    assert 'str(exc).strip().lower() == "unsigned evidence"' in text
+    assert 'network_code in {"INVALID_SIGNATURE", "TAMPER_DETECTED"}' in text
+    assert '"TAMPER_DETECTED"' in text
+    assert '"UNSIGNED EVIDENCE"' in text
     assert "WebsiteExperimentEvaluator" in text
+    assert "OKXOrbitPublisher" in text
+    assert "okx_orbit_publisher.after_content_cycle" in text
     assert "website_experiment_evaluator.evaluate" in text
     assert 'add_argument("--once"' in text
     assert 'add_argument("--health"' in text
