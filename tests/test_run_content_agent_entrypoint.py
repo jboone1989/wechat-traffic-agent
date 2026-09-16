@@ -15,6 +15,7 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "draft_worker.run_once" in text
     assert "BLOCKED_BY_NETWORK_TRUST" in text
     assert 'network_code == "INVALID_SIGNATURE"' in text
+    assert 'str(exc).strip().lower() == "unsigned evidence"' in text
     assert "WebsiteExperimentEvaluator" in text
     assert "website_experiment_evaluator.evaluate" in text
     assert 'add_argument("--once"' in text
