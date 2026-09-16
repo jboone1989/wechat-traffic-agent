@@ -162,3 +162,82 @@ def test_low_importance_world_attention_stays_short_term(tmp_path: Path):
     }]
     assert mind.session.interests.get("peripheral-macro-signal") is None
     assert plan["goal"] is None
+
+
+def _research_source(evidence_id="web:rates-1", revision="rev-1"):
+    return {
+        "evidence_id": evidence_id, "title": "Treasury yields move above a prior regime range",
+        "summary": "The observed source reports a material move in long-duration borrowing costs.",
+        "source_revision": revision, "source": "runtime:web.fetch:test",
+        "evidence_refs": (evidence_id, "fetch:" + revision),
+    }
+
+
+def test_research_conclusion_becomes_evidence_backed_worldview_and_survives_restart(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    proposition = "Persistently higher long-term yields tighten crypto financial conditions."
+    formed = mind.record_research_belief(
+        cycle="v2-100", topic="rates-regime",
+        question="Do higher long-term yields materially tighten crypto financial conditions?",
+        source_evidence=_research_source(), proposition=proposition,
+        stance=0.8, reliability=0.75, support=0.8, commit=True,
+    )
+    assert formed["status"] == "FORMED"
+    assert formed["confidence"] > 0
+    evidence = mind.session.epistemic.evidence[formed["evidence_id"]]
+    assert evidence.provenance_kind == "OBSERVED_TRUSTED"
+    assert evidence.claim.startswith("Observed source material:")
+    projection = mind.public_projection()
+    assert projection["beliefs"][0]["proposition"] == proposition
+    assert projection["beliefs"][0]["revision_count"] == 1
+
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    assert restarted.public_projection()["beliefs"] == projection["beliefs"]
+    duplicate = restarted.record_research_belief(
+        cycle="v2-100", topic="rates-regime",
+        question="Do higher long-term yields materially tighten crypto financial conditions?",
+        source_evidence=_research_source(), proposition=proposition,
+        stance=0.8, reliability=0.75, support=0.8, commit=True,
+    )
+    assert duplicate["status"] == "ALREADY_RECORDED"
+    assert restarted.public_projection()["beliefs"][0]["revision_count"] == 1
+
+
+def test_new_evidence_revises_same_worldview_claim_without_rewriting_history(tmp_path: Path):
+    mind = ContentMind(root=tmp_path / "state", subject_id="content-agent")
+    proposition = "Persistently higher long-term yields tighten crypto financial conditions."
+    first = mind.record_research_belief(
+        cycle="v2-100", topic="rates-regime", question="What does the first regime signal imply?",
+        source_evidence=_research_source(), proposition=proposition,
+        stance=0.8, reliability=0.7, support=0.8, commit=True,
+    )
+    second = mind.record_research_belief(
+        cycle="v2-200", topic="rates-regime", question="Does later evidence weaken the thesis?",
+        source_evidence=_research_source("web:rates-2", "rev-2"), proposition=proposition,
+        stance=-0.6, reliability=0.9, support=0.7, commit=True,
+    )
+    assert first["status"] == "FORMED"
+    assert second["status"] == "REVISED"
+    assert second["previous"]["stance"] == first["stance"]
+    projection = mind.public_projection()
+    belief = next(row for row in projection["beliefs"] if row["proposition"] == proposition)
+    assert belief["revision_count"] == 2
+    changes = [row for row in projection["recent_belief_changes"] if row["proposition"] == proposition]
+    assert len(changes) == 2
+    assert changes[0]["after"] == changes[1]["before"]
+
+
+def test_deferred_research_adds_evidence_but_does_not_invent_belief(tmp_path: Path):
+    mind = ContentMind(root=tmp_path / "state", subject_id="content-agent")
+    proposition = "ETF flows currently dominate leverage as the marginal Bitcoin driver."
+    result = mind.record_research_belief(
+        cycle="v2-100", topic="etf-flows", question="Which flow is marginal?",
+        source_evidence=_research_source("web:etf-1", "etf-rev-1"), proposition=proposition,
+        stance=0.2, reliability=0.3, support=0.55, commit=False,
+    )
+    assert result["status"] == "DEFERRED"
+    assert result["evidence_id"] in mind.session.epistemic.evidence
+    assert mind.session.inquiry.inquiries[result["inquiry_id"]]["status"] == "OPEN"
+    assert mind.session.worldview.claim(proposition) is None
+    assert mind.public_projection()["beliefs"] == []
