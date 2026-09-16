@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 from pydantic import ValidationError
 
-from wechat_traffic_agent.social_evidence import collect_okx_social_market_context
+from wechat_traffic_agent.social_evidence import collect_okx_social_market_context, resolve_social_evidence
 from wechat_traffic_agent.social_expression import (
     ChannelSocialDraft, OKX_SHORT_POST_MAX_CHARS, SOCIAL_LONG_TEXT_MAX_CHARS, SocialExpressionDraftWorker,
 )
@@ -27,22 +27,25 @@ class Runtime:
             if self.mode.startswith("seek"):
                 return json.dumps({
                     "action": "SEEK",
+                    "supported_facts": ["XRP is falling more than BTC in the current snapshot."],
                     "missing_evidence": ["volume", "funding rate", "open interest"],
                     "search_query": "BTC XRP volume funding open interest now",
                     "rationale": "The market interpretation needs positioning and participation evidence before asserting a cause."
                 })
             if self.mode == "skip":
                 return json.dumps({
-                    "action": "SKIP", "missing_evidence": [], "search_query": None,
+                    "action": "SKIP", "supported_facts": [], "missing_evidence": [], "search_query": None,
                     "rationale": "The cycle contains no information gain or useful public question."
                 })
             return json.dumps({
-                "action": "READY", "missing_evidence": [], "search_query": None,
+                "action": "READY", "supported_facts": ["XRP fell more than BTC in the same OKX snapshot."],
+                "missing_evidence": [], "search_query": None,
                 "rationale": "The supplied evidence supports one bounded and useful observation."
             })
         if task.startswith("SOCIAL_EVIDENCE_RESOLUTION"):
             action = "QUESTION" if self.mode == "seek_question" else "DRAFT"
-            facts = [] if action == "QUESTION" else ["XRP has higher 24h spot volume and negative funding in the supplemental snapshot."]
+            facts = (["XRP is falling more than BTC in the current snapshot."] if action == "QUESTION" else
+                     ["XRP has higher 24h spot volume and negative funding in the supplemental snapshot."])
             return json.dumps({
                 "action": action, "useful_facts": facts,
                 "rationale": "The enrichment still leaves attribution unresolved." if action == "QUESTION" else "The enrichment adds concrete participation and positioning evidence."
@@ -101,7 +104,7 @@ def setup_cycle(tmp_path: Path):
 
 async def fake_market_evidence(now):
     return {
-        "schema_version": "social-okx-market-evidence.v1", "status": "AVAILABLE",
+        "schema_version": "social-okx-market-evidence.v2", "status": "AVAILABLE",
         "source": "OKX public API", "observed_at": now.isoformat(), "source_revision": "sha256:test",
         "evidence_refs": ["okx-public:test"],
         "summary": "BTC volume 600m USDT, funding +0.0017%, OI 28k BTC; XRP volume 126m USDT, funding -0.0025%, OI 79m XRP.",
@@ -198,14 +201,12 @@ def test_channel_formats_allow_articles_but_keep_okx_feed_short():
     assert len(x_article.text) <= SOCIAL_LONG_TEXT_MAX_CHARS
 
 
-def test_okx_public_enrichment_includes_volume_funding_and_open_interest(monkeypatch):
+def test_okx_public_enrichment_includes_change_evidence(monkeypatch):
     import wechat_traffic_agent.social_evidence as module
 
     spots = []
     for symbol, last, opened, volume in [
-        ("BTC", "75644.9", "76470.2", "600253299"), ("ETH", "2400", "2450", "300000000"),
-        ("SOL", "97", "100", "120000000"), ("XRP", "1.2736", "1.4104", "125802084"),
-        ("BNB", "700", "705", "50000000"),
+        ("BTC", "75644.9", "76470.2", "600253299"), ("XRP", "1.2736", "1.4104", "125802084"),
     ]:
         spots.append({"instId": f"{symbol}-USDT", "last": last, "open24h": opened,
                       "volCcy24h": volume, "ts": "1789568476000"})
@@ -213,10 +214,36 @@ def test_okx_public_enrichment_includes_volume_funding_and_open_interest(monkeyp
     def fake_read(url):
         if "market/tickers" in url:
             return {"code": "0", "data": spots}
-        if "open-interest" in url:
+        if "open-interest-volume" in url:
+            symbol = url.split("ccy=")[1].split("&")[0]
+            base = 117_000_000 if symbol == "XRP" else 28_400
+            return {"code": "0", "data": [
+                ["1789567200000", str(base), "1000000"],
+                ["1789563600000", str(base * 1.02), "900000"],
+            ]}
+        if "public/open-interest" in url:
             return {"code": "0", "data": [
                 {"instId": "BTC-USDT-SWAP", "oiCcy": "28422.77", "ts": "1789568476992"},
                 {"instId": "XRP-USDT-SWAP", "oiCcy": "79501347", "ts": "1789568477100"},
+            ]}
+        if "funding-rate-history" in url:
+            symbol = url.split("instId=")[1].split("-")[0]
+            latest = "-0.0000246" if symbol == "XRP" else "0.0000169"
+            prior = "0.0000300" if symbol == "XRP" else "0.0000100"
+            return {"code": "0", "data": [
+                {"fundingRate": latest, "fundingTime": "1789545600000"},
+                {"fundingRate": prior, "fundingTime": "1789516800000"},
+            ]}
+        if "market/candles" in url:
+            symbol = url.split("instId=")[1].split("-")[0]
+            if symbol == "XRP":
+                return {"code": "0", "data": [
+                    ["1789567200000", "1.28", "1.29", "1.26", "1.27", "1", "1", "4000000", "0"],
+                    ["1789563600000", "1.30", "1.31", "1.27", "1.29", "1", "1", "5000000", "1"],
+                ]}
+            return {"code": "0", "data": [
+                ["1789567200000", "75600", "76000", "75000", "75500", "1", "1", "50000000", "0"],
+                ["1789563600000", "75800", "76200", "75400", "75800", "1", "1", "60000000", "1"],
             ]}
         symbol = url.split("instId=")[1].split("-")[0]
         rate = "-0.0000246" if symbol == "XRP" else "0.0000169"
@@ -224,11 +251,93 @@ def test_okx_public_enrichment_includes_volume_funding_and_open_interest(monkeyp
                                               "ts": "1789568462000"}]}
 
     monkeypatch.setattr(module, "_read_json_url", fake_read)
-    value = asyncio.run(collect_okx_social_market_context(NOW))
+    value = asyncio.run(collect_okx_social_market_context(NOW, symbols=("BTC", "XRP")))
     assert value["status"] == "AVAILABLE"
-    assert "spot quote volume 24h" in value["summary"]
-    assert "swap funding" in value["summary"]
-    assert "swap OI" in value["summary"]
+    assert value["schema_version"] == "social-okx-market-evidence.v2"
+    assert value["symbols"] == ["BTC", "XRP"]
+    assert "latest-hour open-interest change" in value["summary"]
+    assert "last realized funding" in value["summary"]
     xrp = next(row for row in value["details"] if row["symbol"] == "XRP")
     assert xrp["swap_funding_rate"] < 0
     assert xrp["swap_open_interest_base_ccy"] == 79501347.0
+    assert xrp["swap_open_interest_change_latest_hour_pct"] < 0
+    assert xrp["spot_change_since_previous_hour_close_pct"] < 0
+
+
+def test_question_intent_requires_actual_question_mark():
+    try:
+        ChannelSocialDraft(
+            channel="OKX", format="SHORT_POST", intent="QUESTION",
+            text="XRP is weaker than BTC and I wonder which signal resolves this next",
+            style_observation_ids=(), rationale="Question form must be explicit.",
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("QUESTION intent without a question mark was accepted")
+
+
+class WebSeekRuntime:
+    agent_manifest = SimpleNamespace(agent_type="content-agent")
+
+    def __init__(self):
+        self.calls = []
+        self.invocations = []
+
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        if task.startswith("SOCIAL_EVIDENCE_PLAN"):
+            return json.dumps({
+                "action": "SEEK",
+                "supported_facts": ["A new inflation release is the stated topic."],
+                "missing_evidence": ["the current official inflation reading"],
+                "search_query": "official latest inflation release",
+                "rationale": "The current reading is needed before making a public update."
+            })
+        return json.dumps({
+            "action": "DRAFT",
+            "useful_facts": ["The official release reports inflation at 2.4 percent year over year."],
+            "rationale": "The fetched official release supplies the missing current reading."
+        })
+
+    def available_capabilities(self):
+        return {"web.search", "web.fetch"}
+
+    def invoke(self, capability, args):
+        self.invocations.append((capability, args))
+        if capability == "web.search":
+            return SimpleNamespace(
+                payload={"ok": True, "capability_id": "web.search", "results": [{
+                    "title": "Official inflation release", "url": "https://example.com/inflation",
+                    "published_at": "2026-09-16T12:00:00Z",
+                }]},
+                receipt_id="search-receipt", provider="test-search",
+            )
+        markdown = "Official statistical release. " + ("Inflation was 2.4 percent year over year. " * 12)
+        return SimpleNamespace(
+            payload={"ok": True, "canonical_capability_id": "web.fetch", "page": {
+                "success": True, "url": "https://example.com/inflation", "markdown": markdown,
+            }},
+            receipt_id="fetch-receipt", provider="test-fetch",
+        )
+
+    def persist(self):
+        pass
+
+
+def test_non_crypto_seek_uses_runtime_web_search_and_fetch(tmp_path):
+    runtime = WebSeekRuntime()
+    folder = tmp_path / "cycle"
+    folder.mkdir()
+    decision = asyncio.run(resolve_social_evidence(
+        runtime=runtime,
+        folder=folder,
+        cognition={"worth_saying": True, "what_matters": "Current inflation may have changed."},
+        artifact={"title": "Inflation update", "summary": "Need the latest official reading."},
+        now=NOW,
+    ))
+    assert decision["plan"]["action"] == "SEEK"
+    assert decision["resolution"]["action"] == "DRAFT"
+    assert decision["supplemental_evidence"]["source"] == "runtime:web.search+fetch"
+    assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
+    assert [cap for cap, _ in runtime.invocations] == ["web.search", "web.fetch"]
