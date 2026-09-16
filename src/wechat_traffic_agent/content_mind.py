@@ -14,6 +14,7 @@ MIND_SCHEMA = "content-mind:v1"
 AUTHORITY_ID = "session"
 MAX_PLANS = 128
 MAX_EVENT_IDS = 512
+MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
 
 
 class ContentMind:
@@ -86,6 +87,56 @@ class ContentMind:
                 return topic
         return None
 
+    def _observe_world_attention(self, observations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Let attended reality change salience/familiarity without inventing preference."""
+        updates: list[dict[str, Any]] = []
+        for row in observations:
+            topic = row["topic"]
+            evidence_id = row["evidence_id"]
+            if row["importance"] < MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE:
+                updates.append({
+                    "topic": topic, "status": "SHORT_TERM_ONLY", "interest": None,
+                    "importance": row["importance"],
+                })
+                continue
+            event_id = f"world-attention:{topic}:{evidence_id}"
+            if event_id in self._observed_event_ids:
+                interest = self.session.interests.get(topic)
+                updates.append({
+                    "topic": topic, "status": "ALREADY_OBSERVED",
+                    "interest": interest.__dict__ if interest else None,
+                })
+                continue
+            refs = list(dict.fromkeys(
+                str(ref).strip() for ref in (row.get("evidence_refs") or (evidence_id,)) if str(ref).strip()
+            ))
+            if evidence_id not in refs:
+                refs.insert(0, evidence_id)
+            self.session.ingest_life_experience(
+                {
+                    "event_id": event_id, "tick": int(self.session.tick),
+                    "summary": f"The world feed drew attention to {topic}: {row['question']}",
+                    "evidence_refs": refs, "significance": row["importance"],
+                    "source": "world-feed-attention", "confidence": 1.0,
+                    # Attention is not success/failure. Neutral reward plus neutral effort keeps
+                    # preference unchanged while VirtualBrain learns familiarity and salience.
+                    "outcome": 0.5, "domain": "crypto-finance-world",
+                },
+                authority_id=AUTHORITY_ID,
+                interest_feedback={
+                    "name": topic, "novelty": row["novelty"],
+                    "effort": 0.5, "learning_rate": 0.1,
+                },
+            )
+            self._observed_event_ids.append(event_id)
+            self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+            interest = self.session.interests.get(topic)
+            updates.append({
+                "topic": topic, "status": "OBSERVED",
+                "interest": interest.__dict__ if interest else None,
+            })
+        return updates
+
     def plan_for_cycle(
         self, *, cycle: str, available_topics: Iterable[str],
         world_observations: Iterable[Mapping[str, Any]] = (),
@@ -107,9 +158,12 @@ class ContentMind:
                 "novelty": min(1.0, max(0.0, float(raw.get("novelty") or 0.0))),
                 "why_now": str(raw.get("why_now") or "")[:300],
             })
+        world_interest_updates = self._observe_world_attention(observations)
+        persistent_interests = set(self.session.interests.snapshot()["items"])
         topics = tuple(sorted(
             {str(item) for item in available_topics if str(item).strip()}
             | {row["topic"] for row in observations}
+            | persistent_interests
         ))
         before = self.session.inquiry.inquiries
         open_questions = {state.get("question") for state in before.values() if state.get("status") == "OPEN"}
@@ -149,6 +203,7 @@ class ContentMind:
             "cycle": cycle, "mind_tick": int(readout["tick"]), "goal": goal,
             "required_topic": required_topic, "available_topics": list(topics),
             "world_observations": observations, "world_inquiry_topics": inquiry_topics,
+            "world_interest_updates": world_interest_updates,
         }
         self._plans[cycle] = plan
         if len(self._plans) > MAX_PLANS:
@@ -238,8 +293,8 @@ class ContentMind:
             "interests": interests[:8],
             "open_inquiries": inquiries[:8],
             "latest_plan": deepcopy(latest_plan),
-            "learning_boundary": "process experience only; audience outcomes are not connected yet",
+            "learning_boundary": "world attention and process experience are connected; audience outcomes are not connected yet",
         }
 
 
-__all__ = ["ContentMind", "MIND_SCHEMA"]
+__all__ = ["ContentMind", "MIND_SCHEMA", "MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE"]
