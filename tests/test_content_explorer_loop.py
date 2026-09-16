@@ -690,3 +690,53 @@ def test_method_note_rebinds_to_observed_method_evidence_instead_of_unrelated_ou
     compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
     assert '"evidence_id": "method-1"' in compose
     assert '"evidence_id": "rss-fallback"' not in compose.split('"source_material":', 1)[1]
+
+
+class CryptoMissionRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SELECT_EVIDENCE:"):
+            self.calls.append(task)
+            return json.dumps({
+                "title": "Explaining evidence question 1", "evidence_id": "crypto-market-1",
+                "topic": "crypto-market", "related_ids": ["a0"],
+                "reader_question": "What does the current crypto market snapshot actually tell us?",
+                "gap": "Separate a point-in-time market observation from any trading conclusion.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+class CryptoMissionExplorer(Explorer):
+    row = candidate("crypto-market-1", "BTC, ETH and SOL current market snapshot") | {
+        "source_kind": "public-api", "source": "OKX public market API",
+        "summary": "BTC, ETH and SOL have different 24-hour moves in a point-in-time OKX snapshot; this is not a trading signal.",
+        "evidence_refs": ["okx-public-api:sha256:test"],
+    }
+    async def collect(self, *, now, active):
+        assert active is True
+        self.collect_calls += 1
+        return {"items": [self.row], "failures": [], "observed_at": now.isoformat()}
+    async def filter_for_goal(self, **kwargs):
+        assert kwargs["goal_topic"] == "crypto-market"
+        self.filter_calls += 1
+        return {"items": [self.row], "matches": [], "candidate_count": 1}
+
+
+def test_one_shot_crypto_bootstrap_sets_direction_without_replacing_future_autonomy(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, explorer = CryptoMissionRuntime(), CryptoMissionExplorer()
+    worker = ContinuousContentLoop(
+        runtime=runtime, state_root=legacy.state, artifacts_path=legacy.artifacts_path,
+        site_root=legacy.site_root, base_url=legacy.base_url, curriculum_path=legacy.curriculum_path,
+        feeds=legacy.feeds, interval_hours=legacy.interval_hours, fetcher=legacy.fetcher,
+        publisher=publisher, explorer=explorer,
+    )
+    result = asyncio.run(worker.run_once(now=NOW, cycle_id="v2-bootstrap-1789491601", focus_topic="crypto-market"))
+    assert result["status"] == "PUBLISHED"
+    assert result["mind_plan"]["required_topic"] == "crypto-market"
+    assert result["mind_plan"]["goal"]["origin"] == "BOOTSTRAP_FOCUS"
+    assert result["mind_plan"]["endogenous_goal"] is None
+    # With no persistent cognition adapter in this fixture, the existing default remains longform.
+    # The mission selects subject matter; it does not force Note vs longform.
+    published = json.loads(publisher.inventory_path().read_text())[-1]
+    assert published["kind"] != "note"
+    assert published["tags"] == ["crypto-market"]

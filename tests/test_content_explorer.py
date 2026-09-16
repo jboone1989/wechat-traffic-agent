@@ -73,3 +73,37 @@ def test_web_candidate_preserves_search_publication_time_for_prospective_use():
         "evidence_refs": ["receipt:1"], "search_query": "fresh evidence", "search_rank": 1,
     })
     assert row["published_at"] == "2026-09-16T02:55:00+00:00"
+
+
+def test_okx_public_market_snapshot_becomes_bounded_crypto_evidence(monkeypatch):
+    import io
+    import wechat_traffic_agent.content_explorer as module
+    payload = {"data": [
+        {"instId": "BTC-USDT", "last": "76000", "open24h": "77000", "ts": "1789550000000"},
+        {"instId": "ETH-USDT", "last": "2400", "open24h": "2460", "ts": "1789550000001"},
+        {"instId": "SOL-USDT", "last": "97", "open24h": "100", "ts": "1789550000002"},
+    ]}
+    monkeypatch.setattr(module.urllib.request, "urlopen",
+        lambda *_args, **_kwargs: io.BytesIO(json.dumps(payload).encode()))
+    rows = asyncio.run(module.collect_okx_public_market(NOW))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["source_kind"] == "public-api"
+    assert row["source"] == "OKX public market API"
+    assert "BTC-USDT" in row["summary"] and "ETH-USDT" in row["summary"] and "SOL-USDT" in row["summary"]
+    assert "not a trading signal" in row["summary"]
+    assert row["evidence_refs"][0].startswith("okx-public-api:sha256:")
+
+
+def test_active_explorer_includes_market_source_without_requiring_trading(tmp_path):
+    calls = []
+    async def rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+    async def market(now):
+        calls.append(now)
+        return [candidate("market-1", "BTC and ETH moved differently") | {"source_kind": "public-api", "source": "OKX public market API"}]
+    worker = GoalEvidenceExplorer(state_root=tmp_path, feeds=("https://example.org/feed",), rss_fetcher=rss, market_fetcher=market)
+    passive = asyncio.run(worker.collect(now=NOW, active=False))
+    active = asyncio.run(worker.collect(now=NOW, active=True))
+    assert passive["items"] == [] and calls == [NOW]
+    assert active["items"][0]["source_kind"] == "public-api"

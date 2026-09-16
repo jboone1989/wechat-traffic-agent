@@ -36,7 +36,7 @@ class EvidenceFloorSource(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     evidence_id: str = Field(min_length=1, max_length=200)
-    source_kind: Literal["rss", "agent-network", "web-search"]
+    source_kind: Literal["rss", "agent-network", "web-search", "public-api"]
     source: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=2, max_length=300)
     summary: str = Field(min_length=1, max_length=2000)

@@ -309,3 +309,20 @@ def test_mind_persistence_failure_prevents_publication(tmp_path):
     assert result['status'] == 'ERROR'
     assert result['error_type'] == 'OSError'
     assert (publisher.public / 'current').resolve() == before
+
+
+def test_directed_cycle_id_allows_a_new_audited_cycle_without_erasing_bucket_history(tmp_path):
+    runtime, worker, _publisher = setup(tmp_path)
+    first = asyncio.run(worker.run_once(now=NOW))
+    assert first["status"] == "PUBLISHED"
+    runtime.number = 2
+    async def new_fetch(feeds, now):
+        return {"items":[{"news_id":"news-2", "title":"Directed fresh evidence", "summary":"A fresh bounded observation.",
+            "url":"https://example.org/directed", "published_at":NOW.isoformat(), "publisher_feed":feeds[0]}],
+            "observed_at":now.isoformat(), "failures":[]}
+    worker.fetcher = new_fetch
+    directed = asyncio.run(worker.run_once(now=NOW, cycle_id="v2-directed-1789491601"))
+    assert directed["cycle"] == "v2-directed-1789491601"
+    assert directed["status"] == "PUBLISHED"
+    assert (worker.root / "cycles" / first["cycle"] / "result.json").exists()
+    assert (worker.root / "cycles" / "v2-directed-1789491601" / "result.json").exists()

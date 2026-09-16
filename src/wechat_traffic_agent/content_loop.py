@@ -208,7 +208,7 @@ class ContinuousContentLoop:
         self.root = self.state / 'content/continuous'
         self.inbox = ContentDraftInbox(self.state / 'content')
 
-    async def run_once(self, *, now=None):
+    async def run_once(self, *, now=None, cycle_id=None):
         now = now or datetime.now(timezone.utc)
         if now.utcoffset() is None:
             raise ValueError('timezone required')
@@ -220,7 +220,11 @@ class ContinuousContentLoop:
             except BlockingIOError:
                 return {'status': 'BUSY'}
             seconds = self.interval_hours * 3600
-            cycle = 'v2-' + str(int(now.timestamp()) // seconds * seconds)
+            cycle = str(cycle_id or ('v2-' + str(int(now.timestamp()) // seconds * seconds)))
+            if cycle_id is not None:
+                parts = cycle.split('-')
+                if len(parts) < 3 or parts[0] != 'v2' or not parts[-1].isdigit():
+                    raise ValueError('directed cycle_id must be v2-<label>-<unix-seconds>')
             folder = self.root / 'cycles' / cycle
             result_path = folder / 'result.json'
             if result_path.exists():
