@@ -17,6 +17,9 @@ def corpus(path: Path) -> Path:
             {"observation_id": "recap", "channel": "X", "format": "MARKET_RECAP",
              "source_url": "https://x.com/example/status/2",
              "features": ["Name the move first.", "End with what to watch next."]},
+            {"observation_id": "long", "channel": "OKX", "format": "LONG_POST",
+             "source_url": "https://www.okx.com/feed/post/3",
+             "features": ["Explain one mechanism step by step.", "Include where the relationship can fail."]},
             {"observation_id": "article", "channel": "X", "format": "ARTICLE",
              "source_url": "https://x.com/example/article/3",
              "features": ["State a thesis.", "Include counter-risks before implications."]},
@@ -31,7 +34,7 @@ def test_thought_uses_social_post_shapes_but_not_article(tmp_path):
     assert value["purpose"] == "STYLE_ONLY"
     assert value["performance_claim"] == "UNVERIFIED"
     ids = {row["observation_id"] for row in value["observations"]}
-    assert ids == {"short", "recap"}
+    assert ids == {"short", "recap", "long"}
     assert any("never as factual evidence" in rule for rule in value["rules"])
 
 

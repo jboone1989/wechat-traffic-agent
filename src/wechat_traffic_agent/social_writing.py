@@ -12,7 +12,7 @@ class SocialStyleObservation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     observation_id: str = Field(min_length=3, max_length=120)
     channel: Literal["X", "OKX"]
-    format: Literal["SHORT_POST", "MARKET_RECAP", "EXPLAINER_POST", "ARTICLE"]
+    format: Literal["SHORT_POST", "LONG_POST", "MARKET_RECAP", "EXPLAINER_POST", "ARTICLE"]
     source_url: HttpUrl
     features: tuple[str, ...] = Field(min_length=2, max_length=8)
 
@@ -30,7 +30,7 @@ def load_social_style_context(path: Path, *, expression_kind: str, market_pulse:
     if not path.exists():
         return {"purpose": "STYLE_ONLY", "status": "UNAVAILABLE", "observations": []}
     corpus = SocialStyleCorpus.model_validate_json(path.read_text(encoding="utf-8"))
-    wanted = {"ARTICLE"} if expression_kind == "LONGFORM" else {"SHORT_POST", "MARKET_RECAP", "EXPLAINER_POST"}
+    wanted = {"ARTICLE"} if expression_kind == "LONGFORM" else {"SHORT_POST", "LONG_POST", "MARKET_RECAP", "EXPLAINER_POST"}
     if market_pulse:
         wanted |= {"SHORT_POST", "MARKET_RECAP"}
     rows = [row.model_dump(mode="json") for row in corpus.observations if row.format in wanted]

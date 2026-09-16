@@ -316,3 +316,53 @@ def test_live_snapshot_and_life_history_include_x_identity_and_lineage(tmp_path)
         html = client.get("/live/").text
     assert "X · PUBLIC SOCIAL IDENTITY" in html
     assert "x-activity-list" in html
+
+
+def test_public_snapshot_exposes_social_drafts_without_granting_publish_authority(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-social-style-999"
+    _write(cycle / "result.json", {"status": "PUBLISHED", "cycle": cycle.name})
+    _write(cycle / "social_expression_drafts.json", {
+        "schema_version": "content-social-expression-drafts.v1",
+        "cycle": cycle.name,
+        "created_at": "2026-09-16T13:24:15+00:00",
+        "publication_authority": False,
+        "style_status": "DISCOVERED",
+        "style_performance_claim": "UNVERIFIED",
+        "drafts": {
+            "okx": {"channel": "OKX", "format": "SHORT_POST", "text": "OKX draft text for the current market observation.",
+                    "style_observation_ids": ["okx-style"], "rationale": "Current market read."},
+            "x": {"channel": "X", "format": "SHORT_POST", "text": "X draft text for the same cognition.",
+                  "style_observation_ids": ["x-style"], "rationale": "Compressed version."},
+        },
+    })
+    snapshot = public_agent_snapshot(root, _Application())
+    drafts = snapshot["social"]["drafts"]
+    assert drafts["status"] == "DRAFT_READY"
+    assert drafts["cycle"] == cycle.name
+    assert drafts["publication_authority"] is False
+    assert drafts["style_performance_claim"] == "UNVERIFIED"
+    assert drafts["drafts"]["okx"]["text"].startswith("OKX draft")
+    assert drafts["drafts"]["x"]["text"].startswith("X draft")
+
+
+def test_directed_cycle_names_are_supported_by_live_snapshot(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-market-pulse-1000"
+    _write(cycle / "result.json", {"status": "PUBLISHED", "cycle": cycle.name})
+    snapshot = public_agent_snapshot(root, _Application())
+    assert snapshot["activity"]["cycle"] == cycle.name
+    assert snapshot["recent_cycles"][0]["cycle"] == cycle.name
+
+
+def test_live_page_shows_social_expression_preview(tmp_path):
+    root = _state(tmp_path)
+    service = LiveAgentService(state_root=root, application=_Application(), backend=_Backend())
+    with TestClient(service._app()) as client:
+        live = client.get("/live/")
+    assert live.status_code == 200
+    assert "SOCIAL EXPRESSION · PREVIEW" in live.text
+    assert "What I would post now" in live.text
+    assert "OKX ORBIT" in live.text
+    assert "okx-draft-text" in live.text
+    assert "x-draft-text" in live.text

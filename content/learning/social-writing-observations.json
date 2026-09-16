@@ -62,6 +62,64 @@
         "Include counter-risks and limits before implications.",
         "End with what the reader should monitor, not a certainty claim."
       ]
+    },
+    {
+      "observation_id": "x-regulatory-event-headline-v1",
+      "channel": "X",
+      "format": "SHORT_POST",
+      "source_url": "https://x.com/BitcoinMagazine/status/2011092830069145648",
+      "features": [
+        "Lead with the concrete event rather than commentary about the event.",
+        "Use one short sentence for the immediate status or next procedural step.",
+        "Keep interpretation out unless it adds information beyond the headline."
+      ]
+    },
+    {
+      "observation_id": "x-macro-flow-key-levels-v1",
+      "channel": "X",
+      "format": "LONG_POST",
+      "source_url": "https://x.com/10xResearch/status/2056179154715127933",
+      "features": [
+        "Connect one macro catalyst to one or two measurable crypto flows before discussing price.",
+        "Use a short chain from catalyst to flow to market state instead of a broad narrative.",
+        "End with concrete levels or conditions that would confirm deterioration or recovery.",
+        "Keep each data point tied to the claim it is meant to support."
+      ]
+    },
+    {
+      "observation_id": "okx-contrast-thesis-current-v1",
+      "channel": "OKX",
+      "format": "SHORT_POST",
+      "source_url": "https://www.okx.com/en-us/orbit/insight/87426939029088",
+      "features": [
+        "Open with a current contrast that creates a question worth reading.",
+        "Separate short-term price weakness from the slower participant behavior being observed.",
+        "State what the contrast does not prove before giving an interpretation.",
+        "End with the implication being watched rather than a buy-or-sell instruction."
+      ]
+    },
+    {
+      "observation_id": "okx-conditional-signal-humility-v1",
+      "channel": "OKX",
+      "format": "SHORT_POST",
+      "source_url": "https://www.okx.com/es-la/feed/post/60381713217536",
+      "features": [
+        "State the market signal and the exact condition that would confirm it.",
+        "Address the strongest obvious historical exception rather than ignoring it.",
+        "Use first-person uncertainty explicitly when the signal is not decisive."
+      ]
+    },
+    {
+      "observation_id": "okx-long-thread-mechanism-risk-v1",
+      "channel": "OKX",
+      "format": "LONG_POST",
+      "source_url": "https://www.okx.com/en-us/feed/post/49780258414784",
+      "features": [
+        "Use a hook that promises one mechanism, then explain that mechanism step by step.",
+        "Move from definition to historical examples to the current reading.",
+        "Include a section where the historical relationship failed before giving implications.",
+        "Keep forecast ranges conditional on the relationship continuing rather than presenting them as facts."
+      ]
     }
   ]
 }
