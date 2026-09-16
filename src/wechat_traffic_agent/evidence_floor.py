@@ -5,6 +5,7 @@ independence; the latter remains a separate governed G1 candidate.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -112,8 +113,15 @@ def risk_cues(*, topic: str, text: str) -> tuple[str, ...]:
     normalized = " ".join(str(text).lower().split())
     cues: list[str] = []
     topic = str(topic).strip()
-    domains = [term for term in DOMAIN_TERMS if term in normalized]
-    claims = [term.strip() for term in CLAIM_TERMS if term in normalized]
+
+    def contains_term(term: str) -> bool:
+        # Financial trigger words must be lexical terms, not substrings. In particular,
+        # ``sharper`` must never be interpreted as the Sharpe ratio.
+        phrase = " ".join(term.lower().split())
+        return re.search(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", normalized) is not None
+
+    domains = [term for term in DOMAIN_TERMS if contains_term(term)]
+    claims = [term.strip() for term in CLAIM_TERMS if contains_term(term)]
     # Topic membership alone is not a claim. A neutral methodology article about trading or
     # backtesting should remain publishable; the floor is for substantive performance/advice claims.
     if topic in HIGH_RISK_TOPICS and claims:

@@ -133,10 +133,10 @@ async def collect_okx_public_market(now: datetime) -> list[dict[str, Any]]:
         with urllib.request.urlopen(request, timeout=10) as response:
             return json.load(response)
     payload = await asyncio.to_thread(load)
-    wanted = {"BTC-USDT", "ETH-USDT", "SOL-USDT"}
+    wanted = {"BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "BNB-USDT"}
     rows = {row.get("instId"): row for row in payload.get("data", []) if row.get("instId") in wanted}
     if set(rows) != wanted:
-        raise RuntimeError("OKX public market snapshot missing BTC/ETH/SOL")
+        raise RuntimeError("OKX public market snapshot missing required major assets")
     observations = []
     max_ts = 0
     for inst_id in sorted(wanted):
@@ -150,7 +150,7 @@ async def collect_okx_public_market(now: datetime) -> list[dict[str, Any]]:
     revision = hashlib.sha256(json.dumps(revision_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     candidate = EvidenceCandidate(
         evidence_id="okx-market:" + revision[:32], source_kind="public-api", source="OKX public market API",
-        title="BTC, ETH and SOL current OKX market snapshot", summary=summary, url=endpoint,
+        title="Major crypto current OKX market snapshot", summary=summary, url=endpoint,
         observed_at=now.isoformat(), source_revision="sha256:" + revision,
         evidence_refs=("okx-public-api:sha256:" + revision,), published_at=None,
     )
@@ -205,7 +205,14 @@ class GoalEvidenceExplorer:
     async def search_web(self, *, goal_topic: str, now: datetime) -> dict[str, Any]:
         if not goal_topic or self.web_searcher is None:
             return {"items": [], "failures": [], "query": None}
-        query = " ".join(goal_topic.replace("-", " ").split()) + " AI trading research evidence"
+        normalized_topic = " ".join(goal_topic.replace("-", " ").split())
+        crypto_terms = {"crypto", "bitcoin", "btc", "ethereum", "eth", "solana", "sol"}
+        words = set(normalized_topic.lower().split())
+        query = (
+            normalized_topic + " BTC ETH SOL latest market catalyst today"
+            if words & crypto_terms
+            else normalized_topic + " AI trading research evidence"
+        )
         try:
             rows = await self.web_searcher(query, now)
             items = [_web_candidate(row) for row in rows[:12]]
