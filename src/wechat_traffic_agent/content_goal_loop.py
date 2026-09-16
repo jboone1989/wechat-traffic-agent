@@ -566,14 +566,29 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             'performance effects. Explain methodology, verification, uncertainty, or limitations instead.'
             if scope_downgraded else ''
         )
+        expression_context = ({
+            'agent_cognition': cognition_decision.model_dump(mode='json'),
+            'worldview_decision': belief_decision.model_dump(mode='json'),
+            'worldview_update': worldview_update,
+            'voice_contract': {
+                'identity': 'persistent Content Agent',
+                'facts': 'Attribute observed facts to supplied sources; do not narrate sourced facts as personal memory.',
+                'interpretation': 'Use first person for the agent’s own interpretation, judgment, uncertainty, and belief change.',
+                'epistemic_honesty': 'Say what would weaken or change the view when material; never imply certainty that the stored belief does not have.',
+                'style': 'Write like an expert expressing a considered view, not an academic paper, generic explainer, or institutional press release.',
+            },
+        } if cognition_decision is not None else None)
         brief = {'selection': selection.model_dump(mode='json'), 'learned_techniques': lesson_payload,
                  'prospective_experiment': experiment_payload, 'content_strategy': strategy_payload,
                  'evidence_floor': floor_plan.model_dump(mode='json'),
+                 'agent_expression_context': expression_context,
                  'source_material': {'evidence': selected, 'counter_evidence': counter_payload,
                                      'existing_articles': related},
                  'writing_requirements': 'Write at least 350 words. Explain one mechanism, separate reported facts and interpretation. '
                      'No personal investment advice, fabricated numbers, private details, or unsupported predictions. '
                      'Apply each learned technique visibly. Attribute factual claims to the selected source. No long verbatim source copying. '
+                     'When agent_expression_context is present, make that cognition the reason the piece exists: express the agent’s own view in first person while keeping source facts attributed. '
+                     'Do not hide a belief change behind neutral encyclopedia prose, and do not invent stronger conviction than the stored worldview update supports. '
                      + strategy_instruction(content_strategy)
                      + floor_requirement + ((' ' + experiment_requirement) if experiment_requirement else '')}
         observed_at = datetime.fromisoformat(selected.get('observed_at') or inputs['now'])
@@ -629,6 +644,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         if experiment_check is not None:
             _put(folder / 'website_experiment_compliance.json', experiment_check)
         text = '\n'.join([artifact.title, artifact.summary] + [value for section in artifact.sections for value in (section.heading, *section.paragraphs)])
+        perspective_expression = (
+            cognition_decision is None
+            or re.search(r"\b(?:I|I'm|I’m|my|My)\b", text) is not None
+        )
         if _title_key(artifact.title) in {_title_key(t) for t in existing}:
             raise ValueError('generated title duplicates existing content')
         selected_text = selected['title'] + '\n' + selected['summary']
@@ -680,7 +699,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
                   and application_valid == set(range(len(lesson.techniques)))
                   and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
-                  and floor_check.status == 'PASS')
+                  and floor_check.status == 'PASS' and perspective_expression)
         self._activity(cycle, 'CREATE', 'I finished the publication checks',
                        ('All required checks passed; the draft can proceed.' if passes else 'One or more checks failed; the draft will be held.'),
                        status='completed' if passes else 'stopped')
@@ -698,6 +717,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'evidence_floor_check': floor_check.model_dump(mode='json'),
                       'missing_technique_applications': sorted(set(range(len(lesson.techniques))) - application_valid),
                       'missing_section_support': sorted(set(range(len(artifact.sections))) - support_valid),
+                      'perspective_expression': perspective_expression,
                       'word_count': len(text.split()),
                       'assessment_kind': 'model self-check with exact-quote validation; no audience outcome claim'}
         _put(folder / 'experience.json', experience)
@@ -711,6 +731,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'traffic_context': traffic_payload,
                   'evidence_floor': floor_check.model_dump(mode='json'),
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,
+                  'perspective_expression': perspective_expression,
                   'mind_plan': mind_plan, 'worldview_update': worldview_update,
                   'cognition': (cognition_decision.model_dump(mode='json') if cognition_decision is not None else None),
                   'source_failures': exploration.get('source_failures', evidence_pool.get('failures', [])),
