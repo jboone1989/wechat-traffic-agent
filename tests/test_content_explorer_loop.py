@@ -748,8 +748,32 @@ def test_public_market_evidence_gets_market_pulse_guidance_without_forcing_lengt
     instruction = _market_expression_instruction({
         "source_kind": "public-api", "source": "OKX public market API",
     })
+    assert "direct timely hook" in instruction
     assert "what is happening now" in instruction
-    assert "what to watch next" in instruction
+    assert "two or three concrete things to watch next" in instruction
     assert "weaken or reverse" in instruction
     assert "LONGFORM remains valid" in instruction
     assert _market_expression_instruction({"source_kind": "rss", "source": "public-news-feed"}) == ""
+
+
+def test_live_crypto_news_is_also_treated_as_market_pulse():
+    instruction = _market_expression_instruction({
+        "source_kind": "web-search",
+        "source": "runtime:web.fetch:jina-reader",
+        "title": "Bitcoin News Today: Why BTC Is Down",
+        "summary": "Bitcoin fell today and is trading near a key level ahead of a catalyst.",
+        "search_query": "crypto market reaction long-end yields funding rates basis",
+    })
+    assert "market pulse" in instruction
+    assert "direct market headline" in instruction
+    assert "generic Website structure hints" in instruction
+
+
+def test_non_live_crypto_research_is_not_forced_into_market_pulse():
+    assert _market_expression_instruction({
+        "source_kind": "web-search",
+        "source": "runtime:web.fetch:jina-reader",
+        "title": "A historical study of Bitcoin validation methods",
+        "summary": "A retrospective methodology paper with no current market update.",
+        "search_query": "bitcoin research evidence",
+    }) == ""
