@@ -89,6 +89,7 @@ class StaticWebChannel:
             "Articles": [item for item in ordered if item.kind is ContentKind.ARTICLE],
             "Guides": [item for item in ordered if item.kind is ContentKind.GUIDE],
             "Research": [item for item in ordered if item.kind is ContentKind.RESEARCH],
+            "Notes": [item for item in ordered if item.kind is ContentKind.NOTE],
         }
         self._write(root / "index.html", self._home(ordered, categories))
         for heading, items in categories.items():
@@ -105,7 +106,7 @@ class StaticWebChannel:
             self._write(root / route.strip("/") / "index.html", self._simple_page(title, body, route, description))
 
         self._write(root / "404.html", self._not_found())
-        urls = ["/", "/articles/", "/guides/", "/research/", "/archive/", "/topics/"]
+        urls = ["/", "/articles/", "/guides/", "/research/", "/notes/", "/archive/", "/topics/"]
         urls.extend(static_pages)
         urls.extend(_route_for(item) for item in ordered)
         urls.extend(self._topic_routes(ordered))
@@ -510,7 +511,7 @@ class StaticWebChannel:
             '<header class="site-header"><div class="shell nav-wrap">'
             f'<a class="brand" href="/">{site}</a><nav aria-label="Primary">'
             '<a href="/articles/">Articles</a><a href="/guides/">Guides</a>'
-            '<a href="/research/">Research</a><a href="/topics/">Topics</a>'
+            '<a href="/research/">Research</a><a href="/notes/">Notes</a><a href="/topics/">Topics</a>'
             '<a href="/about/">About</a></nav></div></header>'
         )
 
@@ -674,7 +675,7 @@ def assess_adsense_readiness(
 ) -> SiteReadinessReport:
     """Internal launch gate; this is intentionally stricter than a claim of Google approval."""
     safe = all(item.public_safe for item in artifacts)
-    substantive = [item for item in artifacts if _word_count(item) >= 350]
+    substantive = [item for item in artifacts if item.kind is not ContentKind.NOTE and _word_count(item) >= 350]
     kinds = {item.kind for item in artifacts}
     unique_routes = len({_route_for(item) for item in artifacts}) == len(artifacts)
     checks = {
@@ -725,6 +726,7 @@ def assess_adsense_readiness(
 def _route_for(item: ContentArtifact) -> str:
     prefix = {
         ContentKind.RESEARCH: "research",
+        ContentKind.NOTE: "notes",
         ContentKind.GUIDE: "guides",
         ContentKind.ARTICLE: "articles",
     }[item.kind]

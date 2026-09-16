@@ -95,18 +95,24 @@ class ContentMind:
             topic = row["topic"]
             evidence_id = row["evidence_id"]
             if row["importance"] < MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE:
-                updates.append({
+                update = {
                     "topic": topic, "status": "SHORT_TERM_ONLY", "interest": None,
                     "importance": row["importance"],
-                })
+                }
+                if row.get("learning_kind", "WORLD_EVENT") != "WORLD_EVENT":
+                    update["learning_kind"] = row["learning_kind"]
+                updates.append(update)
                 continue
             event_id = f"world-attention:{topic}:{evidence_id}"
             if event_id in self._observed_event_ids:
                 interest = self.session.interests.get(topic)
-                updates.append({
+                update = {
                     "topic": topic, "status": "ALREADY_OBSERVED",
                     "interest": interest.__dict__ if interest else None,
-                })
+                }
+                if row.get("learning_kind", "WORLD_EVENT") != "WORLD_EVENT":
+                    update["learning_kind"] = row["learning_kind"]
+                updates.append(update)
                 continue
             refs = list(dict.fromkeys(
                 str(ref).strip() for ref in (row.get("evidence_refs") or (evidence_id,)) if str(ref).strip()
@@ -132,10 +138,13 @@ class ContentMind:
             self._observed_event_ids.append(event_id)
             self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
             interest = self.session.interests.get(topic)
-            updates.append({
+            update = {
                 "topic": topic, "status": "OBSERVED",
                 "interest": interest.__dict__ if interest else None,
-            })
+            }
+            if row.get("learning_kind", "WORLD_EVENT") != "WORLD_EVENT":
+                update["learning_kind"] = row["learning_kind"]
+            updates.append(update)
         return updates
 
     def plan_for_cycle(
@@ -158,6 +167,7 @@ class ContentMind:
                 "importance": min(1.0, max(0.0, float(raw.get("importance") or 0.0))),
                 "novelty": min(1.0, max(0.0, float(raw.get("novelty") or 0.0))),
                 "why_now": str(raw.get("why_now") or "")[:300],
+                "learning_kind": str(raw.get("learning_kind") or "WORLD_EVENT"),
                 "evidence_refs": list(dict.fromkeys(
                     str(ref).strip() for ref in (raw.get("evidence_refs") or ()) if str(ref).strip()
                 )),

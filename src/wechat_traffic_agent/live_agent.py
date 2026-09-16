@@ -186,18 +186,67 @@ def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
     rows = sorted((p for p in root.glob("v2-*") if p.is_dir()),
                   key=lambda p: int(p.name.removeprefix("v2-")), reverse=True)
     history: list[dict[str, Any]] = []
-    for cycle_dir in rows[:8]:
+    for cycle_dir in rows[:24]:
         result = _read_json(cycle_dir / "result.json")
         plan = _read_json(cycle_dir / "mind_plan.json")
         strategy = _read_json(cycle_dir / "content_strategy.json")
+        cognition = _read_json(cycle_dir / "cognition.json")
+        worldview = _read_json(cycle_dir / "worldview_update.json")
+        world = _read_json(cycle_dir / "world_feed.json")
         epoch = int(cycle_dir.name.removeprefix("v2-"))
+        observations = [
+            {"topic": str(row.get("topic") or ""), "why_now": str(row.get("why_now") or "")[:260],
+             "learning_kind": str(row.get("learning_kind") or "WORLD_EVENT")}
+            for row in (world.get("observations") or [])[:3] if isinstance(row, dict)
+        ]
+        interest_updates = [
+            str(row.get("topic") or "") for row in (plan.get("world_interest_updates") or [])
+            if isinstance(row, dict) and row.get("status") == "OBSERVED" and row.get("topic")
+        ][:5]
+        publication = result.get("publication") if isinstance(result.get("publication"), dict) else None
+        prediction = result.get("prediction") if isinstance(result.get("prediction"), dict) else None
         history.append({
             "cycle": cycle_dir.name,
             "started_at": datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat(),
             "status": str(result.get("status") or "IN_PROGRESS"),
             "topic": str(strategy.get("topic") or plan.get("required_topic") or ""),
+            "goal": str((plan.get("goal") or {}).get("description") or "")[:320] if isinstance(plan.get("goal"), dict) else "",
+            "observations": observations,
+            "new_interests": interest_updates,
+            "worldview_status": str(worldview.get("status") or ""),
+            "worldview_proposition": str(worldview.get("proposition") or "")[:420],
+            "cognition_state": str(cognition.get("cognition_state") or ""),
+            "expression_kind": str(cognition.get("expression_kind") or "NONE"),
+            "what_changed": str(cognition.get("what_changed") or "")[:500],
+            "what_matters": str(cognition.get("what_matters") or "")[:500],
+            "publication": publication,
+            "prediction": prediction,
         })
     return history
+
+
+def _world_learning_candidates(state_root: Path, *, limit: int = 8) -> list[dict[str, Any]]:
+    path = state_root / "content" / "world" / "learning_opportunities.json"
+    raw = _read_json(path)
+    rows = []
+    for evidence_id, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        rows.append({
+            "evidence_id": str(evidence_id),
+            "learning_kind": str(value.get("learning_kind") or "RESEARCH"),
+            "topic": str(value.get("topic") or "")[:120],
+            "question": str(value.get("question") or "")[:360],
+            "why_now": str(value.get("why_now") or "")[:360],
+            "source_kind": str(value.get("source_kind") or "")[:80],
+            "url": value.get("url"),
+            "status": str(value.get("status") or "DISCOVERED"),
+            "first_seen": value.get("first_seen"),
+            "last_seen": value.get("last_seen"),
+            "seen_count": int(value.get("seen_count") or 0),
+        })
+    rows.sort(key=lambda row: (row.get("last_seen") or "", row["evidence_id"]), reverse=True)
+    return rows[:limit]
 
 
 
@@ -421,6 +470,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         },
         "learning": {
             "mind": mind_projection,
+            "world_learning_candidates": _world_learning_candidates(state_root),
             "predictions": prediction_projection,
             "adaptation": str(lesson_body.get("adaptation") or "")[:600],
             "techniques": techniques[:3],

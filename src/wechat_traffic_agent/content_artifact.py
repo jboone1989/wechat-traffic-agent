@@ -14,6 +14,7 @@ _SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 class ContentKind(str, Enum):
     ARTICLE = "article"
     RESEARCH = "research"
+    NOTE = "note"
     GUIDE = "guide"
 
 

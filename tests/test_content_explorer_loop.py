@@ -370,6 +370,49 @@ def test_agent_perspective_expression_is_required_for_publication(tmp_path):
     assert len(json.loads(publisher.inventory_path().read_text())) == before
 
 
+class ShortThoughtRuntime(BeliefRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("DECIDE_EXPRESSION:"):
+            self.calls.append(task)
+            return json.dumps({
+                "cognition_state": "BELIEF_CHANGED", "worth_saying": True,
+                "expression_kind": "THOUGHT",
+                "what_changed": "The fresh evidence changed one bounded part of my current interpretation.",
+                "what_matters": "The point is useful now even though it does not need a full-length article.",
+                "belief_proposition": "Better validation evidence reduces uncertainty about model reliability.",
+                "rationale": "A concise public thought is enough; padding it would reduce signal rather than add value.",
+            })
+        if "Create one original, useful web-ready content artifact" in task and "agent_expression_context" in task:
+            self.calls.append(task)
+            paragraph = (
+                "I noticed a small but useful shift. Explanation of supplied evidence separates what was observed from my interpretation. "
+                "I would rather preserve that uncertainty in a short note than inflate it into a long article."
+            )
+            return json.dumps({
+                "title": f"A small validation thought {self.number}",
+                "summary": "A concise evidence-grounded reflection from the persistent agent.",
+                "sections": [{"heading": "Thought", "paragraphs": [paragraph]}],
+                "topic": f"Explaining evidence question {self.number}", "source_urls": [], "disclosure": None,
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_short_thought_publishes_as_note_without_padding_to_longform(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = ShortThoughtRuntime()
+    result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    experience = json.loads((cycle / "experience.json").read_text())
+    assert experience["expression_kind"] == "THOUGHT"
+    assert experience["minimum_words"] is None
+    assert experience["word_count"] < 350
+    published = json.loads(publisher.inventory_path().read_text())
+    assert published[-1]["kind"] == "note"
+    public_root = Path(result["publication"]["public_root"])
+    assert (public_root / "notes" / published[-1]["slug"] / "index.html").exists()
+
+
 class PredictiveBeliefRuntime(BeliefRuntime):
     async def cognitive_probe(self, task, max_tokens):
         if task.startswith("PROPOSE_DATED_PREDICTION:"):

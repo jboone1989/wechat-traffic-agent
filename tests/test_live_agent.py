@@ -107,6 +107,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "What changed in me" in live.text
     assert "REAL-WORLD VALIDATION" in live.text
     assert "What I believe — and what changed my mind" in live.text
+    assert "How yesterday became today" in live.text
+    assert "Things I found, not things I have adopted" in live.text
     assert "belief-change-list" in live.text
     assert "What I expect next — and what reality decided" in live.text
     assert "prediction-outcome-list" in live.text
@@ -212,3 +214,62 @@ def test_public_snapshot_exposes_open_predictions_and_resolved_outcomes(tmp_path
     assert projection["recent_outcomes"][0]["prediction_id"] == resolved.prediction_id
     assert projection["recent_outcomes"][0]["checks"][-1]["status"] == "REFUTED"
     assert projection["recent_outcomes"][0]["checks"][-1]["prediction_error"] == 0.7
+
+
+
+def test_life_history_exposes_cognition_worldview_interests_and_observations(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-123"
+    _write(cycle / "mind_plan.json", {
+        "required_topic": "rates-regime-shift",
+        "goal": {"description": "Investigate whether the rates regime changed."},
+        "world_interest_updates": [
+            {"topic": "rates-regime-shift", "status": "OBSERVED"},
+            {"topic": "random-noise", "status": "SHORT_TERM_ONLY"},
+        ],
+    })
+    _write(cycle / "world_feed.json", {"observations": [{
+        "topic": "10y-yield-breakout", "learning_kind": "WORLD_EVENT",
+        "why_now": "The yield threshold was touched and deserves follow-up.",
+    }]})
+    _write(cycle / "worldview_update.json", {
+        "status": "DEFERRED", "proposition": "The 10-year yield is in a sustained above-5% regime.",
+    })
+    _write(cycle / "cognition.json", {
+        "cognition_state": "INVESTIGATING", "expression_kind": "THOUGHT",
+        "what_changed": "The threshold was touched, but one intraday print is not a regime.",
+        "what_matters": "Repeated closes would be stronger evidence.",
+    })
+
+    snapshot = public_agent_snapshot(root, _Application())
+    row = snapshot["recent_cycles"][0]
+    assert row["worldview_status"] == "DEFERRED"
+    assert row["expression_kind"] == "THOUGHT"
+    assert row["new_interests"] == ["rates-regime-shift"]
+    assert row["observations"][0]["topic"] == "10y-yield-breakout"
+    assert "one intraday print is not a regime" in row["what_changed"]
+
+
+
+def test_live_snapshot_projects_world_learning_candidates_without_adopting_them(tmp_path):
+    root = _state(tmp_path)
+    path = root / "content/world/learning_opportunities.json"
+    _write(path, {
+        "web:x-method-1": {
+            "evidence_id": "web:x-method-1", "learning_kind": "METHOD",
+            "topic": "continuous-eval-loop",
+            "question": "Would a small continuous evaluation loop improve my own research discipline?",
+            "why_now": "The practitioner method is concrete and testable.",
+            "source": "runtime:web.fetch:test", "source_kind": "social-x",
+            "url": "https://x.com/example/status/123",
+            "first_seen": "2026-09-16T04:00:00+00:00", "last_seen": "2026-09-16T04:00:00+00:00",
+            "seen_count": 1, "status": "DISCOVERED",
+        }
+    })
+    before = path.read_bytes()
+    snapshot = public_agent_snapshot(root, _Application())
+    row = snapshot["learning"]["world_learning_candidates"][0]
+    assert row["learning_kind"] == "METHOD"
+    assert row["source_kind"] == "social-x"
+    assert row["status"] == "DISCOVERED"
+    assert path.read_bytes() == before

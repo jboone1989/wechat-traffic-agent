@@ -155,3 +155,64 @@ def test_bad_attention_item_does_not_erase_valid_observations(tmp_path: Path):
     assert [row["evidence_id"] for row in result["observations"]] == ["valid-1"]
     assert result["attention_rejections"] == [{"evidence_id": "bad-1", "reason": "QUOTE_NOT_EXACT"}]
     assert not any(row["source"] == "world-attention" for row in result["failures"])
+
+
+class SocialLearningRuntime(Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        if task.startswith("WORLD_SCAN_PLAN:"):
+            return json.dumps({
+                "queries": ["agent evaluation workflow ideas"],
+                "source_spaces": ["web", "x", "github"],
+                "rationale": "Practitioners and open-source maintainers may expose a useful method or tool worth testing.",
+            })
+        if task.startswith("WORLD_ATTENTION:"):
+            return json.dumps({"observations": [{
+                "evidence_id": "web:x-method-1",
+                "evidence_quote": "A small eval loop catches regressions before they spread",
+                "topic": "continuous-eval-loop",
+                "question": "Would a small continuous evaluation loop improve this agent's own research discipline?",
+                "importance": 0.84,
+                "novelty": 0.88,
+                "why_now": "The method is concrete, testable, and directly related to how the agent checks its own work.",
+                "learning_kind": "METHOD",
+            }]})
+        raise AssertionError(task[:80])
+
+
+def test_world_feed_can_choose_x_and_github_as_learning_source_spaces(tmp_path: Path):
+    calls = []
+    async def search(query, now):
+        calls.append(query)
+        if query.startswith("site:x.com"):
+            return [{
+                "title": "A small eval loop catches regressions before they spread",
+                "summary": "A practitioner shares a repeatable evaluation workflow and a concrete way to test it.",
+                "url": "https://x.com/example/status/123",
+                "source": "runtime:web.fetch:test", "source_revision": "x-method-1",
+                "evidence_refs": ["capability-receipt:v1:x-search", "capability-receipt:v1:x-fetch"],
+                "search_query": query, "search_rank": 1, "observed_at": now.isoformat(),
+            }]
+        if query.startswith("site:github.com"):
+            return [{
+                "title": "Open source evaluation harness",
+                "summary": "A repository implements a small evaluation harness.",
+                "url": "https://github.com/example/eval-harness",
+                "source": "runtime:web.fetch:test", "source_revision": "gh-tool-1",
+                "evidence_refs": ["capability-receipt:v1:gh-search", "capability-receipt:v1:gh-fetch"],
+                "search_query": query, "search_rank": 1, "observed_at": now.isoformat(),
+            }]
+        return []
+
+    feed = WorldFeed(state_root=tmp_path, web_searcher=search)
+    result = asyncio.run(feed.collect(runtime=SocialLearningRuntime(), now=NOW, base_items=[], mind_projection={}))
+    assert "site:x.com agent evaluation workflow ideas" in calls
+    assert "site:github.com agent evaluation workflow ideas" in calls
+    x_item = next(row for row in result["items"] if row["evidence_id"] == "web:x-method-1")
+    gh_item = next(row for row in result["items"] if row["evidence_id"] == "web:gh-tool-1")
+    assert x_item["source_kind"] == "social-x"
+    assert gh_item["source_kind"] == "github"
+    assert result["observations"][0]["learning_kind"] == "METHOD"
+    opportunities = json.loads(feed.learning_path.read_text())
+    assert opportunities["web:x-method-1"]["status"] == "DISCOVERED"
+    assert opportunities["web:x-method-1"]["learning_kind"] == "METHOD"
