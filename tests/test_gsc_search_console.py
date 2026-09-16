@@ -119,4 +119,4 @@ def test_runner_refreshes_gsc_before_content_strategy_selection():
     from pathlib import Path
     text = (Path(__file__).resolve().parents[1] / "scripts/run_content_agent.py").read_text(encoding="utf-8")
     assert "GoogleSearchConsoleCollector" in text
-    assert text.index("gsc_collector.collect(now=now)") < text.index("continuous_loop.run_once(now=now)")
+    assert text.index("gsc_collector.collect(now=now)") < text.index("continuous_loop.run_once(now=now")
