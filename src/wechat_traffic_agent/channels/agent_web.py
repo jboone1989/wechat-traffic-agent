@@ -15,6 +15,12 @@ from .web import StaticWebChannel
 class ContentAgentWebChannel(StaticWebChannel):
     """Present the website as the public surface of the learning agent."""
 
+    def _public_persona(self) -> dict:
+        state_raw = os.environ.get("CONTENT_APPLICATION_ROOT", "").strip()
+        if state_raw:
+            return public_persona_projection(Path(state_raw))
+        return {"name": "Content Agent", "status": "UNINITIALIZED"}
+
     def _home(self, artifacts: list[ContentArtifact], categories: dict[str, list[ContentArtifact]]) -> str:
         latest_html = self._cards(artifacts[:6])
         category_html = "".join(
@@ -27,12 +33,18 @@ class ContentAgentWebChannel(StaticWebChannel):
         if state_raw:
             from ..x_social import public_x_projection
             x_projection = public_x_projection(Path(state_raw))
-            persona = public_persona_projection(Path(state_raw))
         else:
             x_projection = {"connected": False, "recent_activity": []}
-            persona = {"name": "Content Agent", "status": "UNINITIALIZED"}
+        persona = self._public_persona()
         body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection, persona=persona)
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
+
+    def _artifact_page(self, item: ContentArtifact, route: str, all_artifacts: list[ContentArtifact]) -> str:
+        page = super()._artifact_page(item, route, all_artifacts)
+        persona = self._public_persona()
+        name = html.escape(str(persona.get("name") or "Content Agent"))
+        author = f'<span class="agent-author">By <a href="/about/">{name} · LivingRuntime agent</a></span>'
+        return page.replace('<div class="byline">', '<div class="byline">' + author, 1)
 
     def _layout(self, *args, **kwargs) -> str:
         route = args[2] if len(args) > 2 else kwargs.get("route")
