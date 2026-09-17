@@ -9,7 +9,8 @@ from ..content_artifact import ContentArtifact
 from ..website_engagement_client import first_party_engagement_script
 from ..public_persona import public_persona_projection
 from .agent_home_experience import agent_home_css, agent_home_script, render_agent_home
-from .web import StaticWebChannel
+from .agent_work_library import work_library_css, work_library_script
+from .web import StaticWebChannel, _route_for, _tag_slug
 
 
 class ContentAgentWebChannel(StaticWebChannel):
@@ -45,6 +46,70 @@ class ContentAgentWebChannel(StaticWebChannel):
             '</div></header>'
         )
 
+    def _archive(self, artifacts) -> str:
+        ordered = sorted(artifacts, key=lambda item: item.created_at, reverse=True)
+        topic_map: dict[str, tuple[str, int]] = {}
+        for item in ordered:
+            for tag in item.tags:
+                slug = _tag_slug(tag)
+                if not slug:
+                    continue
+                label, count = topic_map.get(slug, (tag.strip(), 0))
+                topic_map[slug] = (label, count + 1)
+        kind_counts: dict[str, int] = {}
+        for item in ordered:
+            key = item.kind.value
+            kind_counts[key] = kind_counts.get(key, 0) + 1
+        kind_buttons = ['<button type="button" class="work-kind active" data-kind="all">All <span>%d</span></button>' % len(ordered)]
+        for key in ("article", "research", "guide", "note"):
+            if kind_counts.get(key):
+                kind_buttons.append(
+                    f'<button type="button" class="work-kind" data-kind="{key}">{key.title()} <span>{kind_counts[key]}</span></button>'
+                )
+        topic_options = ['<option value="all">All topics</option>']
+        for slug, (label, count) in sorted(topic_map.items(), key=lambda row: (-row[1][1], row[1][0].lower())):
+            topic_options.append(f'<option value="{html.escape(slug, quote=True)}">{html.escape(label)} ({count})</option>')
+        cards = []
+        for index, item in enumerate(ordered):
+            tags = [(tag, _tag_slug(tag)) for tag in item.tags if _tag_slug(tag)]
+            tag_links = ''.join(
+                f'<button type="button" class="work-tag" data-pick-topic="{html.escape(slug, quote=True)}">{html.escape(tag)}</button>'
+                for tag, slug in tags[:4]
+            )
+            if len(tags) > 4:
+                tag_links += f'<span class="work-tag-more">+{len(tags)-4}</span>'
+            search_text = " ".join([item.title, item.summary, item.kind.value, *item.tags]).casefold()
+            topic_slugs = " ".join(slug for _, slug in tags)
+            date_iso = item.created_at.isoformat()
+            date_label = item.created_at.strftime("%b %d, %Y")
+            route = _route_for(item)
+            cards.append(
+                f'<article class="work-item" data-work-item data-kind="{html.escape(item.kind.value, quote=True)}" '
+                f'data-topics="{html.escape(topic_slugs, quote=True)}" data-search="{html.escape(search_text, quote=True)}" '
+                f'data-date="{html.escape(date_iso, quote=True)}" data-index="{index}">'
+                f'<div class="work-item-meta"><span class="work-type">{html.escape(item.kind.value.upper())}</span>'
+                f'<time datetime="{html.escape(date_iso, quote=True)}">{html.escape(date_label)}</time></div>'
+                f'<h2><a href="{html.escape(route, quote=True)}">{html.escape(item.title)}</a></h2>'
+                f'<p>{html.escape(item.summary)}</p><div class="work-tags">{tag_links}</div>'
+                f'<a class="work-open" href="{html.escape(route, quote=True)}">Open work <span>→</span></a></article>'
+            )
+        body = (
+            '<section class="work-library" data-work-library>'
+            '<header class="work-hero"><p class="eyebrow">FERRO · WORK</p><h1>Research you can actually find again.</h1>'
+            f'<p>{len(ordered)} published pieces. Search by idea, filter by format or topic, and sort the archive without leaving the page.</p></header>'
+            '<div class="work-controls" aria-label="Work filters"><label class="work-search"><span>Search</span>'
+            '<input id="work-search" type="search" autocomplete="off" placeholder="Search titles, summaries, topics…"></label>'
+            '<label class="work-select"><span>Topic</span><select id="work-topic">' + ''.join(topic_options) + '</select></label>'
+            '<label class="work-select work-sort"><span>Sort</span><select id="work-sort"><option value="newest">Newest first</option>'
+            '<option value="oldest">Oldest first</option></select></label></div>'
+            '<div class="work-kind-row" id="work-kinds" aria-label="Content type">' + ''.join(kind_buttons) + '</div>'
+            + f'<div class="work-result-bar"><strong id="work-count">{len(ordered)} results</strong><button type="button" id="work-clear">Clear filters</button></div>'
+            + '<div class="work-grid" id="work-grid">' + ''.join(cards) + '</div>'
+            '<div class="work-empty" id="work-empty" hidden><strong>No matching work.</strong><p>Try a broader search or clear one of the filters.</p></div>'
+            '<noscript><p class="work-noscript">Search and filters require JavaScript; all published work is still listed above.</p></noscript></section>'
+        )
+        return self._layout("Work", "Search and browse Ferro's published work.", "/archive/", body)
+
     def _footer(self) -> str:
         persona = self._public_persona()
         name = html.escape(str(persona.get("name") or "Content Agent"))
@@ -72,10 +137,13 @@ class ContentAgentWebChannel(StaticWebChannel):
         if route == "/":
             page = page.replace("<body>", '<body class="agent-home">', 1)
             scripts += agent_home_script()
+        elif route == "/archive/":
+            page = page.replace("<body>", '<body class="work-page">', 1)
+            scripts += work_library_script()
         return page.replace("</body>", scripts + "</body>", 1)
 
     def _css(self) -> str:
-        return super()._css() + agent_home_css()
+        return super()._css() + agent_home_css() + work_library_css()
 
     def _static_pages(self) -> dict[str, tuple[str, str, str]]:
         pages = super()._static_pages()

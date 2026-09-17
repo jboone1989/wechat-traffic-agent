@@ -10,6 +10,7 @@ on:
       - "src/wechat_traffic_agent/channels/web.py"
       - "src/wechat_traffic_agent/channels/agent_web.py"
       - "src/wechat_traffic_agent/channels/agent_home_experience.py"
+      - "src/wechat_traffic_agent/channels/agent_work_library.py"
       - "src/wechat_traffic_agent/channels/agent_three_scene.py"
       - "src/wechat_traffic_agent/channels/agent_static_hero_asset.py"
       - "src/wechat_traffic_agent/website_engagement_client.py"
@@ -68,6 +69,7 @@ jobs:
           cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_web.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_home_experience.py .site-ci/wechat_traffic_agent/channels/
+          cp src/wechat_traffic_agent/channels/agent_work_library.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_three_scene.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_static_hero_asset.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/__init__.py .site-ci/wechat_traffic_agent/channels/

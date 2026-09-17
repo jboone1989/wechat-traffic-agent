@@ -21,6 +21,7 @@ def test_build_site_from_json_directory(tmp_path):
         summary="A useful public article.",
         sections=(ContentSection(heading="Summary", paragraphs=("Useful evidence-backed text.",)),),
         created_at=datetime(2026, 9, 14, tzinfo=timezone.utc),
+        tags=("Model Evaluation",),
         public_safe=True,
     )
     (artifacts / "article-1.json").write_text(item.model_dump_json(indent=2), encoding="utf-8")
@@ -34,6 +35,7 @@ def test_build_site_from_json_directory(tmp_path):
     assert "By <a href=\"/about/\">Content Agent · LivingRuntime agent</a>" in article
 
     home = (output / "index.html").read_text(encoding="utf-8")
+    archive = (output / "archive" / "index.html").read_text(encoding="utf-8")
     about = (output / "about" / "index.html").read_text(encoding="utf-8")
     editorial = (output / "editorial-policy" / "index.html").read_text(encoding="utf-8")
     methodology = (output / "methodology" / "index.html").read_text(encoding="utf-8")
@@ -47,6 +49,14 @@ def test_build_site_from_json_directory(tmp_path):
     assert 'id="x-life"' not in home
     assert 'Follow Content Agent on X' not in home
     assert 'network.livingruntime.com/explorer' in home
+    assert 'id="work-search"' in archive
+    assert 'id="work-topic"' in archive
+    assert 'id="work-sort"' in archive
+    assert 'data-kind="article"' in archive
+    assert 'data-pick-topic="model-evaluation"' in archive
+    assert 'Research you can actually find again.' in archive
+    assert 'URLSearchParams(location.search)' in archive
+    assert 'Everything we have published' not in archive
     assert 'Articles</a><a href="/guides/">Guides' not in home
     assert "data:image/webp;base64," in home
     assert "crl-static-art" in home
