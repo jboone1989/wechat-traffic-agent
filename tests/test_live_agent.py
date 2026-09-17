@@ -82,6 +82,9 @@ def test_public_snapshot_is_bounded_and_truthful(tmp_path):
     assert snapshot["learning"]["memory_history"][-1]["familiarity"] == 0.68
     assert snapshot["learning"]["audience_validation"]["status"] == "WAITING_FOR_MATURE_AUDIENCE_EVIDENCE"
     assert snapshot["learning"]["predictions"] == {"open_predictions": [], "recent_outcomes": []}
+    assert snapshot["public_reasoning"]["kind"] == "PUBLIC_REASONING_SUMMARY"
+    assert snapshot["public_reasoning"]["private_chain_of_thought_exposed"] is False
+    assert snapshot["public_reasoning"]["next_action"]
     assert snapshot["boundaries"] == {
         "chat_is_learning_evidence": True,
         "chat_learning_authority": "AUDIENCE_INTEREST_ONLY",
@@ -112,6 +115,7 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         live = client.get("/live/")
         status = client.get("/api/agent/status")
         reply = client.post("/api/agent/chat", json={"message": "What are you doing now?"})
+        talk = client.get("/talk/")
 
     assert live.status_code == 200
     assert "NOW · CURRENT AGENT STATE" in live.text
@@ -131,6 +135,12 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert live.text.index("NOW · CURRENT AGENT STATE") < live.text.index("Learning details")
     assert "<details class=\"detail\">" in live.text
     assert "agent-core" not in live.text
+    assert talk.status_code == 200
+    assert "What I’m thinking about" in talk.text
+    assert "PUBLIC_REASONING_SUMMARY" in talk.text
+    assert 'id="send" type="button"' in talk.text
+    assert "addEventListener('click',sendMessage)" in talk.text
+    assert "setInterval(refreshState,5000)" in talk.text
     assert status.status_code == 200
     assert reply.status_code == 200
     assert reply.json()["learning_effect"] == "audience_interest_evidence_only"

@@ -499,6 +499,43 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         x_projection = {"connected": False, "status": "UNAVAILABLE", "recent_activity": []}
     social_drafts = _social_draft_projection(state_root, cycle_dir)
 
+    goal_description = str(goal.get("description") or "")[:300]
+    selected_summary = str((selected or {}).get("summary") or "")[:420]
+    decision_summary = str(strategy.get("decision_reason") or "")[:300]
+    if not decision_summary:
+        decision_summary = (
+            f"The current cycle is {str(result.get('status') or 'in progress').replace('_', ' ').lower()}."
+            if cycle_dir else "No cycle is active yet."
+        )
+    uncertainty = ""
+    if floor.get("status") == "MISSING":
+        uncertainty = "Counter-evidence is still missing, so I am not treating the current direction as settled."
+    elif not selected_summary:
+        uncertainty = "I do not have a selected public evidence item for this cycle yet."
+    elif int(exploration.get("candidate_count") or 0) and not exploration.get("matches"):
+        uncertainty = "The current scan produced candidates but no topic match, so the evidence is still weak."
+    else:
+        uncertainty = "This is a public decision summary; private chain-of-thought is not exposed."
+    if run_state == "WORKING":
+        next_action = f"Continue the {str(phase or 'current').lower()} phase and emit the next inspectable runtime event."
+    elif self_check.get("next_practice"):
+        next_action = str(self_check.get("next_practice"))[:500]
+    elif next_check_at:
+        next_action = f"Wait for the next scheduled runtime check at {next_check_at}."
+    else:
+        next_action = "Wait for the next runtime check."
+    public_reasoning = {
+        "kind": "PUBLIC_REASONING_SUMMARY",
+        "headline": str(focus or goal_description or "Waiting for the next runtime check")[:260],
+        "goal": goal_description or "No endogenous goal is active in this cycle.",
+        "evidence": selected_summary or f"{int(exploration.get('candidate_count') or 0)} candidates scanned; {len(exploration.get('matches') or [])} matched the current topic.",
+        "decision": decision_summary,
+        "uncertainty": uncertainty,
+        "next_action": next_action,
+        "updated_at": now.isoformat(),
+        "private_chain_of_thought_exposed": False,
+    }
+
     return {
         "schema_version": "public-agent-snapshot:v3",
         "as_of": as_of,
@@ -579,6 +616,7 @@ def public_agent_snapshot(state_root: Path, application: Any, mind: Any | None =
         "recent_cycles": _recent_cycles(state_root),
         "persona": public_persona_projection(state_root),
         "social": {"x": x_projection, "drafts": social_drafts},
+        "public_reasoning": public_reasoning,
         "boundaries": {
             "chat_is_learning_evidence": True,
             "chat_learning_authority": "AUDIENCE_INTEREST_ONLY",
