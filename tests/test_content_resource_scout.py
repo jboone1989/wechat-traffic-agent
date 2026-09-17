@@ -135,3 +135,37 @@ def test_verify_provider_leads_uses_runtime_search_and_fetch_for_official_eviden
     assert row["payment_method_required"] is False
     assert row["rate_limit_evidence"] is True
     assert all("blog.example" not in url for url in row["official_urls"])
+
+
+def test_plan_trials_records_compute_pressure_and_missing_credential(tmp_path, monkeypatch):
+    from agent_runtime.resource_discovery import ProviderLead, ProviderVerification
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime())
+    scout.scout._write_provider_lead(ProviderLead(
+        "lead:a","op:a","Alpha","ALPHA_API_KEY","https://alpha.example/keys","alpha.example",NOW.isoformat(),"r"
+    ))
+    scout.scout._write_provider_verification(ProviderVerification(
+        "lead:a","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE",rate_limit_evidence=True
+    ))
+    monkeypatch.delenv("ALPHA_API_KEY",raising=False)
+    monkeypatch.setattr(scout,"local_inference_feasibility",lambda:{"status":"DEFER_LOCAL_RESOURCE_PRESSURE","reasons":["disk_pressure"]})
+    result=scout.plan_trials(now=NOW)
+    assert result["plans"][0]["status"]=="NEEDS_CREDENTIAL"
+    assert result["local_inference"]["status"]=="DEFER_LOCAL_RESOURCE_PRESSURE"
+    assert (tmp_path/"application/resource_discovery/trial_plans/latest.json").exists()
+
+
+def test_plan_trials_detects_existing_credential_by_name_only(tmp_path, monkeypatch):
+    from agent_runtime.resource_discovery import ProviderLead, ProviderVerification
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime())
+    scout.scout._write_provider_lead(ProviderLead(
+        "lead:a","op:a","Alpha","ALPHA_API_KEY","https://alpha.example/keys","alpha.example",NOW.isoformat(),"r"
+    ))
+    scout.scout._write_provider_verification(ProviderVerification(
+        "lead:a","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE"
+    ))
+    monkeypatch.setenv("ALPHA_API_KEY","super-secret")
+    monkeypatch.setattr(scout,"local_inference_feasibility",lambda:{"status":"LOCAL_SETUP_REQUIRED","reasons":[]})
+    result=scout.plan_trials(now=NOW)
+    assert result["plans"][0]["status"]=="READY_TO_TRIAL"
+    text=(tmp_path/"application/resource_discovery/trial_plans/latest.json").read_text()
+    assert "super-secret" not in text

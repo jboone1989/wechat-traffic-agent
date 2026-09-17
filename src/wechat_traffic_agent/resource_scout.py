@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
+import os
 from pathlib import Path
+import shutil
 from typing import Any
 
-from agent_runtime.resource_discovery import ResourceNeed, ResourceScout
+from agent_runtime.resource_discovery import ResourceNeed, ResourceScout, plan_provider_trials
 
 
 class ContentResourceScout:
@@ -145,6 +148,112 @@ class ContentResourceScout:
                 for row in rows
             ],
         }
+
+    def plan_trials(self, *, now: datetime, limit: int = 3) -> dict[str, Any]:
+        leads = self.scout.provider_leads()
+        verifications = self.scout.provider_verifications()
+        available = {item.credential_env for item in leads if os.environ.get(item.credential_env)}
+        plans = plan_provider_trials(
+            leads, verifications, available_credentials=available, limit=limit
+        )
+        local = self.local_inference_feasibility()
+        lead_by_id = {item.lead_id: item for item in leads}
+        payload = {
+            "status": "PLANNED" if plans else "NO_VERIFIED_TRIAL_CANDIDATES",
+            "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "available_credential_envs": sorted(available),
+            "local_inference": local,
+            "plans": [
+                {
+                    "plan_id": item.plan_id,
+                    "lead_id": item.lead_id,
+                    "provider_label": item.provider_label,
+                    "credential_env": item.credential_env,
+                    "signup_url": lead_by_id[item.lead_id].signup_url,
+                    "official_root": lead_by_id[item.lead_id].official_root,
+                    "status": item.status,
+                    "priority_score": item.priority_score,
+                    "task_class": item.task_class,
+                    "data_policy": item.data_policy,
+                    "max_requests": item.max_requests,
+                    "reasons": list(item.reasons),
+                    "policy_version": item.policy_version,
+                }
+                for item in plans
+            ],
+        }
+        self._persist_trial_plan(payload)
+        return payload
+
+    def local_inference_feasibility(self) -> dict[str, Any]:
+        mem_total_gib = mem_available_gib = None
+        try:
+            values = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                if ":" not in line:
+                    continue
+                key, rest = line.split(":", 1)
+                token = rest.strip().split()[0]
+                if token.isdigit():
+                    values[key] = int(token)
+            if values.get("MemTotal") is not None:
+                mem_total_gib = round(values["MemTotal"] / 1024 / 1024, 3)
+            if values.get("MemAvailable") is not None:
+                mem_available_gib = round(values["MemAvailable"] / 1024 / 1024, 3)
+        except OSError:
+            pass
+        disk = shutil.disk_usage(self.state_root)
+        disk_free_gib = round(disk.free / 1024**3, 3)
+        disk_used_ratio = round(disk.used / disk.total, 4) if disk.total else 1.0
+        engines = [name for name in ("ollama", "llama-cli", "llama-server", "llamafile") if shutil.which(name)]
+        gpu_present = Path("/dev/nvidia0").exists() or Path("/dev/dri/renderD128").exists()
+        reasons: list[str] = []
+        if disk_free_gib < 5.0 or disk_used_ratio >= 0.90:
+            reasons.append("disk_pressure")
+        if mem_available_gib is not None and mem_available_gib < 2.0:
+            reasons.append("memory_pressure")
+        if not engines:
+            reasons.append("no_local_inference_engine")
+        if "disk_pressure" in reasons or "memory_pressure" in reasons:
+            status = "DEFER_LOCAL_RESOURCE_PRESSURE"
+        elif not engines:
+            status = "LOCAL_SETUP_REQUIRED"
+        else:
+            status = "READY_FOR_LOCAL_TRIAL"
+        return {
+            "status": status,
+            "mem_total_gib": mem_total_gib,
+            "mem_available_gib": mem_available_gib,
+            "disk_free_gib": disk_free_gib,
+            "disk_used_ratio": disk_used_ratio,
+            "gpu_present": gpu_present,
+            "engines": engines,
+            "reasons": reasons,
+        }
+
+    def _persist_trial_plan(self, payload: dict[str, Any]) -> None:
+        folder = self.state_root / "application" / "resource_discovery" / "trial_plans"
+        folder.mkdir(parents=True, exist_ok=True)
+        canonical = dict(payload); canonical.pop("observed_at", None)
+        signature = sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        latest = folder / "latest.json"
+        previous_signature = None
+        if latest.exists():
+            try:
+                previous_signature = json.loads(latest.read_text()).get("signature")
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        row = dict(payload); row["signature"] = signature
+        self._atomic_json(latest, row)
+        if previous_signature != signature:
+            stamp = payload["observed_at"].replace(":", "").replace("+", "_")
+            self._atomic_json(folder / f"{stamp}.json", row)
+
+    @staticmethod
+    def _atomic_json(path: Path, row: dict[str, Any]) -> None:
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+        os.replace(tmp, path)
 
     def _search(self, query: str, limit: int, source_class: str):
         payload = {"query": query, "limit": int(limit), "safesearch": 1}
