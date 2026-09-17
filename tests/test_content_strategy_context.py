@@ -44,3 +44,39 @@ def test_persisted_context_strategy_fails_closed_if_preference_changes(tmp_path)
             topic="crypto-market", traffic_signal=signal(), decided_at=NOW,
             preferred_profile_name="evidence-brief",
         )
+
+
+def test_virtualbrain_belief_history_changes_next_strategy_under_same_current_input(tmp_path):
+    import hashlib
+    profiles = [
+        "explainer-question", "evidence-brief", "comparison-guide",
+        "practical-guide", "follow-up-update", "topic-pillar",
+    ]
+    cycle = next(
+        f"mind-control-{i}" for i in range(1000)
+        if int(hashlib.sha256(f"mind-control-{i}|crypto-market".encode()).hexdigest()[:8], 16) % 100 >= 25
+    )
+    counts = {name: 2 for name in profiles}
+    base = {name: 0.5 for name in profiles}
+    evidence_history = dict(base)
+    evidence_history["evidence-brief"] = 0.9
+    evidence_history["practical-guide"] = 0.2
+    practical_history = dict(base)
+    practical_history["evidence-brief"] = 0.2
+    practical_history["practical-guide"] = 0.9
+    common = dict(
+        state_root=tmp_path, account="https://example.com", cycle=cycle,
+        topic="crypto-market", traffic_signal=signal(), as_of=NOW,
+    )
+    first = choose_content_strategy(**common, mind_strategy_context={
+        "topic": "crypto-market", "samples_by_profile": counts,
+        "mean_relative_reward_by_profile": evidence_history, "evidence_refs": ["history:a"],
+    })
+    second = choose_content_strategy(**common, mind_strategy_context={
+        "topic": "crypto-market", "samples_by_profile": counts,
+        "mean_relative_reward_by_profile": practical_history, "evidence_refs": ["history:b"],
+    })
+    assert first.selection_mode == second.selection_mode == "VIRTUALBRAIN_BELIEF"
+    assert first.profile.name == "evidence-brief"
+    assert second.profile.name == "practical-guide"
+    assert first.profile.name != second.profile.name

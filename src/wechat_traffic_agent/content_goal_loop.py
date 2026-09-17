@@ -19,7 +19,7 @@ from .content_loop import (
 from .content_artifact import ContentKind
 from .content_explorer import GoalEvidenceExplorer, collect_okx_public_market, collect_trading_evidence
 from .content_service import ContentAgent
-from .content_strategy import bind_content_strategy, strategy_instruction
+from .content_strategy import bind_content_strategy, collect_mature_strategy_outcomes, strategy_instruction
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
 from .models import TopicSignal
@@ -249,6 +249,23 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             _put(inputs_path, inputs)
         snapshot = inputs['website']
         cycle_now = datetime.fromisoformat(inputs['now'])
+        strategy_sync = None
+        if self.mind is not None and hasattr(self.mind, 'observe_strategy_outcomes'):
+            strategy_sync_path = folder / 'strategy_learning_sync.json'
+            if strategy_sync_path.exists():
+                strategy_sync = json.loads(strategy_sync_path.read_text(encoding='utf-8'))
+            else:
+                mature_outcomes = collect_mature_strategy_outcomes(
+                    state_root=self.state, account=self.base_url, as_of=cycle_now,
+                )
+                strategy_sync = self.mind.observe_strategy_outcomes(mature_outcomes)
+                _put(strategy_sync_path, strategy_sync)
+                if strategy_sync.get('applied'):
+                    self._activity(
+                        cycle, 'LEARN', 'Audience outcomes changed my strategy memory',
+                        f"Applied {len(strategy_sync['applied'])} mature 24h Website outcome(s) before choosing this cycle's action.",
+                        status='completed',
+                    )
         world_payload = None
         prefetched_evidence_pool = None
         if self.world_feed is not None:
@@ -835,15 +852,24 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 demand_score=0.0, priority_score=0.0, exposure_status='UNKNOWN',
             )
         strategy_path = folder / 'content_strategy.json'
+        mind_strategy_path = folder / 'mind_strategy_context.json'
+        if mind_strategy_path.exists():
+            mind_strategy_context = json.loads(mind_strategy_path.read_text(encoding='utf-8'))
+        elif self.mind is not None and hasattr(self.mind, 'strategy_context'):
+            mind_strategy_context = self.mind.strategy_context(topic=selection.topic)
+            _put(mind_strategy_path, mind_strategy_context)
+        else:
+            mind_strategy_context = None
         content_strategy = bind_content_strategy(
             strategy_path, state_root=self.state, account=self.base_url, cycle=cycle,
             topic=selection.topic, traffic_signal=traffic_signal, decided_at=cycle_now,
             opening_mode=(experiment.treatment_value if experiment is not None else None),
             preferred_profile_name=('follow-up-update' if market_pulse else None),
+            mind_strategy_context=mind_strategy_context,
         )
         strategy_payload = content_strategy.model_dump(mode='json')
         self._activity(cycle, 'DECIDE', 'I chose the content strategy',
-                       f"Using {content_strategy.profile.name} with {content_strategy.profile.structure_pattern}.", status='completed')
+                       f"Using {content_strategy.profile.name} with {content_strategy.profile.structure_pattern}; authority={content_strategy.selection_mode}.", status='completed')
 
         floor_path = folder / 'evidence_floor_plan.json'
         if floor_path.exists():
@@ -921,6 +947,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         brief = {'selection': selection.model_dump(mode='json'), 'learned_techniques': lesson_payload,
                  'social_style_context': social_style_context,
                  'prospective_experiment': experiment_payload, 'content_strategy': strategy_payload,
+                 'virtualbrain_strategy_context': mind_strategy_context,
                  'evidence_floor': floor_plan.model_dump(mode='json'),
                  'agent_expression_context': expression_context,
                  'source_material': {'evidence': selected, 'market_context_evidence': market_companion,
@@ -1082,6 +1109,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'website_experiment_compliance': experiment_check,
                       'website_experiment_eligible': experiment_eligible,
                       'content_strategy': strategy_payload,
+                      'virtualbrain_strategy_context': mind_strategy_context,
+                      'strategy_learning_sync': strategy_sync,
                       'traffic_context_ref': 'traffic_context.json',
                       'evidence_floor_plan': floor_plan.model_dump(mode='json'),
                       'evidence_floor_check': floor_check.model_dump(mode='json'),
@@ -1101,6 +1130,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'website_experiment_compliance': experiment_check,
                   'website_experiment_eligible': experiment_eligible,
                   'content_strategy': strategy_payload,
+                  'virtualbrain_strategy_context': mind_strategy_context,
+                  'strategy_learning_sync': strategy_sync,
                   'traffic_context': traffic_payload,
                   'evidence_floor': floor_check.model_dump(mode='json'),
                   'prior_experiences_used': len(inputs['prior_experience']), 'automated_checks_passed': passes,

@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable, Mapping
 
 MIND_SCHEMA = "content-mind:v1"
@@ -15,6 +16,8 @@ MIND_SCHEMA = "content-mind:v1"
 AUTHORITY_ID = "session"
 MAX_PLANS = 128
 MAX_EVENT_IDS = 512
+MAX_STRATEGY_OUTCOMES = 512
+MIN_STRATEGY_PROFILE_SAMPLES = 2
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
 
 
@@ -32,6 +35,7 @@ class ContentMind:
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
+        self._strategy_outcomes: dict[str, dict[str, Any]] = {}
         self._restore()
 
     @property
@@ -55,16 +59,20 @@ class ContentMind:
         if not self.checkpoint_path.exists():
             return
         row = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
-        expected = {"schema_version", "subject_id", "subject", "plans", "observed_event_ids"}
-        if not isinstance(row, dict) or set(row) != expected:
+        legacy = {"schema_version", "subject_id", "subject", "plans", "observed_event_ids"}
+        current = legacy | {"strategy_outcomes"}
+        if not isinstance(row, dict) or frozenset(row) not in {frozenset(legacy), frozenset(current)}:
             raise ValueError("Content Mind checkpoint fields mismatch")
         if row["schema_version"] != MIND_SCHEMA or row["subject_id"] != self.subject_id:
             raise ValueError("Content Mind checkpoint identity mismatch")
         if not isinstance(row["plans"], dict) or not isinstance(row["observed_event_ids"], list):
             raise ValueError("Content Mind checkpoint collections are invalid")
+        if "strategy_outcomes" in row and not isinstance(row["strategy_outcomes"], dict):
+            raise ValueError("Content Mind strategy outcomes are invalid")
         self.session.restore(row["subject"])
         self._plans = deepcopy(row["plans"])
         self._observed_event_ids = [str(item) for item in row["observed_event_ids"]]
+        self._strategy_outcomes = deepcopy(row.get("strategy_outcomes") or {})
 
     def _persist(self) -> None:
         payload = {
@@ -73,6 +81,7 @@ class ContentMind:
             "subject": self.session.snapshot(),
             "plans": self._plans,
             "observed_event_ids": self._observed_event_ids,
+            "strategy_outcomes": self._strategy_outcomes,
         }
         tmp = self.checkpoint_path.with_suffix(".json.tmp")
         tmp.write_text(
@@ -360,6 +369,113 @@ class ContentMind:
             "prediction_error": prediction_error, "reliability": reliability,
         }
 
+    def observe_strategy_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Ingest mature Website outcomes as persistent, non-causal strategy experience."""
+        applied: list[dict[str, Any]] = []
+        duplicates = 0
+        rows = sorted(
+            (dict(raw) for raw in outcomes if isinstance(raw, Mapping)),
+            key=lambda row: (str(row.get("observed_at") or ""), str(row.get("outcome_id") or "")),
+        )
+        for row in rows:
+            outcome_id = str(row.get("outcome_id") or "").strip()
+            topic = str(row.get("topic") or "").strip()
+            profile = str(row.get("profile_name") or "").strip()
+            refs = list(dict.fromkeys(
+                str(ref).strip() for ref in row.get("evidence_refs", ()) if str(ref).strip()
+            ))
+            raw_pageviews = row.get("pageviews_24h")
+            if not outcome_id or not topic or not profile or not refs:
+                raise ValueError("strategy outcome requires id, topic, profile, and evidence_refs")
+            if isinstance(raw_pageviews, bool) or not isinstance(raw_pageviews, (int, float)) or raw_pageviews < 0:
+                raise ValueError("strategy outcome requires non-negative 24h pageviews")
+            pageviews = float(raw_pageviews)
+            if outcome_id in self._strategy_outcomes:
+                duplicates += 1
+                continue
+            prior = [
+                float(item["pageviews_24h"])
+                for item in self._strategy_outcomes.values()
+                if item.get("topic") == topic and isinstance(item.get("pageviews_24h"), (int, float))
+            ]
+            baseline = float(median(prior)) if prior else None
+            if baseline is None or (baseline == 0.0 and pageviews == 0.0):
+                reward = 0.5
+            elif baseline == 0.0:
+                reward = 1.0
+            else:
+                reward = pageviews / (pageviews + baseline)
+            event_id = "content-strategy-outcome:" + outcome_id
+            self.session.ingest_life_experience(
+                {
+                    "event_id": event_id, "tick": int(self.session.tick),
+                    "summary": (
+                        f"Website strategy {profile} on topic {topic} produced "
+                        f"{int(pageviews) if pageviews.is_integer() else pageviews} pageviews in the mature 24h window."
+                    ),
+                    "evidence_refs": refs, "significance": min(1.0, 0.25 + 0.1 * len(prior)),
+                    "source": "website-audience-outcome", "confidence": 1.0,
+                    "outcome": reward, "domain": "content-audience",
+                    "identity_relevance": 0.25, "emotional_intensity": 0.0,
+                },
+                authority_id=AUTHORITY_ID,
+            )
+            stored = {
+                "outcome_id": outcome_id, "topic": topic, "profile_name": profile,
+                "pageviews_24h": pageviews, "baseline_pageviews_24h": baseline,
+                "relative_reward": reward, "observed_at": str(row.get("observed_at") or ""),
+                "publication_id": str(row.get("publication_id") or ""),
+                "evidence_refs": refs,
+            }
+            self._strategy_outcomes[outcome_id] = stored
+            applied.append(deepcopy(stored))
+        if len(self._strategy_outcomes) > MAX_STRATEGY_OUTCOMES:
+            ordered = sorted(
+                self._strategy_outcomes.items(),
+                key=lambda item: (str(item[1].get("observed_at") or ""), item[0]),
+            )
+            for key, _ in ordered[: len(self._strategy_outcomes) - MAX_STRATEGY_OUTCOMES]:
+                self._strategy_outcomes.pop(key, None)
+        if applied:
+            self._persist()
+        return {
+            "status": "OBSERVED" if applied else "NO_NEW_OUTCOMES",
+            "applied": applied, "duplicates": duplicates,
+            "total_strategy_outcomes": len(self._strategy_outcomes),
+            "causal_claim": False,
+        }
+
+    def strategy_context(self, *, topic: str) -> dict[str, Any]:
+        """Expose learned audience-response beliefs for the next prospective decision."""
+        topic = str(topic).strip()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in self._strategy_outcomes.values():
+            if row.get("topic") == topic:
+                grouped.setdefault(str(row.get("profile_name") or ""), []).append(row)
+        counts: dict[str, int] = {}
+        mean_rewards: dict[str, float | None] = {}
+        mean_pageviews: dict[str, float | None] = {}
+        refs: list[str] = []
+        for profile, values in grouped.items():
+            if not profile:
+                continue
+            rewards = [float(row["relative_reward"]) for row in values]
+            views = [float(row["pageviews_24h"]) for row in values]
+            counts[profile] = len(values)
+            mean_rewards[profile] = sum(rewards) / len(rewards) if rewards else None
+            mean_pageviews[profile] = sum(views) / len(views) if views else None
+            for row in values:
+                refs.extend(row.get("evidence_refs") or ())
+        return {
+            "topic": topic, "outcome_count": sum(counts.values()),
+            "samples_by_profile": counts,
+            "mean_relative_reward_by_profile": mean_rewards,
+            "mean_pageviews_24h_by_profile": mean_pageviews,
+            "evidence_refs": list(dict.fromkeys(str(ref) for ref in refs if str(ref).strip())),
+            "minimum_profile_samples": MIN_STRATEGY_PROFILE_SAMPLES,
+            "causal_claim": False,
+        }
+
     def observe_process_experience(
         self,
         *,
@@ -459,7 +575,16 @@ class ContentMind:
             "beliefs": beliefs[:8],
             "recent_belief_changes": recent_belief_changes,
             "latest_plan": deepcopy(latest_plan),
-            "learning_boundary": "world attention and process experience are connected; audience outcomes are not connected yet",
+            "strategy_learning": {
+                "outcome_count": len(self._strategy_outcomes),
+                "topics": sorted({
+                    str(row.get("topic")) for row in self._strategy_outcomes.values() if row.get("topic")
+                }),
+            },
+            "learning_boundary": (
+                "world attention, prospective prediction error, process experience, and mature Website "
+                "audience outcomes are connected; audience outcomes remain descriptive and non-causal"
+            ),
         }
 
 
