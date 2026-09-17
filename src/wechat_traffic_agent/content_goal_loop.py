@@ -891,6 +891,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             created_at=cycle_now, candidate_forecasts=action_forecasts,
         )
         action_prediction_payload = action_prediction.model_dump(mode='json')
+        if self.mind is not None and hasattr(self.mind, 'register_action_prediction'):
+            self.mind.register_action_prediction(action_prediction)
         self._activity(cycle, 'DECIDE', 'I chose the content strategy from prospective forecasts',
                        f"Using {content_strategy.profile.name} with {content_strategy.profile.structure_pattern}; authority={content_strategy.selection_mode}.", status='completed')
 

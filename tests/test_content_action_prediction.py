@@ -179,3 +179,42 @@ def test_multi_horizon_feedback_stays_separate_and_24h_is_mature(tmp_path):
     assert by_window["4h"]["maturity"] == "PROVISIONAL"
     assert by_window["24h"]["maturity"] == "MATURE"
     assert by_window["1h"]["reliability"] < by_window["4h"]["reliability"] < by_window["24h"]["reliability"]
+
+
+def test_virtualbrain_prediction_calibration_changes_next_forecast_under_same_current_input(tmp_path):
+    topic = "crypto-market"
+
+    def calibrated_context(root, *, expected, actual):
+        mind = ContentMind(root=root, subject_id="content-agent")
+        prediction_id = f"calibration:{root.name}"
+        mind.session.register_prediction(
+            prediction_id=prediction_id, domain="content", context_key=topic,
+            action_key="evidence-brief", target="website:http_pageviews:24h",
+            expected=expected, confidence=0.8,
+            created_at=(NOW - timedelta(hours=26)).isoformat(),
+            evidence_cutoff_at=(NOW - timedelta(hours=26)).isoformat(),
+            due_at=(NOW - timedelta(hours=2)).isoformat(),
+            evidence_refs=[f"evidence:{root.name}:prediction"],
+        )
+        mind.session.settle_prediction(
+            prediction_id=prediction_id, outcome_id=f"outcome:{root.name}",
+            observed=actual, observed_at=(NOW - timedelta(hours=1)).isoformat(),
+            evidence_refs=[f"evidence:{root.name}:outcome"], maturity="MATURE",
+            reliability=1.0, learning_authority=True, inquiry_threshold=1.0,
+        )
+        return mind.strategy_context(topic=topic)
+
+    under_context = calibrated_context(tmp_path / "under", expected=1.0, actual=10.0)
+    over_context = calibrated_context(tmp_path / "over", expected=10.0, actual=1.0)
+    under = forecast_strategy_candidates(
+        state_root=tmp_path / "same-current", account=ACCOUNT, topic=topic, as_of=NOW,
+        mind_strategy_context=under_context,
+    )
+    over = forecast_strategy_candidates(
+        state_root=tmp_path / "same-current", account=ACCOUNT, topic=topic, as_of=NOW,
+        mind_strategy_context=over_context,
+    )
+    assert under_context["prediction_calibration_by_profile"]["evidence-brief"]["mean_signed_error"] > 0
+    assert over_context["prediction_calibration_by_profile"]["evidence-brief"]["mean_signed_error"] < 0
+    assert under["evidence-brief"]["expected_utility"] > over["evidence-brief"]["expected_utility"]
+    assert under["evidence-brief"]["information_gain"] == over["evidence-brief"]["information_gain"]
