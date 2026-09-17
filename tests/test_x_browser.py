@@ -9,6 +9,7 @@ from wechat_traffic_agent.x_browser import (
     XBrowserPublicationUnverified, XBrowserPublishResult, XBrowserPublisher, _post_id_from_url,
 )
 from wechat_traffic_agent.x_social import XHistoryLedger
+from wechat_traffic_agent.x_browser_mentions import browser_mention_post
 
 NOW = datetime(2026, 9, 17, 4, 0, tzinfo=timezone.utc)
 
@@ -147,3 +148,16 @@ def test_pre_publish_reconciliation_fails_closed_when_timeline_does_not_load():
         assert "refusing to publish" in str(exc)
     else:
         raise AssertionError("missing timeline was treated as safe-to-publish")
+
+
+def test_browser_mention_post_normalizes_incoming_status_and_skips_self():
+    row = browser_mention_post(
+        text="  A public question   about Ferro  ", href="/other_agent/status/2100486738342764999",
+        own_handle="caini56006962",
+    )
+    assert row == {
+        "id": "2100486738342764999", "text": "A public question about Ferro",
+        "username": "other_agent", "url": "https://x.com/other_agent/status/2100486738342764999",
+    }
+    assert browser_mention_post(text="self", href="/caini56006962/status/2100486738342765000", own_handle="caini56006962") is None
+    assert browser_mention_post(text="bad", href="/home", own_handle="caini56006962") is None

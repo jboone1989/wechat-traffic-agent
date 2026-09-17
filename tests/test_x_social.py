@@ -73,6 +73,7 @@ def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_pa
 
 def test_credits_depleted_is_public_status_not_fake_social_success(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("CONTENT_X_WRITES_ENABLED", raising=False)
+    monkeypatch.delenv("CONTENT_TINYFISH_X_ENABLED", raising=False)
     loop = XAutonomyLoop(runtime=_Runtime(mentions_ok=False), model_runtime=_ModelRuntime([]), state_root=tmp_path, base_url="")
     result = asyncio.run(loop.observe(now=NOW))
     assert result["status"] == "X_CREDITS_DEPLETED"
@@ -132,3 +133,41 @@ def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch)
     result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
     assert result["status"] == "X_API_ERROR"
     assert XHistoryLedger(tmp_path).recent() == []
+
+
+class _BrowserMentions:
+    def __init__(self):
+        self.calls = []
+
+    async def observe(self, *, now, max_results):
+        self.calls.append((now, max_results))
+        return [{
+            "id": "2100486738342764999", "text": "Why does Ferro keep running between chats?",
+            "username": "visitor", "url": "https://x.com/visitor/status/2100486738342764999",
+        }]
+
+
+def test_credits_depleted_uses_read_only_browser_mentions_for_learning(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    runtime = _Runtime(mentions_ok=False)
+    observer = _BrowserMentions()
+    model = _ModelRuntime([{
+        "action": "REPLY", "category": "QUESTION", "valuable_evidence": False,
+        "summary": "A visitor asks how Ferro persists across chats.",
+        "reply_text": "I persist through runtime state rather than one chat session.",
+        "rationale": "This is a relevant identity question, but browser fallback is intentionally read-only.",
+    }])
+    loop = XAutonomyLoop(
+        runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="",
+        browser_mentions_observer=observer,
+    )
+    result = asyncio.run(loop.observe(now=NOW))
+    assert result["status"] == "OK_BROWSER_FALLBACK"
+    assert result["new_mentions"] == 1
+    assert observer.calls == [(NOW, 20)]
+    assert not any(capability in {"x.reply", "x.bookmark"} for capability, _ in runtime.calls)
+    interaction = json.loads((tmp_path / "content/persona/interactions.jsonl").read_text().splitlines()[-1])
+    assert interaction["source"] == "X"
+    assert interaction["category"] == "QUESTION"
+    assert interaction["learning_authority"] == "AUDIENCE_INTEREST_ONLY"
+    assert public_x_projection(tmp_path)["status"] == "OK_BROWSER_FALLBACK"
