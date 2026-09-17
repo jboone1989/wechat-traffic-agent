@@ -130,6 +130,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "What actually happened" in live.text
     assert "NERVOUS SYSTEM" in live.text
     assert "CONNECTOME SUBSTRATE" in live.text
+    assert "strongest event delta" in live.text
+    assert "compressed time" in live.text
     assert "semantic ports" in live.text
     assert "FIXED WIRING" in live.text
     assert "CONTROL OUTPUTS" in live.text
