@@ -25,7 +25,7 @@ def render_agent_home(config, latest_html: str, category_html: str, *, x_project
 <div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Content Agent observing, deciding, creating and learning">
 <div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="Humanoid Content Agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
 <a class="crl-live-pill" href="/live/" aria-label="Open the live Content Agent"><b>● LIVE AGENT</b><span>Observe · Decide · Create · Learn</span></a>
-</div></div></section>'''+_loop(agent_name)+_x_social(x_projection or {}, agent_name=agent_name)+_editorial(latest_html, category_html, agent_name=agent_name)
+</div></div></section>'''+_loop(agent_name)+_editorial(latest_html, agent_name=agent_name)+_x_social(x_projection or {}, agent_name=agent_name)+_livingruntime(agent_name)
 
 
 def _loop(agent_name: str) -> str:
@@ -41,6 +41,10 @@ def _loop(agent_name: str) -> str:
 <div class="loop-step"><i>04</i><b>▥</b><div><strong>Learn</strong><span>Listen to outcomes, update beliefs, improve over time.</span></div></div>
 </div></div></section>'''
 
+
+
+def _livingruntime(agent_name: str) -> str:
+    return f"""<section class="crl-runtime"><div class="home-shell runtime-card"><div><p class="editorial-kicker"><i></i> PART OF LIVINGRUNTIME</p><h2>{agent_name} is one persistent agent in a larger agent ecosystem.</h2><p>LivingRuntime provides the runtime, memory, network and continuity ideas behind this public agent. The network lets agents discover capabilities and work with other agents without turning every node into a separate identity.</p></div><div class="runtime-actions"><a class="crl-primary" href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Explore Agent Network</a><a class="crl-secondary" href="/about/">About {agent_name}</a></div></div></section>"""
 
 
 def _x_social(projection: dict, *, agent_name: str = "Content Agent") -> str:
@@ -71,14 +75,13 @@ def _x_social(projection: dict, *, agent_name: str = "Content Agent") -> str:
         profile = f'<div class="x-profile"><div class="x-avatar-fallback">X</div><div><p class="x-status">CONNECTING</p><h2>Follow {agent_name} on X</h2><p>{agent_name}’s public X identity will appear here after identity sync.</p></div></div>'
         fallback = '<p class="x-empty">No X public trace has been synchronized into the site build yet.</p>'
         embed = ''
-    return f'''<section class="crl-x"><div class="home-shell x-grid">{profile}<div class="x-public"><p class="editorial-kicker"><i></i> PUBLIC SOCIAL LIFE</p><h3>Thoughts, replies, revisions.</h3><p>Short-form expressions are linked to the cognition cycle that produced them. Discovery is not adoption, and older views are not deleted to make the agent look consistent.</p><div class="x-fallback">{fallback}</div>{embed}</div></div></section>'''
+    return f'''<section class="crl-x" id="x-life"><div class="home-shell x-grid">{profile}<div class="x-public"><p class="editorial-kicker"><i></i> PUBLIC SOCIAL LIFE</p><h3>Thoughts, replies, revisions.</h3><p>Short-form expressions are linked to the cognition cycle that produced them. Discovery is not adoption, and older views are not deleted to make the agent look consistent.</p><div class="x-fallback">{fallback}</div>{embed}</div></div></section>'''
 
-def _editorial(latest_html: str, category_html: str, *, agent_name: str = "Content Agent") -> str:
-    return f'''<section class="crl-editorial"><div class="home-shell editorial-grid">
-<div class="editorial-intro"><p class="editorial-kicker"><i></i> Latest from {agent_name}</p><h2>Fresh perspectives<br>for a more curious world.</h2><p>Original research, clear explanations, and new perspectives — published by {agent_name} as part of an ongoing learning process.</p><a href="/archive/">View all articles <span>→</span></a></div>
+def _editorial(latest_html: str, *, agent_name: str = "Content Agent") -> str:
+    return f"""<section class="crl-editorial"><div class="home-shell editorial-grid editorial-simple">
+<div class="editorial-intro"><p class="editorial-kicker"><i></i> Latest from {agent_name}</p><h2>What I’ve been working on.</h2><p>Research, notes, and explanations published as part of an ongoing learning process.</p><a href="/archive/">View all work <span>→</span></a></div>
 <div class="card-grid latest-grid">{latest_html}</div>
-<aside class="editorial-quote"><blockquote>“Better information for a brighter tomorrow.”</blockquote><span>CONTENT<br>RESEARCH LAB</span></aside>
-</div><div class="home-shell editorial-more"><p>Explore the archive</p><div class="category-grid">{category_html}</div></div></section>'''
+</div></section>"""
 
 
 def agent_home_css() -> str:
@@ -117,6 +120,16 @@ def agent_home_css() -> str:
 @media(max-width:860px){.crl-hero-inner{grid-template-columns:1fr}.crl-static-visual{height:440px!important;order:-1;margin-top:12px}.crl-static-art{inset:0 -48px}.crl-live-pill{left:61%;top:55%}}
 @media(max-width:620px){.crl-static-visual{height:315px!important}.crl-static-art{inset:0 -95px}.crl-static-art img{border-radius:14px}.crl-live-pill{display:none}}
 @media(prefers-reduced-motion:reduce){.crl-static-art{transform:none!important;transition:none!important}}
+'''
+    css += r'''
+.agent-home .brand-ecosystem{color:#7d9186;font-weight:500;font-size:.72em}
+.agent-home .editorial-grid{grid-template-columns:260px minmax(0,1fr)}
+.crl-runtime{padding:58px 0;background:#0b1c18;border-top:1px solid rgba(112,243,178,.14)}
+.runtime-card{display:grid;grid-template-columns:minmax(0,1.3fr) auto;gap:44px;align-items:center;padding:32px;border:1px solid rgba(112,243,178,.16);border-radius:16px;background:#0a1814}
+.runtime-card h2{margin:.15em 0 .45em;color:#eef7f1;font:500 2rem/1.08 Georgia,serif}
+.runtime-card>div>p:not(.editorial-kicker){max-width:760px;color:#8fa59a;font-size:.82rem}.runtime-actions{display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:860px){.agent-home .editorial-grid{grid-template-columns:1fr}.runtime-card{grid-template-columns:1fr}.runtime-actions{justify-content:flex-start}}
+@media(max-width:620px){.agent-home .nav-wrap{display:flex;align-items:center}.agent-home .nav-wrap nav{display:flex;max-width:62vw;overflow-x:auto;flex-wrap:nowrap;gap:14px;scrollbar-width:none}.agent-home .nav-wrap nav a{white-space:nowrap}.agent-home .nav-wrap nav a:nth-child(1),.agent-home .nav-wrap nav a:nth-child(4),.agent-home .nav-wrap nav a:nth-child(5),.agent-home .nav-wrap nav a:nth-child(6){display:none}}
 '''
     return css
 

@@ -42,6 +42,29 @@ class ContentAgentWebChannel(StaticWebChannel):
         body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection, persona=persona)
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
 
+    def _header(self) -> str:
+        persona = self._public_persona()
+        name = html.escape(str(persona.get("name") or "Content Agent"))
+        return (
+            '<header class="site-header"><div class="shell nav-wrap">'
+            f'<a class="brand" href="/">{name}<span class="brand-ecosystem"> / LivingRuntime</span></a>'
+            '<nav aria-label="Primary"><a href="/about/">Ferro</a><a href="/live/">Live</a>'
+            '<a href="/talk/">Talk</a><a href="/archive/">Work</a><a href="/#x-life">X</a>'
+            '<a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Network ↗</a></nav>'
+            '</div></header>'
+        )
+
+    def _footer(self) -> str:
+        persona = self._public_persona()
+        name = html.escape(str(persona.get("name") or "Content Agent"))
+        return (
+            '<footer class="site-footer"><div class="shell footer-grid"><div>'
+            f'<strong>{name} · LivingRuntime</strong><p>Persistent AI agent. Public work, learning, and conversation.</p></div>'
+            '<nav aria-label="Footer"><a href="/archive/">Work</a><a href="/methodology/">Methodology</a>'
+            '<a href="/editorial-policy/">Editorial policy</a><a href="/privacy/">Privacy</a><a href="/contact/">Contact</a></nav></div>'
+            f'<div class="shell copyright">{name} is part of the LivingRuntime ecosystem. Market content is not investment advice.</div></footer>'
+        )
+
     def _artifact_page(self, item: ContentArtifact, route: str, all_artifacts: list[ContentArtifact]) -> str:
         page = super()._artifact_page(item, route, all_artifacts)
         persona = self._public_persona()

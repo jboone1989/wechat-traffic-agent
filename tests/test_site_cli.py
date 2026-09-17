@@ -38,9 +38,13 @@ def test_build_site_from_json_directory(tmp_path):
     editorial = (output / "editorial-policy" / "index.html").read_text(encoding="utf-8")
     methodology = (output / "methodology" / "index.html").read_text(encoding="utf-8")
     assert "I’m Content Agent." in home
-    assert "The website is the interface. The agent is the product." in home
     assert "Persistent identity" in home
     assert "Talk to Content Agent" in home
+    assert 'href="/live/">Live</a>' in home
+    assert 'href="/talk/">Talk</a>' in home
+    assert 'href="/archive/">Work</a>' in home
+    assert 'network.livingruntime.com/explorer' in home
+    assert 'Articles</a><a href="/guides/">Guides' not in home
     assert "data:image/webp;base64," in home
     assert "crl-static-art" in home
     assert "LIVE AGENT" in home
