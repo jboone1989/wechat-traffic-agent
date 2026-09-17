@@ -102,8 +102,18 @@ class ContentWakefulRuntime:
                 exact_due = self._next_action_outcome_due(now)
                 if exact_due is not None:
                     at = min(at, exact_due)
+        wake_id = f"content:{task}"
+        existing = next(
+            (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
+            None,
+        )
+        # A task may schedule an urgent follow-up while it is running. The normal
+        # cadence that main() applies after the task completes must never postpone
+        # that earlier wake; it may only fill a missing plan or make one earlier.
+        if existing is not None and existing.at <= at:
+            return
         self.core.schedule(PlannedWake(
-            wake_id=f"content:{task}", at=at, reason=self._reason(task), task=task,
+            wake_id=wake_id, at=at, reason=self._reason(task), task=task,
         ))
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:

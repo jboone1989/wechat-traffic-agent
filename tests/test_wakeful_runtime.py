@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
+from agent_runtime.wakeful import PlannedWake
 
 
 NOW = datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
@@ -204,3 +205,23 @@ def test_real_minifly_shadow_substrate_is_separate_from_semantic_ports(tmp_path,
     assert substrate["lifecycle"] == "SHADOW"
     assert substrate["recent_bursts"][-1]["synaptic_events"] > 0
     assert snapshot["connectome"]["status"] == "SHADOW_ACTIVE"
+
+
+def test_normal_resource_cadence_does_not_postpone_earlier_followup(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_resource_followup(NOW, seconds=300)
+    runtime.schedule_next("RESOURCE_REVIEW", NOW)
+    wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "RESOURCE_REVIEW")
+    assert wake.at == NOW + timedelta(minutes=5)
+    assert wake.reason == "continue unresolved autonomous resource verification"
+
+
+def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:RESOURCE_REVIEW", at=NOW + timedelta(hours=2),
+        reason="later placeholder", task="RESOURCE_REVIEW",
+    ))
+    runtime.schedule_next("RESOURCE_REVIEW", NOW)
+    wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "RESOURCE_REVIEW")
+    assert wake.at == NOW + timedelta(hours=1)
