@@ -16,6 +16,7 @@ from typing import Any, Protocol
 
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from .content_admission import _write_once
+from .okx_orbit import _draft_sha256, _post_id_from_url
 from .web_editorial import digest
 
 SOURCE = "okx-orbit-public-page:v1"
@@ -269,6 +270,10 @@ class OKXOrbitOutcomeCollector:
             post_id = str(receipt.get("post_id") or "")
             if not published_at or not post_id or not url:
                 continue
+            if receipt.get("draft_sha256") != _draft_sha256(cycle=cycle_dir.name, draft=draft):
+                raise ValueError("OKX publication receipt draft binding mismatch")
+            if _post_id_from_url(url) != post_id:
+                raise ValueError("OKX publication receipt URL/post id mismatch")
             content_sha256 = hashlib.sha256(text.encode("utf-8")).hexdigest()
             intent = str(draft.get("intent") or "UNKNOWN")
             format_name = str(draft.get("format") or "SHORT_POST")

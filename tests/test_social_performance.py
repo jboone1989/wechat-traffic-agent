@@ -48,6 +48,7 @@ def test_two_mature_samples_enable_style_only_guidance(tmp_path: Path):
 
     assert context["status"] == "DESCRIPTIVE_ONLY"
     assert context["generation_authority"] == "STYLE_ONLY"
+    assert context["channel_scope"] == "OKX_ONLY"
     assert context["factual_authority"] is False
     assert context["evidence_gate_authority"] is False
     assert context["publication_authority"] is False
