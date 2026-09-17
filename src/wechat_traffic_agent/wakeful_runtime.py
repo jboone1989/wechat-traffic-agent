@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -74,9 +75,47 @@ class ContentWakefulRuntime:
             if seconds is None:
                 return
             at = now + timedelta(seconds=seconds)
+            if task == "CHECK_OUTCOMES":
+                exact_due = self._next_action_outcome_due(now)
+                if exact_due is not None:
+                    at = min(at, exact_due)
         self.core.schedule(PlannedWake(
             wake_id=f"content:{task}", at=at, reason=self._reason(task), task=task,
         ))
+
+    def _next_action_outcome_due(self, now: datetime) -> datetime | None:
+        """Return the next prospective action-outcome maturity after ``now``.
+
+        The hourly CHECK_OUTCOMES cadence remains the liveness fallback. A known
+        prospective maturity may only make the wake earlier; it can never delay
+        the fallback or create a busy loop for already-due/missing evidence.
+        """
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("outcome scheduling time requires timezone awareness")
+        root = self.state_root / "content" / "continuous" / "cycles"
+        due: list[datetime] = []
+        for prediction_path in root.glob("*/action_prediction.json") if root.exists() else ():
+            cycle_root = prediction_path.parent
+            publication_path = cycle_root / "publication.json"
+            if not publication_path.exists():
+                continue
+            try:
+                publication = json.loads(publication_path.read_text(encoding="utf-8"))
+                attr = publication.get("outcome_attribution") if isinstance(publication, dict) else None
+                published_at = datetime.fromisoformat(str((attr or {}).get("published_at")).replace("Z", "+00:00"))
+                if published_at.tzinfo is None or published_at.utcoffset() is None:
+                    continue
+                published_at = published_at.astimezone(timezone.utc)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            for label, hours in (("1h", 1), ("4h", 4), ("24h", 24)):
+                outcome_path = cycle_root / "action_prediction_outcomes" / f"{label}.json"
+                if outcome_path.exists():
+                    continue
+                candidate = published_at + timedelta(hours=hours)
+                if candidate > now:
+                    due.append(candidate)
+        return min(due) if due else None
 
     def emit_talk(self, *, message: str, observed_at: datetime | None = None) -> None:
         now = observed_at or datetime.now(timezone.utc)
