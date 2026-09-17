@@ -20,11 +20,15 @@ class ContentResourceScout:
             raise ValueError("resource scout time requires timezone")
         runs = self._runs()
         if runs:
-            last = datetime.fromisoformat(str(runs[-1]["observed_at"]).replace("Z", "+00:00"))
-            if now.astimezone(timezone.utc) - last < timedelta(hours=24):
+            last_run = runs[-1]
+            last = datetime.fromisoformat(str(last_run["observed_at"]).replace("Z", "+00:00"))
+            found_last_time = bool(last_run.get("new_opportunity_ids"))
+            retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
+            if now.astimezone(timezone.utc) - last < retry_after:
                 return {
                     "status": "NOT_DUE",
                     "last_observed_at": last.isoformat(),
+                    "retry_after_seconds": int(retry_after.total_seconds()),
                     "opportunity_count": len(self.scout.opportunities()),
                 }
         need = ResourceNeed(
@@ -38,7 +42,7 @@ class ContentResourceScout:
                 "no paid signup or privilege expansion without operator approval",
             ),
         )
-        created = self.scout.discover(need, now=now, max_queries=3, results_per_query=6)
+        created = self.scout.discover(need, now=now, max_queries=6, results_per_query=6)
         opportunities = self.scout.opportunities()
         return {
             "status": "DISCOVERED" if created else "NO_NEW_OPPORTUNITIES",
@@ -53,16 +57,18 @@ class ContentResourceScout:
                     "url": x.url,
                     "claimed_free": x.claimed_free,
                     "credential_hint": x.credential_hint,
+                    "source_class": x.source_class,
                     "status": x.status,
                 }
                 for x in created[:12]
             ],
         }
 
-    def _search(self, query: str, limit: int):
-        return self.capability_runtime.invoke(
-            "web.search", {"query": query, "limit": int(limit), "safesearch": 1}
-        )
+    def _search(self, query: str, limit: int, source_class: str):
+        payload = {"query": query, "limit": int(limit), "safesearch": 1}
+        if source_class == "technical":
+            payload["categories"] = ["it"]
+        return self.capability_runtime.invoke("web.search", payload)
 
     def _runs(self) -> list[dict[str, Any]]:
         folder = self.state_root / "application" / "resource_discovery" / "runs"
