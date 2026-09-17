@@ -134,6 +134,33 @@ class HumanAssistanceService:
         self._write(path, row)
         return row
 
+    def fulfill_matching(
+        self, *, kind: str, detail_key: str, detail_value: str, now: datetime,
+        evidence_refs: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        if not self.root.exists():
+            return []
+        fulfilled = []
+        for path in sorted(self.root.glob("human-request-*.json")):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            details = row.get("details") or {}
+            if str(row.get("kind") or "").upper() != str(kind).upper():
+                continue
+            if str(details.get(detail_key) or "") != str(detail_value):
+                continue
+            if row.get("resolution_status") == "FULFILLED":
+                fulfilled.append(row)
+                continue
+            row["resolution_status"] = "FULFILLED"
+            row["fulfilled_at"] = _iso(now)
+            row["resolution_evidence_refs"] = list(dict.fromkeys(str(x) for x in evidence_refs if x))
+            self._write(path, row)
+            fulfilled.append(row)
+        return fulfilled
+
     @staticmethod
     def _message(row: dict[str, Any]) -> str:
         return (

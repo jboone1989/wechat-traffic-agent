@@ -66,6 +66,23 @@ class WakefulContentTaskRunner:
             local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
             ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
             top = plans[0] if plans else None
+            if ready is not None:
+                trial_result = self.resource_scout.execute_ready_trials(now=now, trial_plans=trial_plans)
+                rows["provider_trials"] = trial_result
+                if int(trial_result.get("completed_count") or 0) > 0:
+                    fulfilled = self.human_assistance.fulfill_matching(
+                        kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                        detail_value=str(ready.get("credential_env") or ""), now=now,
+                        evidence_refs=tuple(
+                            x for x in (str(ready.get("plan_id") or ""), *(trial_result.get("trial_ids") or [])) if x
+                        ),
+                    )
+                    rows["provider_access_resolution"] = {
+                        "status": "FULFILLED" if fulfilled else "NO_MATCHING_REQUEST",
+                        "request_ids": [row.get("request_id") for row in fulfilled],
+                    }
+                elif any(code in {"HTTP_401", "HTTP_403"} for code in (trial_result.get("error_codes") or [])):
+                    rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
             if (
                 ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
                 and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"

@@ -9,7 +9,11 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from agent_runtime.resource_discovery import ResourceNeed, ResourceScout, plan_provider_trials
+from agent_runtime.resource_discovery import (
+    ResourceNeed, ResourceScout, plan_provider_trials, provider_profiles, select_provider,
+)
+
+from .provider_trials import TRIAL_CASES, execute_case, resolve_trial_spec, trial_id
 
 
 class ContentResourceScout:
@@ -183,6 +187,78 @@ class ContentResourceScout:
             ],
         }
         self._persist_trial_plan(payload)
+        return payload
+
+    def execute_ready_trials(self, *, now: datetime, trial_plans: dict[str, Any]) -> dict[str, Any]:
+        plans = [row for row in (trial_plans.get("plans") or []) if row.get("status") == "READY_TO_TRIAL"]
+        if not plans:
+            return {"status": "NO_READY_TRIALS", "created_count": 0, "completed_count": 0}
+        plan = plans[0]
+        if str(plan.get("data_policy") or "") != "PUBLIC_SYNTHETIC_ONLY":
+            return {"status": "BLOCKED_BY_DATA_POLICY", "created_count": 0, "completed_count": 0}
+        spec = resolve_trial_spec(plan)
+        if spec is None:
+            return {"status": "UNSUPPORTED_PROVIDER_ADAPTER", "credential_env": plan.get("credential_env"), "created_count": 0, "completed_count": 0}
+        lead = next((row for row in self.scout.provider_leads() if row.lead_id == plan.get("lead_id")), None)
+        verification = next((row for row in self.scout.provider_verifications() if row.lead_id == plan.get("lead_id")), None)
+        if lead is None or verification is None:
+            return {"status": "MISSING_PROVIDER_EVIDENCE", "created_count": 0, "completed_count": 0}
+        cost = 0.0 if verification.status == "VERIFIED_RECURRING_FREE" else None
+        existing = {row.trial_id for row in self.scout.model_trials()}
+        created = []
+        max_requests = max(0, min(int(plan.get("max_requests") or 0), 3, len(TRIAL_CASES)))
+        for case in TRIAL_CASES[:max_requests]:
+            expected_id = trial_id(plan_id=str(plan["plan_id"]), model_id=spec.model_id, case_id=case.case_id)
+            if expected_id in existing:
+                continue
+            trial, receipt = execute_case(
+                plan=plan, spec=spec, case=case, opportunity_id=lead.source_opportunity_id,
+                now=now, evidence_refs=tuple(verification.evidence_refs), observed_cost=cost,
+            )
+            self.scout.record_model_trial(trial)
+            self._persist_trial_receipt(receipt)
+            created.append(trial)
+            existing.add(trial.trial_id)
+        all_trials = self.scout.model_trials()
+        profiles = provider_profiles(all_trials, minimum_quality=0.75)
+        selected = select_provider(profiles, task_class=str(plan.get("task_class") or "simple_public_text"), quality_floor=0.75)
+        selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
+        return {
+            "status": "TRIALS_EXECUTED" if created else "ALREADY_EVALUATED",
+            "provider_label": spec.provider_label, "model_id": spec.model_id,
+            "created_count": len(created),
+            "completed_count": sum(1 for row in created if row.status == "COMPLETED"),
+            "failed_count": sum(1 for row in created if row.status != "COMPLETED"),
+            "trial_ids": [row.trial_id for row in created],
+            "quality_scores": [row.quality_score for row in created],
+            "error_codes": [row.error_code for row in created if row.error_code],
+            "selection": selection,
+        }
+
+    def _persist_trial_receipt(self, row: dict[str, Any]) -> None:
+        folder = self.state_root / "application" / "resource_discovery" / "trial_receipts"
+        folder.mkdir(parents=True, exist_ok=True)
+        key = sha256(str(row.get("trial_id") or "").encode()).hexdigest()[:24]
+        self._atomic_json(folder / f"{key}.json", row)
+
+    def _persist_provider_selection(self, *, now: datetime, selected: Any, trials: list[Any]) -> dict[str, Any]:
+        if selected is None:
+            payload = {"status": "NO_EMPIRICALLY_VIABLE_PROVIDER", "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat()}
+        else:
+            matching = [row for row in trials if row.opportunity_id == selected.opportunity_id and row.task_class == selected.task_class and row.status == "COMPLETED"]
+            latest = matching[-1] if matching else None
+            payload = {
+                "status": "SELECTED_EMPIRICALLY", "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+                "opportunity_id": selected.opportunity_id, "task_class": selected.task_class,
+                "mean_quality": selected.mean_quality, "mean_latency_ms": selected.mean_latency_ms,
+                "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
+                "provider_lead_id": getattr(latest, "provider_lead_id", ""),
+                "provider_label": getattr(latest, "provider_label", ""), "model_id": getattr(latest, "model_id", ""),
+                "evidence_refs": list(selected.evidence_refs),
+            }
+        folder = self.state_root / "application" / "resource_discovery" / "provider_selection"
+        folder.mkdir(parents=True, exist_ok=True)
+        self._atomic_json(folder / "latest.json", payload)
         return payload
 
     def local_inference_feasibility(self) -> dict[str, Any]:
