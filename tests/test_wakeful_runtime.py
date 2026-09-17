@@ -78,7 +78,7 @@ def test_full_neural_graph_is_exposed_without_claiming_future_plasticity(tmp_pat
     assert graph["synapses"]
     assert graph["capabilities"]["recurrent_graph"] is True
     assert graph["capabilities"]["cpg"] is False
-    assert graph["capabilities"]["synaptic_plasticity"] is False
+    assert graph["capabilities"]["synaptic_plasticity"] is True
     assert graph["capabilities"]["structural_plasticity"] is False
 
 
@@ -93,3 +93,47 @@ def test_prediction_deadline_enters_neural_graph_without_creating_duplicate_wake
     assert snap.neural_state["neurons"]["prediction_due"]["fire_count"] == 0
     assert not any(row.source_event_id.startswith("prediction-due:")
                    for row in snap.neural_control_signals)
+
+
+def test_prospective_prediction_outcome_changes_existing_path_and_is_idempotent(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    before = runtime.public_snapshot()["neural_graph"]
+    before_weight = next(
+        row["weight"] for row in before["synapses"]
+        if row["source"] == "prediction_due" and row["target"] == "task_urgency"
+    )
+    outcome = {
+        "prediction_id": "content-action-prediction:0123456789abcdef01234567",
+        "window": "24h", "expected_pageviews": 4.0, "actual_pageviews": 8.0,
+        "prediction_error": 4.0 / 13.0, "reliability": 1.0,
+        "observed_at": NOW.isoformat(),
+        "evidence_refs": ["content-action-prediction:0123456789abcdef01234567", "nginx:test"],
+    }
+    first = runtime.apply_prediction_outcome_feedback(outcome)
+    after = runtime.public_snapshot()["neural_graph"]
+    after_weight = next(
+        row["weight"] for row in after["synapses"]
+        if row["source"] == "prediction_due" and row["target"] == "task_urgency"
+    )
+    assert first["status"] == "APPLIED"
+    assert after_weight > before_weight
+    assert after["neurons"]["prediction_due"]["input_gain"] > 1.0
+    assert after["neurons"]["prediction_due"]["threshold"] < before["neurons"]["prediction_due"]["threshold"]
+    duplicate = runtime.apply_prediction_outcome_feedback(outcome)
+    assert duplicate["status"] == "ALREADY_APPLIED"
+    assert runtime.public_snapshot()["neural_graph"] == after
+
+
+def test_prediction_feedback_survives_content_runtime_restart(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    outcome = {
+        "prediction_id": "content-action-prediction:fedcba9876543210fedcba98",
+        "window": "4h", "expected_pageviews": 9.0, "actual_pageviews": 3.0,
+        "prediction_error": 6.0 / 13.0, "reliability": 0.65,
+        "observed_at": NOW.isoformat(), "evidence_refs": ["prediction:test", "nginx:test"],
+    }
+    runtime.apply_prediction_outcome_feedback(outcome)
+    snapshot = runtime.public_snapshot()
+    restored = ContentWakefulRuntime(state_root=tmp_path).public_snapshot()
+    assert restored["neural_graph"] == snapshot["neural_graph"]
+    assert restored["neural_feedback"][-1]["outcome_id"].endswith(":4h")
