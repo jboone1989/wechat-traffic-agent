@@ -197,9 +197,19 @@ class ContentResourceEconomy:
             current = self.mind.session.resource_awareness.current
         assert current is not None
         awareness = self.mind.session.resource_awareness
-        prior_costs = [item.actual_cost for item in awareness.outcomes[-12:]]
-        estimated_cost = mean(prior_costs) if prior_costs else self.bootstrap_cycle_estimate
-        prior_values = list(awareness.outcomes[-12:])
+        recent_outcomes = list(awareness.outcomes[-12:])
+        # A provider balance that did not move is not proof the work was free; billing may lag.
+        # Known no-op replays are also not generation-cost evidence. Learn the cost prior only
+        # from positive, actually observed balance decreases on non-noop episodes.
+        cost_evidence = [
+            item.actual_cost for item in recent_outcomes
+            if item.actual_cost > 0.0 and "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary
+        ]
+        estimated_cost = mean(cost_evidence) if cost_evidence else self.bootstrap_cycle_estimate
+        prior_values = [
+            item for item in recent_outcomes
+            if "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary
+        ]
         external = mean([item.external_value for item in prior_values]) if prior_values else 0.5
         learning = mean([item.learning_value for item in prior_values]) if prior_values else 0.5
         reproduction = mean([item.reproduction_value for item in prior_values]) if prior_values else 0.5

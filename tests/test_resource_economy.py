@@ -87,3 +87,18 @@ def test_balance_increase_is_not_misreported_as_negative_spend(tmp_path, monkeyp
     assert result["status"] == "AMBIGUOUS_BALANCE_INCREASE"
     assert mind.session.resource_awareness.outcomes == ()
     assert mind.session.resource_awareness.current.estimated_daily_burn is None
+
+
+def test_zero_or_noop_history_does_not_collapse_future_cost_estimate(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    observations = iter((balance(when=NOW, total=97.35, suffix="a"),
+                         balance(when=NOW + timedelta(minutes=20), total=97.35, suffix="b")))
+    monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
+    economy.observe(NOW)
+    first = economy.begin_cycle(now=NOW, cycle="cycle-zero")
+    economy.end_cycle(now=NOW + timedelta(minutes=20), cycle="cycle-zero",
+                      episode_id=first["episode_id"], before_balance=first["before_balance"],
+                      result={"status": "ALREADY_PROCESSED"})
+    second = economy.begin_cycle(now=NOW + timedelta(minutes=21), cycle="cycle-next")
+    assert second["estimated_cost"] == pytest.approx(economy.bootstrap_cycle_estimate)
