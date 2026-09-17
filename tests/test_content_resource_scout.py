@@ -169,3 +169,44 @@ def test_plan_trials_detects_existing_credential_by_name_only(tmp_path, monkeypa
     assert result["plans"][0]["status"]=="READY_TO_TRIAL"
     text=(tmp_path/"application/resource_discovery/trial_plans/latest.json").read_text()
     assert "super-secret" not in text
+
+
+def test_new_external_friction_breaks_discovery_cooldown_and_changes_constraints(tmp_path):
+    class AdaptiveRuntime:
+        def __init__(self): self.calls=[]
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            return SimpleNamespace(receipt_id="r",payload={"results":[]})
+    runtime=AdaptiveRuntime(); scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    scout.maybe_discover(now=NOW)
+    before=len(runtime.calls)
+    scout.record_acquisition_outcome(
+        plan_id="plan:1",lead_id="lead:1",status="BLOCKED_EXTERNAL",now=NOW.replace(minute=10),
+        friction_kind="PHONE_VERIFICATION",source="HUMAN_REPORTED",evidence_refs=("human-report:1",),
+    )
+    result=scout.maybe_discover(now=NOW.replace(minute=11))
+    assert result["status"]=="NO_NEW_OPPORTUNITIES"
+    assert "without phone verification" in result["adaptive_constraints"]
+    assert len(runtime.calls) > before
+    assert any("without phone verification" in payload["query"] for cap,payload in runtime.calls[before:] if cap=="web.search")
+
+
+def test_trial_plan_uses_persisted_acquisition_friction(tmp_path, monkeypatch):
+    from agent_runtime.resource_discovery import ProviderLead, ProviderVerification
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=SimpleNamespace())
+    lead_a=ProviderLead("lead:a","opp","A","A_KEY","https://a.example/key","a.example",NOW.isoformat(),"r")
+    lead_b=ProviderLead("lead:b","opp","B","B_KEY","https://b.example/key","b.example",NOW.isoformat(),"r")
+    scout.scout._write_provider_lead(lead_a); scout.scout._write_provider_lead(lead_b)
+    scout.scout._write_provider_verification(ProviderVerification("lead:a","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE",rate_limit_evidence=True))
+    scout.scout._write_provider_verification(ProviderVerification("lead:b","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE"))
+    first=scout.plan_trials(now=NOW)
+    top=first["plans"][0]
+    assert top["lead_id"]=="lead:a"
+    scout.record_acquisition_outcome(
+        plan_id=top["plan_id"],lead_id=top["lead_id"],status="BLOCKED_EXTERNAL",now=NOW,
+        friction_kind="PHONE_VERIFICATION",source="HUMAN_REPORTED",
+    )
+    second=scout.plan_trials(now=NOW.replace(minute=1))
+    assert second["plans"][0]["lead_id"]=="lead:b"
+    blocked=next(x for x in second["plans"] if x["lead_id"]=="lead:a")
+    assert blocked["status"]=="BLOCKED_BY_FRICTION"
