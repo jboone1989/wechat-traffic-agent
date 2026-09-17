@@ -460,3 +460,13 @@ def test_live_page_does_not_mix_channel_handoffs_into_life_evidence(tmp_path):
     assert "navigator.clipboard.writeText" not in live.text
     assert "Publish to OKX" not in live.text
     assert "WHY THIS IS MORE THAN A TIMER" in live.text
+
+def test_live_activity_renders_newest_event_first(tmp_path):
+    root = _state(tmp_path)
+    service = LiveAgentService(state_root=root, application=_Application(), backend=_Backend())
+    with TestClient(service._app()) as client:
+        live = client.get('/live/')
+    assert live.status_code == 200
+    assert "box.prepend(eventNode(e))" in live.text
+    assert "box.lastElementChild.remove()" in live.text
+    assert "box.scrollTop=0" in live.text
