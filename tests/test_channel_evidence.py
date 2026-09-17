@@ -140,13 +140,14 @@ def test_mature_window_records_pageviews_without_client_data(tmp_path):
     collector = WebsiteOutcomeCollector(state_root=state, access_log=log, account="https://example.com")
     result = collector.collect(now=NOW + timedelta(hours=25))
     assert result["status"] == "RECORDED"
-    assert len(result["recorded"]) == 1
-    assert result["recorded"][0]["window"] == "24h"
-    assert result["recorded"][0]["pageviews"] == 2
+    assert len(result["recorded"]) == 3
+    recorded = {row["window"]: row["pageviews"] for row in result["recorded"]}
+    assert recorded == {"1h": 0, "4h": 2, "24h": 2}
     rows = ChannelEvidenceStore(state / "content/channel_evidence").as_of(NOW + timedelta(hours=25))
-    assert len(rows) == 1 and rows[0].value == 2
-    assert rows[0].objective == "website_pageviews"
-    assert rows[0].agent_candidate_sha256 == rows[0].published_content_sha256
+    assert len(rows) == 3
+    assert sorted(row.value for row in rows) == [0, 2, 2]
+    assert all(row.objective == "website_pageviews" for row in rows)
+    assert all(row.agent_candidate_sha256 == row.published_content_sha256 for row in rows)
     persisted = "\n".join(
         p.read_text() for base in (state / "content/channel_evidence", state / "content/channel_evidence_sources")
         for p in base.rglob("*.json")
@@ -170,7 +171,8 @@ def test_rotated_gzip_logs_are_included_and_bot_requests_excluded(tmp_path):
         state_root=state, access_log=current, account="https://example.com"
     ).collect(now=NOW + timedelta(hours=25))
     assert result["status"] == "RECORDED"
-    assert result["recorded"][0]["pageviews"] == 1
+    recorded = {row["window"]: row["pageviews"] for row in result["recorded"]}
+    assert recorded == {"1h": 0, "4h": 0, "24h": 1}
 
 
 def test_immature_or_incomplete_log_window_never_becomes_zero(tmp_path):
@@ -179,7 +181,7 @@ def test_immature_or_incomplete_log_window_never_becomes_zero(tmp_path):
     log = tmp_path / "access.log"
     log.write_text(_combined(NOW + timedelta(hours=1), "/"))
     collector = WebsiteOutcomeCollector(state_root=state, access_log=log, account="https://example.com")
-    assert collector.collect(now=NOW + timedelta(hours=12))["status"] == "NO_MATURE_WINDOWS"
+    assert collector.collect(now=NOW + timedelta(hours=12))["status"] == "INSUFFICIENT_LOG_COVERAGE"
     result = collector.collect(now=NOW + timedelta(hours=25))
     assert result["status"] == "INSUFFICIENT_LOG_COVERAGE"
     assert not (state / "content/channel_evidence").exists()

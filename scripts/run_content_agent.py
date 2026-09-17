@@ -221,9 +221,19 @@ def main() -> int:
                         print(json.dumps({"x_social_expression":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
 
             if web_outcome_collector is not None:
-                try: print(json.dumps({"website_outcomes": web_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
+                try:
+                    print(json.dumps({"website_outcomes": web_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
                 except Exception as exc:  # noqa: BLE001
                     print(json.dumps({"website_outcomes":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False,"learning_authority":False}}, sort_keys=True), file=sys.stderr)
+                try:
+                    from wechat_traffic_agent.content_action_prediction import settle_action_predictions
+                    action_learning = settle_action_predictions(
+                        state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
+                        as_of=now, mind=content_mind,
+                    )
+                    print(json.dumps({"content_action_prediction_learning": action_learning}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    print(json.dumps({"content_action_prediction_learning":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
 
             if engagement_outcome_collector is not None:
                 try: print(json.dumps({"website_engagement": engagement_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))

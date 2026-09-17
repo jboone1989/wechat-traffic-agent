@@ -183,13 +183,14 @@ def test_v2_publication_and_outcome_keep_stable_treatment_identity(tmp_path):
         account="https://example.com",
     ).collect(now=published_at + timedelta(hours=25))
     assert result["status"] == "RECORDED"
-    assert result["recorded"][0]["pageviews"] == 1
+    recorded = {row["window"]: row["pageviews"] for row in result["recorded"]}
+    assert recorded["24h"] == 1
     rows = ChannelEvidenceStore(
         tmp_path / "state/content/channel_evidence"
     ).as_of(published_at + timedelta(hours=25))
-    assert len(rows) == 1
-    assert rows[0].strategy_version == binding.strategy_version
-    assert f"website-experiment:{binding.experiment_id}" in rows[0].evidence_refs
+    assert len(rows) == 3
+    assert all(row.strategy_version == binding.strategy_version for row in rows)
+    assert all(f"website-experiment:{binding.experiment_id}" in row.evidence_refs for row in rows)
 
 
 class _GoalExplorer:

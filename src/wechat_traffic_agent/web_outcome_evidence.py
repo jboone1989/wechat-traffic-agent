@@ -31,7 +31,7 @@ METRIC_DEFINITION = (
     "Count of non-obvious-bot HTTP GET 200 requests to the exact canonical "
     "article route during the window; not unique users or verified readers."
 )
-WINDOWS = (("24h", timedelta(hours=24)), ("48h", timedelta(hours=48)), ("7d", timedelta(days=7)))
+WINDOWS = (("1h", timedelta(hours=1)), ("4h", timedelta(hours=4)), ("24h", timedelta(hours=24)), ("48h", timedelta(hours=48)), ("7d", timedelta(days=7)))
 MAX_LOG_FILES = 16
 MAX_COMPRESSED_BYTES = 128 * 1024 * 1024
 MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024
