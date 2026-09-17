@@ -18,8 +18,8 @@ def test_home_x_section_has_identity_static_fallback_and_lazy_official_embed():
         "avatar_url": "https://pbs.twimg.com/profile_images/a.jpg", "url": "https://x.com/agent",
         "recent_activity": [{"text": "A thought linked to cognition.", "expression_kind": "THOUGHT",
                              "url": "https://x.com/agent/status/42"}],
-    })
-    assert "Follow the agent on X" in html
+    }, agent_name="Ferro")
+    assert "Follow Ferro on X" in html
     assert "@agent" in html
     assert "A thought linked to cognition." in html
     assert "twitter-timeline" in html

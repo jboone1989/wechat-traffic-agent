@@ -64,6 +64,7 @@ jobs:
           cp src/wechat_traffic_agent/site_audit.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/site_cli.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/website_engagement_client.py .site-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/public_persona.py .site-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/channels/web.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_web.py .site-ci/wechat_traffic_agent/channels/
           cp src/wechat_traffic_agent/channels/agent_home_experience.py .site-ci/wechat_traffic_agent/channels/

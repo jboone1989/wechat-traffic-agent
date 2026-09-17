@@ -14,6 +14,7 @@ from .content_loop import ReceiptRuntime, _structured
 from .public_activity import emit_public_activity
 from .sources.runtime_x import first_post_id, first_user, normalize_posts
 from .x_mcp import x_writes_enabled
+from .public_persona import public_persona_projection, record_public_interaction
 
 
 class SocialAttentionDecision(BaseModel):
@@ -238,9 +239,15 @@ class XAutonomyLoop:
             "valuable_evidence means the content could materially change an inquiry or worldview after verification; it does NOT mean it is already true or adopted. "
             "A reply must be <=280 characters, contain no private data, impersonation, harassment, investment advice, fabricated facts, or unsupported factual assertions. "
             "If factual verification is needed before replying, choose INVESTIGATE instead. Return JSON only.\n"
-            + json.dumps({"mention": row, "agent_handle": me.get("username")}, ensure_ascii=False)
+            + json.dumps({"mention": row, "agent_handle": me.get("username"),
+                          "public_persona": public_persona_projection(self.state_root)}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, SocialAttentionDecision)
+        if decision.category != "SPAM":
+            record_public_interaction(
+                state_root=self.state_root, source="X", message=str(row.get("summary") or ""),
+                category=decision.category, source_ref=post_id, observed_at=now, summary=decision.summary,
+            )
         if decision.valuable_evidence:
             _append_jsonl(self.social_evidence_path, {
                 "schema_version": "content-agent-x-social-evidence.v1",
@@ -315,8 +322,10 @@ class XAutonomyLoop:
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
             "For METHOD_NOTE, describe the method/tool only as a candidate being tested unless adoption is separately proven. "
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
+            "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported certainty. Max 280 characters including any URL. Return JSON only.\n"
-            + json.dumps({**context, "public_url": public_url}, ensure_ascii=False)
+            + json.dumps({**context, "public_url": public_url,
+                          "public_persona": public_persona_projection(self.state_root)}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XExpressionDecision)
         if decision.action != "POST" or not decision.post_text:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ..content_artifact import ContentArtifact
 from ..website_engagement_client import first_party_engagement_script
+from ..public_persona import public_persona_projection
 from .agent_home_experience import agent_home_css, agent_home_script, render_agent_home
 from .web import StaticWebChannel
 
@@ -26,9 +27,11 @@ class ContentAgentWebChannel(StaticWebChannel):
         if state_raw:
             from ..x_social import public_x_projection
             x_projection = public_x_projection(Path(state_raw))
+            persona = public_persona_projection(Path(state_raw))
         else:
             x_projection = {"connected": False, "recent_activity": []}
-        body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection)
+            persona = {"name": "Content Agent", "status": "UNINITIALIZED"}
+        body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection, persona=persona)
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
 
     def _layout(self, *args, **kwargs) -> str:
@@ -48,6 +51,13 @@ class ContentAgentWebChannel(StaticWebChannel):
     def _static_pages(self) -> dict[str, tuple[str, str, str]]:
         pages = super()._static_pages()
         site = html.escape(self.config.site_name)
+        pages["/talk/"] = (
+            "Talk to the Agent",
+            "<p>This is the public conversation entry for the persistent LivingRuntime agent. On the live production service, this route is served by the bounded conversation endpoint.</p>"
+            "<h2>Conversation boundary</h2><p>Ask about the agent, its work, LivingRuntime, its public learning, website, or social activity. This endpoint is not a general-purpose assistant and does not perform unrelated tasks.</p>"
+            '<p><a href="/live/#talk">Open the live agent conversation →</a></p>',
+            "A bounded public conversation surface for the persistent LivingRuntime agent.",
+        )
         pages["/about/"] = (
             "About the Content Agent",
             f"<p>{site} is not a conventional publication with AI added on top. It is the public surface of a persistent Content Agent that observes, researches, drafts, measures outcomes, and improves its content strategy over time.</p>"

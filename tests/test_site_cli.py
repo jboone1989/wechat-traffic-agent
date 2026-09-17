@@ -35,9 +35,10 @@ def test_build_site_from_json_directory(tmp_path):
     about = (output / "about" / "index.html").read_text(encoding="utf-8")
     editorial = (output / "editorial-policy" / "index.html").read_text(encoding="utf-8")
     methodology = (output / "methodology" / "index.html").read_text(encoding="utf-8")
-    assert "Persistent self-learning Content Agent" in home
+    assert "I’m Content Agent." in home
     assert "The website is the interface. The agent is the product." in home
-    assert "Human-gated publishing" in home
+    assert "Persistent identity" in home
+    assert "Talk to Content Agent" in home
     assert "data:image/webp;base64," in home
     assert "crl-static-art" in home
     assert "LIVE AGENT" in home

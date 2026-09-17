@@ -6,28 +6,31 @@ import html
 from .agent_static_hero_asset import STATIC_HERO_DATA_URI
 
 
-def render_agent_home(config, latest_html: str, category_html: str, *, x_projection: dict | None = None) -> str:
+def render_agent_home(config, latest_html: str, category_html: str, *, x_projection: dict | None = None, persona: dict | None = None) -> str:
     description = html.escape(config.description)
+    persona = persona or {}
+    agent_name = html.escape(str(persona.get("name") or "Content Agent"))
+    self_description = html.escape(str(persona.get("self_description") or description))
     return f'''<section class="crl-hero">
 <div class="crl-grid" aria-hidden="true"></div>
 <div class="crl-index" aria-hidden="true"><b>01</b><span>02</span><span>03</span><span>04</span></div>
-<p class="sr-only">Persistent self-learning Content Agent</p><p class="sr-only">Human-gated publishing</p><p class="sr-only">The website is the interface. The agent is the product.</p><div class="home-shell crl-hero-inner">
+<p class="sr-only">{agent_name}, a persistent LivingRuntime agent</p><div class="home-shell crl-hero-inner">
 <div class="crl-copy" data-parallax="0.012">
-<p class="crl-badge"><i></i> Autonomous Content Agent</p>
-<h1><span>The website is</span><span>the interface.</span><strong>The agent is</strong><strong>the product.</strong></h1>
-<p class="crl-lede">{description}</p>
-<div class="crl-actions"><a class="crl-primary" href="#agent-loop">▶ <span>Watch the loop</span></a><a class="crl-secondary" href="/about/">Meet the agent <span>→</span></a></div>
-<p class="crl-meta"><span>Persistent</span><span>Self-learning</span><span>Evidence-based</span><span>Published automatically</span></p>
+<p class="crl-badge"><i></i> {agent_name} · LivingRuntime Agent</p>
+<h1><span>I’m {agent_name}.</span><strong>I keep going.</strong></h1>
+<p class="crl-lede">{self_description}</p>
+<div class="crl-actions"><a class="crl-primary" href="/talk/">Talk to {agent_name}</a><a class="crl-secondary" href="/live/">Watch me live <span>→</span></a></div>
+<p class="crl-meta"><span>Persistent identity</span><span>Continuous runtime</span><span>Learns from evidence</span><span>Public on X</span></p>
 </div>
 <div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Content Agent observing, deciding, creating and learning">
 <div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="Humanoid Content Agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
 <a class="crl-live-pill" href="/live/" aria-label="Open the live Content Agent"><b>● LIVE AGENT</b><span>Observe · Decide · Create · Learn</span></a>
-</div></div></section>'''+_loop()+_x_social(x_projection or {})+_editorial(latest_html, category_html)
+</div></div></section>'''+_loop(agent_name)+_x_social(x_projection or {}, agent_name=agent_name)+_editorial(latest_html, category_html, agent_name=agent_name)
 
 
-def _loop() -> str:
-    return '''<section class="crl-loop" id="agent-loop"><div class="home-shell crl-loop-grid">
-<div class="loop-intro"><p>THE AGENT LOOP</p><h2>A virtuous cycle<br>for a more curious internet.</h2></div>
+def _loop(agent_name: str) -> str:
+    return f'''<section class="crl-loop" id="agent-loop"><div class="home-shell crl-loop-grid">
+<div class="loop-intro"><p>THE AGENT LOOP</p><h2>{agent_name} is not a page.<br>It is a running process.</h2></div>
 <div class="loop-steps">
 <div class="loop-step"><i>01</i><b>◉</b><div><strong>Observe</strong><span>Scan the world for interesting signals.</span></div></div>
 <div class="loop-arrow">→</div>
@@ -40,7 +43,7 @@ def _loop() -> str:
 
 
 
-def _x_social(projection: dict) -> str:
+def _x_social(projection: dict, *, agent_name: str = "Content Agent") -> str:
     handle = str(projection.get("handle") or "").strip().lstrip("@")
     name = str(projection.get("name") or "Content Agent").strip()
     profile_url = str(projection.get("url") or (f"https://x.com/{handle}" if handle else ""))
@@ -51,7 +54,7 @@ def _x_social(projection: dict) -> str:
         avatar = (f'<img loading="lazy" referrerpolicy="no-referrer" src="{html.escape(avatar_url, quote=True)}" '
                   f'alt="{html.escape(name)} on X" width="64" height="64">') if avatar_url.startswith("https://") else '<div class="x-avatar-fallback">X</div>'
         profile = (f'<div class="x-profile">{avatar}<div><p class="x-status">{html.escape(status)}</p>'
-                   f'<h2>Follow the agent on X</h2><p><strong>{html.escape(name)}</strong> · @{html.escape(handle)}</p>'
+                   f'<h2>Follow {agent_name} on X</h2><p><strong>{html.escape(name)}</strong> · @{html.escape(handle)}</p>'
                    f'<a class="crl-secondary" href="{html.escape(profile_url, quote=True)}" rel="me noopener noreferrer">View on X <span>→</span></a></div></div>')
         fallback_rows = []
         for row in recent:
@@ -65,14 +68,14 @@ def _x_social(projection: dict) -> str:
                  f'<a class="twitter-timeline" data-dnt="true" data-tweet-limit="4" data-chrome="noheader nofooter transparent" '
                  f'href="https://x.com/{html.escape(handle, quote=True)}">Posts by @{html.escape(handle)}</a></div>')
     else:
-        profile = '<div class="x-profile"><div class="x-avatar-fallback">X</div><div><p class="x-status">CONNECTING</p><h2>Follow the agent on X</h2><p>The production X identity will appear here after OAuth identity sync.</p></div></div>'
+        profile = f'<div class="x-profile"><div class="x-avatar-fallback">X</div><div><p class="x-status">CONNECTING</p><h2>Follow {agent_name} on X</h2><p>{agent_name}’s public X identity will appear here after identity sync.</p></div></div>'
         fallback = '<p class="x-empty">No X public trace has been synchronized into the site build yet.</p>'
         embed = ''
     return f'''<section class="crl-x"><div class="home-shell x-grid">{profile}<div class="x-public"><p class="editorial-kicker"><i></i> PUBLIC SOCIAL LIFE</p><h3>Thoughts, replies, revisions.</h3><p>Short-form expressions are linked to the cognition cycle that produced them. Discovery is not adoption, and older views are not deleted to make the agent look consistent.</p><div class="x-fallback">{fallback}</div>{embed}</div></div></section>'''
 
-def _editorial(latest_html: str, category_html: str) -> str:
+def _editorial(latest_html: str, category_html: str, *, agent_name: str = "Content Agent") -> str:
     return f'''<section class="crl-editorial"><div class="home-shell editorial-grid">
-<div class="editorial-intro"><p class="editorial-kicker"><i></i> Latest from the agent</p><h2>Fresh perspectives<br>for a more curious world.</h2><p>Original research, clear explanations, and new perspectives — published by a self-learning agent.</p><a href="/archive/">View all articles <span>→</span></a></div>
+<div class="editorial-intro"><p class="editorial-kicker"><i></i> Latest from {agent_name}</p><h2>Fresh perspectives<br>for a more curious world.</h2><p>Original research, clear explanations, and new perspectives — published by {agent_name} as part of an ongoing learning process.</p><a href="/archive/">View all articles <span>→</span></a></div>
 <div class="card-grid latest-grid">{latest_html}</div>
 <aside class="editorial-quote"><blockquote>“Better information for a brighter tomorrow.”</blockquote><span>CONTENT<br>RESEARCH LAB</span></aside>
 </div><div class="home-shell editorial-more"><p>Explore the archive</p><div class="category-grid">{category_html}</div></div></section>'''
