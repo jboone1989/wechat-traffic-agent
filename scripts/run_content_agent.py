@@ -214,30 +214,36 @@ def main() -> int:
 
             if not tick_failed and continuous_loop is not None and result.generation_ready:
                 focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if args.focus_topic else None
-                resource_cycle_id = focus_cycle_id or f"scheduled-{int(now.timestamp())}"
-                try:
-                    resource_decision = resource_economy.begin_cycle(now=now, cycle=resource_cycle_id)
-                    print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    resource_decision = {"status": "UNAVAILABLE", "decision": "ASK_HUMAN", "error_type": type(exc).__name__, "message": str(exc)[:300]}
-                    print(json.dumps({"resource_decision": resource_decision}, sort_keys=True), file=sys.stderr)
-                if resource_decision.get("decision") != "EXECUTE":
-                    continuous_result = {"status": "RESOURCE_DEFERRED", "cycle": resource_cycle_id, "resource_decision": resource_decision}
-                else:
+                preflight = continuous_loop.preflight(now=now, cycle_id=focus_cycle_id)
+                resource_cycle_id = str(preflight["cycle"])
+                if preflight["status"] == "ALREADY_PROCESSED":
+                    resource_decision = {"status": "SKIPPED_NOOP", "decision": "NO_RESOURCE_ACTION", "cycle": resource_cycle_id}
                     continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
+                    print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
+                else:
                     try:
-                        resource_result = resource_economy.end_cycle(
-                            now=datetime.now(timezone.utc).replace(microsecond=0), cycle=resource_cycle_id,
-                            episode_id=str(resource_decision["episode_id"]), before_balance=float(resource_decision["before_balance"]),
-                            result=continuous_result,
-                        )
-                        continuous_result["resource_economy"] = resource_result
-                        print(json.dumps({"resource_cycle_result": resource_result}, ensure_ascii=False, sort_keys=True))
+                        resource_decision = resource_economy.begin_cycle(now=now, cycle=resource_cycle_id)
+                        print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
                     except Exception as exc:  # noqa: BLE001
-                        print(json.dumps({"resource_cycle_result": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
+                        resource_decision = {"status": "UNAVAILABLE", "decision": "ASK_HUMAN", "error_type": type(exc).__name__, "message": str(exc)[:300]}
+                        print(json.dumps({"resource_decision": resource_decision}, sort_keys=True), file=sys.stderr)
+                    if resource_decision.get("decision") != "EXECUTE":
+                        continuous_result = {"status": "RESOURCE_DEFERRED", "cycle": resource_cycle_id, "resource_decision": resource_decision}
+                    else:
+                        continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
+                        try:
+                            resource_result = resource_economy.end_cycle(
+                                now=datetime.now(timezone.utc).replace(microsecond=0), cycle=resource_cycle_id,
+                                episode_id=str(resource_decision["episode_id"]), before_balance=float(resource_decision["before_balance"]),
+                                result=continuous_result,
+                            )
+                            continuous_result["resource_economy"] = resource_result
+                            print(json.dumps({"resource_cycle_result": resource_result}, ensure_ascii=False, sort_keys=True))
+                        except Exception as exc:  # noqa: BLE001
+                            print(json.dumps({"resource_cycle_result": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
                 print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
-                if continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED"}:
+                if continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
                     try:
                         social_expression = asyncio.run(social_expression_loop.after_content_cycle(result=continuous_result, now=now))
                         print(json.dumps({"social_expression_drafts": social_expression}, ensure_ascii=False, sort_keys=True))

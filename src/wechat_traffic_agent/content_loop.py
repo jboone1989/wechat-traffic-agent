@@ -208,6 +208,24 @@ class ContinuousContentLoop:
         self.root = self.state / 'content/continuous'
         self.inbox = ContentDraftInbox(self.state / 'content')
 
+    def preflight(self, *, now=None, cycle_id=None):
+        """Resolve a cycle locally without acquiring the worker or touching cognition."""
+        now = now or datetime.now(timezone.utc)
+        if now.utcoffset() is None:
+            raise ValueError('timezone required')
+        seconds = self.interval_hours * 3600
+        cycle = str(cycle_id or ('v2-' + str(int(now.timestamp()) // seconds * seconds)))
+        if cycle_id is not None:
+            parts = cycle.split('-')
+            if len(parts) < 3 or parts[0] != 'v2' or not parts[-1].isdigit():
+                raise ValueError('directed cycle_id must be v2-<label>-<unix-seconds>')
+        result_path = self.root / 'cycles' / cycle / 'result.json'
+        return {
+            'cycle': cycle,
+            'status': 'ALREADY_PROCESSED' if result_path.exists() else 'READY',
+            'result_path': str(result_path),
+        }
+
     async def run_once(self, *, now=None, cycle_id=None):
         now = now or datetime.now(timezone.utc)
         if now.utcoffset() is None:
@@ -219,12 +237,8 @@ class ContinuousContentLoop:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return {'status': 'BUSY'}
-            seconds = self.interval_hours * 3600
-            cycle = str(cycle_id or ('v2-' + str(int(now.timestamp()) // seconds * seconds)))
-            if cycle_id is not None:
-                parts = cycle.split('-')
-                if len(parts) < 3 or parts[0] != 'v2' or not parts[-1].isdigit():
-                    raise ValueError('directed cycle_id must be v2-<label>-<unix-seconds>')
+            preflight = self.preflight(now=now, cycle_id=cycle_id)
+            cycle = preflight['cycle']
             folder = self.root / 'cycles' / cycle
             result_path = folder / 'result.json'
             if result_path.exists():

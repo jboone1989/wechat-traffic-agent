@@ -327,3 +327,20 @@ def test_directed_cycle_id_allows_a_new_audited_cycle_without_erasing_bucket_his
     assert directed["status"] == "PUBLISHED"
     assert (worker.root / "cycles" / first["cycle"] / "result.json").exists()
     assert (worker.root / "cycles" / "v2-directed-1789491601" / "result.json").exists()
+
+
+def test_preflight_is_local_and_distinguishes_processed_cycle(tmp_path):
+    runtime, worker, _publisher = setup(tmp_path)
+    before_calls = list(runtime.calls)
+    first = worker.preflight(now=NOW)
+    assert first["status"] == "READY"
+    assert first["cycle"].startswith("v2-")
+    assert runtime.calls == before_calls
+
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    calls_after_publish = list(runtime.calls)
+    replay = worker.preflight(now=NOW)
+    assert replay == {**replay, "status": "ALREADY_PROCESSED"}
+    assert replay["cycle"] == first["cycle"]
+    assert runtime.calls == calls_after_publish
