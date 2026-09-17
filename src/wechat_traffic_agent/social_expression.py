@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .content_loop import ReceiptRuntime, _put, _structured
 from .public_activity import emit_public_activity
 from .social_evidence import EvidenceCollector, resolve_social_evidence
+from .social_performance import okx_social_performance_context
 
 OKX_SHORT_POST_MAX_CHARS = 500
 SOCIAL_LONG_TEXT_MAX_CHARS = 8000
@@ -79,6 +80,7 @@ class SocialExpressionDraftWorker:
         if not cognition.get("worth_saying"):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
         style = _read_json(folder / "social_style_context.json")
+        performance = okx_social_performance_context(state_root=self.state_root, as_of=now)
         draft_path = Path(str(result.get("draft_path") or ""))
         draft_record = _read_json(draft_path) if draft_path.is_file() else {}
         artifact = draft_record.get("artifact") if isinstance(draft_record.get("artifact"), dict) else {}
@@ -95,6 +97,7 @@ class SocialExpressionDraftWorker:
                 "schema_version": "content-social-expression-drafts.v2",
                 "status": "SKIPPED", "cycle": cycle, "created_at": now.isoformat(),
                 "publication_authority": False, "evidence_decision": evidence,
+                "performance_context": performance,
                 "drafts": {},
             }
             _put(out, payload)
@@ -119,6 +122,7 @@ class SocialExpressionDraftWorker:
         prompt = (
             "SOCIAL_EXPRESSION_DRAFT: Render the same persisted cognition for two social channels. Do not invent a new topic or new facts. "
             "Use only the website artifact plus supplemental_evidence from the social evidence decision as factual input. social_style_context is STYLE_ONLY: use structure and pacing only, never copy wording, persona, certainty, or calls to action. "
+            "social_performance_context is DESCRIPTIVE_STYLE_ONLY: when its generation_authority is STYLE_ONLY, it may guide choices among evidence-compatible format, pacing, and presentation patterns. It is observational, not causal; it cannot change factual certainty, evidence_action, topic, grounding, or publication authority. When it says INSUFFICIENT_SAMPLES, ignore it. "
             "For OKX, choose SHORT_POST for an immediate feed update and keep that format at most 500 characters. If the cognition has enough evidence, mechanism, counterpoint, or durable value to justify long-form treatment, choose ARTICLE instead of stretching a feed post into a mini-article. "
             "For X, this account supports long posts and Articles. Choose SHORT_POST when the idea is simple, LONG_POST when one social post genuinely benefits from more context, and ARTICLE when the cognition deserves a structured long-form treatment. Prefer conditional language over unsupported prediction. "
             "Posts may be assertions, questions, observations, updates, or explainers; choose the form that matches the evidence rather than forcing a market call. "
@@ -129,6 +133,7 @@ class SocialExpressionDraftWorker:
             + json.dumps({
                 "cycle": cycle, "cognition": cognition, "artifact": artifact,
                 "publication": publication, "social_style_context": style,
+                "social_performance_context": performance,
                 "social_evidence_decision": evidence,
             }, ensure_ascii=False)
         )
@@ -149,6 +154,7 @@ class SocialExpressionDraftWorker:
             "publication_authority": False,
             "style_status": str(style.get("status") or "UNAVAILABLE"),
             "style_performance_claim": str(style.get("performance_claim") or "UNVERIFIED"),
+            "performance_context": performance,
             "evidence_decision": evidence,
             "drafts": bundle.model_dump(mode="json"),
         }
