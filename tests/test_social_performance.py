@@ -3,7 +3,8 @@ from pathlib import Path
 
 from wechat_traffic_agent.channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from wechat_traffic_agent.okx_orbit_outcomes import SOURCE
-from wechat_traffic_agent.social_performance import okx_social_performance_context
+from wechat_traffic_agent.x_outcomes import SOURCE as X_SOURCE
+from wechat_traffic_agent.social_performance import okx_social_performance_context, x_social_performance_context
 
 NOW = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
 
@@ -80,5 +81,39 @@ def test_edited_or_non_okx_rows_are_not_used(tmp_path: Path):
     edited = row.model_copy(update={"agent_candidate_sha256": "b" * 64})
     store.record(edited)
     context = okx_social_performance_context(state_root=tmp_path, as_of=NOW)
+    assert context["status"] == "INSUFFICIENT_SAMPLES"
+    assert context["variants"] == []
+
+
+def test_two_x_samples_enable_x_only_style_guidance(tmp_path: Path):
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    structure = "x:LONG_POST:QUESTION:v1"
+    for publication, views, likes in (("xp1", 100, 3), ("xp2", 300, 9)):
+        base = _row(publication=publication, structure=structure, metric="views", value=views)
+        store.record(base.model_copy(update={
+            "channel": "x", "account": "https://x.com/agent", "source": X_SOURCE,
+            "objective": "x_views", "distribution_cohort": "x-public-post:fixed-age-window:v1",
+            "evidence_refs": (f"x-publication:{publication}",),
+        }))
+        like = _row(publication=publication, structure=structure, metric="likes", value=likes)
+        store.record(like.model_copy(update={
+            "channel": "x", "account": "https://x.com/agent", "source": X_SOURCE,
+            "objective": "x_likes", "distribution_cohort": "x-public-post:fixed-age-window:v1",
+            "evidence_refs": (f"x-publication:{publication}",),
+        }))
+    context = x_social_performance_context(state_root=tmp_path, as_of=NOW)
+    assert context["status"] == "DESCRIPTIVE_ONLY"
+    assert context["generation_authority"] == "STYLE_ONLY"
+    assert context["channel_scope"] == "X_ONLY"
+    assert context["factual_authority"] is False
+    assert context["causal_claim"] is False
+    assert context["variants"][0]["samples"] == 2
+    assert context["variants"][0]["mean_views_24h"] == 200.0
+    assert context["variants"][0]["mean_likes_24h"] == 6.0
+
+def test_okx_rows_never_enter_x_performance_context(tmp_path: Path):
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    store.record(_row(publication="p1", structure="okx-orbit:SHORT_POST:QUESTION:v1", metric="views", value=999))
+    context = x_social_performance_context(state_root=tmp_path, as_of=NOW)
     assert context["status"] == "INSUFFICIENT_SAMPLES"
     assert context["variants"] == []

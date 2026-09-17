@@ -7,6 +7,7 @@ on:
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
+      - "src/wechat_traffic_agent/x_outcomes.py"
       - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/social_performance.py"
       - "src/wechat_traffic_agent/okx_orbit.py"
@@ -19,10 +20,12 @@ on:
       - "src/wechat_traffic_agent/channels/agent_home_experience.py"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
+      - "scripts/collect_x_outcomes.py"
       - "scripts/collect_okx_orbit_outcomes.py"
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
+      - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
       - "tests/test_okx_orbit.py"
       - "tests/test_okx_orbit_outcomes.py"
@@ -36,6 +39,7 @@ on:
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
+      - "src/wechat_traffic_agent/x_outcomes.py"
       - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/social_performance.py"
       - "src/wechat_traffic_agent/okx_orbit.py"
@@ -48,10 +52,12 @@ on:
       - "src/wechat_traffic_agent/channels/agent_home_experience.py"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
+      - "scripts/collect_x_outcomes.py"
       - "scripts/collect_okx_orbit_outcomes.py"
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
+      - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
       - "tests/test_okx_orbit.py"
       - "tests/test_okx_orbit_outcomes.py"
@@ -77,6 +83,7 @@ jobs:
           src/wechat_traffic_agent/x_mcp.py
           src/wechat_traffic_agent/x_social.py
           src/wechat_traffic_agent/x_browser.py
+          src/wechat_traffic_agent/x_outcomes.py
           src/wechat_traffic_agent/social_expression.py
           src/wechat_traffic_agent/social_evidence.py
           src/wechat_traffic_agent/social_performance.py
@@ -89,6 +96,7 @@ jobs:
           src/wechat_traffic_agent/channels/agent_home_experience.py
           src/wechat_traffic_agent/channels/agent_web.py
           scripts/run_content_agent.py
+          scripts/collect_x_outcomes.py
           scripts/collect_okx_orbit_outcomes.py
       - name: Build lightweight Agent Runtime stub
         run: |
@@ -100,7 +108,7 @@ jobs:
           PYTHONPATH: .x-ci:src
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_x_site.py
+          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_x_outcomes.py tests/test_x_site.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
           tests/test_world_feed.py tests/test_live_agent.py

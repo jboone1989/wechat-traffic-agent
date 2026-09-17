@@ -11,6 +11,7 @@ from typing import Any
 
 from .channel_evidence import ChannelEvidenceStore
 from .okx_orbit_outcomes import SOURCE
+from .x_outcomes import SOURCE as X_SOURCE
 
 MIN_SAMPLES_PER_VARIANT = 2
 
@@ -69,8 +70,62 @@ def okx_social_performance_context(*, state_root: Path, as_of: datetime) -> dict
     }
 
 
+def x_social_performance_context(*, state_root: Path, as_of: datetime) -> dict[str, Any]:
+    if as_of.utcoffset() is None:
+        raise ValueError("social performance cutoff must be timezone-aware")
+    store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
+    grouped: dict[str, dict[str, list[float]]] = {}
+    refs: dict[str, set[str]] = {}
+    for row in store.as_of(as_of):
+        if not (
+            row.channel == "x"
+            and row.source == X_SOURCE
+            and row.value is not None
+            and row.agent_candidate_sha256 == row.published_content_sha256
+            and row.window_end - row.window_start == timedelta(hours=24)
+            and row.metric in {"views", "likes", "replies", "reposts"}
+        ):
+            continue
+        metrics = grouped.setdefault(row.structure_version, {})
+        metrics.setdefault(row.metric, []).append(float(row.value))
+        refs.setdefault(row.structure_version, set()).update(row.evidence_refs)
+
+    variants = []
+    for structure_version, metrics in sorted(grouped.items()):
+        sample_count = len(metrics.get("views", []))
+        variants.append({
+            "structure_version": structure_version,
+            "samples": sample_count,
+            "eligible_for_style_guidance": sample_count >= MIN_SAMPLES_PER_VARIANT,
+            "mean_views_24h": _mean(metrics.get("views", [])),
+            "mean_likes_24h": _mean(metrics.get("likes", [])),
+            "mean_replies_24h": _mean(metrics.get("replies", [])),
+            "mean_reposts_24h": _mean(metrics.get("reposts", [])),
+            "evidence_refs": sorted(refs.get(structure_version, set())),
+        })
+    eligible = [row for row in variants if row["eligible_for_style_guidance"]]
+    return {
+        "schema_version": "x-social-performance-context.v1",
+        "status": "DESCRIPTIVE_ONLY" if eligible else "INSUFFICIENT_SAMPLES",
+        "as_of": as_of.isoformat(),
+        "min_samples_per_variant": MIN_SAMPLES_PER_VARIANT,
+        "variants": variants,
+        "generation_authority": "STYLE_ONLY" if eligible else "NONE",
+        "channel_scope": "X_ONLY",
+        "factual_authority": False,
+        "evidence_gate_authority": False,
+        "publication_authority": False,
+        "causal_claim": False,
+        "limitations": [
+            "Observed engagement differences do not establish causal writing improvement.",
+            "Use only to choose among evidence-compatible X expression forms; never alter factual certainty.",
+            "Unknown or missed outcome windows stay unknown and are not treated as zero.",
+        ],
+    }
+
+
 def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-__all__ = ["MIN_SAMPLES_PER_VARIANT", "okx_social_performance_context"]
+__all__ = ["MIN_SAMPLES_PER_VARIANT", "okx_social_performance_context", "x_social_performance_context"]
