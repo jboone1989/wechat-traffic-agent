@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 from threading import Event, RLock, Thread
@@ -68,6 +69,7 @@ class ContentNetworkService:
         agent_id: str = DEFAULT_AGENT_ID,
         capabilities: tuple[str, ...] = DEFAULT_CAPABILITIES,
         startup_timeout_seconds: float = 10.0,
+        join_retry_seconds: float = 30.0,
         lease_seconds: int = 1800,
         engagement_enabled: bool = False,
     ) -> None:
@@ -79,6 +81,8 @@ class ContentNetworkService:
             raise ValueError("network lease_seconds must be at least 60")
         if float(startup_timeout_seconds) <= 0:
             raise ValueError("network startup_timeout_seconds must be positive")
+        if float(join_retry_seconds) <= 0:
+            raise ValueError("network join_retry_seconds must be positive")
         raw_seeds = (seed_url,) if seed_urls is None else seed_urls
         cleaned_seeds = tuple(dict.fromkeys(item.strip().rstrip("/") for item in raw_seeds if item.strip()))
         if not cleaned_seeds:
@@ -94,6 +98,7 @@ class ContentNetworkService:
         self.agent_id = agent_id
         self.capability_ids = tuple(dict.fromkeys(capabilities))
         self.startup_timeout_seconds = float(startup_timeout_seconds)
+        self.join_retry_seconds = float(join_retry_seconds)
         self.lease_seconds = int(lease_seconds)
         self.engagement_enabled = bool(engagement_enabled)
         self.execution_lock = RLock()
@@ -103,6 +108,7 @@ class ContentNetworkService:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._joined = Event()
         self._startup_error: BaseException | None = None
+        self._join_task: asyncio.Task | None = None
 
     @classmethod
     def from_environment(cls, *, root: Path, application: Any) -> "ContentNetworkService":
@@ -120,6 +126,7 @@ class ContentNetworkService:
             agent_id=os.environ.get("CONTENT_NETWORK_AGENT_ID", DEFAULT_AGENT_ID),
             capabilities=caps,
             startup_timeout_seconds=float(os.environ.get("CONTENT_NETWORK_STARTUP_TIMEOUT_SECONDS", "10")),
+            join_retry_seconds=float(os.environ.get("CONTENT_NETWORK_JOIN_RETRY_SECONDS", "30")),
             lease_seconds=int(os.environ.get("CONTENT_NETWORK_LEASE_SECONDS", "1800")),
             engagement_enabled=(os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
         )
@@ -127,6 +134,33 @@ class ContentNetworkService:
     @property
     def identity_path(self) -> Path:
         return self.root / "application" / "network" / "identity.json"
+
+    @property
+    def join_status_path(self) -> Path:
+        return self.root / "application" / "network" / "join_status.json"
+
+    @property
+    def joined(self) -> bool:
+        return self._joined.is_set()
+
+    @property
+    def join_error_type(self) -> str | None:
+        return type(self._startup_error).__name__ if self._startup_error is not None else None
+
+    def _record_join_status(self, status: str, *, error: BaseException | None = None) -> None:
+        row = {
+            "status": str(status),
+            "observed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "endpoint": self.endpoint,
+            "seed_count": len(self.seed_urls),
+            "error_type": type(error).__name__ if error is not None else None,
+            "error_code": str(getattr(error, "code", "") or "") if error is not None else "",
+        }
+        path = self.join_status_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
 
     @property
     def public_base(self) -> str:
@@ -288,15 +322,26 @@ class ContentNetworkService:
 
             handlers[capability_id] = handler
 
+        async def join_with_retry() -> None:
+            while True:
+                try:
+                    await network.join()
+                    self._startup_error = None
+                    self._joined.set()
+                    self._record_join_status("JOINED")
+                    return
+                except asyncio.CancelledError:
+                    raise
+                except BaseException as exc:  # noqa: BLE001
+                    self._startup_error = exc
+                    self._joined.clear()
+                    self._record_join_status("RETRYING", error=exc)
+                    await asyncio.sleep(self.join_retry_seconds)
+
         async def startup() -> None:
             self._loop = asyncio.get_running_loop()
-            try:
-                await network.join()
-            except BaseException as exc:  # noqa: BLE001
-                self._startup_error = exc
-                self._joined.set()
-                raise
-            self._joined.set()
+            self._record_join_status("PENDING")
+            self._join_task = self._loop.create_task(join_with_retry())
 
         app = A2AServer(identity=identity, card=card, handlers=handlers).starlette_app(on_start=startup)
         if self.engagement_enabled:
@@ -326,19 +371,23 @@ class ContentNetworkService:
         self._thread.start()
         deadline = time.monotonic() + self.startup_timeout_seconds
         while time.monotonic() < deadline:
-            if self._joined.wait(timeout=0.05) or not self._thread.is_alive():
+            if bool(getattr(server, "started", False)) or not self._thread.is_alive():
                 break
-        if self._startup_error is not None:
+            time.sleep(0.05)
+        if not bool(getattr(server, "started", False)) or not self._thread.is_alive():
             self.stop()
-            raise RuntimeError(f"Agent Network join failed: {self._startup_error}") from self._startup_error
-        if not self._joined.is_set() or not self._thread.is_alive():
-            self.stop()
-            raise RuntimeError("Agent Network endpoint did not become ready")
+            raise RuntimeError("Agent Network local endpoint did not become ready")
 
     def stop(self) -> None:
-        if self._network is not None and self._loop is not None and self._loop.is_running():
+        loop = self._loop
+        if self._join_task is not None and loop is not None and loop.is_running():
             try:
-                future = asyncio.run_coroutine_threadsafe(self._network.leave(), self._loop)
+                loop.call_soon_threadsafe(self._join_task.cancel)
+            except Exception:
+                pass
+        if self.joined and self._network is not None and loop is not None and loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._network.leave(), loop)
                 future.result(timeout=2.0)
             except Exception:
                 pass
@@ -346,6 +395,8 @@ class ContentNetworkService:
             self._server.should_exit = True
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
+        self._joined.clear()
+        self._join_task = None
         self._thread = self._server = self._network = self._loop = None
 
     def discover(self, capability: str, *, timeout: float = 10.0) -> list[dict[str, Any]]:

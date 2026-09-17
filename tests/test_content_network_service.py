@@ -1,5 +1,9 @@
 from pathlib import Path
 from types import SimpleNamespace
+import json
+import socket
+import time
+import urllib.request
 
 from wechat_traffic_agent.network_service import ContentNetworkService, _record_peer_capability_demand, _request_data
 from wechat_traffic_agent.runtime_app import CAP_CONTENT_STATUS
@@ -171,3 +175,32 @@ def test_peer_capability_demand_records_only_structured_capability_signal(tmp_pa
         root=tmp_path, capability_id=CAP_CONTENT_RESEARCH, payload=payload,
     )
     assert duplicate["status"] == "DUPLICATE"
+
+
+def test_local_endpoint_survives_seed_join_failure(tmp_path):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    service = ContentNetworkService(
+        root=tmp_path,
+        application=SimpleNamespace(runtime=_Runtime()),
+        seed_urls=("http://127.0.0.1:1/a2a",),
+        bind_host="127.0.0.1",
+        advertise_host="127.0.0.1",
+        port=port,
+        startup_timeout_seconds=3,
+        join_retry_seconds=0.1,
+    )
+    try:
+        service.start()
+        time.sleep(0.3)
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/.well-known/agent-card.json", timeout=2
+        ) as response:
+            assert response.status == 200
+        status = json.loads(service.join_status_path.read_text(encoding="utf-8"))
+        assert service.joined is False
+        assert status["status"] == "RETRYING"
+        assert status["error_type"] == "NetworkError"
+    finally:
+        service.stop()

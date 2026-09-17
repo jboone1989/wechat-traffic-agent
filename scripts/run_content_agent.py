@@ -105,7 +105,13 @@ def main() -> int:
         try:
             network_service = ContentNetworkService.from_environment(root=state_root, application=app)
             network_service.start()
-            print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
+            print(json.dumps({
+                "agent_network": {
+                    "status": "JOINED" if network_service.joined else "ENDPOINT_READY_JOIN_PENDING",
+                    "endpoint": network_service.endpoint,
+                    "seed_count": len(network_service.seed_urls),
+                }
+            }, sort_keys=True))
         except Exception as exc:  # network is a capability, never a life dependency
             print(json.dumps({"agent_network": {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
             wakeful_runtime.emit_network_error(code=type(exc).__name__)
