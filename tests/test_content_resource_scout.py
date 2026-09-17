@@ -65,3 +65,31 @@ def test_verify_pending_uses_runtime_fetch_and_promotes_evidence(tmp_path):
     assert result["verified_candidate_count"] == 1
     assert any(capability == "web.fetch" for capability,_ in runtime.calls)
     assert runtime.persisted > 0
+
+
+def test_expand_provider_leads_uses_verified_public_catalogue(tmp_path):
+    class LeadRuntime:
+        def __init__(self): self.calls=[]; self.persisted=0
+        def persist(self): self.persisted += 1
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            if capability == "web.search":
+                return SimpleNamespace(receipt_id="search:lead",payload={"results":[{
+                    "title":"Free LLM router","url":"https://github.com/acme/free-router","snippet":"free LLM API key router"
+                }]})
+            if capability == "web.fetch":
+                url=payload["url"]
+                if url.endswith('/HEAD/.env.example'):
+                    text="# Provider One — free tier\n# Get key: https://console.one.example/keys\nONE_API_KEY=your-key\n"
+                else:
+                    text="Free LLM router. Free tier providers. API key required. OpenAI-compatible chat completions."
+                return SimpleNamespace(receipt_id="fetch:lead",payload={"ok":True,"page":{"success":True,"url":url,"markdown":text}})
+            raise AssertionError(capability)
+    runtime=LeadRuntime(); scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    scout.maybe_discover(now=NOW)
+    scout.verify_pending(now=NOW)
+    result=scout.expand_provider_leads(now=NOW)
+    assert result["lead_count"]==1
+    assert result["new_leads"][0]["credential_env"]=="ONE_API_KEY"
+    assert result["new_leads"][0]["official_root"]=="one.example"
+    assert any(cap=="web.fetch" and payload["url"].endswith('/HEAD/.env.example') for cap,payload in runtime.calls)

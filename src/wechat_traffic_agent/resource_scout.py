@@ -98,6 +98,27 @@ class ContentResourceScout:
             persist()
         return receipt
 
+    def expand_provider_leads(self, *, now: datetime, limit: int = 12) -> dict[str, Any]:
+        created = self.scout.expand_provider_leads(now=now, fetch=self._fetch, limit=limit)
+        leads = self.scout.provider_leads()
+        return {
+            "status": "DISCOVERED" if created else "NO_NEW_LEADS",
+            "new_count": len(created),
+            "lead_count": len(leads),
+            "new_leads": [
+                {
+                    "lead_id": item.lead_id,
+                    "provider_label": item.provider_label,
+                    "credential_env": item.credential_env,
+                    "signup_url": item.signup_url,
+                    "official_root": item.official_root,
+                    "claimed_free": item.claimed_free,
+                    "status": item.status,
+                }
+                for item in created[:20]
+            ],
+        }
+
     def _search(self, query: str, limit: int, source_class: str):
         payload = {"query": query, "limit": int(limit), "safesearch": 1}
         if source_class == "technical":
