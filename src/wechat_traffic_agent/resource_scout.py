@@ -232,8 +232,43 @@ class ContentResourceScout:
             api_key = str(os.environ.get(plan.credential_env) or "")
             if not api_key:
                 continue
+            excluded_models: frozenset[str] = frozenset()
+            if plan.credential_env == "OPENROUTER_API_KEY":
+                model_rows: dict[str, list[ModelTrial]] = {}
+                for row in existing:
+                    if row.opportunity_id != plan.lead_id or not row.model_id or row.model_id == "openrouter/free":
+                        continue
+                    model_rows.setdefault(row.model_id, []).append(row)
+                rate_limited_models = {
+                    model_id
+                    for model_id, rows in model_rows.items()
+                    if rows and all(
+                        row.status == "FAILED" and row.error_code == "HTTP_429"
+                        for row in rows
+                    )
+                }
+                if len(rate_limited_models) >= 3:
+                    provider_rows.append({
+                        "provider_label": plan.provider_label,
+                        "credential_env": plan.credential_env,
+                        "lead_id": plan.lead_id,
+                        "status": "FREE_TIER_RATE_LIMITED",
+                        "request_count": 0,
+                        "completed_count": 0,
+                        "trial_ids": [],
+                        "mean_quality": None,
+                        "mean_latency_ms": None,
+                        "observed_cost_total": None,
+                        "cost_observed_for_all_completed": False,
+                        "models": sorted(rate_limited_models),
+                        "error_codes": ["HTTP_429"],
+                    })
+                    continue
+                excluded_models = frozenset(rate_limited_models)
             try:
-                target = resolve_trial_target(plan.credential_env, api_key=api_key)
+                target = resolve_trial_target(
+                    plan.credential_env, api_key=api_key, exclude_models=excluded_models,
+                )
             except Exception as exc:  # Provider catalogue failures must not block other candidates.
                 provider_rows.append({
                     "provider_label": plan.provider_label,
