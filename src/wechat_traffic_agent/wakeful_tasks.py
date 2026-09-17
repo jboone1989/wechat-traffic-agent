@@ -64,10 +64,22 @@ class WakefulContentTaskRunner:
             rows["provider_trial_plans"] = trial_plans
             plans = list(trial_plans.get("plans") or [])
             local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
+            autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
+            if autonomous_pending:
+                self.wakeful.schedule_resource_followup(now, seconds=300)
+                rows["resource_followup"] = {
+                    "status": "SCHEDULED",
+                    "reason": "unverified resource opportunities remain",
+                    "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                    "delay_seconds": 300,
+                }
             ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
+            if ready is not None:
+                rows["provider_trials"] = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
             top = plans[0] if plans else None
             if (
-                ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
+                not autonomous_pending
+                and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
                 and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
             ):
                 request = self.human_assistance.request(
