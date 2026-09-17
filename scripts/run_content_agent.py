@@ -66,6 +66,12 @@ def main() -> int:
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
+    try:
+        from wechat_traffic_agent.public_persona import ensure_public_persona
+        persona = asyncio.run(ensure_public_persona(runtime=app.domain_runtime, state_root=state_root))
+        print(json.dumps({"public_persona": {"status": "ACTIVE", "name": persona.name, "affiliation": persona.affiliation}}, ensure_ascii=False))
+    except Exception as exc:  # identity bootstrap must not take the agent offline
+        print(json.dumps({"public_persona": {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}}, ensure_ascii=False), file=sys.stderr)
     social_expression_loop = SocialExpressionDraftWorker(runtime=app.domain_runtime, state_root=state_root)
     okx_orbit_publisher = OKXOrbitPublisher(state_root=state_root)
     x_browser_publisher = XBrowserPublisher(state_root=state_root)
