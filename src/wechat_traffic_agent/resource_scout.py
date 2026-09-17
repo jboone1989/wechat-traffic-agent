@@ -14,7 +14,8 @@ from agent_runtime.resource_discovery import (
     plan_provider_trials, provider_profiles, resource_discovery_constraints, select_provider,
 )
 from agent_runtime.resource_trials import (
-    ProviderTrialMeasurement, model_trials_from_measurements, run_bounded_provider_trial,
+    ProviderTrialMeasurement, model_trials_from_measurements, resolve_trial_target,
+    run_bounded_provider_trial,
 )
 
 
@@ -228,14 +229,38 @@ class ContentResourceScout:
         executed_measurements: list[ProviderTrialMeasurement] = []
         provider_rows: list[dict[str, Any]] = []
         for plan in ready:
-            prior = [row for row in existing if row.opportunity_id == plan.lead_id]
+            api_key = str(os.environ.get(plan.credential_env) or "")
+            if not api_key:
+                continue
+            try:
+                target = resolve_trial_target(plan.credential_env, api_key=api_key)
+            except Exception as exc:  # Provider catalogue failures must not block other candidates.
+                provider_rows.append({
+                    "provider_label": plan.provider_label,
+                    "credential_env": plan.credential_env,
+                    "lead_id": plan.lead_id,
+                    "status": "TARGET_RESOLUTION_FAILED",
+                    "request_count": 0,
+                    "completed_count": 0,
+                    "trial_ids": [],
+                    "mean_quality": None,
+                    "mean_latency_ms": None,
+                    "observed_cost_total": None,
+                    "cost_observed_for_all_completed": False,
+                    "models": [],
+                    "error_codes": [str(getattr(exc, "code", "") or type(exc).__name__)],
+                })
+                continue
+            if target is None:
+                continue
+            prior = [
+                row for row in existing
+                if row.opportunity_id == plan.lead_id and row.model_id == target.model
+            ]
             if prior:
                 provider_rows.append(self._trial_provider_summary(
                     plan.provider_label, plan.credential_env, plan.lead_id, prior, status="ALREADY_TRIED"
                 ))
-                continue
-            api_key = str(os.environ.get(plan.credential_env) or "")
-            if not api_key:
                 continue
             self.record_acquisition_outcome(
                 plan_id=plan.plan_id, lead_id=plan.lead_id, status="CREDENTIAL_ACQUIRED",
@@ -243,7 +268,9 @@ class ContentResourceScout:
                 detail_summary=f"credential variable {plan.credential_env} is present",
                 evidence_refs=(f"env-presence:{plan.credential_env}",),
             )
-            measurements = run_bounded_provider_trial(plan, api_key=api_key, now=now)
+            measurements = run_bounded_provider_trial(
+                plan, api_key=api_key, now=now, target=target,
+            )
             trials = model_trials_from_measurements(measurements)
             for measurement, trial in zip(measurements, trials):
                 self.scout.record_model_trial(trial)
@@ -274,7 +301,7 @@ class ContentResourceScout:
                 status=outcome_status, measurements=measurements,
             ))
         all_trials = self.scout.model_trials()
-        profiles = provider_profiles(all_trials, minimum_quality=0.75)
+        profiles = provider_profiles(all_trials, minimum_quality=0.75, minimum_trials=3)
         selected = select_provider(profiles, task_class="simple_public_text", quality_floor=0.75)
         selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
         completed_count = sum(1 for row in executed_measurements if row.status == "COMPLETED")
@@ -286,7 +313,10 @@ class ContentResourceScout:
             "completed_count": completed_count,
             "failed_count": failed_count,
             "trial_ids": [row.trial_id for row in executed_measurements],
-            "error_codes": sorted({row.error_type for row in executed_measurements if row.error_type}),
+            "error_codes": sorted({
+                str(row.error_code or row.error_type)
+                for row in executed_measurements if row.error_code or row.error_type
+            }),
             "providers": provider_rows,
             "empirical_profiles": [
                 {

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import wechat_traffic_agent.resource_scout as resource_module
 from wechat_traffic_agent.resource_scout import ContentResourceScout
 from agent_runtime.resource_discovery import ProviderLead, ProviderVerification
-from agent_runtime.resource_trials import ProviderTrialMeasurement
+from agent_runtime.resource_trials import ProviderTrialMeasurement, ProviderTrialTarget
 
 NOW=datetime(2026,9,17,16,tzinfo=timezone.utc)
 
@@ -30,13 +30,14 @@ def test_ready_trials_use_credentials_without_persisting_key(tmp_path, monkeypat
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
     monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
-    def fake(plan, *, api_key, now):
+    monkeypatch.setattr(resource_module,"resolve_trial_target",lambda env,**kwargs: ProviderTrialTarget(env,"https://example/v1","m-"+env.split("_")[0].lower()))
+    def fake(plan, *, api_key, now, target):
         expected="n-secret" if plan.credential_env=="NVIDIA_API_KEY" else "o-secret"
         assert api_key==expected
         cost=0.0 if plan.credential_env=="OPENROUTER_API_KEY" else None
         return [ProviderTrialMeasurement(
-            trial_id=f"trial:{plan.lead_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
-            provider_label=plan.provider_label,credential_env=plan.credential_env,model="m",task_id=f"t{i}",
+            trial_id=f"trial:{plan.lead_id}:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
             status="COMPLETED",observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10+i,
             observed_cost=cost,response_sha256="sha256:x",evidence_refs=("e",),
         ) for i in range(3)]
@@ -56,11 +57,12 @@ def test_completed_plan_is_idempotent_and_does_not_repeat_requests(tmp_path, mon
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
     calls=[]
-    def fake(plan, *, api_key, now):
+    monkeypatch.setattr(resource_module,"resolve_trial_target",lambda env,**kwargs: ProviderTrialTarget(env,"https://example/v1","m-o"))
+    def fake(plan, *, api_key, now, target):
         calls.append(plan.lead_id)
         return [ProviderTrialMeasurement(
-            trial_id=f"trial:{plan.lead_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
-            provider_label=plan.provider_label,credential_env=plan.credential_env,model="m",task_id=f"t{i}",
+            trial_id=f"trial:{plan.lead_id}:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
             status="COMPLETED",observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10,observed_cost=0.0,
         ) for i in range(3)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
@@ -68,3 +70,26 @@ def test_completed_plan_is_idempotent_and_does_not_repeat_requests(tmp_path, mon
     second=scout.run_ready_trials(now=NOW,provider_limit=2)
     assert first["executed_request_count"]==3 and second["executed_request_count"]==0
     assert calls==["lead:o"]
+
+
+def test_changed_resolved_model_retries_without_erasing_prior_trials(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    models=iter(["old-model","new-model"])
+    monkeypatch.setattr(resource_module,"resolve_trial_target",lambda env,**kwargs: ProviderTrialTarget(env,"https://example/v1",next(models)))
+    calls=[]
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.lead_id}:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
+            status="FAILED",observed_at=NOW.isoformat(),latency_ms=1.0,error_code="HTTP_410",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    first=scout.run_ready_trials(now=NOW,provider_limit=1)
+    second=scout.run_ready_trials(now=NOW,provider_limit=1)
+    assert first["executed_request_count"]==3 and second["executed_request_count"]==3
+    assert calls==["old-model","new-model"]
+    rows=scout.scout.model_trials()
+    assert len(rows)==6
+    assert {row.model_id for row in rows}=={"old-model","new-model"}
