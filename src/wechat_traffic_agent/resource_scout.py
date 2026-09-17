@@ -59,7 +59,11 @@ class ContentResourceScout:
             ],
         }
 
-    def _search(self, query: str, limit: int):
+    def _search(self, query: str, limit: int, source_class: str = "general"):
+        # agent-runtime owns source-class planning/provenance; the underlying
+        # web.search capability remains provider-neutral and does not need the
+        # classification as a transport parameter.
+        _ = source_class
         return self.capability_runtime.invoke(
             "web.search", {"query": query, "limit": int(limit), "safesearch": 1}
         )
