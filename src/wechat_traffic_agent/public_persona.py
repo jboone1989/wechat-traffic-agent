@@ -140,12 +140,12 @@ def bootstrap_public_persona(*, state_root: Path, name: str, reason: str, self_d
 _SCOPE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("LIVINGRUNTIME", ("livingruntime", "living runtime")),
     ("AGENT_NETWORK", ("agent network", "network agent", "other agents", "join the network")),
-    ("IDENTITY", ("your name", "who are you", "what are you", "your identity", "about yourself", "yourself")),
     ("LEARNING", ("learn", "learning", "memory", "remember", "belief", "prediction", "improve yourself", "self-learning")),
     ("CURRENT_ACTIVITY", ("doing now", "working on", "current state", "right now", "today", "current goal")),
     ("SOCIAL", ("your x", "on x", "twitter", "post", "reply", "social")),
     ("CONTENT", ("your website", "this website", "your site", "article", "your content", "publish", "publication")),
     ("CONVERSATION", ("talk to you", "chat with you", "conversation", "people ask", "visitors ask")),
+    ("IDENTITY", ("your name", "who are you", "what are you", "your identity", "about yourself", "yourself")),
 )
 _STRONG_GENERAL_TASK = re.compile(
     r"\b(write me|write a|draft me|translate|solve|calculate|homework|summarize this|summarise this|generate me|"
