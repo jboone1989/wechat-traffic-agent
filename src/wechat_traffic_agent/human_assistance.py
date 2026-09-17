@@ -1,0 +1,119 @@
+"""Private human-assistance queue with optional WeCom delivery."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+import urllib.error
+import urllib.request
+
+
+def _iso(now: datetime) -> str:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("human assistance timestamp requires timezone")
+    return now.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+class WeComNotifier:
+    def __init__(self, webhook_url: str | None = None, *, timeout_seconds: float = 10.0) -> None:
+        self.webhook_url = str(webhook_url or os.environ.get("CONTENT_WECOM_WEBHOOK_URL") or "").strip()
+        self.timeout_seconds = timeout_seconds
+        if self.webhook_url:
+            parsed = urlparse(self.webhook_url)
+            if parsed.scheme != "https" or parsed.hostname not in {"qyapi.weixin.qq.com", "wecom.qq.com"}:
+                raise ValueError("CONTENT_WECOM_WEBHOOK_URL must be an HTTPS WeCom endpoint")
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.webhook_url)
+
+    def send_text(self, text: str) -> dict[str, Any]:
+        content = str(text).strip()
+        if not content:
+            raise ValueError("WeCom message must not be empty")
+        if not self.configured:
+            return {"status": "NOT_CONFIGURED"}
+        request = urllib.request.Request(
+            self.webhook_url,
+            data=json.dumps({"msgtype": "text", "text": {"content": content}}, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(f"WeCom HTTP error {exc.code}") from exc
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("WeCom delivery failed") from exc
+        if not isinstance(payload, dict) or int(payload.get("errcode", -1)) != 0:
+            raise RuntimeError("WeCom rejected message")
+        return {"status": "SENT"}
+
+
+class HumanAssistanceService:
+    def __init__(self, *, state_root: Path, notifier: WeComNotifier | None = None) -> None:
+        self.root = Path(state_root) / "application" / "human_assistance"
+        self.notifier = notifier or WeComNotifier()
+
+    def request(self, *, kind: str, summary: str, requested_action: str, now: datetime,
+                urgency: str = "NORMAL", details: dict[str, Any] | None = None) -> dict[str, Any]:
+        kind = str(kind).strip().upper()
+        summary = str(summary).strip()
+        requested_action = str(requested_action).strip()
+        urgency = str(urgency).strip().upper()
+        if not kind or not summary or not requested_action:
+            raise ValueError("human assistance request fields must be non-empty")
+        if urgency not in {"NORMAL", "HIGH", "CRITICAL"}:
+            raise ValueError("unsupported human assistance urgency")
+        created_at = _iso(now)
+        key_payload = {"kind": kind, "summary": summary, "requested_action": requested_action}
+        request_id = "human-request:" + sha256(json.dumps(key_payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / (request_id.replace(":", "-") + ".json")
+        if path.exists():
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("delivery_status") != "SENT" and self.notifier.configured:
+                delivery = self.notifier.send_text(self._message(row))
+                row["delivery_status"] = delivery["status"]
+                row["last_delivery_at"] = created_at
+                self._write(path, row)
+            return row
+        row = {
+            "schema_version": "content-human-assistance.v1",
+            "request_id": request_id,
+            "kind": kind,
+            "urgency": urgency,
+            "summary": summary,
+            "requested_action": requested_action,
+            "details": dict(details or {}),
+            "created_at": created_at,
+            "delivery_status": "PENDING_CONFIGURATION" if not self.notifier.configured else "PENDING",
+            "last_delivery_at": None,
+        }
+        if self.notifier.configured:
+            delivery = self.notifier.send_text(self._message(row))
+            row["delivery_status"] = delivery["status"]
+            row["last_delivery_at"] = created_at
+        self._write(path, row)
+        return row
+
+    @staticmethod
+    def _message(row: dict[str, Any]) -> str:
+        return (
+            f"Ferro 需要你的帮助 [{row['urgency']}]\n"
+            f"{row['summary']}\n"
+            f"需要你做：{row['requested_action']}"
+        )
+
+    @staticmethod
+    def _write(path: Path, row: dict[str, Any]) -> None:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+
+__all__ = ["WeComNotifier", "HumanAssistanceService"]

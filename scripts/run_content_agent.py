@@ -66,8 +66,13 @@ def main() -> int:
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     from wechat_traffic_agent.resource_economy import ContentResourceEconomy
+    from wechat_traffic_agent.human_assistance import HumanAssistanceService, WeComNotifier
+    from wechat_traffic_agent.daily_reflection import DailyReflectionService
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
+    private_notifier = WeComNotifier()
+    human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
+    daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
     try:
         from wechat_traffic_agent.public_persona import ensure_public_persona
         persona = asyncio.run(ensure_public_persona(runtime=app.domain_runtime, state_root=state_root))
@@ -170,6 +175,15 @@ def main() -> int:
                 resource_observation = {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
                 print(json.dumps({"resource_observation": resource_observation}, sort_keys=True), file=sys.stderr)
             try:
+                reflection_result = daily_reflection.maybe_generate(now)
+                print(json.dumps({"daily_reflection": {
+                    "status": reflection_result.get("status"),
+                    "target_date": reflection_result.get("target_date"),
+                    "delivery_status": reflection_result.get("delivery_status"),
+                }}, ensure_ascii=False, sort_keys=True))
+            except Exception as exc:  # noqa: BLE001
+                print(json.dumps({"daily_reflection": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
+            try:
                 guard = network_service.execution_lock if network_service is not None else nullcontext()
                 with guard: result = app.run_tick(as_of_time=as_of)
                 print(json.dumps(result.to_payload(), ensure_ascii=False, sort_keys=True))
@@ -229,6 +243,22 @@ def main() -> int:
                         print(json.dumps({"resource_decision": resource_decision}, sort_keys=True), file=sys.stderr)
                     if resource_decision.get("decision") != "EXECUTE":
                         continuous_result = {"status": "RESOURCE_DEFERRED", "cycle": resource_cycle_id, "resource_decision": resource_decision}
+                        if resource_decision.get("decision") == "ASK_HUMAN":
+                            request = human_assistance.request(
+                                kind="RESOURCE_SUPPORT", urgency="HIGH", now=now,
+                                summary=(
+                                    f"Content cycle was deferred because current {resource_decision.get('currency', 'resource')} "
+                                    f"funds are below the estimated next-cycle cost or the provider is unavailable."
+                                ),
+                                requested_action="Please review the Content Agent budget/provider availability and top up or change the budget only if you want it to continue paid work.",
+                                details={
+                                    "cycle": resource_cycle_id,
+                                    "available_funds": resource_decision.get("available_funds"),
+                                    "estimated_cost": resource_decision.get("estimated_cost"),
+                                    "currency": resource_decision.get("currency"),
+                                },
+                            )
+                            print(json.dumps({"human_assistance": {"request_id": request["request_id"], "delivery_status": request["delivery_status"]}}, sort_keys=True))
                     else:
                         continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
                         try:

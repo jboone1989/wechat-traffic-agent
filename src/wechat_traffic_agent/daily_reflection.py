@@ -1,0 +1,211 @@
+"""Evidence-grounded daily self-reflection for the persistent Content Agent."""
+from __future__ import annotations
+
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
+import json
+import os
+from pathlib import Path
+import re
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from .human_assistance import WeComNotifier
+
+_CYCLE_TS = re.compile(r"(\d+)$")
+
+
+def _timezone() -> ZoneInfo:
+    return ZoneInfo(str(os.environ.get("CONTENT_REFLECTION_TIMEZONE") or "Asia/Shanghai"))
+
+
+def _hour() -> int:
+    value = int(os.environ.get("CONTENT_DAILY_REFLECTION_HOUR", "8"))
+    if not 0 <= value <= 23:
+        raise ValueError("CONTENT_DAILY_REFLECTION_HOUR must be 0..23")
+    return value
+
+
+def _cycle_date(name: str, tz: ZoneInfo) -> date | None:
+    match = _CYCLE_TS.search(name)
+    if not match:
+        return None
+    return datetime.fromtimestamp(int(match.group(1)), timezone.utc).astimezone(tz).date()
+
+
+class DailyReflectionService:
+    def __init__(self, *, state_root: Path, mind: Any, notifier: WeComNotifier | None = None) -> None:
+        self.state_root = Path(state_root)
+        self.mind = mind
+        self.notifier = notifier or WeComNotifier()
+        self.root = self.state_root / "application" / "daily_reflections"
+
+    def maybe_generate(self, now: datetime) -> dict[str, Any]:
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("daily reflection timestamp requires timezone")
+        local_now = now.astimezone(_timezone())
+        target = local_now.date() - timedelta(days=1)
+        if local_now.hour < _hour():
+            return {"status": "NOT_DUE", "target_date": target.isoformat()}
+        return self.generate(target_date=target, now=now)
+
+    def generate(self, *, target_date: date, now: datetime) -> dict[str, Any]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{target_date.isoformat()}.json"
+        if path.exists():
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("delivery_status") != "SENT" and self.notifier.configured:
+                delivery = self.notifier.send_text(row["reflection_text"])
+                row["delivery_status"] = delivery["status"]
+                row["delivered_at"] = now.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+                self._write(path, row)
+            return {"status": "ALREADY_GENERATED", **row}
+
+        facts = self._facts(target_date)
+        text = self._render(target_date, facts)
+        row = {
+            "schema_version": "content-daily-reflection.v1",
+            "target_date": target_date.isoformat(),
+            "timezone": _timezone().key,
+            "generated_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "facts": facts,
+            "reflection_text": text,
+            "delivery_status": "PENDING_CONFIGURATION" if not self.notifier.configured else "PENDING",
+            "delivered_at": None,
+        }
+        if self.notifier.configured:
+            delivery = self.notifier.send_text(text)
+            row["delivery_status"] = delivery["status"]
+            row["delivered_at"] = row["generated_at"]
+        self._write(path, row)
+        (self.root / f"{target_date.isoformat()}.txt").write_text(text + "\n", encoding="utf-8")
+        return {"status": "GENERATED", **row}
+
+    def _facts(self, target_date: date) -> dict[str, Any]:
+        cycles: list[tuple[str, dict[str, Any]]] = []
+        cycle_root = self.state_root / "content" / "continuous" / "cycles"
+        if cycle_root.exists():
+            for path in cycle_root.glob("*/result.json"):
+                if _cycle_date(path.parent.name, _timezone()) != target_date:
+                    continue
+                try:
+                    row = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if isinstance(row, dict):
+                    cycles.append((path.parent.name, row))
+        cycles.sort(key=lambda item: item[0])
+        statuses = Counter(str(row.get("status") or "UNKNOWN") for _, row in cycles)
+        topics = Counter(
+            str((row.get("mind_plan") or {}).get("required_topic"))
+            for _, row in cycles if (row.get("mind_plan") or {}).get("required_topic")
+        )
+        cognition = Counter(
+            str((row.get("cognition") or {}).get("cognition_state"))
+            for _, row in cycles if (row.get("cognition") or {}).get("cognition_state")
+        )
+        errors = Counter(
+            str(row.get("error_type") or "UNKNOWN")
+            for _, row in cycles if row.get("status") == "ERROR"
+        )
+        model_calls_by_status: Counter[str] = Counter()
+        for _, row in cycles:
+            calls = (row.get("mind_experience") or {}).get("model_calls")
+            if isinstance(calls, int) and not isinstance(calls, bool) and calls >= 0:
+                model_calls_by_status[str(row.get("status") or "UNKNOWN")] += calls
+
+        snapshot = self.mind.session.snapshot()
+        resource = snapshot.get("resource_awareness") or {}
+        resource_states = []
+        for state in resource.get("states", []):
+            stamp = state.get("observed_at")
+            if not stamp:
+                continue
+            try:
+                observed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00")).astimezone(_timezone())
+            except ValueError:
+                continue
+            if observed.date() == target_date:
+                resource_states.append(state)
+        resource_states.sort(key=lambda row: str(row.get("observed_at") or ""))
+        if resource_states:
+            opening = float(resource_states[0]["available_funds"])
+            closing = float(resource_states[-1]["available_funds"])
+            resource_summary = {
+                "status": "OBSERVED",
+                "currency": resource_states[-1].get("currency"),
+                "opening_balance": opening,
+                "closing_balance": closing,
+                "observed_balance_delta": closing - opening,
+                "observation_count": len(resource_states),
+                "latest_daily_burn": resource_states[-1].get("estimated_daily_burn"),
+                "latest_runway_days": resource_states[-1].get("runway_days"),
+            }
+        else:
+            resource_summary = {
+                "status": "UNKNOWN",
+                "reason": "No timestamped resource observations exist for this day; do not backfill cost from later balances.",
+            }
+        return {
+            "cycle_count": len(cycles),
+            "statuses": dict(sorted(statuses.items())),
+            "model_calls": sum(model_calls_by_status.values()),
+            "model_calls_by_status": dict(sorted(model_calls_by_status.items())),
+            "top_topics": [{"topic": topic, "cycles": count} for topic, count in topics.most_common(5)],
+            "cognition_states": dict(sorted(cognition.items())),
+            "error_types": dict(sorted(errors.items())),
+            "resource": resource_summary,
+            "evidence_cycle_ids": [name for name, _ in cycles],
+        }
+
+    @staticmethod
+    def _render(target_date: date, facts: dict[str, Any]) -> str:
+        statuses = facts["statuses"]
+        published = int(statuses.get("PUBLISHED", 0))
+        held = int(statuses.get("HELD_BY_CHECKS", 0))
+        errors = int(statuses.get("ERROR", 0))
+        cognition_only = int(statuses.get("COGNITION_ONLY", 0))
+        calls = int(facts["model_calls"])
+        belief_changes = int(facts["cognition_states"].get("BELIEF_CHANGED", 0))
+        top_topics = facts["top_topics"]
+        topic_text = "、".join(f"{row['topic']}({row['cycles']}轮)" for row in top_topics[:3]) or "没有形成稳定主题"
+        error_text = "、".join(f"{name}×{count}" for name, count in facts["error_types"].items()) or "没有记录到错误"
+        held_calls = int(facts["model_calls_by_status"].get("HELD_BY_CHECKS", 0))
+        resource = facts["resource"]
+        if resource["status"] == "OBSERVED":
+            resource_text = (
+                f"资源方面，我有 {resource['observation_count']} 次可靠余额观测；"
+                f"余额从 {resource['opening_balance']:.2f} 变到 {resource['closing_balance']:.2f} {resource['currency']}。"
+                "这只是账户余额变化，不自动等同于全部由内容循环造成的消费。"
+            )
+        else:
+            resource_text = "资源方面，昨天还没有可靠的时间戳余额观测，所以我不补写消费数字；资源遥测从后续真实观测开始累计。"
+        adjustment = []
+        if held:
+            adjustment.append(f"减少重复撞质量门：昨天 {held} 轮被拦住，其中记录了 {held_calls} 次模型调用")
+        if errors:
+            adjustment.append(f"先消除可复现错误（{error_text}），再为同类任务继续付模型成本")
+        if belief_changes:
+            adjustment.append(f"保留并复查 {belief_changes} 次真正改变信念的证据链，不把普通产出冒充学习")
+        if not adjustment:
+            adjustment.append("继续比较行动成本与真实外部结果，避免因为单日顺利就过度扩大调用")
+        return (
+            f"Ferro · {target_date.isoformat()} 日终反思\n\n"
+            f"昨天我跑了 {facts['cycle_count']} 个内容周期：{published} 次发布，{held} 次被质量门拦住，"
+            f"{cognition_only} 次只形成认知更新，{errors} 次出错。记录到的模型调用共 {calls} 次。\n\n"
+            f"我花最多注意力的方向是：{topic_text}。其中有 {belief_changes} 次状态明确标记为 BELIEF_CHANGED；"
+            "其他调查或表达不能因为写出来了就算学会。\n\n"
+            f"我昨天最需要承认的浪费/摩擦是：{error_text}。"
+            + (f" 被质量门拦住的循环消耗了 {held_calls} 次模型调用，这部分值得优先压缩。" if held_calls else "")
+            + "\n\n" + resource_text + "\n\n"
+            "今天我会调整：" + "；".join(adjustment) + "。"
+        )
+
+    @staticmethod
+    def _write(path: Path, row: dict[str, Any]) -> None:
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+
+
+__all__ = ["DailyReflectionService"]
