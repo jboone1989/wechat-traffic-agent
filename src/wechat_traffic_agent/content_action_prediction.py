@@ -254,6 +254,7 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
     global_baseline = float(median(global_24h)) if global_24h else 1.0
     mind_rewards: Mapping[str, Any] = {}
     mind_counts: Mapping[str, Any] = {}
+    mind_calibration: Mapping[str, Any] = {}
     if mind_strategy_context is not None:
         if str(mind_strategy_context.get("topic") or "") != topic:
             raise ValueError("VirtualBrain forecast context topic mismatch")
@@ -263,6 +264,9 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
             mind_rewards = raw_rewards
         if isinstance(raw_counts, Mapping):
             mind_counts = raw_counts
+        raw_calibration = mind_strategy_context.get("prediction_calibration_by_profile") or {}
+        if isinstance(raw_calibration, Mapping):
+            mind_calibration = raw_calibration
     output: dict[str, dict[str, Any]] = {}
     for profile in PROFILE_NAMES:
         metrics = tuple(_estimate(rows, topic=topic, profile=profile, window=label) for label, _ in WINDOWS)
@@ -281,6 +285,17 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
             1.0,
             0.70 * (1.0 - mature.confidence) + 0.30 / (1.0 + mature.sample_count),
         )
+        calibration = mind_calibration.get(profile)
+        if isinstance(calibration, Mapping):
+            samples = max(0, int(calibration.get("mature_samples", 0) or 0))
+            if samples > 0:
+                strength = min(1.0, samples / 3.0)
+                mean_error = min(1.0, max(0.0, float(calibration.get("mean_error", 0.0) or 0.0)))
+                signed_bias = min(1.0, max(-1.0, float(calibration.get("mean_signed_error", 0.0) or 0.0)))
+                # A persistent underprediction means the action has been better than our model expected;
+                # persistent overprediction means the opposite. High error also increases exploration value.
+                expected_utility = min(1.0, max(0.0, expected_utility + 0.20 * signed_bias * strength))
+                information_gain = min(1.0, information_gain + 0.30 * mean_error * strength)
         candidate = StrategyCandidateForecast(
             profile_name=profile, metrics=metrics,
             expected_utility=expected_utility, information_gain=information_gain,
@@ -344,6 +359,8 @@ def settle_action_predictions(*, state_root: Path, account: str, as_of: datetime
         if not publication_path.exists():
             continue
         prediction = ContentActionPrediction.model_validate_json(prediction_path.read_text(encoding="utf-8"))
+        if mind is not None and hasattr(mind, "register_action_prediction"):
+            mind.register_action_prediction(prediction)
         publication = json.loads(publication_path.read_text(encoding="utf-8"))
         attr = publication.get("outcome_attribution") if isinstance(publication, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None

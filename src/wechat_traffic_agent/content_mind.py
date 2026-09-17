@@ -33,6 +33,8 @@ class ContentMind:
         self.root.mkdir(parents=True, exist_ok=True)
         self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
+        if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
+            raise RuntimeError("Content Agent requires VirtualBrain >=0.2 predictive learning")
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
@@ -381,9 +383,44 @@ class ContentMind:
             "prediction_error": prediction_error, "reliability": reliability,
         }
 
+    def register_action_prediction(self, prediction: Any) -> dict[str, Any]:
+        """Register Content's selected 1h/4h/24h forecasts in VirtualBrain core."""
+        from datetime import timedelta
+        from .content_action_prediction import ContentActionPrediction, WINDOW_HOURS
+
+        row = prediction if isinstance(prediction, ContentActionPrediction) else ContentActionPrediction.model_validate(prediction)
+        created = row.created_at
+        registered: list[str] = []
+        existing = self.session.predictive_learning.predictions
+        for metric in row.selected.metrics:
+            brain_prediction_id = f"{row.prediction_id}:{metric.window}"
+            if brain_prediction_id in existing:
+                continue
+            refs = list(dict.fromkeys([row.prediction_id, row.strategy_id, *metric.evidence_refs]))
+            self.session.register_prediction(
+                prediction_id=brain_prediction_id, domain="content", context_key=row.topic,
+                action_key=row.selected_profile_name, target=f"website:http_pageviews:{metric.window}",
+                expected=metric.expected_pageviews, confidence=metric.confidence,
+                created_at=created.isoformat(), evidence_cutoff_at=created.isoformat(),
+                due_at=(created + timedelta(hours=WINDOW_HOURS[metric.window])).isoformat(),
+                evidence_refs=refs, lower=metric.lower_bound, upper=metric.upper_bound,
+            )
+            registered.append(brain_prediction_id)
+        if registered:
+            self._persist()
+        return {"status": "REGISTERED" if registered else "ALREADY_REGISTERED", "prediction_ids": registered}
+
     def observe_action_prediction_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-        """Turn prospective content-action errors into experience and self-directed inquiry."""
+        """Settle Content outcomes through VirtualBrain's shared predictive-learning core."""
+        from virtualbrain.research.predictive_learning import PredictionAssessment
         from .content_action_prediction import ERROR_INQUIRY_THRESHOLD
+
+        def content_error(prediction: Mapping[str, Any], observed: float) -> PredictionAssessment:
+            expected = float(prediction["expected"])
+            actual = float(observed)
+            denom = actual + expected + 1.0
+            signed = max(-1.0, min(1.0, (actual - expected) / denom))
+            return PredictionAssessment(min(1.0, abs(actual - expected) / denom), signed)
 
         applied: list[dict[str, Any]] = []
         inquiries_opened: list[dict[str, Any]] = []
@@ -411,6 +448,18 @@ class ContentMind:
             if event_id in self._observed_event_ids:
                 duplicates += 1
                 continue
+            brain_prediction_id = f"{prediction_id}:{window}"
+            result = self.session.settle_prediction(
+                prediction_id=brain_prediction_id,
+                outcome_id=f"content-outcome:{publication_id}:{window}",
+                observed=actual, observed_at=str(row.get("observed_at")), evidence_refs=refs,
+                maturity=str(row.get("maturity")), reliability=reliability,
+                learning_authority=(str(row.get("maturity")) == "MATURE"),
+                metric=content_error, inquiry_threshold=ERROR_INQUIRY_THRESHOLD[window],
+            )
+            core_error = float(result["normalized_error"])
+            if abs(core_error - error) > 1e-9:
+                raise ValueError("Content and VirtualBrain prediction-error calculations diverged")
             self.session.ingest_life_experience(
                 {
                     "event_id": event_id, "tick": int(self.session.tick),
@@ -425,32 +474,26 @@ class ContentMind:
                 },
                 authority_id=AUTHORITY_ID,
             )
-            inquiry_id = "action-error-" + sha256(prediction_id.encode()).hexdigest()[:16]
-            if error >= ERROR_INQUIRY_THRESHOLD[window] and inquiry_id not in self.session.inquiry.inquiries:
-                question = (
-                    f"Why did {profile} on {topic} produce {actual:.2f} pageviews at {window} when I predicted "
-                    f"{expected:.2f}? Which assumption was wrong: topic demand, title promise, structure fit, "
-                    "distribution timing, or my traffic baseline?"
-                )
-                self.session.inquiry.open(
-                    inquiry_id=inquiry_id, question=question, origin="self_question",
-                    personal_relevance=min(1.0, 0.5 + error / 2.0),
-                    hypotheses={
-                        "topic-demand-mismatch": 0.2, "title-promise-mismatch": 0.2,
-                        "structure-fit-mismatch": 0.2, "distribution-timing": 0.2,
-                        "traffic-baseline-miscalibrated": 0.2,
-                    },
-                )
-                self._inquiry_topics[inquiry_id] = topic
+            inquiry_id = result.get("inquiry_id")
+            if inquiry_id:
+                self._inquiry_topics[str(inquiry_id)] = topic
+                inquiry = self.session.inquiry.inquiries[str(inquiry_id)]
+                for hypothesis in (
+                    "topic-demand-mismatch", "title-promise-mismatch", "structure-fit-mismatch",
+                    "distribution-timing", "traffic-baseline-miscalibrated",
+                ):
+                    if hypothesis not in inquiry["hypotheses"]:
+                        self.session.add_inquiry_hypothesis(str(inquiry_id), hypothesis=hypothesis, confidence=0.2)
                 inquiries_opened.append({
-                    "inquiry_id": inquiry_id, "question": question, "prediction_id": prediction_id,
-                    "window": window, "prediction_error": error,
+                    "inquiry_id": inquiry_id, "question": self.session.inquiry.inquiries[str(inquiry_id)]["question"],
+                    "prediction_id": prediction_id, "window": window, "prediction_error": error,
                 })
             self._observed_event_ids.append(event_id)
             self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
             applied.append({
                 "event_id": event_id, "prediction_id": prediction_id, "window": window,
                 "prediction_error": error, "reliability": reliability,
+                "virtualbrain_outcome_id": result["outcome_id"],
             })
         if applied:
             self._persist()
@@ -556,11 +599,26 @@ class ContentMind:
             mean_pageviews[profile] = sum(views) / len(views) if views else None
             for row in values:
                 refs.extend(row.get("evidence_refs") or ())
+        predictive = self.session.predictive_learning.calibration_context(domain="content")
+        prediction_calibration_by_profile: dict[str, dict[str, float | int]] = {}
+        for row in predictive.get("calibration", []):
+            if row.get("target") != "website:http_pageviews:24h":
+                continue
+            profile = str(row.get("action_key") or "")
+            if not profile:
+                continue
+            prediction_calibration_by_profile[profile] = {
+                "mature_samples": int(row["count"]),
+                "mean_error": float(row["mean_error"]),
+                "mean_signed_error": float(row["mean_signed_error"]),
+                "mean_reliability": float(row["mean_reliability"]),
+            }
         return {
             "topic": topic, "outcome_count": sum(counts.values()),
             "samples_by_profile": counts,
             "mean_relative_reward_by_profile": mean_rewards,
             "mean_pageviews_24h_by_profile": mean_pageviews,
+            "prediction_calibration_by_profile": prediction_calibration_by_profile,
             "evidence_refs": list(dict.fromkeys(str(ref) for ref in refs if str(ref).strip())),
             "minimum_profile_samples": MIN_STRATEGY_PROFILE_SAMPLES,
             "causal_claim": False,
