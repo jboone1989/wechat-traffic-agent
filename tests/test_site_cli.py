@@ -50,6 +50,7 @@ def test_build_site_from_json_directory(tmp_path):
     assert 'Follow Content Agent on X' not in home
     assert 'network.livingruntime.com/explorer' in home
     assert 'id="work-search"' in archive
+    assert 'class="work-search-sticky"' in archive
     assert 'id="work-topic"' in archive
     assert 'id="work-sort"' in archive
     assert 'data-kind="article"' in archive
