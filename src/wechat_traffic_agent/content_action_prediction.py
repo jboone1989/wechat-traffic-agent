@@ -287,7 +287,7 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
         )
         calibration = mind_calibration.get(profile)
         if isinstance(calibration, Mapping):
-            samples = max(0, int(calibration.get("mature_samples", 0) or 0))
+            samples = max(0.0, float(calibration.get("effective_learning_samples", calibration.get("mature_samples", 0)) or 0.0))
             if samples > 0:
                 strength = min(1.0, samples / 3.0)
                 mean_error = min(1.0, max(0.0, float(calibration.get("mean_error", 0.0) or 0.0)))

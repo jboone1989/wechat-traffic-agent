@@ -34,7 +34,7 @@ class ContentMind:
         self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
-            raise RuntimeError("Content Agent requires VirtualBrain >=0.2 predictive learning")
+            raise RuntimeError("Content Agent requires VirtualBrain >=0.3 causal learning")
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
@@ -608,7 +608,10 @@ class ContentMind:
             if not profile:
                 continue
             prediction_calibration_by_profile[profile] = {
-                "mature_samples": int(row["count"]),
+                "mature_samples": int(row.get("prospective_count", row.get("count", 0))),
+                "prospective_samples": int(row.get("prospective_count", row.get("count", 0))),
+                "historical_prior_samples": int(row.get("historical_prior_count", 0)),
+                "effective_learning_samples": float(row.get("effective_learning_samples", row.get("count", 0))),
                 "mean_error": float(row["mean_error"]),
                 "mean_signed_error": float(row["mean_signed_error"]),
                 "mean_reliability": float(row["mean_reliability"]),
