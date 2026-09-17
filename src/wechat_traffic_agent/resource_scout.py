@@ -10,7 +10,8 @@ import shutil
 from typing import Any
 
 from agent_runtime.resource_discovery import (
-    ResourceNeed, ResourceScout, plan_provider_trials, provider_profiles, select_provider,
+    ResourceAcquisitionOutcome, ResourceNeed, ResourceScout, plan_provider_trials,
+    provider_profiles, resource_discovery_constraints, select_provider,
 )
 
 from .provider_trials import TRIAL_CASES, execute_case, resolve_trial_spec, trial_id
@@ -25,28 +26,41 @@ class ContentResourceScout:
     def maybe_discover(self, *, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("resource scout time requires timezone")
+        outcomes = self.acquisition_outcomes()
+        adaptive_constraints = resource_discovery_constraints(outcomes)
         runs = self._runs()
         if runs:
             last_run = runs[-1]
             last = datetime.fromisoformat(str(last_run["observed_at"]).replace("Z", "+00:00"))
             found_last_time = bool(last_run.get("new_opportunity_ids"))
             retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
-            if now.astimezone(timezone.utc) - last < retry_after:
+            new_friction = any(
+                row.status == "BLOCKED_EXTERNAL"
+                and datetime.fromisoformat(row.observed_at.replace("Z", "+00:00")) > last
+                for row in outcomes
+            )
+            if not new_friction and now.astimezone(timezone.utc) - last < retry_after:
                 return {
                     "status": "NOT_DUE",
                     "last_observed_at": last.isoformat(),
                     "retry_after_seconds": int(retry_after.total_seconds()),
                     "opportunity_count": len(self.scout.opportunities()),
+                    "adaptive_constraints": list(adaptive_constraints),
                 }
         need = ResourceNeed(
             resource_kind="llm_inference",
             objective="reduce financial burn while preserving useful task quality",
-            reason="paid-provider concentration exists and no low-cost alternative has trial evidence",
+            reason=(
+                "recent resource acquisition friction requires alternate routes"
+                if adaptive_constraints else
+                "paid-provider concentration exists and no low-cost alternative has trial evidence"
+            ),
             constraints=(
                 "public evidence only",
                 "never send secrets during discovery",
                 "prefer zero-cost or recurring free quota",
                 "no paid signup or privilege expansion without operator approval",
+                *adaptive_constraints,
             ),
         )
         created = self.scout.discover(need, now=now, max_queries=6, results_per_query=6)
@@ -57,6 +71,7 @@ class ContentResourceScout:
             "opportunity_count": len(opportunities),
             "claimed_free_count": sum(1 for x in opportunities if x.claimed_free),
             "credential_hint_count": sum(1 for x in opportunities if x.credential_hint),
+            "adaptive_constraints": list(adaptive_constraints),
             "new_opportunities": [
                 {
                     "opportunity_id": x.opportunity_id,
@@ -157,8 +172,10 @@ class ContentResourceScout:
         leads = self.scout.provider_leads()
         verifications = self.scout.provider_verifications()
         available = {item.credential_env for item in leads if os.environ.get(item.credential_env)}
+        outcomes = self.acquisition_outcomes()
         plans = plan_provider_trials(
-            leads, verifications, available_credentials=available, limit=limit
+            leads, verifications, available_credentials=available,
+            acquisition_outcomes=outcomes, limit=limit
         )
         local = self.local_inference_feasibility()
         lead_by_id = {item.lead_id: item for item in leads}
@@ -167,6 +184,8 @@ class ContentResourceScout:
             "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
             "available_credential_envs": sorted(available),
             "local_inference": local,
+            "adaptive_constraints": list(resource_discovery_constraints(outcomes)),
+            "acquisition_outcome_count": len(outcomes),
             "plans": [
                 {
                     "plan_id": item.plan_id,
@@ -260,6 +279,55 @@ class ContentResourceScout:
         folder.mkdir(parents=True, exist_ok=True)
         self._atomic_json(folder / "latest.json", payload)
         return payload
+
+    def record_acquisition_outcome(
+        self, *, plan_id: str, lead_id: str, status: str, now: datetime,
+        friction_kind: str = "NONE", source: str = "RUNTIME",
+        detail_summary: str = "", evidence_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("acquisition outcome time requires timezone")
+        detail = " ".join(str(detail_summary or "").split())[:500]
+        refs = tuple(dict.fromkeys(str(x) for x in evidence_refs if str(x)))
+        digest_input = json.dumps({
+            "plan_id": str(plan_id), "lead_id": str(lead_id), "status": str(status),
+            "friction_kind": str(friction_kind), "source": str(source),
+            "detail_summary": detail, "evidence_refs": refs,
+        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        outcome = ResourceAcquisitionOutcome(
+            outcome_id="resource-acquisition-outcome:" + sha256(digest_input.encode()).hexdigest()[:24],
+            plan_id=str(plan_id), lead_id=str(lead_id), status=str(status),
+            observed_at=now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            friction_kind=str(friction_kind), source=str(source), detail_summary=detail,
+            evidence_refs=refs,
+        )
+        folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (outcome.outcome_id.split(":")[-1] + ".json")
+        self._atomic_json(path, {
+            "outcome_id": outcome.outcome_id, "plan_id": outcome.plan_id,
+            "lead_id": outcome.lead_id, "status": outcome.status,
+            "observed_at": outcome.observed_at, "friction_kind": outcome.friction_kind,
+            "source": outcome.source, "detail_summary": outcome.detail_summary,
+            "evidence_refs": list(outcome.evidence_refs), "schema_version": outcome.schema_version,
+        })
+        return {
+            "outcome_id": outcome.outcome_id, "status": outcome.status,
+            "friction_kind": outcome.friction_kind, "observed_at": outcome.observed_at,
+        }
+
+    def acquisition_outcomes(self) -> list[ResourceAcquisitionOutcome]:
+        folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
+        rows: list[ResourceAcquisitionOutcome] = []
+        for path in sorted(folder.glob("*.json")) if folder.exists() else []:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                value["evidence_refs"] = tuple(value.get("evidence_refs") or ())
+                rows.append(ResourceAcquisitionOutcome(**value))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return sorted(rows, key=lambda row: (row.observed_at, row.outcome_id))
+
 
     def local_inference_feasibility(self) -> dict[str, Any]:
         mem_total_gib = mem_available_gib = None
