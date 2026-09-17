@@ -52,7 +52,7 @@ def test_restart_preserves_goal_and_duplicate_experience_is_idempotent(tmp_path:
     assert duplicate["status"] == "ALREADY_OBSERVED"
     projection = restarted.public_projection()
     assert projection["interests"][0]["name"] == "rare"
-    assert "audience outcomes are not connected" in projection["learning_boundary"]
+    assert "mature Website audience outcomes are connected" in projection["learning_boundary"]
 
 
 def test_authority_key_is_private(tmp_path: Path):
@@ -288,3 +288,29 @@ def test_method_discovery_can_raise_salience_without_rewriting_preference(tmp_pa
     assert plan["world_observations"][0]["learning_kind"] == "METHOD"
     # Discovery may create curiosity/inquiry, but it is not proof that the method works or has been adopted.
     assert all(row["proposition"] != "continuous-eval-loop" for row in mind.public_projection()["beliefs"])
+
+def test_mature_website_outcomes_become_persistent_virtualbrain_strategy_experience(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    result = mind.observe_strategy_outcomes([
+        {"outcome_id": "o1", "publication_id": "1", "topic": "crypto-market", "profile_name": "evidence-brief",
+         "pageviews_24h": 100, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
+        {"outcome_id": "o2", "publication_id": "2", "topic": "crypto-market", "profile_name": "practical-guide",
+         "pageviews_24h": 20, "observed_at": "2026-09-17T01:00:00+00:00", "evidence_refs": ["metric:2"]},
+        {"outcome_id": "o3", "publication_id": "3", "topic": "crypto-market", "profile_name": "evidence-brief",
+         "pageviews_24h": 120, "observed_at": "2026-09-17T02:00:00+00:00", "evidence_refs": ["metric:3"]},
+    ])
+    assert result["status"] == "OBSERVED"
+    assert result["causal_claim"] is False
+    context = mind.strategy_context(topic="crypto-market")
+    assert context["samples_by_profile"]["evidence-brief"] == 2
+    assert context["samples_by_profile"]["practical-guide"] == 1
+    assert context["mean_relative_reward_by_profile"]["evidence-brief"] is not None
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    assert restarted.strategy_context(topic="crypto-market") == context
+    duplicate = restarted.observe_strategy_outcomes([
+        {"outcome_id": "o1", "publication_id": "1", "topic": "crypto-market", "profile_name": "evidence-brief",
+         "pageviews_24h": 100, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
+    ])
+    assert duplicate["status"] == "NO_NEW_OUTCOMES"
+    assert duplicate["duplicates"] == 1
