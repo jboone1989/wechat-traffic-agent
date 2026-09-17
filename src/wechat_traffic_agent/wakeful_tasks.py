@@ -59,6 +59,48 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["provider_verification"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        try:
+            trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
+            rows["provider_trial_plans"] = trial_plans
+            plans = list(trial_plans.get("plans") or [])
+            local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
+            ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
+            top = plans[0] if plans else None
+            if (
+                ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
+                and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
+            ):
+                request = self.human_assistance.request(
+                    kind="MODEL_RESOURCE_ACCESS",
+                    urgency="NORMAL",
+                    summary=(
+                        f"我已验证 {top['provider_label']} 是当前更值得试的低成本模型资源，"
+                        "但本机资源压力不适合新增本地推理栈，而且我缺少访问凭据。"
+                    ),
+                    requested_action=(
+                        f"请在官方 {top['signup_url']} 创建/获取 {top['credential_env']}，"
+                        "并把它配置到 Content Agent 的受保护服务器环境中；不要通过聊天或企业微信发送密钥明文。"
+                    ),
+                    now=now,
+                    details={
+                        "plan_id": top.get("plan_id"),
+                        "lead_id": top.get("lead_id"),
+                        "provider_label": top.get("provider_label"),
+                        "credential_env": top.get("credential_env"),
+                        "signup_url": top.get("signup_url"),
+                        "priority_score": top.get("priority_score"),
+                        "reasons": top.get("reasons"),
+                        "local_inference": trial_plans.get("local_inference"),
+                    },
+                )
+                rows["provider_access_request"] = {
+                    "request_id": request.get("request_id"),
+                    "delivery_status": request.get("delivery_status"),
+                    "kind": request.get("kind"),
+                }
+        except Exception as exc:  # noqa: BLE001
+            rows["provider_trial_plans"] = self._error(exc)
+            rows["status"] = "DEGRADED"
         return rows
 
     def _reflect(self, now: datetime) -> dict[str, Any]:
