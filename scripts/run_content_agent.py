@@ -89,18 +89,18 @@ def main() -> int:
             runtime=app.runtime, model_runtime=app.domain_runtime, state_root=state_root,
             base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
         )
-    network_service: ContentNetworkService | None = None
-    if network_enabled():
-        network_service = ContentNetworkService.from_environment(root=state_root, application=app)
-        network_service.start()
-        print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
-
     live_agent_service = None
     from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
     if live_agent_enabled():
         live_agent_service = build_live_agent_service(state_root=state_root, application=app, mind=content_mind, poll_seconds=args.poll_seconds)
         live_agent_service.start()
         print(f"live-agent endpoint=http://{live_agent_service.host}:{live_agent_service.port}")
+
+    network_service: ContentNetworkService | None = None
+    if network_enabled():
+        network_service = ContentNetworkService.from_environment(root=state_root, application=app)
+        network_service.start()
+        print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
 
     draft_worker: TradingResearchDraftWorker | None = None
     if trading_draft_worker_enabled():
