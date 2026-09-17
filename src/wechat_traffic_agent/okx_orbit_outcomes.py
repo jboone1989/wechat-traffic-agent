@@ -130,9 +130,9 @@ class PlaywrightOrbitMetricsTransport:
                 blob = body + "\n" + str(metadata)
                 values: dict[str, int | None] = {"views": _metric_from_text(blob, "views")}
                 action_selectors = {
-                    "comments": "i[class*='okx-trading-message']",
-                    "quotes": "[data-testid='quote-btn']",
-                    "likes": "i[aria-label='Like'], i[class*='okx-trading-like']",
+                    "comments": "[class*='actionList-'] i[class*='okx-trading-message']",
+                    "quotes": "[class*='actionList-'] [data-testid='quote-btn']",
+                    "likes": "[class*='actionList-'] i[aria-label='Like'], [class*='actionList-'] i[class*='okx-trading-like']",
                 }
                 for name, selector in action_selectors.items():
                     value = await _action_count(page, selector)
