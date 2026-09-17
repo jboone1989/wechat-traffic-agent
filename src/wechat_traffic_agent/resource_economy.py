@@ -132,8 +132,8 @@ class ContentResourceEconomy:
         from virtualbrain.research.resource_awareness import ResourceState
 
         balance = self.observer.observe(now)
-        prior = self.mind.session.resource_awareness.current
-        burn = self._daily_burn(prior, balance)
+        awareness = self.mind.session.resource_awareness
+        burn = self._daily_burn(awareness.states, balance)
         runway = balance.total_balance / burn if burn is not None and burn > 0 else None
         state = ResourceState(
             observed_tick=int(self.mind.session.tick),
@@ -160,19 +160,25 @@ class ContentResourceEconomy:
         return {"status": "OBSERVED", "balance": balance.payload(), "resource_state": self._state_payload(state)}
 
     @staticmethod
-    def _daily_burn(prior: Any, current: BalanceObservation) -> float | None:
-        if prior is None or prior.observed_at is None or prior.currency != current.currency:
-            return None
-        before = datetime.fromisoformat(prior.observed_at.replace("Z", "+00:00"))
+    def _daily_burn(history: tuple[Any, ...], current: BalanceObservation) -> float | None:
+        """Estimate burn from a real elapsed window even when observations arrive every few minutes."""
         after = datetime.fromisoformat(current.observed_at.replace("Z", "+00:00"))
-        seconds = (after - before).total_seconds()
-        if seconds <= 0:
-            return prior.estimated_daily_burn
+        fallback = history[-1].estimated_daily_burn if history else None
+        candidate = None
+        for state in reversed(history):
+            if state.observed_at is None or state.currency != current.currency:
+                continue
+            before = datetime.fromisoformat(state.observed_at.replace("Z", "+00:00"))
+            seconds = (after - before).total_seconds()
+            if seconds >= 900:
+                candidate = (state, seconds)
+                break
+        if candidate is None:
+            return fallback
+        prior, seconds = candidate
         delta = prior.available_funds - current.total_balance
         if delta < 0:
             return None  # top-up/grant/change: do not mislabel it as negative spend
-        if seconds < 900:
-            return prior.estimated_daily_burn
         return delta * 86400.0 / seconds
 
     @staticmethod

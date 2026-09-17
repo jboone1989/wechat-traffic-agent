@@ -102,3 +102,21 @@ def test_zero_or_noop_history_does_not_collapse_future_cost_estimate(tmp_path, m
                       result={"status": "ALREADY_PROCESSED"})
     second = economy.begin_cycle(now=NOW + timedelta(minutes=21), cycle="cycle-next")
     assert second["estimated_cost"] == pytest.approx(economy.bootstrap_cycle_estimate)
+
+
+def test_burn_uses_older_window_when_observations_are_every_five_minutes(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    observations = iter((
+        balance(when=NOW, total=100.0, suffix="a"),
+        balance(when=NOW + timedelta(minutes=5), total=99.9, suffix="b"),
+        balance(when=NOW + timedelta(minutes=10), total=99.8, suffix="c"),
+        balance(when=NOW + timedelta(minutes=15), total=99.7, suffix="d"),
+    ))
+    monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
+    economy.observe(NOW)
+    economy.observe(NOW + timedelta(minutes=5))
+    economy.observe(NOW + timedelta(minutes=10))
+    final = economy.observe(NOW + timedelta(minutes=15))
+    assert final["resource_state"]["estimated_daily_burn"] == pytest.approx(28.8)
+    assert final["resource_state"]["runway_days"] == pytest.approx(99.7 / 28.8)
