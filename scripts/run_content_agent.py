@@ -179,6 +179,8 @@ def main() -> int:
             try:
                 scout_result = resource_scout.maybe_discover(now=now)
                 print(json.dumps({"resource_scout": scout_result}, ensure_ascii=False, sort_keys=True))
+                verify_result = resource_scout.verify_pending(now=now, limit=8)
+                print(json.dumps({"resource_verification": verify_result}, ensure_ascii=False, sort_keys=True))
             except Exception as exc:  # noqa: BLE001
                 print(json.dumps({"resource_scout": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
             try:

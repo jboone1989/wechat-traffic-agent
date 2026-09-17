@@ -64,11 +64,47 @@ class ContentResourceScout:
             ],
         }
 
+    def verify_pending(self, *, now: datetime, limit: int = 8) -> dict[str, Any]:
+        rows = self.scout.verify_pending(now=now, fetch=self._fetch, limit=limit)
+        all_rows = self.scout.verifications()
+        verified = [row for row in all_rows if row.status == "VERIFIED_CANDIDATE"]
+        return {
+            "status": "VERIFIED" if rows else "NO_PENDING",
+            "processed_count": len(rows),
+            "verified_candidate_count": len(verified),
+            "processed": [
+                {
+                    "opportunity_id": row.opportunity_id,
+                    "status": row.status,
+                    "relevance_score": row.relevance_score,
+                    "free_evidence": row.free_evidence,
+                    "local_evidence": row.local_evidence,
+                    "credential_evidence": row.credential_evidence,
+                    "privacy_caution": row.privacy_caution,
+                    "verification_url": row.verification_url,
+                }
+                for row in rows
+            ],
+        }
+
+    def _fetch(self, url: str, max_chars: int):
+        receipt = self.capability_runtime.invoke(
+            "web.fetch", {"url": url, "max_chars": int(max_chars)}
+        )
+        persist = getattr(self.capability_runtime, "persist", None)
+        if callable(persist):
+            persist()
+        return receipt
+
     def _search(self, query: str, limit: int, source_class: str):
         payload = {"query": query, "limit": int(limit), "safesearch": 1}
         if source_class == "technical":
             payload["categories"] = ["it"]
-        return self.capability_runtime.invoke("web.search", payload)
+        receipt = self.capability_runtime.invoke("web.search", payload)
+        persist = getattr(self.capability_runtime, "persist", None)
+        if callable(persist):
+            persist()
+        return receipt
 
     def _runs(self) -> list[dict[str, Any]]:
         folder = self.state_root / "application" / "resource_discovery" / "runs"
