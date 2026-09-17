@@ -9,6 +9,7 @@ from wechat_traffic_agent.okx_orbit_outcomes import (
     OKXOrbitOutcomeCollector,
     OrbitPublicMetrics,
     SOURCE,
+    _count_from_action_text,
     _parse_compact_count,
 )
 
@@ -66,6 +67,14 @@ def test_parse_compact_public_counts():
     assert _parse_compact_count("50.78K") == 50_780
     assert _parse_compact_count("1.2M") == 1_200_000
     assert _parse_compact_count("6") == 6
+
+
+def test_parse_semantic_action_container_counts():
+    assert _count_from_action_text("3") == 3
+    assert _count_from_action_text("0") == 0
+    assert _count_from_action_text("6") == 6
+    assert _count_from_action_text(" 1.2K ") == 1200
+    assert _count_from_action_text("") is None
 
 
 def test_collect_records_four_public_metrics_only_near_mature_window(tmp_path):

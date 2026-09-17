@@ -67,6 +67,13 @@ def _parse_compact_count(raw: str) -> int:
     return int(round(value * multiplier))
 
 
+def _count_from_action_text(raw: str) -> int | None:
+    match = re.search(r"([0-9]+(?:[.,][0-9]+)?\s*[KMB]?)", str(raw), re.I)
+    if not match:
+        return None
+    return _parse_compact_count(match.group(1).replace(" ", ""))
+
+
 def _metric_from_text(blob: str, label: str) -> int | None:
     aliases = {
         "views": ("views", "view", "浏览", "瀏覽"),
@@ -82,6 +89,16 @@ def _metric_from_text(blob: str, label: str) -> int | None:
             if match:
                 return _parse_compact_count(match.group(1).replace(" ", ""))
     return None
+
+
+async def _action_count(page: Any, selector: str) -> int | None:
+    target = page.locator(selector).first
+    if not await target.count() or not await target.is_visible():
+        return None
+    text = await target.evaluate(
+        "e => { const item = e.closest('[class*=\"actionItem-\"]') || e.parentElement; return (item && item.innerText || '').trim(); }"
+    )
+    return _count_from_action_text(str(text))
 
 
 class PlaywrightOrbitMetricsTransport:
@@ -111,7 +128,16 @@ class PlaywrightOrbitMetricsTransport:
                     "els => els.slice(0, 1500).map(e => [e.innerText || '', e.getAttribute('aria-label') || '', e.getAttribute('title') || ''].join(' ')).join('\\n')"
                 )
                 blob = body + "\n" + str(metadata)
-                metrics = OrbitPublicMetrics(**{name: _metric_from_text(blob, name) for name in METRICS})
+                values: dict[str, int | None] = {"views": _metric_from_text(blob, "views")}
+                action_selectors = {
+                    "comments": "i[class*='okx-trading-message']",
+                    "quotes": "[data-testid='quote-btn']",
+                    "likes": "i[aria-label='Like'], i[class*='okx-trading-like']",
+                }
+                for name, selector in action_selectors.items():
+                    value = await _action_count(page, selector)
+                    values[name] = value if value is not None else _metric_from_text(blob, name)
+                metrics = OrbitPublicMetrics(**values)
                 if all(getattr(metrics, name) is None for name in METRICS):
                     raise RuntimeError("no public Orbit engagement counters were parseable")
                 return metrics
@@ -276,5 +302,5 @@ class OKXOrbitOutcomeCollector:
 __all__ = [
     "MAX_CAPTURE_LAG", "METRICS", "OKXOrbitOutcomeCollector", "OrbitMetricsTransport",
     "OrbitPublicMetrics", "PlaywrightOrbitMetricsTransport", "SOURCE", "WINDOWS",
-    "_parse_compact_count",
+    "_count_from_action_text", "_parse_compact_count",
 ]
