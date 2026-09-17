@@ -66,11 +66,13 @@ def main() -> int:
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     from wechat_traffic_agent.resource_economy import ContentResourceEconomy
-    from wechat_traffic_agent.human_assistance import HumanAssistanceService, WeComNotifier
+    from wechat_traffic_agent.human_assistance import HumanAssistanceService, operator_notifier
     from wechat_traffic_agent.daily_reflection import DailyReflectionService
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
-    private_notifier = WeComNotifier()
+    from wechat_traffic_agent.resource_scout import ContentResourceScout
+    resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
+    private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
     try:
@@ -174,6 +176,11 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 resource_observation = {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
                 print(json.dumps({"resource_observation": resource_observation}, sort_keys=True), file=sys.stderr)
+            try:
+                scout_result = resource_scout.maybe_discover(now=now)
+                print(json.dumps({"resource_scout": scout_result}, ensure_ascii=False, sort_keys=True))
+            except Exception as exc:  # noqa: BLE001
+                print(json.dumps({"resource_scout": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
             try:
                 reflection_result = daily_reflection.maybe_generate(now)
                 print(json.dumps({"daily_reflection": {

@@ -54,6 +54,39 @@ class WeComNotifier:
         return {"status": "SENT"}
 
 
+class RuntimeMailboxNotifier:
+    """Publish private operator messages into Agent Runtime; Runtime owns delivery credentials."""
+    def __init__(self, state_dir: Path | str | None = None) -> None:
+        raw = str(state_dir or os.environ.get("CONTENT_OPERATOR_STATE_DIR") or "").strip()
+        self.state_dir = Path(raw) if raw else None
+
+    @property
+    def configured(self) -> bool:
+        return self.state_dir is not None and self.state_dir.exists()
+
+    def send_text(self, text: str) -> dict[str, Any]:
+        content = str(text).strip()
+        if not content:
+            raise ValueError("operator message must not be empty")
+        if not self.configured:
+            return {"status": "NOT_CONFIGURED"}
+        from agent_runtime.communication.mailbox import RuntimeMailbox
+        mailbox = RuntimeMailbox(self.state_dir)
+        title = content.splitlines()[0].strip()[:160] or "Ferro update"
+        notification = mailbox.publish_notification(
+            agent_id="content-agent", cycle=0, kind="CONTENT_AGENT_PRIVATE",
+            title=title, message=content, evidence_refs=["content-agent:private-operator-message"],
+        )
+        return {"status": "SENT", "transport": "runtime-mailbox", "notification_id": notification.notification_id}
+
+
+def operator_notifier():
+    runtime = RuntimeMailboxNotifier()
+    if runtime.configured:
+        return runtime
+    return WeComNotifier()
+
+
 class HumanAssistanceService:
     def __init__(self, *, state_root: Path, notifier: WeComNotifier | None = None) -> None:
         self.root = Path(state_root) / "application" / "human_assistance"
@@ -116,4 +149,4 @@ class HumanAssistanceService:
         os.replace(tmp, path)
 
 
-__all__ = ["WeComNotifier", "HumanAssistanceService"]
+__all__ = ["WeComNotifier", "RuntimeMailboxNotifier", "operator_notifier", "HumanAssistanceService"]
