@@ -190,6 +190,21 @@ class ContentWakefulRuntime:
             urgency=0.35, persistence=0.45, payload_ref=f"x-mentions-count:{int(count)}",
         ))
 
+    def emit_action_commitment(self, *, prediction_id: str, observed_at: datetime | None = None) -> dict:
+        prediction_id = str(prediction_id or "").strip()
+        if not prediction_id:
+            raise ValueError("action commitment requires prediction_id")
+        now = observed_at or datetime.now(timezone.utc)
+        event_id = f"action:{prediction_id}"
+        signal = self.core.emit(StimulusEvent(
+            event_id=event_id, source="content-cognition", kind="ACTION_COMMITMENT", observed_at=now,
+            salience=0.80, novelty=0.35, urgency=0.65, persistence=0.85, payload_ref=prediction_id,
+        ), enqueue=False)
+        return {
+            "status": "OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
+            "attention_channel": signal.channel, "threshold_crossed": signal.threshold_crossed,
+        }
+
     def emit_prediction_due(self, *, prediction_ref: str, observed_at: datetime | None = None) -> None:
         now = observed_at or datetime.now(timezone.utc)
         self.core.emit(StimulusEvent(
@@ -235,6 +250,7 @@ class ContentWakefulRuntime:
             observed_at=observed_at,
             pathway=("prediction_due", "task_urgency"),
             evidence_refs=evidence_refs,
+            source_event_id=f"action:{prediction_id}",
             information_gain=0.25 * reliability,
             prediction_error=prediction_error * reliability,
             goal_progress=max(-1.0, min(1.0, signed_progress * reliability)),
@@ -261,6 +277,7 @@ class ContentWakefulRuntime:
                     "outcome_id": row.outcome_id,
                     "observed_at": row.observed_at.isoformat(),
                     "pathway": list(row.pathway),
+                    "source_event_id": row.source_event_id,
                     "evidence_refs": list(row.evidence_refs),
                 }
                 for row in snap.recent_neural_feedback[-8:]

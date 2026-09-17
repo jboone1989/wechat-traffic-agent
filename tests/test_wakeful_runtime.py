@@ -204,3 +204,34 @@ def test_real_minifly_shadow_substrate_is_separate_from_semantic_ports(tmp_path,
     assert substrate["lifecycle"] == "SHADOW"
     assert substrate["recent_bursts"][-1]["synaptic_events"] > 0
     assert snapshot["connectome"]["status"] == "SHADOW_ACTIVE"
+
+
+def test_action_commitment_is_a_stable_provenance_bound_neural_stimulus(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    prediction_id = "content-action-prediction:aaaaaaaaaaaaaaaaaaaaaaaa"
+    first = runtime.emit_action_commitment(prediction_id=prediction_id, observed_at=NOW)
+    second = runtime.emit_action_commitment(prediction_id=prediction_id, observed_at=NOW + timedelta(seconds=5))
+    assert first["event_id"] == f"action:{prediction_id}"
+    assert second["event_id"] == first["event_id"]
+    matching = [row for row in runtime.core.snapshot().recent_stimuli if row.event_id == first["event_id"]]
+    assert len(matching) == 1
+    assert matching[0].kind == "ACTION_COMMITMENT"
+    assert matching[0].payload_ref == prediction_id
+
+
+def test_prediction_outcome_feedback_points_to_exact_action_commitment(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    prediction_id = "content-action-prediction:bbbbbbbbbbbbbbbbbbbbbbbb"
+    commitment = runtime.emit_action_commitment(prediction_id=prediction_id, observed_at=NOW)
+    outcome = {
+        "prediction_id": prediction_id,
+        "window": "1h", "expected_pageviews": 2.0, "actual_pageviews": 4.0,
+        "prediction_error": 2.0 / 7.0, "reliability": 0.9,
+        "observed_at": (NOW + timedelta(hours=1)).isoformat(),
+        "evidence_refs": [prediction_id, "nginx:outcome-1"],
+    }
+    result = runtime.apply_prediction_outcome_feedback(outcome)
+    assert result["status"] == "APPLIED"
+    feedback = runtime.core.snapshot().recent_neural_feedback[-1]
+    assert feedback.source_event_id == commitment["event_id"] == f"action:{prediction_id}"
+    assert runtime.public_snapshot()["neural_feedback"][-1]["source_event_id"] == f"action:{prediction_id}"
