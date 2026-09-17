@@ -9,5 +9,5 @@ def test_persistent_content_framework_dependencies_are_declared():
     dependencies = tuple(data["project"]["dependencies"])
     assert any(item.startswith("agent-runtime>=0.3") for item in dependencies)
     assert any(item.startswith("agent-network-sdk>=0.2") for item in dependencies)
-    assert any(item.startswith("virtualbrain>=0.1") for item in dependencies)
+    assert any(item.startswith("virtualbrain>=0.2") for item in dependencies)
     assert any(item.startswith("uvicorn>=0.30") for item in dependencies)
