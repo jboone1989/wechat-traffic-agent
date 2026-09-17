@@ -205,7 +205,9 @@ class TinyFishXTransport:
             await button.click()
             for _ in range(8):
                 await page.wait_for_timeout(900)
-                existing = await self._find_existing(page, handle=handle, text=text, duplicate_found=False)
+                existing = await self._find_existing(
+                    page, handle=handle, text=text, duplicate_found=False, require_timeline=False
+                )
                 if existing is not None:
                     return existing
             raise XBrowserPublicationUnverified("X submit could not be tied to a public post URL")
@@ -220,11 +222,20 @@ class TinyFishXTransport:
             raise TinyFishProfileUnavailable("Could not resolve authenticated X handle")
         return handle
 
-    async def _find_existing(self, page: Any, *, handle: str, text: str, duplicate_found: bool) -> XBrowserPublishResult | None:
+    async def _find_existing(self, page: Any, *, handle: str, text: str, duplicate_found: bool,
+                             require_timeline: bool = True) -> XBrowserPublishResult | None:
         await page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded")
-        await page.wait_for_timeout(1000)
-        needle = _normalize_text(text)[:160]
         articles = page.locator("article")
+        try:
+            await articles.first.wait_for(state="visible", timeout=min(self.timeout_ms, 15_000))
+        except Exception as exc:
+            if require_timeline:
+                raise XBrowserPublicationUnverified(
+                    "X profile timeline did not load; refusing to publish without an idempotency check"
+                ) from exc
+            return None
+        await page.wait_for_timeout(500)
+        needle = _normalize_text(text)[:160]
         for index in range(min(await articles.count(), 15)):
             article = articles.nth(index)
             body = _normalize_text(await article.inner_text())
@@ -233,9 +244,10 @@ class TinyFishXTransport:
             links = article.locator(f'a[href^="/{handle}/status/"]')
             for link_index in range(await links.count()):
                 href = str(await links.nth(link_index).get_attribute("href") or "")
-                url = "https://x.com" + href if href.startswith("/") else href
-                post_id = _post_id_from_url(url)
+                raw_url = "https://x.com" + href if href.startswith("/") else href
+                post_id = _post_id_from_url(raw_url)
                 if post_id:
+                    url = f"https://x.com/{handle}/status/{post_id}"
                     return XBrowserPublishResult(post_id=post_id, url=url, handle=handle, duplicate_found=duplicate_found)
         return None
 
