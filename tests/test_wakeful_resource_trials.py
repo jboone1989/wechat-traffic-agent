@@ -11,22 +11,22 @@ class Mind:
     def public_projection(self): return {"resource_awareness":{"current":{"pressure":"WATCH"}}}
 class Wakeful:
     def set_resource_pressure(self, pressure): self.pressure=pressure
+    def schedule_resource_followup(self, now, *, seconds=300): self.followup=(now,seconds)
 class Scout:
     def maybe_discover(self, **kwargs): return {"status":"NOT_DUE"}
     def verify_pending(self, **kwargs): return {"status":"NO_PENDING"}
     def expand_provider_leads(self, **kwargs): return {"status":"NO_NEW_LEADS"}
     def verify_provider_leads(self, **kwargs): return {"status":"NO_PENDING"}
     def plan_trials(self, **kwargs):
-        return {"status":"PLANNED","local_inference":{"status":"DEFER_LOCAL_RESOURCE_PRESSURE","reasons":["disk_pressure"]},"plans":[{
+        return {"status":"PLANNED","autonomous_work_pending":False,"pending_verification_count":0,"local_inference":{"status":"DEFER_LOCAL_RESOURCE_PRESSURE","reasons":["disk_pressure"]},"plans":[{
             "plan_id":"plan:1","lead_id":"lead:1","provider_label":"Provider One","credential_env":"ONE_API_KEY",
             "signup_url":"https://provider.example/keys","priority_score":0.63,"reasons":["recurring_free_evidence","credential_missing"],"status":"NEEDS_CREDENTIAL",
         }]}
+    def run_ready_trials(self, **kwargs):
+        return {"status":"TRIALED","executed_request_count":3,"providers":[],"empirical_profiles":[],"empirical_selection":None}
 class Assistance:
-    def __init__(self): self.calls=[]; self.fulfilled=[]
+    def __init__(self): self.calls=[]
     def request(self, **kwargs): self.calls.append(kwargs); return {"request_id":"human-request:1","delivery_status":"SENT","kind":kwargs["kind"]}
-    def fulfill_matching(self, **kwargs):
-        self.fulfilled.append(kwargs)
-        return [{"request_id":"human-request:1"}]
 
 def test_resource_review_requests_only_top_credential_when_local_path_is_deferred():
     assistance=Assistance()
@@ -42,11 +42,23 @@ def test_resource_review_does_not_interrupt_human_when_trial_is_ready():
     class ReadyScout(Scout):
         def plan_trials(self, **kwargs):
             row=super().plan_trials(**kwargs); row["plans"][0]["status"]="READY_TO_TRIAL"; return row
-        def execute_ready_trials(self, **kwargs):
-            return {"status":"TRIALS_EXECUTED","completed_count":1,"failed_count":0,"trial_ids":["model-trial:1"],"error_codes":[]}
     assistance=Assistance()
     runner=WakefulContentTaskRunner(resource_economy=Economy(),content_mind=Mind(),wakeful=Wakeful(),resource_scout=ReadyScout(),human_assistance=assistance)
     result=runner.run("RESOURCE_REVIEW",now=NOW)
     assert result["status"]=="OK" and not assistance.calls
-    assert result["provider_access_resolution"]["status"]=="FULFILLED"
-    assert assistance.fulfilled[0]["detail_value"]=="ONE_API_KEY"
+
+
+def test_resource_review_defers_human_and_schedules_followup_while_autonomous_work_remains():
+    class PendingScout(Scout):
+        def plan_trials(self, **kwargs):
+            row=super().plan_trials(**kwargs)
+            row["autonomous_work_pending"]=True
+            row["pending_verification_count"]=7
+            return row
+    assistance=Assistance(); wakeful=Wakeful()
+    runner=WakefulContentTaskRunner(resource_economy=Economy(),content_mind=Mind(),wakeful=wakeful,resource_scout=PendingScout(),human_assistance=assistance)
+    result=runner.run("RESOURCE_REVIEW",now=NOW)
+    assert result["status"]=="OK"
+    assert not assistance.calls
+    assert result["resource_followup"]["pending_verification_count"]==7
+    assert wakeful.followup[1]==300

@@ -64,27 +64,44 @@ class WakefulContentTaskRunner:
             rows["provider_trial_plans"] = trial_plans
             plans = list(trial_plans.get("plans") or [])
             local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
+            autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
+            if autonomous_pending:
+                self.wakeful.schedule_resource_followup(now, seconds=300)
+                rows["resource_followup"] = {
+                    "status": "SCHEDULED",
+                    "reason": "unverified resource opportunities remain",
+                    "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                    "delay_seconds": 300,
+                }
             ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
-            top = plans[0] if plans else None
             if ready is not None:
-                trial_result = self.resource_scout.execute_ready_trials(now=now, trial_plans=trial_plans)
+                trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
                 rows["provider_trials"] = trial_result
-                if int(trial_result.get("completed_count") or 0) > 0:
+                resolutions = []
+                for provider in trial_result.get("providers") or []:
+                    if int(provider.get("completed_count") or 0) <= 0:
+                        continue
                     fulfilled = self.human_assistance.fulfill_matching(
                         kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
-                        detail_value=str(ready.get("credential_env") or ""), now=now,
-                        evidence_refs=tuple(
-                            x for x in (str(ready.get("plan_id") or ""), *(trial_result.get("trial_ids") or [])) if x
-                        ),
+                        detail_value=str(provider.get("credential_env") or ""), now=now,
+                        evidence_refs=tuple(str(x) for x in provider.get("trial_ids") or () if x),
                     )
+                    resolutions.extend(fulfilled)
+                if resolutions:
                     rows["provider_access_resolution"] = {
-                        "status": "FULFILLED" if fulfilled else "NO_MATCHING_REQUEST",
-                        "request_ids": [row.get("request_id") for row in fulfilled],
+                        "status": "FULFILLED",
+                        "request_ids": [row.get("request_id") for row in resolutions],
                     }
-                elif any(code in {"HTTP_401", "HTTP_403"} for code in (trial_result.get("error_codes") or [])):
+                elif any(
+                    code in {"HTTP_401", "HTTP_403"}
+                    for provider in trial_result.get("providers") or []
+                    for code in provider.get("error_codes") or []
+                ):
                     rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
+            top = plans[0] if plans else None
             if (
-                ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
+                not autonomous_pending
+                and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
                 and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
             ):
                 request = self.human_assistance.request(

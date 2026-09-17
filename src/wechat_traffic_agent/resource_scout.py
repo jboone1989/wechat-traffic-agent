@@ -10,11 +10,12 @@ import shutil
 from typing import Any
 
 from agent_runtime.resource_discovery import (
-    ResourceAcquisitionOutcome, ResourceNeed, ResourceScout, plan_provider_trials,
-    provider_profiles, resource_discovery_constraints, select_provider,
+    ModelTrial, ResourceAcquisitionOutcome, ResourceNeed, ResourceScout,
+    plan_provider_trials, provider_profiles, resource_discovery_constraints, select_provider,
 )
-
-from .provider_trials import TRIAL_CASES, execute_case, resolve_trial_spec, trial_id
+from agent_runtime.resource_trials import (
+    ProviderTrialMeasurement, model_trials_from_measurements, run_bounded_provider_trial,
+)
 
 
 class ContentResourceScout:
@@ -60,8 +61,8 @@ class ContentResourceScout:
                 "never send secrets during discovery",
                 "prefer zero-cost or recurring free quota",
                 "no paid signup or privilege expansion without operator approval",
-                *adaptive_constraints,
             ),
+            search_constraints=adaptive_constraints,
         )
         created = self.scout.discover(need, now=now, max_queries=6, results_per_query=6)
         opportunities = self.scout.opportunities()
@@ -91,10 +92,12 @@ class ContentResourceScout:
         rows = self.scout.verify_pending(now=now, fetch=self._fetch, limit=limit)
         all_rows = self.scout.verifications()
         verified = [row for row in all_rows if row.status == "VERIFIED_CANDIDATE"]
+        pending_count = self.scout.pending_verification_count()
         return {
             "status": "VERIFIED" if rows else "NO_PENDING",
             "processed_count": len(rows),
             "verified_candidate_count": len(verified),
+            "pending_count": pending_count,
             "processed": [
                 {
                     "opportunity_id": row.opportunity_id,
@@ -179,9 +182,12 @@ class ContentResourceScout:
         )
         local = self.local_inference_feasibility()
         lead_by_id = {item.lead_id: item for item in leads}
+        pending_count = self.scout.pending_verification_count()
         payload = {
             "status": "PLANNED" if plans else "NO_VERIFIED_TRIAL_CANDIDATES",
             "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "pending_verification_count": pending_count,
+            "autonomous_work_pending": pending_count > 0,
             "available_credential_envs": sorted(available),
             "local_inference": local,
             "adaptive_constraints": list(resource_discovery_constraints(outcomes)),
@@ -208,49 +214,93 @@ class ContentResourceScout:
         self._persist_trial_plan(payload)
         return payload
 
-    def execute_ready_trials(self, *, now: datetime, trial_plans: dict[str, Any]) -> dict[str, Any]:
-        plans = [row for row in (trial_plans.get("plans") or []) if row.get("status") == "READY_TO_TRIAL"]
-        if not plans:
-            return {"status": "NO_READY_TRIALS", "created_count": 0, "completed_count": 0}
-        plan = plans[0]
-        if str(plan.get("data_policy") or "") != "PUBLIC_SYNTHETIC_ONLY":
-            return {"status": "BLOCKED_BY_DATA_POLICY", "created_count": 0, "completed_count": 0}
-        spec = resolve_trial_spec(plan)
-        if spec is None:
-            return {"status": "UNSUPPORTED_PROVIDER_ADAPTER", "credential_env": plan.get("credential_env"), "created_count": 0, "completed_count": 0}
-        lead = next((row for row in self.scout.provider_leads() if row.lead_id == plan.get("lead_id")), None)
-        verification = next((row for row in self.scout.provider_verifications() if row.lead_id == plan.get("lead_id")), None)
-        if lead is None or verification is None:
-            return {"status": "MISSING_PROVIDER_EVIDENCE", "created_count": 0, "completed_count": 0}
-        cost = 0.0 if verification.status == "VERIFIED_RECURRING_FREE" else None
-        existing = {row.trial_id for row in self.scout.model_trials()}
-        created = []
-        max_requests = max(0, min(int(plan.get("max_requests") or 0), 3, len(TRIAL_CASES)))
-        for case in TRIAL_CASES[:max_requests]:
-            expected_id = trial_id(plan_id=str(plan["plan_id"]), model_id=spec.model_id, case_id=case.case_id)
-            if expected_id in existing:
+    def run_ready_trials(self, *, now: datetime, provider_limit: int = 2) -> dict[str, Any]:
+        leads = self.scout.provider_leads()
+        verifications = self.scout.provider_verifications()
+        outcomes = self.acquisition_outcomes()
+        available = {item.credential_env for item in leads if os.environ.get(item.credential_env)}
+        plans = plan_provider_trials(
+            leads, verifications, available_credentials=available,
+            acquisition_outcomes=outcomes, limit=max(3, int(provider_limit)),
+        )
+        ready = [item for item in plans if item.status == "READY_TO_TRIAL"][: max(1, min(int(provider_limit), 3))]
+        existing = list(self.scout.model_trials())
+        executed_measurements: list[ProviderTrialMeasurement] = []
+        provider_rows: list[dict[str, Any]] = []
+        for plan in ready:
+            prior = [row for row in existing if row.opportunity_id == plan.lead_id]
+            if prior:
+                provider_rows.append(self._trial_provider_summary(
+                    plan.provider_label, plan.credential_env, plan.lead_id, prior, status="ALREADY_TRIED"
+                ))
                 continue
-            trial, receipt = execute_case(
-                plan=plan, spec=spec, case=case, opportunity_id=lead.source_opportunity_id,
-                now=now, evidence_refs=tuple(verification.evidence_refs), observed_cost=cost,
+            api_key = str(os.environ.get(plan.credential_env) or "")
+            if not api_key:
+                continue
+            self.record_acquisition_outcome(
+                plan_id=plan.plan_id, lead_id=plan.lead_id, status="CREDENTIAL_ACQUIRED",
+                now=now, source="ENVIRONMENT",
+                detail_summary=f"credential variable {plan.credential_env} is present",
+                evidence_refs=(f"env-presence:{plan.credential_env}",),
             )
-            self.scout.record_model_trial(trial)
-            self._persist_trial_receipt(receipt)
-            created.append(trial)
-            existing.add(trial.trial_id)
+            measurements = run_bounded_provider_trial(plan, api_key=api_key, now=now)
+            trials = model_trials_from_measurements(measurements)
+            for measurement, trial in zip(measurements, trials):
+                self.scout.record_model_trial(trial)
+                self._persist_trial_receipt(measurement.to_payload())
+                existing.append(trial)
+            executed_measurements.extend(measurements)
+            completed = [row for row in measurements if row.status == "COMPLETED"]
+            mean_quality = (
+                sum(float(row.quality_score or 0.0) for row in completed) / len(completed)
+                if completed else 0.0
+            )
+            outcome_status = (
+                "TRIAL_SUCCEEDED"
+                if len(completed) == len(measurements) and mean_quality >= 0.75
+                else "TRIAL_FAILED"
+            )
+            self.record_acquisition_outcome(
+                plan_id=plan.plan_id, lead_id=plan.lead_id, status=outcome_status, now=now,
+                source="RUNTIME",
+                detail_summary=(
+                    f"bounded synthetic trial completed={len(completed)}/{len(measurements)} "
+                    f"mean_quality={mean_quality:.3f}"
+                ),
+                evidence_refs=tuple(row.trial_id for row in measurements),
+            )
+            provider_rows.append(self._trial_provider_summary(
+                plan.provider_label, plan.credential_env, plan.lead_id, trials,
+                status=outcome_status, measurements=measurements,
+            ))
         all_trials = self.scout.model_trials()
         profiles = provider_profiles(all_trials, minimum_quality=0.75)
-        selected = select_provider(profiles, task_class=str(plan.get("task_class") or "simple_public_text"), quality_floor=0.75)
+        selected = select_provider(profiles, task_class="simple_public_text", quality_floor=0.75)
         selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
+        completed_count = sum(1 for row in executed_measurements if row.status == "COMPLETED")
+        failed_count = len(executed_measurements) - completed_count
         return {
-            "status": "TRIALS_EXECUTED" if created else "ALREADY_EVALUATED",
-            "provider_label": spec.provider_label, "model_id": spec.model_id,
-            "created_count": len(created),
-            "completed_count": sum(1 for row in created if row.status == "COMPLETED"),
-            "failed_count": sum(1 for row in created if row.status != "COMPLETED"),
-            "trial_ids": [row.trial_id for row in created],
-            "quality_scores": [row.quality_score for row in created],
-            "error_codes": [row.error_code for row in created if row.error_code],
+            "status": "TRIALED" if executed_measurements else ("ALREADY_TRIALED" if provider_rows else "NO_READY_TRIALS"),
+            "executed_request_count": len(executed_measurements),
+            "created_count": len(executed_measurements),
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+            "trial_ids": [row.trial_id for row in executed_measurements],
+            "error_codes": sorted({row.error_type for row in executed_measurements if row.error_type}),
+            "providers": provider_rows,
+            "empirical_profiles": [
+                {
+                    "lead_id": row.opportunity_id, "task_class": row.task_class, "viable": row.viable,
+                    "mean_quality": row.mean_quality, "mean_latency_ms": row.mean_latency_ms,
+                    "mean_cost": row.mean_cost, "trial_count": row.trial_count,
+                }
+                for row in profiles
+            ],
+            "empirical_selection": None if selected is None else {
+                "lead_id": selected.opportunity_id, "task_class": selected.task_class,
+                "mean_quality": selected.mean_quality, "mean_latency_ms": selected.mean_latency_ms,
+                "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
+            },
             "selection": selection,
         }
 
@@ -260,25 +310,67 @@ class ContentResourceScout:
         key = sha256(str(row.get("trial_id") or "").encode()).hexdigest()[:24]
         self._atomic_json(folder / f"{key}.json", row)
 
-    def _persist_provider_selection(self, *, now: datetime, selected: Any, trials: list[Any]) -> dict[str, Any]:
+    def _persist_provider_selection(self, *, now: datetime, selected: Any, trials: list[ModelTrial]) -> dict[str, Any]:
         if selected is None:
-            payload = {"status": "NO_EMPIRICALLY_VIABLE_PROVIDER", "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat()}
+            payload = {
+                "status": "NO_EMPIRICALLY_VIABLE_PROVIDER",
+                "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            }
         else:
-            matching = [row for row in trials if row.opportunity_id == selected.opportunity_id and row.task_class == selected.task_class and row.status == "COMPLETED"]
+            matching = [
+                row for row in trials
+                if row.opportunity_id == selected.opportunity_id
+                and row.task_class == selected.task_class and row.status == "COMPLETED"
+            ]
             latest = matching[-1] if matching else None
             payload = {
-                "status": "SELECTED_EMPIRICALLY", "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
-                "opportunity_id": selected.opportunity_id, "task_class": selected.task_class,
-                "mean_quality": selected.mean_quality, "mean_latency_ms": selected.mean_latency_ms,
-                "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
-                "provider_lead_id": getattr(latest, "provider_lead_id", ""),
-                "provider_label": getattr(latest, "provider_label", ""), "model_id": getattr(latest, "model_id", ""),
+                "status": "SELECTED_EMPIRICALLY",
+                "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+                "opportunity_id": selected.opportunity_id,
+                "task_class": selected.task_class,
+                "mean_quality": selected.mean_quality,
+                "mean_latency_ms": selected.mean_latency_ms,
+                "mean_cost": selected.mean_cost,
+                "trial_count": selected.trial_count,
+                "provider_lead_id": getattr(latest, "provider_lead_id", "") if latest else "",
+                "provider_label": getattr(latest, "provider_label", "") if latest else "",
+                "model_id": getattr(latest, "model_id", "") if latest else "",
                 "evidence_refs": list(selected.evidence_refs),
             }
         folder = self.state_root / "application" / "resource_discovery" / "provider_selection"
         folder.mkdir(parents=True, exist_ok=True)
         self._atomic_json(folder / "latest.json", payload)
         return payload
+
+    @staticmethod
+    def _trial_provider_summary(
+        provider_label: str, credential_env: str, lead_id: str, rows: list[Any], *,
+        status: str, measurements: list[ProviderTrialMeasurement] | None = None,
+    ) -> dict[str, Any]:
+        completed = [row for row in rows if row.status == "COMPLETED"]
+        qualities = [float(row.quality_score) for row in completed if row.quality_score is not None]
+        latencies = [float(row.latency_ms) for row in completed if row.latency_ms is not None]
+        costs = [float(row.observed_cost) for row in completed if row.observed_cost is not None]
+        trial_ids = [str(row.trial_id) for row in rows]
+        models = sorted({
+            str(getattr(row, "model_id", "") or getattr(row, "model", ""))
+            for row in rows if getattr(row, "model_id", "") or getattr(row, "model", "")
+        })
+        errors = sorted({
+            str(getattr(row, "error_code", "") or getattr(row, "error_type", ""))
+            for row in (measurements or rows)
+            if getattr(row, "error_code", "") or getattr(row, "error_type", "")
+        })
+        return {
+            "provider_label": provider_label, "credential_env": credential_env,
+            "lead_id": lead_id, "status": status, "request_count": len(rows),
+            "completed_count": len(completed), "trial_ids": trial_ids,
+            "mean_quality": (sum(qualities) / len(qualities)) if qualities else None,
+            "mean_latency_ms": (sum(latencies) / len(latencies)) if latencies else None,
+            "observed_cost_total": sum(costs) if len(costs) == len(completed) and completed else None,
+            "cost_observed_for_all_completed": bool(completed) and len(costs) == len(completed),
+            "models": models, "error_codes": errors,
+        }
 
     def record_acquisition_outcome(
         self, *, plan_id: str, lead_id: str, status: str, now: datetime,
@@ -327,7 +419,6 @@ class ContentResourceScout:
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 continue
         return sorted(rows, key=lambda row: (row.observed_at, row.outcome_id))
-
 
     def local_inference_feasibility(self) -> dict[str, Any]:
         mem_total_gib = mem_available_gib = None

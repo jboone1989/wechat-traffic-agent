@@ -1,0 +1,70 @@
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
+import wechat_traffic_agent.resource_scout as resource_module
+from wechat_traffic_agent.resource_scout import ContentResourceScout
+from agent_runtime.resource_discovery import ProviderLead, ProviderVerification
+from agent_runtime.resource_trials import ProviderTrialMeasurement
+
+NOW=datetime(2026,9,17,16,tzinfo=timezone.utc)
+
+class Runtime:
+    def invoke(self, capability, payload):
+        return SimpleNamespace(receipt_id="x", payload={"results":[]})
+
+
+def _seed(scout):
+    leads=[
+        ProviderLead("lead:n","op:n","N","NVIDIA_API_KEY","https://build.nvidia.com/","nvidia.com",NOW.isoformat(),"r"),
+        ProviderLead("lead:o","op:o","O","OPENROUTER_API_KEY","https://openrouter.ai/keys","openrouter.ai",NOW.isoformat(),"r"),
+    ]
+    ver=[
+        ProviderVerification("lead:n","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE",rate_limit_evidence=True),
+        ProviderVerification("lead:o","VERIFIED_RECURRING_FREE",NOW.isoformat(),free_status="RECURRING_FREE"),
+    ]
+    for row in leads: scout.scout._write_provider_lead(row)
+    for row in ver: scout.scout._write_provider_verification(row)
+
+
+def test_ready_trials_use_credentials_without_persisting_key(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+    def fake(plan, *, api_key, now):
+        expected="n-secret" if plan.credential_env=="NVIDIA_API_KEY" else "o-secret"
+        assert api_key==expected
+        cost=0.0 if plan.credential_env=="OPENROUTER_API_KEY" else None
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.lead_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model="m",task_id=f"t{i}",
+            status="COMPLETED",observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10+i,
+            observed_cost=cost,response_sha256="sha256:x",evidence_refs=("e",),
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    result=scout.run_ready_trials(now=NOW,provider_limit=2)
+    assert result["status"]=="TRIALED" and result["executed_request_count"]==6
+    assert len(result["providers"])==2
+    raw=" ".join(path.read_text() for path in (tmp_path/"application/resource_discovery").rglob("*.json"))
+    assert "n-secret" not in raw and "o-secret" not in raw
+    assert any(row.status=="CREDENTIAL_ACQUIRED" for row in scout.acquisition_outcomes())
+    assert any(row.status=="TRIAL_SUCCEEDED" for row in scout.acquisition_outcomes())
+    # Only OpenRouter-like rows have observed cost for every request, so only that lead is routable by current profile contract.
+    assert result["empirical_selection"]["lead_id"]=="lead:o"
+
+
+def test_completed_plan_is_idempotent_and_does_not_repeat_requests(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+    calls=[]
+    def fake(plan, *, api_key, now):
+        calls.append(plan.lead_id)
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.lead_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model="m",task_id=f"t{i}",
+            status="COMPLETED",observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10,observed_cost=0.0,
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    first=scout.run_ready_trials(now=NOW,provider_limit=2)
+    second=scout.run_ready_trials(now=NOW,provider_limit=2)
+    assert first["executed_request_count"]==3 and second["executed_request_count"]==0
+    assert calls==["lead:o"]

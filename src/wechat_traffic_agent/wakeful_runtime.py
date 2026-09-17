@@ -105,6 +105,15 @@ class ContentWakefulRuntime:
             wake_id=f"content:{task}", at=at, reason=self._reason(task), task=task,
         ))
 
+    def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
+        delay = max(60, min(int(seconds), 3600))
+        self.core.schedule(PlannedWake(
+            wake_id="content:RESOURCE_REVIEW",
+            at=now + timedelta(seconds=delay),
+            reason="continue unresolved autonomous resource verification",
+            task="RESOURCE_REVIEW",
+        ))
+
     def _next_action_outcome_due(self, now: datetime) -> datetime | None:
         """Return the next prospective action-outcome maturity after ``now``.
 
