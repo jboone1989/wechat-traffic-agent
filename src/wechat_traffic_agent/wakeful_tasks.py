@@ -300,6 +300,16 @@ class WakefulContentTaskRunner:
             now=now, cycle_id=focus_cycle_id, focus_topic=focus_topic,
         ))
         rows["continuous_content"] = continuous
+        action_prediction = continuous.get("action_prediction") if isinstance(continuous, dict) else None
+        prediction_id = str((action_prediction or {}).get("prediction_id") or "")
+        if prediction_id:
+            try:
+                rows["neural_action_commitment"] = self.wakeful.emit_action_commitment(
+                    prediction_id=prediction_id, observed_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["neural_action_commitment"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         if decision.get("decision") == "EXECUTE":
             try:
                 rows["resource_cycle_result"] = self.resource_economy.end_cycle(

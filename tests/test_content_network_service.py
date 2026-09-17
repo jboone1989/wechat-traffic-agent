@@ -4,12 +4,84 @@ import json
 import socket
 import time
 import urllib.request
+import sys
+import types
+from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 
 from wechat_traffic_agent.network_service import ContentNetworkService, _record_peer_capability_demand, _request_data
 from wechat_traffic_agent.runtime_app import CAP_CONTENT_STATUS
 from wechat_traffic_agent.network_capabilities import (
     CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW, capability_specs,
 )
+
+
+def _install_fake_agent_network(monkeypatch):
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    class NetworkError(RuntimeError):
+        pass
+
+    class Identity:
+        key_id = "fake-key"
+        @classmethod
+        def load_or_create(cls, path, agent_id):
+            return cls()
+        def sign_object(self, payload):
+            return "fake-signature"
+
+    class AgentNetwork:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+        async def join(self):
+            raise NetworkError("seed unavailable")
+        async def leave(self):
+            return None
+
+    class HandlerResult:
+        def __init__(self, metadata=None, artifacts=None):
+            self.metadata = metadata or {}
+            self.artifacts = artifacts or []
+
+    class A2AServer:
+        def __init__(self, *, identity, card, handlers):
+            self.card = card
+        def starlette_app(self, on_start=None):
+            async def card_endpoint(request):
+                return JSONResponse(self.card)
+            @asynccontextmanager
+            async def lifespan(app):
+                if on_start is not None:
+                    await on_start()
+                yield
+            return Starlette(
+                routes=[Route("/.well-known/agent-card.json", card_endpoint, methods=["GET"])],
+                lifespan=lifespan,
+            )
+
+    package = types.ModuleType("agent_network")
+    package.__path__ = []
+    modules = {
+        "agent_network": package,
+        "agent_network.a2a_card": types.ModuleType("agent_network.a2a_card"),
+        "agent_network.a2a_server": types.ModuleType("agent_network.a2a_server"),
+        "agent_network.crypto": types.ModuleType("agent_network.crypto"),
+        "agent_network.models": types.ModuleType("agent_network.models"),
+        "agent_network.network": types.ModuleType("agent_network.network"),
+    }
+    modules["agent_network.a2a_card"].signed_agent_card = lambda **kwargs: {"name": kwargs["name"], "url": kwargs["url"]}
+    modules["agent_network.a2a_server"].A2AServer = A2AServer
+    modules["agent_network.a2a_server"].HandlerResult = HandlerResult
+    modules["agent_network.a2a_server"].json_artifact = lambda **kwargs: SimpleNamespace(
+        to_dict=lambda: {}, artifact_id="fake", sha256="fake"
+    )
+    modules["agent_network.crypto"].Identity = Identity
+    modules["agent_network.models"].utc_now = lambda: datetime.now(timezone.utc).isoformat()
+    modules["agent_network.network"].AgentNetwork = AgentNetwork
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
 
 
 class _Runtime:
@@ -177,7 +249,8 @@ def test_peer_capability_demand_records_only_structured_capability_signal(tmp_pa
     assert duplicate["status"] == "DUPLICATE"
 
 
-def test_local_endpoint_survives_seed_join_failure(tmp_path):
+def test_local_endpoint_survives_seed_join_failure(monkeypatch, tmp_path):
+    _install_fake_agent_network(monkeypatch)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
