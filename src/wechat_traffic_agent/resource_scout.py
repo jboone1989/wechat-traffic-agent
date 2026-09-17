@@ -62,6 +62,7 @@ class ContentResourceScout:
                 "no paid signup or privilege expansion without operator approval",
                 *adaptive_constraints,
             ),
+            search_constraints=tuple(adaptive_constraints),
         )
         created = self.scout.discover(need, now=now, max_queries=6, results_per_query=6)
         opportunities = self.scout.opportunities()
