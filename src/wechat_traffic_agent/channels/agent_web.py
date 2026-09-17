@@ -31,8 +31,11 @@ class ContentAgentWebChannel(StaticWebChannel):
         )
         state_raw = os.environ.get("CONTENT_APPLICATION_ROOT", "").strip()
         if state_raw:
-            from ..x_social import public_x_projection
-            x_projection = public_x_projection(Path(state_raw))
+            try:
+                from ..x_social import public_x_projection
+                x_projection = public_x_projection(Path(state_raw))
+            except ImportError:
+                x_projection = {"connected": False, "recent_activity": []}
         else:
             x_projection = {"connected": False, "recent_activity": []}
         persona = self._public_persona()
