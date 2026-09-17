@@ -36,6 +36,7 @@ class ContentMind:
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
+        self._inquiry_topics: dict[str, str] = {}
         self._restore()
 
     @property
@@ -60,8 +61,10 @@ class ContentMind:
             return
         row = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
         legacy = {"schema_version", "subject_id", "subject", "plans", "observed_event_ids"}
-        current = legacy | {"strategy_outcomes"}
-        if not isinstance(row, dict) or frozenset(row) not in {frozenset(legacy), frozenset(current)}:
+        strategy_version = legacy | {"strategy_outcomes"}
+        current = strategy_version | {"inquiry_topics"}
+        allowed = {frozenset(legacy), frozenset(strategy_version), frozenset(current)}
+        if not isinstance(row, dict) or frozenset(row) not in allowed:
             raise ValueError("Content Mind checkpoint fields mismatch")
         if row["schema_version"] != MIND_SCHEMA or row["subject_id"] != self.subject_id:
             raise ValueError("Content Mind checkpoint identity mismatch")
@@ -69,10 +72,13 @@ class ContentMind:
             raise ValueError("Content Mind checkpoint collections are invalid")
         if "strategy_outcomes" in row and not isinstance(row["strategy_outcomes"], dict):
             raise ValueError("Content Mind strategy outcomes are invalid")
+        if "inquiry_topics" in row and not isinstance(row["inquiry_topics"], dict):
+            raise ValueError("Content Mind inquiry topics are invalid")
         self.session.restore(row["subject"])
         self._plans = deepcopy(row["plans"])
         self._observed_event_ids = [str(item) for item in row["observed_event_ids"]]
         self._strategy_outcomes = deepcopy(row.get("strategy_outcomes") or {})
+        self._inquiry_topics = {str(key): str(value) for key, value in (row.get("inquiry_topics") or {}).items()}
 
     def _persist(self) -> None:
         payload = {
@@ -82,6 +88,7 @@ class ContentMind:
             "plans": self._plans,
             "observed_event_ids": self._observed_event_ids,
             "strategy_outcomes": self._strategy_outcomes,
+            "inquiry_topics": self._inquiry_topics,
         }
         tmp = self.checkpoint_path.with_suffix(".json.tmp")
         tmp.write_text(
@@ -91,6 +98,9 @@ class ContentMind:
         os.replace(tmp, self.checkpoint_path)
 
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
+        mapped = self._inquiry_topics.get(str(inquiry_id))
+        if isinstance(mapped, str) and mapped.strip():
+            return mapped
         for key in reversed(sorted(self._plans)):
             topic = (self._plans[key].get("world_inquiry_topics") or {}).get(inquiry_id)
             if isinstance(topic, str) and topic.strip():
@@ -214,6 +224,7 @@ class ContentMind:
         for inquiry_id, state in after.items():
             if inquiry_id not in before and state.get("question") in by_question:
                 inquiry_topics[inquiry_id] = by_question[state["question"]]
+                self._inquiry_topics[inquiry_id] = inquiry_topics[inquiry_id]
         required_topic = None
         if goal and goal.get("origin") == "INTEREST":
             refs = [str(item) for item in goal.get("interest_refs") or ()]
@@ -291,6 +302,7 @@ class ContentMind:
                     inquiry_id=active_id, question=question, origin="self_question",
                     personal_relevance=0.7, hypotheses={proposition: 0.5},
                 )
+            self._inquiry_topics[active_id] = topic
         state = self.session.inquiry.inquiries[active_id]
         if proposition not in state["hypotheses"]:
             self.session.add_inquiry_hypothesis(active_id, hypothesis=proposition, confidence=0.5)
@@ -367,6 +379,84 @@ class ContentMind:
             "status": "OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
             "outcome_status": status, "prediction_confidence": confidence,
             "prediction_error": prediction_error, "reliability": reliability,
+        }
+
+    def observe_action_prediction_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Turn prospective content-action errors into experience and self-directed inquiry."""
+        from .content_action_prediction import ERROR_INQUIRY_THRESHOLD
+
+        applied: list[dict[str, Any]] = []
+        inquiries_opened: list[dict[str, Any]] = []
+        duplicates = 0
+        rows = sorted(
+            (dict(raw) for raw in outcomes if isinstance(raw, Mapping)),
+            key=lambda row: (str(row.get("observed_at") or ""), str(row.get("prediction_id") or ""), str(row.get("window") or "")),
+        )
+        for row in rows:
+            prediction_id = str(row.get("prediction_id") or "").strip()
+            publication_id = str(row.get("publication_id") or "").strip()
+            topic = str(row.get("topic") or "").strip()
+            profile = str(row.get("profile_name") or "").strip()
+            window = str(row.get("window") or "").strip()
+            refs = list(dict.fromkeys(str(ref).strip() for ref in row.get("evidence_refs", ()) if str(ref).strip()))
+            if not prediction_id or not publication_id or not topic or not profile or window not in ERROR_INQUIRY_THRESHOLD or not refs:
+                raise ValueError("action prediction outcome is incomplete")
+            error = float(row.get("prediction_error"))
+            reliability = float(row.get("reliability"))
+            expected = float(row.get("expected_pageviews"))
+            actual = float(row.get("actual_pageviews"))
+            if any(not 0.0 <= value <= 1.0 for value in (error, reliability)) or min(expected, actual) < 0:
+                raise ValueError("action prediction outcome scores are invalid")
+            event_id = f"content-action-outcome:{prediction_id}:{window}"
+            if event_id in self._observed_event_ids:
+                duplicates += 1
+                continue
+            self.session.ingest_life_experience(
+                {
+                    "event_id": event_id, "tick": int(self.session.tick),
+                    "summary": (
+                        f"Content action prediction for {profile} on {topic} at {window}: "
+                        f"forecast {expected:.2f} pageviews, observed {actual:.2f}; prediction error {error:.3f}."
+                    ),
+                    "evidence_refs": refs, "significance": min(1.0, max(0.1, error * reliability)),
+                    "source": "content-action-prediction-outcome", "confidence": reliability,
+                    "outcome": max(0.0, 1.0 - error), "domain": "content-prediction",
+                    "prediction_error": error, "identity_relevance": 0.4, "emotional_intensity": 0.0,
+                },
+                authority_id=AUTHORITY_ID,
+            )
+            inquiry_id = "action-error-" + sha256(prediction_id.encode()).hexdigest()[:16]
+            if error >= ERROR_INQUIRY_THRESHOLD[window] and inquiry_id not in self.session.inquiry.inquiries:
+                question = (
+                    f"Why did {profile} on {topic} produce {actual:.2f} pageviews at {window} when I predicted "
+                    f"{expected:.2f}? Which assumption was wrong: topic demand, title promise, structure fit, "
+                    "distribution timing, or my traffic baseline?"
+                )
+                self.session.inquiry.open(
+                    inquiry_id=inquiry_id, question=question, origin="self_question",
+                    personal_relevance=min(1.0, 0.5 + error / 2.0),
+                    hypotheses={
+                        "topic-demand-mismatch": 0.2, "title-promise-mismatch": 0.2,
+                        "structure-fit-mismatch": 0.2, "distribution-timing": 0.2,
+                        "traffic-baseline-miscalibrated": 0.2,
+                    },
+                )
+                self._inquiry_topics[inquiry_id] = topic
+                inquiries_opened.append({
+                    "inquiry_id": inquiry_id, "question": question, "prediction_id": prediction_id,
+                    "window": window, "prediction_error": error,
+                })
+            self._observed_event_ids.append(event_id)
+            self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+            applied.append({
+                "event_id": event_id, "prediction_id": prediction_id, "window": window,
+                "prediction_error": error, "reliability": reliability,
+            })
+        if applied:
+            self._persist()
+        return {
+            "status": "OBSERVED" if applied else "NO_NEW_OUTCOMES",
+            "applied": applied, "duplicates": duplicates, "inquiries_opened": inquiries_opened,
         }
 
     def observe_strategy_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -582,8 +672,8 @@ class ContentMind:
                 }),
             },
             "learning_boundary": (
-                "world attention, prospective prediction error, process experience, and mature Website "
-                "audience outcomes are connected; audience outcomes remain descriptive and non-causal"
+                "world attention, world prediction error, prospective content-action prediction error, process experience, "
+                "and mature Website audience outcomes are connected; audience outcomes remain descriptive and non-causal"
             ),
         }
 

@@ -20,6 +20,7 @@ from .content_artifact import ContentKind
 from .content_explorer import GoalEvidenceExplorer, collect_okx_public_market, collect_trading_evidence
 from .content_service import ContentAgent
 from .content_strategy import bind_content_strategy, collect_mature_strategy_outcomes, strategy_instruction
+from .content_action_prediction import bind_action_prediction, forecast_strategy_candidates
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
 from .models import TopicSignal
@@ -860,15 +861,37 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             _put(mind_strategy_path, mind_strategy_context)
         else:
             mind_strategy_context = None
+        action_forecasts_path = folder / 'action_forecasts.json'
+        if strategy_path.exists() and not action_forecasts_path.exists():
+            raise ValueError('cannot create prospective action forecasts after strategy selection has begun')
+        if action_forecasts_path.exists():
+            action_forecasts = json.loads(action_forecasts_path.read_text(encoding='utf-8'))
+        else:
+            action_forecasts = forecast_strategy_candidates(
+                state_root=self.state, account=self.base_url, topic=selection.topic, as_of=cycle_now,
+                mind_strategy_context=mind_strategy_context,
+            )
+            _put(action_forecasts_path, action_forecasts)
+        self._activity(
+            cycle, 'PREDICT', 'I forecasted the outcomes of six possible content strategies',
+            'Each candidate now has explicit 1h, 4h, and 24h pageview expectations, uncertainty, expected utility, and information gain.',
+            status='completed',
+        )
         content_strategy = bind_content_strategy(
             strategy_path, state_root=self.state, account=self.base_url, cycle=cycle,
             topic=selection.topic, traffic_signal=traffic_signal, decided_at=cycle_now,
             opening_mode=(experiment.treatment_value if experiment is not None else None),
             preferred_profile_name=('follow-up-update' if market_pulse else None),
-            mind_strategy_context=mind_strategy_context,
+            mind_strategy_context=mind_strategy_context, action_forecasts=action_forecasts,
         )
         strategy_payload = content_strategy.model_dump(mode='json')
-        self._activity(cycle, 'DECIDE', 'I chose the content strategy',
+        action_prediction = bind_action_prediction(
+            folder / 'action_prediction.json', cycle=cycle, topic=selection.topic,
+            strategy_id=content_strategy.strategy_id, selected_profile_name=content_strategy.profile.name,
+            created_at=cycle_now, candidate_forecasts=action_forecasts,
+        )
+        action_prediction_payload = action_prediction.model_dump(mode='json')
+        self._activity(cycle, 'DECIDE', 'I chose the content strategy from prospective forecasts',
                        f"Using {content_strategy.profile.name} with {content_strategy.profile.structure_pattern}; authority={content_strategy.selection_mode}.", status='completed')
 
         floor_path = folder / 'evidence_floor_plan.json'
@@ -1109,6 +1132,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'website_experiment_compliance': experiment_check,
                       'website_experiment_eligible': experiment_eligible,
                       'content_strategy': strategy_payload,
+                      'action_prediction': action_prediction_payload,
                       'virtualbrain_strategy_context': mind_strategy_context,
                       'strategy_learning_sync': strategy_sync,
                       'traffic_context_ref': 'traffic_context.json',
@@ -1130,6 +1154,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                   'website_experiment_compliance': experiment_check,
                   'website_experiment_eligible': experiment_eligible,
                   'content_strategy': strategy_payload,
+                  'action_prediction': action_prediction_payload,
                   'virtualbrain_strategy_context': mind_strategy_context,
                   'strategy_learning_sync': strategy_sync,
                   'traffic_context': traffic_payload,

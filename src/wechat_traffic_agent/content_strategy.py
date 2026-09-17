@@ -66,12 +66,15 @@ class ContentStrategyBinding(BaseModel):
     decided_at: datetime
     profile: StrategyProfile
     opening_mode: Literal["reader_question_first", "evidence_first"] | None = None
-    selection_mode: Literal["TRAFFIC_HEURISTIC", "CONTEXT_HEURISTIC", "EXPLORE", "EXPLOIT", "VIRTUALBRAIN_BELIEF"]
+    selection_mode: Literal["TRAFFIC_HEURISTIC", "CONTEXT_HEURISTIC", "EXPLORE", "EXPLOIT", "VIRTUALBRAIN_BELIEF", "PREDICTIVE_EXPLORE", "PREDICTIVE_EXPLOIT"]
     decision_reason: str = Field(min_length=1, max_length=500)
     samples_by_profile: dict[str, int]
     mean_pageviews_24h_by_profile: dict[str, float | None]
     mind_mean_relative_reward_by_profile: dict[str, float | None] = Field(default_factory=dict)
     mind_strategy_evidence_refs: tuple[str, ...] = ()
+    prediction_expected_pageviews_24h_by_profile: dict[str, float] = Field(default_factory=dict)
+    prediction_information_gain_by_profile: dict[str, float] = Field(default_factory=dict)
+    prediction_evidence_refs: tuple[str, ...] = ()
     generation_authority: Literal[True] = True
     publication_authority: Literal[False] = False
     causal_claim: Literal[False] = False
@@ -217,7 +220,8 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
                             traffic_signal: TopicTrafficSignal, as_of: datetime,
                             opening_mode: str | None = None,
                             preferred_profile_name: str | None = None,
-                            mind_strategy_context: Mapping[str, Any] | None = None) -> ContentStrategyBinding:
+                            mind_strategy_context: Mapping[str, Any] | None = None,
+                            action_forecasts: Mapping[str, Any] | None = None) -> ContentStrategyBinding:
     if as_of.utcoffset() is None:
         raise ValueError("strategy cutoff must be timezone-aware")
     as_of = as_of.astimezone(timezone.utc)
@@ -241,6 +245,27 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
             str(ref).strip() for ref in (mind_strategy_context.get("evidence_refs") or ())
             if str(ref).strip()
         ))
+    forecast_expected: dict[str, float] = {}
+    forecast_information: dict[str, float] = {}
+    forecast_utility: dict[str, float] = {}
+    forecast_refs: list[str] = []
+    if action_forecasts is not None:
+        for candidate in PROFILES:
+            raw = action_forecasts.get(candidate.name) if isinstance(action_forecasts, Mapping) else None
+            if not isinstance(raw, Mapping) or raw.get("profile_name") != candidate.name:
+                raise ValueError("action forecast context must cover every strategy profile")
+            metrics = raw.get("metrics")
+            if not isinstance(metrics, (list, tuple)) or len(metrics) != 3:
+                raise ValueError("action forecast must contain 1h, 4h, and 24h metrics")
+            mature = metrics[-1]
+            if not isinstance(mature, Mapping) or mature.get("window") != "24h":
+                raise ValueError("action forecast mature metric must be 24h")
+            forecast_expected[candidate.name] = float(mature["expected_pageviews"])
+            forecast_information[candidate.name] = float(raw["information_gain"])
+            forecast_utility[candidate.name] = float(raw["expected_utility"])
+            for metric in metrics:
+                if isinstance(metric, Mapping):
+                    forecast_refs.extend(str(ref) for ref in (metric.get("evidence_refs") or ()) if str(ref).strip())
     if preferred_profile_name is not None:
         if preferred_profile_name not in PROFILE_BY_NAME:
             raise ValueError("unknown preferred content strategy profile")
@@ -253,50 +278,73 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
         pass
     else:
         seed = int(hashlib.sha256(f"{cycle}|{topic}".encode()).hexdigest()[:8], 16)
-        mind_has_outcomes = any(mind_counts.values())
-        mind_under = [candidate for candidate in PROFILES if mind_counts[candidate.name] < MIN_SAMPLES]
-        mind_ready = (
-            mind_has_outcomes
-            and not mind_under
-            and all(mind_rewards[candidate.name] is not None for candidate in PROFILES)
-        )
-        if mind_ready and seed % 100 >= EXPLORATION_PERCENT:
-            profile = max(
-                PROFILES,
-                key=lambda item: (float(mind_rewards[item.name]), -PROFILES.index(item)),
-            )
-            mode = "VIRTUALBRAIN_BELIEF"
-            reason = (
-                "VirtualBrain audience-outcome belief has mature samples for every profile; "
-                "exploiting highest relative reward"
-            )
-        elif mind_ready:
-            profile = PROFILES[seed % len(PROFILES)]
-            mode = "EXPLORE"
-            reason = f"VirtualBrain belief is mature; retaining deterministic {EXPLORATION_PERCENT}% exploration"
-        elif heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
-            profile = heuristic
-            mode = "TRAFFIC_HEURISTIC"
-            reason = f"traffic signal {traffic_signal.exposure_status}; profile still under-sampled"
-        else:
-            under = [candidate for candidate in PROFILES if counts[candidate.name] < MIN_SAMPLES]
+        if action_forecasts is not None:
+            sample_counts = mind_counts if any(mind_counts.values()) else counts
+            under = [candidate for candidate in PROFILES if sample_counts[candidate.name] < MIN_SAMPLES]
+            tie = lambda item: -((PROFILES.index(item) + seed) % len(PROFILES))
             if under:
-                profile = under[seed % len(under)]
-                mode = "EXPLORE"
-                reason = f"{counts[profile.name]} mature 24h samples < {MIN_SAMPLES}"
+                profile = max(under, key=lambda item: (forecast_information[item.name], tie(item)))
+                mode = "PREDICTIVE_EXPLORE"
+                reason = (
+                    "candidate forecasts were formed before action; choosing the under-sampled profile "
+                    "with highest expected information gain"
+                )
+            elif seed % 100 < EXPLORATION_PERCENT:
+                profile = max(PROFILES, key=lambda item: (forecast_information[item.name], tie(item)))
+                mode = "PREDICTIVE_EXPLORE"
+                reason = (
+                    f"candidate forecasts are mature; retaining {EXPLORATION_PERCENT}% exploration "
+                    "through highest expected information gain"
+                )
             else:
-                explore = seed % 100 < EXPLORATION_PERCENT
-                if explore:
-                    profile = PROFILES[seed % len(PROFILES)]
+                profile = max(PROFILES, key=lambda item: (forecast_utility[item.name], tie(item)))
+                mode = "PREDICTIVE_EXPLOIT"
+                reason = "candidate forecasts were formed before action; choosing highest expected utility"
+        else:
+            mind_has_outcomes = any(mind_counts.values())
+            mind_under = [candidate for candidate in PROFILES if mind_counts[candidate.name] < MIN_SAMPLES]
+            mind_ready = (
+                mind_has_outcomes
+                and not mind_under
+                and all(mind_rewards[candidate.name] is not None for candidate in PROFILES)
+            )
+            if mind_ready and seed % 100 >= EXPLORATION_PERCENT:
+                profile = max(
+                    PROFILES,
+                    key=lambda item: (float(mind_rewards[item.name]), -PROFILES.index(item)),
+                )
+                mode = "VIRTUALBRAIN_BELIEF"
+                reason = (
+                    "VirtualBrain audience-outcome belief has mature samples for every profile; "
+                    "exploiting highest relative reward"
+                )
+            elif mind_ready:
+                profile = PROFILES[seed % len(PROFILES)]
+                mode = "EXPLORE"
+                reason = f"VirtualBrain belief is mature; retaining deterministic {EXPLORATION_PERCENT}% exploration"
+            elif heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
+                profile = heuristic
+                mode = "TRAFFIC_HEURISTIC"
+                reason = f"traffic signal {traffic_signal.exposure_status}; profile still under-sampled"
+            else:
+                under = [candidate for candidate in PROFILES if counts[candidate.name] < MIN_SAMPLES]
+                if under:
+                    profile = under[seed % len(under)]
                     mode = "EXPLORE"
-                    reason = f"deterministic {EXPLORATION_PERCENT}% exploration"
+                    reason = f"{counts[profile.name]} mature 24h samples < {MIN_SAMPLES}"
                 else:
-                    profile = max(PROFILES, key=lambda item: (means[item.name] or 0.0, -PROFILES.index(item)))
-                    mode = "EXPLOIT"
-                    reason = (
-                        "highest associated mean 24h pageviews; observational fallback because "
-                        "no mature VirtualBrain strategy belief is available"
-                    )
+                    explore = seed % 100 < EXPLORATION_PERCENT
+                    if explore:
+                        profile = PROFILES[seed % len(PROFILES)]
+                        mode = "EXPLORE"
+                        reason = f"deterministic {EXPLORATION_PERCENT}% exploration"
+                    else:
+                        profile = max(PROFILES, key=lambda item: (means[item.name] or 0.0, -PROFILES.index(item)))
+                        mode = "EXPLOIT"
+                        reason = (
+                            "highest associated mean 24h pageviews; observational fallback because "
+                            "no mature VirtualBrain strategy belief is available"
+                        )
     return ContentStrategyBinding(
         strategy_id=_strategy_id(topic=topic, profile=profile, opening_mode=opening_mode),
         cycle=cycle,
@@ -310,6 +358,9 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
         mean_pageviews_24h_by_profile=means,
         mind_mean_relative_reward_by_profile=mind_rewards if any(mind_counts.values()) else {},
         mind_strategy_evidence_refs=mind_refs,
+        prediction_expected_pageviews_24h_by_profile=forecast_expected,
+        prediction_information_gain_by_profile=forecast_information,
+        prediction_evidence_refs=tuple(dict.fromkeys(forecast_refs)),
     )
 
 
@@ -317,7 +368,8 @@ def bind_content_strategy(path: Path, *, state_root: Path, account: str, cycle: 
                           topic: str, traffic_signal: TopicTrafficSignal, decided_at: datetime,
                           opening_mode: str | None = None,
                           preferred_profile_name: str | None = None,
-                          mind_strategy_context: Mapping[str, Any] | None = None) -> ContentStrategyBinding:
+                          mind_strategy_context: Mapping[str, Any] | None = None,
+                          action_forecasts: Mapping[str, Any] | None = None) -> ContentStrategyBinding:
     path = Path(path)
     if path.exists():
         saved = ContentStrategyBinding.model_validate_json(path.read_text(encoding="utf-8"))
@@ -330,7 +382,7 @@ def bind_content_strategy(path: Path, *, state_root: Path, account: str, cycle: 
         state_root=state_root, account=account, cycle=cycle, topic=topic,
         traffic_signal=traffic_signal, as_of=decided_at, opening_mode=opening_mode,
         preferred_profile_name=preferred_profile_name,
-        mind_strategy_context=mind_strategy_context,
+        mind_strategy_context=mind_strategy_context, action_forecasts=action_forecasts,
     )
     _write_once(path, binding.model_dump_json(indent=2) + "\n")
     return binding
