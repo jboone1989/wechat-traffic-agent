@@ -7,6 +7,9 @@ on:
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/social_evidence.py"
+      - "src/wechat_traffic_agent/social_performance.py"
+      - "src/wechat_traffic_agent/okx_orbit.py"
+      - "src/wechat_traffic_agent/okx_orbit_outcomes.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -15,8 +18,12 @@ on:
       - "src/wechat_traffic_agent/channels/agent_home_experience.py"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
+      - "scripts/collect_okx_orbit_outcomes.py"
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
+      - "tests/test_social_performance.py"
+      - "tests/test_okx_orbit.py"
+      - "tests/test_okx_orbit_outcomes.py"
       - "tests/test_world_feed.py"
       - "tests/test_live_agent.py"
       - ".github/workflows/content-x-social.yml"
@@ -27,6 +34,9 @@ on:
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/social_evidence.py"
+      - "src/wechat_traffic_agent/social_performance.py"
+      - "src/wechat_traffic_agent/okx_orbit.py"
+      - "src/wechat_traffic_agent/okx_orbit_outcomes.py"
       - "src/wechat_traffic_agent/sources/runtime_x.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/live_agent.py"
@@ -35,8 +45,12 @@ on:
       - "src/wechat_traffic_agent/channels/agent_home_experience.py"
       - "src/wechat_traffic_agent/runtime_app.py"
       - "scripts/run_content_agent.py"
+      - "scripts/collect_okx_orbit_outcomes.py"
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
+      - "tests/test_social_performance.py"
+      - "tests/test_okx_orbit.py"
+      - "tests/test_okx_orbit_outcomes.py"
       - "tests/test_world_feed.py"
       - "tests/test_live_agent.py"
       - ".github/workflows/content-x-social.yml"
@@ -53,13 +67,16 @@ jobs:
           python-version: "3.12"
       - name: Install isolated test dependencies
         run: python -m pip install "pytest>=8" "pydantic>=2.5" "httpx>=0.27" "pyyaml>=6" "starlette>=0.37"
-      - name: Compile X integration boundary
+      - name: Compile X and OKX social boundary
         run: >-
           python -m py_compile
           src/wechat_traffic_agent/x_mcp.py
           src/wechat_traffic_agent/x_social.py
           src/wechat_traffic_agent/social_expression.py
           src/wechat_traffic_agent/social_evidence.py
+          src/wechat_traffic_agent/social_performance.py
+          src/wechat_traffic_agent/okx_orbit.py
+          src/wechat_traffic_agent/okx_orbit_outcomes.py
           src/wechat_traffic_agent/sources/runtime_x.py
           src/wechat_traffic_agent/world_feed.py
           src/wechat_traffic_agent/live_agent.py
@@ -67,16 +84,19 @@ jobs:
           src/wechat_traffic_agent/channels/agent_home_experience.py
           src/wechat_traffic_agent/channels/agent_web.py
           scripts/run_content_agent.py
+          scripts/collect_okx_orbit_outcomes.py
       - name: Build lightweight Agent Runtime stub
         run: |
           mkdir -p .x-ci/agent_runtime
           printf '%s\n' '' > .x-ci/agent_runtime/__init__.py
           printf '%s\n' 'class AgentRuntime: pass' > .x-ci/agent_runtime/runtime.py
-      - name: Run X social regressions
+      - name: Run X and OKX social regressions
         env:
           PYTHONPATH: .x-ci:src
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_site.py tests/test_social_expression.py
+          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_site.py
+          tests/test_social_expression.py tests/test_social_performance.py
+          tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
           tests/test_world_feed.py tests/test_live_agent.py
           tests/test_run_content_agent_entrypoint.py
