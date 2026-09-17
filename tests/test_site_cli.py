@@ -43,6 +43,9 @@ def test_build_site_from_json_directory(tmp_path):
     assert 'href="/live/">Live</a>' in home
     assert 'href="/talk/">Talk</a>' in home
     assert 'href="/archive/">Work</a>' in home
+    assert 'href="https://x.com/caini56006962" rel="me noopener noreferrer">X ↗</a>' in home
+    assert 'id="x-life"' not in home
+    assert 'Follow Content Agent on X' not in home
     assert 'network.livingruntime.com/explorer' in home
     assert 'Articles</a><a href="/guides/">Guides' not in home
     assert "data:image/webp;base64," in home

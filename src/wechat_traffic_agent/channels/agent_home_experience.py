@@ -6,7 +6,7 @@ import html
 from .agent_static_hero_asset import STATIC_HERO_DATA_URI
 
 
-def render_agent_home(config, latest_html: str, category_html: str, *, x_projection: dict | None = None, persona: dict | None = None) -> str:
+def render_agent_home(config, latest_html: str, category_html: str, *, persona: dict | None = None) -> str:
     description = html.escape(config.description)
     persona = persona or {}
     agent_name = html.escape(str(persona.get("name") or "Content Agent"))
@@ -25,7 +25,7 @@ def render_agent_home(config, latest_html: str, category_html: str, *, x_project
 <div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Content Agent observing, deciding, creating and learning">
 <div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="Humanoid Content Agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
 <a class="crl-live-pill" href="/live/" aria-label="Open the live Content Agent"><b>● LIVE AGENT</b><span>Observe · Decide · Create · Learn</span></a>
-</div></div></section>'''+_loop(agent_name)+_editorial(latest_html, agent_name=agent_name)+_x_social(x_projection or {}, agent_name=agent_name)+_livingruntime(agent_name)
+</div></div></section>'''+_loop(agent_name)+_editorial(latest_html, agent_name=agent_name)+_livingruntime(agent_name)
 
 
 def _loop(agent_name: str) -> str:
@@ -46,36 +46,6 @@ def _loop(agent_name: str) -> str:
 def _livingruntime(agent_name: str) -> str:
     return f"""<section class="crl-runtime"><div class="home-shell runtime-card"><div><p class="editorial-kicker"><i></i> PART OF LIVINGRUNTIME</p><h2>{agent_name} is one persistent agent in a larger agent ecosystem.</h2><p>LivingRuntime provides the runtime, memory, network and continuity ideas behind this public agent. The network lets agents discover capabilities and work with other agents without turning every node into a separate identity.</p></div><div class="runtime-actions"><a class="crl-primary" href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Explore Agent Network</a><a class="crl-secondary" href="/about/">About {agent_name}</a></div></div></section>"""
 
-
-def _x_social(projection: dict, *, agent_name: str = "Content Agent") -> str:
-    handle = str(projection.get("handle") or "").strip().lstrip("@")
-    name = str(projection.get("name") or "Content Agent").strip()
-    profile_url = str(projection.get("url") or (f"https://x.com/{handle}" if handle else ""))
-    avatar_url = str(projection.get("avatar_url") or "")
-    status = str(projection.get("status") or ("CONNECTED" if handle else "NOT CONNECTED"))
-    recent = [row for row in projection.get("recent_activity", []) if isinstance(row, dict)][:5]
-    if handle:
-        avatar = (f'<img loading="lazy" referrerpolicy="no-referrer" src="{html.escape(avatar_url, quote=True)}" '
-                  f'alt="{html.escape(name)} on X" width="64" height="64">') if avatar_url.startswith("https://") else '<div class="x-avatar-fallback">X</div>'
-        profile = (f'<div class="x-profile">{avatar}<div><p class="x-status">{html.escape(status)}</p>'
-                   f'<h2>Follow {agent_name} on X</h2><p><strong>{html.escape(name)}</strong> · @{html.escape(handle)}</p>'
-                   f'<a class="crl-secondary" href="{html.escape(profile_url, quote=True)}" rel="me noopener noreferrer">View on X <span>→</span></a></div></div>')
-        fallback_rows = []
-        for row in recent:
-            text = html.escape(str(row.get("text") or row.get("expression_kind") or "X activity"))
-            url = str(row.get("url") or "")
-            meta = html.escape(str(row.get("expression_kind") or row.get("event_type") or "thought").replace("_", " ").lower())
-            link = f'<a href="{html.escape(url, quote=True)}" rel="noopener noreferrer">View on X →</a>' if url.startswith("https://x.com/") else ""
-            fallback_rows.append(f'<article><p>{text}</p><span>{meta}</span>{link}</article>')
-        fallback = "".join(fallback_rows) or '<p class="x-empty">No agent-originated X post is recorded yet. The first one waits for a real cognition cycle.</p>'
-        embed = (f'<div class="x-embed" data-x-embed data-handle="{html.escape(handle, quote=True)}">'
-                 f'<a class="twitter-timeline" data-dnt="true" data-tweet-limit="4" data-chrome="noheader nofooter transparent" '
-                 f'href="https://x.com/{html.escape(handle, quote=True)}">Posts by @{html.escape(handle)}</a></div>')
-    else:
-        profile = f'<div class="x-profile"><div class="x-avatar-fallback">X</div><div><p class="x-status">CONNECTING</p><h2>Follow {agent_name} on X</h2><p>{agent_name}’s public X identity will appear here after identity sync.</p></div></div>'
-        fallback = '<p class="x-empty">No X public trace has been synchronized into the site build yet.</p>'
-        embed = ''
-    return f'''<section class="crl-x" id="x-life"><div class="home-shell x-grid">{profile}<div class="x-public"><p class="editorial-kicker"><i></i> PUBLIC SOCIAL LIFE</p><h3>Thoughts, replies, revisions.</h3><p>Short-form expressions are linked to the cognition cycle that produced them. Discovery is not adoption, and older views are not deleted to make the agent look consistent.</p><div class="x-fallback">{fallback}</div>{embed}</div></div></section>'''
 
 def _editorial(latest_html: str, *, agent_name: str = "Content Agent") -> str:
     return f"""<section class="crl-editorial"><div class="home-shell editorial-grid editorial-simple">
@@ -104,8 +74,6 @@ def agent_home_css() -> str:
 .crl-loop{background:#0b1c18;border-bottom:1px solid rgba(106,226,168,.18);border-top:1px solid rgba(106,226,168,.12);padding:18px 0}.crl-loop-grid{display:grid;grid-template-columns:280px 1fr;gap:46px;align-items:center}.loop-intro p{margin:0 0 6px;color:#6ef0ad;font:700 .62rem ui-monospace,monospace;letter-spacing:.13em}.loop-intro h2{margin:0;color:#eef5ef;font:500 1.55rem/1.08 Georgia,Times New Roman,serif}.loop-steps{display:flex;align-items:center;gap:12px}.loop-step{display:grid;grid-template-columns:28px 32px 1fr;gap:8px;align-items:start;min-width:0;flex:1}.loop-step i{display:grid;place-items:center;width:27px;height:27px;border:1px solid rgba(112,243,175,.35);border-radius:50%;color:#71f3b0;font:700 .58rem ui-monospace,monospace;font-style:normal}.loop-step>b{color:#6ff0ad;font-size:1.1rem}.loop-step strong{display:block;color:#f2f6f2;font:500 1rem Georgia,serif}.loop-step span{display:block;color:#899991;font-size:.66rem;line-height:1.35;margin-top:3px}.loop-arrow{color:#5ad39a;font-size:1.15rem}
 .crl-editorial{background:#f3f1e9;color:#14211b;padding:56px 0 68px}.editorial-grid{display:grid;grid-template-columns:260px minmax(0,1fr) 150px;gap:32px;align-items:start}.editorial-kicker{margin:5px 0 12px!important;color:#6c7d72!important;font:700 .6rem ui-monospace,monospace!important;text-transform:uppercase;letter-spacing:.13em}.editorial-kicker i{display:inline-block;width:7px;height:7px;border-radius:50%;background:#57d99a;margin-right:7px}.editorial-intro h2{margin:0 0 12px;font:500 2.05rem/1 Georgia,Times New Roman,serif;letter-spacing:-.035em}.editorial-intro>p:not(.editorial-kicker){color:#5b6860;font-size:.82rem;line-height:1.45}.editorial-intro>a{display:inline-flex;gap:28px;align-items:center;margin-top:18px;padding:10px 18px;border:1px solid #8d9890;border-radius:999px;color:#18231e;text-decoration:none;font-size:.75rem;font-weight:700}.latest-grid{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px!important}.latest-grid .card{display:block;background:#fbfaf5;border:1px solid #deddd6;border-radius:8px;padding:0 14px 15px;box-shadow:0 10px 25px rgba(38,49,42,.06);overflow:hidden}.latest-grid .card:nth-child(n+4){display:none}.latest-grid .card:before{content:"";display:block;height:118px;margin:0 -14px 12px}.latest-grid .card:nth-child(1):before{background:linear-gradient(165deg,#94b89f 0 25%,#426f5d 26% 49%,#173526 50% 100%)}.latest-grid .card:nth-child(2):before{background:radial-gradient(circle at 73% 18%,#fff 0 4%,#b9c8c6 5% 7%,transparent 8%),linear-gradient(170deg,#9bb5b1 0 32%,#405e68 33% 55%,#17252c 56%)}.latest-grid .card:nth-child(3):before{background:radial-gradient(circle at 65% 18%,rgba(255,255,220,.75),transparent 14%),linear-gradient(155deg,#76966f 0 35%,#244b34 36% 70%,#0d271c 71%)}.latest-grid .card .eyebrow{color:#37966b!important;font-size:.56rem!important}.latest-grid .card h3{font:500 1.02rem/1.08 Georgia,Times New Roman,serif;margin:.25em 0}.latest-grid .card h3 a{color:#17221d}.latest-grid .card>p:not(.eyebrow){color:#67726b;font-size:.7rem;line-height:1.4}.latest-grid .card-meta{color:#8a918d;font-size:.58rem}.editorial-quote{padding-top:28px}.editorial-quote blockquote{margin:0 0 28px;font:italic 1.18rem/1.25 Georgia,Times New Roman,serif;color:#354139}.editorial-quote span{color:#9aa29d;font:600 .58rem ui-monospace,monospace;letter-spacing:.12em}.editorial-more{margin-top:54px;padding-top:28px;border-top:1px solid #d8d8d0}.editorial-more>p{font:700 .62rem ui-monospace,monospace;text-transform:uppercase;letter-spacing:.13em;color:#6f7a73}.agent-home .category-grid{gap:0}.agent-home .category{border-color:#c8cbc4;color:#17211c}.agent-home .category .text-link{color:#2e7c59}
 
-.crl-x{padding:54px 0;background:#07110f;border-top:1px solid rgba(112,243,178,.12);border-bottom:1px solid rgba(112,243,178,.12)}.x-grid{display:grid;grid-template-columns:.78fr 1.22fr;gap:42px;align-items:start}.x-profile{display:grid;grid-template-columns:72px 1fr;gap:18px;align-items:start;padding:22px;border:1px solid rgba(112,243,178,.17);border-radius:14px;background:#0a1b15}.x-profile img,.x-avatar-fallback{width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid rgba(112,243,178,.3);background:#102b20}.x-avatar-fallback{display:grid;place-items:center;color:#70f3b2;font:700 1.4rem ui-monospace,monospace}.x-profile h2{margin:4px 0 6px;font:500 1.8rem/1 Georgia,serif;color:#eef7f1}.x-profile p{margin:5px 0 15px;color:#9aafa4;font-size:.78rem}.x-profile .x-status{margin:0;color:#70f3b2;font:700 .58rem ui-monospace,monospace;letter-spacing:.1em}.x-profile .crl-secondary{min-height:39px;padding:0 16px;font-size:.7rem}.x-public h3{margin:5px 0 8px;color:#eef7f1;font:500 2rem/1 Georgia,serif}.x-public>p{color:#8fa59a;font-size:.82rem;line-height:1.55}.x-fallback{display:grid;gap:8px;margin-top:18px}.x-fallback article{padding:12px 14px;border:1px solid rgba(112,243,178,.12);border-radius:10px;background:#091913}.x-fallback article p{margin:0 0 7px;color:#d9e6df;font-size:.77rem;line-height:1.45}.x-fallback article span{color:#71877b;font:650 .55rem ui-monospace,monospace;text-transform:uppercase}.x-fallback article a{float:right;color:#70f3b2;font-size:.63rem;text-decoration:none}.x-empty{color:#71877b;font-size:.75rem}.x-embed{margin-top:16px;min-height:24px}.x-embed>a{color:#70f3b2;font-size:.7rem}.twitter-timeline-rendered{border-radius:12px!important;overflow:hidden!important}
-@media(max-width:860px){.x-grid{grid-template-columns:1fr}.x-public{min-width:0}}@media(max-width:620px){.crl-x{padding:38px 0}.x-profile{grid-template-columns:54px 1fr;padding:16px}.x-profile img,.x-avatar-fallback{width:48px;height:48px}.x-profile h2{font-size:1.45rem}}
 @keyframes crl-spin{to{transform:rotate(360deg)}}
 '''
     css += r'''
@@ -145,5 +113,4 @@ if(!reduce&&visual&&art&&matchMedia('(pointer:fine)').matches){
 visual.addEventListener('pointermove',e=>{const r=visual.getBoundingClientRect(),x=(e.clientX-r.left)/r.width-.5,y=(e.clientY-r.top)/r.height-.5;art.style.transform=`translate3d(${(x*-9).toFixed(1)}px,${(y*-6).toFixed(1)}px,0) scale(1.025)`});
 visual.addEventListener('pointerleave',()=>{art.style.transform='translate3d(0,0,0) scale(1.015)'});
 }
-const xe=document.querySelector('[data-x-embed]');if(xe){let loaded=false;const load=()=>{if(loaded)return;loaded=true;const s=document.createElement('script');s.src='https://platform.twitter.com/widgets.js';s.async=true;s.charset='utf-8';document.body.appendChild(s)};if('IntersectionObserver'in window){const io=new IntersectionObserver(es=>{if(es.some(e=>e.isIntersecting)){io.disconnect();load()}},{rootMargin:'300px'});io.observe(xe)}else setTimeout(load,1500)}
 })();</script>'''

@@ -29,17 +29,8 @@ class ContentAgentWebChannel(StaticWebChannel):
             f'<a class="text-link" href="/{name.lower()}/">Browse {html.escape(name)} →</a></section>'
             for name, items in categories.items()
         )
-        state_raw = os.environ.get("CONTENT_APPLICATION_ROOT", "").strip()
-        if state_raw:
-            try:
-                from ..x_social import public_x_projection
-                x_projection = public_x_projection(Path(state_raw))
-            except ImportError:
-                x_projection = {"connected": False, "recent_activity": []}
-        else:
-            x_projection = {"connected": False, "recent_activity": []}
         persona = self._public_persona()
-        body = render_agent_home(self.config, latest_html, category_html, x_projection=x_projection, persona=persona)
+        body = render_agent_home(self.config, latest_html, category_html, persona=persona)
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
 
     def _header(self) -> str:
@@ -49,7 +40,7 @@ class ContentAgentWebChannel(StaticWebChannel):
             '<header class="site-header"><div class="shell nav-wrap">'
             f'<a class="brand" href="/">{name}<span class="brand-ecosystem"> / LivingRuntime</span></a>'
             '<nav aria-label="Primary"><a href="/about/">Ferro</a><a href="/live/">Live</a>'
-            '<a href="/talk/">Talk</a><a href="/archive/">Work</a><a href="/#x-life">X</a>'
+            '<a href="/talk/">Talk</a><a href="/archive/">Work</a><a href="https://x.com/caini56006962" rel="me noopener noreferrer">X ↗</a>'
             '<a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Network ↗</a></nav>'
             '</div></header>'
         )
@@ -139,7 +130,7 @@ class ContentAgentWebChannel(StaticWebChannel):
         privacy_title, privacy_body, privacy_description = pages["/privacy/"]
         pages["/privacy/"] = (
             privacy_title,
-            privacy_body + "<h2>First-party engagement measurement</h2><p>When enabled, the Content Agent measures anonymous page views, 30-second visible reading, internal-link clicks, and return visits using random browser tokens. Those tokens are immediately HMACed by the Content Agent; the engagement evidence store does not persist the raw token, IP address, user agent, referrer, or page text. These measurements are descriptive evidence and do not grant publication authority.</p><h2>X embed</h2><p>The home page can lazily load the official X timeline only after a visitor scrolls near the X section. Loading that embed connects the browser to X, which may receive technical data such as IP address, browser information, and the requested page. The embed requests X's do-not-track mode where supported; a static first-party fallback remains available when the embed is blocked or slow.</p>",
+            privacy_body + "<h2>First-party engagement measurement</h2><p>When enabled, the Content Agent measures anonymous page views, 30-second visible reading, internal-link clicks, and return visits using random browser tokens. Those tokens are immediately HMACed by the Content Agent; the engagement evidence store does not persist the raw token, IP address, user agent, referrer, or page text. These measurements are descriptive evidence and do not grant publication authority.</p>",
             privacy_description,
         )
         return pages
