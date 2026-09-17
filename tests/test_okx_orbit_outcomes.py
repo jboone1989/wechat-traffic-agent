@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
+import pytest
+
 from wechat_traffic_agent.channel_evidence import ChannelEvidenceStore
+from wechat_traffic_agent.okx_orbit import _draft_sha256
 from wechat_traffic_agent.okx_orbit_outcomes import (
     MAX_CAPTURE_LAG,
     OKXOrbitOutcomeCollector,
@@ -26,24 +29,24 @@ def _state(tmp_path: Path, *, published_at: datetime = PUBLISHED) -> tuple[Path,
     root = tmp_path / "state"
     cycle = "v2-okx-outcome-1"
     folder = root / "content/continuous/cycles" / cycle
+    draft = {
+        "channel": "OKX",
+        "format": "SHORT_POST",
+        "intent": "QUESTION",
+        "text": "BTC moved while market structure stayed ambiguous. Which public evidence separates flow from broad risk-off?",
+    }
     _write(folder / "okx_orbit_publication.json", {
         "status": "POSTED",
         "cycle": cycle,
         "published_at": published_at.isoformat(),
         "post_id": "87555650159168",
         "url": "https://www.okx.com/orbit/post/87555650159168",
+        "draft_sha256": _draft_sha256(cycle=cycle, draft=draft),
     })
     _write(folder / "social_expression_drafts.json", {
         "status": "DRAFT_READY",
         "cycle": cycle,
-        "drafts": {
-            "okx": {
-                "channel": "OKX",
-                "format": "SHORT_POST",
-                "intent": "QUESTION",
-                "text": "BTC moved while market structure stayed ambiguous. Which public evidence separates flow from broad risk-off?",
-            }
-        },
+        "drafts": {"okx": draft},
         "evidence_decision": {"resolution": {"action": "QUESTION"}},
     })
     _write(folder / "publication.json", {
@@ -128,6 +131,33 @@ def test_collection_is_idempotent_per_post_window_metric(tmp_path):
     assert len(transport.calls) == 1
     assert len(ChannelEvidenceStore(root / "content/channel_evidence").as_of(NOW)) == 4
 
+
+
+def test_changed_persisted_draft_cannot_inherit_published_post_outcomes(tmp_path):
+    root, cycle = _state(tmp_path)
+    path = root / "content/continuous/cycles" / cycle / "social_expression_drafts.json"
+    payload = json.loads(path.read_text())
+    payload["drafts"]["okx"]["text"] = "This text was changed after publication and must not inherit the original post outcomes."
+    _write(path, payload)
+    transport = _Transport(OrbitPublicMetrics(views=100, comments=1, quotes=0, likes=2))
+    collector = OKXOrbitOutcomeCollector(state_root=root, transport=transport)
+
+    with pytest.raises(ValueError, match="draft binding mismatch"):
+        asyncio.run(collector.collect(now=NOW))
+    assert transport.calls == []
+
+
+def test_receipt_url_must_match_recorded_post_id(tmp_path):
+    root, cycle = _state(tmp_path)
+    path = root / "content/continuous/cycles" / cycle / "okx_orbit_publication.json"
+    payload = json.loads(path.read_text())
+    payload["post_id"] = "99999999999999"
+    _write(path, payload)
+    collector = OKXOrbitOutcomeCollector(
+        state_root=root, transport=_Transport(OrbitPublicMetrics(views=1, comments=0, quotes=0, likes=0))
+    )
+    with pytest.raises(ValueError, match="URL/post id mismatch"):
+        asyncio.run(collector.collect(now=NOW))
 
 def test_no_okx_publication_means_no_outcome_authority(tmp_path):
     collector = OKXOrbitOutcomeCollector(

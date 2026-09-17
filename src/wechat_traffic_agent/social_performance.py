@@ -56,6 +56,7 @@ def okx_social_performance_context(*, state_root: Path, as_of: datetime) -> dict
         "min_samples_per_variant": MIN_SAMPLES_PER_VARIANT,
         "variants": variants,
         "generation_authority": "STYLE_ONLY" if eligible else "NONE",
+        "channel_scope": "OKX_ONLY",
         "factual_authority": False,
         "evidence_gate_authority": False,
         "publication_authority": False,

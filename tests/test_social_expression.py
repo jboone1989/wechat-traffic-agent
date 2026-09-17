@@ -138,6 +138,7 @@ def test_social_expression_drafts_are_channel_specific_and_non_publishing(tmp_pa
     assert "at most 500 characters" in runtime.calls[-1]
     assert "supports long posts and Articles" in runtime.calls[-1]
     assert "STYLE_ONLY" in runtime.calls[-1]
+    assert "The X draft must ignore this OKX performance context." in runtime.calls[-1]
     replay = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
     assert replay["status"] == "ALREADY_DRAFTED"
     assert len(runtime.calls) == 2
