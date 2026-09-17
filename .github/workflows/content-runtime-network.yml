@@ -21,6 +21,8 @@ on:
       - "src/wechat_traffic_agent/evidence_floor.py"
       - "src/wechat_traffic_agent/sources/runtime_web.py"
       - "src/wechat_traffic_agent/live_agent.py"
+      - "src/wechat_traffic_agent/wakeful_runtime.py"
+      - "src/wechat_traffic_agent/wakeful_tasks.py"
       - "src/wechat_traffic_agent/channels/agent_live_page.py"
       - "src/wechat_traffic_agent/automatic_website.py"
       - "src/wechat_traffic_agent/website_experiment.py"
@@ -57,6 +59,7 @@ on:
       - "tests/test_content_network_service.py"
       - "tests/test_content_runtime_dependencies.py"
       - "tests/test_run_content_agent_entrypoint.py"
+      - "tests/test_wakeful_runtime.py"
       - "tests/test_trading_network_source.py"
       - "tests/test_draft_inbox.py"
       - "tests/test_trading_draft_worker.py"
@@ -85,6 +88,8 @@ jobs:
           src/wechat_traffic_agent/prospective_predictions.py
           src/wechat_traffic_agent/evidence_floor.py
           src/wechat_traffic_agent/live_agent.py
+          src/wechat_traffic_agent/wakeful_runtime.py
+          src/wechat_traffic_agent/wakeful_tasks.py
           src/wechat_traffic_agent/channels/agent_live_page.py
           src/wechat_traffic_agent/website_experiment.py
           src/wechat_traffic_agent/website_experiment_evaluation.py
