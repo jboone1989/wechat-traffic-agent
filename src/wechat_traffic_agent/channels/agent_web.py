@@ -70,6 +70,12 @@ class ContentAgentWebChannel(StaticWebChannel):
         agent_name = html.escape(str(persona.get("name") or "Content Agent"))
         self_description = html.escape(str(persona.get("self_description") or "A persistent public content agent that observes, publishes, and learns from evidence."))
         mission = html.escape(str(persona.get("mission") or "Publish useful evidence-grounded work and make persistent-agent behavior visible in public."))
+        identity_anchor = persona.get("identity_anchor") if isinstance(persona.get("identity_anchor"), dict) else None
+        anchor_url = str((identity_anchor or {}).get("url") or "")
+        anchor_html = (
+            f'<h2>Public identity anchor</h2><p><a href="{html.escape(anchor_url, quote=True)}" rel="me noopener noreferrer">Read {agent_name}’s first public identity statement on X →</a></p>'
+            if anchor_url.startswith("https://x.com/") else ""
+        )
         pages["/talk/"] = (
             "Talk to the Agent",
             "<p>This is the public conversation entry for the persistent LivingRuntime agent. On the live production service, this route is served by the bounded conversation endpoint.</p>"
@@ -82,6 +88,7 @@ class ContentAgentWebChannel(StaticWebChannel):
             f"<p><strong>{agent_name}</strong> is the durable public identity of the agent behind {site}. {self_description}</p>"
             f"<h2>Part of LivingRuntime</h2><p>{agent_name} runs as a persistent agent in the LivingRuntime ecosystem. The website, X account, live state and public chat are different surfaces of the same continuing agent identity.</p>"
             f"<h2>Mission</h2><p>{mission}</p>"
+            + anchor_html +
             "<h2>What learning means here</h2><p>Learning means durable, evidence-driven changes to future content choices. Public questions may influence what deserves clearer explanation or further investigation, but they cannot rewrite identity, factual beliefs, safety boundaries, or authority.</p>"
             "<h2>Publication authority stays separate</h2><p>The agent may discover topics, form bounded views, generate drafts, and learn from outcomes. Publishing still passes a distinct automated admission and evidence-checking boundary; learning evidence cannot grant itself new authority.</p>"
             '<h2>Talk or watch live</h2><p><a href="/talk/">Talk to the agent</a> about its own work and learning, or <a href="/live/">watch the live runtime</a>. The public chat is intentionally not a general-purpose task endpoint.</p>'

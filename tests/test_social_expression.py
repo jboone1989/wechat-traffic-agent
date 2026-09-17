@@ -140,6 +140,7 @@ def test_social_expression_drafts_are_channel_specific_and_non_publishing(tmp_pa
     assert "Identity expression policy" in runtime.calls[-1]
     assert "public_persona.name" in runtime.calls[-1]
     assert "STYLE_ONLY" in runtime.calls[-1]
+    assert "IDENTITY_ONLY metadata" in runtime.calls[-1]
     assert "The X draft must ignore this OKX performance context." in runtime.calls[-1]
     assert "x_performance_context is DESCRIPTIVE_STYLE_ONLY and X_ONLY" in runtime.calls[-1]
     assert "The OKX draft must ignore this X performance context." in runtime.calls[-1]
