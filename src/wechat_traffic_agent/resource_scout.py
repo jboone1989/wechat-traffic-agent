@@ -119,6 +119,33 @@ class ContentResourceScout:
             ],
         }
 
+    def verify_provider_leads(self, *, now: datetime, limit: int = 8) -> dict[str, Any]:
+        rows = self.scout.verify_provider_leads(
+            now=now, fetch=self._fetch, limit=limit, results_per_query=8
+        )
+        all_rows = self.scout.provider_verifications()
+        counts: dict[str, int] = {}
+        for row in all_rows:
+            counts[row.status] = counts.get(row.status, 0) + 1
+        return {
+            "status": "VERIFIED" if rows else "NO_PENDING",
+            "processed_count": len(rows),
+            "verification_count": len(all_rows),
+            "status_counts": counts,
+            "processed": [
+                {
+                    "lead_id": row.lead_id,
+                    "status": row.status,
+                    "free_status": row.free_status,
+                    "payment_method_required": row.payment_method_required,
+                    "privacy_caution": row.privacy_caution,
+                    "rate_limit_evidence": row.rate_limit_evidence,
+                    "official_urls": list(row.official_urls),
+                }
+                for row in rows
+            ],
+        }
+
     def _search(self, query: str, limit: int, source_class: str):
         payload = {"query": query, "limit": int(limit), "safesearch": 1}
         if source_class == "technical":

@@ -54,6 +54,11 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["provider_leads"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        try:
+            rows["provider_verification"] = self.resource_scout.verify_provider_leads(now=now, limit=8)
+        except Exception as exc:  # noqa: BLE001
+            rows["provider_verification"] = self._error(exc)
+            rows["status"] = "DEGRADED"
         return rows
 
     def _reflect(self, now: datetime) -> dict[str, Any]:

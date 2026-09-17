@@ -93,3 +93,45 @@ def test_expand_provider_leads_uses_verified_public_catalogue(tmp_path):
     assert result["new_leads"][0]["credential_env"]=="ONE_API_KEY"
     assert result["new_leads"][0]["official_root"]=="one.example"
     assert any(cap=="web.fetch" and payload["url"].endswith('/HEAD/.env.example') for cap,payload in runtime.calls)
+
+
+def test_verify_provider_leads_uses_runtime_search_and_fetch_for_official_evidence(tmp_path):
+    class OfficialRuntime:
+        def __init__(self): self.calls=[]; self.persisted=0; self.phase="discover"
+        def persist(self): self.persisted += 1
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            if capability == "web.search":
+                if self.phase == "official":
+                    return SimpleNamespace(receipt_id="search:official",payload={"results":[
+                        {"title":"Provider One API pricing","url":"https://docs.one.example/pricing","snippet":"Free tier rate limits"},
+                        {"title":"Unofficial","url":"https://blog.example/one","snippet":"free"},
+                    ]})
+                return SimpleNamespace(receipt_id="search:discover",payload={"results":[{
+                    "title":"Free LLM router","url":"https://github.com/acme/free-router","snippet":"free LLM API key router"
+                }]})
+            if capability == "web.fetch":
+                url=payload["url"]
+                if url.endswith('/HEAD/.env.example'):
+                    text="# Provider One — free tier\n# Get key: https://console.one.example/keys\nONE_API_KEY=your-key\n"
+                elif "docs.one.example" in url:
+                    text="Provider One API pricing. Free tier gives 100 requests/day at no charge. No credit card required. Rate limits apply."
+                elif "console.one.example" in url:
+                    text="Provider One API key signup account."
+                else:
+                    text="Free LLM router. Free tier providers. API key required. OpenAI-compatible chat completions."
+                return SimpleNamespace(receipt_id="fetch:"+str(len(self.calls)),payload={"ok":True,"page":{"success":True,"url":url,"markdown":text}})
+            raise AssertionError(capability)
+    runtime=OfficialRuntime(); scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    scout.maybe_discover(now=NOW)
+    scout.verify_pending(now=NOW)
+    scout.expand_provider_leads(now=NOW)
+    runtime.phase="official"
+    result=scout.verify_provider_leads(now=NOW)
+    assert result["processed_count"]==1
+    row=result["processed"][0]
+    assert row["status"]=="VERIFIED_RECURRING_FREE"
+    assert row["free_status"]=="RECURRING_FREE"
+    assert row["payment_method_required"] is False
+    assert row["rate_limit_evidence"] is True
+    assert all("blog.example" not in url for url in row["official_urls"])
