@@ -247,12 +247,28 @@ class ContentResourceScout:
                         for row in rows
                     )
                 }
-                if len(rate_limited_models) >= 3:
+                low_quality_models = set()
+                for model_id, rows in model_rows.items():
+                    completed = [
+                        row for row in rows
+                        if row.status == "COMPLETED" and row.quality_score is not None
+                    ]
+                    if len(completed) >= 3:
+                        mean_quality = sum(float(row.quality_score) for row in completed) / len(completed)
+                        if mean_quality < 0.75:
+                            low_quality_models.add(model_id)
+                exhausted_models = rate_limited_models | low_quality_models
+                if len(exhausted_models) >= 3:
+                    error_codes = []
+                    if rate_limited_models:
+                        error_codes.append("HTTP_429")
+                    if low_quality_models:
+                        error_codes.append("QUALITY_BELOW_FLOOR")
                     provider_rows.append({
                         "provider_label": plan.provider_label,
                         "credential_env": plan.credential_env,
                         "lead_id": plan.lead_id,
-                        "status": "FREE_TIER_RATE_LIMITED",
+                        "status": "FREE_TIER_CANDIDATES_EXHAUSTED",
                         "request_count": 0,
                         "completed_count": 0,
                         "trial_ids": [],
@@ -260,11 +276,11 @@ class ContentResourceScout:
                         "mean_latency_ms": None,
                         "observed_cost_total": None,
                         "cost_observed_for_all_completed": False,
-                        "models": sorted(rate_limited_models),
-                        "error_codes": ["HTTP_429"],
+                        "models": sorted(exhausted_models),
+                        "error_codes": error_codes,
                     })
                     continue
-                excluded_models = frozenset(rate_limited_models)
+                excluded_models = frozenset(exhausted_models)
             try:
                 target = resolve_trial_target(
                     plan.credential_env, api_key=api_key, exclude_models=excluded_models,
@@ -355,14 +371,16 @@ class ContentResourceScout:
             "providers": provider_rows,
             "empirical_profiles": [
                 {
-                    "lead_id": row.opportunity_id, "task_class": row.task_class, "viable": row.viable,
+                    "lead_id": row.opportunity_id, "model_id": row.model_id,
+                    "task_class": row.task_class, "viable": row.viable,
                     "mean_quality": row.mean_quality, "mean_latency_ms": row.mean_latency_ms,
                     "mean_cost": row.mean_cost, "trial_count": row.trial_count,
                 }
                 for row in profiles
             ],
             "empirical_selection": None if selected is None else {
-                "lead_id": selected.opportunity_id, "task_class": selected.task_class,
+                "lead_id": selected.opportunity_id, "model_id": selected.model_id,
+                "task_class": selected.task_class,
                 "mean_quality": selected.mean_quality, "mean_latency_ms": selected.mean_latency_ms,
                 "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
             },
@@ -385,7 +403,9 @@ class ContentResourceScout:
             matching = [
                 row for row in trials
                 if row.opportunity_id == selected.opportunity_id
-                and row.task_class == selected.task_class and row.status == "COMPLETED"
+                and row.task_class == selected.task_class
+                and row.model_id == selected.model_id
+                and row.status == "COMPLETED"
             ]
             latest = matching[-1] if matching else None
             payload = {
@@ -399,7 +419,7 @@ class ContentResourceScout:
                 "trial_count": selected.trial_count,
                 "provider_lead_id": getattr(latest, "provider_lead_id", "") if latest else "",
                 "provider_label": getattr(latest, "provider_label", "") if latest else "",
-                "model_id": getattr(latest, "model_id", "") if latest else "",
+                "model_id": selected.model_id,
                 "evidence_refs": list(selected.evidence_refs),
             }
         folder = self.state_root / "application" / "resource_discovery" / "provider_selection"
