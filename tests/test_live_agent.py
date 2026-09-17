@@ -118,22 +118,21 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         talk = client.get("/talk/")
 
     assert live.status_code == 200
-    assert "NOW · CURRENT AGENT STATE" in live.text
-    assert "What is actually happening" in live.text
-    assert "Just happened / next" in live.text
-    assert "REAL-WORLD VALIDATION" in live.text
-    assert "Worldview & predictions" in live.text
-    assert "Life history" in live.text
-    assert "Things I found, not things I have adopted" in live.text
-    assert "belief-change-list" in live.text
-    assert "AWAITING REALITY" in live.text
-    assert "prediction-outcome-list" in live.text
+    assert "LIVE · PERSISTENT RUNTIME" in live.text
+    assert "WHY THIS IS MORE THAN A TIMER" in live.text
+    assert "A mind that survives the call" in live.text
+    assert "Not every wake becomes generation" in live.text
+    assert "The world can say “nothing useful”" in live.text
+    assert "Resources constrain behavior" in live.text
+    assert "What actually happened" in live.text
+    assert "Open diagnostics & history" in live.text
+    assert "<details class=\"details\">" in live.text
     assert "/api/agent/stream" in live.text
-    assert "NEXT CHECK" in live.text
     assert "/api/agent/status" in live.text
-    assert "NO PRIVATE CHAIN-OF-THOUGHT" in live.text
-    assert live.text.index("NOW · CURRENT AGENT STATE") < live.text.index("Learning details")
-    assert "<details class=\"detail\">" in live.text
+    assert "No private chain-of-thought is exposed" in live.text
+    assert "SOCIAL EXPRESSION · PREVIEW" not in live.text
+    assert "X · PUBLIC SOCIAL IDENTITY" not in live.text
+    assert "Learning details" not in live.text
     assert "agent-core" not in live.text
     assert talk.status_code == 200
     assert "What I’m thinking about" in talk.text
@@ -142,6 +141,9 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "addEventListener('click',sendMessage)" in talk.text
     assert "setInterval(refreshState,5000)" in talk.text
     assert status.status_code == 200
+    assert status.json()["schema_version"] == "public-agent-snapshot:v4"
+    assert status.json()["life"]["presence"]["service_started_at"] is not None
+    assert status.json()["life"]["presence"]["service_uptime_seconds"] >= 0
     assert reply.status_code == 200
     assert reply.json()["learning_effect"] == "audience_interest_evidence_only"
     assert reply.json()["interaction"]["status"] == "RECORDED"
@@ -209,7 +211,7 @@ def test_public_snapshot_exposes_live_goal_evidence_strategy_and_mind(tmp_path):
 
     snapshot = public_agent_snapshot(root, _Application(), _Mind())
 
-    assert snapshot["schema_version"] == "public-agent-snapshot:v3"
+    assert snapshot["schema_version"] == "public-agent-snapshot:v4"
     assert snapshot["activity"]["run_state"] == "IDLE"
     assert snapshot["activity"]["phase"] is None
     assert snapshot["activity"]["last_phase"] == "LEARN"
@@ -223,6 +225,17 @@ def test_public_snapshot_exposes_live_goal_evidence_strategy_and_mind(tmp_path):
     assert snapshot["learning"]["mind"]["interests"][0]["name"] == "model-evaluation"
     assert snapshot["learning"]["mind"]["beliefs"][0]["revision_count"] == 2
     assert snapshot["learning"]["mind"]["recent_belief_changes"][0]["after"]["stance"] == 0.18
+    assert snapshot["life"]["presence"]["runtime_check_seconds"] == 300
+    assert snapshot["life"]["presence"]["live_stream_pulse_seconds"] == 1
+    assert snapshot["life"]["presence"]["idle_is_reported_truthfully"] is True
+    assert snapshot["life"]["continuity"]["mind_tick"] == 21
+    assert snapshot["life"]["continuity"]["beliefs"] == 1
+    assert snapshot["life"]["continuity"]["belief_revisions"] == 1
+    assert snapshot["life"]["continuity"]["current_topic"] == "model-evaluation"
+    assert snapshot["life"]["agency"]["goal_origin"] == "INTEREST"
+    assert snapshot["life"]["agency"]["selection_mode"] == "EXPLORE"
+    assert snapshot["life"]["reality"]["candidate_count"] == 31
+    assert snapshot["life"]["reality"]["match_count"] == 1
     assert snapshot["boundaries"]["private_reasoning_exposed"] is False
 
 
@@ -347,8 +360,9 @@ def test_live_snapshot_and_life_history_include_x_identity_and_lineage(tmp_path)
     page = LiveAgentService(state_root=root, application=_Application(), backend=None)._app()
     with TestClient(page) as client:
         html = client.get("/live/").text
-    assert "X · PUBLIC SOCIAL IDENTITY" in html
-    assert "x-activity-list" in html
+    assert "X · PUBLIC SOCIAL IDENTITY" not in html
+    assert "x-activity-list" not in html
+    assert "Open diagnostics & history" in html
 
 
 def test_public_snapshot_exposes_social_drafts_without_granting_publish_authority(tmp_path):
@@ -408,17 +422,17 @@ def test_directed_cycle_names_are_supported_by_live_snapshot(tmp_path):
     assert snapshot["recent_cycles"][0]["cycle"] == cycle.name
 
 
-def test_live_page_shows_social_expression_preview(tmp_path):
+def test_live_page_keeps_social_expression_out_of_primary_surface(tmp_path):
     root = _state(tmp_path)
     service = LiveAgentService(state_root=root, application=_Application(), backend=_Backend())
     with TestClient(service._app()) as client:
         live = client.get("/live/")
     assert live.status_code == 200
-    assert "SOCIAL EXPRESSION · PREVIEW" in live.text
-    assert "What I would post now" in live.text
-    assert "OKX ORBIT" in live.text
-    assert "okx-draft-text" in live.text
-    assert "x-draft-text" in live.text
+    assert "SOCIAL EXPRESSION · PREVIEW" not in live.text
+    assert "What I would post now" not in live.text
+    assert "OKX ORBIT" not in live.text
+    assert "Talk to Ferro" in live.text
+    assert "Browse Work" in live.text
 
 
 def test_live_skips_newer_unreadable_cycle(monkeypatch, tmp_path):
@@ -434,16 +448,15 @@ def test_live_skips_newer_unreadable_cycle(monkeypatch, tmp_path):
     assert all(row["cycle"] != blocked.name for row in snapshot["recent_cycles"])
 
 
-def test_live_social_preview_has_copy_handoff_without_publish_action(tmp_path):
+def test_live_page_does_not_mix_channel_handoffs_into_life_evidence(tmp_path):
     root = _state(tmp_path)
     service = LiveAgentService(state_root=root, application=_Application(), backend=_Backend())
     with TestClient(service._app()) as client:
         live = client.get("/live/")
     assert live.status_code == 200
-    assert "Copy OKX draft" in live.text
-    assert "https://www.okx.com/orbit" in live.text
-    assert "okx-orbit-link" in live.text
-    assert "OKX POSTED" in live.text
-    assert "Copy X draft" in live.text
-    assert "navigator.clipboard.writeText" in live.text
+    assert "Copy OKX draft" not in live.text
+    assert "okx-orbit-link" not in live.text
+    assert "Copy X draft" not in live.text
+    assert "navigator.clipboard.writeText" not in live.text
     assert "Publish to OKX" not in live.text
+    assert "WHY THIS IS MORE THAN A TIMER" in live.text
