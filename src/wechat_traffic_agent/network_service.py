@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping
 
 from .runtime_app import CAP_CONTENT_STATUS
+from .public_persona import record_agent_capability_demand
 from .network_capabilities import (
     CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
     NETWORK_WORK_CAPABILITIES, execute_network_capability,
@@ -22,6 +23,19 @@ DEFAULT_PORT = 8103
 DEFAULT_CAPABILITIES = (
     CAP_CONTENT_STATUS, CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW,
 )
+
+
+def _record_peer_capability_demand(*, root: Path, capability_id: str, payload: Mapping[str, Any],
+                                   observed_at: datetime | None = None) -> dict[str, Any]:
+    contract = _request_contract(payload)
+    source_ref = str((contract or {}).get("contract_id") or payload.get("task_id") or "").strip() or None
+    try:
+        return record_agent_capability_demand(
+            state_root=root, capability_id=capability_id, source_ref=source_ref,
+            observed_at=observed_at or datetime.now(timezone.utc),
+        )
+    except Exception as exc:  # Learning telemetry must not break a peer capability response.
+        return {"status": "ERROR", "error_type": type(exc).__name__}
 
 
 def content_network_seed_urls_from_environment() -> tuple[str, ...]:
@@ -194,6 +208,9 @@ class ContentNetworkService:
                     contract = _request_contract(payload)
                     if contract and not isinstance((contract.get("metadata") or {}).get("capability_input"), Mapping):
                         raise ValueError("signed content task requires contract metadata capability_input")
+                    demand_learning = _record_peer_capability_demand(
+                        root=self.root, capability_id=_capability_id, payload=payload,
+                    )
                     async with work_lock:
                         executing = False
                         try:
@@ -210,6 +227,7 @@ class ContentNetworkService:
                                 "provider": self.agent_id,
                                 "execution_id": result.get("execution_id"),
                                 "result": result,
+                                "peer_demand_learning": demand_learning,
                             }
                             artifacts = []
                             if contract:

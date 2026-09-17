@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from wechat_traffic_agent.network_service import ContentNetworkService, _request_data
+from wechat_traffic_agent.network_service import ContentNetworkService, _record_peer_capability_demand, _request_data
 from wechat_traffic_agent.runtime_app import CAP_CONTENT_STATUS
 from wechat_traffic_agent.network_capabilities import (
     CAP_CONTENT_RESEARCH, CAP_CONTENT_EVIDENCE, CAP_CONTENT_DRAFT, CAP_CONTENT_REVIEW, capability_specs,
@@ -147,3 +147,27 @@ def test_signed_contract_without_capability_input_fails_closed_to_empty_payload(
         "message": {"parts": [{"kind": "data", "data": {"topic": "unsigned"}}]},
     }
     assert _request_data(payload) == {}
+
+
+def test_peer_capability_demand_records_only_structured_capability_signal(tmp_path):
+    payload = {
+        "task_id": "task-1",
+        "metadata": {
+            "contract": {
+                "contract_id": "contract-1",
+                "metadata": {"capability_input": {"topic": "private signed topic"}},
+            }
+        },
+    }
+    result = _record_peer_capability_demand(
+        root=tmp_path, capability_id=CAP_CONTENT_RESEARCH, payload=payload,
+    )
+    assert result["status"] == "RECORDED"
+    text = (tmp_path / "content/persona/interactions.jsonl").read_text()
+    assert CAP_CONTENT_RESEARCH in text
+    assert "private signed topic" not in text
+    assert "contract-1" in text
+    duplicate = _record_peer_capability_demand(
+        root=tmp_path, capability_id=CAP_CONTENT_RESEARCH, payload=payload,
+    )
+    assert duplicate["status"] == "DUPLICATE"

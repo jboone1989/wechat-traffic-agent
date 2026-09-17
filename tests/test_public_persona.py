@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 
 import pytest
+import json
 
 from wechat_traffic_agent.public_persona import (
     bootstrap_public_persona, classify_public_question, persona_learning_context,
-    public_interaction_items, public_persona_projection, record_public_identity_anchor, record_public_interaction,
+    public_interaction_items, public_persona_projection, record_agent_capability_demand,
+    record_public_identity_anchor, record_public_interaction,
 )
 
 NOW = datetime(2026, 9, 17, 6, 30, tzinfo=timezone.utc)
@@ -75,3 +77,23 @@ def test_identity_anchor_is_immutable_identity_only_metadata(tmp_path):
     assert record_public_identity_anchor(state_root=state, url=url, statement=text, published_at=NOW) == anchor
     with pytest.raises(ValueError, match="immutable"):
         record_public_identity_anchor(state_root=state, url="https://x.com/caini56006962/status/2100486738342764629", statement=text, published_at=NOW)
+
+
+def test_agent_capability_demand_is_interest_only_and_deduplicated(tmp_path):
+    first = record_agent_capability_demand(
+        state_root=tmp_path, capability_id="content.research.public", source_ref="contract-42", observed_at=NOW,
+    )
+    second = record_agent_capability_demand(
+        state_root=tmp_path, capability_id="content.research.public", source_ref="contract-42", observed_at=NOW,
+    )
+    assert first["status"] == "RECORDED"
+    assert second["status"] == "DUPLICATE"
+    row = json.loads((tmp_path / "content/persona/interactions.jsonl").read_text().splitlines()[-1])
+    assert row["source"] == "AGENT_NETWORK"
+    assert row["category"] == "AGENT_CAPABILITY_CONTENT_RESEARCH_PUBLIC"
+    assert row["signal"] == "CAPABILITY_DEMAND"
+    assert row["learning_authority"] == "CAPABILITY_DEMAND_ONLY"
+    assert row["identity_authority"] is False
+    assert row["factual_authority"] is False
+    assert "signed topic" not in json.dumps(row)
+
