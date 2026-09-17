@@ -210,6 +210,7 @@ def main() -> int:
                 wake_reason = wakeful_runtime.wait(stopping=lambda: stopping)
             reason_task = wake_reason.task if wake_reason.task else None
         while not stopping:
+
             if wake_reason is not None and wake_reason.kind == "STOP":
                 break
             now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -250,6 +251,7 @@ def main() -> int:
                 return 1 if status in {"ERROR", "DEGRADED"} else 0
             wake_reason = wakeful_runtime.wait(stopping=lambda: stopping)
             reason_task = wake_reason.task if wake_reason.task else None
+
         return 0
     finally:
         if gsc_collector is not None: gsc_collector.close()
