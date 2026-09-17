@@ -152,5 +152,36 @@ def test_openrouter_stops_after_three_explicit_rate_limited_models(tmp_path, mon
     results=[scout.run_ready_trials(now=NOW,provider_limit=2) for _ in range(4)]
     assert calls==["free-a","free-b","free-c"]
     assert [row["executed_request_count"] for row in results]==[3,3,3,0]
-    assert results[-1]["providers"][0]["status"]=="FREE_TIER_RATE_LIMITED"
+    assert results[-1]["providers"][0]["status"]=="FREE_TIER_CANDIDATES_EXHAUSTED"
     assert results[-1]["providers"][0]["models"]==["free-a","free-b","free-c"]
+
+
+def test_openrouter_rotates_after_complete_low_quality_model(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+    resolved=[]
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        resolved.append(excluded)
+        model="weak-free" if "weak-free" not in excluded else "good-free"
+        return ProviderTrialTarget(env,"https://example/v1",model,True)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        quality=0.2 if target.model=="weak-free" else 1.0
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{target.model}:{i}", plan_id=plan.plan_id, lead_id=plan.lead_id,
+            provider_label=plan.provider_label, credential_env=plan.credential_env,
+            model=target.model, task_id=f"t{i}", status="COMPLETED", observed_at=NOW.isoformat(),
+            quality_score=quality, latency_ms=10, observed_cost=0.0,
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    first=scout.run_ready_trials(now=NOW,provider_limit=2)
+    second=scout.run_ready_trials(now=NOW,provider_limit=2)
+    assert first["executed_request_count"]==3
+    assert first["empirical_selection"] is None
+    assert second["executed_request_count"]==3
+    assert second["empirical_selection"]["model_id"]=="good-free"
+    assert calls==["weak-free","good-free"]
+    assert resolved[1]=={"weak-free"}
