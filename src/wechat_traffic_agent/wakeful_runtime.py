@@ -7,7 +7,9 @@ import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from agent_runtime.wakeful import PlannedWake, StimulusEvent, WakefulCore, WakefulState
+from agent_runtime.wakeful import (
+    NeuralFeedbackEvent, PlannedWake, StimulusEvent, WakefulCore, WakefulState,
+)
 from virtualbrain.research.neural_graph import LIFNeuralGraph
 
 
@@ -141,6 +143,33 @@ class ContentWakefulRuntime:
             payload_ref=f"resource-pressure:{normalized}",
         ))
 
+    def apply_prediction_outcome_feedback(self, outcome: dict) -> dict:
+        prediction_id = str(outcome.get("prediction_id") or "")
+        window = str(outcome.get("window") or "")
+        evidence_refs = tuple(str(x) for x in outcome.get("evidence_refs") or () if x)
+        if not prediction_id or window not in {"1h", "4h", "24h"} or not evidence_refs:
+            raise ValueError("prediction outcome feedback requires identity, canonical window, and evidence")
+        observed_raw = outcome.get("observed_at")
+        if isinstance(observed_raw, datetime):
+            observed_at = observed_raw
+        else:
+            observed_at = datetime.fromisoformat(str(observed_raw).replace("Z", "+00:00"))
+        expected = max(0.0, float(outcome.get("expected_pageviews") or 0.0))
+        actual = max(0.0, float(outcome.get("actual_pageviews") or 0.0))
+        reliability = max(0.0, min(1.0, float(outcome.get("reliability") or 0.0)))
+        prediction_error = max(0.0, min(1.0, float(outcome.get("prediction_error") or 0.0)))
+        signed_progress = (actual - expected) / (actual + expected + 1.0)
+        feedback = NeuralFeedbackEvent(
+            outcome_id=f"content-action:{prediction_id}:{window}",
+            observed_at=observed_at,
+            pathway=("prediction_due", "task_urgency"),
+            evidence_refs=evidence_refs,
+            information_gain=0.25 * reliability,
+            prediction_error=prediction_error * reliability,
+            goal_progress=max(-1.0, min(1.0, signed_progress * reliability)),
+        )
+        return self.core.apply_neural_feedback(feedback)
+
     def mark_cognition(self, now: datetime | None = None) -> None:
         self.core.mark_cognition(now)
 
@@ -156,6 +185,15 @@ class ContentWakefulRuntime:
             "next_wake_reason": snap.next_wake_reason,
             "attention": dict(snap.attention),
             "neural_graph": dict(snap.neural_state),
+            "neural_feedback": [
+                {
+                    "outcome_id": row.outcome_id,
+                    "observed_at": row.observed_at.isoformat(),
+                    "pathway": list(row.pathway),
+                    "evidence_refs": list(row.evidence_refs),
+                }
+                for row in snap.recent_neural_feedback[-8:]
+            ],
             "neural_control_signals": [
                 {
                     "source_event_id": row.source_event_id, "neuron": row.neuron,

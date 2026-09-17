@@ -129,12 +129,22 @@ class WakefulContentTaskRunner:
         if self.web_outcome_collector is not None:
             try:
                 from .content_action_prediction import settle_action_predictions
-                rows["content_action_prediction_learning"] = settle_action_predictions(
+                learning = settle_action_predictions(
                     state_root=self.state_root,
                     account=self.web_base_url,
                     as_of=now,
                     mind=self.content_mind,
                 )
+                rows["content_action_prediction_learning"] = learning
+                feedback_rows = []
+                for outcome in learning.get("recorded") or ():
+                    feedback_rows.append(self.wakeful.apply_prediction_outcome_feedback(outcome))
+                rows["neural_prediction_learning"] = {
+                    "status": "APPLIED" if feedback_rows else "NO_NEW_OUTCOMES",
+                    "count": len(feedback_rows),
+                    "feedback": feedback_rows,
+                    "publication_authority": False,
+                }
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
                 rows["status"] = "DEGRADED"
