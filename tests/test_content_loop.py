@@ -217,8 +217,9 @@ def test_automatic_release_readable_with_restrictive_service_umask(tmp_path):
     assert all(p.stat().st_mode & (0o005 if p.is_dir() else 0o004)
                for p in root.rglob('*'))
     home=(root/'index.html').read_text()
-    assert 'The website is the interface. The agent is the product.' in home
-    assert 'Audited automatic publishing' in home
+    assert 'I’m Content Agent.' in home
+    assert 'Persistent identity' in home
+    assert 'Continuous runtime' in home
     assert 'Human-gated' not in home
 
 
