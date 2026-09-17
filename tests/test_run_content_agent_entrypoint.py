@@ -30,4 +30,5 @@ def test_persistent_content_entrypoint_composes_frameworks_network_and_drafts():
     assert "app.status_observation()['publish_mode']" in text
     assert "build_live_agent_service" in text
     assert "live_agent_service.start()" in text
+    assert text.index("live_agent_service.start()") < text.index("network_service.start()")
     assert "poll_seconds=args.poll_seconds" in text
