@@ -44,6 +44,7 @@ class ContentWakefulRuntime:
                     input_hz=float(os.environ.get("CONTENT_FLY_CONNECTOME_INPUT_HZ", "120")),
                     stimulus_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_STIMULUS_MS", "10")),
                     settle_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_SETTLE_MS", "40")),
+                    baseline_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_BASELINE_MS", "20")),
                 )
                 reflex = HybridConnectomeNervousSystem(semantic=semantic, substrate=substrate)
             except Exception as exc:
