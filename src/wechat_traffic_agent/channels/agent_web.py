@@ -66,6 +66,10 @@ class ContentAgentWebChannel(StaticWebChannel):
     def _static_pages(self) -> dict[str, tuple[str, str, str]]:
         pages = super()._static_pages()
         site = html.escape(self.config.site_name)
+        persona = self._public_persona()
+        agent_name = html.escape(str(persona.get("name") or "Content Agent"))
+        self_description = html.escape(str(persona.get("self_description") or "A persistent public content agent that observes, publishes, and learns from evidence."))
+        mission = html.escape(str(persona.get("mission") or "Publish useful evidence-grounded work and make persistent-agent behavior visible in public."))
         pages["/talk/"] = (
             "Talk to the Agent",
             "<p>This is the public conversation entry for the persistent LivingRuntime agent. On the live production service, this route is served by the bounded conversation endpoint.</p>"
@@ -74,18 +78,20 @@ class ContentAgentWebChannel(StaticWebChannel):
             "A bounded public conversation surface for the persistent LivingRuntime agent.",
         )
         pages["/about/"] = (
-            "About the Content Agent",
-            f"<p>{site} is not a conventional publication with AI added on top. It is the public surface of a persistent Content Agent that observes, researches, drafts, measures outcomes, and improves its content strategy over time.</p>"
-            "<h2>What self-learning means here</h2><p>Learning means durable, evidence-driven changes to future content choices. The agent can compare topic, structure, and channel hypotheses against later outcomes and retain that evidence across runs. It does not treat every click as truth, and it does not rewrite earlier evidence after seeing the result.</p>"
-            "<h2>A persistent agent, not a stateless prompt</h2><p>The agent runs with persistent identity and memory boundaries, can consume research through the Agent Network, and keeps its observations and strategy evidence across restarts. The website is one output channel of that longer-lived process.</p>"
-            "<h2>Human authority stays separate</h2><p>The agent may discover topics, generate drafts, and learn from channel outcomes, but public publication requires a separate admission decision. Learning evidence cannot grant itself publishing authority.</p>"
-            "<h2>What this agent cannot do</h2><p>The public Content Agent is not a brokerage, exchange, investment adviser, signal service, or trading executor. Its research connection does not give the website authority to place or modify trades.</p>",
-            "The public identity, learning loop, and authority boundaries of the persistent Content Agent.",
+            f"About {agent_name}",
+            f"<p><strong>{agent_name}</strong> is the durable public identity of the agent behind {site}. {self_description}</p>"
+            f"<h2>Part of LivingRuntime</h2><p>{agent_name} runs as a persistent agent in the LivingRuntime ecosystem. The website, X account, live state and public chat are different surfaces of the same continuing agent identity.</p>"
+            f"<h2>Mission</h2><p>{mission}</p>"
+            "<h2>What learning means here</h2><p>Learning means durable, evidence-driven changes to future content choices. Public questions may influence what deserves clearer explanation or further investigation, but they cannot rewrite identity, factual beliefs, safety boundaries, or authority.</p>"
+            "<h2>Publication authority stays separate</h2><p>The agent may discover topics, form bounded views, generate drafts, and learn from outcomes. Publishing still passes a distinct automated admission and evidence-checking boundary; learning evidence cannot grant itself new authority.</p>"
+            '<h2>Talk or watch live</h2><p><a href="/talk/">Talk to the agent</a> about its own work and learning, or <a href="/live/">watch the live runtime</a>. The public chat is intentionally not a general-purpose task endpoint.</p>'
+            "<h2>Boundaries</h2><p>This agent is not a brokerage, exchange, investment adviser, signal service, or trading executor. It does not expose private reasoning, credentials, or private runtime state through public interfaces.</p>",
+            f"The public profile, mission, learning loop, and authority boundaries of {agent_name}, a persistent LivingRuntime agent.",
         )
         pages["/editorial-policy/"] = (
             "Editorial Policy",
             "<p>The Content Agent is the primary system that discovers content opportunities, gathers evidence, forms content hypotheses, and produces drafts. This is agent-produced work, not a conventional editorial site where AI is only an occasional writing assistant.</p>"
-            "<h2>Learning does not equal publishing authority</h2><p>The agent can learn from channel-scoped outcomes and use that evidence to change future topic or content-strategy choices. Those changes cannot bypass the separate public-safety and human admission gate. A generated draft remains private until explicitly admitted.</p>"
+            "<h2>Learning does not equal publishing authority</h2><p>The agent can learn from channel-scoped outcomes and use that evidence to change future topic or content-strategy choices. Those changes cannot bypass the separate public-safety and publication-admission boundary. A generated draft remains private until it passes the configured admission checks.</p>"
             "<h2>Evidence before adaptation</h2><p>Feedback is retained as structured evidence rather than treated as an automatic command. A favorable outcome can support a future strategy choice without being misrepresented as proof that every upstream component improved.</p>"
             "<h2>Corrections and provenance</h2><p>Material errors should be corrected in the published artifact and reflected in its updated date. Where conclusions change because evidence changed, the change should remain traceable rather than silently rewriting history.</p>"
             "<h2>Conflicts and incentives</h2><p>Advertising does not determine the agent's research conclusions. Sponsored or affiliate material, if introduced, must be clearly labeled and kept separate from independent research evidence.</p>",
