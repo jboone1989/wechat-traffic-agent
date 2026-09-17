@@ -65,7 +65,9 @@ def main() -> int:
     state_root = _state_root()
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
+    from wechat_traffic_agent.resource_economy import ContentResourceEconomy
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
+    resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
     try:
         from wechat_traffic_agent.public_persona import ensure_public_persona
         persona = asyncio.run(ensure_public_persona(runtime=app.domain_runtime, state_root=state_root))
@@ -160,7 +162,13 @@ def main() -> int:
             runtime_event_cycle = 'runtime-' + str(int(now.timestamp()))
             emit_public_activity(state_root, cycle=runtime_event_cycle, phase='RUNTIME',
                                  title='I’m awake — checking for new work',
-                                 detail='I’m checking health, network membership, fresh evidence, traffic outcomes, and whether a new content cycle is due.')
+                                 detail='I’m checking health, network membership, fresh evidence, traffic outcomes, resources, and whether a new content cycle is due.')
+            try:
+                resource_observation = resource_economy.observe(now)
+                print(json.dumps({"resource_observation": resource_observation}, ensure_ascii=False, sort_keys=True))
+            except Exception as exc:  # noqa: BLE001
+                resource_observation = {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
+                print(json.dumps({"resource_observation": resource_observation}, sort_keys=True), file=sys.stderr)
             try:
                 guard = network_service.execution_lock if network_service is not None else nullcontext()
                 with guard: result = app.run_tick(as_of_time=as_of)
@@ -206,9 +214,30 @@ def main() -> int:
 
             if not tick_failed and continuous_loop is not None and result.generation_ready:
                 focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if args.focus_topic else None
-                continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic)); print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
+                resource_cycle_id = focus_cycle_id or f"scheduled-{int(now.timestamp())}"
+                try:
+                    resource_decision = resource_economy.begin_cycle(now=now, cycle=resource_cycle_id)
+                    print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
+                except Exception as exc:  # noqa: BLE001
+                    resource_decision = {"status": "UNAVAILABLE", "decision": "ASK_HUMAN", "error_type": type(exc).__name__, "message": str(exc)[:300]}
+                    print(json.dumps({"resource_decision": resource_decision}, sort_keys=True), file=sys.stderr)
+                if resource_decision.get("decision") != "EXECUTE":
+                    continuous_result = {"status": "RESOURCE_DEFERRED", "cycle": resource_cycle_id, "resource_decision": resource_decision}
+                else:
+                    continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
+                    try:
+                        resource_result = resource_economy.end_cycle(
+                            now=datetime.now(timezone.utc).replace(microsecond=0), cycle=resource_cycle_id,
+                            episode_id=str(resource_decision["episode_id"]), before_balance=float(resource_decision["before_balance"]),
+                            result=continuous_result,
+                        )
+                        continuous_result["resource_economy"] = resource_result
+                        print(json.dumps({"resource_cycle_result": resource_result}, ensure_ascii=False, sort_keys=True))
+                    except Exception as exc:  # noqa: BLE001
+                        print(json.dumps({"resource_cycle_result": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
+                print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
                 if continuous_result["status"] == "ERROR": draft_failed = True
-                if continuous_result["status"] != "ERROR":
+                if continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED"}:
                     try:
                         social_expression = asyncio.run(social_expression_loop.after_content_cycle(result=continuous_result, now=now))
                         print(json.dumps({"social_expression_drafts": social_expression}, ensure_ascii=False, sort_keys=True))
@@ -228,7 +257,7 @@ def main() -> int:
                         print(json.dumps({"okx_orbit_publication": okx_publication}, ensure_ascii=False, sort_keys=True))
                     except Exception as exc:  # noqa: BLE001
                         print(json.dumps({"okx_orbit_publication":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-                if x_loop is not None and continuous_result["status"] != "ERROR":
+                if x_loop is not None and continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED"}:
                     try:
                         x_expression = asyncio.run(x_loop.after_content_cycle(result=continuous_result, now=now))
                         print(json.dumps({"x_social_expression": x_expression}, ensure_ascii=False, sort_keys=True))

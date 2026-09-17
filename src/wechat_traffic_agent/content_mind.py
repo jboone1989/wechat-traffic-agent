@@ -35,6 +35,8 @@ class ContentMind:
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
             raise RuntimeError("Content Agent requires VirtualBrain >=0.3 causal learning")
+        if not hasattr(self.session, "resource_awareness"):
+            raise RuntimeError("Content Agent requires VirtualBrain resource awareness")
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
@@ -98,6 +100,10 @@ class ContentMind:
             encoding="utf-8",
         )
         os.replace(tmp, self.checkpoint_path)
+
+    def persist_resource_awareness(self) -> None:
+        """Persist provider-neutral resource state after a governed external observation."""
+        self._persist()
 
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
         mapped = self._inquiry_topics.get(str(inquiry_id))
@@ -718,6 +724,29 @@ class ContentMind:
             for row in worldview["history"][-8:]
         ]
         latest_plan = self._plans[sorted(self._plans)[-1]] if self._plans else None
+        resource_state = snapshot.get("resource_awareness", {})
+        resource_states = resource_state.get("states", []) if isinstance(resource_state, dict) else []
+        current_resource = None
+        if resource_states:
+            raw_resource = resource_states[-1]
+            balance = float(raw_resource.get("available_funds") or 0.0)
+            budget = float(raw_resource.get("period_budget") or 0.0)
+            runway = raw_resource.get("runway_days")
+            ratio = (balance / budget) if budget > 0 else None
+            if balance <= 0 or (ratio is not None and ratio < 0.10) or (runway is not None and float(runway) < 3):
+                pressure = "CRITICAL"
+            elif (ratio is not None and ratio < 0.25) or (runway is not None and float(runway) < 7):
+                pressure = "CONSERVE"
+            elif (ratio is not None and ratio < 0.50) or (runway is not None and float(runway) < 14):
+                pressure = "WATCH"
+            else:
+                pressure = "NORMAL"
+            current_resource = {
+                "observed_at": raw_resource.get("observed_at"),
+                "currency": raw_resource.get("currency"),
+                "pressure": pressure,
+                "provider_available": bool((raw_resource.get("quotas") or {}).get("deepseek_api_available", 0.0)),
+            }
         return {
             "mind_schema": MIND_SCHEMA,
             "mind_tick": int(self.session.tick),
@@ -726,6 +755,13 @@ class ContentMind:
             "beliefs": beliefs[:8],
             "recent_belief_changes": recent_belief_changes,
             "latest_plan": deepcopy(latest_plan),
+            "resource_awareness": {
+                "current": current_resource,
+                "observation_count": len(resource_states),
+                "decision_count": len(resource_state.get("episodes", [])) if isinstance(resource_state, dict) else 0,
+                "outcome_count": len(resource_state.get("outcomes", [])) if isinstance(resource_state, dict) else 0,
+                "reflection_count": len(resource_state.get("reflections", [])) if isinstance(resource_state, dict) else 0,
+            },
             "strategy_learning": {
                 "outcome_count": len(self._strategy_outcomes),
                 "topics": sorted({
