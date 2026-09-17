@@ -1,0 +1,95 @@
+from datetime import datetime, timedelta, timezone
+
+from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
+
+
+NOW = datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
+
+
+def test_initial_plans_are_explicit_and_restart_safe(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.ensure_initial_plans(NOW)
+    tasks = {wake.task for wake in runtime.core.snapshot().pending_plans}
+    assert {"OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"} <= tasks
+    restored = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    before = len(restored.core.snapshot().pending_plans)
+    restored.ensure_initial_plans(NOW)
+    assert len(restored.core.snapshot().pending_plans) == before
+
+
+def test_content_cognition_is_scheduled_by_semantic_interval(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.schedule_next("CONTENT_COGNITION", NOW)
+    snapshot = runtime.core.snapshot()
+    wake = next(row for row in snapshot.pending_plans if row.task == "CONTENT_COGNITION")
+    assert wake.at == NOW + timedelta(hours=6)
+
+
+def test_talk_stimuli_accumulate_without_storing_prompt_text(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    runtime.emit_talk(message="first private-ish visitor text", observed_at=now)
+    assert runtime.public_snapshot()["cognition_threshold_crossed"] is False
+    runtime.emit_talk(message="second visitor text", observed_at=now + timedelta(seconds=1))
+    runtime.emit_talk(message="third visitor text", observed_at=now + timedelta(seconds=2))
+    snapshot = runtime.public_snapshot()
+    assert snapshot["cognition_threshold_crossed"] is True
+    persisted = (tmp_path / "application" / "wakeful.json").read_text(encoding="utf-8")
+    assert "private-ish" not in persisted
+    assert "visitor text" not in persisted
+
+
+def test_quiet_runtime_has_zero_cognition_triggers_for_thirty_minutes(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.ensure_initial_plans(NOW)
+    runtime.core.mark_cognition(NOW)
+    snapshot = runtime.core.snapshot()
+    assert snapshot.cognition_triggers == ()
+    assert runtime.public_snapshot()["presence"] == "AWAKE"
+
+
+def test_open_prediction_becomes_precise_planned_wake(tmp_path):
+    from wechat_traffic_agent.prospective_predictions import ProspectivePredictionLedger
+    ledger = ProspectivePredictionLedger(tmp_path)
+    due = NOW + timedelta(hours=2)
+    prediction = ledger.record(
+        cycle="v2-1", topic="btc", proposition="BTC liquidity conditions matter", proposition_stance=0.1,
+        statement="BTC evidence changes", confidence=0.6,
+        created_at=NOW, due_at=due, verification_query="BTC evidence",
+        falsifier="No material change", source_evidence_refs=("e:1",),
+    )
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.ensure_initial_plans(NOW)
+    wake = next(row for row in runtime.core.snapshot().pending_plans
+                if row.task == "VERIFY_PREDICTION")
+    assert wake.at == due
+    assert wake.relevant_refs == (prediction.prediction_id,)
+    assert wake.reason == f"verify prediction {prediction.prediction_id}"
+
+
+def test_full_neural_graph_is_exposed_without_claiming_future_plasticity(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    snapshot = runtime.public_snapshot()
+    graph = snapshot["neural_graph"]
+    assert set(graph["neurons"]) == {
+        "curiosity", "threat_risk", "social_attention", "task_urgency",
+        "prediction_due", "resource_pressure", "opportunity", "error_recovery",
+    }
+    assert graph["synapses"]
+    assert graph["capabilities"]["recurrent_graph"] is True
+    assert graph["capabilities"]["cpg"] is False
+    assert graph["capabilities"]["synaptic_plasticity"] is False
+    assert graph["capabilities"]["structural_plasticity"] is False
+
+
+def test_prediction_deadline_enters_neural_graph_without_creating_duplicate_wake(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    before = len(runtime.core.snapshot().pending_plans)
+    runtime.emit_prediction_due(prediction_ref="prediction:test", observed_at=now)
+    snap = runtime.core.snapshot()
+    assert len(snap.pending_plans) == before
+    assert snap.neural_state["neurons"]["prediction_due"]["membrane"] > 0.0
+    assert snap.neural_state["neurons"]["prediction_due"]["fire_count"] == 0
+    assert not any(row.source_event_id.startswith("prediction-due:")
+                   for row in snap.neural_control_signals)

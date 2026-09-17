@@ -64,6 +64,7 @@ class ContentResourceScout:
             ],
         }
 
+
     def verify_pending(self, *, now: datetime, limit: int = 8) -> dict[str, Any]:
         rows = self.scout.verify_pending(now=now, fetch=self._fetch, limit=limit)
         all_rows = self.scout.verifications()
@@ -90,6 +91,7 @@ class ContentResourceScout:
     def _fetch(self, url: str, max_chars: int):
         receipt = self.capability_runtime.invoke(
             "web.fetch", {"url": url, "max_chars": int(max_chars)}
+
         )
         persist = getattr(self.capability_runtime, "persist", None)
         if callable(persist):

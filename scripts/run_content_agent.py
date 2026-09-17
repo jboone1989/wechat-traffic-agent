@@ -48,7 +48,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--once", action="store_true", help="Run one application tick and exit")
     parser.add_argument("--health", action="store_true", help="Print persisted application health")
     parser.add_argument("--focus-topic", help="One-shot content focus slug; requires --once and does not replace the persisted autonomous goal")
-    parser.add_argument("--poll-seconds", type=int, default=300)
+    parser.add_argument("--watchdog-seconds", type=int, default=1800, help="Low-frequency liveness watchdog; never a cognition cadence")
     return parser
 
 
@@ -60,7 +60,7 @@ def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
     if args.focus_topic and not args.once: parser.error("--focus-topic requires --once")
-    if args.poll_seconds <= 0: parser.error("poll-seconds must be positive")
+    if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
 
     state_root = _state_root()
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
@@ -75,6 +75,8 @@ def main() -> int:
     private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
+    from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
+    wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)
     try:
         from wechat_traffic_agent.public_persona import ensure_public_persona
         persona = asyncio.run(ensure_public_persona(runtime=app.domain_runtime, state_root=state_root))
@@ -94,20 +96,26 @@ def main() -> int:
     live_agent_service = None
     from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
     if live_agent_enabled():
-        live_agent_service = build_live_agent_service(state_root=state_root, application=app, mind=content_mind, poll_seconds=args.poll_seconds)
+        live_agent_service = build_live_agent_service(state_root=state_root, application=app, mind=content_mind, wakeful=wakeful_runtime)
         live_agent_service.start()
         print(f"live-agent endpoint=http://{live_agent_service.host}:{live_agent_service.port}")
 
     network_service: ContentNetworkService | None = None
     if network_enabled():
-        network_service = ContentNetworkService.from_environment(root=state_root, application=app)
-        network_service.start()
-        print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
+        try:
+            network_service = ContentNetworkService.from_environment(root=state_root, application=app)
+            network_service.start()
+            print(f"agent-network joined seed={network_service.seed_url} endpoint={network_service.endpoint}")
+        except Exception as exc:  # network is a capability, never a life dependency
+            print(json.dumps({"agent_network": {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
+            wakeful_runtime.emit_network_error(code=type(exc).__name__)
+            network_service = None
 
     draft_worker: TradingResearchDraftWorker | None = None
-    if trading_draft_worker_enabled():
-        if network_service is None: raise RuntimeError("Trading draft worker requires Agent Network membership")
+    if trading_draft_worker_enabled() and network_service is not None:
         draft_worker = TradingResearchDraftWorker(runtime=app.domain_runtime, state_root=state_root)
+    elif trading_draft_worker_enabled():
+        print(json.dumps({"draft_worker": {"status": "DISABLED_NETWORK_UNAVAILABLE"}}, sort_keys=True), file=sys.stderr)
 
     web_worker = None
     if _enabled("CONTENT_WEB_DRAFTS_ENABLED"):
@@ -160,188 +168,90 @@ def main() -> int:
 
     stopping = False
     def _stop(_signum, _frame):
-        nonlocal stopping; stopping = True
+        nonlocal stopping
+        stopping = True
+        wakeful_runtime.core.interrupt()
     signal.signal(signal.SIGTERM, _stop); signal.signal(signal.SIGINT, _stop)
+
+    from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
+    task_runner = WakefulContentTaskRunner(
+        app=app,
+        state_root=state_root,
+        content_mind=content_mind,
+        resource_economy=resource_economy,
+        resource_scout=resource_scout,
+        daily_reflection=daily_reflection,
+        human_assistance=human_assistance,
+        network_service=network_service,
+        draft_worker=draft_worker,
+        web_worker=web_worker,
+        gsc_collector=gsc_collector,
+        continuous_loop=continuous_loop,
+        social_expression_loop=social_expression_loop,
+        x_loop=x_loop,
+        x_browser_publisher=x_browser_publisher,
+        okx_orbit_publisher=okx_orbit_publisher,
+        web_outcome_collector=web_outcome_collector,
+        engagement_outcome_collector=engagement_outcome_collector,
+        website_experiment_evaluator=website_experiment_evaluator,
+        wakeful=wakeful_runtime,
+        web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
+    )
     print(f"{APPLICATION_VERSION} publish_mode={app.status_observation()['publish_mode']}")
     try:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        wakeful_runtime.ensure_initial_plans(now)
+        if args.once:
+            reason_task = "CONTENT_COGNITION"
+            wake_reason = None
+        else:
+            wake_reason = wakeful_runtime.core.pop_ready()
+            if wake_reason is None:
+                wake_reason = wakeful_runtime.wait(stopping=lambda: stopping)
+            reason_task = wake_reason.task if wake_reason.task else None
         while not stopping:
-            now = datetime.now(timezone.utc).replace(microsecond=0); as_of = now.isoformat(); tick_failed = False
-            runtime_event_cycle = 'runtime-' + str(int(now.timestamp()))
-            emit_public_activity(state_root, cycle=runtime_event_cycle, phase='RUNTIME',
-                                 title='I’m awake — checking for new work',
-                                 detail='I’m checking health, network membership, fresh evidence, traffic outcomes, resources, and whether a new content cycle is due.')
-            try:
-                resource_observation = resource_economy.observe(now)
-                print(json.dumps({"resource_observation": resource_observation}, ensure_ascii=False, sort_keys=True))
-            except Exception as exc:  # noqa: BLE001
-                resource_observation = {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
-                print(json.dumps({"resource_observation": resource_observation}, sort_keys=True), file=sys.stderr)
-            try:
-                scout_result = resource_scout.maybe_discover(now=now)
-                print(json.dumps({"resource_scout": scout_result}, ensure_ascii=False, sort_keys=True))
-                verify_result = resource_scout.verify_pending(now=now, limit=8)
-                print(json.dumps({"resource_verification": verify_result}, ensure_ascii=False, sort_keys=True))
-            except Exception as exc:  # noqa: BLE001
-                print(json.dumps({"resource_scout": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
-            try:
-                reflection_result = daily_reflection.maybe_generate(now)
-                print(json.dumps({"daily_reflection": {
-                    "status": reflection_result.get("status"),
-                    "target_date": reflection_result.get("target_date"),
-                    "delivery_status": reflection_result.get("delivery_status"),
-                }}, ensure_ascii=False, sort_keys=True))
-            except Exception as exc:  # noqa: BLE001
-                print(json.dumps({"daily_reflection": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
-            try:
-                guard = network_service.execution_lock if network_service is not None else nullcontext()
-                with guard: result = app.run_tick(as_of_time=as_of)
-                print(json.dumps(result.to_payload(), ensure_ascii=False, sort_keys=True))
-            except Exception as exc:  # noqa: BLE001
-                tick_failed = True
-                print(json.dumps({"application_version": APPLICATION_VERSION, "status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}, sort_keys=True), file=sys.stderr)
 
-            draft_failed = False
-            if not tick_failed and x_loop is not None and result.generation_ready:
-                try:
-                    x_observation = asyncio.run(x_loop.observe(now=now))
-                    print(json.dumps({"x_social_observation": x_observation}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"x_social_observation":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
+            if wake_reason is not None and wake_reason.kind == "STOP":
+                break
+            now = datetime.now(timezone.utc).replace(microsecond=0)
+            task = reason_task or ("OBSERVE_WORLD" if wake_reason and wake_reason.cognition_required else "EVENT_OBSERVE")
+            runtime_event_cycle = f"wake-{int(now.timestamp())}"
+            wakeful_runtime.core.set_state(
+                WakefulState.THINKING if task in {"CONTENT_COGNITION", "OBSERVE_WORLD"} else WakefulState.OBSERVING
+            )
+            emit_public_activity(
+                state_root, cycle=runtime_event_cycle, phase=task,
+                title=f"Awake · {task.replace('_', ' ').title()}",
+                detail=(wake_reason.detail if wake_reason is not None else "One-shot content cognition"),
+            )
+            if task == "EVENT_OBSERVE":
+                task_result = {"task": task, "status": "NO_DEEP_COGNITION_JUSTIFIED"}
+            else:
+                task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
+            print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
+            status = str(task_result.get("status") or "UNKNOWN")
+            wakeful_runtime.sync_prediction_wakes(now)
+            if task not in {"EVENT_OBSERVE"}:
+                wakeful_runtime.core.mark_action(now)
+            if wake_reason is not None and wake_reason.kind == "PLAN" and reason_task:
+                wakeful_runtime.schedule_next(reason_task, now)
+            wakeful_runtime.core.set_state(WakefulState.WAITING)
+            next_state = wakeful_runtime.public_snapshot()
+            emit_public_activity(
+                state_root, cycle=runtime_event_cycle, phase="WAITING",
+                title="Awake · Waiting",
+                detail=(
+                    "No deeper cognition is currently justified. "
+                    f"Next intentional wake: {next_state.get('next_wake_at') or 'event-driven'} · "
+                    f"{next_state.get('next_wake_reason') or 'external stimulus'}"
+                ),
+                status="completed" if status not in {"ERROR", "DEGRADED"} else "stopped",
+            )
+            if args.once:
+                return 1 if status in {"ERROR", "DEGRADED"} else 0
+            wake_reason = wakeful_runtime.wait(stopping=lambda: stopping)
+            reason_task = wake_reason.task if wake_reason.task else None
 
-            if not tick_failed and draft_worker is not None and result.generation_ready:
-                try:
-                    draft_result = asyncio.run(draft_worker.run_once(now=now)); print(json.dumps({"draft_worker": draft_result.to_payload()}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    network_code = str(getattr(exc, "code", "") or "")
-                    network_message = str(exc).strip()
-                    if (
-                        network_code in {"INVALID_SIGNATURE", "TAMPER_DETECTED"}
-                        or (type(exc).__name__ == "NetworkError" and network_message.upper() in {"UNSIGNED EVIDENCE", "TAMPER_DETECTED"})
-                    ):
-                        print(json.dumps({"draft_worker": {"status":"BLOCKED_BY_NETWORK_TRUST","error_type":type(exc).__name__,"code":network_code,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-                    else:
-                        draft_failed = True
-                        print(json.dumps({"draft_worker": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-
-            if not tick_failed and web_worker is not None and result.generation_ready:
-                try:
-                    web_result = asyncio.run(web_worker.run_once(now=now)); print(json.dumps({"web_editorial": web_result}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:
-                    draft_failed = True; print(json.dumps({"web_editorial":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-
-            if not tick_failed and gsc_collector is not None:
-                try:
-                    print(json.dumps({"google_search_console": gsc_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"google_search_console":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
-
-            if not tick_failed and continuous_loop is not None and result.generation_ready:
-                focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if args.focus_topic else None
-                preflight = continuous_loop.preflight(now=now, cycle_id=focus_cycle_id)
-                resource_cycle_id = str(preflight["cycle"])
-                if preflight["status"] == "ALREADY_PROCESSED":
-                    resource_decision = {"status": "SKIPPED_NOOP", "decision": "NO_RESOURCE_ACTION", "cycle": resource_cycle_id}
-                    continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
-                    print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
-                else:
-                    try:
-                        resource_decision = resource_economy.begin_cycle(now=now, cycle=resource_cycle_id)
-                        print(json.dumps({"resource_decision": resource_decision}, ensure_ascii=False, sort_keys=True))
-                    except Exception as exc:  # noqa: BLE001
-                        resource_decision = {"status": "UNAVAILABLE", "decision": "ASK_HUMAN", "error_type": type(exc).__name__, "message": str(exc)[:300]}
-                        print(json.dumps({"resource_decision": resource_decision}, sort_keys=True), file=sys.stderr)
-                    if resource_decision.get("decision") != "EXECUTE":
-                        continuous_result = {"status": "RESOURCE_DEFERRED", "cycle": resource_cycle_id, "resource_decision": resource_decision}
-                        if resource_decision.get("decision") == "ASK_HUMAN":
-                            request = human_assistance.request(
-                                kind="RESOURCE_SUPPORT", urgency="HIGH", now=now,
-                                summary=(
-                                    f"Content cycle was deferred because current {resource_decision.get('currency', 'resource')} "
-                                    f"funds are below the estimated next-cycle cost or the provider is unavailable."
-                                ),
-                                requested_action="Please review the Content Agent budget/provider availability and top up or change the budget only if you want it to continue paid work.",
-                                details={
-                                    "cycle": resource_cycle_id,
-                                    "available_funds": resource_decision.get("available_funds"),
-                                    "estimated_cost": resource_decision.get("estimated_cost"),
-                                    "currency": resource_decision.get("currency"),
-                                },
-                            )
-                            print(json.dumps({"human_assistance": {"request_id": request["request_id"], "delivery_status": request["delivery_status"]}}, sort_keys=True))
-                    else:
-                        continuous_result = asyncio.run(continuous_loop.run_once(now=now, cycle_id=focus_cycle_id, focus_topic=args.focus_topic))
-                        try:
-                            resource_result = resource_economy.end_cycle(
-                                now=datetime.now(timezone.utc).replace(microsecond=0), cycle=resource_cycle_id,
-                                episode_id=str(resource_decision["episode_id"]), before_balance=float(resource_decision["before_balance"]),
-                                result=continuous_result,
-                            )
-                            continuous_result["resource_economy"] = resource_result
-                            print(json.dumps({"resource_cycle_result": resource_result}, ensure_ascii=False, sort_keys=True))
-                        except Exception as exc:  # noqa: BLE001
-                            print(json.dumps({"resource_cycle_result": {"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)[:300]}}, sort_keys=True), file=sys.stderr)
-                print(json.dumps({"continuous_content":continuous_result}, ensure_ascii=False, sort_keys=True))
-                if continuous_result["status"] == "ERROR": draft_failed = True
-                if continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
-                    try:
-                        social_expression = asyncio.run(social_expression_loop.after_content_cycle(result=continuous_result, now=now))
-                        print(json.dumps({"social_expression_drafts": social_expression}, ensure_ascii=False, sort_keys=True))
-                    except Exception as exc:  # noqa: BLE001
-                        print(json.dumps({"social_expression_drafts":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-                    try:
-                        x_browser_publication = asyncio.run(x_browser_publisher.after_content_cycle(
-                            cycle=str(continuous_result.get("cycle") or ""), now=now,
-                        ))
-                        print(json.dumps({"x_browser_publication": x_browser_publication}, ensure_ascii=False, sort_keys=True))
-                    except Exception as exc:  # noqa: BLE001
-                        print(json.dumps({"x_browser_publication":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-                    try:
-                        okx_publication = asyncio.run(okx_orbit_publisher.after_content_cycle(
-                            cycle=str(continuous_result.get("cycle") or ""), now=now,
-                        ))
-                        print(json.dumps({"okx_orbit_publication": okx_publication}, ensure_ascii=False, sort_keys=True))
-                    except Exception as exc:  # noqa: BLE001
-                        print(json.dumps({"okx_orbit_publication":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-                if x_loop is not None and continuous_result["status"] not in {"ERROR", "RESOURCE_DEFERRED"}:
-                    try:
-                        x_expression = asyncio.run(x_loop.after_content_cycle(result=continuous_result, now=now))
-                        print(json.dumps({"x_social_expression": x_expression}, ensure_ascii=False, sort_keys=True))
-                    except Exception as exc:  # noqa: BLE001
-                        print(json.dumps({"x_social_expression":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc)}}, sort_keys=True), file=sys.stderr)
-
-            if web_outcome_collector is not None:
-                try:
-                    print(json.dumps({"website_outcomes": web_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"website_outcomes":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False,"learning_authority":False}}, sort_keys=True), file=sys.stderr)
-                try:
-                    from wechat_traffic_agent.content_action_prediction import settle_action_predictions
-                    action_learning = settle_action_predictions(
-                        state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"],
-                        as_of=now, mind=content_mind,
-                    )
-                    print(json.dumps({"content_action_prediction_learning": action_learning}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"content_action_prediction_learning":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False}}, sort_keys=True), file=sys.stderr)
-
-            if engagement_outcome_collector is not None:
-                try: print(json.dumps({"website_engagement": engagement_outcome_collector.collect(now=now)}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"website_engagement":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"publication_authority":False,"learning_authority":False}}, sort_keys=True), file=sys.stderr)
-
-            if website_experiment_evaluator is not None:
-                try: print(json.dumps({"website_experiment_evaluation": website_experiment_evaluator.evaluate(as_of=now)}, ensure_ascii=False, sort_keys=True))
-                except Exception as exc:  # noqa: BLE001
-                    print(json.dumps({"website_experiment_evaluation":{"status":"ERROR","error_type":type(exc).__name__,"message":str(exc),"learning_authority":False,"strategy_control":False}}, sort_keys=True), file=sys.stderr)
-
-            emit_public_activity(state_root, cycle=runtime_event_cycle, phase='RUNTIME',
-                                 title='Check complete',
-                                 detail=('The check completed with an error; the service will retry.' if tick_failed or draft_failed
-                                         else f'Nothing else is running in the background. I’ll wake for the next scheduled check in about {args.poll_seconds} seconds.'),
-                                 status='stopped' if tick_failed or draft_failed else 'completed')
-            if args.once: return 1 if tick_failed or draft_failed else 0
-            deadline = time.monotonic() + args.poll_seconds
-            while not stopping and time.monotonic() < deadline: time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
         return 0
     finally:
         if gsc_collector is not None: gsc_collector.close()

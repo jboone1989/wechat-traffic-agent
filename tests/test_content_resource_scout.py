@@ -56,7 +56,7 @@ def test_verify_pending_uses_runtime_fetch_and_promotes_evidence(tmp_path):
                 }]})
             if capability == "web.fetch":
                 return SimpleNamespace(receipt_id="fetch:1", payload={"ok":True,"page":{
-                    "success":True,"url":payload["url"],"markdown":"Free, open source OpenAI alternative. Run locally with docker run."
+                    "success":True,"url":payload["url"],"markdown":"Free, open source LLM inference API and OpenAI alternative. Run locally with docker run."
                 }})
             raise AssertionError(capability)
     runtime=VerifyRuntime(); scout=ContentResourceScout(state_root=tmp_path, capability_runtime=runtime)

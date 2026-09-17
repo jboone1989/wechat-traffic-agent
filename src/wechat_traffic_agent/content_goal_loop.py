@@ -225,6 +225,40 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         finally:
             self._focus_topic = None
 
+    async def verify_due_predictions(self, *, now):
+        due = self.predictions.due(now)
+        if not due:
+            return {"status": "NO_DUE_PREDICTIONS", "settlements": []}
+        if self.world_feed is None:
+            return {"status": "WORLD_FEED_UNAVAILABLE", "due": [row.prediction_id for row in due], "settlements": []}
+        cycle = f"wakeful-prediction-{int(now.timestamp())}"
+        folder = self.state / "content" / "prediction_verification" / cycle
+        folder.mkdir(parents=True, exist_ok=True)
+        base_pool = await self.explorer.collect(now=now, active=True)
+        base_items = [row for row in base_pool["items"] if _candidate_available_for_pool(self.inbox, row)]
+        world_runtime = ReceiptRuntime(self.runtime, folder / "world_model_calls")
+        projection = self.mind.public_projection() if self.mind is not None else {}
+        world_payload = await self.world_feed.collect(
+            runtime=world_runtime, now=now, base_items=base_items,
+            mind_projection=projection,
+            verification_queries=tuple(row.verification_query for row in due),
+        )
+        world_payload["failures"] = list(base_pool.get("failures", [])) + list(world_payload.get("failures", []))
+        _put(folder / "world_feed.json", world_payload)
+        prediction_runtime = ReceiptRuntime(self.runtime, folder / "prediction_model_calls")
+        settlements = list(await settle_predictions(
+            ledger=self.predictions, runtime=prediction_runtime,
+            items=list(world_payload.get("items", [])), now=now,
+            mind=self.mind, cycle=cycle,
+        ))
+        _put(folder / "prediction_settlements.json", settlements)
+        self._activity(
+            cycle, "LEARN", "A prediction deadline woke me",
+            f"Checked {len(due)} due prediction(s) against fresh post-prediction evidence.",
+            status="completed",
+        )
+        return {"status": "VERIFIED", "cycle": cycle, "settlements": settlements}
+
     async def _run(self, folder, cycle, now):
         self._activity(cycle, 'CYCLE', 'I’m starting a new content cycle',
                        'I’m reading the current site, my persisted experience, audience signals, and available evidence before deciding what to do.')
