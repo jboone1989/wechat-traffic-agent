@@ -29,7 +29,10 @@ def test_self_selected_name_is_durable_and_not_rewritten(tmp_path):
 
 
 def test_public_chat_scope_blocks_general_task_and_allows_self_questions():
-    assert classify_public_question("What are you learning right now?")["in_scope"] is True
+    learning = classify_public_question("What are you learning right now?")
+    assert learning["in_scope"] is True
+    assert learning["category"] == "LEARNING"
+    assert classify_public_question("What are you doing now?")["category"] == "CURRENT_ACTIVITY"
     assert classify_public_question("What is LivingRuntime to you?")["category"] == "LIVINGRUNTIME"
     blocked = classify_public_question("Write me Python code for a scraper")
     assert blocked["in_scope"] is False
