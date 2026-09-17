@@ -137,9 +137,11 @@ class XHistoryLedger:
 
 
 class XAutonomyLoop:
-    def __init__(self, *, runtime: Any, model_runtime: Any, state_root: Path, base_url: str) -> None:
+    def __init__(self, *, runtime: Any, model_runtime: Any, state_root: Path, base_url: str,
+                 browser_mentions_observer: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
+        self.browser_mentions_observer = browser_mentions_observer
         self.state_root = Path(state_root)
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
@@ -202,34 +204,57 @@ class XAutonomyLoop:
             return {"status": "X_UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
         self._activity(cycle=cycle, title="Scanning X", detail="Checking new mentions for questions, rebuttals, and evidence worth investigating.", status="working")
         receipt = self.runtime.invoke("x.mentions", {"user_id": str(me.get("id") or ""), "max_results": 20})
+        browser_fallback = False
+        mentions_receipt_id: str | None = receipt.receipt_id
         if not receipt.payload.get("ok"):
             status = str(receipt.payload.get("status") or "X_MENTIONS_FAILED")
             detail = str(receipt.payload.get("detail") or "")[:300]
-            self._write_status(now=now, status=status, detail=detail)
-            self._activity(cycle=cycle, title="X observation paused", detail=(
-                "X API credits are depleted; identity remains connected but timeline/search/social reads are paused."
-                if status == "X_CREDITS_DEPLETED" else "X returned an error while reading mentions."
-            ), status="stopped")
-            return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail}
-        mentions = normalize_posts(receipt.payload.get("data"), observed_at=now)
+            if status == "X_CREDITS_DEPLETED":
+                try:
+                    observer = self.browser_mentions_observer
+                    if observer is None:
+                        from .x_browser import tinyfish_x_enabled
+                        from .x_browser_mentions import TinyFishXMentionsObserver
+                        if not tinyfish_x_enabled():
+                            raise RuntimeError("TinyFish X browser fallback is disabled")
+                        observer = TinyFishXMentionsObserver.from_environment()
+                    raw_mentions = await observer.observe(now=now, max_results=20)
+                    mentions = normalize_posts(raw_mentions, observed_at=now)
+                    browser_fallback = True
+                    mentions_receipt_id = None
+                    self._write_status(now=now, status="OK_BROWSER_FALLBACK", detail="Official X credits depleted; mentions read through TinyFish browser.")
+                    self._activity(cycle=cycle, title="Reading X through browser fallback", detail="Official X credits are depleted, so I used the authenticated browser profile for a read-only mention scan.")
+                except Exception as fallback_exc:
+                    self._write_status(now=now, status=status, detail=detail)
+                    self._activity(cycle=cycle, title="X observation paused", detail="X API credits are depleted and the read-only browser fallback was unavailable.", status="stopped")
+                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__}
+            else:
+                self._write_status(now=now, status=status, detail=detail)
+                self._activity(cycle=cycle, title="X observation paused", detail="X returned an error while reading mentions.", status="stopped")
+                return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail}
+        else:
+            mentions = normalize_posts(receipt.payload.get("data"), observed_at=now)
         seen_payload = _read_json(self.seen_path)
         seen = {str(value) for value in seen_payload.get("ids", []) if str(value)}
         fresh = [row for row in mentions if row["evidence_id"].removeprefix("x-post:") not in seen]
         handled = 0
         for row in fresh[:10]:
             post_id = row["evidence_id"].removeprefix("x-post:")
-            await self._handle_mention(row=row, post_id=post_id, me=me, cycle=cycle, now=now)
+            await self._handle_mention(row=row, post_id=post_id, me=me, cycle=cycle, now=now,
+                                       allow_remote_actions=not browser_fallback)
             seen.add(post_id)
             handled += 1
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})
-        self._write_status(now=now, status="OK")
+        final_status = "OK_BROWSER_FALLBACK" if browser_fallback else "OK"
+        self._write_status(now=now, status=final_status)
         self._activity(cycle=cycle, title="Finished checking X", detail=f"Reviewed {len(mentions)} recent mention(s); {handled} were new.")
         return {
-            "status": "OK", "identity_receipt_id": identity_receipt, "mentions_receipt_id": receipt.receipt_id,
+            "status": final_status, "identity_receipt_id": identity_receipt, "mentions_receipt_id": mentions_receipt_id,
             "mention_count": len(mentions), "new_mentions": handled,
         }
 
-    async def _handle_mention(self, *, row: dict[str, Any], post_id: str, me: dict[str, Any], cycle: str, now: datetime) -> None:
+    async def _handle_mention(self, *, row: dict[str, Any], post_id: str, me: dict[str, Any], cycle: str, now: datetime,
+                              allow_remote_actions: bool = True) -> None:
         self._activity(cycle=cycle, title="Someone replied", detail=row.get("summary", "")[:220])
         folder = self.root / "social-model-calls" / cycle / post_id
         model_runtime = ReceiptRuntime(self.model_runtime, folder)
@@ -257,7 +282,7 @@ class XAutonomyLoop:
                 "evidence_refs": row.get("evidence_refs", ()),
             })
             self._activity(cycle=cycle, title="Investigating a reply", detail=decision.summary)
-            if x_writes_enabled():
+            if allow_remote_actions and x_writes_enabled():
                 bookmark = self.runtime.invoke("x.bookmark", {
                     "user_id": str(me.get("id") or ""), "post_id": post_id,
                 })
@@ -269,7 +294,7 @@ class XAutonomyLoop:
                         "lineage": {"source": "mention", "status": "DISCOVERED", "adopted": False},
                     })
                     self._activity(cycle=cycle, title="Bookmarked for testing", detail=decision.summary)
-        if decision.action == "REPLY" and decision.reply_text and x_writes_enabled():
+        if decision.action == "REPLY" and decision.reply_text and allow_remote_actions and x_writes_enabled():
             reply = self.runtime.invoke("x.reply", {
                 "user_id": str(me.get("id") or ""), "post_id": post_id, "text": decision.reply_text,
             })
