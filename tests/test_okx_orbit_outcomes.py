@@ -76,6 +76,9 @@ def test_collect_records_four_public_metrics_only_near_mature_window(tmp_path):
     result = asyncio.run(collector.collect(now=NOW))
 
     assert result["status"] == "RECORDED"
+    assert result["learning_authority"] is False
+    assert result["publication_authority"] is False
+    assert result["causal_claim"] is False
     assert len(result["recorded"]) == 4
     assert result["pending"] == 2
     assert len(transport.calls) == 1
@@ -85,7 +88,6 @@ def test_collect_records_four_public_metrics_only_near_mature_window(tmp_path):
     }
     assert all(row.channel == "okx-orbit" for row in rows)
     assert all(row.source == SOURCE for row in rows)
-    assert all(row.learning_authority if hasattr(row, "learning_authority") else True for row in [])
     assert all(row.agent_candidate_sha256 == row.published_content_sha256 for row in rows)
 
 
