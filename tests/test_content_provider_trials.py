@@ -93,3 +93,64 @@ def test_changed_resolved_model_retries_without_erasing_prior_trials(tmp_path, m
     rows=scout.scout.model_trials()
     assert len(rows)==6
     assert {row.model_id for row in rows}=={"old-model","new-model"}
+
+
+def test_openrouter_rotates_only_after_all_three_requests_are_rate_limited(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+    resolved=[]
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        resolved.append(excluded)
+        model="free-a" if "free-a" not in excluded else "free-b"
+        return ProviderTrialTarget(env,"https://example/v1",model,True)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        failed=target.model=="free-a"
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{target.model}:{i}", plan_id=plan.plan_id, lead_id=plan.lead_id,
+            provider_label=plan.provider_label, credential_env=plan.credential_env,
+            model=target.model, task_id=f"t{i}", status="FAILED" if failed else "COMPLETED",
+            observed_at=NOW.isoformat(), quality_score=None if failed else 1.0,
+            latency_ms=10, observed_cost=None if failed else 0.0,
+            error_code="HTTP_429" if failed else "",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    first=scout.run_ready_trials(now=NOW,provider_limit=2)
+    second=scout.run_ready_trials(now=NOW,provider_limit=2)
+    third=scout.run_ready_trials(now=NOW,provider_limit=2)
+    assert first["executed_request_count"]==3
+    assert second["executed_request_count"]==3
+    assert third["executed_request_count"]==0
+    assert calls==["free-a","free-b"]
+    assert resolved[0]==set()
+    assert resolved[1]=={"free-a"}
+    assert second["empirical_selection"]["lead_id"]=="lead:o"
+
+
+def test_openrouter_stops_after_three_explicit_rate_limited_models(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+    models=("free-a","free-b","free-c","free-d")
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        model=next(item for item in models if item not in excluded)
+        return ProviderTrialTarget(env,"https://example/v1",model,True)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{target.model}:{i}", plan_id=plan.plan_id, lead_id=plan.lead_id,
+            provider_label=plan.provider_label, credential_env=plan.credential_env,
+            model=target.model, task_id=f"t{i}", status="FAILED", observed_at=NOW.isoformat(),
+            latency_ms=10, error_code="HTTP_429",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+    results=[scout.run_ready_trials(now=NOW,provider_limit=2) for _ in range(4)]
+    assert calls==["free-a","free-b","free-c"]
+    assert [row["executed_request_count"] for row in results]==[3,3,3,0]
+    assert results[-1]["providers"][0]["status"]=="FREE_TIER_RATE_LIMITED"
+    assert results[-1]["providers"][0]["models"]==["free-a","free-b","free-c"]
