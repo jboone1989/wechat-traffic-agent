@@ -210,3 +210,22 @@ def test_trial_plan_uses_persisted_acquisition_friction(tmp_path, monkeypatch):
     assert second["plans"][0]["lead_id"]=="lead:b"
     blocked=next(x for x in second["plans"] if x["lead_id"]=="lead:a")
     assert blocked["status"]=="BLOCKED_BY_FRICTION"
+
+
+def test_no_viable_model_breaks_discovery_cooldown(tmp_path):
+    class AdaptiveRuntime:
+        def __init__(self): self.calls=[]
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            return SimpleNamespace(receipt_id="r",payload={"results":[]})
+    runtime=AdaptiveRuntime(); scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    scout.maybe_discover(now=NOW)
+    before=len(runtime.calls)
+    scout.record_acquisition_outcome(
+        plan_id="plan:1",lead_id="lead:1",status="NO_VIABLE_MODEL",now=NOW.replace(minute=10),
+        source="RUNTIME",evidence_refs=("trial:1",),
+    )
+    result=scout.maybe_discover(now=NOW.replace(minute=11))
+    assert result["status"]=="NO_NEW_OPPORTUNITIES"
+    assert len(runtime.calls)>before
+    assert any("reduce financial burn" in payload["query"] for cap,payload in runtime.calls[before:] if cap=="web.search")

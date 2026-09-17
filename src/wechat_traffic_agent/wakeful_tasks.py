@@ -77,6 +77,14 @@ class WakefulContentTaskRunner:
             if ready is not None:
                 trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
                 rows["provider_trials"] = trial_result
+                if bool(trial_result.get("replan_required")):
+                    self.wakeful.schedule_resource_followup(now, seconds=300)
+                    rows["resource_followup"] = {
+                        "status": "SCHEDULED",
+                        "reason": "provider trial evidence requires alternate routes",
+                        "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                        "delay_seconds": 300,
+                    }
                 resolutions = []
                 for provider in trial_result.get("providers") or []:
                     if int(provider.get("completed_count") or 0) <= 0:

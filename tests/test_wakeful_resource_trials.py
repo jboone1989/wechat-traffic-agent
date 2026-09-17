@@ -23,7 +23,7 @@ class Scout:
             "signup_url":"https://provider.example/keys","priority_score":0.63,"reasons":["recurring_free_evidence","credential_missing"],"status":"NEEDS_CREDENTIAL",
         }]}
     def run_ready_trials(self, **kwargs):
-        return {"status":"TRIALED","executed_request_count":3,"providers":[],"empirical_profiles":[],"empirical_selection":None}
+        return {"status":"TRIALED","executed_request_count":3,"providers":[],"empirical_profiles":[],"empirical_selection":None,"replan_required":False}
 class Assistance:
     def __init__(self): self.calls=[]
     def request(self, **kwargs): self.calls.append(kwargs); return {"request_id":"human-request:1","delivery_status":"SENT","kind":kwargs["kind"]}
@@ -62,3 +62,18 @@ def test_resource_review_defers_human_and_schedules_followup_while_autonomous_wo
     assert not assistance.calls
     assert result["resource_followup"]["pending_verification_count"]==7
     assert wakeful.followup[1]==300
+
+
+def test_resource_review_schedules_followup_when_trials_require_replan():
+    class ReplanScout(Scout):
+        def plan_trials(self, **kwargs):
+            row=super().plan_trials(**kwargs); row["plans"][0]["status"]="READY_TO_TRIAL"; return row
+        def run_ready_trials(self, **kwargs):
+            return {"status":"ALREADY_TRIALED","executed_request_count":0,"providers":[],"empirical_profiles":[],"empirical_selection":None,"replan_required":True}
+    assistance=Assistance(); wakeful=Wakeful()
+    runner=WakefulContentTaskRunner(resource_economy=Economy(),content_mind=Mind(),wakeful=wakeful,resource_scout=ReplanScout(),human_assistance=assistance)
+    result=runner.run("RESOURCE_REVIEW",now=NOW)
+    assert result["status"]=="OK"
+    assert result["resource_followup"]["reason"]=="provider trial evidence requires alternate routes"
+    assert wakeful.followup[1]==300
+    assert not assistance.calls

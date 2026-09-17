@@ -36,12 +36,12 @@ class ContentResourceScout:
             last = datetime.fromisoformat(str(last_run["observed_at"]).replace("Z", "+00:00"))
             found_last_time = bool(last_run.get("new_opportunity_ids"))
             retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
-            new_friction = any(
-                row.status == "BLOCKED_EXTERNAL"
+            new_replan_signal = any(
+                row.status in {"BLOCKED_EXTERNAL", "NO_VIABLE_MODEL"}
                 and datetime.fromisoformat(row.observed_at.replace("Z", "+00:00")) > last
                 for row in outcomes
             )
-            if not new_friction and now.astimezone(timezone.utc) - last < retry_after:
+            if not new_replan_signal and now.astimezone(timezone.utc) - last < retry_after:
                 return {
                     "status": "NOT_DUE",
                     "last_observed_at": last.isoformat(),
@@ -53,6 +53,8 @@ class ContentResourceScout:
             resource_kind="llm_inference",
             objective="reduce financial burn while preserving useful task quality",
             reason=(
+                "recent provider trial evidence requires alternate routes"
+                if any(row.status == "NO_VIABLE_MODEL" for row in outcomes) else
                 "recent resource acquisition friction requires alternate routes"
                 if adaptive_constraints else
                 "paid-provider concentration exists and no low-cost alternative has trial evidence"
@@ -228,9 +230,52 @@ class ContentResourceScout:
         existing = list(self.scout.model_trials())
         executed_measurements: list[ProviderTrialMeasurement] = []
         provider_rows: list[dict[str, Any]] = []
+        replan_required = False
         for plan in ready:
             api_key = str(os.environ.get(plan.credential_env) or "")
             if not api_key:
+                continue
+            plan_model_rows: dict[str, list[ModelTrial]] = {}
+            for row in existing:
+                if row.opportunity_id == plan.lead_id and row.model_id:
+                    plan_model_rows.setdefault(row.model_id, []).append(row)
+            incompatible_models = {
+                model_id
+                for model_id, rows in plan_model_rows.items()
+                if len(rows) >= max(1, min(int(plan.max_requests), 3))
+                and all(
+                    row.status == "FAILED" and row.error_code in {"HTTP_404", "HTTP_410"}
+                    for row in rows
+                )
+            }
+            if len(incompatible_models) >= 2:
+                refs = tuple(
+                    row.trial_id
+                    for model_id in sorted(incompatible_models)
+                    for row in plan_model_rows[model_id]
+                )
+                self.record_acquisition_outcome(
+                    plan_id=plan.plan_id, lead_id=plan.lead_id, status="NO_VIABLE_MODEL",
+                    now=now, source="RUNTIME",
+                    detail_summary="multiple catalog model targets were incompatible with the current trial protocol",
+                    evidence_refs=refs,
+                )
+                replan_required = True
+                provider_rows.append({
+                    "provider_label": plan.provider_label,
+                    "credential_env": plan.credential_env,
+                    "lead_id": plan.lead_id,
+                    "status": "PROTOCOL_TARGETS_EXHAUSTED",
+                    "request_count": 0,
+                    "completed_count": 0,
+                    "trial_ids": list(refs),
+                    "mean_quality": None,
+                    "mean_latency_ms": None,
+                    "observed_cost_total": None,
+                    "cost_observed_for_all_completed": False,
+                    "models": sorted(incompatible_models),
+                    "error_codes": ["HTTP_404", "HTTP_410"],
+                })
                 continue
             excluded_models: frozenset[str] = frozenset()
             if plan.credential_env == "OPENROUTER_API_KEY":
@@ -247,23 +292,41 @@ class ContentResourceScout:
                         for row in rows
                     )
                 }
-                low_quality_models = set()
+                quality_impossible_models = set()
+                benchmark_count = max(1, min(int(plan.max_requests), 3))
+                quality_floor = 0.75
                 for model_id, rows in model_rows.items():
                     completed = [
                         row for row in rows
                         if row.status == "COMPLETED" and row.quality_score is not None
                     ]
-                    if len(completed) >= 3:
-                        mean_quality = sum(float(row.quality_score) for row in completed) / len(completed)
-                        if mean_quality < 0.75:
-                            low_quality_models.add(model_id)
-                exhausted_models = rate_limited_models | low_quality_models
+                    if len(rows) < benchmark_count:
+                        continue
+                    remaining = max(0, benchmark_count - len(completed))
+                    best_possible = (
+                        sum(float(row.quality_score) for row in completed) + float(remaining)
+                    ) / float(benchmark_count)
+                    if best_possible < quality_floor:
+                        quality_impossible_models.add(model_id)
+                exhausted_models = rate_limited_models | quality_impossible_models
                 if len(exhausted_models) >= 3:
                     error_codes = []
                     if rate_limited_models:
                         error_codes.append("HTTP_429")
-                    if low_quality_models:
-                        error_codes.append("QUALITY_BELOW_FLOOR")
+                    if quality_impossible_models:
+                        error_codes.append("QUALITY_CANNOT_REACH_FLOOR")
+                    refs = tuple(
+                        row.trial_id
+                        for model_id in sorted(exhausted_models)
+                        for row in model_rows[model_id]
+                    )
+                    self.record_acquisition_outcome(
+                        plan_id=plan.plan_id, lead_id=plan.lead_id, status="NO_VIABLE_MODEL",
+                        now=now, source="RUNTIME",
+                        detail_summary="bounded free-tier model candidates exhausted without a viable quality result",
+                        evidence_refs=refs,
+                    )
+                    replan_required = True
                     provider_rows.append({
                         "provider_label": plan.provider_label,
                         "credential_env": plan.credential_env,
@@ -271,7 +334,7 @@ class ContentResourceScout:
                         "status": "FREE_TIER_CANDIDATES_EXHAUSTED",
                         "request_count": 0,
                         "completed_count": 0,
-                        "trial_ids": [],
+                        "trial_ids": list(refs),
                         "mean_quality": None,
                         "mean_latency_ms": None,
                         "observed_cost_total": None,
@@ -385,6 +448,7 @@ class ContentResourceScout:
                 "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
             },
             "selection": selection,
+            "replan_required": replan_required,
         }
 
     def _persist_trial_receipt(self, row: dict[str, Any]) -> None:
