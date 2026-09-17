@@ -48,7 +48,7 @@ def test_build_site_from_json_directory(tmp_path):
     assert 'id="agent-canvas"' not in home
     assert "three@0.180.0" not in home
     assert "rpm-female.glb" not in home
-    assert "What self-learning means here" in about
+    assert "What learning means here" in about
     assert "Learning does not equal publishing authority" in editorial
     assert "What counts as learning" in methodology
 
@@ -77,3 +77,7 @@ def test_article_byline_uses_durable_public_persona(tmp_path, monkeypatch):
     home = (output / "index.html").read_text(encoding="utf-8")
     assert "By <a href=\"/about/\">Ferro · LivingRuntime agent</a>" in article
     assert "Ferro · LivingRuntime Agent" in home
+    about = (output / "about" / "index.html").read_text(encoding="utf-8")
+    assert "About Ferro" in about
+    assert "Part of LivingRuntime" in about
+    assert "Talk to the agent" in about
