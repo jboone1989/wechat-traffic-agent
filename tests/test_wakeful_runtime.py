@@ -169,3 +169,38 @@ def test_outcome_deadline_never_delays_hourly_fallback(tmp_path):
     runtime.schedule_next("CHECK_OUTCOMES", NOW)
     wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "CHECK_OUTCOMES")
     assert wake.at == NOW + timedelta(hours=1)
+
+
+def test_connectome_provider_degrades_without_becoming_a_life_dependency(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_ENABLED", "1")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_SOURCE", str(tmp_path / "missing-connectome.npz"))
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    snapshot = runtime.public_snapshot()
+    assert snapshot["presence"] == "AWAKE"
+    assert snapshot["connectome"]["enabled"] is True
+    assert snapshot["connectome"]["status"] == "DEGRADED"
+    assert snapshot["connectome"]["error"] is not None
+    assert "substrate" not in snapshot["neural_graph"]
+
+
+def test_real_minifly_shadow_substrate_is_separate_from_semantic_ports(tmp_path, monkeypatch):
+    import pytest
+    pytest.importorskip("numpy")
+    pytest.importorskip("scipy")
+    pytest.importorskip("flydrones")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_ENABLED", "1")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_SOURCE", "minifly")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE", "12")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_STIMULUS_MS", "10")
+    monkeypatch.setenv("CONTENT_FLY_CONNECTOME_SETTLE_MS", "20")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    runtime.emit_network_error(code="shadow-test", observed_at=now)
+    snapshot = runtime.public_snapshot()
+    substrate = snapshot["neural_graph"]["substrate"]
+    assert len(snapshot["neural_graph"]["neurons"]) == 8
+    assert substrate["neuron_count"] == 850
+    assert substrate["connection_count"] == 4_928
+    assert substrate["lifecycle"] == "SHADOW"
+    assert substrate["recent_bursts"][-1]["synaptic_events"] > 0
+    assert snapshot["connectome"]["status"] == "SHADOW_ACTIVE"

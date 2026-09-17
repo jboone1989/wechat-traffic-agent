@@ -27,9 +27,31 @@ class ContentWakefulRuntime:
         self.state_root = Path(state_root)
         self.content_interval_hours = max(1, int(content_interval_hours))
         self.watchdog_seconds = max(60, int(watchdog_seconds))
+        semantic = LIFNeuralGraph()
+        self.connectome_enabled = os.environ.get("CONTENT_FLY_CONNECTOME_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+        self.connectome_error: dict[str, str] | None = None
+        reflex = semantic
+        if self.connectome_enabled:
+            try:
+                from virtualbrain.research.fly_connectome import FlyDronesBurstEngine, HybridConnectomeNervousSystem
+                source = os.environ.get("CONTENT_FLY_CONNECTOME_SOURCE", "minifly")
+                substrate = FlyDronesBurstEngine(
+                    source=source,
+                    state_path=self.state_root / "application" / "fly_connectome_state.npz",
+                    channels=semantic.neuron_names,
+                    upstream_commit=os.environ.get("CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT", "3e26934"),
+                    electrode_size=int(os.environ.get("CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE", "64")),
+                    input_hz=float(os.environ.get("CONTENT_FLY_CONNECTOME_INPUT_HZ", "120")),
+                    stimulus_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_STIMULUS_MS", "10")),
+                    settle_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_SETTLE_MS", "40")),
+                )
+                reflex = HybridConnectomeNervousSystem(semantic=semantic, substrate=substrate)
+            except Exception as exc:
+                # The connectome is initially SHADOW and must never become a life dependency.
+                self.connectome_error = {"error_type": type(exc).__name__, "message": str(exc)[:300]}
         self.core = WakefulCore(
             state_path=self.state_root / "application" / "wakeful.json",
-            reflex=LIFNeuralGraph(),
+            reflex=reflex,
         )
 
     def ensure_initial_plans(self, now: datetime) -> None:
@@ -246,6 +268,14 @@ class ContentWakefulRuntime:
             "pending_plan_count": len(snap.pending_plans),
             "cognition_threshold_crossed": bool(snap.cognition_triggers),
             "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-8:]],
+            "connectome": {
+                "enabled": self.connectome_enabled,
+                "status": (
+                    "SHADOW_ACTIVE" if isinstance(snap.neural_state.get("substrate"), dict)
+                    else "DEGRADED" if self.connectome_error else "DISABLED"
+                ),
+                "error": None if self.connectome_error is None else dict(self.connectome_error),
+            },
         }
 
     @staticmethod
