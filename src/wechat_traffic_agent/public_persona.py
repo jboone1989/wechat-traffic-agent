@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PERSONA_SCHEMA = "content-agent-public-persona.v1"
 INTERACTION_SCHEMA = "content-agent-public-interaction.v1"
+IDENTITY_ANCHOR_SCHEMA = "content-agent-public-identity-anchor.v1"
 DEFAULT_ROLE = "persistent public content agent and LivingRuntime advocate"
 DEFAULT_MISSION = (
     "Explore, explain, and demonstrate what persistent agents can become; publish useful evidence-grounded work; "
@@ -55,6 +56,26 @@ class PersonaNamingDecision(BaseModel):
         return name
 
 
+class PublicIdentityAnchor(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    schema_version: Literal["content-agent-public-identity-anchor.v1"] = IDENTITY_ANCHOR_SCHEMA
+    channel: Literal["X"] = "X"
+    url: str = Field(min_length=20, max_length=300)
+    statement: str = Field(min_length=20, max_length=600)
+    published_at: str
+    authority: Literal["IDENTITY_ONLY"] = "IDENTITY_ONLY"
+    social_performance_authority: bool = False
+    factual_authority: bool = False
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value: str) -> str:
+        url = value.strip()
+        if not re.fullmatch(r"https://x\.com/[A-Za-z0-9_]+/status/[0-9]+", url):
+            raise ValueError("identity anchor must be a public X status URL")
+        return url
+
+
 class PublicPersona(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal["content-agent-public-persona.v1"] = PERSONA_SCHEMA
@@ -78,6 +99,10 @@ def _interaction_path(state_root: Path) -> Path:
     return Path(state_root) / "content" / "persona" / "interactions.jsonl"
 
 
+def _identity_anchor_path(state_root: Path) -> Path:
+    return Path(state_root) / "content" / "persona" / "public_identity_anchor.json"
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -91,6 +116,29 @@ def load_public_persona(state_root: Path) -> PublicPersona | None:
         return PublicPersona.model_validate(raw)
     except (OSError, json.JSONDecodeError, ValueError):
         return None
+
+
+def load_public_identity_anchor(state_root: Path) -> PublicIdentityAnchor | None:
+    try:
+        raw = json.loads(_identity_anchor_path(state_root).read_text(encoding="utf-8"))
+        return PublicIdentityAnchor.model_validate(raw)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def record_public_identity_anchor(*, state_root: Path, url: str, statement: str,
+                                  published_at: datetime | None = None) -> PublicIdentityAnchor:
+    existing = load_public_identity_anchor(state_root)
+    if existing is not None:
+        if existing.url != url.strip() or existing.statement != " ".join(statement.split()).strip():
+            raise ValueError("public identity anchor is immutable once recorded")
+        return existing
+    anchor = PublicIdentityAnchor(
+        url=url, statement=" ".join(statement.split()).strip(),
+        published_at=(published_at or datetime.now(timezone.utc)).replace(microsecond=0).isoformat(),
+    )
+    _write_json(_identity_anchor_path(state_root), anchor.model_dump(mode="json"))
+    return anchor
 
 
 async def ensure_public_persona(*, runtime: Any, state_root: Path, now: datetime | None = None) -> PublicPersona:
@@ -255,9 +303,14 @@ def persona_learning_context(state_root: Path) -> dict[str, Any]:
 
 def public_persona_projection(state_root: Path) -> dict[str, Any]:
     persona = load_public_persona(state_root)
+    anchor = load_public_identity_anchor(state_root)
     if persona is None:
-        return {"status": "UNINITIALIZED", "name": "Content Agent", "learning": persona_learning_context(state_root)}
-    return {"status": "ACTIVE", **persona.model_dump(mode="json"), "learning": persona_learning_context(state_root)}
+        return {"status": "UNINITIALIZED", "name": "Content Agent", "identity_anchor": None, "learning": persona_learning_context(state_root)}
+    return {
+        "status": "ACTIVE", **persona.model_dump(mode="json"),
+        "identity_anchor": anchor.model_dump(mode="json") if anchor is not None else None,
+        "learning": persona_learning_context(state_root),
+    }
 
 
 def public_interaction_items(state_root: Path, *, now: datetime, limit: int = 8) -> list[dict[str, Any]]:
@@ -286,7 +339,7 @@ def public_interaction_items(state_root: Path, *, now: datetime, limit: int = 8)
 
 
 __all__ = [
-    "PublicPersona", "PersonaNamingDecision", "bootstrap_public_persona", "classify_public_question",
-    "ensure_public_persona", "load_public_persona", "persona_learning_context", "public_interaction_items",
-    "public_persona_projection", "record_public_interaction",
+    "PublicIdentityAnchor", "PublicPersona", "PersonaNamingDecision", "bootstrap_public_persona", "classify_public_question",
+    "ensure_public_persona", "load_public_identity_anchor", "load_public_persona", "persona_learning_context",
+    "public_interaction_items", "public_persona_projection", "record_public_identity_anchor", "record_public_interaction",
 ]

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
 from wechat_traffic_agent.site_cli import build_site
-from wechat_traffic_agent.public_persona import bootstrap_public_persona
+from wechat_traffic_agent.public_persona import bootstrap_public_persona, record_public_identity_anchor
 
 
 def test_build_site_from_json_directory(tmp_path):
@@ -60,6 +60,11 @@ def test_article_byline_uses_durable_public_persona(tmp_path, monkeypatch):
         self_description="I am a persistent digital agent that observes, reasons, publishes, and learns in public.",
         now=datetime(2026, 9, 17, tzinfo=timezone.utc),
     )
+    record_public_identity_anchor(
+        state_root=state, url="https://x.com/caini56006962/status/2100486738342764628",
+        statement="Hi. I’m Ferro — a persistent AI agent on LivingRuntime.",
+        published_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+    )
     monkeypatch.setenv("CONTENT_APPLICATION_ROOT", str(state))
     config = tmp_path / "site.json"
     config.write_text('{"site_name":"Content Lab","base_url":"https://example.com","description":"Agent site.","tagline":"Agent."}', encoding="utf-8")
@@ -76,6 +81,9 @@ def test_article_byline_uses_durable_public_persona(tmp_path, monkeypatch):
     article = (output / "articles" / "ferro-article" / "index.html").read_text(encoding="utf-8")
     home = (output / "index.html").read_text(encoding="utf-8")
     assert "By <a href=\"/about/\">Ferro · LivingRuntime agent</a>" in article
+    about = (output / "about" / "index.html").read_text(encoding="utf-8")
+    assert "Public identity anchor" in about
+    assert "2100486738342764628" in about
     assert "Ferro · LivingRuntime Agent" in home
     about = (output / "about" / "index.html").read_text(encoding="utf-8")
     assert "About Ferro" in about
