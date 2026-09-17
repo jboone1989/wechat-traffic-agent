@@ -117,6 +117,8 @@ def test_invalid_fractional_clicks_fail_closed(tmp_path):
 
 def test_runner_refreshes_gsc_before_content_strategy_selection():
     from pathlib import Path
-    text = (Path(__file__).resolve().parents[1] / "scripts/run_content_agent.py").read_text(encoding="utf-8")
-    assert "GoogleSearchConsoleCollector" in text
-    assert text.index("gsc_collector.collect(now=now)") < text.index("continuous_loop.run_once(now=now")
+    root = Path(__file__).resolve().parents[1]
+    entrypoint = (root / "scripts/run_content_agent.py").read_text(encoding="utf-8")
+    runner = (root / "src/wechat_traffic_agent/wakeful_tasks.py").read_text(encoding="utf-8")
+    assert "GoogleSearchConsoleCollector" in entrypoint
+    assert runner.index('gsc_collector.collect(now=now)') < runner.index('continuous_loop.run_once(')

@@ -118,13 +118,20 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         talk = client.get("/talk/")
 
     assert live.status_code == 200
-    assert "LIVE · PERSISTENT RUNTIME" in live.text
+    assert "LIVE · WAKEFUL CORE" in live.text
+    assert "NEXT INTENTIONAL WAKE" in live.text
+    assert "WHAT COULD WAKE DEEPER COGNITION SOONER" in live.text
+    assert "COGNITION THRESHOLD" in live.text
     assert "WHY THIS IS MORE THAN A TIMER" in live.text
     assert "A mind that survives the call" in live.text
     assert "Not every wake becomes generation" in live.text
     assert "The world can say “nothing useful”" in live.text
     assert "Resources constrain behavior" in live.text
     assert "What actually happened" in live.text
+    assert "NERVOUS SYSTEM" in live.text
+    assert "FIXED WIRING" in live.text
+    assert "CONTROL OUTPUTS" in live.text
+    assert "Plasticity boundary" in live.text
     assert "Open diagnostics & history" in live.text
     assert "<details class=\"details\">" in live.text
     assert "/api/agent/stream" in live.text
@@ -470,3 +477,31 @@ def test_live_activity_renders_newest_event_first(tmp_path):
     assert "box.prepend(eventNode(e))" in live.text
     assert "box.lastElementChild.remove()" in live.text
     assert "box.scrollTop=0" in live.text
+
+
+def test_wakeful_presence_keeps_live_online_without_recent_cognition_tick(tmp_path):
+    root = _state(tmp_path)
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(microsecond=0).isoformat()
+    _write(root / "application/health.json", {
+        "as_of_time": old, "status": "OK", "subject_id": "content-agent",
+        "subject_tick": 12, "runtime_cycle": 34,
+    })
+
+    class _Wakeful:
+        def public_snapshot(self):
+            return {
+                "presence": "AWAKE", "state": "WAITING",
+                "next_wake_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+                "next_wake_reason": "review matured website outcomes",
+                "attention": {"curiosity": 0.21}, "resource_pressure": "NORMAL",
+                "last_cognition_at": None, "last_action_at": None,
+                "pending_plan_count": 4, "cognition_threshold_crossed": False,
+                "recent_stimulus_kinds": [],
+            }
+
+    snapshot = public_agent_snapshot(root, _Application(), wakeful=_Wakeful())
+    assert snapshot["agent"]["online"] is True
+    assert snapshot["activity"]["runtime_cadence_seconds"] is None
+    assert snapshot["life"]["presence"]["runtime_check_seconds"] is None
+    assert snapshot["life"]["presence"]["wakeful"]["state"] == "WAITING"
+    assert snapshot["life"]["presence"]["wakeful"]["next_wake_reason"] == "review matured website outcomes"
