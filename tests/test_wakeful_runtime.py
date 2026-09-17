@@ -137,3 +137,35 @@ def test_prediction_feedback_survives_content_runtime_restart(tmp_path):
     restored = ContentWakefulRuntime(state_root=tmp_path).public_snapshot()
     assert restored["neural_graph"] == snapshot["neural_graph"]
     assert restored["neural_feedback"][-1]["outcome_id"].endswith(":4h")
+
+
+def _write_action_prediction_cycle(root, *, published_at):
+    import json
+    cycle = root / "content" / "continuous" / "cycles" / "v2-deadline"
+    cycle.mkdir(parents=True)
+    (cycle / "action_prediction.json").write_text("{}", encoding="utf-8")
+    (cycle / "publication.json").write_text(json.dumps({
+        "outcome_attribution": {"published_at": published_at.isoformat()}
+    }), encoding="utf-8")
+    outcomes = cycle / "action_prediction_outcomes"
+    outcomes.mkdir()
+    (outcomes / "1h.json").write_text("{}", encoding="utf-8")
+    return cycle
+
+
+def test_outcome_check_wakes_at_known_maturity_before_hourly_fallback(tmp_path):
+    cycle = _write_action_prediction_cycle(tmp_path, published_at=NOW - timedelta(hours=3, minutes=57))
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_next("CHECK_OUTCOMES", NOW)
+    wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "CHECK_OUTCOMES")
+    assert wake.at == NOW + timedelta(minutes=3)
+    assert not (cycle / "action_prediction_outcomes" / "4h.json").exists()
+
+
+def test_outcome_deadline_never_delays_hourly_fallback(tmp_path):
+    cycle = _write_action_prediction_cycle(tmp_path, published_at=NOW - timedelta(hours=3, minutes=57))
+    (cycle / "action_prediction_outcomes" / "4h.json").write_text("{}", encoding="utf-8")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_next("CHECK_OUTCOMES", NOW)
+    wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "CHECK_OUTCOMES")
+    assert wake.at == NOW + timedelta(hours=1)
