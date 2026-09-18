@@ -369,8 +369,6 @@ class ContentResourceEconomy:
             })
         if settled:
             self.mind.persist_resource_awareness()
-            if force_override is not None:
-                self._consume_force_wake_override(now=now, decision=decision)
         return {
             "status": "SETTLED" if settled else "NO_NEW_SETTLEMENTS",
             "settled": settled,
@@ -670,6 +668,8 @@ class ContentResourceEconomy:
                 evidence_refs=evidence,
             ))
             self.mind.persist_resource_awareness()
+            if force_override is not None:
+                self._consume_force_wake_override(now=now, decision=decision)
         return {
             "status": "DECIDED",
             "proposal_id": proposal_id,
