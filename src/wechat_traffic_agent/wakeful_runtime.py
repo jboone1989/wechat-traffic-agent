@@ -120,6 +120,18 @@ class ContentWakefulRuntime:
             wake_id=wake_id, at=at, reason=self._reason(task), task=task,
         ))
 
+    def operator_force_wake(self, now: datetime) -> None:
+        """Schedule one auditable operator-authorized cognition wake despite CRITICAL pressure."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("operator force wake time requires timezone awareness")
+        self.core.schedule(PlannedWake(
+            wake_id="content:OPERATOR_FORCE_CONTENT_COGNITION",
+            at=now,
+            reason="authenticated operator authorized one content cycle",
+            task="CONTENT_COGNITION",
+            relevant_refs=("operator-force-wake",),
+        ))
+
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
         delay = max(60, min(int(seconds), 3600))
         self.core.schedule(PlannedWake(
