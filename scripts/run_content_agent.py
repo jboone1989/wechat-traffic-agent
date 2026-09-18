@@ -73,7 +73,16 @@ def main() -> int:
     from wechat_traffic_agent.resource_scout import ContentResourceScout
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
     private_notifier = operator_notifier()
-    human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
+    human_assistance = HumanAssistanceService(
+        state_root=state_root,
+        notifier=private_notifier,
+        evolution_runtime=app.domain_runtime,
+    )
+    evolution_backfill = human_assistance.backfill_evolution_observations(
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+    )
+    if evolution_backfill.get("recorded") or evolution_backfill.get("failed"):
+        print(json.dumps({"human_assistance_evolution_backfill": evolution_backfill}, sort_keys=True))
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)

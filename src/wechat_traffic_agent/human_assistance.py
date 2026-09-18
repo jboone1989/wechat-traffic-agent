@@ -88,9 +88,16 @@ def operator_notifier():
 
 
 class HumanAssistanceService:
-    def __init__(self, *, state_root: Path, notifier: WeComNotifier | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        notifier: WeComNotifier | None = None,
+        evolution_runtime: Any | None = None,
+    ) -> None:
         self.root = Path(state_root) / "application" / "human_assistance"
         self.notifier = notifier or WeComNotifier()
+        self.evolution_runtime = evolution_runtime
 
     def request(self, *, kind: str, summary: str, requested_action: str, now: datetime,
                 urgency: str = "NORMAL", details: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -109,10 +116,16 @@ class HumanAssistanceService:
         path = self.root / (request_id.replace(":", "-") + ".json")
         if path.exists():
             row = json.loads(path.read_text(encoding="utf-8"))
+            changed = False
             if row.get("delivery_status") != "SENT" and self.notifier.configured:
                 delivery = self.notifier.send_text(self._message(row))
                 row["delivery_status"] = delivery["status"]
                 row["last_delivery_at"] = created_at
+                changed = True
+            if row.get("evolution_observation_status") != "RECORDED":
+                row = self._record_evolution(row, now=now)
+                changed = True
+            if changed:
                 self._write(path, row)
             return row
         row = {
@@ -131,8 +144,81 @@ class HumanAssistanceService:
             delivery = self.notifier.send_text(self._message(row))
             row["delivery_status"] = delivery["status"]
             row["last_delivery_at"] = created_at
+        row = self._record_evolution(row, now=now)
         self._write(path, row)
         return row
+
+    def backfill_evolution_observations(self, *, now: datetime) -> dict[str, Any]:
+        if not self.root.exists():
+            return {"status": "OK", "recorded": 0, "failed": 0}
+        recorded = 0
+        failed = 0
+        for path in sorted(self.root.glob("human-request-*.json")):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if row.get("evolution_observation_status") == "RECORDED":
+                continue
+            updated = self._record_evolution(row, now=now)
+            if updated.get("evolution_observation_status") == "RECORDED":
+                recorded += 1
+            elif updated.get("evolution_observation_status") == "FAILED":
+                failed += 1
+            self._write(path, updated)
+        return {"status": "OK", "recorded": recorded, "failed": failed}
+
+    def _record_evolution(self, row: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+        updated = dict(row)
+        runtime = self.evolution_runtime
+        observer = getattr(runtime, "observe_evolution_fact", None)
+        if not callable(observer):
+            updated["evolution_observation_status"] = "UNAVAILABLE"
+            return updated
+        details = updated.get("details") if isinstance(updated.get("details"), dict) else {}
+        kind = str(updated.get("kind") or "HUMAN_ASSISTANCE").upper()
+        urgency = str(updated.get("urgency") or "NORMAL").upper()
+        if kind == "MODEL_RESOURCE_ACCESS" and details.get("credential_env"):
+            subject = "protected-credential-handoff"
+            recurrence_key = "HUMAN_DEPENDENCY:protected-credential-handoff"
+            need_hint = (
+                "Reduce recurring human dependency for protected credential "
+                "handoff without exposing secret values"
+            )
+        else:
+            subject = kind.lower().replace("_", "-")
+            recurrence_key = f"HUMAN_DEPENDENCY:{subject}"
+            need_hint = f"Reduce recurring human dependency around '{subject}'"
+        severity = {"NORMAL": 0.50, "HIGH": 0.75, "CRITICAL": 0.95}.get(
+            urgency, 0.50
+        )
+        try:
+            fact = observer(
+                kind="HUMAN_DEPENDENCY",
+                subject=subject,
+                summary=f"Human assistance was required for {subject}",
+                severity=severity,
+                evidence_refs=[str(updated.get("request_id") or "")],
+                recurrence_key=recurrence_key,
+                need_hint=need_hint,
+                metadata={
+                    "request_kind": kind,
+                    "credential_env": str(details.get("credential_env") or ""),
+                    "provider_label": str(details.get("provider_label") or ""),
+                },
+            )
+            persist = getattr(runtime, "persist", None)
+            if callable(persist):
+                persist()
+            updated["evolution_observation_status"] = "RECORDED"
+            fact_id = getattr(fact, "fact_id", None)
+            if fact_id:
+                updated["evolution_fact_id"] = str(fact_id)
+            updated["evolution_observed_at"] = _iso(now)
+        except Exception as exc:  # evolution must never block a human request
+            updated["evolution_observation_status"] = "FAILED"
+            updated["evolution_error_type"] = type(exc).__name__
+        return updated
 
     def fulfill_matching(
         self, *, kind: str, detail_key: str, detail_value: str, now: datetime,
