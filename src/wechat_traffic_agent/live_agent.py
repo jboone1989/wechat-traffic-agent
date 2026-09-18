@@ -921,6 +921,40 @@ class LiveAgentService:
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
             return JSONResponse(operator_console.status(), headers={"Cache-Control": "no-store"})
 
+        def schedule_operator_resource_onboarding() -> bool:
+            scheduler = getattr(self.wakeful, "schedule_resource_followup", None)
+            if not callable(scheduler):
+                return False
+            scheduler(datetime.now(timezone.utc), seconds=5)
+            return True
+
+        async def operator_resource_decision(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                decision = str(body.get("decision") or "").strip().upper() if isinstance(body, dict) else ""
+                if decision not in {"APPROVE", "REJECT"}:
+                    raise ValueError("decision must be APPROVE or REJECT")
+                result = operator_console.authorize_resource_request(
+                    str(request.path_params["request_id"]),
+                    approved=(decision == "APPROVE"),
+                )
+                result["onboarding_scheduled"] = (
+                    schedule_operator_resource_onboarding() if decision == "APPROVE" else False
+                )
+            except FileNotFoundError:
+                return JSONResponse({"error": "resource_request_not_found"}, status_code=404)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception:
+                return JSONResponse({"error": "resource_decision_failed"}, status_code=500)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         async def operator_store_secret(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -932,6 +966,7 @@ class LiveAgentService:
                 body = await request.json()
                 value = str(body.get("value") or "") if isinstance(body, dict) else ""
                 result = operator_console.store_secret(str(request.path_params["env_name"]), value)
+                result["onboarding_scheduled"] = schedule_operator_resource_onboarding()
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except Exception:
@@ -984,6 +1019,7 @@ class LiveAgentService:
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
+                Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
                 Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
                 Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
                 Route("/operator/api/logout", operator_logout, methods=["POST"]),

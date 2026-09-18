@@ -39,10 +39,13 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 </section>
 
 <section id="dash" class="hidden">
-<div class="row"><h2 class="grow">LLM survival resources</h2><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
+<div class="row"><h2 class="grow">Survival resources</h2><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
 <div id="flash"></div>
 
 <div id="summary" class="grid"></div>
+
+<h2>Resource domains</h2>
+<div id="domains" class="grid"></div>
 
 <h2>VirtualBrain routing</h2>
 <div id="routing" class="card"></div>
@@ -54,7 +57,8 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 <p class="muted">Secret values are write-only. Quota, reset and expiry metadata are non-secret control data used by the Survival Router.</p>
 <div id="secrets" class="grid"></div>
 
-<h2>Requests from Ferro</h2>
+<h2>Resource requests & lifecycle</h2>
+<p class="muted">A resource must be explicitly authorized before credential provisioning. Provider onboarding is scheduled immediately after approval or credential handoff.</p>
 <div id="requests" class="stack"></div>
 </section>
 
@@ -82,6 +86,17 @@ function renderSummary(data){
  const p=r.policy||{};root.append(metricCard('VB pressure',p.pressure||'UNKNOWN','mode '+fmt(p.routing_mode)));
  root.append(metricCard('Paid reserve',fmt(p.paid_reserve_floor), 'available '+fmt(p.paid_available_funds)));
  const latest=r.latest_route||{};root.append(metricCard('Latest route',latest.result||'NO ROUTE',fmt(latest.selected_resource_id)));
+}
+function renderDomains(data){
+ const rows=((data.survival_resources||{}).domains||[]),root=el('domains');root.replaceChildren();
+ if(!rows.length){root.append(node('div','No survival resource observations.','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card');const head=node('div',undefined,'row');head.append(node('h3',row.domain,'grow'));
+  const kind=(row.status==='HEALTHY'||row.status==='ACTIVE'||row.status==='LOCAL_PRIMARY')?'ok':row.status==='PRESSURE'?'bad':'pending';head.append(badge(row.status||'UNKNOWN',kind));c.append(head);
+  if(row.domain==='LLM')c.append(node('p',fmt(row.resource_count)+' resources · '+fmt(row.free_count)+' free · pressure '+fmt(row.pressure),'muted'));
+  if(row.domain==='STORAGE')c.append(node('p','free '+fmt(row.free_gib)+' GiB / '+fmt(row.total_gib)+' GiB · used '+fmt(row.used_ratio),'muted'));
+  if(row.domain==='COMPUTE')c.append(node('p','CPU '+fmt(row.cpu_count)+' · load '+fmt(row.load_1m)+' · memory free '+fmt(row.memory_available_gib)+' GiB · used '+fmt(row.memory_used_ratio),'muted'));
+  if(row.domain==='HOSTING')c.append(node('p','Current body: '+fmt(row.status)+' · relocation '+fmt(row.relocation),'muted'));
+  root.append(c)}
 }
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();
@@ -115,9 +130,19 @@ function renderResources(data){
 }
 function renderRequests(rows){
  const root=el('requests');root.replaceChildren();
- if(!rows.length){root.append(node('div','No pending credential requests.','card muted'));return}
- for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.provider_label,'grow'),badge(row.urgency,row.urgency==='HIGH'?'bad':'pending'));c.append(head,node('p',row.summary));
-  if(row.signup_url&&row.signup_url.startsWith('https://')){const a=node('a','Open official signup');a.href=row.signup_url;a.target='_blank';a.rel='noopener';c.append(a)}root.append(c)}
+ if(!rows.length){root.append(node('div','No resource requests yet.','card muted'));return}
+ for(const row of rows){
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
+  head.append(node('h3',row.provider_label+' · '+row.credential_env,'grow'));
+  const auth=row.authorization_status||'PENDING';head.append(badge(auth,auth==='APPROVED'||auth==='LEGACY_APPROVED'?'ok':auth==='REJECTED'?'bad':'pending'));c.append(head,node('p',row.summary));
+  const flow=node('div',undefined,'row');for(const stage of (row.stages||[])){const complete=stage.status==='COMPLETE'||stage.status==='APPROVED'||stage.status==='LEGACY_APPROVED';const bad=stage.status==='REJECTED';flow.append(badge(stage.stage+' · '+stage.status,bad?'bad':complete?'ok':'pending'))}c.append(flow);
+  const detail=node('p');detail.textContent='trials '+fmt(row.completed_trial_count)+' · active models '+fmt((row.active_models||[]).join(', '))+' · used '+(row.used?'yes':'no');c.append(detail);
+  const actions=node('div',undefined,'row');
+  if(auth==='PENDING'){const approve=node('button','Approve');approve.onclick=async()=>{approve.disabled=true;try{const out=await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash(out.credential_configured?'Approved; onboarding scheduled.':'Approved. Configure the credential below; onboarding will start immediately after save.');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};
+   const reject=node('button','Reject','ghost');reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});flash('Resource request rejected.');await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};actions.append(approve,reject)}
+  if(row.signup_url&&row.signup_url.startsWith('https://')){const a=node('a','Open official signup');a.href=row.signup_url;a.target='_blank';a.rel='noopener';actions.append(a)}
+  c.append(actions);root.append(c)
+ }
 }
 function field(labelText,input){const l=node('label');l.append(node('span',labelText),input);return l}
 function input(type,placeholder,value=''){const x=document.createElement('input');x.type=type;x.placeholder=placeholder;x.value=value??'';return x}
@@ -141,7 +166,7 @@ function renderSecrets(rows){
   root.append(c);
  }
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.pending_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};

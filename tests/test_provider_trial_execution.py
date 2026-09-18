@@ -15,6 +15,10 @@ def test_human_request_can_be_fulfilled_by_verified_trial_evidence(tmp_path):
         now=NOW,
         details={"credential_env": "NVIDIA_API_KEY"},
     )
+    service.authorize_request(
+        row["request_id"], approved=True, now=NOW,
+        evidence_refs=("operator-console:test-approval",),
+    )
     resolved = service.fulfill_matching(
         kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
         detail_value="NVIDIA_API_KEY", now=NOW,

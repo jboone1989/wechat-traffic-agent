@@ -117,7 +117,9 @@ class ContentWakefulRuntime:
         ))
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
-        delay = max(60, min(int(seconds), 3600))
+        # Operator-authorized resource onboarding is event-driven and should not
+        # wait for the normal hourly review. Autonomous retries still pass 300s.
+        delay = max(5, min(int(seconds), 3600))
         self.core.schedule(PlannedWake(
             wake_id="content:RESOURCE_REVIEW",
             at=now + timedelta(seconds=delay),

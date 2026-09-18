@@ -80,7 +80,7 @@ def test_operator_auth_uses_short_lived_server_session(tmp_path):
     assert not auth.valid(session, now=NOW + timedelta(minutes=2))
 
 
-def test_store_secret_fulfills_matching_human_request(tmp_path):
+def test_resource_request_requires_explicit_authorization_before_secret(tmp_path):
     request = HumanAssistanceService(state_root=tmp_path).request(
         kind="MODEL_RESOURCE_ACCESS",
         summary="Cerebras credential needed",
@@ -90,16 +90,37 @@ def test_store_secret_fulfills_matching_human_request(tmp_path):
             "credential_env": "CEREBRAS_API_KEY",
             "provider_label": "Cerebras",
             "signup_url": "https://cloud.cerebras.ai/",
+            "lead_id": "provider-lead:cerebras-test",
         },
     )
     console = OperatorConsole(tmp_path)
+    with pytest.raises(ValueError, match="approve the resource request"):
+        console.store_secret("CEREBRAS_API_KEY", "csk-test-secret-value", now=NOW)
+
+    approval = console.authorize_resource_request(request["request_id"], approved=True, now=NOW)
+    assert approval["authorization_status"] == "APPROVED"
     result = console.store_secret("CEREBRAS_API_KEY", "csk-test-secret-value", now=NOW)
 
     assert request["request_id"] in result["fulfilled_request_ids"]
     saved = json.loads(next((tmp_path / "application" / "human_assistance").glob("*.json")).read_text())
+    assert saved["authorization_status"] == "APPROVED"
     assert saved["resolution_status"] == "FULFILLED"
     assert saved["resolution_evidence_refs"] == ["secret-configured:CEREBRAS_API_KEY"]
     assert "csk-test-secret-value" not in json.dumps(saved)
+
+
+def test_resource_request_can_be_rejected_and_decision_is_immutable(tmp_path):
+    request = HumanAssistanceService(state_root=tmp_path).request(
+        kind="MODEL_RESOURCE_ACCESS", summary="NVIDIA access", requested_action="authorize",
+        now=NOW, details={"credential_env":"NVIDIA_API_KEY","provider_label":"NVIDIA NIM"},
+    )
+    console = OperatorConsole(tmp_path)
+    rejected = console.authorize_resource_request(request["request_id"], approved=False, now=NOW)
+    assert rejected["authorization_status"] == "REJECTED"
+    saved = json.loads(next((tmp_path / "application" / "human_assistance").glob("*.json")).read_text())
+    assert saved["resolution_status"] == "REJECTED"
+    with pytest.raises(ValueError, match="already rejected"):
+        console.authorize_resource_request(request["request_id"], approved=True, now=NOW)
 
 
 def test_operator_http_flow_never_echoes_secret(tmp_path, monkeypatch):
@@ -142,6 +163,109 @@ def test_operator_http_flow_never_echoes_secret(tmp_path, monkeypatch):
         row["env_name"] == "CEREBRAS_API_KEY" and row["configured"]
         for row in status.json()["secrets"]
     )
+
+
+def test_resource_lifecycle_projects_request_through_verified_active_and_used(tmp_path, monkeypatch):
+    request = HumanAssistanceService(state_root=tmp_path).request(
+        kind="MODEL_RESOURCE_ACCESS", summary="NVIDIA credential needed", requested_action="authorize",
+        now=NOW, details={
+            "credential_env":"NVIDIA_API_KEY", "provider_label":"NVIDIA NIM",
+            "lead_id":"provider-lead:nvidia-test",
+        },
+    )
+    console = OperatorConsole(tmp_path)
+    console.authorize_resource_request(request["request_id"], approved=True, now=NOW)
+    console.store_secret("NVIDIA_API_KEY", "nvapi-test-secret", now=NOW)
+
+    discovery = tmp_path / "application" / "resource_discovery"
+    (discovery / "provider_verifications").mkdir(parents=True, exist_ok=True)
+    (discovery / "trial_receipts").mkdir(parents=True, exist_ok=True)
+    (discovery / "provider_verifications" / "nvidia-test.json").write_text(json.dumps({
+        "lead_id":"provider-lead:nvidia-test", "status":"VERIFIED_RECURRING_FREE",
+        "observed_at":"2026-09-18T00:01:00+00:00",
+    }))
+    (discovery / "trial_receipts" / "trial.json").write_text(json.dumps({
+        "lead_id":"provider-lead:nvidia-test", "credential_env":"NVIDIA_API_KEY",
+        "status":"COMPLETED", "model":"nvidia/test-model",
+        "observed_at":"2026-09-18T00:02:00+00:00",
+    }))
+    pool = tmp_path / "application" / "llm_resource_pool"
+    (pool / "runtime").mkdir(parents=True, exist_ok=True)
+    (pool / "resources.json").write_text(json.dumps({"resources":[{
+        "resource_id":"llm-resource:nvidia:test", "provider_label":"NVIDIA NIM",
+        "credential_env":"NVIDIA_API_KEY", "model":"nvidia/test-model",
+        "pricing_class":"FREE", "lifecycle":"RECURRING_FREE", "reserve":False,
+    }]}))
+    (pool / "runtime" / "health.json").write_text(json.dumps({"resources":{
+        "llm-resource:nvidia:test": {"successes":2,"failures":0,"last_success_at":"2026-09-18T00:03:00+00:00"}
+    }}))
+    (pool / "runtime" / "latest.json").write_text(json.dumps({
+        "selected_resource_id":"llm-resource:nvidia:test","result":"COMPLETED",
+        "observed_at":"2026-09-18T00:03:00+00:00",
+    }))
+
+    row = OperatorConsole(tmp_path).resource_requests()[0]
+    assert row["authorization_status"] == "APPROVED"
+    assert row["credential_configured"] is True
+    assert row["verification_status"] == "VERIFIED_RECURRING_FREE"
+    assert row["completed_trial_count"] == 1
+    assert row["active_resource_ids"] == ["llm-resource:nvidia:test"]
+    assert row["used"] is True
+    assert [stage["status"] for stage in row["stages"]] == [
+        "COMPLETE", "APPROVED", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE"
+    ]
+
+
+def test_survival_status_unifies_llm_storage_compute_and_hosting(tmp_path):
+    status = OperatorConsole(tmp_path).survival_status()
+    domains = {row["domain"]: row for row in status["domains"]}
+    assert set(domains) == {"LLM", "STORAGE", "COMPUTE", "HOSTING"}
+    assert domains["STORAGE"]["total_gib"] > 0
+    assert domains["COMPUTE"]["cpu_count"] >= 1
+    assert domains["HOSTING"]["status"] == "LOCAL_PRIMARY"
+
+
+def test_operator_http_approve_then_secret_schedules_immediate_onboarding(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    request = HumanAssistanceService(state_root=tmp_path).request(
+        kind="MODEL_RESOURCE_ACCESS", summary="NVIDIA access", requested_action="authorize",
+        now=NOW, details={"credential_env":"NVIDIA_API_KEY","provider_label":"NVIDIA NIM"},
+    )
+
+    class Wakeful:
+        def __init__(self): self.calls=[]
+        def schedule_resource_followup(self, now, *, seconds=300): self.calls.append((now,seconds))
+
+    wakeful=Wakeful()
+    service=LiveAgentService(state_root=tmp_path,application=None,backend=None,mind=None,wakeful=wakeful)
+    client=TestClient(service._app())
+    token=(tmp_path/"secrets/operator-console.token").read_text().strip()
+    assert client.post(
+        "/operator/api/session", headers={"X-Operator-Request":"1"}, json={"token":token}
+    ).status_code==200
+
+    blocked=client.post(
+        "/operator/api/secrets/NVIDIA_API_KEY", headers={"X-Operator-Request":"1"},
+        json={"value":"nvapi-http-secret"},
+    )
+    assert blocked.status_code==400
+
+    approved=client.post(
+        "/operator/api/requests/"+request["request_id"]+"/decision",
+        headers={"X-Operator-Request":"1"}, json={"decision":"APPROVE"},
+    )
+    assert approved.status_code==200
+    assert approved.json()["authorization_status"]=="APPROVED"
+    assert approved.json()["onboarding_scheduled"] is True
+
+    stored=client.post(
+        "/operator/api/secrets/NVIDIA_API_KEY", headers={"X-Operator-Request":"1"},
+        json={"value":"nvapi-http-secret"},
+    )
+    assert stored.status_code==200
+    assert stored.json()["onboarding_scheduled"] is True
+    assert [seconds for _,seconds in wakeful.calls]==[5,5]
+    assert "nvapi-http-secret" not in stored.text
 
 
 def test_quota_metadata_persists_without_echoing_secret(tmp_path, monkeypatch):
