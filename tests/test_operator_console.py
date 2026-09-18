@@ -283,3 +283,43 @@ def test_deepseek_stable_reserve_key_is_write_only(tmp_path):
     row = next(x for x in vault.status() if x["env_name"] == "VIRTUALBRAIN_LLM_API_KEY")
     assert row["label"] == "DeepSeek stable reserve"
     assert row["quota_supported"] is False
+
+
+def test_one_time_operator_access_persists_only_digest_and_is_single_use(tmp_path):
+    from datetime import timedelta
+    auth=OperatorAuthenticator(tmp_path,ttl=timedelta(minutes=30))
+    token=auth.issue_one_time_access(now=NOW,ttl=timedelta(hours=2))
+    raw=auth.bootstrap_path.read_text()
+    assert token not in raw
+    assert "token_sha256" in raw
+
+    session=auth.consume_one_time_access(token,now=NOW+timedelta(minutes=1))
+    assert session
+    assert auth.valid(session,now=NOW+timedelta(minutes=2))
+    assert not auth.bootstrap_path.exists()
+    assert auth.consume_one_time_access(token,now=NOW+timedelta(minutes=3)) is None
+
+
+def test_operator_http_one_time_bootstrap_sets_session_and_cannot_replay(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED","true")
+    service=LiveAgentService(state_root=tmp_path,application=None,backend=None,mind=None)
+    client=TestClient(service._app())
+    auth=service._app  # keep service reachable; token issued from same persisted state
+    console=OperatorConsole(tmp_path)
+    token=console.auth.issue_one_time_access()
+
+    first=client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request":"1"},
+        json={"token":token},
+    )
+    assert first.status_code==200
+    assert "ferro_operator_session" in first.cookies
+    assert token not in first.text
+
+    replay=client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request":"1"},
+        json={"token":token},
+    )
+    assert replay.status_code==401

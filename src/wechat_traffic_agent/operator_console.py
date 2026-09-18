@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hmac
+from hashlib import sha256
 import json
 import math
 import os
@@ -236,6 +237,7 @@ class OperatorAuthenticator:
     def __init__(self, state_root: Path, *, ttl: timedelta = _SESSION_TTL) -> None:
         self.secret_root = Path(state_root) / "secrets"
         self.token_path = self.secret_root / "operator-console.token"
+        self.bootstrap_path = self.secret_root / "operator-console-bootstrap.json"
         self.ttl = ttl
         self._sessions: dict[str, datetime] = {}
         self._ensure_bootstrap_token()
@@ -250,6 +252,12 @@ class OperatorAuthenticator:
                 handle.write(token + "\n")
         os.chmod(self.token_path, 0o600)
 
+    def _new_session(self, instant: datetime) -> str:
+        session_id = secrets.token_urlsafe(32)
+        self._sessions[session_id] = instant + self.ttl
+        self._prune(instant)
+        return session_id
+
     def login(self, token: str, *, now: datetime | None = None) -> str | None:
         try:
             expected = self.token_path.read_text(encoding="utf-8").strip()
@@ -258,11 +266,67 @@ class OperatorAuthenticator:
         supplied = str(token or "").strip()
         if not supplied or not hmac.compare_digest(supplied, expected):
             return None
-        session_id = secrets.token_urlsafe(32)
+        return self._new_session(now or datetime.now(timezone.utc))
+
+    def issue_one_time_access(
+        self,
+        *,
+        now: datetime | None = None,
+        ttl: timedelta = timedelta(hours=2),
+    ) -> str:
+        """Create a one-use bootstrap secret; only its digest is persisted."""
         instant = now or datetime.now(timezone.utc)
-        self._sessions[session_id] = instant + self.ttl
-        self._prune(instant)
-        return session_id
+        if ttl <= timedelta(0) or ttl > timedelta(hours=24):
+            raise ValueError("bootstrap ttl must be within 24 hours")
+        token = secrets.token_urlsafe(32)
+        payload = {
+            "schema_version": "operator-bootstrap.v1",
+            "token_sha256": sha256(token.encode()).hexdigest(),
+            "created_at": instant.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "expires_at": (instant + ttl).astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+        }
+        tmp = self.bootstrap_path.with_suffix(".json.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.bootstrap_path)
+        os.chmod(self.bootstrap_path, 0o600)
+        return token
+
+    def consume_one_time_access(
+        self, token: str, *, now: datetime | None = None
+    ) -> str | None:
+        instant = now or datetime.now(timezone.utc)
+        try:
+            payload = json.loads(self.bootstrap_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        try:
+            expires = datetime.fromisoformat(
+                str(payload.get("expires_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            return None
+        if expires.tzinfo is None or expires.astimezone(timezone.utc) <= instant.astimezone(timezone.utc):
+            try:
+                self.bootstrap_path.unlink()
+            except OSError:
+                pass
+            return None
+        supplied = str(token or "").strip()
+        expected = str(payload.get("token_sha256") or "")
+        digest = sha256(supplied.encode()).hexdigest() if supplied else ""
+        if not supplied or not hmac.compare_digest(digest, expected):
+            return None
+        try:
+            self.bootstrap_path.unlink()
+        except OSError:
+            return None
+        return self._new_session(instant)
 
     def valid(self, session_id: str | None, *, now: datetime | None = None) -> bool:
         if not session_id:
@@ -346,6 +410,10 @@ class OperatorConsole:
                 "success_rate": raw.get("success_rate"),
                 "mean_latency_ms": raw.get("mean_latency_ms"),
                 "metrics_source": raw.get("metrics_source"),
+                "capability_tier": raw.get("capability_tier"),
+                "capability_score": raw.get("capability_score"),
+                "capability_tags": list(raw.get("capability_tags") or []),
+                "windfall_eligible": bool(raw.get("windfall_eligible")),
                 "quota_remaining": raw.get("quota_remaining"),
                 "quota_limit": raw.get("quota_limit"),
                 "quota_unit": raw.get("quota_unit"),
@@ -366,6 +434,8 @@ class OperatorConsole:
                 "observed_at", "routing_mode", "pressure", "prefer_free",
                 "minimum_quality", "max_failovers", "preferred_lifecycles",
                 "paid_available_funds", "paid_reserve_floor", "runway_days", "mind_tick",
+                "windfall_active", "windfall_bonus", "windfall_mode",
+                "windfall_resource_ids", "high_value_task_classes",
             )
         }
         safe_latest = {
@@ -379,6 +449,7 @@ class OperatorConsole:
             "resource_count": len(resources),
             "free_count": sum(1 for row in resources if row["pricing_class"] == "FREE"),
             "paid_count": sum(1 for row in resources if row["pricing_class"] == "PAID"),
+            "windfall_count": sum(1 for row in resources if row["windfall_eligible"]),
             "resources": resources,
             "policy": safe_policy,
             "latest_route": safe_latest,

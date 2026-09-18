@@ -208,6 +208,42 @@ class ContentResourceEconomy:
             evidence_refs = tuple(dict.fromkeys(
                 [*current.source_refs, f"vb-mind-tick:{int(self.mind.session.tick)}"]
             ))
+        pool_path = (
+            self.state_root / "application" / "llm_resource_pool" / "resources.json"
+        )
+        windfall_resources: list[dict[str, Any]] = []
+        try:
+            manifest = json.loads(pool_path.read_text(encoding="utf-8"))
+            rows = manifest.get("resources") if isinstance(manifest, dict) else []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                if row.get("pricing_class") != "FREE" or not row.get("windfall_eligible"):
+                    continue
+                expires_raw = str(row.get("expires_at") or "")
+                if expires_raw:
+                    expires = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+                    if expires.tzinfo is None or expires.utcoffset() is None:
+                        continue
+                    if expires.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+                        continue
+                windfall_resources.append(row)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            windfall_resources = []
+        windfall_active = bool(windfall_resources)
+        windfall_bonus = {
+            "NORMAL": 0.42,
+            "WATCH": 0.38,
+            "CONSERVE": 0.30,
+            "CRITICAL": 0.18,
+        }.get(pressure, 0.30)
+        high_value_task_classes = [
+            "self_upgrade",
+            "code_audit",
+            "deep_research",
+            "long_reflection",
+            "architecture_review",
+        ]
         reserve_default = max(5.0, self.monthly_budget * 0.20)
         reserve_floor = float(
             os.environ.get("CONTENT_LLM_RESERVE_FLOOR_CNY") or reserve_default
@@ -226,6 +262,16 @@ class ContentResourceEconomy:
             "preferred_lifecycles": [
                 "TEMPORARY_FREE", "RECURRING_FREE", "STABLE_PAID"
             ],
+            "windfall_active": windfall_active,
+            "windfall_bonus": windfall_bonus,
+            "high_value_task_classes": high_value_task_classes,
+            "windfall_resource_ids": [
+                str(row.get("resource_id") or "") for row in windfall_resources
+                if row.get("resource_id")
+            ],
+            "windfall_mode": (
+                "OPPORTUNITY_FEAST" if windfall_active else "NONE"
+            ),
             "paid_available_funds": funds,
             "paid_reserve_floor": reserve_floor,
             "runway_days": runway,
@@ -249,6 +295,10 @@ class ContentResourceEconomy:
             "prefer_free": True,
             "max_failovers": max_failovers,
             "paid_reserve_floor": reserve_floor,
+            "windfall_active": windfall_active,
+            "windfall_bonus": windfall_bonus,
+            "windfall_resource_count": len(windfall_resources),
+            "windfall_mode": payload["windfall_mode"],
             "mind_tick": payload["mind_tick"],
             "evidence_refs": list(evidence_refs),
         }

@@ -34,7 +34,7 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 
 <section id="login" class="card">
 <h2>Operator sign in</h2>
-<p>Read the operator token only through trusted server access. Do not paste or send the token through chat or messaging.</p>
+<p>Use a one-time access link when available. The durable operator token remains a server-only fallback and never needs to be sent through chat.</p>
 <div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin">Sign in</button></div>
 </section>
 
@@ -78,7 +78,7 @@ function metricCard(label,value,detail){
 }
 function renderSummary(data){
  const r=data.llm_resources||{};const root=el('summary');root.replaceChildren();
- root.append(metricCard('Resources',r.resource_count||0,(r.free_count||0)+' free · '+(r.paid_count||0)+' paid'));
+ root.append(metricCard('Resources',r.resource_count||0,(r.free_count||0)+' free · '+(r.paid_count||0)+' paid · '+(r.windfall_count||0)+' windfall'));
  const p=r.policy||{};root.append(metricCard('VB pressure',p.pressure||'UNKNOWN','mode '+fmt(p.routing_mode)));
  root.append(metricCard('Paid reserve',fmt(p.paid_reserve_floor), 'available '+fmt(p.paid_available_funds)));
  const latest=r.latest_route||{};root.append(metricCard('Latest route',latest.result||'NO ROUTE',fmt(latest.selected_resource_id)));
@@ -86,8 +86,10 @@ function renderSummary(data){
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();
  const top=node('div',undefined,'row');top.append(badge(p.pressure||'UNKNOWN',(p.pressure==='NORMAL'?'ok':p.pressure==='WATCH'?'info':'pending')),badge(p.routing_mode||'NO POLICY','info'));
- if(p.prefer_free)top.append(badge('FREE PREFERRED','ok'));root.append(top);
- const body=node('p');body.textContent='Mind tick '+fmt(p.mind_tick)+' · minimum quality '+fmt(p.minimum_quality)+' · max failovers '+fmt(p.max_failovers)+' · available paid funds '+fmt(p.paid_available_funds)+' · reserve floor '+fmt(p.paid_reserve_floor);root.append(body);
+ if(p.prefer_free)top.append(badge('FREE PREFERRED','ok'));
+ if(p.windfall_active)top.append(badge('WINDFALL ACTIVE','success'));
+ root.append(top);
+ const body=node('p');body.textContent='Mind tick '+fmt(p.mind_tick)+' · minimum quality '+fmt(p.minimum_quality)+' · max failovers '+fmt(p.max_failovers)+' · available paid funds '+fmt(p.paid_available_funds)+' · reserve floor '+fmt(p.paid_reserve_floor)+' · windfall '+fmt(p.windfall_mode);root.append(body);
  const d=node('div',undefined,'divider');root.append(d);
  const route=node('p');route.textContent='Latest: '+fmt(latest.result)+' · selected '+fmt(latest.selected_resource_id)+' · attempted '+fmt((latest.attempted_resource_ids||[]).join(' → '));root.append(route);
 }
@@ -98,9 +100,13 @@ function renderResources(data){
   const c=node('div',undefined,'card resource '+(row.pricing_class==='FREE'?'free':'paid'));
   const head=node('div',undefined,'row'),h=node('h3',row.provider_label+' · '+row.model,'grow');head.append(h);
   head.append(badge(row.pricing_class||'UNKNOWN',row.pricing_class==='FREE'?'ok':'pending'));
-  if(row.reserve)head.append(badge('RESERVE','pending'));c.append(head);
-  c.append(node('div',row.lifecycle+' · '+fmt(row.metrics_source),'muted'));
+  if(row.reserve)head.append(badge('RESERVE','pending'));
+  if(row.windfall_eligible)head.append(badge('WINDFALL','success'));
+  if(row.capability_tier)head.append(badge(row.capability_tier,row.capability_tier==='FRONTIER'?'success':'info'));
+  c.append(head);
+  c.append(node('div',row.lifecycle+' · '+fmt(row.metrics_source)+' · capability '+fmt(num(row.capability_score)),'muted'));
   const stats=node('p');stats.textContent='quality '+fmt(num(row.quality_score))+' · empirical success '+fmt(num(row.success_rate))+' · latency '+fmt(num(row.mean_latency_ms))+' ms';c.append(stats);
+  const tags=node('p');tags.textContent='capabilities '+fmt((row.capability_tags||[]).join(', '));c.append(tags);
   const health=node('p');health.textContent='runtime success '+row.successes+' · failures '+row.failures+' · consecutive '+row.consecutive_failures+' · last error '+fmt(row.last_error_code);c.append(health);
   if(row.cooldown_until)c.append(badge('COOLDOWN until '+row.cooldown_until,'bad'));
   const quota=node('p');quota.textContent='quota '+fmt(row.quota_remaining)+' / '+fmt(row.quota_limit)+' '+fmt(row.quota_unit)+' · consumed '+fmt(row.consumed_quota)+' · reset '+fmt(row.quota_reset_at)+' · expires '+fmt(row.expires_at);c.append(quota);
@@ -139,7 +145,19 @@ async function refresh(){const data=await api('/operator/api/status');showDash()
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
-refresh().catch(()=>showLogin());
+async function bootstrapFromHash(){
+ const params=new URLSearchParams((location.hash||'').replace(/^#/,''));
+ const token=params.get('bootstrap');
+ if(!token)return false;
+ history.replaceState(null,'',location.pathname+location.search);
+ try{
+  await api('/operator/api/bootstrap',{method:'POST',body:JSON.stringify({token})});
+  flash('One-time access accepted.');
+  await refresh();
+  return true;
+ }catch(e){flash(e.message,true);showLogin();return false}
+}
+(async()=>{if(!(await bootstrapFromHash()))refresh().catch(()=>showLogin())})();
 </script></main></body></html>"""
 
 

@@ -1,6 +1,7 @@
 """Content Agent orchestration for Runtime-owned autonomous resource discovery."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -507,6 +508,174 @@ class ContentResourceScout:
             "selection": selection,
             "llm_resource_pool": pool_sync,
             "replan_required": replan_required,
+        }
+
+    def probe_capability_windfall(self, *, now: datetime) -> dict[str, Any]:
+        """Probe one high-capability free NVIDIA candidate without assuming catalogue reachability."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("windfall probe time requires timezone awareness")
+        api_key = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
+        if not api_key:
+            return {"status": "CREDENTIAL_MISSING", "credential_env": "NVIDIA_API_KEY"}
+
+        leads = self.scout.provider_leads()
+        verifications = self.scout.provider_verifications()
+        available = {
+            lead.credential_env
+            for lead in leads
+            if str(os.environ.get(lead.credential_env) or "").strip()
+        }
+        plans = plan_provider_trials(
+            leads,
+            verifications,
+            available_credentials=available,
+            acquisition_outcomes=self.acquisition_outcomes(),
+            limit=25,
+        )
+        plan = next(
+            (
+                row for row in plans
+                if row.credential_env == "NVIDIA_API_KEY"
+                and row.status == "READY_TO_TRIAL"
+            ),
+            None,
+        )
+        if plan is None:
+            return {"status": "NO_READY_NVIDIA_PLAN"}
+
+        probe_root = (
+            self.state_root / "application" / "resource_discovery" / "windfall_probes"
+        )
+        probe_root.mkdir(parents=True, exist_ok=True)
+        excluded: set[str] = set()
+        current_time = now.astimezone(timezone.utc)
+        for path in probe_root.glob("*.json"):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            model = str(row.get("model") or "")
+            if not model:
+                continue
+            status = str(row.get("status") or "")
+            if status == "AVAILABLE":
+                excluded.add(model)
+                continue
+            retry_raw = str(row.get("retry_at") or "")
+            if retry_raw:
+                try:
+                    retry_at = datetime.fromisoformat(retry_raw.replace("Z", "+00:00"))
+                except ValueError:
+                    retry_at = None
+                if (
+                    retry_at is not None
+                    and retry_at.tzinfo is not None
+                    and retry_at.astimezone(timezone.utc) > current_time
+                ):
+                    excluded.add(model)
+
+        try:
+            target = resolve_trial_target(
+                "NVIDIA_API_KEY",
+                api_key=api_key,
+                exclude_models=frozenset(excluded),
+                selection_mode="HIGH_CAPABILITY",
+            )
+        except Exception as exc:
+            return {
+                "status": "TARGET_RESOLUTION_FAILED",
+                "error_code": str(getattr(exc, "code", "") or type(exc).__name__),
+                "excluded_count": len(excluded),
+            }
+        if target is None:
+            return {"status": "NO_HIGH_CAPABILITY_CANDIDATE"}
+
+        from .llm_resources import model_capability_profile, sync_llm_resource_pool
+
+        capability = model_capability_profile(target.model)
+        if not bool(capability.get("windfall_eligible")):
+            return {
+                "status": "NO_HIGH_CAPABILITY_CANDIDATE",
+                "best_remaining_model": target.model,
+                "capability_tier": capability.get("capability_tier"),
+                "capability_score": capability.get("capability_score"),
+            }
+
+        digest = sha256(
+            f"{plan.plan_id}\0windfall\0{target.model}".encode()
+        ).hexdigest()[:24]
+        windfall_plan = replace(
+            plan,
+            plan_id="provider-windfall:" + digest,
+            task_class="capability_windfall",
+            max_requests=3,
+        )
+        measurements = run_bounded_provider_trial(
+            windfall_plan,
+            api_key=api_key,
+            now=now,
+            target=target,
+            timeout_seconds=30.0,
+        )
+        trials = model_trials_from_measurements(measurements)
+        for measurement, trial in zip(measurements, trials):
+            self.scout.record_model_trial(trial)
+            self._persist_trial_receipt(measurement.to_payload())
+
+        completed = [row for row in measurements if row.status == "COMPLETED"]
+        mean_quality = (
+            sum(float(row.quality_score or 0.0) for row in completed) / len(completed)
+            if completed else 0.0
+        )
+        errors = sorted({
+            str(row.error_code or row.error_type)
+            for row in measurements
+            if row.error_code or row.error_type
+        })
+        available_now = (
+            len(completed) == len(measurements)
+            and len(completed) > 0
+            and mean_quality >= 0.75
+        )
+        if available_now:
+            status = "AVAILABLE"
+            retry_at = None
+        else:
+            temporary = any(
+                code in {"HTTP_429", "HTTP_503", "TimeoutError", "URLError"}
+                for code in errors
+            )
+            delay = timedelta(hours=1 if temporary else 24)
+            status = "TEMPORARILY_UNAVAILABLE" if temporary else "UNAVAILABLE"
+            retry_at = (current_time + delay).replace(microsecond=0).isoformat()
+
+        probe = {
+            "schema_version": "llm-capability-windfall-probe.v1",
+            "model": target.model,
+            "provider_label": plan.provider_label,
+            "observed_at": current_time.replace(microsecond=0).isoformat(),
+            "status": status,
+            "retry_at": retry_at,
+            "completed_count": len(completed),
+            "request_count": len(measurements),
+            "mean_quality": round(mean_quality, 6),
+            "error_codes": errors,
+            "capability_tier": capability["capability_tier"],
+            "capability_score": capability["capability_score"],
+            "capability_tags": capability["capability_tags"],
+            "windfall_eligible": capability["windfall_eligible"],
+            "trial_ids": [row.trial_id for row in measurements],
+        }
+        probe_path = probe_root / (
+            sha256(target.model.encode()).hexdigest()[:24] + ".json"
+        )
+        self._atomic_json(probe_path, probe)
+        pool = sync_llm_resource_pool(state_root=self.state_root, now=now)
+        return {
+            **probe,
+            "llm_resource_pool": pool,
         }
 
     def _persist_trial_receipt(self, row: dict[str, Any]) -> None:

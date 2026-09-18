@@ -120,3 +120,38 @@ def test_burn_uses_older_window_when_observations_are_every_five_minutes(tmp_pat
     final = economy.observe(NOW + timedelta(minutes=15))
     assert final["resource_state"]["estimated_daily_burn"] == pytest.approx(28.8)
     assert final["resource_state"]["runway_days"] == pytest.approx(99.7 / 28.8)
+
+
+def test_vb_activates_opportunity_feast_for_verified_free_frontier_resource(tmp_path, monkeypatch):
+    import json
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(
+        economy.observer,
+        "observe",
+        lambda now: balance(when=now,total=20.0,available=True,suffix="w"),
+    )
+    pool=tmp_path/"application"/"llm_resource_pool"
+    pool.mkdir(parents=True)
+    (pool/"resources.json").write_text(json.dumps({
+        "resources":[{
+            "resource_id":"frontier-free",
+            "pricing_class":"FREE",
+            "windfall_eligible":True,
+            "capability_tier":"FRONTIER",
+            "capability_score":0.97,
+            "expires_at":None,
+        }]
+    }))
+
+    result=economy.observe(NOW)
+
+    policy=result["llm_routing_policy"]
+    assert policy["pressure"]=="CONSERVE"
+    assert policy["windfall_active"] is True
+    assert policy["windfall_mode"]=="OPPORTUNITY_FEAST"
+    assert policy["windfall_resource_count"]==1
+    saved=json.loads((pool/"policy.json").read_text())
+    assert saved["windfall_resource_ids"]==["frontier-free"]
+    assert "self_upgrade" in saved["high_value_task_classes"]
+    assert saved["windfall_bonus"]==pytest.approx(0.30)

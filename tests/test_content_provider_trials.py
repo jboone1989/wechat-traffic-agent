@@ -302,3 +302,88 @@ def test_nvidia_marks_targets_exhausted_only_after_catalogue_has_no_remaining_mo
     assert third["replan_required"] is True
     assert fourth["replan_required"] is False
     assert any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
+
+
+def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    monkeypatch.setattr(
+        resource_module,
+        "resolve_trial_target",
+        lambda env, **kwargs: (
+            ProviderTrialTarget(
+                env,
+                "https://integrate.api.nvidia.com/v1",
+                "nvidia/nemotron-3-super-120b-a12b",
+                False,
+                128,
+            )
+            if kwargs.get("selection_mode")=="HIGH_CAPABILITY"
+            else ProviderTrialTarget(env,"https://example/v1","openai/gpt-oss-20b")
+        ),
+    )
+    def fake(plan, *, api_key, now, target, **kwargs):
+        assert kwargs["timeout_seconds"]==30.0
+        assert plan.task_class=="capability_windfall"
+        assert api_key=="n-secret"
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:windfall:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="COMPLETED",
+            observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=1200,
+            observed_cost=0.0,response_sha256="sha256:x",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    result=scout.probe_capability_windfall(now=NOW)
+
+    assert result["status"]=="AVAILABLE"
+    assert result["capability_tier"]=="FRONTIER"
+    assert result["windfall_eligible"] is True
+    assert result["llm_resource_pool"]["windfall_count"]==1
+    import json
+    manifest=json.loads(
+        (tmp_path/"application/llm_resource_pool/resources.json").read_text()
+    )
+    row=next(x for x in manifest["resources"] if x["provider_id"]=="nvidia")
+    assert row["model"]=="nvidia/nemotron-3-super-120b-a12b"
+    assert row["windfall_eligible"] is True
+    assert "self_upgrade" in row["task_classes"]
+
+
+def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediately(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    excluded_seen=[]
+    def resolve(env, **kwargs):
+        excluded_seen.append(set(kwargs.get("exclude_models") or ()))
+        candidates=[
+            "nvidia/nemotron-3-super-120b-a12b",
+            "z-ai/glm-5.3",
+        ]
+        model=next(x for x in candidates if x not in excluded_seen[-1])
+        return ProviderTrialTarget(env,"https://example/v1",model,False,128)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    def fake(plan, *, api_key, now, target, **kwargs):
+        assert kwargs["timeout_seconds"]==30.0
+        if target.model.startswith("nvidia/"):
+            return [ProviderTrialMeasurement(
+                trial_id=f"trial:503:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+                provider_label=plan.provider_label,credential_env=plan.credential_env,
+                model=target.model,task_id=f"t{i}",status="FAILED",
+                observed_at=NOW.isoformat(),error_code="HTTP_503",
+            ) for i in range(3)]
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:ok:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="COMPLETED",
+            observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10,observed_cost=0.0,
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    first=scout.probe_capability_windfall(now=NOW)
+    second=scout.probe_capability_windfall(now=NOW)
+
+    assert first["status"]=="TEMPORARILY_UNAVAILABLE"
+    assert second["model"]=="z-ai/glm-5.3"
+    assert "nvidia/nemotron-3-super-120b-a12b" in excluded_seen[1]
