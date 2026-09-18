@@ -387,3 +387,34 @@ def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediatel
     assert first["status"]=="TEMPORARILY_UNAVAILABLE"
     assert second["model"]=="z-ai/glm-5.3"
     assert "nvidia/nemotron-3-super-120b-a12b" in excluded_seen[1]
+
+
+def test_dynamic_high_capability_ranker_prefers_kimi_k3_over_known_frontier_models():
+    from wechat_traffic_agent.resource_scout import rank_high_capability_model
+
+    chosen = rank_high_capability_model(
+        [
+            "openai/gpt-oss-20b",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "moonshotai/kimi-k3",
+            "z-ai/glm-5.3",
+        ],
+        frozenset(),
+    )
+
+    assert chosen == "moonshotai/kimi-k3"
+
+
+def test_dynamic_high_capability_ranker_moves_to_next_challenger_after_kimi_cooldown():
+    from wechat_traffic_agent.resource_scout import rank_high_capability_model
+
+    chosen = rank_high_capability_model(
+        [
+            "moonshotai/kimi-k3",
+            "nvidia/nemotron-3-super-120b-a12b",
+            "z-ai/glm-5.3",
+        ],
+        frozenset({"moonshotai/kimi-k3"}),
+    )
+
+    assert chosen == "nvidia/nemotron-3-super-120b-a12b"

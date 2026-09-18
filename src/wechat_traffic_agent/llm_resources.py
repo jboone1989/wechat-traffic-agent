@@ -84,8 +84,17 @@ def model_capability_profile(model: str) -> dict[str, Any]:
     tier = "STANDARD"
     score = 0.55
     tags = ["general_text"]
-    if "nemotron-3-super-120b" in low:
+    if "kimi-k3" in low:
+        tier, score = "FRONTIER", 0.99
+        tags += [
+            "reasoning", "coding", "planning", "tool_calling",
+            "long_context", "multimodal", "long_horizon",
+        ]
+    elif "nemotron-3-super-120b" in low:
         tier, score = "FRONTIER", 0.97
+        tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
+    elif "kimi-k2.6" in low:
+        tier, score = "FRONTIER", 0.95
         tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
     elif "gpt-oss-120b" in low:
         tier, score = "FRONTIER", 0.94

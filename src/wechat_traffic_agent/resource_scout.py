@@ -31,6 +31,40 @@ _REPLAN_OUTCOME_STATUSES = {
 }
 
 
+def rank_high_capability_model(
+    model_ids: list[str], excluded_models: frozenset[str]
+) -> str | None:
+    """Rank challengers by capability potential, never by vendor preference alone."""
+    from .llm_resources import model_capability_profile
+
+    candidates: list[tuple[float, str]] = []
+    for raw in model_ids:
+        model = str(raw or "").strip()
+        if not model or model in excluded_models:
+            continue
+        low = model.lower()
+        if any(token in low for token in (
+            "embed", "embedding", "rerank", "guard", "safety",
+            "speech", "audio", "diffusion", "detector",
+        )):
+            continue
+        profile = model_capability_profile(model)
+        score = float(profile.get("capability_score") or 0.0)
+        if str(profile.get("capability_tier") or "") == "FRONTIER":
+            score += 0.30
+        elif str(profile.get("capability_tier") or "") == "ADVANCED":
+            score += 0.12
+        # Unknown newly-listed models remain challengers if their names signal
+        # a large/general reasoning model; they are still probe-gated.
+        if any(token in low for token in (
+            "reason", "agent", "pro", "ultra", "super", "max",
+            "kimi-", "glm-", "gpt-oss", "nemotron",
+        )):
+            score += 0.08
+        candidates.append((score, model))
+    return max(candidates, default=(0.0, ""))[1] or None
+
+
 class ContentResourceScout:
     def __init__(self, *, state_root: Path, capability_runtime: Any) -> None:
         self.state_root = Path(state_root)
@@ -582,6 +616,7 @@ class ContentResourceScout:
                 api_key=api_key,
                 exclude_models=frozenset(excluded),
                 selection_mode="HIGH_CAPABILITY",
+                model_ranker=rank_high_capability_model,
             )
         except Exception as exc:
             return {

@@ -177,3 +177,53 @@ def test_daily_reflection_failure_does_not_block_evolution_deliberation(tmp_path
     assert row["daily_reflection"]["error_type"] == "RuntimeError"
     assert row["evolution_deliberation"]["status"] == "PROPOSED"
     assert len(backend.requests) == 1
+
+
+def test_windfall_creates_high_value_hypothesis_even_without_open_need(tmp_path):
+    backend = FixtureAgentBackend(_proposal_json("capability replacement audit"))
+    rt = _runtime(tmp_path, backend)
+    runner = WakefulContentTaskRunner(
+        app=SimpleNamespace(domain_runtime=rt),
+        daily_reflection=DailyReflection(),
+        state_root=tmp_path,
+    )
+    runner._record_windfall_pending(
+        {
+            "model": "moonshotai/kimi-k3",
+            "provider_label": "NVIDIA NIM",
+            "observed_at": NOW.isoformat(),
+            "capability_tier": "FRONTIER",
+            "capability_score": 0.99,
+            "trial_ids": ["trial:kimi:1", "trial:kimi:2", "trial:kimi:3"],
+        },
+        NOW,
+    )
+
+    first = runner.run("REFLECT", now=NOW)
+    second = runner.run("REFLECT", now=NOW)
+
+    evolution = first["evolution_deliberation"]
+    assert evolution["status"] == "WINDFALL_PROPOSED"
+    assert evolution["model"] == "moonshotai/kimi-k3"
+    assert evolution["windfall_used"] is True
+    assert evolution["token_budget"] == 1800
+    assert len(backend.requests) == 1
+    assert backend.requests[0].routing_task_class == "self_upgrade"
+    assert backend.requests[0].minimum_model_quality == 0.82
+    assert second["evolution_deliberation"] == {"status": "NO_OPEN_NEEDS"}
+    assert len(backend.requests) == 1
+    assert not (
+        tmp_path
+        / "application"
+        / "llm_resource_pool"
+        / "windfall_feast_pending.json"
+    ).exists()
+    receipts = list(
+        (
+            tmp_path
+            / "application"
+            / "llm_resource_pool"
+            / "windfall_feast_receipts"
+        ).glob("*.json")
+    )
+    assert len(receipts) == 1
