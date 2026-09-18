@@ -16,6 +16,10 @@ on:
       - "src/wechat_traffic_agent/content_goal_loop.py"
       - "src/wechat_traffic_agent/content_explorer.py"
       - "src/wechat_traffic_agent/content_mind.py"
+      - "src/wechat_traffic_agent/website_experiment_governance.py"
+      - "src/wechat_traffic_agent/resource_economy.py"
+      - "src/wechat_traffic_agent/content_action_prediction.py"
+      - "src/wechat_traffic_agent/audience_reward.py"
       - "src/wechat_traffic_agent/world_feed.py"
       - "src/wechat_traffic_agent/prospective_predictions.py"
       - "src/wechat_traffic_agent/evidence_floor.py"
@@ -34,6 +38,9 @@ on:
       - "tests/test_content_explorer_loop.py"
       - "tests/test_goal_web_search.py"
       - "tests/test_content_mind.py"
+      - "tests/test_resource_economy.py"
+      - "tests/test_content_action_prediction.py"
+      - "tests/test_audience_reward.py"
       - "tests/test_world_feed.py"
       - "tests/test_prospective_predictions.py"
       - "tests/test_evidence_floor.py"
@@ -84,6 +91,10 @@ jobs:
         run: >-
           python -m py_compile
           src/wechat_traffic_agent/content_mind.py
+          src/wechat_traffic_agent/audience_reward.py
+          src/wechat_traffic_agent/content_action_prediction.py
+          src/wechat_traffic_agent/resource_economy.py
+          src/wechat_traffic_agent/website_experiment_governance.py
           src/wechat_traffic_agent/content_explorer.py
           src/wechat_traffic_agent/content_goal_loop.py
           src/wechat_traffic_agent/world_feed.py
@@ -156,7 +167,7 @@ jobs:
           PYTHONPATH: .editorial-ci
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_web_editorial.py tests/test_channel_evidence.py tests/test_website_experiment.py
+          tests/test_web_editorial.py tests/test_channel_evidence.py tests/test_website_experiment.py tests/test_audience_reward.py
           tests/test_content_loop.py tests/test_content_explorer.py tests/test_content_explorer_loop.py tests/test_goal_web_search.py
           tests/test_world_feed.py tests/test_prospective_predictions.py
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
