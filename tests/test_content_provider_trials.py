@@ -149,12 +149,13 @@ def test_openrouter_stops_after_three_explicit_rate_limited_models(tmp_path, mon
             latency_ms=10, error_code="HTTP_429",
         ) for i in range(3)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
-    results=[scout.run_ready_trials(now=NOW,provider_limit=2) for _ in range(4)]
+    results=[scout.run_ready_trials(now=NOW,provider_limit=2) for _ in range(5)]
     assert calls==["free-a","free-b","free-c"]
-    assert [row["executed_request_count"] for row in results]==[3,3,3,0]
+    assert [row["executed_request_count"] for row in results]==[3,3,3,0,0]
     assert results[-1]["providers"][0]["status"]=="FREE_TIER_CANDIDATES_EXHAUSTED"
     assert results[-1]["providers"][0]["models"]==["free-a","free-b","free-c"]
-    assert results[-1]["replan_required"] is True
+    assert results[-2]["replan_required"] is True
+    assert results[-1]["replan_required"] is False
     assert any(row.status=="FREE_CANDIDATES_EXHAUSTED" for row in scout.acquisition_outcomes())
 
 
@@ -241,8 +242,10 @@ def test_protocol_incompatible_models_mark_provider_for_replan(tmp_path, monkeyp
     first=scout.run_ready_trials(now=NOW,provider_limit=1)
     second=scout.run_ready_trials(now=NOW,provider_limit=1)
     third=scout.run_ready_trials(now=NOW,provider_limit=1)
-    assert [first["executed_request_count"],second["executed_request_count"],third["executed_request_count"]]==[3,3,0]
+    fourth=scout.run_ready_trials(now=NOW.replace(minute=1),provider_limit=1)
+    assert [first["executed_request_count"],second["executed_request_count"],third["executed_request_count"],fourth["executed_request_count"]]==[3,3,0,0]
     assert calls==["old-model","new-model"]
     assert third["providers"][0]["status"]=="PROTOCOL_TARGETS_EXHAUSTED"
     assert third["replan_required"] is True
+    assert fourth["replan_required"] is False
     assert any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
