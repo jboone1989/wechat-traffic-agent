@@ -759,3 +759,39 @@ def test_governance_uses_audience_reward_not_pageviews_alone(tmp_path):
     assert audience["status"] == "EVIDENCE_FAVORS_TREATMENT"
     assert audience["favored_treatment"] == "evidence_first"
     assert result["experiment_conclusion"]["favored_treatment"] == "evidence_first"
+
+
+def test_audience_reward_fixed_horizon_ref_stays_stable_after_later_v1_samples(tmp_path):
+    for index in range(MIN_SAMPLES_PER_TREATMENT + 1):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index,
+            value=30, engagement_rate=0.9,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index,
+            value=2, engagement_rate=0.2,
+        )
+    evaluator = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    )
+    first = evaluator.evaluate(as_of=NOW + timedelta(days=20))
+    first_audience = first["audience_reward_evaluation"]
+    assert first_audience["status"] == "EVIDENCE_FAVORS_TREATMENT"
+
+    for index in range(5):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=1000 + index,
+            value=0, engagement_rate=0.0,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=1100 + index,
+            value=100, engagement_rate=1.0,
+        )
+    second = evaluator.evaluate(as_of=NOW + timedelta(days=100))
+    second_audience = second["audience_reward_evaluation"]
+    assert second_audience["evaluation_ref"] == first_audience["evaluation_ref"]
+    assert second_audience["favored_treatment"] == first_audience["favored_treatment"]
+    assert second_audience["samples"] == {
+        "reader_question_first": MIN_SAMPLES_PER_TREATMENT,
+        "evidence_first": MIN_SAMPLES_PER_TREATMENT,
+    }
