@@ -171,3 +171,104 @@ def test_remote_host_verification_rejects_same_physical_host(tmp_path, monkeypat
     assert row["status"] == "FAILED"
     assert row["last_error"] == "RuntimeError"
     assert row["deployment_capable"] is False
+
+
+def test_agent_network_discovery_requires_signed_card_and_identity_match(tmp_path, monkeypatch):
+    from agent_network.a2a_card import signed_agent_card
+    from agent_network.crypto import Identity
+
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("remote.network.body")
+    endpoint = "https://edge.example.test/a2a"
+    card_url = "https://edge.example.test/.well-known/agent-card.json"
+    health_url = "https://edge.example.test/application/survival/host"
+    control_url = "https://edge.example.test/application/survival/workloads"
+    card = signed_agent_card(
+        identity=remote,
+        name="Remote Body",
+        description="survival worker",
+        url=endpoint,
+        network_id="network.cai",
+        skills=[{"id":"survival.workload.deploy.v1","name":"Deploy bounded workload"}],
+        extra={"survival_resource":{
+            "host_instance_id":"host-instance:remote-network-body",
+            "health_url":health_url,
+            "control_url":control_url,
+            "capacity":{"cpu_count":2,"memory_gib":4},
+            "reliability":"BEST_EFFORT",
+        }},
+    )
+
+    class Network:
+        def discover(self, capability, *, timeout):
+            assert capability == "survival.workload.deploy.v1"
+            return [{
+                "agent_id":remote.agent_id,
+                "public_key":remote.public_key,
+                "key_id":remote.key_id,
+                "endpoint":endpoint,
+                "agent_card_url":card_url,
+                "network_id":"network.cai",
+                "reachability":"REACHABLE",
+            }]
+
+    def remote_call(url, *, method, payload=None, timeout):
+        if url == card_url:
+            return card
+        assert url == health_url
+        return {
+            "status":"HEALTHY",
+            "host_instance_id":"host-instance:remote-network-body",
+            "agent_id":remote.agent_id,
+            "key_id":remote.key_id,
+            "public_key":remote.public_key,
+            "capabilities":["survival.workload.deploy.v1"],
+        }
+
+    monkeypatch.setattr(manager, "_http_json", remote_call)
+    result = manager.discover_agent_network_hosts(Network(), now=NOW)
+    assert result["status"] == "DISCOVERED"
+    assert len(result["accepted_host_ids"]) == 1
+    row = manager.remote_hosts()[0]
+    assert row["status"] == "ACTIVE"
+    assert row["deployment_capable"] is True
+    assert row["trust_source"] == "AGENT_NETWORK_SIGNED_CARD"
+    assert row["expected_agent_id"] == remote.agent_id
+
+
+def test_agent_network_discovery_rejects_cross_origin_resource_endpoints(tmp_path, monkeypatch):
+    from agent_network.a2a_card import signed_agent_card
+    from agent_network.crypto import Identity
+
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("remote.bad-origin")
+    endpoint = "https://edge.example.test/a2a"
+    card_url = "https://edge.example.test/.well-known/agent-card.json"
+    card = signed_agent_card(
+        identity=remote,
+        name="Remote Body",
+        description="survival worker",
+        url=endpoint,
+        network_id="network.cai",
+        skills=[{"id":"survival.workload.deploy.v1","name":"Deploy bounded workload"}],
+        extra={"survival_resource":{
+            "host_instance_id":"host-instance:other",
+            "health_url":"https://other.example.test/health",
+            "control_url":"https://other.example.test/workloads",
+        }},
+    )
+
+    class Network:
+        def discover(self, capability, *, timeout):
+            return [{
+                "agent_id":remote.agent_id,"public_key":remote.public_key,
+                "key_id":remote.key_id,"endpoint":endpoint,
+                "agent_card_url":card_url,"network_id":"network.cai",
+                "reachability":"REACHABLE",
+            }]
+
+    monkeypatch.setattr(manager, "_http_json", lambda *args, **kwargs: card)
+    result = manager.discover_agent_network_hosts(Network(), now=NOW)
+    assert result["status"] == "NO_VERIFIED_REMOTE_HOST"
+    assert result["accepted_host_ids"] == []
+    assert manager.remote_hosts() == []
