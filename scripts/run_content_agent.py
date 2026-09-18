@@ -140,6 +140,7 @@ def main() -> int:
         workspace_root=Path(repair_workspace_raw) if repair_workspace_raw else None,
         deployed_root=ROOT,
         python_executable=sys.executable,
+        planner_runtime=app.domain_runtime,
     )
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)
