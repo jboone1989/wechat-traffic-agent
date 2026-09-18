@@ -99,10 +99,45 @@ class WakefulContentTaskRunner:
             projection = self.content_mind.public_projection().get("resource_awareness") or {}
             current = projection.get("current") or {}
             pressure = str(current.get("pressure") or "UNKNOWN")
-            self.wakeful.set_resource_pressure(pressure)
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
+
+        infrastructure_pressure = "UNKNOWN"
+        state_root = getattr(self, "state_root", None) or getattr(
+            self.resource_economy, "state_root", None
+        )
+        if state_root is None:
+            rows["survival_resource_observation"] = {
+                "status": "UNAVAILABLE_NO_STATE_ROOT"
+            }
+        else:
+            try:
+                from .survival_resources import SurvivalResourceManager
+                survival = SurvivalResourceManager(Path(state_root))
+                observed = survival.observe(now=now)
+                rows["survival_resource_observation"] = observed
+                infrastructure_pressure = str(observed.get("pressure") or "UNKNOWN")
+                actions = survival.execute_approved(now=now)
+                rows["survival_resource_actions"] = actions
+                if actions.get("results"):
+                    rows["survival_resource_after_actions"] = survival.observe(now=now)
+                    infrastructure_pressure = str(
+                        rows["survival_resource_after_actions"].get("pressure")
+                        or infrastructure_pressure
+                    )
+            except Exception as exc:  # noqa: BLE001
+                rows["survival_resource_observation"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+
+        pressure_rank = {"UNKNOWN": 0, "NORMAL": 1, "WATCH": 2, "CONSERVE": 3, "CRITICAL": 4}
+        combined_pressure = max(
+            (pressure, infrastructure_pressure),
+            key=lambda value: pressure_rank.get(str(value).upper(), 0),
+        )
+        pressure = str(combined_pressure).upper()
+        self.wakeful.set_resource_pressure(pressure)
+
         model_reputation = getattr(self, "model_reputation", None)
         if model_reputation is not None:
             try:

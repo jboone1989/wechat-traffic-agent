@@ -52,6 +52,24 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 <h2>Resource domains</h2>
 <div id="domains" class="grid"></div>
 
+<h2>Survival needs & actions</h2>
+<p class="muted">Low-risk local repairs can self-authorize under policy. Remote offload and primary relocation remain operator-controlled.</p>
+<div id="survivalNeeds" class="stack"></div>
+<div id="survivalActions" class="stack"></div>
+
+<h2>Remote machines</h2>
+<div class="card">
+<div class="two"><label>Name<input id="hostName" placeholder="edge-node-1"></label><label>Reliability<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
+<label>HTTPS health URL<input id="hostHealth" placeholder="https://node.example.com/health"></label>
+<label>Signed deployment control URL (optional)<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
+<div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>Memory GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div>
+<button id="addHost">Add candidate host</button>
+</div>
+<div id="remoteHosts" class="stack"></div>
+
+<h2>Movable services</h2>
+<div id="servicePlacements" class="stack"></div>
+
 <h2>VirtualBrain routing</h2>
 <div id="routing" class="card"></div>
 
@@ -100,8 +118,39 @@ function renderDomains(data){
   if(row.domain==='LLM')c.append(node('p',fmt(row.resource_count)+' resources · '+fmt(row.free_count)+' free · pressure '+fmt(row.pressure),'muted'));
   if(row.domain==='STORAGE')c.append(node('p','free '+fmt(row.free_gib)+' GiB / '+fmt(row.total_gib)+' GiB · used '+fmt(row.used_ratio),'muted'));
   if(row.domain==='COMPUTE')c.append(node('p','CPU '+fmt(row.cpu_count)+' · load '+fmt(row.load_1m)+' · memory free '+fmt(row.memory_available_gib)+' GiB · used '+fmt(row.memory_used_ratio),'muted'));
-  if(row.domain==='HOSTING')c.append(node('p','Current body: '+fmt(row.status)+' · relocation '+fmt(row.relocation),'muted'));
+  if(row.domain==='HOSTING')c.append(node('p','Current body: '+fmt(row.location||row.status)+' · reliability '+fmt(row.reliability),'muted'));
+  if(row.domain==='REMOTE_MACHINE')c.append(node('p',fmt(row.active_count)+' active / '+fmt(row.resource_count)+' known remote bodies','muted'));
+  if(row.domain==='SERVICE')c.append(node('p',fmt(row.movable_count)+' movable / '+fmt(row.resource_count)+' managed workloads','muted'));
   root.append(c)}
+}
+function renderSurvivalControl(data){
+ const ctl=data.survival_control||{},needs=ctl.needs||[],actions=ctl.actions||[];
+ const root=el('survivalNeeds');root.replaceChildren();
+ if(!needs.length)root.append(node('div','No survival-resource needs.','card muted'));
+ for(const row of needs){
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
+  head.append(node('h3',fmt(row.domain)+' · '+fmt(row.action),'grow'));
+  head.append(badge(row.status||'UNKNOWN',row.status==='EXECUTED'||row.status==='SATISFIED'?'ok':row.status==='REJECTED'||row.status==='FAILED'?'bad':'pending'));
+  c.append(head,node('p',row.reason||'','muted'));
+  c.append(node('div','authorization '+fmt(row.authorization)+' · urgency '+fmt(row.urgency),'mono muted'));
+  if(row.status==='PENDING'){
+   const controls=node('div',undefined,'row');
+   for(const decision of ['APPROVE','REJECT']){const b=node('button',decision,decision==='REJECT'?'ghost':'');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision})});flash('Survival need '+decision.toLowerCase()+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};controls.append(b)}
+   c.append(controls)
+  }
+  root.append(c)
+ }
+ const log=el('survivalActions');log.replaceChildren();
+ if(actions.length){log.append(node('h3','Recent resource actions'));for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card');c.append(node('div',fmt(row.action)+' · '+fmt(row.status),'mono'),node('p',fmt(row.observed_at)+' · '+fmt(row.need_id||row.host_id||row.service_id),'muted'));if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','Execute signed offload');b.onclick=async()=>{b.disabled=true;try{const out=await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});flash('Remote deployment '+fmt(out.status)+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}}
+}
+function renderRemoteHosts(data){
+ const ctl=data.survival_control||{},rows=ctl.remote_hosts||[],root=el('remoteHosts');root.replaceChildren();
+ if(!rows.length){root.append(node('div','No remote machines registered. Ferro will prefer local restructuring first.','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'CANDIDATE',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));if(row.deployment_capable)head.append(badge('SIGNED DEPLOY','ok'));c.append(head,node('p',fmt(row.health_url)+' · '+fmt(row.reliability),'muted'),node('div',JSON.stringify(row.capacity||{}),'mono muted'));if(row.control_url)c.append(node('div','control '+fmt(row.control_url),'mono muted'));if(row.agent_id)c.append(node('div','agent '+fmt(row.agent_id)+' · key '+fmt(row.key_id),'mono muted'));if(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable)){const b=node('button','Verify & activate');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
+}
+function renderServicePlacements(data){
+ const ctl=data.survival_control||{},services=ctl.services||[],hosts=(ctl.remote_hosts||[]).filter(x=>x.status==='ACTIVE'&&x.deployment_capable),root=el('servicePlacements');root.replaceChildren();
+ for(const row of services){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.service_id,'grow'),badge(row.migration_class||'UNKNOWN',row.migration_class==='PRIMARY_STATEFUL'?'pending':'info'));c.append(head,node('p','placement '+fmt(row.placement)+' · role '+fmt(row.role),'muted'));if(row.migration_class!=='PRIMARY_STATEFUL'&&hosts.length){const select=document.createElement('select');for(const host of hosts){const o=node('option',host.name||host.host_id);o.value=host.host_id;select.append(o)}const b=node('button','Plan offload');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash('Offload plan created.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(select,b)}root.append(c)}
 }
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();
@@ -171,7 +220,8 @@ function renderSecrets(rows){
   root.append(c);
  }
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
