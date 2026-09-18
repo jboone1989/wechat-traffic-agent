@@ -347,6 +347,10 @@ class WakefulContentTaskRunner:
         if self_repair is not None:
             try:
                 rows["self_repair"] = self_repair.run_once(now=now)
+                if rows["self_repair"].get("status") == "GENERATED_REPAIR_PROPOSED":
+                    schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
+                    if callable(schedule):
+                        schedule(now, seconds=60)
             except Exception as exc:  # noqa: BLE001
                 rows["self_repair"] = self._error(exc)
                 rows["status"] = "DEGRADED"
