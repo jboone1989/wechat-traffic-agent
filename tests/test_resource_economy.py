@@ -65,21 +65,24 @@ def test_cycle_decision_outcome_and_reflection_close_from_balance_delta(tmp_path
     assert mind.session.resource_awareness.current.estimated_daily_burn == pytest.approx(18.0)
 
 
-def test_unavailable_or_underfunded_balance_asks_human_without_execution(tmp_path, monkeypatch):
+def test_critical_balance_defers_and_enters_hibernation(tmp_path, monkeypatch):
     mind = ContentMind(root=tmp_path, subject_id="content-agent")
     economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
     monkeypatch.setattr(economy.observer, "observe", lambda now: balance(when=now, total=0.2, available=False))
     economy.observe(NOW)
     decision = economy.begin_cycle(now=NOW, cycle="cycle-low")
-    assert decision["decision"] == "ASK_HUMAN"
+    assert decision["decision"] == "DEFER"
+    assert decision["pressure"] == "CRITICAL"
+    assert decision["hibernation"]["status"] == "HIBERNATE"
+    assert economy.hibernation_state()["allowed_tasks"] == ["RESOURCE_REVIEW", "CHECK_OUTCOMES"]
     assert mind.session.resource_awareness.outcomes == ()
 
 
 def test_balance_increase_is_not_misreported_as_negative_spend(tmp_path, monkeypatch):
     mind = ContentMind(root=tmp_path, subject_id="content-agent")
     economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
-    observations = iter((balance(when=NOW, total=10.0, suffix="a"),
-                         balance(when=NOW + timedelta(minutes=20), total=20.0, suffix="b")))
+    observations = iter((balance(when=NOW, total=60.0, suffix="a"),
+                         balance(when=NOW + timedelta(minutes=20), total=70.0, suffix="b")))
     monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
     economy.observe(NOW)
     decision = economy.begin_cycle(now=NOW, cycle="cycle-topup")
@@ -169,8 +172,8 @@ def test_next_cycle_uses_only_world_settled_value(tmp_path, monkeypatch):
     mind = ContentMind(root=tmp_path, subject_id="content-agent")
     economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
     observations = iter((
-        balance(when=NOW, total=20.0, suffix="a"),
-        balance(when=NOW + timedelta(minutes=20), total=19.5, suffix="b"),
+        balance(when=NOW, total=60.0, suffix="a"),
+        balance(when=NOW + timedelta(minutes=20), total=59.5, suffix="b"),
     ))
     monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
     economy.observe(NOW)
@@ -196,3 +199,70 @@ def test_next_cycle_uses_only_world_settled_value(tmp_path, monkeypatch):
     assert proposal.expected_external_value == pytest.approx(0.9)
     assert proposal.expected_learning_value == pytest.approx(0.5)
     assert proposal.expected_reproduction_value == pytest.approx(0.5)
+
+
+def test_conserve_defers_without_verified_free_windfall(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(
+        economy.observer, "observe",
+        lambda now: balance(when=now, total=20.0, available=True, suffix="c"),
+    )
+    economy.observe(NOW)
+    decision = economy.begin_cycle(now=NOW, cycle="conserve-no-free")
+    assert decision["pressure"] == "CONSERVE"
+    assert decision["decision"] == "DEFER"
+    assert decision["defer_interval_multiplier"] == 2
+    assert economy.hibernation_state() is None
+
+
+def test_conserve_executes_only_with_verified_free_windfall(tmp_path, monkeypatch):
+    import json
+
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(
+        economy.observer, "observe",
+        lambda now: balance(when=now, total=20.0, available=True, suffix="f"),
+    )
+    pool = tmp_path / "application" / "llm_resource_pool"
+    pool.mkdir(parents=True)
+    (pool / "resources.json").write_text(json.dumps({
+        "resources": [{
+            "resource_id": "free-test",
+            "pricing_class": "FREE",
+            "windfall_eligible": True,
+            "expires_at": None,
+        }]
+    }))
+    economy.observe(NOW)
+    decision = economy.begin_cycle(now=NOW, cycle="conserve-free")
+    assert decision["pressure"] == "CONSERVE"
+    assert decision["windfall_active"] is True
+    assert decision["prefer_free"] is True
+    assert decision["decision"] == "EXECUTE"
+
+
+def test_resource_recovery_exits_hibernation_with_receipt(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    observations = iter((
+        balance(when=NOW, total=0.2, available=False, suffix="x"),
+        balance(when=NOW + timedelta(hours=1), total=80.0, available=True, suffix="y"),
+    ))
+    monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
+    economy.observe(NOW)
+    first = economy.begin_cycle(now=NOW, cycle="critical-before-recovery")
+    assert first["decision"] == "DEFER"
+    assert economy.hibernation_state() is not None
+
+    economy.observe(NOW + timedelta(hours=1))
+    second = economy.begin_cycle(
+        now=NOW + timedelta(hours=1), cycle="after-resource-recovery"
+    )
+    assert second["pressure"] in {"NORMAL", "WATCH"}
+    assert economy.hibernation_state() is None
+    receipts = list(
+        (tmp_path / "application/resource_observations/hibernation_recovery_receipts").glob("*.json")
+    )
+    assert receipts
