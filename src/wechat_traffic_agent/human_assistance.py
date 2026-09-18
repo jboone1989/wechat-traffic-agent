@@ -220,6 +220,35 @@ class HumanAssistanceService:
             updated["evolution_error_type"] = type(exc).__name__
         return updated
 
+    def authorize_request(
+        self, request_id: str, *, approved: bool, now: datetime,
+        evidence_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        if not request_id:
+            raise ValueError("request_id is required")
+        path = self.root / (str(request_id).replace(":", "-") + ".json")
+        if not path.exists():
+            raise FileNotFoundError(request_id)
+        row = json.loads(path.read_text(encoding="utf-8"))
+        if str(row.get("kind") or "").upper() != "MODEL_RESOURCE_ACCESS":
+            raise ValueError("request is not a resource-access request")
+        target = "APPROVED" if approved else "REJECTED"
+        current = str(row.get("authorization_status") or "").upper()
+        if current and current != target:
+            raise ValueError(f"resource request already {current.lower()}")
+        if current == target:
+            return row
+        row["authorization_status"] = target
+        row["authorization_at"] = _iso(now)
+        row["authorization_evidence_refs"] = list(
+            dict.fromkeys(str(x) for x in evidence_refs if x)
+        )
+        if not approved:
+            row["resolution_status"] = "REJECTED"
+            row["resolved_at"] = _iso(now)
+        self._write(path, row)
+        return row
+
     def fulfill_matching(
         self, *, kind: str, detail_key: str, detail_value: str, now: datetime,
         evidence_refs: tuple[str, ...] = (),
@@ -239,6 +268,8 @@ class HumanAssistanceService:
                 continue
             if row.get("resolution_status") == "FULFILLED":
                 fulfilled.append(row)
+                continue
+            if str(row.get("authorization_status") or "").upper() != "APPROVED":
                 continue
             row["resolution_status"] = "FULFILLED"
             row["fulfilled_at"] = _iso(now)

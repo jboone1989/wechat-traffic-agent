@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 from typing import Any, Mapping
 
 from .human_assistance import HumanAssistanceService
@@ -360,7 +361,7 @@ class OperatorConsole:
         except (OSError, ValueError, json.JSONDecodeError):
             return {}
 
-    def pending_requests(self) -> list[dict[str, Any]]:
+    def _resource_request_rows(self) -> list[dict[str, Any]]:
         root = self.state_root / "application" / "human_assistance"
         rows: list[dict[str, Any]] = []
         for path in sorted(root.glob("human-request-*.json")) if root.exists() else []:
@@ -368,10 +369,19 @@ class OperatorConsole:
                 row = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
+            if str(row.get("kind") or "").upper() != "MODEL_RESOURCE_ACCESS":
+                continue
             details = row.get("details") if isinstance(row.get("details"), dict) else {}
             credential_env = str(details.get("credential_env") or "")
-            if credential_env not in SECRET_SPECS or row.get("resolution_status") == "FULFILLED":
+            if credential_env not in SECRET_SPECS:
                 continue
+            authorization = str(row.get("authorization_status") or "").upper()
+            if not authorization:
+                authorization = (
+                    "LEGACY_APPROVED"
+                    if row.get("resolution_status") == "FULFILLED"
+                    else "PENDING"
+                )
             rows.append({
                 "request_id": str(row.get("request_id") or ""),
                 "urgency": str(row.get("urgency") or "NORMAL"),
@@ -381,8 +391,145 @@ class OperatorConsole:
                 "credential_env": credential_env,
                 "provider_label": str(details.get("provider_label") or SECRET_SPECS[credential_env].label),
                 "signup_url": str(details.get("signup_url") or ""),
+                "lead_id": str(details.get("lead_id") or ""),
+                "plan_id": str(details.get("plan_id") or ""),
+                "authorization_status": authorization,
+                "authorization_at": row.get("authorization_at"),
+                "resolution_status": str(row.get("resolution_status") or "OPEN"),
+                "fulfilled_at": row.get("fulfilled_at"),
             })
         return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)
+
+    def pending_requests(self) -> list[dict[str, Any]]:
+        return [
+            row for row in self._resource_request_rows()
+            if row["resolution_status"] not in {"FULFILLED", "REJECTED"}
+            and row["authorization_status"] != "REJECTED"
+        ]
+
+    def _matching_discovery_evidence(self, row: Mapping[str, Any]) -> dict[str, Any]:
+        root = self.state_root / "application" / "resource_discovery"
+        lead_id = str(row.get("lead_id") or "")
+        credential_env = str(row.get("credential_env") or "")
+        verification: dict[str, Any] = {}
+        if lead_id:
+            candidate = root / "provider_verifications" / (lead_id.split(":")[-1] + ".json")
+            verification = self._load_json(candidate)
+            if verification.get("lead_id") != lead_id:
+                verification = {}
+        completed_trials: list[dict[str, Any]] = []
+        receipts = root / "trial_receipts"
+        for path in receipts.glob("*.json") if receipts.exists() else ():
+            value = self._load_json(path)
+            if not value:
+                continue
+            matches = (lead_id and value.get("lead_id") == lead_id) or (
+                credential_env and value.get("credential_env") == credential_env
+            )
+            if matches and str(value.get("status") or "").upper() == "COMPLETED":
+                completed_trials.append(value)
+        completed_trials.sort(key=lambda value: str(value.get("observed_at") or ""))
+        return {
+            "verification": verification,
+            "completed_trials": completed_trials,
+        }
+
+    def resource_requests(self) -> list[dict[str, Any]]:
+        pool = self.resource_status()
+        resources = list(pool.get("resources") or [])
+        latest = pool.get("latest_route") or {}
+        out: list[dict[str, Any]] = []
+        for row in self._resource_request_rows():
+            evidence = self._matching_discovery_evidence(row)
+            env_name = str(row.get("credential_env") or "")
+            matching = [
+                resource for resource in resources
+                if str(resource.get("credential_env") or "") == env_name
+            ]
+            used = any(int(resource.get("successes") or 0) > 0 for resource in matching)
+            if latest.get("selected_resource_id") in {r.get("resource_id") for r in matching}:
+                used = True
+            authorization = str(row.get("authorization_status") or "PENDING")
+            configured = self.vault.configured(env_name)
+            verification = evidence["verification"]
+            trials = evidence["completed_trials"]
+            stages = [
+                {"stage": "REQUESTED", "status": "COMPLETE", "at": row.get("created_at")},
+                {
+                    "stage": "AUTHORIZED",
+                    "status": authorization,
+                    "at": row.get("authorization_at"),
+                },
+                {
+                    "stage": "CREDENTIAL_READY",
+                    "status": "COMPLETE" if configured else "WAITING",
+                    "at": row.get("fulfilled_at") if configured else None,
+                },
+                {
+                    "stage": "VERIFIED",
+                    "status": "COMPLETE" if verification else "WAITING",
+                    "at": verification.get("observed_at") if verification else None,
+                },
+                {
+                    "stage": "TRIALLED",
+                    "status": "COMPLETE" if trials else "WAITING",
+                    "at": trials[-1].get("observed_at") if trials else None,
+                },
+                {
+                    "stage": "ACTIVE",
+                    "status": "COMPLETE" if matching else "WAITING",
+                    "at": max((str(r.get("last_success_at") or "") for r in matching), default="") or None,
+                },
+                {
+                    "stage": "USED",
+                    "status": "COMPLETE" if used else "WAITING",
+                    "at": max((str(r.get("last_success_at") or "") for r in matching), default="") or None,
+                },
+            ]
+            out.append({
+                **row,
+                "credential_configured": configured,
+                "verification_status": verification.get("status") if verification else None,
+                "completed_trial_count": len(trials),
+                "active_resource_ids": [str(r.get("resource_id") or "") for r in matching],
+                "active_models": [str(r.get("model") or "") for r in matching],
+                "used": used,
+                "stages": stages,
+            })
+        return out
+
+    def authorize_resource_request(
+        self, request_id: str, *, approved: bool, now: datetime | None = None
+    ) -> dict[str, Any]:
+        instant = now or datetime.now(timezone.utc)
+        service = HumanAssistanceService(state_root=self.state_root)
+        row = service.authorize_request(
+            request_id,
+            approved=approved,
+            now=instant,
+            evidence_refs=("operator-console:explicit-decision",),
+        )
+        fulfilled: list[dict[str, Any]] = []
+        details = row.get("details") if isinstance(row.get("details"), dict) else {}
+        credential_env = str(details.get("credential_env") or "")
+        if approved and credential_env in SECRET_SPECS and self.vault.configured(credential_env):
+            fulfilled = service.fulfill_matching(
+                kind="MODEL_RESOURCE_ACCESS",
+                detail_key="credential_env",
+                detail_value=credential_env,
+                now=instant,
+                evidence_refs=(
+                    f"operator-approved:{request_id}",
+                    f"secret-configured:{credential_env}",
+                ),
+            )
+        return {
+            "request_id": request_id,
+            "authorization_status": row.get("authorization_status"),
+            "credential_configured": bool(credential_env and self.vault.configured(credential_env)),
+            "fulfilled_request_ids": [str(item.get("request_id") or "") for item in fulfilled],
+            "resource_pool_sync": self._sync_pool() if approved else {"status": "NOT_RUN"},
+        }
 
     def resource_status(self) -> dict[str, Any]:
         root = self.state_root / "application" / "llm_resource_pool"
@@ -402,6 +549,7 @@ class OperatorConsole:
             resources.append({
                 "resource_id": resource_id,
                 "provider_label": raw.get("provider_label"),
+                "credential_env": raw.get("credential_env"),
                 "model": raw.get("model"),
                 "pricing_class": raw.get("pricing_class"),
                 "lifecycle": raw.get("lifecycle"),
@@ -455,12 +603,81 @@ class OperatorConsole:
             "latest_route": safe_latest,
         }
 
+    def survival_status(self) -> dict[str, Any]:
+        llm = self.resource_status()
+        disk = shutil.disk_usage(self.state_root)
+        disk_used_ratio = (disk.used / disk.total) if disk.total else 1.0
+        mem_total_kib = mem_available_kib = None
+        try:
+            values = {}
+            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                values[key] = int(value.strip().split()[0])
+            mem_total_kib = values.get("MemTotal")
+            mem_available_kib = values.get("MemAvailable")
+        except (OSError, ValueError, IndexError):
+            pass
+        memory_used_ratio = None
+        if mem_total_kib and mem_available_kib is not None:
+            memory_used_ratio = 1.0 - (mem_available_kib / mem_total_kib)
+        load_1m = None
+        try:
+            load_1m = os.getloadavg()[0]
+        except (AttributeError, OSError):
+            pass
+        disk_pressure = disk.free < 5 * 1024**3 or disk_used_ratio >= 0.90
+        memory_pressure = (
+            mem_available_kib is not None and mem_available_kib < 1024 * 1024
+        ) or (memory_used_ratio is not None and memory_used_ratio >= 0.90)
+        return {
+            "domains": [
+                {
+                    "domain": "LLM",
+                    "status": "ACTIVE" if llm.get("resource_count") else "MISSING",
+                    "resource_count": llm.get("resource_count", 0),
+                    "free_count": llm.get("free_count", 0),
+                    "pressure": (llm.get("policy") or {}).get("pressure") or "UNKNOWN",
+                },
+                {
+                    "domain": "STORAGE",
+                    "status": "PRESSURE" if disk_pressure else "HEALTHY",
+                    "total_gib": round(disk.total / 1024**3, 3),
+                    "free_gib": round(disk.free / 1024**3, 3),
+                    "used_ratio": round(disk_used_ratio, 4),
+                },
+                {
+                    "domain": "COMPUTE",
+                    "status": "PRESSURE" if memory_pressure else "HEALTHY",
+                    "cpu_count": os.cpu_count(),
+                    "load_1m": round(load_1m, 3) if load_1m is not None else None,
+                    "memory_available_gib": (
+                        round(mem_available_kib / 1024**2, 3)
+                        if mem_available_kib is not None else None
+                    ),
+                    "memory_used_ratio": (
+                        round(memory_used_ratio, 4)
+                        if memory_used_ratio is not None else None
+                    ),
+                },
+                {
+                    "domain": "HOSTING",
+                    "status": "LOCAL_PRIMARY",
+                    "state_root": "configured",
+                    "relocation": "resource-planner-managed",
+                },
+            ]
+        }
+
     def status(self) -> dict[str, Any]:
         return {
             "ok": True,
             "secrets": self.vault.status(),
             "pending_requests": self.pending_requests(),
+            "resource_requests": self.resource_requests(),
             "llm_resources": self.resource_status(),
+            "survival_resources": self.survival_status(),
         }
 
     def _sync_pool(self) -> dict[str, Any]:
@@ -473,6 +690,14 @@ class OperatorConsole:
     def store_secret(
         self, env_name: str, value: str, *, now: datetime | None = None
     ) -> dict[str, Any]:
+        waiting = [
+            row for row in self._resource_request_rows()
+            if row.get("credential_env") == env_name
+            and row.get("resolution_status") not in {"FULFILLED", "REJECTED"}
+            and row.get("authorization_status") == "PENDING"
+        ]
+        if waiting:
+            raise ValueError("approve the resource request before provisioning its credential")
         result = self.vault.put(env_name, value)
         instant = now or datetime.now(timezone.utc)
         fulfilled = HumanAssistanceService(state_root=self.state_root).fulfill_matching(
