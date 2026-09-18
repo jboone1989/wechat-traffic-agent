@@ -454,6 +454,14 @@ class ContentResourceScout:
         profiles = provider_profiles(all_trials, minimum_quality=0.75, minimum_trials=3)
         selected = select_provider(profiles, task_class="simple_public_text", quality_floor=0.75)
         selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
+        from .llm_resources import sync_llm_resource_pool
+        try:
+            pool_sync = sync_llm_resource_pool(state_root=self.state_root, now=now)
+        except Exception as exc:
+            pool_sync = {
+                "status": "SYNC_ERROR",
+                "error_type": type(exc).__name__,
+            }
         completed_count = sum(1 for row in executed_measurements if row.status == "COMPLETED")
         failed_count = len(executed_measurements) - completed_count
         return {
@@ -485,6 +493,7 @@ class ContentResourceScout:
                 "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
             },
             "selection": selection,
+            "llm_resource_pool": pool_sync,
             "replan_required": replan_required,
         }
 

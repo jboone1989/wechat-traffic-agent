@@ -207,7 +207,7 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
 
     root = Path(root)
     manifest = load_agent_manifest(manifest_path)
-    backend = load_optional_advisory_backend()
+    backend = load_optional_advisory_backend(state_root=root)
     domain_state = root / "application" / "domain_runtime"
     if (domain_state / "agent_state.json").exists():
         if backend is None:

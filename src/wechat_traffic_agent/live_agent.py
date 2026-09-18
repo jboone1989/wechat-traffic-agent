@@ -870,7 +870,7 @@ def build_live_agent_service(*, state_root: Path, application: Any, mind: Any | 
     return LiveAgentService(
         state_root=state_root,
         application=application,
-        backend=load_optional_advisory_backend(),
+        backend=load_optional_advisory_backend(state_root=state_root),
         mind=mind,
         host=os.environ.get("CONTENT_PUBLIC_AGENT_HOST", DEFAULT_HOST),
         port=int(os.environ.get("CONTENT_PUBLIC_AGENT_PORT", str(DEFAULT_PORT))),

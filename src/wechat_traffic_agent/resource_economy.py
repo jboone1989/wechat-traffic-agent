@@ -43,6 +43,23 @@ def _api_key() -> str | None:
     return str(os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("VIRTUALBRAIN_LLM_API_KEY") or "").strip() or None
 
 
+def _resource_pressure(*, available_funds: float, period_budget: float, runway_days: float | None) -> str:
+    ratio = (available_funds / period_budget) if period_budget > 0 else None
+    if available_funds <= 0 or (ratio is not None and ratio < 0.10) or (
+        runway_days is not None and runway_days < 3
+    ):
+        return "CRITICAL"
+    if (ratio is not None and ratio < 0.25) or (
+        runway_days is not None and runway_days < 7
+    ):
+        return "CONSERVE"
+    if (ratio is not None and ratio < 0.50) or (
+        runway_days is not None and runway_days < 14
+    ):
+        return "WATCH"
+    return "NORMAL"
+
+
 @dataclass(frozen=True)
 class BalanceObservation:
     observed_at: str
@@ -135,6 +152,8 @@ class ContentResourceEconomy:
         awareness = self.mind.session.resource_awareness
         burn = self._daily_burn(awareness.states, balance)
         runway = balance.total_balance / burn if burn is not None and burn > 0 else None
+        from .llm_resources import pool_metrics
+        llm_metrics = pool_metrics(self.state_root)
         state = ResourceState(
             observed_tick=int(self.mind.session.tick),
             observed_at=balance.observed_at,
@@ -152,12 +171,87 @@ class ContentResourceEconomy:
                 "deepseek_api_available": 1.0 if balance.is_available else 0.0,
                 "deepseek_granted_balance": balance.granted_balance,
                 "deepseek_topped_up_balance": balance.topped_up_balance,
+                **llm_metrics,
             },
             source_refs=(balance.evidence_ref,),
         )
         self.mind.session.resource_awareness.observe(state)
         self.mind.persist_resource_awareness()
-        return {"status": "OBSERVED", "balance": balance.payload(), "resource_state": self._state_payload(state)}
+        routing_policy = self.sync_llm_routing_policy(now=now)
+        return {
+            "status": "OBSERVED",
+            "balance": balance.payload(),
+            "resource_state": self._state_payload(state),
+            "llm_routing_policy": routing_policy,
+        }
+
+    def sync_llm_routing_policy(self, *, now: datetime) -> dict[str, Any]:
+        """Translate VirtualBrain resource awareness into a secret-free Runtime routing policy."""
+        current = self.mind.session.resource_awareness.current
+        if current is None:
+            pressure = "NORMAL"
+            funds = None
+            runway = None
+            evidence_refs = (f"vb-mind-tick:{int(self.mind.session.tick)}",)
+        else:
+            pressure = _resource_pressure(
+                available_funds=float(current.available_funds),
+                period_budget=float(current.period_budget),
+                runway_days=(
+                    None if current.runway_days is None else float(current.runway_days)
+                ),
+            )
+            funds = float(current.available_funds)
+            runway = (
+                None if current.runway_days is None else float(current.runway_days)
+            )
+            evidence_refs = tuple(dict.fromkeys(
+                [*current.source_refs, f"vb-mind-tick:{int(self.mind.session.tick)}"]
+            ))
+        reserve_default = max(5.0, self.monthly_budget * 0.20)
+        reserve_floor = float(
+            os.environ.get("CONTENT_LLM_RESERVE_FLOOR_CNY") or reserve_default
+        )
+        max_failovers = 2 if pressure in {"CRITICAL", "CONSERVE"} else 4
+        payload = {
+            "schema_version": "vb-llm-routing-policy.v1",
+            "observed_at": _iso(now),
+            "routing_mode": "FREE_FIRST_RESERVE_PAID",
+            "pressure": pressure,
+            "prefer_free": True,
+            "minimum_quality": float(
+                os.environ.get("CONTENT_LLM_MINIMUM_QUALITY") or 0.70
+            ),
+            "max_failovers": max_failovers,
+            "preferred_lifecycles": [
+                "TEMPORARY_FREE", "RECURRING_FREE", "STABLE_PAID"
+            ],
+            "paid_available_funds": funds,
+            "paid_reserve_floor": reserve_floor,
+            "runway_days": runway,
+            "mind_tick": int(self.mind.session.tick),
+            "evidence_refs": list(evidence_refs),
+        }
+        folder = self.state_root / "application" / "llm_resource_pool"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / "policy.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+        return {
+            "status": "SYNCED",
+            "routing_mode": payload["routing_mode"],
+            "pressure": pressure,
+            "prefer_free": True,
+            "max_failovers": max_failovers,
+            "paid_reserve_floor": reserve_floor,
+            "mind_tick": payload["mind_tick"],
+            "evidence_refs": list(evidence_refs),
+        }
 
     @staticmethod
     def _daily_burn(history: tuple[Any, ...], current: BalanceObservation) -> float | None:
