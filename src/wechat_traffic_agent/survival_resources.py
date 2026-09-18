@@ -271,6 +271,105 @@ class SurvivalResourceManager:
         _atomic_json(self.hosts_path, rows)
         return row
 
+    def discover_agent_network_hosts(
+        self, network_service: Any, *, now: datetime
+    ) -> dict[str, Any]:
+        capability = "survival.workload.deploy.v1"
+        discovered = network_service.discover(capability, timeout=8.0)
+        rows = self.remote_hosts()
+        accepted: list[str] = []
+        rejected: list[dict[str, str]] = []
+        for raw in discovered:
+            candidate = dict(raw or {})
+            agent_id = str(candidate.get("agent_id") or "").strip()
+            public_key = str(candidate.get("public_key") or "").strip()
+            endpoint = str(candidate.get("endpoint") or "").strip()
+            card_url = str(candidate.get("agent_card_url") or "").strip()
+            if not agent_id or not public_key or not endpoint or not card_url:
+                rejected.append({"agent_id": agent_id, "reason": "INCOMPLETE_IDENTITY"})
+                continue
+            if str(candidate.get("reachability") or "").upper() not in {"", "REACHABLE"}:
+                rejected.append({"agent_id": agent_id, "reason": "UNREACHABLE"})
+                continue
+            try:
+                self._validate_remote_url(endpoint)
+                self._validate_remote_url(card_url)
+                card = self._http_json(card_url, method="GET", timeout=8.0)
+                from agent_network.a2a_card import verify_signed_agent_card
+
+                verify_signed_agent_card(
+                    card,
+                    public_key=public_key,
+                    network_id=str(candidate.get("network_id") or "") or None,
+                    seed_agent_id=agent_id,
+                    key_id=str(candidate.get("key_id") or "") or None,
+                    endpoint=endpoint,
+                )
+                skills = {
+                    str(item.get("id") or "")
+                    for item in card.get("skills") or ()
+                    if isinstance(item, dict)
+                }
+                if capability not in skills:
+                    raise ValueError("signed agent card omitted deployment capability")
+                descriptor = card.get("survival_resource") or {}
+                if not isinstance(descriptor, dict):
+                    raise ValueError("signed agent card survival resource descriptor is invalid")
+                health_url = str(descriptor.get("health_url") or "").strip()
+                control_url = str(descriptor.get("control_url") or "").strip()
+                host_instance_id = str(descriptor.get("host_instance_id") or "").strip()
+                if not health_url or not control_url or not host_instance_id:
+                    raise ValueError("signed agent card survival resource descriptor is incomplete")
+                self._validate_remote_url(health_url)
+                self._validate_remote_url(control_url)
+                if not (
+                    self._same_origin(endpoint, card_url)
+                    and self._same_origin(endpoint, health_url)
+                    and self._same_origin(endpoint, control_url)
+                ):
+                    raise ValueError("survival resource endpoints must share the Agent endpoint origin")
+                if host_instance_id == self._host_instance_id():
+                    raise ValueError("network candidate is the local physical host")
+                host_id = "remote-host:" + sha256(
+                    (agent_id + "|" + host_instance_id + "|" + public_key).encode()
+                ).hexdigest()[:20]
+                rows = [row for row in rows if row.get("host_id") != host_id]
+                rows.append({
+                    "host_id": host_id,
+                    "name": str(card.get("name") or agent_id),
+                    "health_url": health_url,
+                    "control_url": control_url,
+                    "capacity": dict(descriptor.get("capacity") or {}),
+                    "reliability": str(descriptor.get("reliability") or "UNKNOWN").upper(),
+                    "status": "NETWORK_DISCOVERED",
+                    "deployment_capable": False,
+                    "host_instance_id": host_instance_id,
+                    "expected_agent_id": agent_id,
+                    "expected_key_id": str(card.get("key_id") or candidate.get("key_id") or ""),
+                    "expected_public_key": public_key,
+                    "network_id": str(candidate.get("network_id") or ""),
+                    "network_endpoint": endpoint,
+                    "agent_card_url": card_url,
+                    "trust_source": "AGENT_NETWORK_SIGNED_CARD",
+                    "created_at": _iso(now),
+                    "last_verified_at": None,
+                })
+                _atomic_json(self.hosts_path, rows)
+                verified = self.verify_remote_host(host_id, now=now)
+                if verified.get("status") == "ACTIVE":
+                    accepted.append(host_id)
+                else:
+                    rejected.append({"agent_id": agent_id, "reason": str(verified.get("last_error") or "VERIFY_FAILED")})
+            except Exception as exc:
+                rejected.append({"agent_id": agent_id, "reason": type(exc).__name__})
+        return {
+            "status": "DISCOVERED" if accepted else "NO_VERIFIED_REMOTE_HOST",
+            "capability": capability,
+            "candidate_count": len(discovered),
+            "accepted_host_ids": accepted,
+            "rejected": rejected,
+        }
+
     def verify_remote_host(self, host_id: str, *, now: datetime) -> dict[str, Any]:
         rows = self.remote_hosts()
         target = next((row for row in rows if row.get("host_id") == host_id), None)
@@ -291,6 +390,18 @@ class SurvivalResourceManager:
             remote_instance_id = str(payload.get("host_instance_id") or "").strip()
             if remote_instance_id and remote_instance_id == self._host_instance_id():
                 raise RuntimeError("remote host resolves to the local physical host")
+            expected_instance_id = str(target.get("host_instance_id") or "").strip()
+            if expected_instance_id and remote_instance_id != expected_instance_id:
+                raise RuntimeError("remote host instance identity mismatch")
+            expected_agent_id = str(target.get("expected_agent_id") or "").strip()
+            if expected_agent_id and str(payload.get("agent_id") or "") != expected_agent_id:
+                raise RuntimeError("remote host agent identity mismatch")
+            expected_key_id = str(target.get("expected_key_id") or "").strip()
+            if expected_key_id and str(payload.get("key_id") or "") != expected_key_id:
+                raise RuntimeError("remote host key identity mismatch")
+            expected_public_key = str(target.get("expected_public_key") or "").strip()
+            if expected_public_key and str(payload.get("public_key") or "") != expected_public_key:
+                raise RuntimeError("remote host public key mismatch")
             target["status"] = "ACTIVE"
             target["last_verified_at"] = _iso(now)
             target["host_instance_id"] = remote_instance_id or None
@@ -634,6 +745,18 @@ class SurvivalResourceManager:
             address = ipaddress.ip_address(raw_ip)
             if not address.is_global:
                 raise ValueError("remote endpoint resolved to non-public address")
+
+    @staticmethod
+    def _same_origin(left: str, right: str) -> bool:
+        a = urlparse(left)
+        b = urlparse(right)
+        return (
+            a.scheme.lower() == b.scheme.lower()
+            and (a.hostname or "").lower().rstrip(".")
+            == (b.hostname or "").lower().rstrip(".")
+            and (a.port or (443 if a.scheme == "https" else 80))
+            == (b.port or (443 if b.scheme == "https" else 80))
+        )
 
     @staticmethod
     def _host_instance_id() -> str:

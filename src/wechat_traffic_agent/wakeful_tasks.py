@@ -118,6 +118,22 @@ class WakefulContentTaskRunner:
                 observed = survival.observe(now=now)
                 rows["survival_resource_observation"] = observed
                 infrastructure_pressure = str(observed.get("pressure") or "UNKNOWN")
+                network_service = getattr(self, "network_service", None)
+                if network_service is not None and not any(
+                    row.get("status") == "ACTIVE"
+                    for row in survival.remote_hosts()
+                ):
+                    try:
+                        rows["remote_machine_discovery"] = (
+                            survival.discover_agent_network_hosts(
+                                network_service, now=now
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        rows["remote_machine_discovery"] = {
+                            "status": "UNAVAILABLE",
+                            **self._error(exc),
+                        }
                 actions = survival.execute_approved(now=now)
                 rows["survival_resource_actions"] = actions
                 if actions.get("results"):
