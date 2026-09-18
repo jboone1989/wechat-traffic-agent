@@ -768,15 +768,40 @@ class ContentMind:
         }
 
     def audience_outcome_for_publication(self, publication_id: str) -> dict[str, Any] | None:
-        """Return the persisted world-settled audience outcome for one publication."""
+        """Return world-settled audience outcome from hot state or durable archive."""
         publication_id = str(publication_id).strip()
+        if not publication_id:
+            return None
         matches = [
             row for row in self._strategy_outcomes.values()
             if str(row.get("publication_id") or "") == publication_id
         ]
+        archive_root = self.root / "archive"
+        if archive_root.exists():
+            for path in sorted(archive_root.glob("*.jsonl")):
+                for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"Content Mind archive is corrupt at {path.name}:{line_number}"
+                        ) from exc
+                    if not isinstance(row, dict):
+                        raise ValueError(
+                            f"Content Mind archive row is invalid at {path.name}:{line_number}"
+                        )
+                    if str(row.get("publication_id") or "") == publication_id:
+                        matches.append(row)
         if not matches:
             return None
-        matches.sort(key=lambda row: (str(row.get("observed_at") or ""), str(row.get("outcome_id") or "")))
+        matches.sort(
+            key=lambda row: (
+                str(row.get("observed_at") or ""),
+                str(row.get("outcome_id") or ""),
+            )
+        )
         return deepcopy(matches[-1])
 
     def strategy_context(self, *, topic: str) -> dict[str, Any]:
