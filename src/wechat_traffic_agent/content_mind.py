@@ -576,6 +576,9 @@ class ContentMind:
                         "identity_relevance": 0.25, "emotional_intensity": 0.0,
                     },
                     authority_id=AUTHORITY_ID,
+                    interest_feedback={
+                        "name": topic, "novelty": 0.0, "effort": 0.0, "learning_rate": 0.15,
+                    },
                 )
             stored = {
                 "outcome_id": outcome_id, "topic": topic, "profile_name": profile,
@@ -606,6 +609,18 @@ class ContentMind:
             "total_strategy_outcomes": len(self._strategy_outcomes),
             "causal_claim": False,
         }
+
+    def audience_outcome_for_publication(self, publication_id: str) -> dict[str, Any] | None:
+        """Return the persisted world-settled audience outcome for one publication."""
+        publication_id = str(publication_id).strip()
+        matches = [
+            row for row in self._strategy_outcomes.values()
+            if str(row.get("publication_id") or "") == publication_id
+        ]
+        if not matches:
+            return None
+        matches.sort(key=lambda row: (str(row.get("observed_at") or ""), str(row.get("outcome_id") or "")))
+        return deepcopy(matches[-1])
 
     def strategy_context(self, *, topic: str) -> dict[str, Any]:
         """Expose world-settled audience beliefs for the next prospective decision."""
@@ -681,7 +696,7 @@ class ContentMind:
         model_calls: int,
         evidence_refs: Iterable[str],
     ) -> dict[str, Any]:
-        """Learn topic preference only from bounded process outcome, never audience claims."""
+        """Record bounded process effort without assigning world value to the topic."""
         event_id = f"content-process:{cycle}"
         if event_id in self._observed_event_ids:
             interest = self.session.interests.get(topic)
@@ -692,10 +707,7 @@ class ContentMind:
         refs = list(dict.fromkeys(str(ref).strip() for ref in evidence_refs if str(ref).strip()))
         if not refs:
             raise ValueError("Content Mind process experience requires evidence_refs")
-        before = self.session.interests.get(topic)
-        novelty = 1.0 if before is None else max(0.0, 1.0 - float(before.familiarity))
         effort = min(1.0, max(0.05, int(model_calls) / 8.0))
-        outcome = 1.0 if passed else 0.0
         self.session.ingest_life_experience(
             {
                 "event_id": event_id,
@@ -708,16 +720,9 @@ class ContentMind:
                 "significance": 0.0,
                 "source": "content-process",
                 "confidence": 1.0,
-                "outcome": outcome,
                 "domain": "content-process",
             },
             authority_id=AUTHORITY_ID,
-            interest_feedback={
-                "name": topic,
-                "novelty": novelty,
-                "effort": effort,
-                "learning_rate": 0.15,
-            },
         )
         self._observed_event_ids.append(event_id)
         self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
