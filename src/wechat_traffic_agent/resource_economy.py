@@ -309,10 +309,19 @@ class ContentResourceEconomy:
             current = self.mind.session.resource_awareness.current
         assert current is not None
         awareness = self.mind.session.resource_awareness
-        recent_outcomes = list(awareness.outcomes[-12:])
-        # A provider balance that did not move is not proof the work was free; billing may lag.
-        # Known no-op replays are also not generation-cost evidence. Learn the cost prior only
-        # from positive, actually observed balance decreases on non-noop episodes.
+        proposal_capability = {
+            item.proposal_id: item.capability_id for item in awareness.proposals
+        }
+        episode_capability = {
+            item.episode_id: proposal_capability.get(item.proposal_id)
+            for item in awareness.episodes
+        }
+        recent_outcomes = [
+            item for item in awareness.outcomes
+            if episode_capability.get(item.episode_id) == "content.continuous"
+        ][-12:]
+        # Habitat placement and other resource decisions share VirtualBrain's resource
+        # memory, but they must never contaminate the monetary prior for content generation.
         cost_evidence = [
             item.actual_cost for item in recent_outcomes
             if item.actual_cost > 0.0 and "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary

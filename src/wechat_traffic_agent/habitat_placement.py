@@ -148,6 +148,8 @@ class CapabilityWorker:
     reliability: float = 0.5
     cost_class: str = COST_FREE
     lease_expires_at: str | None = None
+    first_seen_at: str | None = None
+    last_seen_at: str | None = None
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -176,6 +178,10 @@ class CapabilityWorker:
             raise ValueError("unsupported worker cost_class")
         if self.lease_expires_at is not None:
             _parse(_text(self.lease_expires_at, "worker lease_expires_at"))
+        if self.first_seen_at is not None:
+            _parse(_text(self.first_seen_at, "worker first_seen_at"))
+        if self.last_seen_at is not None:
+            _parse(_text(self.last_seen_at, "worker last_seen_at"))
         if type(self.enabled) is not bool:
             raise ValueError("worker enabled must be boolean")
 
@@ -312,6 +318,8 @@ class CapabilityWorkerRegistry:
             memory_gib=current.memory_gib if memory_gib is None else float(memory_gib),
             disk_free_gib=current.disk_free_gib if disk_free_gib is None else float(disk_free_gib),
             reliability=current.reliability if reliability is None else float(reliability),
+            last_seen_at=_iso(now),
+            first_seen_at=current.first_seen_at or _iso(now),
         )
         rows[worker_id] = updated
         self._persist(list(rows.values()))
@@ -339,6 +347,8 @@ class CapabilityWorkerRegistry:
                 reliability=reliability,
                 cost_class=COST_FREE,
                 lease_expires_at=_iso(now + timedelta(seconds=lease_seconds)),
+                first_seen_at=_iso(now),
+                last_seen_at=_iso(now),
             )
         else:
             caps = tuple(dict.fromkeys((*current.capability_ids, capability_id)))
@@ -348,6 +358,8 @@ class CapabilityWorkerRegistry:
                 network_id=network_id or current.network_id,
                 reliability=max(current.reliability, reliability),
                 lease_expires_at=_iso(now + timedelta(seconds=lease_seconds)),
+                first_seen_at=current.first_seen_at or _iso(now),
+                last_seen_at=_iso(now),
             )
         rows[current.worker_id] = current
         self._persist(list(rows.values()))
@@ -492,6 +504,7 @@ class HabitatPlacementController:
         self.registry = CapabilityWorkerRegistry(state_root=self.state_root)
         self.queue = PlacementTaskQueue(state_root=self.state_root)
         self.network_service = network_service
+        self.learning: Any | None = None
         self.root = self.state_root / "application" / "habitat_placement"
 
     @staticmethod

@@ -120,3 +120,51 @@ def test_burn_uses_older_window_when_observations_are_every_five_minutes(tmp_pat
     final = economy.observe(NOW + timedelta(minutes=15))
     assert final["resource_state"]["estimated_daily_burn"] == pytest.approx(28.8)
     assert final["resource_state"]["runway_days"] == pytest.approx(99.7 / 28.8)
+
+
+def test_habitat_outcome_does_not_contaminate_content_cycle_money_prior(tmp_path, monkeypatch):
+    from virtualbrain.research.resource_awareness import ActionProposal, DecisionEpisode, Outcome
+
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(economy.observer, "observe", lambda now: balance(when=now, total=97.35))
+    economy.observe(NOW)
+
+    awareness = mind.session.resource_awareness
+    awareness.register_proposal(ActionProposal(
+        proposal_id="habitat-proposal:test",
+        action="choose capability habitat placement",
+        capability_id="content.research",
+        estimated_cost=0.0,
+        expected_external_value=0.8,
+        expected_learning_value=0.8,
+        expected_reproduction_value=0.5,
+        created_tick=int(mind.session.tick),
+        evidence_refs=("test:habitat",),
+    ))
+    awareness.record_decision(DecisionEpisode(
+        episode_id="habitat-decision:test",
+        proposal_id="habitat-proposal:test",
+        decision="EXECUTE_CHEAPER",
+        options_considered=("EXECUTE", "EXECUTE_CHEAPER"),
+        predicted_total_value=0.8,
+        estimated_cost=0.0,
+        created_tick=int(mind.session.tick),
+        evidence_refs=("test:habitat",),
+    ))
+    awareness.record_outcome(Outcome(
+        outcome_id="habitat-outcome:test",
+        episode_id="habitat-decision:test",
+        result_summary="habitat synthetic isolation check",
+        actual_cost=9.0,
+        external_value=1.0,
+        learning_value=1.0,
+        reproduction_value=1.0,
+        reputation_delta=0.0,
+        observed_tick=int(mind.session.tick),
+        evidence_refs=("test:habitat",),
+    ))
+
+    decision = economy.begin_cycle(now=NOW + timedelta(minutes=1), cycle="cycle-after-habitat")
+
+    assert decision["estimated_cost"] == pytest.approx(economy.bootstrap_cycle_estimate)

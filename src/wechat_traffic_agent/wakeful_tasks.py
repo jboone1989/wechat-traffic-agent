@@ -89,6 +89,18 @@ class WakefulContentTaskRunner:
                 )
                 rows["habitat_placement"] = placement_review
                 offload_status = str(placement_review.get("offload_status") or "UNAVAILABLE")
+                habitat_learning = getattr(self, "habitat_learning", None)
+                if habitat_learning is not None:
+                    habitat_state = habitat_learning.observe_habitat(
+                        now=now,
+                        current_resource=current,
+                        placement_review=placement_review,
+                    )
+                    rows["habitat_learning"] = {
+                        "status": "OBSERVED",
+                        "state": habitat_state.payload(),
+                        "candidate_catalog": list(habitat_learning.candidate_catalog()),
+                    }
             except Exception as exc:  # noqa: BLE001
                 rows["habitat_placement"] = self._error(exc)
                 rows["status"] = "DEGRADED"

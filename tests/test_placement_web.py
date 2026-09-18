@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from wechat_traffic_agent.content_mind import ContentMind
+from wechat_traffic_agent.habitat_learning import HabitatLearningEngine
 from wechat_traffic_agent.habitat_placement import (
     CapabilityWorker,
     HabitatPlacementController,
@@ -130,3 +132,29 @@ def test_public_web_remote_timeout_safely_falls_back_and_requeues(tmp_path):
     tasks = controller.queue.tasks()
     assert len(tasks) == 1
     assert tasks[0].status == TASK_PENDING
+
+
+def test_public_web_execution_feeds_real_outcome_back_into_virtualbrain(tmp_path):
+    local = _LocalSearch()
+    service = _RemoteService()
+    controller = _controller(tmp_path, service)
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    learning = HabitatLearningEngine(
+        state_root=tmp_path,
+        mind=mind,
+        placement=controller,
+    )
+    controller.learning = learning
+    learning.current_pressure = lambda: "CRITICAL"
+    search = PlacementAwareWebSearch(local_search=local, placement=controller)
+
+    rows = asyncio.run(search.search(query="bitcoin market structure", now=NOW))
+
+    assert rows[0]["title"] == "remote"
+    assert local.calls == 0
+    assert service.delegations == 1
+    assert len(learning.outcomes()) == 1
+    assert learning.outcomes()[0].action == "OFFLOAD_TO_WORKER"
+    assert learning.outcomes()[0].success is True
+    assert len(mind.session.resource_awareness.outcomes) == 1
+    assert len(mind.session.resource_awareness.reflections) == 1

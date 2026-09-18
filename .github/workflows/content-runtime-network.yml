@@ -28,6 +28,7 @@ on:
       - "src/wechat_traffic_agent/survival_resources.py"
       - "src/wechat_traffic_agent/survival_optimization.py"
       - "src/wechat_traffic_agent/habitat_placement.py"
+      - "src/wechat_traffic_agent/habitat_learning.py"
       - "src/wechat_traffic_agent/capability_worker.py"
       - "src/wechat_traffic_agent/placement_web.py"
       - "src/wechat_traffic_agent/channels/agent_live_page.py"
@@ -71,6 +72,7 @@ on:
       - "tests/test_content_resource_scout.py"
       - "tests/test_survival_resources.py"
       - "tests/test_habitat_placement.py"
+      - "tests/test_habitat_learning.py"
       - "tests/test_placement_web.py"
       - "tests/test_capability_worker.py"
       - "tests/test_trading_network_source.py"
@@ -108,6 +110,7 @@ jobs:
           src/wechat_traffic_agent/survival_resources.py
           src/wechat_traffic_agent/survival_optimization.py
           src/wechat_traffic_agent/habitat_placement.py
+          src/wechat_traffic_agent/habitat_learning.py
           src/wechat_traffic_agent/capability_worker.py
           src/wechat_traffic_agent/placement_web.py
           scripts/run_capability_worker.py
@@ -179,7 +182,7 @@ jobs:
           tests/test_world_feed.py tests/test_prospective_predictions.py
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
           tests/test_survival_resources.py tests/test_habitat_placement.py
-          tests/test_placement_web.py tests/test_capability_worker.py
+          tests/test_habitat_learning.py tests/test_placement_web.py tests/test_capability_worker.py
       - name: Build source bundle
         run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=.draft-ci --exclude=.editorial-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
       - uses: actions/upload-artifact@v4

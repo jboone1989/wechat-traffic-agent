@@ -92,6 +92,7 @@ def main() -> int:
     from wechat_traffic_agent.survival_resources import ComputeResourceScout, SurvivalNodeRegistry
     from wechat_traffic_agent.survival_optimization import HostRecoveryPlanner, persist_runtime_footprint
     from wechat_traffic_agent.habitat_placement import HabitatPlacementController
+    from wechat_traffic_agent.habitat_learning import HabitatLearningEngine
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
     compute_resource_scout = ComputeResourceScout(state_root=state_root, capability_runtime=app.runtime)
     persist_runtime_footprint(
@@ -103,6 +104,12 @@ def main() -> int:
     host_recovery = HostRecoveryPlanner(state_root=state_root)
     survival_nodes = SurvivalNodeRegistry(state_root=state_root)
     habitat_placement = HabitatPlacementController(state_root=state_root)
+    habitat_learning = HabitatLearningEngine(
+        state_root=state_root,
+        mind=content_mind,
+        placement=habitat_placement,
+    )
+    habitat_placement.learning = habitat_learning
     private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(
         state_root=state_root,
@@ -232,6 +239,7 @@ def main() -> int:
         host_recovery=host_recovery,
         survival_nodes=survival_nodes,
         habitat_placement=habitat_placement,
+        habitat_learning=habitat_learning,
         daily_reflection=daily_reflection,
         human_assistance=human_assistance,
         network_service=network_service,
