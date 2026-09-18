@@ -255,3 +255,38 @@ def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
     runtime.schedule_next("RESOURCE_REVIEW", NOW)
     wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "RESOURCE_REVIEW")
     assert wake.at == NOW + timedelta(hours=1)
+
+
+def test_critical_pressure_cancels_expensive_wakes_and_reports_hibernation(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.ensure_initial_plans(NOW)
+    runtime.set_resource_pressure("CRITICAL")
+    tasks = {wake.task for wake in runtime.core.snapshot().pending_plans}
+    assert tasks <= {"RESOURCE_REVIEW", "CHECK_OUTCOMES"}
+    assert runtime.public_snapshot()["presence"] == "HIBERNATE"
+
+
+def test_conserve_doubles_content_interval(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.set_resource_pressure("CONSERVE")
+    runtime.schedule_next("CONTENT_COGNITION", NOW)
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.task == "CONTENT_COGNITION"
+    )
+    assert wake.at == NOW + timedelta(hours=12)
+
+
+def test_resource_recovery_reschedules_cognition_after_hibernation(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.ensure_initial_plans(NOW)
+    runtime.set_resource_pressure("CRITICAL")
+    assert not any(
+        wake.task == "CONTENT_COGNITION"
+        for wake in runtime.core.snapshot().pending_plans
+    )
+    runtime.set_resource_pressure("WATCH")
+    tasks = {wake.task for wake in runtime.core.snapshot().pending_plans}
+    assert "CONTENT_COGNITION" in tasks
+    assert "OBSERVE_WORLD" in tasks
+    assert runtime.public_snapshot()["presence"] == "AWAKE"
