@@ -9,6 +9,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Iterable, Mapping
 
+from .audience_reward import audience_reward, engagement_rate
+
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
 # AutobiographicalSelf.TRUSTED_EXPERIENCE_SOURCES. "session" is the canonical
@@ -509,7 +511,7 @@ class ContentMind:
         }
 
     def observe_strategy_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
-        """Ingest mature Website outcomes as persistent, non-causal strategy experience."""
+        """Ingest complete mature reader outcomes; UNKNOWN reward never becomes zero."""
         applied: list[dict[str, Any]] = []
         duplicates = 0
         rows = sorted(
@@ -524,11 +526,27 @@ class ContentMind:
                 str(ref).strip() for ref in row.get("evidence_refs", ()) if str(ref).strip()
             ))
             raw_pageviews = row.get("pageviews_24h")
+            raw_tracked = row.get("tracked_pageviews_24h")
+            raw_engaged = row.get("engaged_readers_30s_24h")
             if not outcome_id or not topic or not profile or not refs:
                 raise ValueError("strategy outcome requires id, topic, profile, and evidence_refs")
-            if isinstance(raw_pageviews, bool) or not isinstance(raw_pageviews, (int, float)) or raw_pageviews < 0:
-                raise ValueError("strategy outcome requires non-negative 24h pageviews")
+            metrics = (raw_pageviews, raw_tracked, raw_engaged)
+            if any(
+                isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0
+                for value in metrics
+            ):
+                raise ValueError("strategy outcome requires non-negative complete audience metrics")
             pageviews = float(raw_pageviews)
+            tracked = float(raw_tracked)
+            engaged = float(raw_engaged)
+            rate = engagement_rate(
+                engaged_readers_30s=engaged, tracked_pageviews=tracked
+            )
+            if rate is None:
+                raise ValueError("strategy outcome engagement denominator is unavailable")
+            supplied_rate = row.get("engagement_rate_24h")
+            if supplied_rate is not None and abs(float(supplied_rate) - rate) > 1e-9:
+                raise ValueError("strategy outcome engagement rate disagrees with evidence")
             if outcome_id in self._strategy_outcomes:
                 duplicates += 1
                 continue
@@ -538,31 +556,36 @@ class ContentMind:
                 if item.get("topic") == topic and isinstance(item.get("pageviews_24h"), (int, float))
             ]
             baseline = float(median(prior)) if prior else None
-            if baseline is None or (baseline == 0.0 and pageviews == 0.0):
-                reward = 0.5
-            elif baseline == 0.0:
-                reward = 1.0
-            else:
-                reward = pageviews / (pageviews + baseline)
-            event_id = "content-strategy-outcome:" + outcome_id
-            self.session.ingest_life_experience(
-                {
-                    "event_id": event_id, "tick": int(self.session.tick),
-                    "summary": (
-                        f"Website strategy {profile} on topic {topic} produced "
-                        f"{int(pageviews) if pageviews.is_integer() else pageviews} pageviews in the mature 24h window."
-                    ),
-                    "evidence_refs": refs, "significance": min(1.0, 0.25 + 0.1 * len(prior)),
-                    "source": "website-audience-outcome", "confidence": 1.0,
-                    "outcome": reward, "domain": "content-audience",
-                    "identity_relevance": 0.25, "emotional_intensity": 0.0,
-                },
-                authority_id=AUTHORITY_ID,
+            reward = audience_reward(
+                pageviews=pageviews,
+                baseline_pageviews=baseline,
+                engagement_rate_value=rate,
             )
+            event_id = "content-strategy-outcome:" + outcome_id
+            if reward is not None:
+                self.session.ingest_life_experience(
+                    {
+                        "event_id": event_id, "tick": int(self.session.tick),
+                        "summary": (
+                            f"Website strategy {profile} on topic {topic} produced "
+                            f"{pageviews:g} pageviews and {rate:.3f} 30s engagement in the mature 24h window."
+                        ),
+                        "evidence_refs": refs, "significance": min(1.0, 0.25 + 0.1 * len(prior)),
+                        "source": "website-audience-outcome", "confidence": 1.0,
+                        "outcome": reward, "domain": "content-audience",
+                        "identity_relevance": 0.25, "emotional_intensity": 0.0,
+                    },
+                    authority_id=AUTHORITY_ID,
+                )
             stored = {
                 "outcome_id": outcome_id, "topic": topic, "profile_name": profile,
                 "pageviews_24h": pageviews, "baseline_pageviews_24h": baseline,
-                "relative_reward": reward, "observed_at": str(row.get("observed_at") or ""),
+                "tracked_pageviews_24h": tracked,
+                "engaged_readers_30s_24h": engaged,
+                "engagement_rate_24h": rate,
+                "relative_reward": reward,
+                "settlement_status": "SETTLED" if reward is not None else "UNKNOWN_BASELINE",
+                "observed_at": str(row.get("observed_at") or ""),
                 "publication_id": str(row.get("publication_id") or ""),
                 "evidence_refs": refs,
             }
@@ -585,7 +608,7 @@ class ContentMind:
         }
 
     def strategy_context(self, *, topic: str) -> dict[str, Any]:
-        """Expose learned audience-response beliefs for the next prospective decision."""
+        """Expose world-settled audience beliefs for the next prospective decision."""
         topic = str(topic).strip()
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in self._strategy_outcomes.values():
@@ -594,15 +617,28 @@ class ContentMind:
         counts: dict[str, int] = {}
         mean_rewards: dict[str, float | None] = {}
         mean_pageviews: dict[str, float | None] = {}
+        mean_engagement: dict[str, float | None] = {}
         refs: list[str] = []
         for profile, values in grouped.items():
             if not profile:
                 continue
-            rewards = [float(row["relative_reward"]) for row in values]
+            scored = [
+                row for row in values
+                if isinstance(row.get("relative_reward"), (int, float))
+                and not isinstance(row.get("relative_reward"), bool)
+            ]
+            rewards = [float(row["relative_reward"]) for row in scored]
             views = [float(row["pageviews_24h"]) for row in values]
-            counts[profile] = len(values)
+            engagement = [
+                float(row["engagement_rate_24h"]) for row in values
+                if isinstance(row.get("engagement_rate_24h"), (int, float))
+            ]
+            counts[profile] = len(scored)
             mean_rewards[profile] = sum(rewards) / len(rewards) if rewards else None
             mean_pageviews[profile] = sum(views) / len(views) if views else None
+            mean_engagement[profile] = (
+                sum(engagement) / len(engagement) if engagement else None
+            )
             for row in values:
                 refs.extend(row.get("evidence_refs") or ())
         predictive = self.session.predictive_learning.calibration_context(domain="content")
@@ -623,10 +659,13 @@ class ContentMind:
                 "mean_reliability": float(row["mean_reliability"]),
             }
         return {
-            "topic": topic, "outcome_count": sum(counts.values()),
+            "topic": topic,
+            "outcome_count": sum(len(values) for values in grouped.values()),
+            "settled_reward_count": sum(counts.values()),
             "samples_by_profile": counts,
             "mean_relative_reward_by_profile": mean_rewards,
             "mean_pageviews_24h_by_profile": mean_pageviews,
+            "mean_engagement_rate_24h_by_profile": mean_engagement,
             "prediction_calibration_by_profile": prediction_calibration_by_profile,
             "evidence_refs": list(dict.fromkeys(str(ref) for ref in refs if str(ref).strip())),
             "minimum_profile_samples": MIN_STRATEGY_PROFILE_SAMPLES,
