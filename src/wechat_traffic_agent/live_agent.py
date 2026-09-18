@@ -936,6 +936,20 @@ class LiveAgentService:
                 return JSONResponse({"error": "resource_metadata_store_failed"}, status_code=500)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
+        async def operator_force_wake(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                now = datetime.now(timezone.utc)
+                result = operator_console.force_wake(now=now)
+                if result.get("status") == "FORCED_AWAKE" and self.wakeful is not None:
+                    self.wakeful.operator_force_wake(now)
+            except Exception:
+                return JSONResponse({"error": "force_wake_failed"}, status_code=500)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         async def operator_logout(request: Request):
             if operator_console is None:
                 return JSONResponse({"error": "not_found"}, status_code=404)
@@ -964,6 +978,7 @@ class LiveAgentService:
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
                 Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
+                Route("/operator/api/force-wake", operator_force_wake, methods=["POST"]),
                 Route("/operator/api/logout", operator_logout, methods=["POST"]),
             ])
         return Starlette(routes=routes)
