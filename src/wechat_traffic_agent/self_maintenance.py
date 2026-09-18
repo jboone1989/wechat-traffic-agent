@@ -16,6 +16,7 @@ from agent_runtime.evolution import EvolutionFactKind
 
 
 _KNOWN_COGNITION_ERROR = "BELIEF_CHANGED requires a persisted worldview change"
+_KNOWN_MODEL_JSON_ERROR = "backend did not return a JSON object"
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -30,6 +31,14 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _cycle_ref(value: object) -> str:
     return str(value or "unknown").strip() or "unknown"
+
+
+def _read_last_seen(path: Path) -> str:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return ""
+    return str(payload.get("last_seen_at") or "") if isinstance(payload, dict) else ""
 
 
 class SelfMaintenanceService:
@@ -165,26 +174,63 @@ class SelfMaintenanceService:
             case.record_remediation(
                 "Treat durable worldview state as authoritative and normalize an impossible BELIEF_CHANGED narration instead of terminating the cycle."
             )
+        elif _KNOWN_MODEL_JSON_ERROR in message:
+            contract_observation = case.observe(
+                statement="A bounded cognition classifier returned no usable JSON object after its repair attempt.",
+                scope="content-cognition-contract",
+                kind=ObservationKind.FAILURE,
+                evidence_refs=evidence_refs,
+                now=now,
+            )
+            hypothesis = case.hypothesize(
+                statement="A non-authoritative relevance classifier is allowed to terminate the whole content cycle when its model output is malformed.",
+                scope="content-cognition-contract",
+                predicts="The failed cycle traceback ends in a relevance/filter parser after repeated malformed model responses.",
+                falsifier="The malformed response came from an authoritative state transition whose failure cannot safely degrade to no-match.",
+            )
+            case.support(hypothesis.hypothesis_id, [contract_observation.observation_id])
+            case.conclude(
+                hypothesis.hypothesis_id,
+                summary="The relevance gate should fail closed to no-match while preserving the classifier failure as evidence.",
+                now=now,
+            )
+            case.record_remediation(
+                "After one bounded repair attempt, preserve invalid-output evidence and return no admitted matches instead of aborting the full cycle."
+            )
         return case
 
     @staticmethod
     def _proposal_for(*, error_type: str, message: str, cycle: str) -> dict[str, Any] | None:
-        if error_type != "ValueError" or _KNOWN_COGNITION_ERROR not in message:
+        if error_type != "ValueError":
+            return None
+        if _KNOWN_COGNITION_ERROR in message:
+            target_file = "src/wechat_traffic_agent/content_goal_loop.py"
+            repair_kind = "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW"
+            verification = [
+                "focused regression for deferred worldview plus overstated BELIEF_CHANGED",
+                "existing persisted-worldview public-trace regression",
+                "full test suite before release",
+            ]
+        elif _KNOWN_MODEL_JSON_ERROR in message:
+            target_file = "src/wechat_traffic_agent/content_explorer.py"
+            repair_kind = "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT"
+            verification = [
+                "two malformed classifier responses return zero admitted matches",
+                "invented IDs and quotes remain rejected",
+                "full content regression before release",
+            ]
+        else:
             return None
         proposal_id = "repair-proposal:" + sha256(
-            f"{error_type}\0{message}\0content_goal_loop.py".encode("utf-8")
+            f"{error_type}\0{message}\0{target_file}".encode("utf-8")
         ).hexdigest()[:24]
         return {
             "schema_version": "repair-proposal.v1",
             "proposal_id": proposal_id,
             "status": "PROPOSED",
-            "repair_kind": "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW",
-            "target_files": ["src/wechat_traffic_agent/content_goal_loop.py"],
-            "verification": [
-                "focused regression for deferred worldview plus overstated BELIEF_CHANGED",
-                "existing persisted-worldview public-trace regression",
-                "full test suite before release",
-            ],
+            "repair_kind": repair_kind,
+            "target_files": [target_file],
+            "verification": verification,
             "risk": "LOW",
             "reversible": True,
             "source_cycle": cycle,
@@ -217,7 +263,37 @@ class SelfMaintenanceService:
         except Exception as exc:  # self-maintenance must not hide the original failure
             return {"status": "ERROR", "error_type": type(exc).__name__}
 
+    def refresh_known_proposals(self) -> dict[str, int]:
+        folder = self.root / "problems"
+        enriched = 0
+        scanned = 0
+        for path in sorted(folder.glob("*.json")) if folder.exists() else ():
+            scanned += 1
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("repair_proposal"):
+                continue
+            cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
+            proposal = self._proposal_for(
+                error_type=str(payload.get("error_type") or ""),
+                message=str(payload.get("symptom") or ""),
+                cycle=cycles[-1] if cycles else "unknown",
+            )
+            if proposal is None:
+                continue
+            payload["repair_proposal"] = proposal
+            payload["status"] = "REPAIR_PROPOSED"
+            _atomic_json(path, payload)
+            enriched += 1
+            latest = self.root / "latest.json"
+            if str(payload.get("last_seen_at") or "") >= str(_read_last_seen(latest)):
+                _atomic_json(latest, payload)
+        return {"scanned": scanned, "enriched": enriched}
+
     def review(self) -> dict[str, Any]:
+        self.refresh_known_proposals()
         folder = self.root / "problems"
         rows: list[dict[str, Any]] = []
         for path in sorted(folder.glob("*.json")) if folder.exists() else ():

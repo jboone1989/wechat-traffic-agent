@@ -227,3 +227,29 @@ def test_windfall_creates_high_value_hypothesis_even_without_open_need(tmp_path)
         ).glob("*.json")
     )
     assert len(receipts) == 1
+
+
+def test_reflect_falls_back_to_low_confidence_bounded_hypothesis_when_advisory_shape_is_invalid(tmp_path):
+    payload = json.loads(_proposal_json())
+    payload["unexpected"] = "field"
+    backend = FixtureAgentBackend(json.dumps(payload))
+    rt = _runtime(tmp_path, backend)
+    need = _add_need(
+        rt,
+        subject="content-cognition-self-maintenance",
+        severity=0.97,
+        evidence="self-problem:1",
+    )
+
+    row = _runner(rt).run("REFLECT", now=NOW)
+
+    evolution = row["evolution_deliberation"]
+    assert row["status"] == "OK"
+    assert evolution["status"] == "PROPOSED_FALLBACK"
+    assert evolution["need_id"] == need.need_id
+    assert evolution["confidence"] == 0.25
+    assert evolution["fitness_dimensions"] == ["autonomy", "reliability", "reversibility"]
+    assert evolution["fallback_reason"].startswith("ValueError:evolution advisory response")
+    assert len(backend.requests) == 1
+    assert len(rt.evolution_hypotheses) == 1
+    assert rt.evolution_hypotheses[0].need_id == need.need_id

@@ -372,6 +372,34 @@ class WakefulContentTaskRunner:
             "token_budget": 1800,
         }
 
+    def _fallback_evolution_hypothesis(self, runtime: Any, candidate: Any, error: Exception):
+        proposer = getattr(runtime, "propose_evolution_insight", None)
+        if not callable(proposer):
+            raise error
+        need_id = str(getattr(candidate, "need_id", "") or "")
+        statement = str(getattr(candidate, "statement", "") or "Improve the open evolution need").strip()
+        target = str(getattr(candidate, "target_capability", "") or "the affected capability").strip()
+        evidence_refs = [str(x) for x in getattr(candidate, "evidence_refs", ()) or () if str(x)]
+        return proposer(
+            statement=(
+                "A bounded shadow trial may improve this open need without expanding authority: "
+                + statement[:900]
+            ),
+            proposed_change=(
+                f"Prototype a reversible improvement for {target}; preserve current authority boundaries, "
+                "record before/after evidence, run focused and full regression, and require observed fitness "
+                "improvement before adoption."
+            ),
+            evidence_refs=evidence_refs,
+            need_id=need_id or None,
+            expected_fitness={
+                "autonomy": 0.20,
+                "reliability": 0.20,
+                "reversibility": 0.15,
+            },
+            confidence=0.25,
+        )
+
     def _evolution_deliberation(self, now: datetime) -> dict[str, Any]:
         runtime = getattr(self.app, "domain_runtime", None)
         deliberate = getattr(runtime, "deliberate_evolution_need", None)
@@ -443,12 +471,19 @@ class WakefulContentTaskRunner:
             except (OSError, ValueError, TypeError):
                 windfall_active = False
         token_budget = 1800 if windfall_active else 800
-        hypothesis = asyncio.run(
-            deliberate(
-                str(getattr(candidate, "need_id")),
-                max_tokens=token_budget,
+        fallback_reason = None
+        try:
+            hypothesis = asyncio.run(
+                deliberate(
+                    str(getattr(candidate, "need_id")),
+                    max_tokens=token_budget,
+                )
             )
-        )
+        except ValueError as exc:
+            if not str(exc).startswith("evolution "):
+                raise
+            hypothesis = self._fallback_evolution_hypothesis(runtime, candidate, exc)
+            fallback_reason = type(exc).__name__ + ":" + str(exc)[:180]
         persist = getattr(runtime, "persist", None)
         if callable(persist):
             persist()
@@ -463,7 +498,7 @@ class WakefulContentTaskRunner:
             getattr(hypothesis, "expected_fitness", {}) or {}
         )
         return {
-            "status": "PROPOSED",
+            "status": "PROPOSED_FALLBACK" if fallback_reason else "PROPOSED",
             "need_id": str(getattr(candidate, "need_id", "") or ""),
             "hypothesis_id": str(
                 getattr(hypothesis, "hypothesis_id", "") or ""
@@ -476,6 +511,7 @@ class WakefulContentTaskRunner:
             "observed_at": now.isoformat(),
             "windfall_used": windfall_active,
             "token_budget": token_budget,
+            "fallback_reason": fallback_reason,
         }
 
     def _x(self, now: datetime) -> dict[str, Any]:

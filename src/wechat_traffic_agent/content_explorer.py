@@ -322,12 +322,31 @@ class GoalEvidenceExplorer:
         raw = await runtime.cognitive_probe(task, max_tokens=1800)
         try:
             value = checked(raw)
-        except ValueError as exc:
-            retry = task + "\nValidation: " + str(exc)[:1000]
-            value = checked(await runtime.cognitive_probe(retry, max_tokens=1800))
+        except ValueError as first_exc:
+            retry = task + "\nValidation: " + str(first_exc)[:1000]
+            try:
+                value = checked(await runtime.cognitive_probe(retry, max_tokens=1800))
+            except ValueError as second_exc:
+                malformed = (
+                    "backend did not return a JSON object" in str(second_exc)
+                    or type(second_exc).__name__ == "ValidationError"
+                )
+                if not malformed:
+                    raise
+                # Relevance classification is an admission gate, not evidence itself.
+                # Two malformed model responses must fail closed instead of killing the
+                # whole life cycle or admitting unverified candidates.
+                return {
+                    "items": [],
+                    "matches": [],
+                    "candidate_count": len(candidates),
+                    "classifier_status": "MODEL_OUTPUT_INVALID",
+                    "classifier_error": type(second_exc).__name__,
+                }
         selected = [registry[match.evidence_id] for match in value.matches]
         return {
             "items": selected,
             "matches": [match.model_dump(mode="json") for match in value.matches],
             "candidate_count": len(candidates),
+            "classifier_status": "OK",
         }
