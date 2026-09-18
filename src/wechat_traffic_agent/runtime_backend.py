@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import os
+from pathlib import Path
 from typing import Iterator, Mapping
 
 
@@ -30,8 +31,18 @@ def runtime_llm_aliases(environ: Mapping[str, str] | None = None) -> dict[str, s
 
 
 @contextmanager
-def _temporary_runtime_llm_environment() -> Iterator[None]:
+def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterator[None]:
     inserted = runtime_llm_aliases()
+    if state_root is not None:
+        pool = Path(state_root) / "application" / "llm_resource_pool"
+        paths = {
+            "AGENT_LLM_RESOURCE_POOL_PATH": pool / "resources.json",
+            "AGENT_LLM_ROUTING_POLICY_PATH": pool / "policy.json",
+            "AGENT_LLM_ROUTING_STATE_DIR": pool / "runtime",
+        }
+        for key, path in paths.items():
+            if not str(os.environ.get(key) or "").strip():
+                inserted[key] = str(path)
     for key, value in inserted.items():
         os.environ[key] = value
     try:
@@ -41,12 +52,12 @@ def _temporary_runtime_llm_environment() -> Iterator[None]:
             os.environ.pop(key, None)
 
 
-def load_optional_advisory_backend():
+def load_optional_advisory_backend(*, state_root: Path | None = None):
     """Load Runtime's advisory backend, or return None when credentials are absent."""
     from agent_runtime.backends import LegacyProviderBackend
     from agent_runtime.llm import LLMProviderError, load_llm_provider
 
-    with _temporary_runtime_llm_environment():
+    with _temporary_runtime_llm_environment(state_root):
         try:
             provider = load_llm_provider()
         except LLMProviderError as exc:

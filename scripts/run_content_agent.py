@@ -63,6 +63,20 @@ def main() -> int:
     if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
 
     state_root = _state_root()
+    from wechat_traffic_agent.llm_resources import sync_llm_resource_pool
+    try:
+        pool_bootstrap = sync_llm_resource_pool(
+            state_root=state_root,
+            now=datetime.now(timezone.utc).replace(microsecond=0),
+        )
+        print(json.dumps({"llm_resource_pool": pool_bootstrap}, sort_keys=True))
+    except Exception as exc:
+        print(json.dumps({
+            "llm_resource_pool": {
+                "status": "BOOTSTRAP_DEGRADED",
+                "error_type": type(exc).__name__,
+            }
+        }, sort_keys=True), file=sys.stderr)
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     from wechat_traffic_agent.resource_economy import ContentResourceEconomy
@@ -70,6 +84,10 @@ def main() -> int:
     from wechat_traffic_agent.daily_reflection import DailyReflectionService
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
+    routing_policy = resource_economy.sync_llm_routing_policy(
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+    )
+    print(json.dumps({"llm_routing_policy": routing_policy}, sort_keys=True))
     from wechat_traffic_agent.resource_scout import ContentResourceScout
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
     private_notifier = operator_notifier()
