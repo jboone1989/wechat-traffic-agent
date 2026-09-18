@@ -34,9 +34,9 @@ def engagement_rate(*, engaged_readers_30s: float, tracked_pageviews: float) -> 
     tracked = float(tracked_pageviews)
     if engaged < 0 or tracked < 0:
         raise ValueError("audience metrics must be non-negative")
-    if tracked <= 0:
+    if tracked <= 0 or engaged > tracked:
         return None
-    return min(1.0, engaged / tracked)
+    return engaged / tracked
 
 
 def reach_score(*, pageviews: float, baseline_pageviews: float | None) -> float | None:
