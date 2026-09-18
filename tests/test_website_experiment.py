@@ -353,7 +353,7 @@ def test_goal_loop_publishes_noncompliant_treatment_without_enrolling_experiment
 
 def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,
                               candidate_matches=True, write_publication=True,
-                              observed_delay_hours=0, extra_refs=()):
+                              observed_delay_hours=0, extra_refs=(), engagement_rate=0.8):
     published_at = NOW + timedelta(hours=index)
     binding = None
     for salt in range(32):
@@ -403,7 +403,28 @@ def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,
         source="nginx-access-log:v1",
         evidence_refs=(f"website-experiment:{binding.experiment_id}", *tuple(extra_refs)),
     )
-    ChannelEvidenceStore(root / "content/channel_evidence").record(row)
+    store = ChannelEvidenceStore(root / "content/channel_evidence")
+    store.record(row)
+    if write_publication and candidate_matches and window_hours == 24:
+        tracked = 10.0
+        engaged = tracked * float(engagement_rate)
+        for metric, metric_value in (
+            ("tracked_pageviews", tracked),
+            ("engaged_readers_30s", engaged),
+        ):
+            store.record(ChannelEvidence(
+                channel="website", account="https://example.com", publication_id=publication_id,
+                artifact_id=f"artifact-{treatment}-{index}", published_content_sha256="a" * 64,
+                agent_candidate_sha256="a" * 64, topic="evidence", title_version="title-v1",
+                structure_version="structure-v1", strategy_version=binding.strategy_version,
+                objective="website_engagement", distribution_cohort="first-party-anonymous-events:v1",
+                metric=metric, metric_definition=metric, unit="count",
+                value=metric_value, published_at=published_at, window_start=published_at,
+                window_end=published_at + timedelta(hours=24),
+                observed_at=published_at + timedelta(hours=24 + observed_delay_hours), revision=1,
+                source="first-party-engagement:v1",
+                evidence_refs=(f"website-engagement-snapshot:{publication_id}",),
+            ))
     return row
 
 
@@ -575,7 +596,7 @@ def test_observing_evidence_refs_are_bounded_and_report_truncation(tmp_path):
     assert result["strategy_control"] is False
 
 
-def _record_promoted_evaluation_sample(root, *, treatment, index, value):
+def _record_promoted_evaluation_sample(root, *, treatment, index, value, engagement_rate=0.8):
     published_at = NOW + timedelta(days=40, hours=index)
     binding = None
     for salt in range(1000):
@@ -626,12 +647,32 @@ def _record_promoted_evaluation_sample(root, *, treatment, index, value):
         source="nginx-access-log:v1",
         evidence_refs=(f"website-experiment:{binding.experiment_id}",),
     )
-    ChannelEvidenceStore(root / "content/channel_evidence").record(row)
+    store = ChannelEvidenceStore(root / "content/channel_evidence")
+    store.record(row)
+    tracked = 10.0
+    engaged = tracked * float(engagement_rate)
+    for metric, metric_value in (
+        ("tracked_pageviews", tracked),
+        ("engaged_readers_30s", engaged),
+    ):
+        store.record(ChannelEvidence(
+            channel="website", account="https://example.com", publication_id=publication_id,
+            artifact_id=receipt["artifact_id"], published_content_sha256="a" * 64,
+            agent_candidate_sha256="a" * 64, topic="evidence", title_version="title-v1",
+            structure_version="structure-v1", strategy_version=binding.strategy_version,
+            objective="website_engagement", distribution_cohort="first-party-anonymous-events:v1",
+            metric=metric, metric_definition=metric, unit="count",
+            value=metric_value, published_at=published_at, window_start=published_at,
+            window_end=published_at + timedelta(hours=24),
+            observed_at=published_at + timedelta(hours=24), revision=1,
+            source="first-party-engagement:v1",
+            evidence_refs=(f"website-engagement-snapshot:{publication_id}",),
+        ))
     return binding
 
 
 def test_favorable_fixed_horizon_conclusion_promotes_future_cycles_to_90_10(tmp_path):
-    for index in range(MIN_SAMPLES_PER_TREATMENT):
+    for index in range(MIN_SAMPLES_PER_TREATMENT + 1):
         _record_evaluation_sample(
             tmp_path, treatment="reader_question_first", index=index, value=20,
         )
@@ -662,7 +703,7 @@ def test_favorable_fixed_horizon_conclusion_promotes_future_cycles_to_90_10(tmp_
 
 
 def test_concurrent_holdout_reversal_revokes_promotion_and_returns_to_v1(tmp_path):
-    for index in range(MIN_SAMPLES_PER_TREATMENT):
+    for index in range(MIN_SAMPLES_PER_TREATMENT + 1):
         _record_evaluation_sample(
             tmp_path, treatment="reader_question_first", index=index, value=20,
         )
@@ -694,3 +735,27 @@ def test_concurrent_holdout_reversal_revokes_promotion_and_returns_to_v1(tmp_pat
     )
     assert after.experiment_version == EXPERIMENT_VERSION
     assert after.assignment_method == "sha256-cycle:v1"
+
+
+def test_governance_uses_audience_reward_not_pageviews_alone(tmp_path):
+    # Reader-first wins raw pageviews but has no 30s engagement; evidence-first
+    # has lower reach but real reading quality. Governance must follow the
+    # composite world reward rather than the legacy pageview diagnostic.
+    for index in range(MIN_SAMPLES_PER_TREATMENT + 1):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index,
+            value=100, engagement_rate=0.0,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index,
+            value=40, engagement_rate=1.0,
+        )
+    result = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    ).evaluate(as_of=NOW + timedelta(days=20))
+    assert result["status"] == "EVIDENCE_FAVORS_TREATMENT"
+    assert result["favored_treatment"] == "reader_question_first"
+    audience = result["audience_reward_evaluation"]
+    assert audience["status"] == "EVIDENCE_FAVORS_TREATMENT"
+    assert audience["favored_treatment"] == "evidence_first"
+    assert result["experiment_conclusion"]["favored_treatment"] == "evidence_first"
