@@ -65,12 +65,25 @@ class WakefulContentTaskRunner:
             plans = list(trial_plans.get("plans") or [])
             local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
             autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
+            credential_resolutions = []
+            for credential_env in trial_plans.get("available_credential_envs") or []:
+                credential_resolutions.extend(self.human_assistance.fulfill_matching(
+                    kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                    detail_value=str(credential_env), now=now,
+                    evidence_refs=(f"env-presence:{credential_env}",),
+                ))
+            if credential_resolutions:
+                rows["provider_access_resolution"] = {
+                    "status": "FULFILLED",
+                    "request_ids": [row.get("request_id") for row in credential_resolutions],
+                }
             if autonomous_pending:
                 self.wakeful.schedule_resource_followup(now, seconds=300)
                 rows["resource_followup"] = {
                     "status": "SCHEDULED",
-                    "reason": "unverified resource opportunities remain",
+                    "reason": "unverified autonomous resource/provider evidence remains",
                     "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                    "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
                     "delay_seconds": 300,
                 }
             ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)

@@ -186,11 +186,13 @@ class ContentResourceScout:
         local = self.local_inference_feasibility()
         lead_by_id = {item.lead_id: item for item in leads}
         pending_count = self.scout.pending_verification_count()
+        pending_provider_count = self.scout.pending_provider_verification_count()
         payload = {
             "status": "PLANNED" if plans else "NO_VERIFIED_TRIAL_CANDIDATES",
             "observed_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
             "pending_verification_count": pending_count,
-            "autonomous_work_pending": pending_count > 0,
+            "pending_provider_verification_count": pending_provider_count,
+            "autonomous_work_pending": (pending_count + pending_provider_count) > 0,
             "available_credential_envs": sorted(available),
             "local_inference": local,
             "adaptive_constraints": list(resource_discovery_constraints(outcomes)),
