@@ -511,3 +511,29 @@ def test_wakeful_presence_keeps_live_online_without_recent_cognition_tick(tmp_pa
     assert snapshot["life"]["presence"]["runtime_check_seconds"] is None
     assert snapshot["life"]["presence"]["wakeful"]["state"] == "WAITING"
     assert snapshot["life"]["presence"]["wakeful"]["next_wake_reason"] == "review matured website outcomes"
+
+
+def test_public_snapshot_reports_persisted_self_maintenance_after_failed_cycle(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-123"
+    _write(cycle / "result.json", {
+        "status": "ERROR",
+        "cycle": "v2-123",
+        "error_type": "ValueError",
+        "message": "BELIEF_CHANGED requires a persisted worldview change",
+    })
+    _write(root / "application/self_maintenance/latest.json", {
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:abc",
+        "status": "REPAIR_PROPOSED",
+        "cycles": ["v2-123"],
+        "repair_proposal": {
+            "repair_kind": "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW",
+        },
+    })
+
+    snapshot = public_agent_snapshot(root, _Application())
+
+    assert snapshot["activity"]["last_phase"] == "RECOVER"
+    assert "persistent SelfProblem" in snapshot["activity"]["current_focus"]
+    assert "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW" in snapshot["activity"]["current_focus"]

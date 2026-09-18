@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import traceback
 import xml.etree.ElementTree as ET
 from urllib.parse import urlsplit
 
@@ -247,7 +248,21 @@ class ContinuousContentLoop:
             try:
                 result = await self._run(folder, cycle, now)
             except Exception as exc:
-                result = {'status': 'ERROR', 'cycle': cycle, 'error_type': type(exc).__name__, 'message': str(exc)[:1000]}
+                diagnostic = {
+                    'schema_version': 'content-error-diagnostic.v1',
+                    'cycle': cycle,
+                    'error_type': type(exc).__name__,
+                    'message': str(exc)[:1000],
+                    'traceback': traceback.format_exc(limit=12)[-12000:],
+                }
+                _put(folder / 'error_diagnostic.json', diagnostic)
+                result = {
+                    'status': 'ERROR',
+                    'cycle': cycle,
+                    'error_type': type(exc).__name__,
+                    'message': str(exc)[:1000],
+                    'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
+                }
             _put(result_path, result)
             return result
 

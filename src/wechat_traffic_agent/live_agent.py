@@ -466,6 +466,28 @@ def public_agent_snapshot(
         online = bool(wakeful_projection.get("presence") == "AWAKE")
 
     run_state, phase, focus = _phase_state(cycle_dir, result)
+    self_maintenance = _read_json(state_root / "application" / "self_maintenance" / "latest.json")
+    maintenance_cycles = {
+        str(value) for value in self_maintenance.get("cycles") or () if str(value)
+    }
+    if (
+        str(result.get("status") or "") == "ERROR"
+        and cycle_dir is not None
+        and cycle_dir.name in maintenance_cycles
+        and str(self_maintenance.get("status") or "") in {"DIAGNOSING", "REPAIR_PROPOSED"}
+    ):
+        maintenance_status = str(self_maintenance.get("status") or "")
+        repair = self_maintenance.get("repair_proposal") if isinstance(self_maintenance.get("repair_proposal"), dict) else {}
+        run_state = "IDLE"
+        phase = "RECOVER"
+        focus = (
+            "The failed cycle has become a persistent SelfProblem; "
+            + (
+                f"repair proposal {repair.get('repair_kind')} is ready for bounded verification"
+                if maintenance_status == "REPAIR_PROPOSED"
+                else "evidence-first diagnosis is in progress"
+            )
+        )
     timing = _cycle_timing(cycle_dir)
     stage_events = _cycle_events(state_root, cycle_dir, result)
     goal = plan.get("goal") if isinstance(plan.get("goal"), dict) else {}

@@ -111,6 +111,17 @@ def main() -> int:
     if evolution_backfill.get("recorded") or evolution_backfill.get("failed"):
         print(json.dumps({"human_assistance_evolution_backfill": evolution_backfill}, sort_keys=True))
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
+    from wechat_traffic_agent.self_maintenance import SelfMaintenanceService
+    self_maintenance = SelfMaintenanceService(
+        state_root=state_root,
+        evolution_runtime=app.domain_runtime,
+        capability_runtime=app.runtime,
+    )
+    self_maintenance_backfill = self_maintenance.backfill_recent_failures(
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+    )
+    if self_maintenance_backfill.get("recorded"):
+        print(json.dumps({"self_maintenance_backfill": self_maintenance_backfill}, sort_keys=True))
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)
     try:
@@ -226,6 +237,7 @@ def main() -> int:
         nvidia_catalog=nvidia_catalog,
         capability_evolution=capability_evolution,
         daily_reflection=daily_reflection,
+        self_maintenance=self_maintenance,
         human_assistance=human_assistance,
         network_service=network_service,
         draft_worker=draft_worker,

@@ -125,6 +125,23 @@ class ContentWakefulRuntime:
             task="RESOURCE_REVIEW",
         ))
 
+    def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
+        delay = max(30, min(int(seconds), 900))
+        at = now + timedelta(seconds=delay)
+        wake_id = "content:REFLECT"
+        existing = next(
+            (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
+            None,
+        )
+        if existing is not None and existing.at <= at:
+            return
+        self.core.schedule(PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason="diagnose production failure and form bounded self-repair hypothesis",
+            task="REFLECT",
+        ))
+
     def schedule_windfall_reflection(
         self, now: datetime, *, seconds: int = 60
     ) -> None:

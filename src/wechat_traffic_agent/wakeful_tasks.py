@@ -285,6 +285,13 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["daily_reflection"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        self_maintenance = getattr(self, "self_maintenance", None)
+        if self_maintenance is not None:
+            try:
+                rows["self_maintenance"] = self_maintenance.review()
+            except Exception as exc:  # noqa: BLE001
+                rows["self_maintenance"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
             rows["evolution_deliberation"] = self._evolution_deliberation(now)
         except Exception as exc:  # noqa: BLE001
@@ -607,6 +614,15 @@ class WakefulContentTaskRunner:
         if continuous.get("status") in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
             if continuous.get("status") == "ERROR":
                 rows["status"] = "DEGRADED"
+                self_maintenance = getattr(self, "self_maintenance", None)
+                if self_maintenance is not None:
+                    try:
+                        rows["self_maintenance"] = self_maintenance.ingest_failure(continuous, now=now)
+                        schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
+                        if callable(schedule):
+                            schedule(now, seconds=60)
+                    except Exception as exc:  # noqa: BLE001
+                        rows["self_maintenance"] = self._error(exc)
             return rows
         try:
             rows["social_expression_drafts"] = asyncio.run(

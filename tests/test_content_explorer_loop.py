@@ -903,3 +903,30 @@ def test_market_expression_fingerprint_changes_only_when_catalyst_or_market_stat
     assert first == _market_expression_fingerprint(primary, snapshot1)
     assert first != _market_expression_fingerprint(primary, snapshot2)
     assert first != _market_expression_fingerprint({**primary, "source_revision": "news-r2"}, snapshot1)
+
+
+class OverstatedBeliefRuntime(QuietBeliefRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("DECIDE_EXPRESSION:"):
+            self.calls.append(task)
+            return json.dumps({
+                "cognition_state": "BELIEF_CHANGED", "worth_saying": False,
+                "expression_kind": "NONE",
+                "what_changed": "The narration claims a change that durable state does not contain.",
+                "what_matters": "The evidence remains incomplete.",
+                "belief_proposition": "This should not survive normalization.",
+                "rationale": "The model narration overstates the durable state.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_unpersisted_belief_change_is_normalized_instead_of_failing_cycle(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, mind = OverstatedBeliefRuntime(), BeliefMind()
+    worker = v2(legacy, runtime, publisher, mind=mind, explorer=Explorer())
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "COGNITION_ONLY"
+    assert result["worldview_update"]["status"] == "DEFERRED"
+    assert result["cognition"]["cognition_state"] == "INVESTIGATING"
+    assert result["cognition"]["belief_proposition"] is None
+    assert "no durable worldview change" in result["cognition"]["what_changed"].lower()
