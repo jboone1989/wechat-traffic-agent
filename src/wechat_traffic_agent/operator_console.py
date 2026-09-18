@@ -466,9 +466,14 @@ class OperatorConsole:
                     "at": row.get("fulfilled_at") if configured else None,
                 },
                 {
-                    "stage": "VERIFIED",
+                    "stage": "PROVIDER_DISCOVERED",
                     "status": "COMPLETE" if verification else "WAITING",
                     "at": verification.get("observed_at") if verification else None,
+                },
+                {
+                    "stage": "VERIFIED",
+                    "status": "COMPLETE" if trials else "WAITING",
+                    "at": trials[0].get("observed_at") if trials else None,
                 },
                 {
                     "stage": "TRIALLED",
@@ -489,7 +494,8 @@ class OperatorConsole:
             out.append({
                 **row,
                 "credential_configured": configured,
-                "verification_status": verification.get("status") if verification else None,
+                "provider_discovery_status": verification.get("status") if verification else None,
+                "verification_status": "VERIFIED_BY_TRIAL" if trials else None,
                 "completed_trial_count": len(trials),
                 "active_resource_ids": [str(r.get("resource_id") or "") for r in matching],
                 "active_models": [str(r.get("model") or "") for r in matching],
