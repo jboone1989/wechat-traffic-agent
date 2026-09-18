@@ -10,6 +10,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .audience_reward import audience_reward, collect_mature_audience_observations
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from .content_admission import _write_once
 
@@ -167,6 +168,9 @@ def _window_label(row: ChannelEvidence) -> str | None:
 
 def _samples(*, state_root: Path, account: str, as_of: datetime) -> list[dict[str, Any]]:
     bindings = _publication_strategy_index(state_root)
+    mature_audience = collect_mature_audience_observations(
+        state_root=state_root, account=account, as_of=as_of
+    )
     store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
     rows: list[dict[str, Any]] = []
     for row in store.as_of(as_of):
@@ -181,10 +185,15 @@ def _samples(*, state_root: Path, account: str, as_of: datetime) -> list[dict[st
             and row.topic == binding["topic"]
         ):
             continue
+        audience = mature_audience.get(row.publication_id) if label == "24h" else None
+        refs = list(row.evidence_refs)
+        if audience is not None:
+            refs.extend(audience.evidence_refs)
         rows.append({
             "topic": binding["topic"], "profile_name": binding["profile_name"],
             "window": label, "value": float(row.value),
-            "evidence_refs": tuple(row.evidence_refs),
+            "engagement_rate": audience.engagement_rate if audience is not None else None,
+            "evidence_refs": tuple(dict.fromkeys(refs)),
         })
     return rows
 
@@ -274,13 +283,32 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
         traffic_utility = mature.expected_pageviews / (
             mature.expected_pageviews + global_baseline + 1.0
         )
+        quality_rows = _matching(rows, topic=topic, profile=profile, window="24h")
+        quality_values = [
+            float(row["engagement_rate"]) for row in quality_rows
+            if isinstance(row.get("engagement_rate"), (int, float))
+            and not isinstance(row.get("engagement_rate"), bool)
+        ]
+        if not quality_values:
+            quality_values = [
+                float(row["engagement_rate"]) for row in _matching(rows, profile=profile, window="24h")
+                if isinstance(row.get("engagement_rate"), (int, float))
+                and not isinstance(row.get("engagement_rate"), bool)
+            ]
+        expected_quality = float(median(quality_values)) if quality_values else None
+        composite_utility = audience_reward(
+            pageviews=mature.expected_pageviews,
+            baseline_pageviews=global_baseline,
+            engagement_rate_value=expected_quality,
+        )
+        world_utility = composite_utility if composite_utility is not None else traffic_utility
         mind_reward = mind_rewards.get(profile)
         mind_count = max(0, int(mind_counts.get(profile, 0) or 0))
         if isinstance(mind_reward, (int, float)) and not isinstance(mind_reward, bool) and mind_count > 0:
             belief_weight = min(0.65, 0.20 + 0.15 * min(mind_count, 3))
-            expected_utility = (1.0 - belief_weight) * traffic_utility + belief_weight * float(mind_reward)
+            expected_utility = (1.0 - belief_weight) * world_utility + belief_weight * float(mind_reward)
         else:
-            expected_utility = traffic_utility
+            expected_utility = world_utility
         information_gain = min(
             1.0,
             0.70 * (1.0 - mature.confidence) + 0.30 / (1.0 + mature.sample_count),
