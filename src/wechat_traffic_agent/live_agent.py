@@ -729,6 +729,10 @@ class LiveAgentService:
         from starlette.routing import Route
         from .channels.agent_live_page import live_agent_document
         from .channels.agent_talk_page import talk_agent_document
+        from .channels.operator_console_page import operator_console_document
+        from .operator_console import OperatorConsole, operator_console_enabled
+
+        operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
 
         async def live_page(_request: Request):
             return HTMLResponse(live_agent_document(), headers={"Cache-Control": "no-cache"})
@@ -822,7 +826,103 @@ class LiveAgentService:
                                  "learning_effect": "audience_interest_evidence_only",
                                  "interaction": recorded}, headers={"Cache-Control": "no-store"})
 
-        return Starlette(routes=[
+        def operator_authorized(request: Request) -> bool:
+            if operator_console is None:
+                return False
+            return operator_console.auth.valid(request.cookies.get("ferro_operator_session"))
+
+        def operator_write_allowed(request: Request) -> bool:
+            return request.headers.get("x-operator-request") == "1"
+
+        async def operator_page(_request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            return HTMLResponse(operator_console_document(), headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "connect-src 'self'; img-src 'self'; frame-ancestors 'none'; "
+                    "base-uri 'none'; form-action 'self'"
+                ),
+            })
+
+        async def operator_login(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "invalid_json"}, status_code=400)
+            token = str(body.get("token") or "") if isinstance(body, dict) else ""
+            session_id = operator_console.auth.login(token)
+            if session_id is None:
+                return JSONResponse({"error": "invalid_operator_token"}, status_code=401)
+            response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+            forwarded_https = request.headers.get("x-forwarded-proto") == "https"
+            response.set_cookie(
+                "ferro_operator_session", session_id, max_age=1800, httponly=True,
+                secure=(request.url.scheme == "https" or forwarded_https),
+                samesite="strict", path="/operator",
+            )
+            return response
+
+        async def operator_status(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            return JSONResponse(operator_console.status(), headers={"Cache-Control": "no-store"})
+
+        async def operator_store_secret(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 9216:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                value = str(body.get("value") or "") if isinstance(body, dict) else ""
+                result = operator_console.store_secret(str(request.path_params["env_name"]), value)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception:
+                return JSONResponse({"error": "secret_store_failed"}, status_code=500)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_store_resource_metadata(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 8192:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("metadata body must be an object")
+                result = operator_console.store_resource_metadata(
+                    str(request.path_params["env_name"]), body
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception:
+                return JSONResponse({"error": "resource_metadata_store_failed"}, status_code=500)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_logout(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            operator_console.auth.logout(request.cookies.get("ferro_operator_session"))
+            response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+            response.delete_cookie("ferro_operator_session", path="/operator")
+            return response
+
+        routes = [
             Route("/live", live_page, methods=["GET"]),
             Route("/live/", live_page, methods=["GET"]),
             Route("/talk", talk_page, methods=["GET"]),
@@ -830,7 +930,18 @@ class LiveAgentService:
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
             Route("/api/agent/chat", chat, methods=["POST"]),
-        ])
+        ]
+        if operator_console is not None:
+            routes.extend([
+                Route("/operator", operator_page, methods=["GET"]),
+                Route("/operator/", operator_page, methods=["GET"]),
+                Route("/operator/api/session", operator_login, methods=["POST"]),
+                Route("/operator/api/status", operator_status, methods=["GET"]),
+                Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
+                Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
+                Route("/operator/api/logout", operator_logout, methods=["POST"]),
+            ])
+        return Starlette(routes=routes)
 
     def start(self) -> None:
         if self._thread is not None:

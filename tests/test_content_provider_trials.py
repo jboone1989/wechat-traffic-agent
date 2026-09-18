@@ -224,27 +224,80 @@ def test_openrouter_rotates_when_quality_floor_is_mathematically_unreachable(tmp
     assert second["empirical_selection"]["model_id"]=="next-free"
 
 
-def test_protocol_incompatible_models_mark_provider_for_replan(tmp_path, monkeypatch):
+def test_nvidia_keeps_searching_after_two_incompatible_models(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
-    models=iter(["old-model","new-model","should-not-run"])
-    monkeypatch.setattr(resource_module,"resolve_trial_target",lambda env,**kwargs: ProviderTrialTarget(env,"https://example/v1",next(models)))
+    models=("old-model","new-model","current-model")
+    resolved=[]
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        resolved.append(excluded)
+        remaining=[model for model in models if model not in excluded]
+        if not remaining:
+            raise resource_module.ProviderTrialRequestError("NO_COMPATIBLE_MODEL")
+        return ProviderTrialTarget(env,"https://example/v1",remaining[0])
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
     calls=[]
     def fake(plan, *, api_key, now, target):
         calls.append(target.model)
-        code="HTTP_410" if target.model=="old-model" else "HTTP_404"
+        if target.model in {"old-model","new-model"}:
+            code="HTTP_410" if target.model=="old-model" else "HTTP_404"
+            return [ProviderTrialMeasurement(
+                trial_id=f"trial:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+                provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
+                status="FAILED",observed_at=NOW.isoformat(),latency_ms=1.0,error_code=code,
+            ) for i in range(3)]
         return [ProviderTrialMeasurement(
             trial_id=f"trial:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
             provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
-            status="FAILED",observed_at=NOW.isoformat(),latency_ms=1.0,error_code=code,
+            status="COMPLETED",observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=2.0,observed_cost=0.0,
         ) for i in range(3)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
     first=scout.run_ready_trials(now=NOW,provider_limit=1)
     second=scout.run_ready_trials(now=NOW,provider_limit=1)
     third=scout.run_ready_trials(now=NOW,provider_limit=1)
+    assert [first["executed_request_count"],second["executed_request_count"],third["executed_request_count"]]==[3,3,3]
+    assert calls==["old-model","new-model","current-model"]
+    assert resolved[0]==set()
+    assert resolved[1]=={"old-model"}
+    assert resolved[2]=={"old-model","new-model"}
+    assert third["providers"][0]["status"]=="TRIAL_SUCCEEDED"
+    assert third["empirical_selection"]["model_id"]=="current-model"
+    assert third["replan_required"] is False
+    assert not any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
+
+
+def test_nvidia_marks_targets_exhausted_only_after_catalogue_has_no_remaining_model(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    models=("old-model","new-model")
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        remaining=[model for model in models if model not in excluded]
+        if not remaining:
+            raise resource_module.ProviderTrialRequestError("NO_COMPATIBLE_MODEL")
+        return ProviderTrialTarget(env,"https://example/v1",remaining[0])
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    def fake(plan, *, api_key, now, target):
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,model=target.model,task_id=f"t{i}",
+            status="FAILED",observed_at=NOW.isoformat(),latency_ms=1.0,error_code="HTTP_410",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    scout.run_ready_trials(now=NOW,provider_limit=1)
+    scout.run_ready_trials(now=NOW,provider_limit=1)
+    third=scout.run_ready_trials(now=NOW,provider_limit=1)
     fourth=scout.run_ready_trials(now=NOW.replace(minute=1),provider_limit=1)
-    assert [first["executed_request_count"],second["executed_request_count"],third["executed_request_count"],fourth["executed_request_count"]]==[3,3,0,0]
-    assert calls==["old-model","new-model"]
+
+    assert third["executed_request_count"]==0
+    assert third["providers"][0]["status"]=="PROTOCOL_TARGETS_EXHAUSTED"
+    assert third["replan_required"] is True
+    assert fourth["executed_request_count"]==0
+    assert fourth["replan_required"] is False
+    assert any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
     assert third["providers"][0]["status"]=="PROTOCOL_TARGETS_EXHAUSTED"
     assert third["replan_required"] is True
     assert fourth["replan_required"] is False
