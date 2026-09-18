@@ -554,6 +554,30 @@ class ContentMind:
                 raise ValueError("action prediction outcome scores are invalid")
             event_id = f"content-action-outcome:{prediction_id}:{window}"
             if self._has_seen_event(event_id):
+                # Schema upgrades may add a new metric prediction after the pageview
+                # experience was already ingested. Replaying the same external evidence
+                # is allowed to settle that new prediction, but must not ingest life
+                # experience twice.
+                if window == "24h":
+                    expected_engaged = row.get("expected_engaged_readers_30s")
+                    actual_engaged = row.get("actual_engaged_readers_30s")
+                    engaged_prediction_id = f"{prediction_id}:engaged-readers-30s:24h"
+                    if (
+                        engaged_prediction_id in self.session.predictive_learning.predictions
+                        and isinstance(expected_engaged, (int, float))
+                        and not isinstance(expected_engaged, bool)
+                        and isinstance(actual_engaged, (int, float))
+                        and not isinstance(actual_engaged, bool)
+                    ):
+                        self.session.settle_prediction(
+                            prediction_id=engaged_prediction_id,
+                            outcome_id=f"content-outcome:{publication_id}:engaged-readers-30s:24h",
+                            observed=float(actual_engaged), observed_at=str(row.get("observed_at")),
+                            evidence_refs=refs, maturity="MATURE", reliability=reliability,
+                            learning_authority=True, metric=content_error,
+                            inquiry_threshold=ERROR_INQUIRY_THRESHOLD["24h"],
+                        )
+                        self._persist()
                 duplicates += 1
                 continue
             brain_prediction_id = f"{prediction_id}:{window}"
