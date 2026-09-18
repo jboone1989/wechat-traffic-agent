@@ -241,6 +241,75 @@ class SurvivalResourceManager:
         _atomic_json(self.needs_path, rows)
         return {"status": "OK", "results": results}
 
+    def bootstrap_ssh_host(
+        self, *, host: str, port: int, username: str, password: str,
+        name: str = "", now: datetime,
+    ) -> dict[str, Any]:
+        from .survival_ssh import SSHHostBootstrapper
+
+        result = SSHHostBootstrapper(self.state_root).bootstrap(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            label=name or host,
+        )
+        audit = dict(result.audit)
+        host_id = "remote-host:" + sha256(
+            (
+                result.host_instance_id
+                + "|"
+                + result.host_key_sha256
+                + "|"
+                + result.username
+            ).encode()
+        ).hexdigest()[:20]
+        key_ref = Path(result.key_path).parent.name
+        rows = [
+            row for row in self.remote_hosts()
+            if row.get("host_id") != host_id
+            and row.get("host_instance_id") != result.host_instance_id
+        ]
+        row = {
+            "host_id": host_id,
+            "name": str(name or audit.get("hostname") or result.host),
+            "ssh_host": result.host,
+            "ssh_port": result.port,
+            "ssh_username": result.username,
+            "ssh_host_key_sha256": result.host_key_sha256,
+            "ssh_key_ref": key_ref,
+            "management_transport": "SSH_KEY",
+            "status": "ACTIVE",
+            "deployment_capable": False,
+            "receiver_status": "NOT_PROVISIONED",
+            "host_instance_id": result.host_instance_id,
+            "capacity": {
+                "cpu_count": audit.get("cpu_count"),
+                "memory_total_gib": audit.get("memory_total_gib"),
+                "memory_available_gib": audit.get("memory_available_gib"),
+                "disk_total_gib": audit.get("disk_total_gib"),
+                "disk_free_gib": audit.get("disk_free_gib"),
+            },
+            "platform": audit.get("platform"),
+            "machine": audit.get("machine"),
+            "reliability": "OPERATOR_MANAGED",
+            "trust_source": "OPERATOR_SSH_BOOTSTRAP",
+            "created_at": _iso(now),
+            "last_verified_at": _iso(now),
+        }
+        rows.append(row)
+        _atomic_json(self.hosts_path, rows)
+        self._satisfy_remote_need(host_id=host_id, now=now)
+        self._record_action({
+            "action": "BOOTSTRAP_REMOTE_HOST",
+            "host_id": host_id,
+            "status": "ACTIVE",
+            "management_transport": "SSH_KEY",
+            "password_retained": False,
+            "host_key_sha256": result.host_key_sha256,
+        }, now)
+        return row
+
     def register_remote_host(
         self, *, name: str, health_url: str, capacity: dict[str, Any],
         reliability: str, now: datetime, control_url: str = "",
@@ -427,19 +496,7 @@ class SurvivalResourceManager:
             target["last_error"] = type(exc).__name__
         _atomic_json(self.hosts_path, rows)
         if target.get("status") == "ACTIVE":
-            needs = self.needs()
-            changed = False
-            for need in needs:
-                if (
-                    need.get("action") == "DISCOVER_REMOTE_MACHINE"
-                    and need.get("status") in OPEN_NEED_STATES
-                ):
-                    need["status"] = "SATISFIED"
-                    need["satisfied_at"] = _iso(now)
-                    need["resource_id"] = host_id
-                    changed = True
-            if changed:
-                _atomic_json(self.needs_path, needs)
+            self._satisfy_remote_need(host_id=host_id, now=now)
         self._record_action({
             "action": "VERIFY_REMOTE_HOST",
             "host_id": host_id,
@@ -603,6 +660,21 @@ class SurvivalResourceManager:
                 })
         _atomic_json(self.needs_path, rows)
         return rows
+
+    def _satisfy_remote_need(self, *, host_id: str, now: datetime) -> None:
+        needs = self.needs()
+        changed = False
+        for need in needs:
+            if (
+                need.get("action") == "DISCOVER_REMOTE_MACHINE"
+                and need.get("status") in OPEN_NEED_STATES
+            ):
+                need["status"] = "SATISFIED"
+                need["satisfied_at"] = _iso(now)
+                need["resource_id"] = host_id
+                changed = True
+        if changed:
+            _atomic_json(self.needs_path, needs)
 
     def _remote_host_resources(self, observed_at: str) -> list[dict[str, Any]]:
         return [{

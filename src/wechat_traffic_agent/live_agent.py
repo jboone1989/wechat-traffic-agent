@@ -1019,6 +1019,34 @@ class LiveAgentService:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
+        async def operator_bootstrap_remote_host(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 8192:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("remote host bootstrap body must be an object")
+                result = operator_console.bootstrap_remote_host(
+                    host=str(body.get("host") or ""),
+                    port=int(body.get("port") or 22),
+                    username=str(body.get("username") or "root"),
+                    password=str(body.get("password") or ""),
+                    name=str(body.get("name") or ""),
+                )
+                result["followup_scheduled"] = schedule_operator_resource_onboarding()
+            except (TypeError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception as exc:
+                return JSONResponse({
+                    "error": "remote_host_bootstrap_failed",
+                    "error_type": type(exc).__name__,
+                }, status_code=502)
+            return JSONResponse(result, status_code=201, headers={"Cache-Control": "no-store"})
+
         async def operator_register_remote_host(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -1157,6 +1185,7 @@ class LiveAgentService:
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
                 Route("/operator/api/survival/needs/{need_id}/decision", operator_survival_need_decision, methods=["POST"]),
+                Route("/operator/api/survival/hosts/bootstrap", operator_bootstrap_remote_host, methods=["POST"]),
                 Route("/operator/api/survival/hosts", operator_register_remote_host, methods=["POST"]),
                 Route("/operator/api/survival/hosts/{host_id}/verify", operator_verify_remote_host, methods=["POST"]),
                 Route("/operator/api/survival/offload", operator_plan_service_offload, methods=["POST"]),

@@ -272,3 +272,45 @@ def test_agent_network_discovery_rejects_cross_origin_resource_endpoints(tmp_pat
     assert result["status"] == "NO_VERIFIED_REMOTE_HOST"
     assert result["accepted_host_ids"] == []
     assert manager.remote_hosts() == []
+
+def test_ssh_bootstrap_persists_key_managed_host_without_secret(tmp_path, monkeypatch):
+    from wechat_traffic_agent.survival_ssh import BootstrapResult, SSHHostBootstrapper
+
+    manager = SurvivalResourceManager(tmp_path)
+    manager.observe(now=NOW)
+    captured = {}
+
+    def fake_bootstrap(self, **kwargs):
+        captured.update(kwargs)
+        key_dir = tmp_path / "secrets" / "survival-hosts" / "key-ref-1"
+        key_dir.mkdir(parents=True, exist_ok=True)
+        key_path = key_dir / "id_ed25519"
+        key_path.write_text("test-key-material")
+        return BootstrapResult(
+            host="207.246.99.253", port=22, username="root",
+            host_key_sha256="SHA256:test-host-key",
+            host_instance_id="host-instance:remote-vultr",
+            audit={"hostname":"vultr-edge","cpu_count":2,"memory_total_gib":4.0,
+                   "memory_available_gib":3.0,"disk_total_gib":80.0,
+                   "disk_free_gib":60.0,"platform":"Linux test","machine":"x86_64"},
+            key_path=str(key_path), key_verified=True,
+        )
+
+    monkeypatch.setattr(SSHHostBootstrapper, "bootstrap", fake_bootstrap)
+    secret = "x" * 16
+    row = manager.bootstrap_ssh_host(
+        host="207.246.99.253", port=22, username="root",
+        password=secret, name="vultr-edge", now=NOW,
+    )
+    assert captured["password"] == secret
+    assert row["status"] == "ACTIVE"
+    assert row["management_transport"] == "SSH_KEY"
+    assert row["receiver_status"] == "NOT_PROVISIONED"
+    assert row["deployment_capable"] is False
+    assert row["ssh_key_ref"] == "key-ref-1"
+    persisted = json.dumps(manager.status())
+    assert secret not in persisted
+    assert "test-key-material" not in persisted
+    need = next(x for x in manager.needs() if x["action"] == "DISCOVER_REMOTE_MACHINE")
+    assert need["status"] == "SATISFIED"
+    assert need["resource_id"] == row["host_id"]

@@ -751,3 +751,62 @@ def test_survival_need_operator_decision_http(tmp_path, monkeypatch):
     assert response.json()["status"] == "APPROVED"
     assert response.json()["followup_scheduled"] is True
     assert wakeful.calls == [5]
+
+def test_operator_can_bootstrap_remote_host_with_one_time_ssh_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    captured = {}
+
+    def fake_bootstrap(self, **kwargs):
+        captured.update(kwargs)
+        return {
+            "host_id":"remote-host:test",
+            "name":"vultr-edge",
+            "ssh_host":"207.246.99.253",
+            "ssh_port":22,
+            "ssh_username":"root",
+            "ssh_host_key_sha256":"SHA256:test",
+            "management_transport":"SSH_KEY",
+            "status":"ACTIVE",
+            "deployment_capable":False,
+            "receiver_status":"NOT_PROVISIONED",
+            "host_instance_id":"host-instance:remote-test",
+            "capacity":{"cpu_count":2,"memory_total_gib":4.0},
+            "reliability":"OPERATOR_MANAGED",
+            "trust_source":"OPERATOR_SSH_BOOTSTRAP",
+        }
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.SurvivalResourceManager.bootstrap_ssh_host",
+        fake_bootstrap,
+    )
+
+    class Wakeful:
+        def __init__(self): self.calls=[]
+        def schedule_resource_followup(self, now, *, seconds=300): self.calls.append(seconds)
+
+    wakeful=Wakeful()
+    client=TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None, wakeful=wakeful,
+    )._app())
+    token=(tmp_path/"secrets"/"operator-console.token").read_text().strip()
+    assert client.post(
+        "/operator/api/session", headers={"X-Operator-Request":"1"}, json={"token":token}
+    ).status_code==200
+    secret="x"*16
+    response=client.post(
+        "/operator/api/survival/hosts/bootstrap",
+        headers={"X-Operator-Request":"1"},
+        json={"host":"207.246.99.253","port":22,"username":"root","password":secret,"name":"vultr-edge"},
+    )
+    assert response.status_code==201
+    assert captured["password"]==secret
+    body=response.json()
+    assert body["status"]=="ACTIVE"
+    assert body["management_transport"]=="SSH_KEY"
+    assert body["followup_scheduled"] is True
+    assert secret not in response.text
+    assert wakeful.calls==[5]
+    page=client.get("/operator/")
+    assert "Hand a server to Ferro" in page.text
+    assert "IP or hostname" in page.text
+    assert "One-time SSH password" in page.text
