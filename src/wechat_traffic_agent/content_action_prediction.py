@@ -55,6 +55,9 @@ class StrategyCandidateForecast(BaseModel):
     metrics: tuple[MetricForecast, ...] = Field(min_length=3, max_length=3)
     expected_utility: float = Field(ge=0.0, le=1.0)
     information_gain: float = Field(ge=0.0, le=1.0)
+    expected_engagement_rate_24h: float | None = Field(default=None, ge=0.0, le=1.0)
+    expected_engaged_readers_30s_24h: float | None = Field(default=None, ge=0.0)
+    engagement_evidence_refs: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def complete_windows(self):
@@ -124,6 +127,9 @@ class ActionPredictionOutcome(BaseModel):
     reliability: float = Field(ge=0.0, le=1.0)
     observed_at: datetime
     evidence_refs: tuple[str, ...] = Field(min_length=1)
+    expected_engaged_readers_30s: float | None = Field(default=None, ge=0.0)
+    actual_engaged_readers_30s: float | None = Field(default=None, ge=0.0)
+    engaged_prediction_error: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @field_validator("observed_at")
     @classmethod
@@ -324,9 +330,20 @@ def forecast_strategy_candidates(*, state_root: Path, account: str, topic: str,
                 # persistent overprediction means the opposite. High error also increases exploration value.
                 expected_utility = min(1.0, max(0.0, expected_utility + 0.20 * signed_bias * strength))
                 information_gain = min(1.0, information_gain + 0.30 * mean_error * strength)
+        engagement_refs: list[str] = []
+        for row in quality_rows:
+            if isinstance(row.get("engagement_rate"), (int, float)) and not isinstance(row.get("engagement_rate"), bool):
+                engagement_refs.extend(row.get("evidence_refs") or ())
+        expected_engaged = (
+            mature.expected_pageviews * expected_quality
+            if expected_quality is not None else None
+        )
         candidate = StrategyCandidateForecast(
             profile_name=profile, metrics=metrics,
             expected_utility=expected_utility, information_gain=information_gain,
+            expected_engagement_rate_24h=expected_quality,
+            expected_engaged_readers_30s_24h=expected_engaged,
+            engagement_evidence_refs=tuple(dict.fromkeys(engagement_refs)),
         )
         output[profile] = candidate.model_dump(mode="json")
     return output
@@ -367,6 +384,9 @@ def settle_action_predictions(*, state_root: Path, account: str, as_of: datetime
         raise ValueError("settlement cutoff must be timezone-aware")
     cutoff = as_of.astimezone(timezone.utc)
     store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
+    mature_audience = collect_mature_audience_observations(
+        state_root=state_root, account=account, as_of=cutoff
+    )
     evidence: dict[tuple[str, str], ChannelEvidence] = {}
     for row in store.as_of(cutoff):
         label = _window_label(row)
@@ -405,6 +425,22 @@ def settle_action_predictions(*, state_root: Path, account: str, as_of: datetime
             row = evidence.get((publication_id, metric.window))
             if row is None:
                 continue
+            audience = mature_audience.get(publication_id) if metric.window == "24h" else None
+            expected_engaged = (
+                selected.expected_engaged_readers_30s_24h
+                if metric.window == "24h" else None
+            )
+            actual_engaged = (
+                audience.engaged_readers_30s
+                if audience is not None and expected_engaged is not None else None
+            )
+            engaged_error = (
+                _symmetric_error(expected_engaged, actual_engaged)
+                if expected_engaged is not None and actual_engaged is not None else None
+            )
+            refs = [prediction.prediction_id, *row.evidence_refs]
+            if audience is not None:
+                refs.extend(audience.evidence_refs)
             outcome = ActionPredictionOutcome(
                 prediction_id=prediction.prediction_id, publication_id=publication_id,
                 topic=prediction.topic, profile_name=prediction.selected_profile_name,
@@ -412,7 +448,10 @@ def settle_action_predictions(*, state_root: Path, account: str, as_of: datetime
                 expected_pageviews=metric.expected_pageviews, actual_pageviews=float(row.value),
                 prediction_error=_symmetric_error(metric.expected_pageviews, float(row.value)),
                 reliability=RELIABILITY[metric.window], observed_at=row.observed_at,
-                evidence_refs=tuple(dict.fromkeys([prediction.prediction_id, *row.evidence_refs])),
+                evidence_refs=tuple(dict.fromkeys(refs)),
+                expected_engaged_readers_30s=expected_engaged,
+                actual_engaged_readers_30s=actual_engaged,
+                engaged_prediction_error=engaged_error,
             )
             outcomes.append(outcome.model_dump(mode="json"))
             outcome_path = cycle_root / "action_prediction_outcomes" / f"{metric.window}.json"
