@@ -24,6 +24,9 @@ on:
       - "src/wechat_traffic_agent/wakeful_runtime.py"
       - "src/wechat_traffic_agent/wakeful_tasks.py"
       - "src/wechat_traffic_agent/resource_scout.py"
+      - "src/wechat_traffic_agent/resource_economy.py"
+      - "src/wechat_traffic_agent/survival_resources.py"
+      - "src/wechat_traffic_agent/survival_optimization.py"
       - "src/wechat_traffic_agent/channels/agent_live_page.py"
       - "src/wechat_traffic_agent/automatic_website.py"
       - "src/wechat_traffic_agent/website_experiment.py"
@@ -62,6 +65,7 @@ on:
       - "tests/test_run_content_agent_entrypoint.py"
       - "tests/test_wakeful_runtime.py"
       - "tests/test_content_resource_scout.py"
+      - "tests/test_survival_resources.py"
       - "tests/test_trading_network_source.py"
       - "tests/test_draft_inbox.py"
       - "tests/test_trading_draft_worker.py"
@@ -93,6 +97,9 @@ jobs:
           src/wechat_traffic_agent/wakeful_runtime.py
           src/wechat_traffic_agent/wakeful_tasks.py
           src/wechat_traffic_agent/resource_scout.py
+          src/wechat_traffic_agent/resource_economy.py
+          src/wechat_traffic_agent/survival_resources.py
+          src/wechat_traffic_agent/survival_optimization.py
           src/wechat_traffic_agent/channels/agent_live_page.py
           src/wechat_traffic_agent/website_experiment.py
           src/wechat_traffic_agent/website_experiment_evaluation.py
@@ -160,6 +167,7 @@ jobs:
           tests/test_content_loop.py tests/test_content_explorer.py tests/test_content_explorer_loop.py tests/test_goal_web_search.py
           tests/test_world_feed.py tests/test_prospective_predictions.py
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
+          tests/test_survival_resources.py
       - name: Build source bundle
         run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=.draft-ci --exclude=.editorial-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
       - uses: actions/upload-artifact@v4
