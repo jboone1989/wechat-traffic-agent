@@ -41,9 +41,17 @@ class ContentMind:
             raise RuntimeError("Content Agent requires VirtualBrain resource awareness")
         self._plans: dict[str, dict[str, Any]] = {}
         self._observed_event_ids: list[str] = []
+        self._seen_event_ids: set[str] = set()
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
         self._inquiry_topics: dict[str, str] = {}
+        self._archive_summary: dict[str, Any] = {
+            "strategy_outcomes_archived": 0,
+            "archived_reward_count": 0,
+            "archived_mean_relative_reward": None,
+            "last_strategy_evidence_ref": None,
+        }
         self._restore()
+        self._load_dedupe_ledger()
 
     @property
     def checkpoint_path(self) -> Path:
@@ -69,7 +77,8 @@ class ContentMind:
         legacy = {"schema_version", "subject_id", "subject", "plans", "observed_event_ids"}
         strategy_version = legacy | {"strategy_outcomes"}
         current = strategy_version | {"inquiry_topics"}
-        allowed = {frozenset(legacy), frozenset(strategy_version), frozenset(current)}
+        archived = current | {"archive_summary"}
+        allowed = {frozenset(legacy), frozenset(strategy_version), frozenset(current), frozenset(archived)}
         if not isinstance(row, dict) or frozenset(row) not in allowed:
             raise ValueError("Content Mind checkpoint fields mismatch")
         if row["schema_version"] != MIND_SCHEMA or row["subject_id"] != self.subject_id:
@@ -80,11 +89,15 @@ class ContentMind:
             raise ValueError("Content Mind strategy outcomes are invalid")
         if "inquiry_topics" in row and not isinstance(row["inquiry_topics"], dict):
             raise ValueError("Content Mind inquiry topics are invalid")
+        if "archive_summary" in row and not isinstance(row["archive_summary"], dict):
+            raise ValueError("Content Mind archive summary is invalid")
         self.session.restore(row["subject"])
         self._plans = deepcopy(row["plans"])
         self._observed_event_ids = [str(item) for item in row["observed_event_ids"]]
         self._strategy_outcomes = deepcopy(row.get("strategy_outcomes") or {})
         self._inquiry_topics = {str(key): str(value) for key, value in (row.get("inquiry_topics") or {}).items()}
+        if "archive_summary" in row:
+            self._archive_summary = deepcopy(row["archive_summary"])
 
     def _persist(self) -> None:
         payload = {
@@ -95,6 +108,7 @@ class ContentMind:
             "observed_event_ids": self._observed_event_ids,
             "strategy_outcomes": self._strategy_outcomes,
             "inquiry_topics": self._inquiry_topics,
+            "archive_summary": self._archive_summary,
         }
         tmp = self.checkpoint_path.with_suffix(".json.tmp")
         tmp.write_text(
@@ -106,6 +120,74 @@ class ContentMind:
     def persist_resource_awareness(self) -> None:
         """Persist provider-neutral resource state after a governed external observation."""
         self._persist()
+
+    @property
+    def dedupe_ledger_path(self) -> Path:
+        return self.root / "seen_event_ids.jsonl"
+
+    def _load_dedupe_ledger(self) -> None:
+        ledger_ids: set[str] = set()
+        if self.dedupe_ledger_path.exists():
+            for line in self.dedupe_ledger_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                event_id = str(row.get("event_id") or "").strip() if isinstance(row, dict) else ""
+                if event_id:
+                    ledger_ids.add(event_id)
+        self._seen_event_ids = set(self._observed_event_ids) | ledger_ids
+        missing = [event_id for event_id in self._observed_event_ids if event_id not in ledger_ids]
+        if missing:
+            with self.dedupe_ledger_path.open("a", encoding="utf-8") as handle:
+                for event_id in missing:
+                    handle.write(json.dumps({
+                        "event_id": event_id,
+                        "event_hash": sha256(event_id.encode()).hexdigest(),
+                    }, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def _has_seen_event(self, event_id: str) -> bool:
+        return str(event_id) in self._seen_event_ids
+
+    def _remember_event_id(self, event_id: str) -> None:
+        event_id = str(event_id)
+        if event_id in self._seen_event_ids:
+            return
+        with self.dedupe_ledger_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "event_id": event_id,
+                "event_hash": sha256(event_id.encode()).hexdigest(),
+            }, sort_keys=True, separators=(",", ":")) + "\n")
+        self._seen_event_ids.add(event_id)
+        self._remember_event_id(event_id)
+
+    def _archive_strategy_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for raw in rows:
+            row = deepcopy(dict(raw))
+            observed = str(row.get("observed_at") or "")
+            date_key = observed[:10] if len(observed) >= 10 else "undated"
+            grouped.setdefault(date_key, []).append(row)
+        archive_root = self.root / "archive"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        for date_key, values in grouped.items():
+            path = archive_root / f"{date_key}.jsonl"
+            with path.open("a", encoding="utf-8") as handle:
+                for row in values:
+                    handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+                    self._archive_summary["strategy_outcomes_archived"] = int(
+                        self._archive_summary.get("strategy_outcomes_archived") or 0
+                    ) + 1
+                    reward = row.get("relative_reward")
+                    if isinstance(reward, (int, float)) and not isinstance(reward, bool):
+                        count = int(self._archive_summary.get("archived_reward_count") or 0)
+                        old_mean = self._archive_summary.get("archived_mean_relative_reward")
+                        total = (float(old_mean) * count if old_mean is not None else 0.0) + float(reward)
+                        count += 1
+                        self._archive_summary["archived_reward_count"] = count
+                        self._archive_summary["archived_mean_relative_reward"] = total / count
+                    refs = [str(ref) for ref in row.get("evidence_refs") or () if str(ref).strip()]
+                    if refs:
+                        self._archive_summary["last_strategy_evidence_ref"] = refs[-1]
 
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
         mapped = self._inquiry_topics.get(str(inquiry_id))
@@ -133,7 +215,7 @@ class ContentMind:
                 updates.append(update)
                 continue
             event_id = f"world-attention:{topic}:{evidence_id}"
-            if event_id in self._observed_event_ids:
+            if self._has_seen_event(event_id):
                 interest = self.session.interests.get(topic)
                 update = {
                     "topic": topic, "status": "ALREADY_OBSERVED",
@@ -363,7 +445,7 @@ class ContentMind:
         if not refs:
             raise ValueError("prediction outcome requires evidence_refs")
         event_id = "prediction-outcome:" + prediction_id
-        if event_id in self._observed_event_ids:
+        if self._has_seen_event(event_id):
             return {
                 "status": "ALREADY_OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
                 "outcome_status": status, "prediction_error": prediction_error,
@@ -382,8 +464,7 @@ class ContentMind:
             },
             authority_id=AUTHORITY_ID,
         )
-        self._observed_event_ids.append(event_id)
-        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._remember_event_id(event_id)
         self._persist()
         return {
             "status": "OBSERVED", "event_id": event_id, "prediction_id": prediction_id,
@@ -453,7 +534,7 @@ class ContentMind:
             if any(not 0.0 <= value <= 1.0 for value in (error, reliability)) or min(expected, actual) < 0:
                 raise ValueError("action prediction outcome scores are invalid")
             event_id = f"content-action-outcome:{prediction_id}:{window}"
-            if event_id in self._observed_event_ids:
+            if self._has_seen_event(event_id):
                 duplicates += 1
                 continue
             brain_prediction_id = f"{prediction_id}:{window}"
@@ -547,7 +628,8 @@ class ContentMind:
             supplied_rate = row.get("engagement_rate_24h")
             if supplied_rate is not None and abs(float(supplied_rate) - rate) > 1e-9:
                 raise ValueError("strategy outcome engagement rate disagrees with evidence")
-            if outcome_id in self._strategy_outcomes:
+            event_id = "content-strategy-outcome:" + outcome_id
+            if self._has_seen_event(event_id):
                 duplicates += 1
                 continue
             prior = [
@@ -561,7 +643,6 @@ class ContentMind:
                 baseline_pageviews=baseline,
                 engagement_rate_value=rate,
             )
-            event_id = "content-strategy-outcome:" + outcome_id
             if reward is not None:
                 self.session.ingest_life_experience(
                     {
@@ -593,13 +674,16 @@ class ContentMind:
                 "evidence_refs": refs,
             }
             self._strategy_outcomes[outcome_id] = stored
+            self._remember_event_id(event_id)
             applied.append(deepcopy(stored))
         if len(self._strategy_outcomes) > MAX_STRATEGY_OUTCOMES:
             ordered = sorted(
                 self._strategy_outcomes.items(),
                 key=lambda item: (str(item[1].get("observed_at") or ""), item[0]),
             )
-            for key, _ in ordered[: len(self._strategy_outcomes) - MAX_STRATEGY_OUTCOMES]:
+            evicted = ordered[: len(self._strategy_outcomes) - MAX_STRATEGY_OUTCOMES]
+            self._archive_strategy_rows(row for _, row in evicted)
+            for key, _ in evicted:
                 self._strategy_outcomes.pop(key, None)
         if applied:
             self._persist()
@@ -698,7 +782,7 @@ class ContentMind:
     ) -> dict[str, Any]:
         """Record bounded process effort without assigning world value to the topic."""
         event_id = f"content-process:{cycle}"
-        if event_id in self._observed_event_ids:
+        if self._has_seen_event(event_id):
             interest = self.session.interests.get(topic)
             return {"status": "ALREADY_OBSERVED", "interest": interest.__dict__ if interest else None}
         topic = str(topic).strip()
@@ -724,8 +808,7 @@ class ContentMind:
             },
             authority_id=AUTHORITY_ID,
         )
-        self._observed_event_ids.append(event_id)
-        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._remember_event_id(event_id)
         self._persist()
         interest = self.session.interests.get(topic)
         return {
