@@ -733,19 +733,43 @@ class ContentMind:
             budget = float(raw_resource.get("period_budget") or 0.0)
             runway = raw_resource.get("runway_days")
             ratio = (balance / budget) if budget > 0 else None
+            quotas = raw_resource.get("quotas") or {}
+            disk_free = float(quotas.get("host_disk_free_gib") or 0.0)
+            disk_used_ratio = float(quotas.get("host_disk_used_ratio") or 0.0)
+            mem_available = float(quotas.get("host_mem_available_gib") or 0.0)
+            levels = {"NORMAL": 0, "WATCH": 1, "CONSERVE": 2, "CRITICAL": 3}
+            reasons: list[str] = []
+            financial_pressure = "NORMAL"
             if balance <= 0 or (ratio is not None and ratio < 0.10) or (runway is not None and float(runway) < 3):
-                pressure = "CRITICAL"
+                financial_pressure = "CRITICAL"
             elif (ratio is not None and ratio < 0.25) or (runway is not None and float(runway) < 7):
-                pressure = "CONSERVE"
+                financial_pressure = "CONSERVE"
             elif (ratio is not None and ratio < 0.50) or (runway is not None and float(runway) < 14):
-                pressure = "WATCH"
-            else:
-                pressure = "NORMAL"
+                financial_pressure = "WATCH"
+            if financial_pressure != "NORMAL":
+                reasons.append("financial_runway")
+            host_pressure = "NORMAL"
+            host_observed = "host_disk_free_gib" in quotas and "host_disk_used_ratio" in quotas
+            if host_observed and (disk_free < 4.0 or disk_used_ratio >= 0.94):
+                host_pressure = "CRITICAL"; reasons.append("disk_critical")
+            elif host_observed and (disk_free < 8.0 or disk_used_ratio >= 0.90):
+                host_pressure = "CONSERVE"; reasons.append("disk_pressure")
+            elif host_observed and (disk_free < 12.0 or disk_used_ratio >= 0.80):
+                host_pressure = "WATCH"; reasons.append("disk_watch")
+            if mem_available and mem_available < 0.5:
+                host_pressure = "CRITICAL"; reasons.append("memory_critical")
+            elif mem_available and mem_available < 1.0 and levels[host_pressure] < levels["CONSERVE"]:
+                host_pressure = "CONSERVE"; reasons.append("memory_pressure")
+            pressure = max((financial_pressure, host_pressure), key=levels.get)
             current_resource = {
                 "observed_at": raw_resource.get("observed_at"),
                 "currency": raw_resource.get("currency"),
                 "pressure": pressure,
-                "provider_available": bool((raw_resource.get("quotas") or {}).get("deepseek_api_available", 0.0)),
+                "pressure_reasons": reasons,
+                "provider_available": bool(quotas.get("deepseek_api_available", 0.0)),
+                "disk_free_gib": disk_free,
+                "disk_used_ratio": disk_used_ratio,
+                "mem_available_gib": mem_available,
             }
         return {
             "mind_schema": MIND_SCHEMA,

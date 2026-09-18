@@ -71,7 +71,18 @@ def main() -> int:
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
     from wechat_traffic_agent.resource_scout import ContentResourceScout
+    from wechat_traffic_agent.survival_resources import ComputeResourceScout, SurvivalNodeRegistry
+    from wechat_traffic_agent.survival_optimization import HostRecoveryPlanner, persist_runtime_footprint
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
+    compute_resource_scout = ComputeResourceScout(state_root=state_root, capability_runtime=app.runtime)
+    persist_runtime_footprint(
+        state_root=state_root,
+        release_root=ROOT,
+        venv_root=Path(sys.prefix),
+        now=datetime.now(timezone.utc),
+    )
+    host_recovery = HostRecoveryPlanner(state_root=state_root)
+    survival_nodes = SurvivalNodeRegistry(state_root=state_root)
     private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
@@ -186,6 +197,9 @@ def main() -> int:
         content_mind=content_mind,
         resource_economy=resource_economy,
         resource_scout=resource_scout,
+        compute_resource_scout=compute_resource_scout,
+        host_recovery=host_recovery,
+        survival_nodes=survival_nodes,
         daily_reflection=daily_reflection,
         human_assistance=human_assistance,
         network_service=network_service,

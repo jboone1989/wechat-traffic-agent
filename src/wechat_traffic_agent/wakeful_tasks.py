@@ -30,6 +30,8 @@ class WakefulContentTaskRunner:
 
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
+        current: dict[str, Any] = {}
+        recovery_status = "NOT_EVALUATED"
         try:
             observation = self.resource_economy.observe(now)
             rows["resource_observation"] = observation
@@ -39,6 +41,42 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        host_recovery = getattr(self, "host_recovery", None)
+        if host_recovery is not None:
+            try:
+                reasons = {str(item) for item in current.get("pressure_reasons") or ()}
+                audit = host_recovery.audit(now=now)
+                rows["host_recovery_audit"] = audit
+                if (
+                    str(current.get("pressure") or "") in {"WATCH", "CONSERVE", "CRITICAL"}
+                    and any(item.startswith("disk_") for item in reasons)
+                ):
+                    recovery = host_recovery.optimize(now=now)
+                    rows["host_recovery"] = recovery
+                    recovery_status = str(recovery.get("status") or "UNKNOWN")
+                else:
+                    recovery_status = "NOT_NEEDED"
+            except Exception as exc:  # noqa: BLE001
+                rows["host_recovery"] = self._error(exc)
+                recovery_status = "FAILED"
+                rows["status"] = "DEGRADED"
+        compute_scout = getattr(self, "compute_resource_scout", None)
+        survival_nodes = getattr(self, "survival_nodes", None)
+        if compute_scout is not None and survival_nodes is not None:
+            try:
+                pressure = str(current.get("pressure") or "UNKNOWN")
+                rows["compute_resource_scout"] = compute_scout.maybe_discover(
+                    now=now,
+                    urgent=pressure == "CRITICAL" and recovery_status not in {"RECOVERED", "NOT_NEEDED"},
+                )
+                rows["compute_resource_verification"] = compute_scout.verify_pending(now=now, limit=6)
+                rows["migration_intent"] = survival_nodes.migration_intent(
+                    resource_pressure=pressure,
+                    recovery_status=recovery_status,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["compute_survival"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
             rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
         except Exception as exc:  # noqa: BLE001

@@ -12,6 +12,8 @@ from typing import Any, Mapping
 import urllib.error
 import urllib.request
 
+from wechat_traffic_agent.survival_resources import HostResourceObserver
+
 
 def _iso(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
@@ -125,6 +127,7 @@ class ContentResourceEconomy:
         self.state_root = Path(state_root)
         self.mind = mind
         self.observer = DeepSeekBalanceObserver(state_root=self.state_root)
+        self.host_observer = HostResourceObserver(state_root=self.state_root)
         self.monthly_budget = _positive_env("CONTENT_MONTHLY_BUDGET_CNY", 100.0)
         self.bootstrap_cycle_estimate = _positive_env("CONTENT_RESOURCE_BOOTSTRAP_CYCLE_ESTIMATE_CNY", 1.0)
 
@@ -132,6 +135,7 @@ class ContentResourceEconomy:
         from virtualbrain.research.resource_awareness import ResourceState
 
         balance = self.observer.observe(now)
+        host = self.host_observer.observe(now)
         awareness = self.mind.session.resource_awareness
         burn = self._daily_burn(awareness.states, balance)
         runway = balance.total_balance / burn if burn is not None and burn > 0 else None
@@ -152,12 +156,23 @@ class ContentResourceEconomy:
                 "deepseek_api_available": 1.0 if balance.is_available else 0.0,
                 "deepseek_granted_balance": balance.granted_balance,
                 "deepseek_topped_up_balance": balance.topped_up_balance,
+                "host_disk_total_gib": host.disk_total_gib,
+                "host_disk_used_gib": host.disk_used_gib,
+                "host_disk_free_gib": host.disk_free_gib,
+                "host_disk_used_ratio": host.disk_used_ratio,
+                "host_mem_total_gib": host.mem_total_gib or 0.0,
+                "host_mem_available_gib": host.mem_available_gib or 0.0,
             },
-            source_refs=(balance.evidence_ref,),
+            source_refs=(balance.evidence_ref, host.evidence_ref),
         )
         self.mind.session.resource_awareness.observe(state)
         self.mind.persist_resource_awareness()
-        return {"status": "OBSERVED", "balance": balance.payload(), "resource_state": self._state_payload(state)}
+        return {
+            "status": "OBSERVED",
+            "balance": balance.payload(),
+            "host": host.payload(),
+            "resource_state": self._state_payload(state),
+        }
 
     @staticmethod
     def _daily_burn(history: tuple[Any, ...], current: BalanceObservation) -> float | None:
@@ -191,6 +206,7 @@ class ContentResourceEconomy:
             "period_budget": state.period_budget,
             "estimated_daily_burn": state.estimated_daily_burn,
             "runway_days": state.runway_days,
+            "quotas": dict(state.quotas),
             "source_refs": list(state.source_refs),
         }
 
