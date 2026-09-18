@@ -29,6 +29,7 @@ from .prospective_predictions import (
     PredictionProposal, ProspectivePredictionLedger, propose_prediction, settle_predictions,
 )
 from .sources.runtime_web import RuntimeWebSearch
+from .placement_web import PlacementAwareWebSearch
 from .sources.runtime_x import RuntimeXSearch
 from .social_writing import load_social_style_context
 from .trading_draft_worker import default_trading_research_audience
@@ -177,7 +178,7 @@ def _repair_related_ids(selection, snapshot):
 class ContinuousContentLoop(_BaseContinuousContentLoop):
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
                  feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None,
-                 capability_runtime=None, website_experiments=False, world_feed=None):
+                 capability_runtime=None, placement_controller=None, website_experiments=False, world_feed=None):
         if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
             raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
         self.runtime, self.state = runtime, Path(state_root)
@@ -193,7 +194,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             web_searcher = None
             x_searcher = None
             if capability_runtime is not None and "web.search" in capability_runtime.available_capabilities():
-                source = RuntimeWebSearch(capability_runtime)
+                local_source = RuntimeWebSearch(capability_runtime)
+                source = (
+                    PlacementAwareWebSearch(local_search=local_source, placement=placement_controller)
+                    if placement_controller is not None else local_source
+                )
                 web_searcher = lambda query, now: source.search(query=query, now=now)
             if capability_runtime is not None and "x.search" in capability_runtime.available_capabilities():
                 x_source = RuntimeXSearch(capability_runtime)

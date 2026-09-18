@@ -32,9 +32,17 @@ def test_migration_waits_for_local_recovery(tmp_path):
     )
     assert recoverable["status"] == "OPTIMIZE_FIRST"
 
+    offload = registry.migration_intent(
+        resource_pressure="CRITICAL",
+        recovery_status="EXHAUSTED",
+        offload_status="AVAILABLE",
+    )
+    assert offload["status"] == "OFFLOAD_FIRST"
+
     exhausted = registry.migration_intent(
         resource_pressure="CRITICAL",
         recovery_status="EXHAUSTED",
+        offload_status="UNAVAILABLE",
     )
     assert exhausted["status"] == "MIGRATION_CANDIDATE"
     assert exhausted["target_node_id"] == "backup-a"

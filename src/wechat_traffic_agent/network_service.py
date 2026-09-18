@@ -399,10 +399,15 @@ class ContentNetworkService:
         self._join_task = None
         self._thread = self._server = self._network = self._loop = None
 
-    def discover(self, capability: str, *, timeout: float = 10.0) -> list[dict[str, Any]]:
+    def discover(
+        self, capability: str, *, timeout: float = 10.0, include_reputation: bool = False,
+    ) -> list[dict[str, Any]]:
         if self._network is None or self._loop is None:
             raise RuntimeError("ContentNetworkService is not started")
-        future = asyncio.run_coroutine_threadsafe(self._network.discover(capability), self._loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._network.discover(capability, include_reputation=include_reputation),
+            self._loop,
+        )
         return [dict(item.raw) for item in future.result(timeout=timeout)]
 
     def read_remote(self, capability: str, payload: Mapping[str, Any] | None = None, *, timeout: float = 15.0) -> dict[str, Any]:
@@ -418,6 +423,49 @@ class ContentNetworkService:
                 "metadata": {"capability": capability, "requester_agent_id": self.agent_id},
             })
             return {"provider_agent_id": agent.agent_id, "provider_network_id": agent.network_id, "provider_endpoint": peer.endpoint, "task": task}
+
+        return asyncio.run_coroutine_threadsafe(_call(), self._loop).result(timeout=timeout)
+
+    def delegate_remote(
+        self, *, agent_id: str, capability: str, payload: Mapping[str, Any],
+        objective: str, idempotency_key: str | None = None,
+        placement_metadata: Mapping[str, Any] | None = None, timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Delegate one capability task by identity; endpoints remain discovery-owned."""
+        if self._network is None or self._loop is None:
+            raise RuntimeError("ContentNetworkService is not started")
+        target_id = str(agent_id).strip()
+        if not target_id:
+            raise ValueError("delegate_remote requires agent_id")
+        capability = str(capability).strip()
+        if not capability:
+            raise ValueError("delegate_remote requires capability")
+        data = dict(payload)
+        placement = dict(placement_metadata or {})
+        authority = str(placement.get("authority") or "NONE")
+        side_effects = "NONE" if authority == "NONE" else authority
+
+        async def _call() -> dict[str, Any]:
+            rows = await self._network.discover(capability, include_reputation=True)
+            agent = next((row for row in rows if str(row.agent_id) == target_id), None)
+            if agent is None:
+                raise RuntimeError("selected placement worker is no longer discoverable")
+            peer = await self._network.connect(agent)
+            task = await peer.propose_task(
+                capability=capability,
+                objective=str(objective),
+                constraints=[
+                    "follow the signed placement contract",
+                    "do not retain requester secrets or private state beyond the task",
+                ],
+                deliverables=["structured capability result"],
+                verification={"required": False},
+                metadata={"placement": placement},
+                capability_input=data,
+                side_effects=side_effects,
+                idempotency_key=idempotency_key,
+            )
+            return dict(task)
 
         return asyncio.run_coroutine_threadsafe(_call(), self._loop).result(timeout=timeout)
 

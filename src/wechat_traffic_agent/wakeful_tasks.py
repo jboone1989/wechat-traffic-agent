@@ -32,6 +32,7 @@ class WakefulContentTaskRunner:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
         current: dict[str, Any] = {}
         recovery_status = "NOT_EVALUATED"
+        offload_status = "UNAVAILABLE"
         try:
             observation = self.resource_economy.observe(now)
             rows["resource_observation"] = observation
@@ -70,12 +71,36 @@ class WakefulContentTaskRunner:
                     urgent=pressure == "CRITICAL" and recovery_status not in {"RECOVERED", "NOT_NEEDED"},
                 )
                 rows["compute_resource_verification"] = compute_scout.verify_pending(now=now, limit=6)
-                rows["migration_intent"] = survival_nodes.migration_intent(
-                    resource_pressure=pressure,
-                    recovery_status=recovery_status,
-                )
             except Exception as exc:  # noqa: BLE001
                 rows["compute_survival"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        placement = getattr(self, "habitat_placement", None)
+        if placement is not None:
+            try:
+                network_service = getattr(self, "network_service", None)
+                capability_ids = tuple(
+                    str(item) for item in (getattr(network_service, "capability_ids", ()) or ())
+                    if str(item).strip()
+                )
+                placement_review = placement.review(
+                    now=now,
+                    resource_pressure=str(current.get("pressure") or "UNKNOWN"),
+                    capability_ids=capability_ids,
+                )
+                rows["habitat_placement"] = placement_review
+                offload_status = str(placement_review.get("offload_status") or "UNAVAILABLE")
+            except Exception as exc:  # noqa: BLE001
+                rows["habitat_placement"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        if survival_nodes is not None:
+            try:
+                rows["migration_intent"] = survival_nodes.migration_intent(
+                    resource_pressure=str(current.get("pressure") or "UNKNOWN"),
+                    recovery_status=recovery_status,
+                    offload_status=offload_status,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["migration_intent"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         try:
             rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)

@@ -321,7 +321,7 @@ class SurvivalNodeRegistry:
 
     def migration_intent(
         self, *, resource_pressure: str, recovery_status: str,
-        hardware_unrecoverable: bool = False,
+        offload_status: str = "UNAVAILABLE", hardware_unrecoverable: bool = False,
     ) -> dict[str, Any]:
         candidates = [node for node in self.nodes() if node.enabled]
         if not candidates:
@@ -329,6 +329,7 @@ class SurvivalNodeRegistry:
                 "status": "NO_CONFIGURED_TARGET",
                 "resource_pressure": resource_pressure,
                 "recovery_status": recovery_status,
+                "offload_status": offload_status,
                 "candidate_count": 0,
             }
         if resource_pressure != "CRITICAL":
@@ -336,6 +337,7 @@ class SurvivalNodeRegistry:
                 "status": "STANDBY_AVAILABLE",
                 "resource_pressure": resource_pressure,
                 "recovery_status": recovery_status,
+                "offload_status": offload_status,
                 "candidate_count": len(candidates),
             }
         if not hardware_unrecoverable and recovery_status not in {
@@ -345,6 +347,15 @@ class SurvivalNodeRegistry:
                 "status": "OPTIMIZE_FIRST",
                 "resource_pressure": resource_pressure,
                 "recovery_status": recovery_status,
+                "offload_status": offload_status,
+                "candidate_count": len(candidates),
+            }
+        if not hardware_unrecoverable and offload_status in {"AVAILABLE", "IN_PROGRESS"}:
+            return {
+                "status": "OFFLOAD_FIRST",
+                "resource_pressure": resource_pressure,
+                "recovery_status": recovery_status,
+                "offload_status": offload_status,
                 "candidate_count": len(candidates),
             }
         target = sorted(candidates, key=lambda row: (-row.min_free_gib, row.node_id))[0]
@@ -352,6 +363,7 @@ class SurvivalNodeRegistry:
             "status": "MIGRATION_CANDIDATE",
             "resource_pressure": resource_pressure,
             "recovery_status": recovery_status,
+            "offload_status": offload_status,
             "target_node_id": target.node_id,
             "credential_ref": target.credential_ref,
             "required_executor": "survival.migrate.ssh",

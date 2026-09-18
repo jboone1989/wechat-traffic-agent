@@ -73,6 +73,7 @@ def main() -> int:
     from wechat_traffic_agent.resource_scout import ContentResourceScout
     from wechat_traffic_agent.survival_resources import ComputeResourceScout, SurvivalNodeRegistry
     from wechat_traffic_agent.survival_optimization import HostRecoveryPlanner, persist_runtime_footprint
+    from wechat_traffic_agent.habitat_placement import HabitatPlacementController
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
     compute_resource_scout = ComputeResourceScout(state_root=state_root, capability_runtime=app.runtime)
     persist_runtime_footprint(
@@ -83,6 +84,7 @@ def main() -> int:
     )
     host_recovery = HostRecoveryPlanner(state_root=state_root)
     survival_nodes = SurvivalNodeRegistry(state_root=state_root)
+    habitat_placement = HabitatPlacementController(state_root=state_root)
     private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
@@ -116,6 +118,7 @@ def main() -> int:
         try:
             network_service = ContentNetworkService.from_environment(root=state_root, application=app)
             network_service.start()
+            habitat_placement.network_service = network_service
             print(json.dumps({
                 "agent_network": {
                     "status": "JOINED" if network_service.joined else "ENDPOINT_READY_JOIN_PENDING",
@@ -181,6 +184,7 @@ def main() -> int:
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
             feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
             publisher=publisher, mind=content_mind, capability_runtime=app.runtime,
+            placement_controller=habitat_placement,
             website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"))
 
     stopping = False
@@ -200,6 +204,7 @@ def main() -> int:
         compute_resource_scout=compute_resource_scout,
         host_recovery=host_recovery,
         survival_nodes=survival_nodes,
+        habitat_placement=habitat_placement,
         daily_reflection=daily_reflection,
         human_assistance=human_assistance,
         network_service=network_service,
