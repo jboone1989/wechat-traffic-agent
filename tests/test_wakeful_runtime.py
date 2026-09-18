@@ -290,3 +290,22 @@ def test_resource_recovery_reschedules_cognition_after_hibernation(tmp_path):
     assert "CONTENT_COGNITION" in tasks
     assert "OBSERVE_WORLD" in tasks
     assert runtime.public_snapshot()["presence"] == "AWAKE"
+
+
+def test_restart_while_critical_does_not_recreate_expensive_initial_wakes(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.set_resource_pressure("CRITICAL")
+    restarted = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    restarted.ensure_initial_plans(NOW)
+    tasks = {wake.task for wake in restarted.core.snapshot().pending_plans}
+    assert tasks <= {"RESOURCE_REVIEW", "CHECK_OUTCOMES"}
+
+
+def test_critical_pressure_does_not_schedule_windfall_reflection(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.set_resource_pressure("CRITICAL")
+    runtime.schedule_windfall_reflection(NOW, seconds=60)
+    assert not any(
+        wake.task == "REFLECT"
+        for wake in runtime.core.snapshot().pending_plans
+    )
