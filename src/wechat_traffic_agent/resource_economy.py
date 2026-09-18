@@ -565,18 +565,59 @@ class ContentResourceEconomy:
         return receipt
 
     def force_wake(self, *, now: datetime, operator_ref: str) -> dict[str, Any]:
+        """Authorize exactly one content cycle while retaining an auditable receipt."""
         operator_ref = str(operator_ref).strip()
         if not operator_ref:
             raise ValueError("operator force wake requires operator_ref")
         current = self.hibernation_state()
         if current is None:
             return {"status": "NOT_HIBERNATING"}
-        receipt = self._exit_hibernation(
+        authorized_at = _iso(now)
+        receipt_payload = {
+            "schema_version": "resource-force-wake.v1",
+            "status": "AUTHORIZED",
+            "authorized_at": authorized_at,
+            "operator_ref": operator_ref,
+            "scope": "ONE_CONTENT_CYCLE",
+            "prior_hibernation": current,
+        }
+        receipt_id = "force-wake:" + sha256(
+            json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        receipt_payload["receipt_id"] = receipt_id
+        receipt_root = self.hibernation_path.parent / "operator_force_wake_receipts"
+        receipt_root.mkdir(parents=True, exist_ok=True)
+        receipt_path = receipt_root / f"{receipt_id.split(':', 1)[1]}.json"
+        if not receipt_path.exists():
+            receipt_path.write_text(
+                json.dumps(receipt_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        override = {
+            "schema_version": "operator-force-wake-override.v1",
+            "status": "ACTIVE",
+            "authorized_at": authorized_at,
+            "expires_at": _iso(now + timedelta(minutes=30)),
+            "receipt_ref": receipt_id,
+            "scope": "ONE_CONTENT_CYCLE",
+        }
+        tmp = self.force_wake_override_path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(override, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, self.force_wake_override_path)
+        recovery = self._exit_hibernation(
             now=now,
             reason="OPERATOR_FORCE_WAKE",
-            evidence_refs=tuple(dict.fromkeys([*current.get("evidence_refs", ()), operator_ref])),
+            evidence_refs=tuple(dict.fromkeys([*current.get("evidence_refs", ()), operator_ref, receipt_id])),
         )
-        return {"status": "FORCED_AWAKE", "receipt": receipt}
+        return {
+            "status": "FORCED_AWAKE",
+            "receipt": receipt_payload,
+            "override": override,
+            "recovery": recovery,
+        }
 
     def begin_cycle(self, *, now: datetime, cycle: str) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ActionProposal, DecisionEpisode
