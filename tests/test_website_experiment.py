@@ -14,7 +14,7 @@ from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop as Goal
 from wechat_traffic_agent.web_editorial import digest
 from wechat_traffic_agent.web_outcome_evidence import WebsiteOutcomeCollector
 from wechat_traffic_agent.website_experiment import (
-    EXPERIMENT_VERSION, WebsiteExperimentBinding,
+    EXPERIMENT_VERSION, PROMOTED_EXPERIMENT_VERSION, WebsiteExperimentBinding,
     bind_website_experiment, experiment_compliance,
 )
 import wechat_traffic_agent.website_experiment_evaluation as evaluation_module
@@ -573,3 +573,124 @@ def test_observing_evidence_refs_are_bounded_and_report_truncation(tmp_path):
     assert len(result["evidence_refs"]) == 1000
     assert result["evidence_refs_truncated"] is True
     assert result["strategy_control"] is False
+
+
+def _record_promoted_evaluation_sample(root, *, treatment, index, value):
+    published_at = NOW + timedelta(days=40, hours=index)
+    binding = None
+    for salt in range(1000):
+        cycle = f"promoted-{treatment}-{index}-{salt}"
+        path = root / "promoted-bindings" / f"{cycle}.json"
+        candidate = bind_website_experiment(
+            path, cycle=cycle, decided_at=published_at - timedelta(minutes=5),
+            state_root=root,
+        )
+        if candidate.experiment_version != PROMOTED_EXPERIMENT_VERSION:
+            raise AssertionError("governed conclusion did not promote the experiment")
+        if candidate.treatment_value == treatment:
+            binding = candidate
+            break
+    assert binding is not None
+    publication_id = f"promoted-pub-{treatment}-{index}"
+    cycle_root = root / "content/continuous/cycles" / binding.cycle
+    cycle_root.mkdir(parents=True, exist_ok=True)
+    receipt = {
+        "revision": publication_id,
+        "artifact_id": f"promoted-artifact-{treatment}-{index}",
+        "outcome_attribution": {
+            "schema_version": "website-publication-attribution.v2",
+            "published_at": published_at.isoformat(),
+            "public_route": f"/articles/{publication_id}/",
+            "published_content_sha256": "a" * 64,
+            "agent_candidate_sha256": "a" * 64,
+            "topic": "evidence", "title_version": "title-v1",
+            "structure_version": "structure-v1",
+            "strategy_version": binding.strategy_version,
+            "practice_version": "lesson:test",
+            "experiment": binding.model_dump(mode="json"),
+        },
+    }
+    (cycle_root / "publication.json").write_text(
+        json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    row = ChannelEvidence(
+        channel="website", account="https://example.com", publication_id=publication_id,
+        artifact_id=receipt["artifact_id"], published_content_sha256="a" * 64,
+        agent_candidate_sha256="a" * 64, topic="evidence", title_version="title-v1",
+        structure_version="structure-v1", strategy_version=binding.strategy_version,
+        objective="website_pageviews", distribution_cohort="public-web-http-requests:v1",
+        metric="http_pageviews", metric_definition="bounded pageviews", unit="count",
+        value=float(value), published_at=published_at, window_start=published_at,
+        window_end=published_at + timedelta(hours=24),
+        observed_at=published_at + timedelta(hours=24), revision=1,
+        source="nginx-access-log:v1",
+        evidence_refs=(f"website-experiment:{binding.experiment_id}",),
+    )
+    ChannelEvidenceStore(root / "content/channel_evidence").record(row)
+    return binding
+
+
+def test_favorable_fixed_horizon_conclusion_promotes_future_cycles_to_90_10(tmp_path):
+    for index in range(MIN_SAMPLES_PER_TREATMENT):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=20,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=1,
+        )
+    evaluator = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    )
+    evaluated = evaluator.evaluate(as_of=NOW + timedelta(days=20))
+    assert evaluated["status"] == "EVIDENCE_FAVORS_TREATMENT"
+    assert evaluated["experiment_conclusion"]["favored_treatment"] == "reader_question_first"
+    assert evaluated["experiment_conclusion"]["strategy_control"] is True
+
+    promoted = bind_website_experiment(
+        tmp_path / "next-binding.json", cycle="after-conclusion", decided_at=NOW + timedelta(days=21),
+        state_root=tmp_path,
+    )
+    assert promoted.experiment_version == PROMOTED_EXPERIMENT_VERSION
+    assert promoted.champion_treatment == "reader_question_first"
+    assert promoted.champion_share_percent == 90
+    assert promoted.conclusion_ref == evaluated["experiment_conclusion"]["conclusion_id"]
+    restored = bind_website_experiment(
+        tmp_path / "next-binding.json", cycle="after-conclusion", decided_at=NOW + timedelta(days=22),
+        state_root=tmp_path,
+    )
+    assert restored == promoted
+
+
+def test_concurrent_holdout_reversal_revokes_promotion_and_returns_to_v1(tmp_path):
+    for index in range(MIN_SAMPLES_PER_TREATMENT):
+        _record_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=20,
+        )
+        _record_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=1,
+        )
+    evaluator = WebsiteExperimentEvaluator(
+        state_root=tmp_path, account="https://example.com",
+    )
+    first = evaluator.evaluate(as_of=NOW + timedelta(days=20))
+    assert first["experiment_conclusion"]["favored_treatment"] == "reader_question_first"
+
+    for index in range(MIN_SAMPLES_PER_TREATMENT):
+        _record_promoted_evaluation_sample(
+            tmp_path, treatment="reader_question_first", index=index, value=1,
+        )
+        _record_promoted_evaluation_sample(
+            tmp_path, treatment="evidence_first", index=100 + index, value=30,
+        )
+    reversed_result = evaluator.evaluate(as_of=NOW + timedelta(days=100))
+    monitor = reversed_result["promotion_monitor"]
+    assert monitor["status"] == "EVIDENCE_FAVORS_HOLDOUT"
+    assert monitor["favored_treatment"] == "evidence_first"
+    assert monitor["revocation"]["reason"] == "CONCURRENT_HOLDOUT_REVERSAL"
+
+    after = bind_website_experiment(
+        tmp_path / "post-revocation.json", cycle="post-revocation",
+        decided_at=NOW + timedelta(days=101), state_root=tmp_path,
+    )
+    assert after.experiment_version == EXPERIMENT_VERSION
+    assert after.assignment_method == "sha256-cycle:v1"
