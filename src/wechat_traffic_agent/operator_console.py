@@ -681,6 +681,19 @@ class OperatorConsole:
             need_id, approved=approved, now=now or datetime.now(timezone.utc)
         )
 
+    def bootstrap_remote_host(
+        self, *, host: str, port: int, username: str, password: str,
+        name: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        return self._survival_manager().bootstrap_ssh_host(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            name=name,
+            now=now or datetime.now(timezone.utc),
+        )
+
     def register_remote_host(
         self, *, name: str, health_url: str, capacity: dict[str, Any],
         reliability: str, control_url: str = "", now: datetime | None = None,

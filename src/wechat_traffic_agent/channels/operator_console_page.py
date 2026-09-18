@@ -59,12 +59,23 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 
 <h2>Remote machines</h2>
 <div class="card">
+<h3>Hand a server to Ferro</h3>
+<p class="muted">For a normal VPS, IP + password is enough. The password is used once to install a per-host SSH key, then discarded. Ferro keeps the key and host fingerprint, not the password.</p>
+<div class="two"><label>IP or hostname<input id="sshHost" autocomplete="off" placeholder="207.246.99.253"></label><label>Password<input id="sshPassword" type="password" autocomplete="new-password" placeholder="One-time SSH password"></label></div>
+<details><summary>Advanced SSH settings</summary>
+<div class="two"><label>Name<input id="sshName" placeholder="vultr-edge-1"></label><label>SSH user<input id="sshUser" value="root" autocomplete="off"></label></div>
+<label>SSH port<input id="sshPort" type="number" min="1" max="65535" value="22"></label>
+</details>
+<button id="bootstrapHost">Connect, audit & hand over to Ferro</button>
+<div id="bootstrapStatus" class="muted"></div>
+</div>
+<details class="card"><summary>Advanced: register an already-running signed receiver</summary>
 <div class="two"><label>Name<input id="hostName" placeholder="edge-node-1"></label><label>Reliability<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
 <label>HTTPS health URL<input id="hostHealth" placeholder="https://node.example.com/health"></label>
 <label>Signed deployment control URL (optional)<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
 <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>Memory GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div>
-<button id="addHost">Add candidate host</button>
-</div>
+<button id="addHost">Add signed receiver candidate</button>
+</details>
 <div id="remoteHosts" class="stack"></div>
 
 <h2>Movable services</h2>
@@ -146,7 +157,7 @@ function renderSurvivalControl(data){
 function renderRemoteHosts(data){
  const ctl=data.survival_control||{},rows=ctl.remote_hosts||[],root=el('remoteHosts');root.replaceChildren();
  if(!rows.length){root.append(node('div','No remote machines registered. Ferro will prefer local restructuring first.','card muted'));return}
- for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'CANDIDATE',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));if(row.deployment_capable)head.append(badge('SIGNED DEPLOY','ok'));c.append(head,node('p',fmt(row.health_url)+' · '+fmt(row.reliability),'muted'),node('div',JSON.stringify(row.capacity||{}),'mono muted'));if(row.control_url)c.append(node('div','control '+fmt(row.control_url),'mono muted'));if(row.agent_id)c.append(node('div','agent '+fmt(row.agent_id)+' · key '+fmt(row.key_id),'mono muted'));if(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable)){const b=node('button','Verify & activate');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'CANDIDATE',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));if(row.management_transport==='SSH_KEY')head.append(badge('SSH KEY MANAGED','ok'));if(row.deployment_capable)head.append(badge('SIGNED DEPLOY','ok'));c.append(head);if(row.ssh_host)c.append(node('p',fmt(row.ssh_username)+'@'+fmt(row.ssh_host)+':'+fmt(row.ssh_port)+' · '+fmt(row.reliability),'muted'));else c.append(node('p',fmt(row.health_url)+' · '+fmt(row.reliability),'muted'));c.append(node('div',JSON.stringify(row.capacity||{}),'mono muted'));if(row.ssh_host_key_sha256)c.append(node('div','host key '+fmt(row.ssh_host_key_sha256),'mono muted'));if(row.receiver_status)c.append(node('div','receiver '+fmt(row.receiver_status),'mono muted'));if(row.control_url)c.append(node('div','control '+fmt(row.control_url),'mono muted'));if(row.agent_id)c.append(node('div','agent '+fmt(row.agent_id)+' · key '+fmt(row.key_id),'mono muted'));if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','Verify & activate');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
 }
 function renderServicePlacements(data){
  const ctl=data.survival_control||{},services=ctl.services||[],hosts=(ctl.remote_hosts||[]).filter(x=>x.status==='ACTIVE'&&x.deployment_capable),root=el('servicePlacements');root.replaceChildren();
@@ -221,6 +232,7 @@ function renderSecrets(rows){
  }
 }
 async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
