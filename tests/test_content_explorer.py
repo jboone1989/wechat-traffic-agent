@@ -135,3 +135,23 @@ def test_non_crypto_goal_keeps_research_search_shape(tmp_path):
     result = asyncio.run(worker.search_web(goal_topic="model-evaluation", now=NOW))
     assert result["query"] == "model evaluation AI trading research evidence"
     assert calls == [result["query"]]
+
+
+def test_relevance_filter_fails_closed_after_two_malformed_model_responses(tmp_path):
+    runtime = Runtime("not json", "still not json")
+
+    result = asyncio.run(
+        explorer(tmp_path).filter_for_goal(
+            runtime=runtime,
+            goal_topic="rare",
+            topic_context=[],
+            candidates=[candidate()],
+        )
+    )
+
+    assert result["items"] == []
+    assert result["matches"] == []
+    assert result["candidate_count"] == 1
+    assert result["classifier_status"] == "MODEL_OUTPUT_INVALID"
+    assert result["classifier_error"] == "ValueError"
+    assert len(runtime.calls) == 2

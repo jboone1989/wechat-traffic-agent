@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from json import loads
 from types import SimpleNamespace
 
@@ -123,3 +124,55 @@ def test_backfill_imports_historical_failed_cycle(tmp_path):
     assert result["recorded"] == 1
     assert service.review()["open_count"] == 1
     assert service.review()["repair_proposed_count"] == 1
+
+
+def test_malformed_model_json_failure_gets_fail_closed_repair_proposal(tmp_path):
+    evolution = EvolutionRuntime()
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=evolution,
+    )
+
+    result = service.ingest_failure(
+        {
+            "status": "ERROR",
+            "cycle": "v2-json",
+            "error_type": "ValueError",
+            "message": "backend did not return a JSON object",
+        },
+        now=NOW,
+    )
+
+    assert result["status"] == "RECORDED"
+    assert result["problem_status"] == "REPAIR_PROPOSED"
+    assert result["repair_proposal"]["repair_kind"] == "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT"
+    assert result["repair_proposal"]["target_files"] == [
+        "src/wechat_traffic_agent/content_explorer.py"
+    ]
+
+
+def test_review_enriches_historical_known_problem_with_new_repair_knowledge(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+    problem = tmp_path / "application/self_maintenance/problems/historical.json"
+    problem.parent.mkdir(parents=True)
+    problem.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:historical",
+        "status": "DIAGNOSING",
+        "symptom": "backend did not return a JSON object",
+        "error_type": "ValueError",
+        "occurrences": 6,
+        "cycles": ["v2-1", "v2-2"],
+        "last_seen_at": NOW.isoformat(),
+        "repair_proposal": None,
+    }))
+
+    review = service.review()
+
+    assert review["repair_proposed_count"] == 1
+    updated = json.loads(problem.read_text())
+    assert updated["status"] == "REPAIR_PROPOSED"
+    assert updated["repair_proposal"]["repair_kind"] == "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT"
