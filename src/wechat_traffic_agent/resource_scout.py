@@ -50,20 +50,15 @@ def rank_high_capability_model(
             "text_reasoning", "vision_multimodal"
         }:
             continue
-        low = model.lower()
         profile = model_capability_profile(model)
         score = float(profile.get("capability_score") or 0.0)
         if str(profile.get("capability_tier") or "") == "FRONTIER":
             score += 0.30
         elif str(profile.get("capability_tier") or "") == "ADVANCED":
             score += 0.12
-        # Unknown newly-listed models remain challengers if their names signal
-        # a large/general reasoning model; they are still probe-gated.
-        if any(token in low for token in (
-            "reason", "agent", "pro", "ultra", "super", "max",
-            "kimi-", "glm-", "gpt-oss", "nemotron",
-        )):
-            score += 0.08
+        # Do not add brand/name bonuses here. Known capability belongs in
+        # model_capability_profile(); unknown catalogue entries are explored
+        # separately instead of being guessed strong from marketing-ish names.
         candidates.append((score, model))
     return max(candidates, default=(0.0, ""))[1] or None
 
