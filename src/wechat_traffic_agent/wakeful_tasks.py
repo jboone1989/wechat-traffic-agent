@@ -74,6 +74,20 @@ class WakefulContentTaskRunner:
         path.unlink(missing_ok=True)
 
     def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
+        economy = getattr(self, "resource_economy", None)
+        hibernation = (
+            economy.hibernation_state()
+            if economy is not None and callable(getattr(economy, "hibernation_state", None))
+            else None
+        )
+        if hibernation is not None and task not in {"RESOURCE_REVIEW", "CHECK_OUTCOMES"}:
+            return {
+                "task": task,
+                "status": "HIBERNATED",
+                "reason": "RESOURCE_CRITICAL",
+                "entered_at": hibernation.get("entered_at"),
+                "allowed_tasks": list(hibernation.get("allowed_tasks") or ()),
+            }
         if task == "RESOURCE_REVIEW":
             return self._resource(now)
         if task == "REFLECT":
