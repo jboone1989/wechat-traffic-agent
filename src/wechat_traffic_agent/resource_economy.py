@@ -478,8 +478,8 @@ class ContentResourceEconomy:
             "entered_at": _iso(now),
             "pressure": pressure,
             "reason": "RESOURCE_CRITICAL",
-            "allowed_tasks": ["RESOURCE_REVIEW", "CHECK_OUTCOMES", "CHECK_X"],
-            "blocked_tasks": ["OBSERVE_WORLD", "CONTENT_COGNITION"],
+            "allowed_tasks": ["RESOURCE_REVIEW", "CHECK_OUTCOMES"],
+            "blocked_tasks": ["OBSERVE_WORLD", "CONTENT_COGNITION", "REFLECT", "CHECK_X", "VERIFY_PREDICTION"],
             "evidence_refs": list(evidence_refs),
         }
         self.hibernation_path.parent.mkdir(parents=True, exist_ok=True)
