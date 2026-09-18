@@ -103,6 +103,13 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        model_reputation = getattr(self, "model_reputation", None)
+        if model_reputation is not None:
+            try:
+                rows["model_reputation"] = model_reputation.observe(now=now)
+            except Exception as exc:  # noqa: BLE001
+                rows["model_reputation"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         nvidia_catalog = getattr(self, "nvidia_catalog", None)
         if nvidia_catalog is not None:
             try:

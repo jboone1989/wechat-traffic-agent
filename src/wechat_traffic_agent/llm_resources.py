@@ -78,73 +78,49 @@ _HIGH_VALUE_TASK_CLASSES = (
 )
 
 
-def model_capability_profile(model: str) -> dict[str, Any]:
-    """Return a conservative capability prior; empirical quality remains separate."""
-    low = str(model or "").lower()
-    tier = "STANDARD"
-    score = 0.55
-    tags = ["general_text"]
-    if "nemotron-3-ultra-550b" in low:
-        tier, score = "FRONTIER", 0.995
-        tags += [
-            "reasoning", "coding", "planning", "tool_calling",
-            "long_context", "agentic", "multilingual",
-        ]
-    elif "glm-5.3" in low and "flash" not in low:
-        tier, score = "FRONTIER", 0.99
-        tags += [
-            "reasoning", "coding", "planning", "tool_calling",
-            "long_context", "agentic",
-        ]
-    elif "kimi-k3" in low:
-        tier, score = "FRONTIER", 0.985
-        tags += [
-            "reasoning", "coding", "planning", "tool_calling",
-            "long_context", "multimodal", "long_horizon",
-        ]
-    elif "deepseek-v4-flash" in low:
-        tier, score = "FRONTIER", 0.97
-        tags += [
-            "reasoning", "coding", "agentic", "long_context",
-            "temporary_opportunity",
-        ]
-    elif "nemotron-3-super-120b" in low:
-        tier, score = "FRONTIER", 0.965
-        tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
-    elif "glm-5.3-flash" in low:
-        tier, score = "FRONTIER", 0.95
-        tags += ["reasoning", "tool_calling", "multimodal", "fast"]
-    elif "kimi-k2.6" in low:
-        tier, score = "FRONTIER", 0.945
-        tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
-    elif "gpt-oss-120b" in low:
-        tier, score = "FRONTIER", 0.94
-        tags += ["reasoning", "coding", "math"]
-    elif "nemotron-3.5-lightning-30b" in low:
-        tier, score = "ADVANCED", 0.92
-        tags += ["reasoning", "agentic", "long_running", "efficient"]
-    elif "muse-glimmer-30b" in low:
-        tier, score = "ADVANCED", 0.90
-        tags += ["reasoning", "multimodal", "tool_calling"]
-    elif "mistral-nemotron" in low:
-        tier, score = "ADVANCED", 0.88
-        tags += ["reasoning", "coding", "agentic"]
-    elif "gpt-oss-20b" in low:
-        tier, score = "ADVANCED", 0.72
-        tags += ["reasoning", "math", "efficient"]
-    elif "nemotron" in low:
-        tier, score = "ADVANCED", 0.74
-        tags += ["reasoning", "agentic"]
-
-    windfall = tier in {"ADVANCED", "FRONTIER"} and score >= 0.82
-    tasks = ["general_text", "simple_public_text"]
-    if tier in {"ADVANCED", "FRONTIER"}:
-        tasks.extend(_HIGH_VALUE_TASK_CLASSES)
+def model_capability_profile(
+    model: str,
+    *,
+    reputation_book: Any | None = None,
+) -> dict[str, Any]:
+    """Derive capability from current external reputation, never a hand list."""
+    row = reputation_book.get(model) if reputation_book is not None else None
+    if row is None:
+        score = 0.50
+        tier = "STANDARD"
+        tags = ["general_text", "externally_unranked"]
+        tasks = ["general_text", "simple_public_text"]
+        source = "EXTERNAL_REPUTATION_MISSING"
+        windfall = False
+    else:
+        score = float(row.score_for("self_upgrade"))
+        if score >= 0.82:
+            tier = "FRONTIER"
+        elif score >= 0.68:
+            tier = "ADVANCED"
+        else:
+            tier = "STANDARD"
+        tags = ["general_text", "external_reputation"]
+        if float(row.coding) >= 0.70:
+            tags.append("coding")
+        if float(row.agentic) >= 0.70:
+            tags.append("agentic")
+        if float(row.human_preference) >= 0.70:
+            tags.append("human_preferred")
+        if float(row.popularity) >= 0.70:
+            tags.append("widely_used")
+        if float(row.chinese) >= 0.70:
+            tags.append("chinese")
+        tasks = ["general_text", "simple_public_text"]
+        if score >= 0.68:
+            tasks.extend(_HIGH_VALUE_TASK_CLASSES)
+        source = "EXTERNAL_LEADERBOARDS"
+        windfall = score >= 0.72
     return {
         "capability_tier": tier,
-        "capability_score": score,
+        "capability_score": round(score, 6),
         "capability_tags": list(dict.fromkeys(tags)),
-        "capability_source": "MODEL_PROFILE_PRIOR",
+        "capability_source": source,
         "windfall_eligible": windfall,
         "task_classes": list(dict.fromkeys(tasks)),
     }
@@ -160,6 +136,8 @@ def sync_llm_resource_pool(
     state_root = Path(state_root)
     now = now or datetime.now(timezone.utc)
     observed_at = _iso(now)
+    from .model_reputation import load_model_reputation_book
+    reputation_book = load_model_reputation_book(state_root)
     scout = ResourceScout(
         state_root / "application",
         lambda *_args, **_kwargs: {"results": []},
@@ -265,7 +243,9 @@ def sync_llm_resource_pool(
             else lead.official_root.replace(".", "-").lower()
         )
         metadata = _env_metadata(lead.credential_env)
-        capability = model_capability_profile(model)
+        capability = model_capability_profile(
+            model, reputation_book=reputation_book
+        )
         resources.append({
             "resource_id": _resource_id(provider_id, model),
             "provider_id": provider_id,

@@ -33,12 +33,14 @@ _REPLAN_OUTCOME_STATUSES = {
 
 
 def rank_high_capability_model(
-    model_ids: list[str], excluded_models: frozenset[str]
+    model_ids: list[str],
+    excluded_models: frozenset[str],
+    *,
+    reputation_book: Any | None = None,
+    task_class: str = "self_upgrade",
 ) -> str | None:
-    """Rank challengers by capability potential, never by vendor preference alone."""
-    from .llm_resources import model_capability_profile
-
-    candidates: list[tuple[float, str]] = []
+    """Rank NVIDIA text candidates from current external leaderboard knowledge."""
+    candidates: list[str] = []
     for raw in model_ids:
         model = str(raw or "").strip()
         if not model or model in excluded_models:
@@ -50,17 +52,17 @@ def rank_high_capability_model(
             "text_reasoning", "vision_multimodal"
         }:
             continue
-        profile = model_capability_profile(model)
-        score = float(profile.get("capability_score") or 0.0)
-        if str(profile.get("capability_tier") or "") == "FRONTIER":
-            score += 0.30
-        elif str(profile.get("capability_tier") or "") == "ADVANCED":
-            score += 0.12
-        # Do not add brand/name bonuses here. Known capability belongs in
-        # model_capability_profile(); unknown catalogue entries are explored
-        # separately instead of being guessed strong from marketing-ish names.
-        candidates.append((score, model))
-    return max(candidates, default=(0.0, ""))[1] or None
+        candidates.append(model)
+    if not candidates:
+        return None
+    if reputation_book is None:
+        return sorted(candidates)[0]
+    ranked = reputation_book.rank(
+        candidates,
+        task_class=task_class,
+        excluded=excluded_models,
+    )
+    return ranked[0] if ranked else None
 
 
 class ContentResourceScout:
@@ -68,6 +70,36 @@ class ContentResourceScout:
         self.state_root = Path(state_root)
         self.capability_runtime = capability_runtime
         self.scout = ResourceScout(self.state_root / "application", self._search)
+
+    def _external_reputation_ranker(
+        self,
+        credential_env: str,
+        *,
+        task_class: str = "self_upgrade",
+    ):
+        from .model_reputation import load_model_reputation_book
+
+        book = load_model_reputation_book(self.state_root)
+
+        def _ranker(
+            model_ids: list[str],
+            excluded_models: frozenset[str],
+        ) -> str | None:
+            if credential_env == "NVIDIA_API_KEY":
+                return rank_high_capability_model(
+                    model_ids,
+                    excluded_models,
+                    reputation_book=book,
+                    task_class=task_class,
+                )
+            ranked = book.rank(
+                model_ids,
+                task_class=task_class,
+                excluded=excluded_models,
+            )
+            return ranked[0] if ranked else None
+
+        return _ranker
 
     def maybe_discover(self, *, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
@@ -543,19 +575,26 @@ class ContentResourceScout:
         }
 
     def probe_capability_windfall(self, *, now: datetime) -> dict[str, Any]:
-        """Probe one high-capability free NVIDIA candidate without assuming catalogue reachability."""
-        if now.tzinfo is None or now.utcoffset() is None:
-            raise ValueError("windfall probe time requires timezone awareness")
-        api_key = str(os.environ.get("NVIDIA_API_KEY") or "").strip()
-        if not api_key:
-            return {"status": "CREDENTIAL_MISSING", "credential_env": "NVIDIA_API_KEY"}
+        """Backward-compatible name for the cross-provider free-model market."""
+        return self.probe_free_model_market(now=now)
 
+    def probe_free_model_market(self, *, now: datetime) -> dict[str, Any]:
+        """Probe one externally reputable free model from any available provider."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("free-model market probe time requires timezone awareness")
+
+        supported = {
+            "NVIDIA_API_KEY",
+            "OPENROUTER_API_KEY",
+            "CEREBRAS_API_KEY",
+        }
         leads = self.scout.provider_leads()
         verifications = self.scout.provider_verifications()
         available = {
             lead.credential_env
             for lead in leads
-            if str(os.environ.get(lead.credential_env) or "").strip()
+            if lead.credential_env in supported
+            and str(os.environ.get(lead.credential_env) or "").strip()
         }
         plans = plan_provider_trials(
             leads,
@@ -564,23 +603,27 @@ class ContentResourceScout:
             acquisition_outcomes=self.acquisition_outcomes(),
             limit=25,
         )
-        plan = next(
-            (
-                row for row in plans
-                if row.credential_env == "NVIDIA_API_KEY"
-                and row.status == "READY_TO_TRIAL"
-            ),
-            None,
-        )
-        if plan is None:
-            return {"status": "NO_READY_NVIDIA_PLAN"}
+        ready = [
+            row for row in plans
+            if row.credential_env in supported
+            and row.status == "READY_TO_TRIAL"
+            and str(os.environ.get(row.credential_env) or "").strip()
+        ]
+        if not ready:
+            return {
+                "status": "NO_READY_FREE_PROVIDER_PLAN",
+                "available_credential_envs": sorted(available),
+            }
 
         probe_root = (
-            self.state_root / "application" / "resource_discovery" / "windfall_probes"
+            self.state_root / "application" / "resource_discovery"
+            / "windfall_probes"
         )
         probe_root.mkdir(parents=True, exist_ok=True)
-        excluded: set[str] = set()
         current_time = now.astimezone(timezone.utc)
+        excluded_by_provider: dict[str, set[str]] = {
+            env: set() for env in supported
+        }
         for path in probe_root.glob("*.json"):
             try:
                 row = json.loads(path.read_text(encoding="utf-8"))
@@ -591,14 +634,23 @@ class ContentResourceScout:
             model = str(row.get("model") or "")
             if not model:
                 continue
+            credential_env = str(row.get("credential_env") or "")
+            if not credential_env:
+                provider_label = str(row.get("provider_label") or "").lower()
+                if "nvidia" in provider_label:
+                    credential_env = "NVIDIA_API_KEY"
+            if credential_env not in excluded_by_provider:
+                continue
             status = str(row.get("status") or "")
             if status == "AVAILABLE":
-                excluded.add(model)
+                excluded_by_provider[credential_env].add(model)
                 continue
             retry_raw = str(row.get("retry_at") or "")
             if retry_raw:
                 try:
-                    retry_at = datetime.fromisoformat(retry_raw.replace("Z", "+00:00"))
+                    retry_at = datetime.fromisoformat(
+                        retry_raw.replace("Z", "+00:00")
+                    )
                 except ValueError:
                     retry_at = None
                 if (
@@ -606,38 +658,86 @@ class ContentResourceScout:
                     and retry_at.tzinfo is not None
                     and retry_at.astimezone(timezone.utc) > current_time
                 ):
-                    excluded.add(model)
+                    excluded_by_provider[credential_env].add(model)
 
-        try:
-            target = resolve_trial_target(
-                "NVIDIA_API_KEY",
-                api_key=api_key,
-                exclude_models=frozenset(excluded),
-                selection_mode="HIGH_CAPABILITY",
-                model_ranker=rank_high_capability_model,
+        from .llm_resources import (
+            model_capability_profile,
+            sync_llm_resource_pool,
+        )
+        from .model_reputation import load_model_reputation_book
+
+        reputation_book = load_model_reputation_book(self.state_root)
+        candidates: list[tuple[float, float, Any, Any]] = []
+        resolution_errors: list[dict[str, str]] = []
+        for plan in ready:
+            api_key = str(os.environ.get(plan.credential_env) or "").strip()
+            excluded = excluded_by_provider.get(plan.credential_env, set())
+            try:
+                target = resolve_trial_target(
+                    plan.credential_env,
+                    api_key=api_key,
+                    exclude_models=frozenset(excluded),
+                    selection_mode="HIGH_CAPABILITY",
+                    model_ranker=self._external_reputation_ranker(
+                        plan.credential_env,
+                        task_class="self_upgrade",
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                resolution_errors.append({
+                    "credential_env": plan.credential_env,
+                    "provider_label": plan.provider_label,
+                    "error_code": str(
+                        getattr(exc, "code", "") or type(exc).__name__
+                    ),
+                })
+                continue
+            if target is None:
+                continue
+            reputation_score = reputation_book.score(
+                target.model,
+                task_class="self_upgrade",
             )
-        except Exception as exc:
+            candidates.append(
+                (
+                    float(reputation_score),
+                    float(plan.priority_score),
+                    plan,
+                    target,
+                )
+            )
+
+        if not candidates:
             return {
-                "status": "TARGET_RESOLUTION_FAILED",
-                "error_code": str(getattr(exc, "code", "") or type(exc).__name__),
-                "excluded_count": len(excluded),
+                "status": "NO_REPUTABLE_FREE_CANDIDATE",
+                "resolution_errors": resolution_errors,
             }
-        if target is None:
-            return {"status": "NO_HIGH_CAPABILITY_CANDIDATE"}
 
-        from .llm_resources import model_capability_profile, sync_llm_resource_pool
-
-        capability = model_capability_profile(target.model)
+        _rep_score, _plan_priority, plan, target = max(
+            candidates,
+            key=lambda row: (row[0], row[1], row[3].model),
+        )
+        capability = model_capability_profile(
+            target.model,
+            reputation_book=reputation_book,
+        )
         if not bool(capability.get("windfall_eligible")):
             return {
-                "status": "NO_HIGH_CAPABILITY_CANDIDATE",
+                "status": "NO_HIGH_CAPABILITY_FREE_CANDIDATE",
+                "provider_label": plan.provider_label,
+                "credential_env": plan.credential_env,
                 "best_remaining_model": target.model,
                 "capability_tier": capability.get("capability_tier"),
                 "capability_score": capability.get("capability_score"),
+                "resolution_errors": resolution_errors,
             }
 
+        api_key = str(os.environ.get(plan.credential_env) or "").strip()
         digest = sha256(
-            f"{plan.plan_id}\0windfall\0{target.model}".encode()
+            (
+                f"{plan.plan_id}\0{plan.credential_env}\0"
+                f"windfall\0{target.model}"
+            ).encode()
         ).hexdigest()[:24]
         preflight_plan = replace(
             plan,
@@ -659,7 +759,10 @@ class ContentResourceScout:
             if row.status == "COMPLETED"
         ]
         preflight_quality = (
-            sum(float(row.quality_score or 0.0) for row in preflight_completed)
+            sum(
+                float(row.quality_score or 0.0)
+                for row in preflight_completed
+            )
             / len(preflight_completed)
             if preflight_completed else 0.0
         )
@@ -690,9 +793,12 @@ class ContentResourceScout:
         else:
             measurements = list(preflight_measurements)
 
-        completed = [row for row in measurements if row.status == "COMPLETED"]
+        completed = [
+            row for row in measurements if row.status == "COMPLETED"
+        ]
         mean_quality = (
-            sum(float(row.quality_score or 0.0) for row in completed) / len(completed)
+            sum(float(row.quality_score or 0.0) for row in completed)
+            / len(completed)
             if completed else 0.0
         )
         errors = sorted({
@@ -718,17 +824,25 @@ class ContentResourceScout:
                 for code in errors
             )
             delay = timedelta(hours=1 if temporary else 24)
-            status = "TEMPORARILY_UNAVAILABLE" if temporary else "UNAVAILABLE"
-            retry_at = (current_time + delay).replace(microsecond=0).isoformat()
+            status = (
+                "TEMPORARILY_UNAVAILABLE" if temporary else "UNAVAILABLE"
+            )
+            retry_at = (
+                current_time + delay
+            ).replace(microsecond=0).isoformat()
 
+        reputation = reputation_book.get(target.model)
         probe = {
-            "schema_version": "llm-capability-windfall-probe.v1",
+            "schema_version": "llm-free-model-market-probe.v1",
             "model": target.model,
             "provider_label": plan.provider_label,
+            "credential_env": plan.credential_env,
             "observed_at": current_time.replace(microsecond=0).isoformat(),
             "status": status,
             "retry_at": retry_at,
-            "preflight_status": "PASSED" if preflight_passed else "FAILED",
+            "preflight_status": (
+                "PASSED" if preflight_passed else "FAILED"
+            ),
             "preflight_quality": round(preflight_quality, 6),
             "preflight_request_count": len(preflight_measurements),
             "preflight_trial_ids": [
@@ -742,16 +856,27 @@ class ContentResourceScout:
             "capability_tier": capability["capability_tier"],
             "capability_score": capability["capability_score"],
             "capability_tags": capability["capability_tags"],
+            "capability_source": capability["capability_source"],
             "windfall_eligible": capability["windfall_eligible"],
+            "reputation_sources": (
+                list(reputation.source_refs) if reputation is not None else []
+            ),
             "trial_ids": [row.trial_id for row in measurements],
         }
         probe_path = probe_root / (
-            sha256(target.model.encode()).hexdigest()[:24] + ".json"
+            sha256(
+                f"{plan.credential_env}\0{target.model}".encode()
+            ).hexdigest()[:24]
+            + ".json"
         )
         self._atomic_json(probe_path, probe)
-        pool = sync_llm_resource_pool(state_root=self.state_root, now=now)
+        pool = sync_llm_resource_pool(
+            state_root=self.state_root,
+            now=now,
+        )
         return {
             **probe,
+            "resolution_errors": resolution_errors,
             "llm_resource_pool": pool,
         }
 
