@@ -494,3 +494,19 @@ def test_windfall_timeout_enters_short_retry_window(tmp_path, monkeypatch):
     assert result["error_codes"]==["TIMEOUT"]
     retry=datetime.fromisoformat(result["retry_at"])
     assert retry - NOW == timedelta(hours=1)
+
+
+def test_dynamic_ranker_uses_capability_prior_not_model_name_bonus():
+    from wechat_traffic_agent.resource_scout import rank_high_capability_model
+
+    chosen = rank_high_capability_model(
+        [
+            "deepseek-ai/deepseek-v4-flash-0731",
+            "z-ai/glm-5.3-flash",
+            "moonshotai/kimi-k2.6",
+            "nvidia/nemotron-3.5-lightning-30b-a3b",
+        ],
+        frozenset(),
+    )
+
+    assert chosen == "deepseek-ai/deepseek-v4-flash-0731"
