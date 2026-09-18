@@ -89,8 +89,12 @@ class ContentWakefulRuntime:
             ))
 
     def schedule_next(self, task: str, now: datetime) -> None:
+        pressure = str(self.core.snapshot().resource_pressure or "UNKNOWN").upper()
+        if pressure == "CRITICAL" and task not in {"RESOURCE_REVIEW", "CHECK_OUTCOMES"}:
+            return
         if task == "CONTENT_COGNITION":
-            at = now + timedelta(hours=self.content_interval_hours)
+            multiplier = 2 if pressure == "CONSERVE" else 1
+            at = now + timedelta(hours=self.content_interval_hours * multiplier)
         elif task == "REFLECT":
             at = self._next_reflection(now)
         else:
@@ -251,9 +255,21 @@ class ContentWakefulRuntime:
         normalized = str(pressure or "UNKNOWN").upper()
         previous = self.core.snapshot().resource_pressure
         self.core.set_resource_pressure(normalized)
+        now = datetime.now(timezone.utc)
+        if normalized == "CRITICAL":
+            for wake in tuple(self.core.snapshot().pending_plans):
+                if wake.task not in {"RESOURCE_REVIEW", "CHECK_OUTCOMES"}:
+                    self.core.cancel(wake.wake_id)
+        elif str(previous).upper() == "CRITICAL":
+            for task, delay in (("OBSERVE_WORLD", 60), ("CONTENT_COGNITION", 60), ("REFLECT", 300)):
+                self.core.schedule(PlannedWake(
+                    wake_id=f"content:{task}",
+                    at=now + timedelta(seconds=delay),
+                    reason=f"resource pressure recovered; resume {task.lower()}",
+                    task=task,
+                ))
         if normalized == previous:
             return
-        now = datetime.now(timezone.utc)
         urgency = {"NORMAL": 0.1, "WATCH": 0.35, "CONSERVE": 0.65, "CRITICAL": 1.0}.get(normalized, 0.3)
         self.core.emit(StimulusEvent(
             event_id=f"resource:{normalized}:{int(now.timestamp())}",
@@ -299,7 +315,7 @@ class ContentWakefulRuntime:
     def public_snapshot(self) -> dict:
         snap = self.core.snapshot()
         return {
-            "presence": "AWAKE",
+            "presence": "HIBERNATE" if str(snap.resource_pressure).upper() == "CRITICAL" else "AWAKE",
             "state": snap.state.value,
             "next_wake_at": snap.next_wake_at.isoformat() if snap.next_wake_at else None,
             "next_wake_reason": snap.next_wake_reason,
