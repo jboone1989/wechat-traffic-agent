@@ -483,18 +483,37 @@ class ContentMind:
         existing = self.session.predictive_learning.predictions
         for metric in row.selected.metrics:
             brain_prediction_id = f"{row.prediction_id}:{metric.window}"
-            if brain_prediction_id in existing:
-                continue
-            refs = list(dict.fromkeys([row.prediction_id, row.strategy_id, *metric.evidence_refs]))
-            self.session.register_prediction(
-                prediction_id=brain_prediction_id, domain="content", context_key=row.topic,
-                action_key=row.selected_profile_name, target=f"website:http_pageviews:{metric.window}",
-                expected=metric.expected_pageviews, confidence=metric.confidence,
-                created_at=created.isoformat(), evidence_cutoff_at=created.isoformat(),
-                due_at=(created + timedelta(hours=WINDOW_HOURS[metric.window])).isoformat(),
-                evidence_refs=refs, lower=metric.lower_bound, upper=metric.upper_bound,
-            )
-            registered.append(brain_prediction_id)
+            if brain_prediction_id not in existing:
+                refs = list(dict.fromkeys([row.prediction_id, row.strategy_id, *metric.evidence_refs]))
+                self.session.register_prediction(
+                    prediction_id=brain_prediction_id, domain="content", context_key=row.topic,
+                    action_key=row.selected_profile_name, target=f"website:http_pageviews:{metric.window}",
+                    expected=metric.expected_pageviews, confidence=metric.confidence,
+                    created_at=created.isoformat(), evidence_cutoff_at=created.isoformat(),
+                    due_at=(created + timedelta(hours=WINDOW_HOURS[metric.window])).isoformat(),
+                    evidence_refs=refs, lower=metric.lower_bound, upper=metric.upper_bound,
+                )
+                registered.append(brain_prediction_id)
+        engaged_expected = row.selected.expected_engaged_readers_30s_24h
+        if engaged_expected is not None:
+            metric = row.selected.mature
+            engaged_prediction_id = f"{row.prediction_id}:engaged-readers-30s:24h"
+            if engaged_prediction_id not in existing:
+                refs = list(dict.fromkeys([
+                    row.prediction_id, row.strategy_id,
+                    *row.selected.engagement_evidence_refs,
+                    *metric.evidence_refs,
+                ]))
+                self.session.register_prediction(
+                    prediction_id=engaged_prediction_id, domain="content", context_key=row.topic,
+                    action_key=row.selected_profile_name,
+                    target="website:engaged_readers_30s:24h",
+                    expected=float(engaged_expected), confidence=metric.confidence,
+                    created_at=created.isoformat(), evidence_cutoff_at=created.isoformat(),
+                    due_at=(created + timedelta(hours=24)).isoformat(),
+                    evidence_refs=refs,
+                )
+                registered.append(engaged_prediction_id)
         if registered:
             self._persist()
         return {"status": "REGISTERED" if registered else "ALREADY_REGISTERED", "prediction_ids": registered}
@@ -549,6 +568,31 @@ class ContentMind:
             core_error = float(result["normalized_error"])
             if abs(core_error - error) > 1e-9:
                 raise ValueError("Content and VirtualBrain prediction-error calculations diverged")
+            engaged_result = None
+            engaged_error = row.get("engaged_prediction_error")
+            expected_engaged = row.get("expected_engaged_readers_30s")
+            actual_engaged = row.get("actual_engaged_readers_30s")
+            if (
+                window == "24h"
+                and isinstance(expected_engaged, (int, float))
+                and not isinstance(expected_engaged, bool)
+                and isinstance(actual_engaged, (int, float))
+                and not isinstance(actual_engaged, bool)
+                and isinstance(engaged_error, (int, float))
+                and not isinstance(engaged_error, bool)
+            ):
+                engaged_prediction_id = f"{prediction_id}:engaged-readers-30s:24h"
+                if engaged_prediction_id in self.session.predictive_learning.predictions:
+                    engaged_result = self.session.settle_prediction(
+                        prediction_id=engaged_prediction_id,
+                        outcome_id=f"content-outcome:{publication_id}:engaged-readers-30s:24h",
+                        observed=float(actual_engaged), observed_at=str(row.get("observed_at")),
+                        evidence_refs=refs, maturity="MATURE", reliability=reliability,
+                        learning_authority=True, metric=content_error,
+                        inquiry_threshold=ERROR_INQUIRY_THRESHOLD["24h"],
+                    )
+                    if abs(float(engaged_result["normalized_error"]) - float(engaged_error)) > 1e-9:
+                        raise ValueError("Engaged-reader prediction error diverged from VirtualBrain")
             self.session.ingest_life_experience(
                 {
                     "event_id": event_id, "tick": int(self.session.tick),
@@ -582,6 +626,12 @@ class ContentMind:
                 "event_id": event_id, "prediction_id": prediction_id, "window": window,
                 "prediction_error": error, "reliability": reliability,
                 "virtualbrain_outcome_id": result["outcome_id"],
+                "engaged_reader_prediction_error": (
+                    None if engaged_result is None else float(engaged_result["normalized_error"])
+                ),
+                "engaged_reader_virtualbrain_outcome_id": (
+                    None if engaged_result is None else engaged_result["outcome_id"]
+                ),
             })
         if applied:
             self._persist()
