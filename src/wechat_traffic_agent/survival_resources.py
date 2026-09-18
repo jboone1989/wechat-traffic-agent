@@ -86,6 +86,7 @@ class SurvivalResourceManager:
                 "PRESSURE" if storage_pressure or compute_pressure else "ACTIVE"
             ),
             "location": socket.gethostname(),
+            "host_instance_id": self._host_instance_id(),
             "reliability": "LOCAL_PRIMARY",
             "capabilities": ["content-core", "website", "resource-research"],
             "observed_at": instant,
@@ -287,8 +288,12 @@ class SurvivalResourceManager:
                 str(item) for item in payload.get("capabilities") or ()
                 if str(item).strip()
             ]
+            remote_instance_id = str(payload.get("host_instance_id") or "").strip()
+            if remote_instance_id and remote_instance_id == self._host_instance_id():
+                raise RuntimeError("remote host resolves to the local physical host")
             target["status"] = "ACTIVE"
             target["last_verified_at"] = _iso(now)
+            target["host_instance_id"] = remote_instance_id or None
             target["agent_id"] = str(payload.get("agent_id") or "")
             target["key_id"] = str(payload.get("key_id") or "")
             target["public_key"] = str(payload.get("public_key") or "")
@@ -454,9 +459,9 @@ class SurvivalResourceManager:
         if compute_pressure:
             desired.append(("COMPUTE", "APPLY_CONSERVATION_POLICY", "HIGH",
                             "CPU/RAM pressure threatens continued operation"))
-        if (storage_pressure or compute_pressure) and not active_remote:
+        if not active_remote:
             desired.append(("REMOTE_MACHINE", "DISCOVER_REMOTE_MACHINE", "NORMAL",
-                            "No verified remote body is available for pressure relief"))
+                            "No verified remote body is available for continuity or pressure relief"))
         if (storage_pressure or compute_pressure) and active_remote:
             desired.append(("SERVICE", "OFFLOAD_NON_CORE_SERVICE", "NORMAL",
                             "Move non-core workloads before considering primary migration"))
@@ -629,6 +634,14 @@ class SurvivalResourceManager:
             address = ipaddress.ip_address(raw_ip)
             if not address.is_global:
                 raise ValueError("remote endpoint resolved to non-public address")
+
+    @staticmethod
+    def _host_instance_id() -> str:
+        try:
+            raw = Path("/etc/machine-id").read_text(encoding="utf-8").strip()
+        except OSError:
+            raw = socket.gethostname()
+        return "host-instance:" + sha256(raw.encode()).hexdigest()[:24]
 
     @staticmethod
     def _memory() -> tuple[int | None, int | None]:

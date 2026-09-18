@@ -28,7 +28,11 @@ def test_observe_builds_unified_local_resource_pool(tmp_path, monkeypatch):
     assert observed["pressure"] == "NORMAL"
     domains = {row["domain"] for row in observed["resources"]}
     assert {"STORAGE", "COMPUTE", "HOSTING", "SERVICE"} <= domains
-    assert observed["needs"] == []
+    assert len(observed["needs"]) == 1
+    remote_need = observed["needs"][0]
+    assert remote_need["domain"] == "REMOTE_MACHINE"
+    assert remote_need["action"] == "DISCOVER_REMOTE_MACHINE"
+    assert remote_need["status"] == "APPROVED"
     assert manager.services()[0]["service_id"] == "content-agent-core"
 
 
@@ -99,6 +103,7 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
         if method == "GET":
             return {
                 "status":"HEALTHY",
+                "host_instance_id":"host-instance:remote-test-body",
                 "agent_id":remote_identity.agent_id,
                 "key_id":remote_identity.key_id,
                 "public_key":remote_identity.public_key,
@@ -143,3 +148,26 @@ def test_remote_host_url_rejects_non_https_and_loopback(tmp_path):
             name="bad-local", health_url="https://127.0.0.1/health",
             capacity={}, reliability="EXPERIMENTAL", now=NOW,
         )
+
+
+def test_remote_host_verification_rejects_same_physical_host(tmp_path, monkeypatch):
+    manager = SurvivalResourceManager(tmp_path)
+    host = manager.register_remote_host(
+        name="same-body",
+        health_url="https://same.example.test/health",
+        capacity={},
+        reliability="BEST_EFFORT",
+        now=NOW,
+    )
+
+    def remote_call(url, *, method, payload=None, timeout):
+        return {
+            "status": "HEALTHY",
+            "host_instance_id": manager._host_instance_id(),
+        }
+
+    monkeypatch.setattr(manager, "_http_json", remote_call)
+    row = manager.verify_remote_host(host["host_id"], now=NOW)
+    assert row["status"] == "FAILED"
+    assert row["last_error"] == "RuntimeError"
+    assert row["deployment_capable"] is False
