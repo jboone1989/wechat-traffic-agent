@@ -373,6 +373,10 @@ class WebsiteExperimentEvaluator:
             }))
             payload = {
                 **base,
+                # Fixed-horizon decision artifact: once both arms reach the gate,
+                # later observations cannot alter its identity or mint a new
+                # conclusion from the same hypothesis.
+                "samples": {name: len(decision_grouped[name]) for name in TREATMENTS},
                 "status": status,
                 "favored_treatment": favored,
                 "mean_difference_reader_minus_evidence": difference,
