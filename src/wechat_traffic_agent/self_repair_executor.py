@@ -1,13 +1,17 @@
 """Bounded RepairProposal execution and production verification."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
 import sys
 from typing import Any, Iterable
+
+from .generated_repair import GeneratedRepairPlan, GeneratedRepairPlanner
 
 from agent_runtime.coding import (
     BoundedCodingProvider,
@@ -211,6 +215,9 @@ DEFAULT_RECIPES: dict[str, RepairRecipe] = {
 }
 
 
+_GENERATED_REPAIR_KIND = "GENERATED_BOUNDED_EDIT"
+
+
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -232,23 +239,37 @@ class SelfRepairExecutor:
         deployed_root: Path | None,
         recipes: dict[str, RepairRecipe] | None = None,
         python_executable: str | None = None,
+        planner_runtime: Any | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
         self.deployed_root = Path(deployed_root).resolve() if deployed_root else None
         self.recipes = dict(recipes or DEFAULT_RECIPES)
         self.python_executable = str(python_executable or sys.executable)
+        self.planner_runtime = planner_runtime
         self.root = self.state_root / "application" / "self_maintenance"
 
     def run_once(self, *, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
-        problem = self._next_problem()
-        if problem is None:
-            return {"status": "NO_REPAIR_PROPOSALS"}
+
+        problem = self._next_problem(statuses={"REPAIR_PROPOSED"})
+        if problem is not None:
+            return self._run_proposal(problem, now)
+
+        diagnosing = self._next_diagnosing_problem()
+        if diagnosing is not None:
+            return self._generate_repair_proposal(diagnosing, now)
+
+        observing = self._next_problem(statuses={"OBSERVING_PRODUCTION"})
+        if observing is not None:
+            return self._run_proposal(observing, now)
+        return {"status": "NO_REPAIR_WORK"}
+
+    def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
         proposal = problem.get("repair_proposal") or {}
         kind = str(proposal.get("repair_kind") or "")
-        recipe = self.recipes.get(kind)
+        recipe = self._recipe_for_proposal(problem, proposal)
         if recipe is None:
             return {
                 "status": "NO_BOUNDED_RECIPE",
@@ -267,7 +288,8 @@ class SelfRepairExecutor:
             }
         return self._build_candidate(problem, recipe, now)
 
-    def _next_problem(self) -> dict[str, Any] | None:
+    def _next_problem(self, *, statuses: set[str] | None = None) -> dict[str, Any] | None:
+        statuses = statuses or {"REPAIR_PROPOSED", "OBSERVING_PRODUCTION"}
         rows: list[dict[str, Any]] = []
         folder = self.root / "problems"
         for path in folder.glob("*.json") if folder.exists() else ():
@@ -277,7 +299,7 @@ class SelfRepairExecutor:
                 continue
             if not isinstance(row, dict):
                 continue
-            if str(row.get("status") or "") not in {"REPAIR_PROPOSED", "OBSERVING_PRODUCTION"}:
+            if str(row.get("status") or "") not in statuses:
                 continue
             if not isinstance(row.get("repair_proposal"), dict):
                 continue
@@ -292,6 +314,203 @@ class SelfRepairExecutor:
             reverse=True,
         )
         return rows[0] if rows else None
+
+    def _planner(self) -> GeneratedRepairPlanner | None:
+        if self.workspace_root is None or self.planner_runtime is None:
+            return None
+        return GeneratedRepairPlanner(
+            workspace_root=self.workspace_root,
+            runtime=self.planner_runtime,
+        )
+
+    def _next_diagnosing_problem(self) -> dict[str, Any] | None:
+        planner = self._planner()
+        if planner is None:
+            return None
+        rows: list[dict[str, Any]] = []
+        folder = self.root / "problems"
+        for path in folder.glob("*.json") if folder.exists() else ():
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict) or str(row.get("status") or "") != "DIAGNOSING":
+                continue
+            if row.get("repair_proposal"):
+                continue
+            attempt = row.get("planner_attempt") if isinstance(row.get("planner_attempt"), dict) else {}
+            if attempt.get("status") == "REJECTED" and (
+                int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
+            ):
+                continue
+            sources = planner.candidate_source_paths(row)
+            if not sources:
+                continue
+            row["_path"] = str(path)
+            row["_planner_sources"] = sources
+            rows.append(row)
+        rows.sort(
+            key=lambda row: (
+                str(row.get("failure_site") or "") not in {"", "unknown"},
+                len(row.get("_planner_sources") or ()) == 1,
+                int(row.get("occurrences") or 0),
+                str(row.get("last_seen_at") or ""),
+            ),
+            reverse=True,
+        )
+        return rows[0] if rows else None
+
+    def _planner_attempt(
+        self,
+        problem: dict[str, Any],
+        *,
+        now: datetime,
+        status: str,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        path = Path(str(problem["_path"]))
+        updated = {k: v for k, v in problem.items() if not str(k).startswith("_")}
+        attempt = {
+            "status": status,
+            "observed_at": now.astimezone(timezone.utc).isoformat(),
+            "occurrences_seen": int(problem.get("occurrences") or 0),
+            **details,
+        }
+        updated["planner_attempt"] = attempt
+        _atomic_json(path, updated)
+        safe = str(problem.get("problem_id") or "unknown").replace(":", "-")
+        _atomic_json(
+            self.root / "repair_plans" / f"{safe}.json",
+            {
+                "schema_version": "generated-repair-plan-attempt.v1",
+                "problem_id": problem.get("problem_id"),
+                **attempt,
+            },
+        )
+        return attempt
+
+    @staticmethod
+    def _recipe_from_plan(plan: GeneratedRepairPlan) -> RepairRecipe:
+        return RepairRecipe(
+            repair_kind=_GENERATED_REPAIR_KIND,
+            target_files=tuple(plan.target_files),
+            implementation_markers=tuple(
+                (marker.path, marker.marker)
+                for marker in plan.implementation_markers
+            ),
+            edits=tuple(
+                RepairEdit(edit.path, edit.old_text, edit.new_text)
+                for edit in plan.edits
+            ),
+            focused_tests=tuple(plan.focused_tests),
+        )
+
+    def _generate_repair_proposal(
+        self, problem: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        planner = self._planner()
+        if planner is None:
+            return {"status": "PLANNER_UNAVAILABLE", "problem_id": problem.get("problem_id")}
+        try:
+            plan, source_paths, test_paths = asyncio.run(planner.plan(problem))
+        except Exception as exc:
+            attempt = self._planner_attempt(
+                problem,
+                now=now,
+                status="REJECTED",
+                details={
+                    "reason": type(exc).__name__ + ":" + str(exc)[:500],
+                },
+            )
+            return {
+                **attempt,
+                "status": "GENERATED_PLAN_REJECTED",
+                "problem_id": problem.get("problem_id"),
+                "planner_status": attempt.get("status"),
+            }
+
+        recipe = self._recipe_from_plan(plan)
+        body = plan.model_dump(mode="json")
+        proposal_id = "repair-proposal:generated:" + sha256(
+            json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        path = Path(str(problem["_path"]))
+        updated = {k: v for k, v in problem.items() if not str(k).startswith("_")}
+        updated["status"] = "REPAIR_PROPOSED"
+        updated["repair_proposal"] = {
+            "schema_version": "repair-proposal.v2",
+            "proposal_id": proposal_id,
+            "status": "PROPOSED",
+            "repair_kind": _GENERATED_REPAIR_KIND,
+            "risk": "LOW",
+            "reversible": True,
+            "target_files": list(recipe.target_files),
+            "verification": [
+                "old_text matched exactly once inside localized source boundary",
+                "approved focused tests must pass",
+                "full repository regression must pass before local commit",
+                "push and deployment remain unavailable",
+            ],
+            "planner_confidence": plan.confidence,
+            "hypothesis": plan.hypothesis,
+            "generated_recipe": body,
+        }
+        updated["planner_attempt"] = {
+            "status": "PROPOSED",
+            "observed_at": now.astimezone(timezone.utc).isoformat(),
+            "occurrences_seen": int(problem.get("occurrences") or 0),
+            "source_paths": source_paths,
+            "allowed_tests": test_paths,
+            "proposal_id": proposal_id,
+        }
+        _atomic_json(path, updated)
+        safe = str(problem.get("problem_id") or "unknown").replace(":", "-")
+        _atomic_json(
+            self.root / "repair_plans" / f"{safe}.json",
+            {
+                "schema_version": "generated-repair-plan.v1",
+                "problem_id": problem.get("problem_id"),
+                "proposal_id": proposal_id,
+                "status": "PROPOSED",
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+                "source_paths": source_paths,
+                "allowed_tests": test_paths,
+                "plan": body,
+            },
+        )
+        return {
+            "status": "GENERATED_REPAIR_PROPOSED",
+            "problem_id": problem.get("problem_id"),
+            "proposal_id": proposal_id,
+            "confidence": plan.confidence,
+            "target_files": list(recipe.target_files),
+            "focused_tests": list(recipe.focused_tests),
+        }
+
+    def _recipe_for_proposal(
+        self,
+        problem: dict[str, Any],
+        proposal: dict[str, Any],
+    ) -> RepairRecipe | None:
+        kind = str(proposal.get("repair_kind") or "")
+        if kind != _GENERATED_REPAIR_KIND:
+            return self.recipes.get(kind)
+        raw = proposal.get("generated_recipe")
+        planner = self._planner()
+        if not isinstance(raw, dict) or planner is None:
+            return None
+        try:
+            plan = GeneratedRepairPlan.model_validate(raw)
+            sources = planner.candidate_source_paths(problem)
+            tests = planner.candidate_test_paths(problem, sources)
+            validated = planner.validate(
+                plan,
+                allowed_sources=sources,
+                allowed_tests=tests,
+            )
+            return self._recipe_from_plan(validated)
+        except Exception:
+            return None
 
     @staticmethod
     def _implemented(root: Path | None, recipe: RepairRecipe) -> bool:
