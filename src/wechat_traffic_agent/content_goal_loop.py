@@ -362,7 +362,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 (folder / name).exists() for name in ('evidence_candidates.json', 'exploration.json', 'model_calls')
             ):
                 raise ValueError('cannot bind Website experiment after evidence/model selection has begun')
-            experiment = bind_website_experiment(experiment_path, cycle=cycle, decided_at=now)
+            experiment = bind_website_experiment(
+                experiment_path, cycle=cycle, decided_at=now, state_root=self.state
+            )
         experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
         if plan_path.exists():
