@@ -54,9 +54,13 @@ def test_cycle_decision_outcome_and_reflection_close_from_balance_delta(tmp_path
     )
     assert result["status"] == "RECORDED"
     assert result["actual_cost"] == pytest.approx(0.25)
+    assert result["settlement_status"] == "PENDING_AUDIENCE"
     assert len(mind.session.resource_awareness.proposals) == 1
     assert len(mind.session.resource_awareness.episodes) == 1
     assert len(mind.session.resource_awareness.outcomes) == 1
+    assert mind.session.resource_awareness.outcomes[0].external_value is None
+    assert mind.session.resource_awareness.outcomes[0].learning_value is None
+    assert mind.session.resource_awareness.outcomes[0].reproduction_value is None
     assert len(mind.session.resource_awareness.reflections) == 1
     assert mind.session.resource_awareness.current.estimated_daily_burn == pytest.approx(18.0)
 
@@ -85,6 +89,8 @@ def test_balance_increase_is_not_misreported_as_negative_spend(tmp_path, monkeyp
         result={"status": "PUBLISHED"},
     )
     assert result["status"] == "AMBIGUOUS_BALANCE_INCREASE"
+    assert result["balance_increase_event"]["source"] == "UNKNOWN"
+    assert result["balance_increase_event"]["classification"] == "UNRESOLVED"
     assert mind.session.resource_awareness.outcomes == ()
     assert mind.session.resource_awareness.current.estimated_daily_burn is None
 
@@ -155,3 +161,38 @@ def test_vb_activates_opportunity_feast_for_verified_free_frontier_resource(tmp_
     assert saved["windfall_resource_ids"]==["frontier-free"]
     assert "self_upgrade" in saved["high_value_task_classes"]
     assert saved["windfall_bonus"]==pytest.approx(0.30)
+
+
+def test_next_cycle_uses_only_world_settled_value(tmp_path, monkeypatch):
+    from virtualbrain.research.resource_awareness import OutcomeSettlement
+
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    observations = iter((
+        balance(when=NOW, total=20.0, suffix="a"),
+        balance(when=NOW + timedelta(minutes=20), total=19.5, suffix="b"),
+    ))
+    monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
+    economy.observe(NOW)
+    first = economy.begin_cycle(now=NOW, cycle="world-1")
+    economy.end_cycle(
+        now=NOW + timedelta(minutes=20), cycle="world-1",
+        episode_id=first["episode_id"], before_balance=first["before_balance"],
+        result={"status": "PUBLISHED"},
+    )
+    outcome = mind.session.resource_awareness.outcomes[-1]
+    mind.session.resource_awareness.record_outcome_settlement(OutcomeSettlement(
+        settlement_id="settled-1", outcome_id=outcome.outcome_id, revision=1,
+        external_value=0.9, learning_value=None, reproduction_value=None,
+        observed_tick=int(mind.session.tick), evidence_refs=("audience:24h",),
+    ))
+    mind.persist_resource_awareness()
+
+    second = economy.begin_cycle(now=NOW + timedelta(minutes=21), cycle="world-2")
+    proposal = next(
+        row for row in mind.session.resource_awareness.proposals
+        if row.proposal_id == second["proposal_id"]
+    )
+    assert proposal.expected_external_value == pytest.approx(0.9)
+    assert proposal.expected_learning_value == pytest.approx(0.5)
+    assert proposal.expected_reproduction_value == pytest.approx(0.5)
