@@ -207,13 +207,40 @@ def test_resource_lifecycle_projects_request_through_verified_active_and_used(tm
     row = OperatorConsole(tmp_path).resource_requests()[0]
     assert row["authorization_status"] == "APPROVED"
     assert row["credential_configured"] is True
-    assert row["verification_status"] == "VERIFIED_RECURRING_FREE"
+    assert row["provider_discovery_status"] == "VERIFIED_RECURRING_FREE"
+    assert row["verification_status"] == "VERIFIED_BY_TRIAL"
     assert row["completed_trial_count"] == 1
     assert row["active_resource_ids"] == ["llm-resource:nvidia:test"]
     assert row["used"] is True
     assert [stage["status"] for stage in row["stages"]] == [
-        "COMPLETE", "APPROVED", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE"
+        "COMPLETE", "APPROVED", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE", "COMPLETE"
     ]
+
+
+
+def test_provider_discovery_does_not_claim_credential_verification(tmp_path):
+    request = HumanAssistanceService(state_root=tmp_path).request(
+        kind="MODEL_RESOURCE_ACCESS", summary="Cerebras credential needed", requested_action="authorize",
+        now=NOW, details={
+            "credential_env":"CEREBRAS_API_KEY", "provider_label":"Cerebras",
+            "lead_id":"provider-lead:cerebras-public",
+        },
+    )
+    discovery = tmp_path / "application" / "resource_discovery" / "provider_verifications"
+    discovery.mkdir(parents=True, exist_ok=True)
+    (discovery / "cerebras-public.json").write_text(json.dumps({
+        "lead_id":"provider-lead:cerebras-public",
+        "status":"VERIFIED_RECURRING_FREE",
+        "observed_at":"2026-09-18T00:01:00+00:00",
+    }))
+    row = OperatorConsole(tmp_path).resource_requests()[0]
+    stages = {stage["stage"]: stage["status"] for stage in row["stages"]}
+    assert stages["PROVIDER_DISCOVERED"] == "COMPLETE"
+    assert stages["CREDENTIAL_READY"] == "WAITING"
+    assert stages["VERIFIED"] == "WAITING"
+    assert stages["TRIALLED"] == "WAITING"
+    assert row["provider_discovery_status"] == "VERIFIED_RECURRING_FREE"
+    assert row["verification_status"] is None
 
 
 def test_survival_status_unifies_llm_storage_compute_and_hosting(tmp_path):
