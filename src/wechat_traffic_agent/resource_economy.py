@@ -303,6 +303,78 @@ class ContentResourceEconomy:
             "evidence_refs": list(evidence_refs),
         }
 
+
+    def settle_audience_outcomes(self, *, now: datetime) -> dict[str, Any]:
+        """Settle resource external value only from mature world-derived audience reward."""
+        from virtualbrain.research.resource_awareness import OutcomeSettlement
+
+        awareness = self.mind.session.resource_awareness
+        latest = getattr(awareness, "latest_outcome_settlement", None)
+        record = getattr(awareness, "record_outcome_settlement", None)
+        if not callable(latest) or not callable(record):
+            return {"status": "UNSUPPORTED_VIRTUALBRAIN", "settled": []}
+        settled: list[dict[str, Any]] = []
+        for outcome in awareness.outcomes:
+            cycle_ref = next(
+                (ref for ref in outcome.evidence_refs if str(ref).startswith("cycle:")),
+                None,
+            )
+            if cycle_ref is None:
+                continue
+            cycle = str(cycle_ref).split(":", 1)[1]
+            publication_path = (
+                self.state_root / "content" / "continuous" / "cycles" / cycle / "publication.json"
+            )
+            if not publication_path.exists():
+                continue
+            publication = json.loads(publication_path.read_text(encoding="utf-8"))
+            publication_id = str(publication.get("revision") or "")
+            if not publication_id:
+                continue
+            audience = self.mind.audience_outcome_for_publication(publication_id)
+            if not isinstance(audience, Mapping):
+                continue
+            reward = audience.get("relative_reward")
+            if isinstance(reward, bool) or not isinstance(reward, (int, float)):
+                continue
+            current = latest(outcome.outcome_id)
+            if current is not None and current.external_value is not None:
+                continue
+            revision = 1 if current is None else int(current.revision) + 1
+            refs = tuple(dict.fromkeys([
+                *outcome.evidence_refs,
+                *tuple(audience.get("evidence_refs") or ()),
+                f"audience-outcome:{audience.get('outcome_id')}",
+            ]))
+            settlement_id = "content-cycle-settlement:" + sha256(
+                f"{outcome.outcome_id}|{revision}|{publication_id}|{float(reward):.12f}".encode()
+            ).hexdigest()[:24]
+            row = record(OutcomeSettlement(
+                settlement_id=settlement_id,
+                outcome_id=outcome.outcome_id,
+                revision=revision,
+                external_value=float(reward),
+                learning_value=None,
+                reproduction_value=None,
+                observed_tick=int(self.mind.session.tick),
+                evidence_refs=refs,
+            ))
+            settled.append({
+                "settlement_id": row.settlement_id,
+                "outcome_id": row.outcome_id,
+                "revision": row.revision,
+                "external_value": row.external_value,
+                "publication_id": publication_id,
+                "evidence_refs": list(row.evidence_refs),
+            })
+        if settled:
+            self.mind.persist_resource_awareness()
+        return {
+            "status": "SETTLED" if settled else "NO_NEW_SETTLEMENTS",
+            "settled": settled,
+        }
+
+
     @staticmethod
     def _daily_burn(history: tuple[Any, ...], current: BalanceObservation) -> float | None:
         """Estimate burn from a real elapsed window even when observations arrive every few minutes."""
@@ -338,6 +410,48 @@ class ContentResourceEconomy:
             "source_refs": list(state.source_refs),
         }
 
+    def _record_balance_increase_event(
+        self, *, now: datetime, cycle: str, before_balance: float, current: Any
+    ) -> dict[str, Any]:
+        payload = {
+            "schema_version": "balance-increase-event.v1",
+            "cycle": cycle,
+            "observed_at": _iso(now),
+            "currency": current.currency,
+            "before_balance": float(before_balance),
+            "after_balance": float(current.available_funds),
+            "increase": float(current.available_funds) - float(before_balance),
+            "source": "UNKNOWN",
+            "classification": "UNRESOLVED",
+            "evidence_refs": list(current.source_refs),
+        }
+        event_id = "balance-increase:" + sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        payload["event_id"] = event_id
+        root = self.state_root / "application" / "resource_observations" / "balance_increase_events"
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f"{event_id}.json"
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+        if target.exists():
+            if target.read_text(encoding="utf-8") != text:
+                raise ValueError("balance increase event conflicts with existing evidence")
+        else:
+            target.write_text(text, encoding="utf-8")
+        return payload
+
+    @staticmethod
+    def _settled_dimension(awareness: Any, outcomes: list[Any], name: str) -> float:
+        values: list[float] = []
+        latest = getattr(awareness, "latest_outcome_settlement", None)
+        if callable(latest):
+            for outcome in outcomes:
+                settlement = latest(outcome.outcome_id)
+                value = getattr(settlement, name, None) if settlement is not None else None
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    values.append(float(value))
+        return mean(values) if values else 0.5
+
     def begin_cycle(self, *, now: datetime, cycle: str) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ActionProposal, DecisionEpisode
 
@@ -360,9 +474,9 @@ class ContentResourceEconomy:
             item for item in recent_outcomes
             if "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary
         ]
-        external = mean([item.external_value for item in prior_values]) if prior_values else 0.5
-        learning = mean([item.learning_value for item in prior_values]) if prior_values else 0.5
-        reproduction = mean([item.reproduction_value for item in prior_values]) if prior_values else 0.5
+        external = self._settled_dimension(awareness, prior_values, "external_value")
+        learning = self._settled_dimension(awareness, prior_values, "learning_value")
+        reproduction = self._settled_dimension(awareness, prior_values, "reproduction_value")
         digest = sha256(cycle.encode()).hexdigest()[:20]
         proposal_id = "content-cycle:" + digest
         episode_id = "content-cycle-decision:" + digest
@@ -413,7 +527,14 @@ class ContentResourceEconomy:
         current = self.mind.session.resource_awareness.current
         assert current is not None
         if current.available_funds > before_balance:
-            return {"status": "AMBIGUOUS_BALANCE_INCREASE", "resource_state": observed["resource_state"]}
+            event = self._record_balance_increase_event(
+                now=now, cycle=cycle, before_balance=before_balance, current=current
+            )
+            return {
+                "status": "AMBIGUOUS_BALANCE_INCREASE",
+                "balance_increase_event": event,
+                "resource_state": observed["resource_state"],
+            }
         awareness = self.mind.session.resource_awareness
         if any(item.episode_id == episode_id for item in awareness.outcomes):
             return {"status": "ALREADY_RECORDED", "episode_id": episode_id}
@@ -422,19 +543,19 @@ class ContentResourceEconomy:
         status = str(result.get("status") or "UNKNOWN")
         published = status == "PUBLISHED"
         succeeded = status not in {"ERROR", "RESOURCE_DEFERRED"}
-        external_value = 0.8 if published else (0.3 if succeeded else 0.0)
-        learning_value = 0.7 if succeeded else 0.1
-        reproduction_value = 0.5 if published else 0.1
         outcome_id = "content-cycle-outcome:" + sha256(cycle.encode()).hexdigest()[:20]
         evidence = tuple(dict.fromkeys((*episode.evidence_refs, *current.source_refs, "cycle-result:" + status)))
         outcome = awareness.record_outcome(Outcome(
             outcome_id=outcome_id,
             episode_id=episode_id,
-            result_summary=f"content cycle ended {status}; observed account balance delta {actual_cost:.6f} {current.currency}",
+            result_summary=(
+                f"content cycle ended {status}; observed account balance delta "
+                f"{actual_cost:.6f} {current.currency}; value settlement PENDING_AUDIENCE"
+            ),
             actual_cost=actual_cost,
-            external_value=external_value,
-            learning_value=learning_value,
-            reproduction_value=reproduction_value,
+            external_value=None,
+            learning_value=None,
+            reproduction_value=None,
             reputation_delta=0.0,
             observed_tick=int(self.mind.session.tick),
             evidence_refs=evidence,
@@ -443,11 +564,11 @@ class ContentResourceEconomy:
         prediction_error = max(-1.0, min(1.0, (actual_cost - episode.estimated_cost) / estimate))
         waste = min(1.0, actual_cost / estimate) if not succeeded and actual_cost > 0 else 0.0
         lesson = (
-            "Published content produced external and learning value within the observed resource episode."
+            "Publication completed, but external, learning, and reproduction value remain unknown until world evidence matures."
             if published else
-            "The cycle consumed resources without publication; compare this episode with later outcomes before changing policy."
+            "The cycle consumed resources without publication; keep value unknown and compare with later evidence before changing policy."
             if actual_cost > 0 else
-            "No account balance decrease was observed during this cycle; retain uncertainty about delayed billing."
+            "No account balance decrease was observed during this cycle; retain uncertainty about delayed billing and value."
         )
         reflection = awareness.record_reflection(Reflection(
             reflection_id="content-cycle-reflection:" + sha256(cycle.encode()).hexdigest()[:20],
@@ -469,6 +590,7 @@ class ContentResourceEconomy:
             "currency": current.currency,
             "prediction_error": prediction_error,
             "waste_score": waste,
+            "settlement_status": "PENDING_AUDIENCE",
             "resource_state": observed["resource_state"],
         }
 
