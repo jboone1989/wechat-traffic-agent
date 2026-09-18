@@ -354,8 +354,12 @@ class ContentResourceEconomy:
                 outcome_id=outcome.outcome_id,
                 revision=revision,
                 external_value=float(reward),
-                learning_value=None,
-                reproduction_value=None,
+                learning_value=(
+                    None if current is None else current.learning_value
+                ),
+                reproduction_value=(
+                    None if current is None else current.reproduction_value
+                ),
                 observed_tick=int(self.mind.session.tick),
                 evidence_refs=refs,
             ))
