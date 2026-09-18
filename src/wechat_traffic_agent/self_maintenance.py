@@ -378,6 +378,72 @@ class SelfMaintenanceService:
             "new_problem_count": len(new_problem_ids),
         }
 
+    def reconcile_legacy_duplicates(self, *, now: datetime) -> dict[str, int]:
+        folder = self.root / "problems"
+        rows: list[tuple[Path, dict[str, Any]]] = []
+        for path in sorted(folder.glob("*.json")) if folder.exists() else ():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("status") or "") in {
+                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+            }:
+                continue
+            rows.append((path, payload))
+
+        groups: dict[tuple[str, str, tuple[str, ...]], list[tuple[Path, dict[str, Any]]]] = {}
+        for path, payload in rows:
+            key = (
+                str(payload.get("error_type") or ""),
+                str(payload.get("symptom") or ""),
+                tuple(sorted(str(x) for x in payload.get("cycles") or () if str(x))),
+            )
+            groups.setdefault(key, []).append((path, payload))
+
+        archived = 0
+        groups_reconciled = 0
+        for matches in groups.values():
+            if len(matches) < 2:
+                continue
+            explicit = [
+                item for item in matches
+                if "failure_site" in item[1]
+            ]
+            legacy = [
+                item for item in matches
+                if "failure_site" not in item[1]
+            ]
+            if not explicit or not legacy:
+                continue
+            canonical_path, canonical = sorted(
+                explicit,
+                key=lambda item: (
+                    str(item[1].get("failure_site") or "") != "unknown",
+                    str(item[1].get("last_seen_at") or ""),
+                    str(item[1].get("problem_id") or ""),
+                ),
+                reverse=True,
+            )[0]
+            canonical_id = str(canonical.get("problem_id") or canonical_path.stem)
+            changed = False
+            for path, payload in legacy:
+                payload["status"] = "LEGACY_DUPLICATE"
+                payload["repair_proposal"] = None
+                payload["superseded_by"] = [canonical_id]
+                payload["superseded_at"] = now.astimezone(timezone.utc).isoformat()
+                _atomic_json(path, payload)
+                archived += 1
+                changed = True
+            if changed:
+                groups_reconciled += 1
+        return {
+            "groups_reconciled": groups_reconciled,
+            "archived_duplicates": archived,
+        }
+
     def refresh_known_proposals(self) -> dict[str, int]:
         folder = self.root / "problems"
         enriched = 0
@@ -389,6 +455,10 @@ class SelfMaintenanceService:
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if not isinstance(payload, dict) or payload.get("repair_proposal"):
+                continue
+            if str(payload.get("status") or "") in {
+                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+            }:
                 continue
             cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
             proposal = self._proposal_for(
@@ -421,7 +491,9 @@ class SelfMaintenanceService:
                 rows.append(payload)
         open_rows = [
             row for row in rows
-            if str(row.get("status") or "") not in {"VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE"}
+            if str(row.get("status") or "") not in {
+                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+            }
         ]
         open_rows.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
         return {

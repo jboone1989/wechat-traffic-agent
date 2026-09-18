@@ -296,3 +296,74 @@ def test_reindex_legacy_problem_splits_different_callsites_and_quarantines_aggre
         "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT",
         "DETERMINISTIC_FALLBACK_ON_INVALID_EVIDENCE_SELECTION",
     }
+
+
+def test_reconcile_legacy_duplicates_archives_only_missing_callsite_copy(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+    root = tmp_path / "application/self_maintenance/problems"
+    root.mkdir(parents=True)
+    canonical = root / "canonical.json"
+    canonical.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:canonical",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "BELIEF_CHANGED requires a persisted worldview change",
+        "error_type": "ValueError",
+        "failure_site": "unknown",
+        "occurrences": 2,
+        "cycles": ["v2-1", "v2-2"],
+        "repair_proposal": {
+            "repair_kind": "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW",
+        },
+    }))
+    legacy = root / "legacy.json"
+    legacy.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:legacy",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "BELIEF_CHANGED requires a persisted worldview change",
+        "error_type": "ValueError",
+        "occurrences": 2,
+        "cycles": ["v2-1", "v2-2"],
+        "repair_proposal": {
+            "repair_kind": "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW",
+        },
+    }))
+
+    result = service.reconcile_legacy_duplicates(now=NOW)
+
+    assert result == {"groups_reconciled": 1, "archived_duplicates": 1}
+    archived = json.loads(legacy.read_text())
+    assert archived["status"] == "LEGACY_DUPLICATE"
+    assert archived["repair_proposal"] is None
+    assert archived["superseded_by"] == ["self-problem:canonical"]
+    kept = json.loads(canonical.read_text())
+    assert kept["status"] == "REPAIR_PROPOSED"
+    assert service.review()["open_count"] == 1
+
+
+def test_reconcile_does_not_merge_same_message_with_different_cycles(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+    root = tmp_path / "application/self_maintenance/problems"
+    root.mkdir(parents=True)
+    (root / "one.json").write_text(json.dumps({
+        "problem_id": "self-problem:one", "status": "DIAGNOSING",
+        "symptom": "same", "error_type": "ValueError", "failure_site": "unknown",
+        "cycles": ["v2-1"],
+    }))
+    (root / "two.json").write_text(json.dumps({
+        "problem_id": "self-problem:two", "status": "DIAGNOSING",
+        "symptom": "same", "error_type": "ValueError",
+        "cycles": ["v2-2"],
+    }))
+
+    result = service.reconcile_legacy_duplicates(now=NOW)
+
+    assert result["archived_duplicates"] == 0
+    assert service.review()["open_count"] == 2
