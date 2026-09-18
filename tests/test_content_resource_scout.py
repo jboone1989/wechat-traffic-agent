@@ -229,3 +229,16 @@ def test_no_viable_model_breaks_discovery_cooldown(tmp_path):
     assert result["status"]=="NO_NEW_OPPORTUNITIES"
     assert len(runtime.calls)>before
     assert any("reduce financial burn" in payload["query"] for cap,payload in runtime.calls[before:] if cap=="web.search")
+
+def test_plan_trials_treats_unverified_provider_lead_as_autonomous_work(tmp_path, monkeypatch):
+    from agent_runtime.resource_discovery import ProviderLead
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime())
+    scout.scout._write_provider_lead(ProviderLead(
+        'lead:new','op:new','New Cloud','NEW_CLOUD_API_KEY','https://new.example/keys','new.example',NOW.isoformat(),'r'
+    ))
+    monkeypatch.delenv('NEW_CLOUD_API_KEY',raising=False)
+    monkeypatch.setattr(scout,'local_inference_feasibility',lambda:{'status':'DEFER_LOCAL_RESOURCE_PRESSURE','reasons':['disk_pressure']})
+    result=scout.plan_trials(now=NOW)
+    assert result['pending_verification_count']==0
+    assert result['pending_provider_verification_count']==1
+    assert result['autonomous_work_pending'] is True
