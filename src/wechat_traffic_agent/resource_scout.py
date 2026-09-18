@@ -48,7 +48,7 @@ class ContentResourceScout:
             found_last_time = bool(last_run.get("new_opportunity_ids"))
             retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
             new_replan_signal = any(
-                row.status == "BLOCKED_EXTERNAL" or row.status in _REPLAN_OUTCOME_STATUSES
+                (row.status == "BLOCKED_EXTERNAL" or row.status in _REPLAN_OUTCOME_STATUSES)
                 and datetime.fromisoformat(row.observed_at.replace("Z", "+00:00")) > last
                 for row in outcomes
             )
@@ -267,13 +267,13 @@ class ContentResourceScout:
                     for model_id in sorted(incompatible_models)
                     for row in plan_model_rows[model_id]
                 )
-                self.record_acquisition_outcome(
+                outcome = self.record_acquisition_outcome(
                     plan_id=plan.plan_id, lead_id=plan.lead_id, status="MODEL_TARGETS_INCOMPATIBLE",
                     now=now, source="RUNTIME",
                     detail_summary="multiple model targets were incompatible with the current trial protocol; provider-wide unavailability was not established",
                     evidence_refs=refs,
                 )
-                replan_required = True
+                replan_required = replan_required or bool(outcome.get("created"))
                 provider_rows.append({
                     "provider_label": plan.provider_label,
                     "credential_env": plan.credential_env,
@@ -333,13 +333,13 @@ class ContentResourceScout:
                         for model_id in sorted(exhausted_models)
                         for row in model_rows[model_id]
                     )
-                    self.record_acquisition_outcome(
+                    outcome = self.record_acquisition_outcome(
                         plan_id=plan.plan_id, lead_id=plan.lead_id, status="FREE_CANDIDATES_EXHAUSTED",
                         now=now, source="RUNTIME",
                         detail_summary="bounded free-tier candidate sample exhausted; provider-wide unavailability was not established",
                         evidence_refs=refs,
                     )
-                    replan_required = True
+                    replan_required = replan_required or bool(outcome.get("created"))
                     provider_rows.append({
                         "provider_label": plan.provider_label,
                         "credential_env": plan.credential_env,
@@ -591,6 +591,18 @@ class ContentResourceScout:
         folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / (outcome.outcome_id.split(":")[-1] + ".json")
+        if path.exists():
+            try:
+                prior = json.loads(path.read_text(encoding="utf-8"))
+                if str(prior.get("outcome_id") or "") == outcome.outcome_id:
+                    return {
+                        "outcome_id": outcome.outcome_id, "status": outcome.status,
+                        "friction_kind": outcome.friction_kind,
+                        "observed_at": str(prior.get("observed_at") or outcome.observed_at),
+                        "created": False,
+                    }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
         self._atomic_json(path, {
             "outcome_id": outcome.outcome_id, "plan_id": outcome.plan_id,
             "lead_id": outcome.lead_id, "status": outcome.status,
@@ -601,6 +613,7 @@ class ContentResourceScout:
         return {
             "outcome_id": outcome.outcome_id, "status": outcome.status,
             "friction_kind": outcome.friction_kind, "observed_at": outcome.observed_at,
+            "created": True,
         }
 
     def acquisition_outcomes(self) -> list[ResourceAcquisitionOutcome]:

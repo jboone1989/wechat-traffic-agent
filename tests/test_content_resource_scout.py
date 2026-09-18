@@ -242,3 +242,47 @@ def test_plan_trials_treats_unverified_provider_lead_as_autonomous_work(tmp_path
     assert result['pending_verification_count']==0
     assert result['pending_provider_verification_count']==1
     assert result['autonomous_work_pending'] is True
+
+def test_old_blocked_external_fact_does_not_break_discovery_cooldown(tmp_path):
+    class AdaptiveRuntime:
+        def __init__(self): self.calls=[]
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            return SimpleNamespace(receipt_id="r",payload={"results":[{
+                "title":"Free inference API","url":"https://models.example/free","snippet":"free API key tier"
+            }]})
+    runtime=AdaptiveRuntime(); scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    scout.maybe_discover(now=NOW)
+    before=len(runtime.calls)
+    scout.record_acquisition_outcome(
+        plan_id="plan:old",lead_id="lead:old",status="BLOCKED_EXTERNAL",
+        now=NOW.replace(year=2025),friction_kind="PHONE_VERIFICATION",
+        source="HUMAN_REPORTED",evidence_refs=("human-report:old",),
+    )
+    result=scout.maybe_discover(now=NOW.replace(minute=5))
+    assert result["status"]=="NOT_DUE"
+    assert len(runtime.calls)==before
+
+def test_acquisition_outcome_is_immutable_for_same_evidence(tmp_path):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=SimpleNamespace())
+    first=scout.record_acquisition_outcome(
+        plan_id="plan:1",lead_id="lead:1",status="MODEL_TARGETS_INCOMPATIBLE",
+        now=NOW,source="RUNTIME",detail_summary="same fact",evidence_refs=("trial:1","trial:2"),
+    )
+    second=scout.record_acquisition_outcome(
+        plan_id="plan:1",lead_id="lead:1",status="MODEL_TARGETS_INCOMPATIBLE",
+        now=NOW.replace(minute=10),source="RUNTIME",detail_summary="same fact",
+        evidence_refs=("trial:1","trial:2"),
+    )
+    third=scout.record_acquisition_outcome(
+        plan_id="plan:1",lead_id="lead:1",status="MODEL_TARGETS_INCOMPATIBLE",
+        now=NOW.replace(minute=11),source="RUNTIME",detail_summary="same fact",
+        evidence_refs=("trial:1","trial:2","trial:3"),
+    )
+    assert first["created"] is True
+    assert second["created"] is False
+    assert second["observed_at"]==first["observed_at"]
+    assert third["created"] is True
+    rows=scout.acquisition_outcomes()
+    assert len(rows)==2
+    assert min(row.observed_at for row in rows)==NOW.isoformat()
