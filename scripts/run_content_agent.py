@@ -128,6 +128,11 @@ def main() -> int:
     )
     if self_maintenance_reindex.get("legacy_rows"):
         print(json.dumps({"self_maintenance_reindex": self_maintenance_reindex}, sort_keys=True))
+    self_maintenance_reconcile = self_maintenance.reconcile_legacy_duplicates(
+        now=self_maintenance_now
+    )
+    if self_maintenance_reconcile.get("archived_duplicates"):
+        print(json.dumps({"self_maintenance_reconcile": self_maintenance_reconcile}, sort_keys=True))
     from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
     repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
     self_repair = SelfRepairExecutor(
