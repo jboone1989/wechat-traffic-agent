@@ -63,6 +63,20 @@ def main() -> int:
     if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
 
     state_root = _state_root()
+    from wechat_traffic_agent.llm_resources import sync_llm_resource_pool
+    try:
+        pool_bootstrap = sync_llm_resource_pool(
+            state_root=state_root,
+            now=datetime.now(timezone.utc).replace(microsecond=0),
+        )
+        print(json.dumps({"llm_resource_pool": pool_bootstrap}, sort_keys=True))
+    except Exception as exc:
+        print(json.dumps({
+            "llm_resource_pool": {
+                "status": "BOOTSTRAP_DEGRADED",
+                "error_type": type(exc).__name__,
+            }
+        }, sort_keys=True), file=sys.stderr)
     app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
     from wechat_traffic_agent.content_mind import ContentMind
     from wechat_traffic_agent.resource_economy import ContentResourceEconomy
@@ -70,6 +84,10 @@ def main() -> int:
     from wechat_traffic_agent.daily_reflection import DailyReflectionService
     content_mind = ContentMind(root=state_root, subject_id=app.subject.subject_id)
     resource_economy = ContentResourceEconomy(state_root=state_root, mind=content_mind)
+    routing_policy = resource_economy.sync_llm_routing_policy(
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+    )
+    print(json.dumps({"llm_routing_policy": routing_policy}, sort_keys=True))
     from wechat_traffic_agent.resource_scout import ContentResourceScout
     from wechat_traffic_agent.survival_resources import ComputeResourceScout, SurvivalNodeRegistry
     from wechat_traffic_agent.survival_optimization import HostRecoveryPlanner, persist_runtime_footprint
@@ -86,7 +104,16 @@ def main() -> int:
     survival_nodes = SurvivalNodeRegistry(state_root=state_root)
     habitat_placement = HabitatPlacementController(state_root=state_root)
     private_notifier = operator_notifier()
-    human_assistance = HumanAssistanceService(state_root=state_root, notifier=private_notifier)
+    human_assistance = HumanAssistanceService(
+        state_root=state_root,
+        notifier=private_notifier,
+        evolution_runtime=app.domain_runtime,
+    )
+    evolution_backfill = human_assistance.backfill_evolution_observations(
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+    )
+    if evolution_backfill.get("recorded") or evolution_backfill.get("failed"):
+        print(json.dumps({"human_assistance_evolution_backfill": evolution_backfill}, sort_keys=True))
     daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)

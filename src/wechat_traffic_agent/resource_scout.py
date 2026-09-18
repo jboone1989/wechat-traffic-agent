@@ -18,6 +18,17 @@ from agent_runtime.resource_trials import (
     run_bounded_provider_trial,
 )
 
+from .provider_diagnostics import diagnose_provider_trials
+
+
+_REPLAN_OUTCOME_STATUSES = {
+    "NO_VIABLE_MODEL",  # legacy broad status; now interpreted as model-level replan
+    "MODEL_TARGETS_INCOMPATIBLE",
+    "FREE_CANDIDATES_EXHAUSTED",
+    "TEMPORARY_RATE_LIMIT",
+    "TASK_MISMATCH",
+}
+
 
 class ContentResourceScout:
     def __init__(self, *, state_root: Path, capability_runtime: Any) -> None:
@@ -37,7 +48,7 @@ class ContentResourceScout:
             found_last_time = bool(last_run.get("new_opportunity_ids"))
             retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
             new_replan_signal = any(
-                row.status in {"BLOCKED_EXTERNAL", "NO_VIABLE_MODEL"}
+                row.status == "BLOCKED_EXTERNAL" or row.status in _REPLAN_OUTCOME_STATUSES
                 and datetime.fromisoformat(row.observed_at.replace("Z", "+00:00")) > last
                 for row in outcomes
             )
@@ -54,7 +65,7 @@ class ContentResourceScout:
             objective="reduce financial burn while preserving useful task quality",
             reason=(
                 "recent provider trial evidence requires alternate routes"
-                if any(row.status == "NO_VIABLE_MODEL" for row in outcomes) else
+                if any(row.status in _REPLAN_OUTCOME_STATUSES for row in outcomes) else
                 "recent resource acquisition friction requires alternate routes"
                 if adaptive_constraints else
                 "paid-provider concentration exists and no low-cost alternative has trial evidence"
@@ -257,9 +268,9 @@ class ContentResourceScout:
                     for row in plan_model_rows[model_id]
                 )
                 self.record_acquisition_outcome(
-                    plan_id=plan.plan_id, lead_id=plan.lead_id, status="NO_VIABLE_MODEL",
+                    plan_id=plan.plan_id, lead_id=plan.lead_id, status="MODEL_TARGETS_INCOMPATIBLE",
                     now=now, source="RUNTIME",
-                    detail_summary="multiple catalog model targets were incompatible with the current trial protocol",
+                    detail_summary="multiple model targets were incompatible with the current trial protocol; provider-wide unavailability was not established",
                     evidence_refs=refs,
                 )
                 replan_required = True
@@ -323,9 +334,9 @@ class ContentResourceScout:
                         for row in model_rows[model_id]
                     )
                     self.record_acquisition_outcome(
-                        plan_id=plan.plan_id, lead_id=plan.lead_id, status="NO_VIABLE_MODEL",
+                        plan_id=plan.plan_id, lead_id=plan.lead_id, status="FREE_CANDIDATES_EXHAUSTED",
                         now=now, source="RUNTIME",
-                        detail_summary="bounded free-tier model candidates exhausted without a viable quality result",
+                        detail_summary="bounded free-tier candidate sample exhausted; provider-wide unavailability was not established",
                         evidence_refs=refs,
                     )
                     replan_required = True
@@ -417,9 +428,40 @@ class ContentResourceScout:
                 status=outcome_status, measurements=measurements,
             ))
         all_trials = self.scout.model_trials()
+        diagnostics: list[dict[str, Any]] = []
+        for lead in leads:
+            if lead.credential_env not in available:
+                continue
+            history = [row for row in all_trials if row.opportunity_id == lead.lead_id]
+            if not history:
+                continue
+            try:
+                diagnostics.append(diagnose_provider_trials(
+                    state_root=self.state_root,
+                    provider_label=lead.provider_label,
+                    credential_env=lead.credential_env,
+                    lead_id=lead.lead_id,
+                    rows=history,
+                    now=now,
+                ))
+            except Exception as exc:  # Diagnostics must not erase the underlying trial evidence.
+                diagnostics.append({
+                    "status": "DIAGNOSTIC_ERROR",
+                    "lead_id": lead.lead_id,
+                    "provider_label": lead.provider_label,
+                    "error_type": type(exc).__name__,
+                })
         profiles = provider_profiles(all_trials, minimum_quality=0.75, minimum_trials=3)
         selected = select_provider(profiles, task_class="simple_public_text", quality_floor=0.75)
         selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
+        from .llm_resources import sync_llm_resource_pool
+        try:
+            pool_sync = sync_llm_resource_pool(state_root=self.state_root, now=now)
+        except Exception as exc:
+            pool_sync = {
+                "status": "SYNC_ERROR",
+                "error_type": type(exc).__name__,
+            }
         completed_count = sum(1 for row in executed_measurements if row.status == "COMPLETED")
         failed_count = len(executed_measurements) - completed_count
         return {
@@ -434,6 +476,7 @@ class ContentResourceScout:
                 for row in executed_measurements if row.error_code or row.error_type
             }),
             "providers": provider_rows,
+            "diagnostics": diagnostics,
             "empirical_profiles": [
                 {
                     "lead_id": row.opportunity_id, "model_id": row.model_id,
@@ -450,6 +493,7 @@ class ContentResourceScout:
                 "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
             },
             "selection": selection,
+            "llm_resource_pool": pool_sync,
             "replan_required": replan_required,
         }
 
