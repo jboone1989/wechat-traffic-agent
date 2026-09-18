@@ -452,6 +452,87 @@ class ContentResourceEconomy:
                     values.append(float(value))
         return mean(values) if values else 0.5
 
+    @property
+    def hibernation_path(self) -> Path:
+        return self.state_root / "application" / "resource_observations" / "hibernation.json"
+
+    def _routing_policy(self) -> dict[str, Any]:
+        path = self.state_root / "application" / "llm_resource_pool" / "policy.json"
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        return row if isinstance(row, dict) else {}
+
+    def hibernation_state(self) -> dict[str, Any] | None:
+        try:
+            row = json.loads(self.hibernation_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return row if isinstance(row, dict) and row.get("status") == "HIBERNATE" else None
+
+    def _enter_hibernation(self, *, now: datetime, pressure: str, evidence_refs: tuple[str, ...]) -> dict[str, Any]:
+        payload = {
+            "schema_version": "content-hibernation.v1",
+            "status": "HIBERNATE",
+            "entered_at": _iso(now),
+            "pressure": pressure,
+            "reason": "RESOURCE_CRITICAL",
+            "allowed_tasks": ["RESOURCE_REVIEW", "CHECK_OUTCOMES", "CHECK_X"],
+            "blocked_tasks": ["OBSERVE_WORLD", "CONTENT_COGNITION"],
+            "evidence_refs": list(evidence_refs),
+        }
+        self.hibernation_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.hibernation_path.exists():
+            existing = self.hibernation_state()
+            if existing is not None:
+                return existing
+        self.hibernation_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        return payload
+
+    def _exit_hibernation(self, *, now: datetime, reason: str, evidence_refs: tuple[str, ...]) -> dict[str, Any] | None:
+        current = self.hibernation_state()
+        if current is None:
+            return None
+        receipt = {
+            "schema_version": "content-hibernation-recovery.v1",
+            "status": "RECOVERED",
+            "recovered_at": _iso(now),
+            "reason": str(reason),
+            "prior": current,
+            "evidence_refs": list(evidence_refs),
+        }
+        receipt_id = sha256(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        root = self.hibernation_path.parent / "hibernation_recovery_receipts"
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / f"{receipt_id}.json"
+        if not target.exists():
+            target.write_text(
+                json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        self.hibernation_path.unlink(missing_ok=True)
+        return receipt
+
+    def force_wake(self, *, now: datetime, operator_ref: str) -> dict[str, Any]:
+        operator_ref = str(operator_ref).strip()
+        if not operator_ref:
+            raise ValueError("operator force wake requires operator_ref")
+        current = self.hibernation_state()
+        if current is None:
+            return {"status": "NOT_HIBERNATING"}
+        receipt = self._exit_hibernation(
+            now=now,
+            reason="OPERATOR_FORCE_WAKE",
+            evidence_refs=tuple(dict.fromkeys([*current.get("evidence_refs", ()), operator_ref])),
+        )
+        return {"status": "FORCED_AWAKE", "receipt": receipt}
+
     def begin_cycle(self, *, now: datetime, cycle: str) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ActionProposal, DecisionEpisode
 
@@ -493,10 +574,36 @@ class ContentResourceEconomy:
                 created_tick=int(self.mind.session.tick),
                 evidence_refs=evidence,
             ))
+        pressure = _resource_pressure(
+            available_funds=float(current.available_funds),
+            period_budget=float(current.period_budget),
+            runway_days=None if current.runway_days is None else float(current.runway_days),
+        )
+        routing = self._routing_policy()
+        windfall_active = bool(routing.get("windfall_active"))
+        prefer_free = bool(routing.get("prefer_free", True))
+        if pressure == "CRITICAL":
+            hibernation = self._enter_hibernation(
+                now=now, pressure=pressure, evidence_refs=evidence
+            )
+        else:
+            self._exit_hibernation(
+                now=now, reason="RESOURCE_PRESSURE_RECOVERED", evidence_refs=evidence
+            )
+            hibernation = None
         existing = next((item for item in awareness.episodes if item.proposal_id == proposal_id), None)
         if existing is None:
-            available = current.quotas.get("deepseek_api_available", 1.0) >= 1.0
-            decision = "EXECUTE" if available and current.available_funds >= estimated_cost else "ASK_HUMAN"
+            paid_available = current.quotas.get("deepseek_api_available", 1.0) >= 1.0
+            if pressure == "CRITICAL":
+                decision = "DEFER"
+            elif pressure == "CONSERVE":
+                decision = "EXECUTE" if prefer_free and windfall_active else "DEFER"
+            else:
+                decision = (
+                    "EXECUTE"
+                    if paid_available and current.available_funds >= estimated_cost
+                    else "ASK_HUMAN"
+                )
             existing = awareness.record_decision(DecisionEpisode(
                 episode_id=episode_id,
                 proposal_id=proposal_id,
@@ -517,6 +624,11 @@ class ContentResourceEconomy:
             "available_funds": current.available_funds,
             "currency": current.currency,
             "before_balance": current.available_funds,
+            "pressure": pressure,
+            "prefer_free": prefer_free,
+            "windfall_active": windfall_active,
+            "hibernation": hibernation,
+            "defer_interval_multiplier": 2 if pressure == "CONSERVE" else 1,
             "evidence_refs": list(existing.evidence_refs),
         }
 
