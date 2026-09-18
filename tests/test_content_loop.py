@@ -344,3 +344,28 @@ def test_preflight_is_local_and_distinguishes_processed_cycle(tmp_path):
     assert replay == {**replay, "status": "ALREADY_PROCESSED"}
     assert replay["cycle"] == first["cycle"]
     assert runtime.calls == calls_after_publish
+
+
+
+def test_changed_model_phase_input_invalidates_stale_recovery_without_retrying_model(tmp_path):
+    runtime, worker, _publisher = setup(tmp_path)
+
+    async def stale_recovery(folder, cycle, now):
+        raise ValueError("model phase input changed during recovery")
+
+    worker._run = stale_recovery
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["status"] == "RECOVERY_INVALIDATED"
+    assert result["reason"] == "MODEL_PHASE_INPUT_CHANGED"
+    assert runtime.calls == []
+    cycle_dir = Path(result["diagnostic_ref"].split(":")[1]) if False else next(
+        (worker.root / "cycles").glob("v2-*")
+    )
+    diagnostic = json.loads((cycle_dir / "error_diagnostic.json").read_text())
+    invalidated = json.loads((cycle_dir / "recovery_invalidated.json").read_text())
+    persisted = json.loads((cycle_dir / "result.json").read_text())
+    assert diagnostic["message"] == "model phase input changed during recovery"
+    assert "stale_recovery" in diagnostic["traceback"]
+    assert invalidated["reason"] == "MODEL_PHASE_INPUT_CHANGED"
+    assert persisted["status"] == "RECOVERY_INVALIDATED"

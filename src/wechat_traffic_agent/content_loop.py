@@ -256,13 +256,27 @@ class ContinuousContentLoop:
                     'traceback': traceback.format_exc(limit=12)[-12000:],
                 }
                 _put(folder / 'error_diagnostic.json', diagnostic)
-                result = {
-                    'status': 'ERROR',
-                    'cycle': cycle,
-                    'error_type': type(exc).__name__,
-                    'message': str(exc)[:1000],
-                    'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
-                }
+                if isinstance(exc, ValueError) and str(exc) == 'model phase input changed during recovery':
+                    _put(folder / 'recovery_invalidated.json', {
+                        'schema_version': 'content-recovery-invalidation.v1',
+                        'cycle': cycle,
+                        'reason': 'MODEL_PHASE_INPUT_CHANGED',
+                        'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
+                    })
+                    result = {
+                        'status': 'RECOVERY_INVALIDATED',
+                        'cycle': cycle,
+                        'reason': 'MODEL_PHASE_INPUT_CHANGED',
+                        'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
+                    }
+                else:
+                    result = {
+                        'status': 'ERROR',
+                        'cycle': cycle,
+                        'error_type': type(exc).__name__,
+                        'message': str(exc)[:1000],
+                        'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
+                    }
             _put(result_path, result)
             return result
 
