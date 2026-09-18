@@ -159,11 +159,95 @@ class WakefulContentTaskRunner:
         return rows
 
     def _reflect(self, now: datetime) -> dict[str, Any]:
+        rows: dict[str, Any] = {"task": "REFLECT", "status": "OK"}
         try:
-            result = self.daily_reflection.maybe_generate(now)
-            return {"task": "REFLECT", "status": "OK", "daily_reflection": result}
+            rows["daily_reflection"] = self.daily_reflection.maybe_generate(now)
         except Exception as exc:  # noqa: BLE001
-            return {"task": "REFLECT", "status": "DEGRADED", "daily_reflection": self._error(exc)}
+            rows["daily_reflection"] = self._error(exc)
+            rows["status"] = "DEGRADED"
+        try:
+            rows["evolution_deliberation"] = self._evolution_deliberation(now)
+        except Exception as exc:  # noqa: BLE001
+            rows["evolution_deliberation"] = self._error(exc)
+            rows["status"] = "DEGRADED"
+        return rows
+
+    def _evolution_deliberation(self, now: datetime) -> dict[str, Any]:
+        runtime = getattr(self.app, "domain_runtime", None)
+        deliberate = getattr(runtime, "deliberate_evolution_need", None)
+        if runtime is None or not callable(deliberate):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+
+        needs = list(getattr(runtime, "evolution_needs", ()) or ())
+        if not needs:
+            return {"status": "NO_OPEN_NEEDS"}
+
+        active_hypothesis_needs: set[str] = set()
+        for hypothesis in list(
+            getattr(runtime, "evolution_hypotheses", ()) or ()
+        ):
+            status = getattr(hypothesis, "status", "")
+            status_value = str(getattr(status, "value", status))
+            if status_value not in {"PROPOSED", "SUPPORTED"}:
+                continue
+            need_id = str(getattr(hypothesis, "need_id", "") or "")
+            if need_id:
+                active_hypothesis_needs.add(need_id)
+
+        ordered = sorted(
+            needs,
+            key=lambda item: (
+                float(getattr(item, "pressure", 0.0) or 0.0),
+                int(getattr(item, "created_cycle", 0) or 0),
+            ),
+            reverse=True,
+        )
+        candidate = next(
+            (
+                item
+                for item in ordered
+                if str(getattr(item, "need_id", "") or "")
+                not in active_hypothesis_needs
+            ),
+            None,
+        )
+        if candidate is None:
+            return {
+                "status": "ALREADY_PROPOSED",
+                "open_need_count": len(needs),
+            }
+        if not bool(getattr(runtime, "has_advisory_backend", False)):
+            return {
+                "status": "BACKEND_UNAVAILABLE",
+                "need_id": str(getattr(candidate, "need_id", "") or ""),
+                "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
+            }
+
+        hypothesis = asyncio.run(
+            deliberate(
+                str(getattr(candidate, "need_id")),
+                max_tokens=800,
+            )
+        )
+        persist = getattr(runtime, "persist", None)
+        if callable(persist):
+            persist()
+        expected_fitness = dict(
+            getattr(hypothesis, "expected_fitness", {}) or {}
+        )
+        return {
+            "status": "PROPOSED",
+            "need_id": str(getattr(candidate, "need_id", "") or ""),
+            "hypothesis_id": str(
+                getattr(hypothesis, "hypothesis_id", "") or ""
+            ),
+            "confidence": float(
+                getattr(hypothesis, "confidence", 0.0) or 0.0
+            ),
+            "fitness_dimensions": sorted(expected_fitness),
+            "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
+            "observed_at": now.isoformat(),
+        }
 
     def _x(self, now: datetime) -> dict[str, Any]:
         if self.x_loop is None:
