@@ -85,6 +85,20 @@ class CognitionDecision(Contract):
     rationale: str = Field(min_length=10, max_length=600)
 
 
+def _normalize_cognition_consistency(value: CognitionDecision, worldview_update: object) -> CognitionDecision:
+    """Durable state is authoritative when model narration disagrees with it."""
+    changed = isinstance(worldview_update, dict) and worldview_update.get("status") in {"FORMED", "REVISED"}
+    if value.cognition_state != "BELIEF_CHANGED" or changed:
+        return value
+    return value.model_copy(update={
+        "cognition_state": "INVESTIGATING",
+        "what_changed": "Fresh evidence was observed, but no durable worldview change was persisted.",
+        "what_matters": "The question remains open until stronger evidence justifies changing the durable worldview.",
+        "belief_proposition": None,
+        "rationale": "Durable worldview state is authoritative, so an unsupported belief-change claim was normalized.",
+    })
+
+
 def _candidate_fingerprint(candidate):
     if candidate.get("source_kind") == "rss":
         return digest({"continuous_content_version": 1, "news_id": candidate["evidence_id"]})
@@ -732,7 +746,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         raise ValueError('worth_saying must match expression_kind')
                     changed = isinstance(worldview_update, dict) and worldview_update.get('status') in {'FORMED', 'REVISED'}
                     if value.cognition_state == 'BELIEF_CHANGED' and not changed:
-                        raise ValueError('BELIEF_CHANGED requires a persisted worldview change')
+                        return
                     if changed and value.expression_kind == 'NONE':
                         raise ValueError('persisted worldview change requires a public expression trace')
                 mission_instruction = (
@@ -760,6 +774,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     + json.dumps(cognition_context, ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
+                cognition_decision = _normalize_cognition_consistency(cognition_decision, worldview_update)
                 _put(cognition_path, cognition_decision.model_dump(mode='json'))
             if not cognition_decision.worth_saying:
                 self._activity(cycle, 'DECIDE', 'I completed the thought without forcing a publication',
