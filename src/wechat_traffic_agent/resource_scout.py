@@ -644,23 +644,56 @@ class ContentResourceScout:
         digest = sha256(
             f"{plan.plan_id}\0windfall\0{target.model}".encode()
         ).hexdigest()[:24]
-        windfall_plan = replace(
+        preflight_plan = replace(
             plan,
-            plan_id="provider-windfall:" + digest,
+            plan_id="provider-windfall-preflight:" + digest,
             task_class="capability_windfall",
-            max_requests=3,
+            max_requests=1,
         )
-        measurements = run_bounded_provider_trial(
-            windfall_plan,
+        preflight_measurements = run_bounded_provider_trial(
+            preflight_plan,
             api_key=api_key,
             now=now,
             target=target,
-            timeout_seconds=30.0,
+            timeout_seconds=12.0,
         )
-        trials = model_trials_from_measurements(measurements)
-        for measurement, trial in zip(measurements, trials):
-            self.scout.record_model_trial(trial)
+        for measurement in preflight_measurements:
             self._persist_trial_receipt(measurement.to_payload())
+        preflight_completed = [
+            row for row in preflight_measurements
+            if row.status == "COMPLETED"
+        ]
+        preflight_quality = (
+            sum(float(row.quality_score or 0.0) for row in preflight_completed)
+            / len(preflight_completed)
+            if preflight_completed else 0.0
+        )
+        preflight_passed = (
+            len(preflight_completed) == len(preflight_measurements)
+            and len(preflight_completed) > 0
+            and preflight_quality >= 0.75
+        )
+
+        if preflight_passed:
+            windfall_plan = replace(
+                plan,
+                plan_id="provider-windfall:" + digest,
+                task_class="capability_windfall",
+                max_requests=3,
+            )
+            measurements = run_bounded_provider_trial(
+                windfall_plan,
+                api_key=api_key,
+                now=now,
+                target=target,
+                timeout_seconds=30.0,
+            )
+            trials = model_trials_from_measurements(measurements)
+            for measurement, trial in zip(measurements, trials):
+                self.scout.record_model_trial(trial)
+                self._persist_trial_receipt(measurement.to_payload())
+        else:
+            measurements = list(preflight_measurements)
 
         completed = [row for row in measurements if row.status == "COMPLETED"]
         mean_quality = (
@@ -700,6 +733,13 @@ class ContentResourceScout:
             "observed_at": current_time.replace(microsecond=0).isoformat(),
             "status": status,
             "retry_at": retry_at,
+            "preflight_status": "PASSED" if preflight_passed else "FAILED",
+            "preflight_quality": round(preflight_quality, 6),
+            "preflight_request_count": len(preflight_measurements),
+            "preflight_trial_ids": [
+                row.trial_id for row in preflight_measurements
+            ],
+            "benchmark_ran": bool(preflight_passed),
             "completed_count": len(completed),
             "request_count": len(measurements),
             "mean_quality": round(mean_quality, 6),
