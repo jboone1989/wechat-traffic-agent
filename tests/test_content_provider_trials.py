@@ -155,7 +155,7 @@ def test_openrouter_stops_after_three_explicit_rate_limited_models(tmp_path, mon
     assert results[-1]["providers"][0]["status"]=="FREE_TIER_CANDIDATES_EXHAUSTED"
     assert results[-1]["providers"][0]["models"]==["free-a","free-b","free-c"]
     assert results[-1]["replan_required"] is True
-    assert any(row.status=="NO_VIABLE_MODEL" for row in scout.acquisition_outcomes())
+    assert any(row.status=="FREE_CANDIDATES_EXHAUSTED" for row in scout.acquisition_outcomes())
 
 
 def test_openrouter_rotates_after_complete_low_quality_model(tmp_path, monkeypatch):
@@ -245,4 +245,4 @@ def test_protocol_incompatible_models_mark_provider_for_replan(tmp_path, monkeyp
     assert calls==["old-model","new-model"]
     assert third["providers"][0]["status"]=="PROTOCOL_TARGETS_EXHAUSTED"
     assert third["replan_required"] is True
-    assert any(row.status=="NO_VIABLE_MODEL" for row in scout.acquisition_outcomes())
+    assert any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
