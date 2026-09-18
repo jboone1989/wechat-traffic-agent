@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import wechat_traffic_agent.resource_scout as resource_module
@@ -418,3 +418,34 @@ def test_dynamic_high_capability_ranker_moves_to_next_challenger_after_kimi_cool
     )
 
     assert chosen == "nvidia/nemotron-3-super-120b-a12b"
+
+
+def test_windfall_timeout_enters_short_retry_window(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    monkeypatch.setattr(
+        resource_module,
+        "resolve_trial_target",
+        lambda env, **kwargs: ProviderTrialTarget(
+            env,
+            "https://integrate.api.nvidia.com/v1",
+            "moonshotai/kimi-k3",
+            False,
+            128,
+        ),
+    )
+    def fake(plan, *, api_key, now, target, **kwargs):
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:timeout:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="FAILED",
+            observed_at=NOW.isoformat(),error_code="TIMEOUT",
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    result=scout.probe_capability_windfall(now=NOW)
+
+    assert result["status"]=="TEMPORARILY_UNAVAILABLE"
+    assert result["error_codes"]==["TIMEOUT"]
+    retry=datetime.fromisoformat(result["retry_at"])
+    assert retry - NOW == timedelta(hours=1)

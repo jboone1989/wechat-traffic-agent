@@ -679,7 +679,11 @@ class ContentResourceScout:
             retry_at = None
         else:
             temporary = any(
-                code in {"HTTP_429", "HTTP_503", "TimeoutError", "URLError"}
+                code in {
+                    "HTTP_408", "HTTP_429", "HTTP_500", "HTTP_502",
+                    "HTTP_503", "HTTP_504", "TIMEOUT", "NETWORK_ERROR",
+                    "TimeoutError", "URLError",
+                }
                 for code in errors
             )
             delay = timedelta(hours=1 if temporary else 24)
