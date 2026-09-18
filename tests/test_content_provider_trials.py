@@ -8,6 +8,33 @@ from agent_runtime.resource_trials import ProviderTrialMeasurement, ProviderTria
 
 NOW=datetime(2026,9,17,16,tzinfo=timezone.utc)
 
+
+def _seed_reputation(state_root, scores):
+    import json
+    path=state_root/"application/model_reputation/latest.json"
+    path.parent.mkdir(parents=True,exist_ok=True)
+    models=[]
+    for model,score in scores.items():
+        models.append({
+            "canonical_name":model,
+            "overall":score,
+            "coding":score,
+            "agentic":score,
+            "human_preference":score,
+            "popularity":score,
+            "chinese":score,
+            "confidence":1.0,
+            "source_refs":["external:test"],
+        })
+    path.write_text(json.dumps({
+        "schema_version":"external-model-reputation.v1",
+        "observed_at":NOW.isoformat(),
+        "model_count":len(models),
+        "source_status":{"test":"OK"},
+        "models":models,
+    }))
+
+
 class Runtime:
     def invoke(self, capability, payload):
         return SimpleNamespace(receipt_id="x", payload={"results":[]})
@@ -306,6 +333,7 @@ def test_nvidia_marks_targets_exhausted_only_after_catalogue_has_no_remaining_mo
 
 def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    _seed_reputation(tmp_path, {"nemotron-3-super-120b-a12b":0.95})
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
     monkeypatch.setattr(
         resource_module,
@@ -357,6 +385,10 @@ def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, mo
 
 def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediately(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    _seed_reputation(tmp_path, {
+        "nemotron-3-super-120b-a12b":0.95,
+        "glm-5.3":0.90,
+    })
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
     excluded_seen=[]
     def resolve(env, **kwargs):
@@ -403,9 +435,18 @@ def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediatel
     assert "nvidia/nemotron-3-super-120b-a12b" in excluded_seen[1]
 
 
-def test_dynamic_high_capability_ranker_starts_with_strongest_known_general_challenger():
+def test_dynamic_high_capability_ranker_starts_with_external_leaderboard_winner():
+    from agent_runtime.llm.reputation import ModelReputation, ModelReputationBook
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
+    book=ModelReputationBook([
+        ModelReputation("gpt-oss-20b",overall=.60,coding=.60,agentic=.60,confidence=1),
+        ModelReputation("nemotron-3-super-120b-a12b",overall=.80,coding=.80,agentic=.80,confidence=1),
+        ModelReputation("kimi-k3",overall=.90,coding=.90,agentic=.90,confidence=1),
+        ModelReputation("glm-5.3",overall=.86,coding=.86,agentic=.86,confidence=1),
+        ModelReputation("nemotron-3-ultra-550b-a55b",overall=.95,coding=.95,agentic=.95,confidence=1),
+        ModelReputation("deepseek-v4-flash-0731",overall=.83,coding=.83,agentic=.83,confidence=1),
+    ])
     chosen = rank_high_capability_model(
         [
             "openai/gpt-oss-20b",
@@ -416,14 +457,23 @@ def test_dynamic_high_capability_ranker_starts_with_strongest_known_general_chal
             "deepseek-ai/deepseek-v4-flash-0731",
         ],
         frozenset(),
+        reputation_book=book,
     )
 
     assert chosen == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
-def test_dynamic_high_capability_ranker_rotates_across_mainstream_frontier_challengers():
+def test_dynamic_high_capability_ranker_rotates_by_external_reputation_after_cooldown():
+    from agent_runtime.llm.reputation import ModelReputation, ModelReputationBook
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
+    book=ModelReputationBook([
+        ModelReputation("nemotron-3-ultra-550b-a55b",overall=.95,coding=.95,agentic=.95,confidence=1),
+        ModelReputation("glm-5.3",overall=.90,coding=.90,agentic=.90,confidence=1),
+        ModelReputation("kimi-k3",overall=.85,coding=.85,agentic=.85,confidence=1),
+        ModelReputation("deepseek-v4-flash-0731",overall=.80,coding=.80,agentic=.80,confidence=1),
+        ModelReputation("nemotron-3-super-120b-a12b",overall=.75,coding=.75,agentic=.75,confidence=1),
+    ])
     models = [
         "nvidia/nemotron-3-ultra-550b-a55b",
         "z-ai/glm-5.3",
@@ -434,6 +484,7 @@ def test_dynamic_high_capability_ranker_rotates_across_mainstream_frontier_chall
     assert rank_high_capability_model(
         models,
         frozenset({"nvidia/nemotron-3-ultra-550b-a55b"}),
+        reputation_book=book,
     ) == "z-ai/glm-5.3"
     assert rank_high_capability_model(
         models,
@@ -441,12 +492,20 @@ def test_dynamic_high_capability_ranker_rotates_across_mainstream_frontier_chall
             "nvidia/nemotron-3-ultra-550b-a55b",
             "z-ai/glm-5.3",
         }),
+        reputation_book=book,
     ) == "moonshotai/kimi-k3"
 
 
 def test_dynamic_high_capability_ranker_does_not_mistake_specialized_nemotron_for_chat_model():
+    from agent_runtime.llm.reputation import ModelReputation, ModelReputationBook
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
+    book=ModelReputationBook([
+        ModelReputation("nemotron-parse-2.0",overall=1,coding=1,agentic=1,confidence=1),
+        ModelReputation("nemotron-3.5-content-safety",overall=1,coding=1,agentic=1,confidence=1),
+        ModelReputation("nemotron-3-embed-1b",overall=1,coding=1,agentic=1,confidence=1),
+        ModelReputation("nemotron-3-super-120b-a12b",overall=.80,coding=.80,agentic=.80,confidence=1),
+    ])
     chosen = rank_high_capability_model(
         [
             "nvidia/nemotron-parse-2.0",
@@ -455,6 +514,7 @@ def test_dynamic_high_capability_ranker_does_not_mistake_specialized_nemotron_fo
             "nvidia/nemotron-3-super-120b-a12b",
         ],
         frozenset(),
+        reputation_book=book,
     )
 
     assert chosen == "nvidia/nemotron-3-super-120b-a12b"
@@ -462,6 +522,7 @@ def test_dynamic_high_capability_ranker_does_not_mistake_specialized_nemotron_fo
 
 def test_windfall_timeout_enters_short_retry_window(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    _seed_reputation(tmp_path, {"kimi-k3":0.95})
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
     monkeypatch.setattr(
         resource_module,
@@ -496,9 +557,16 @@ def test_windfall_timeout_enters_short_retry_window(tmp_path, monkeypatch):
     assert retry - NOW == timedelta(hours=1)
 
 
-def test_dynamic_ranker_uses_capability_prior_not_model_name_bonus():
+def test_dynamic_ranker_uses_external_reputation_not_model_name_bonus():
+    from agent_runtime.llm.reputation import ModelReputation, ModelReputationBook
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
+    book=ModelReputationBook([
+        ModelReputation("deepseek-v4-flash-0731",overall=.90,coding=.90,agentic=.90,confidence=1),
+        ModelReputation("glm-5.3-flash",overall=.75,coding=.75,agentic=.75,confidence=1),
+        ModelReputation("kimi-k2.6",overall=.70,coding=.70,agentic=.70,confidence=1),
+        ModelReputation("nemotron-3.5-lightning-30b-a3b",overall=.65,coding=.65,agentic=.65,confidence=1),
+    ])
     chosen = rank_high_capability_model(
         [
             "deepseek-ai/deepseek-v4-flash-0731",
@@ -507,6 +575,91 @@ def test_dynamic_ranker_uses_capability_prior_not_model_name_bonus():
             "nvidia/nemotron-3.5-lightning-30b-a3b",
         ],
         frozenset(),
+        reputation_book=book,
     )
 
     assert chosen == "deepseek-ai/deepseek-v4-flash-0731"
+
+
+def test_free_model_market_picks_best_reputation_across_nvidia_and_openrouter(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    _seed_reputation(tmp_path, {
+        "nvidia-daily":0.72,
+        "openrouter-windfall":0.95,
+    })
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    monkeypatch.setenv("OPENROUTER_API_KEY","o-secret")
+
+    def resolve(env, **kwargs):
+        if env=="NVIDIA_API_KEY":
+            return ProviderTrialTarget(env,"https://nvidia.example/v1","nvidia-daily",False,128)
+        return ProviderTrialTarget(env,"https://openrouter.example/v1","openrouter-windfall",True,128)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+
+    seen=[]
+    def fake(plan, *, api_key, now, target, **kwargs):
+        seen.append((plan.credential_env,target.model,plan.max_requests))
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.credential_env}:{plan.plan_id}:{i}",
+            plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="COMPLETED",
+            observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10,
+            observed_cost=0.0,
+        ) for i in range(plan.max_requests)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    result=scout.probe_free_model_market(now=NOW)
+
+    assert result["status"]=="AVAILABLE"
+    assert result["credential_env"]=="OPENROUTER_API_KEY"
+    assert result["model"]=="openrouter-windfall"
+    assert seen==[
+        ("OPENROUTER_API_KEY","openrouter-windfall",1),
+        ("OPENROUTER_API_KEY","openrouter-windfall",3),
+    ]
+
+
+def test_free_model_market_can_use_cerebras_when_key_becomes_available(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    lead=ProviderLead(
+        "lead:c","op:c","Cerebras","CEREBRAS_API_KEY",
+        "https://cloud.cerebras.ai/","cerebras.ai",NOW.isoformat(),"r"
+    )
+    verification=ProviderVerification(
+        "lead:c","VERIFIED_RECURRING_FREE",NOW.isoformat(),
+        free_status="RECURRING_FREE",rate_limit_evidence=True,
+    )
+    scout.scout._write_provider_lead(lead)
+    scout.scout._write_provider_verification(verification)
+    _seed_reputation(tmp_path, {
+        "gpt-oss-120b":0.96,
+        "nvidia-daily":0.70,
+    })
+    monkeypatch.setenv("CEREBRAS_API_KEY","c-secret")
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+
+    def resolve(env, **kwargs):
+        if env=="CEREBRAS_API_KEY":
+            return ProviderTrialTarget(env,"https://api.cerebras.ai/v1","gpt-oss-120b",False,128)
+        return ProviderTrialTarget(env,"https://nvidia.example/v1","nvidia-daily",False,128)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
+    def fake(plan, *, api_key, now, target, **kwargs):
+        calls.append((plan.credential_env,api_key,target.model))
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.credential_env}:{plan.plan_id}:{i}",
+            plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="COMPLETED",
+            observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=5,
+            observed_cost=0.0,
+        ) for i in range(plan.max_requests)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    result=scout.probe_free_model_market(now=NOW)
+
+    assert result["status"]=="AVAILABLE"
+    assert result["credential_env"]=="CEREBRAS_API_KEY"
+    assert result["model"]=="gpt-oss-120b"
+    assert all(row[1]=="c-secret" for row in calls)
