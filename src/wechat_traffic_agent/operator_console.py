@@ -296,6 +296,12 @@ class OperatorAuthenticator:
         os.chmod(self.bootstrap_path, 0o600)
         return token
 
+    def revoke_one_time_access(self) -> None:
+        try:
+            self.bootstrap_path.unlink()
+        except FileNotFoundError:
+            pass
+
     def consume_one_time_access(
         self, token: str, *, now: datetime | None = None
     ) -> str | None:

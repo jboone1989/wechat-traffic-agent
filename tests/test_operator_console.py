@@ -519,3 +519,107 @@ def test_operator_http_one_time_bootstrap_sets_session_and_cannot_replay(tmp_pat
         json={"token":token},
     )
     assert replay.status_code==401
+
+
+def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_OPERATOR_PUBLIC_URL", "https://livingruntime.com/operator/")
+
+    class FakeNotifier:
+        def __init__(self):
+            self.messages = []
+        def send_text(self, text):
+            self.messages.append(text)
+            return {"status": "SENT"}
+
+    notifier = FakeNotifier()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: notifier,
+    )
+    service = LiveAgentService(state_root=tmp_path, application=None, backend=None, mind=None)
+    client = TestClient(service._app())
+
+    page = client.get("/operator/")
+    assert page.status_code == 200
+    assert "Send login link to Enterprise WeChat" in page.text
+    assert "Emergency token fallback" in page.text
+
+    missing_header = client.post("/operator/api/request-login", json={})
+    assert missing_header.status_code == 403
+
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "status": "SENT", "expires_in_seconds": 600}
+    assert "bootstrap" not in response.text.lower()
+    assert len(notifier.messages) == 1
+    message = notifier.messages[0]
+    assert "https://livingruntime.com/operator/#bootstrap=" in message
+    token = message.split("#bootstrap=", 1)[1].splitlines()[0].strip()
+    assert token
+    assert token not in (tmp_path / "secrets" / "operator-console-bootstrap.json").read_text()
+
+    accepted = client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert accepted.status_code == 200
+    replay = client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert replay.status_code == 401
+
+
+def test_operator_login_request_is_rate_limited(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeNotifier:
+        def __init__(self):
+            self.count = 0
+        def send_text(self, text):
+            self.count += 1
+            return {"status": "SENT"}
+
+    notifier = FakeNotifier()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: notifier,
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    headers = {"X-Operator-Request": "1"}
+    assert client.post("/operator/api/request-login", headers=headers, json={}).status_code == 202
+    assert client.post("/operator/api/request-login", headers=headers, json={}).status_code == 429
+    assert notifier.count == 1
+
+
+def test_failed_operator_login_delivery_revokes_one_time_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FailedNotifier:
+        def send_text(self, text):
+            return {"status": "NOT_CONFIGURED"}
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: FailedNotifier(),
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"error": "login_delivery_unavailable"}
+    assert not (tmp_path / "secrets" / "operator-console-bootstrap.json").exists()
