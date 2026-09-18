@@ -14,8 +14,8 @@ from agent_runtime.resource_discovery import (
     plan_provider_trials, provider_profiles, resource_discovery_constraints, select_provider,
 )
 from agent_runtime.resource_trials import (
-    ProviderTrialMeasurement, model_trials_from_measurements, resolve_trial_target,
-    run_bounded_provider_trial,
+    ProviderTrialMeasurement, ProviderTrialRequestError, model_trials_from_measurements,
+    resolve_trial_target, run_bounded_provider_trial,
 )
 
 from .provider_diagnostics import diagnose_provider_trials
@@ -48,7 +48,7 @@ class ContentResourceScout:
             found_last_time = bool(last_run.get("new_opportunity_ids"))
             retry_after = timedelta(hours=24) if found_last_time else timedelta(minutes=30)
             new_replan_signal = any(
-                row.status == "BLOCKED_EXTERNAL" or row.status in _REPLAN_OUTCOME_STATUSES
+                (row.status == "BLOCKED_EXTERNAL" or row.status in _REPLAN_OUTCOME_STATUSES)
                 and datetime.fromisoformat(row.observed_at.replace("Z", "+00:00")) > last
                 for row in outcomes
             )
@@ -261,36 +261,7 @@ class ContentResourceScout:
                     for row in rows
                 )
             }
-            if len(incompatible_models) >= 2:
-                refs = tuple(
-                    row.trial_id
-                    for model_id in sorted(incompatible_models)
-                    for row in plan_model_rows[model_id]
-                )
-                self.record_acquisition_outcome(
-                    plan_id=plan.plan_id, lead_id=plan.lead_id, status="MODEL_TARGETS_INCOMPATIBLE",
-                    now=now, source="RUNTIME",
-                    detail_summary="multiple model targets were incompatible with the current trial protocol; provider-wide unavailability was not established",
-                    evidence_refs=refs,
-                )
-                replan_required = True
-                provider_rows.append({
-                    "provider_label": plan.provider_label,
-                    "credential_env": plan.credential_env,
-                    "lead_id": plan.lead_id,
-                    "status": "PROTOCOL_TARGETS_EXHAUSTED",
-                    "request_count": 0,
-                    "completed_count": 0,
-                    "trial_ids": list(refs),
-                    "mean_quality": None,
-                    "mean_latency_ms": None,
-                    "observed_cost_total": None,
-                    "cost_observed_for_all_completed": False,
-                    "models": sorted(incompatible_models),
-                    "error_codes": ["HTTP_404", "HTTP_410"],
-                })
-                continue
-            excluded_models: frozenset[str] = frozenset()
+            excluded_models: frozenset[str] = frozenset(incompatible_models)
             if plan.credential_env == "OPENROUTER_API_KEY":
                 model_rows: dict[str, list[ModelTrial]] = {}
                 for row in existing:
@@ -321,7 +292,11 @@ class ContentResourceScout:
                     ) / float(benchmark_count)
                     if best_possible < quality_floor:
                         quality_impossible_models.add(model_id)
-                exhausted_models = rate_limited_models | quality_impossible_models
+                exhausted_models = (
+                    set(incompatible_models)
+                    | rate_limited_models
+                    | quality_impossible_models
+                )
                 if len(exhausted_models) >= 3:
                     error_codes = []
                     if rate_limited_models:
@@ -333,13 +308,13 @@ class ContentResourceScout:
                         for model_id in sorted(exhausted_models)
                         for row in model_rows[model_id]
                     )
-                    self.record_acquisition_outcome(
+                    outcome = self.record_acquisition_outcome(
                         plan_id=plan.plan_id, lead_id=plan.lead_id, status="FREE_CANDIDATES_EXHAUSTED",
                         now=now, source="RUNTIME",
                         detail_summary="bounded free-tier candidate sample exhausted; provider-wide unavailability was not established",
                         evidence_refs=refs,
                     )
-                    replan_required = True
+                    replan_required = replan_required or bool(outcome.get("created"))
                     provider_rows.append({
                         "provider_label": plan.provider_label,
                         "credential_env": plan.credential_env,
@@ -362,6 +337,43 @@ class ContentResourceScout:
                     plan.credential_env, api_key=api_key, exclude_models=excluded_models,
                 )
             except Exception as exc:  # Provider catalogue failures must not block other candidates.
+                error_code = str(getattr(exc, "code", "") or type(exc).__name__)
+                if error_code == "NO_COMPATIBLE_MODEL" and incompatible_models:
+                    refs = tuple(
+                        row.trial_id
+                        for model_id in sorted(incompatible_models)
+                        for row in plan_model_rows[model_id]
+                    )
+                    outcome = self.record_acquisition_outcome(
+                        plan_id=plan.plan_id,
+                        lead_id=plan.lead_id,
+                        status="MODEL_TARGETS_INCOMPATIBLE",
+                        now=now,
+                        source="RUNTIME",
+                        detail_summary=(
+                            "all currently resolvable compatible model targets were exhausted "
+                            "after excluding model-level 404/410 evidence; provider-wide "
+                            "unavailability was not established"
+                        ),
+                        evidence_refs=refs,
+                    )
+                    replan_required = replan_required or bool(outcome.get("created"))
+                    provider_rows.append({
+                        "provider_label": plan.provider_label,
+                        "credential_env": plan.credential_env,
+                        "lead_id": plan.lead_id,
+                        "status": "PROTOCOL_TARGETS_EXHAUSTED",
+                        "request_count": 0,
+                        "completed_count": 0,
+                        "trial_ids": list(refs),
+                        "mean_quality": None,
+                        "mean_latency_ms": None,
+                        "observed_cost_total": None,
+                        "cost_observed_for_all_completed": False,
+                        "models": sorted(incompatible_models),
+                        "error_codes": ["HTTP_404", "HTTP_410"],
+                    })
+                    continue
                 provider_rows.append({
                     "provider_label": plan.provider_label,
                     "credential_env": plan.credential_env,
@@ -375,7 +387,7 @@ class ContentResourceScout:
                     "observed_cost_total": None,
                     "cost_observed_for_all_completed": False,
                     "models": [],
-                    "error_codes": [str(getattr(exc, "code", "") or type(exc).__name__)],
+                    "error_codes": [error_code],
                 })
                 continue
             if target is None:
@@ -591,6 +603,18 @@ class ContentResourceScout:
         folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / (outcome.outcome_id.split(":")[-1] + ".json")
+        if path.exists():
+            try:
+                prior = json.loads(path.read_text(encoding="utf-8"))
+                if str(prior.get("outcome_id") or "") == outcome.outcome_id:
+                    return {
+                        "outcome_id": outcome.outcome_id, "status": outcome.status,
+                        "friction_kind": outcome.friction_kind,
+                        "observed_at": str(prior.get("observed_at") or outcome.observed_at),
+                        "created": False,
+                    }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
         self._atomic_json(path, {
             "outcome_id": outcome.outcome_id, "plan_id": outcome.plan_id,
             "lead_id": outcome.lead_id, "status": outcome.status,
@@ -601,6 +625,7 @@ class ContentResourceScout:
         return {
             "outcome_id": outcome.outcome_id, "status": outcome.status,
             "friction_kind": outcome.friction_kind, "observed_at": outcome.observed_at,
+            "created": True,
         }
 
     def acquisition_outcomes(self) -> list[ResourceAcquisitionOutcome]:
