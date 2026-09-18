@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+from statistics import median
 from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -197,10 +198,7 @@ def _historical_audience_rewards(
     prior_pageviews: list[float] = []
     for observation in ordered:
         profile_name = strategy_to_profile[observation.publication_id]
-        baseline = (
-            sorted(prior_pageviews)[len(prior_pageviews) // 2]
-            if prior_pageviews else None
-        )
+        baseline = float(median(prior_pageviews)) if prior_pageviews else None
         reward = audience_reward(
             pageviews=observation.pageviews,
             baseline_pageviews=baseline,
