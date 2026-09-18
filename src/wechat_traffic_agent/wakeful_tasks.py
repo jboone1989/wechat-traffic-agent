@@ -119,6 +119,36 @@ class WakefulContentTaskRunner:
                     for code in provider.get("error_codes") or []
                 ):
                     rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
+            probe_windfall = getattr(
+                self.resource_scout, "probe_capability_windfall", None
+            )
+            if callable(probe_windfall):
+                try:
+                    windfall = probe_windfall(now=now)
+                    rows["capability_windfall"] = windfall
+                    if windfall.get("status") == "AVAILABLE":
+                        sync_policy = getattr(
+                            self.resource_economy, "sync_llm_routing_policy", None
+                        )
+                        if callable(sync_policy):
+                            rows["llm_routing_policy"] = sync_policy(now=now)
+                        schedule = getattr(
+                            self.wakeful, "schedule_windfall_reflection", None
+                        )
+                        if callable(schedule):
+                            schedule(now, seconds=60)
+                            rows["windfall_feast"] = {
+                                "status": "SCHEDULED",
+                                "task": "REFLECT",
+                                "reason": "new high-capability free model verified",
+                                "model": windfall.get("model"),
+                                "capability_tier": windfall.get("capability_tier"),
+                                "capability_score": windfall.get("capability_score"),
+                            }
+                except Exception as exc:  # noqa: BLE001
+                    rows["capability_windfall"] = self._error(exc)
+                    rows["status"] = "DEGRADED"
+
             top = plans[0] if plans else None
             if (
                 not autonomous_pending
@@ -223,10 +253,25 @@ class WakefulContentTaskRunner:
                 "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
             }
 
+        windfall_active = False
+        state_root = getattr(self, "state_root", None)
+        if state_root is not None:
+            policy_path = (
+                state_root / "application" / "llm_resource_pool" / "policy.json"
+            )
+            try:
+                import json
+                policy = json.loads(policy_path.read_text(encoding="utf-8"))
+                windfall_active = bool(
+                    isinstance(policy, dict) and policy.get("windfall_active")
+                )
+            except (OSError, ValueError, TypeError):
+                windfall_active = False
+        token_budget = 1800 if windfall_active else 800
         hypothesis = asyncio.run(
             deliberate(
                 str(getattr(candidate, "need_id")),
-                max_tokens=800,
+                max_tokens=token_budget,
             )
         )
         persist = getattr(runtime, "persist", None)
@@ -247,6 +292,8 @@ class WakefulContentTaskRunner:
             "fitness_dimensions": sorted(expected_fitness),
             "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
             "observed_at": now.isoformat(),
+            "windfall_used": windfall_active,
+            "token_budget": token_budget,
         }
 
     def _x(self, now: datetime) -> dict[str, Any]:

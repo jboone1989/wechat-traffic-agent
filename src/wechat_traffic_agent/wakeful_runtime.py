@@ -125,6 +125,29 @@ class ContentWakefulRuntime:
             task="RESOURCE_REVIEW",
         ))
 
+    def schedule_windfall_reflection(
+        self, now: datetime, *, seconds: int = 60
+    ) -> None:
+        """Spend a newly verified high-capability free window on bounded reflection."""
+        delay = max(30, min(int(seconds), 900))
+        at = now + timedelta(seconds=delay)
+        wake_id = "content:REFLECT"
+        existing = next(
+            (
+                wake for wake in self.core.snapshot().pending_plans
+                if wake.wake_id == wake_id
+            ),
+            None,
+        )
+        if existing is not None and existing.at <= at:
+            return
+        self.core.schedule(PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason="consume verified high-capability free LLM windfall on self-improvement",
+            task="REFLECT",
+        ))
+
     def _next_action_outcome_due(self, now: datetime) -> datetime | None:
         """Return the next prospective action-outcome maturity after ``now``.
 

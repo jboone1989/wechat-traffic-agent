@@ -67,6 +67,62 @@ def _env_metadata(credential_env: str) -> dict[str, Any]:
     }
 
 
+
+
+_HIGH_VALUE_TASK_CLASSES = (
+    "self_upgrade",
+    "code_audit",
+    "deep_research",
+    "long_reflection",
+    "architecture_review",
+)
+
+
+def model_capability_profile(model: str) -> dict[str, Any]:
+    """Return a conservative capability prior; empirical quality remains separate."""
+    low = str(model or "").lower()
+    tier = "STANDARD"
+    score = 0.55
+    tags = ["general_text"]
+    if "nemotron-3-super-120b" in low:
+        tier, score = "FRONTIER", 0.97
+        tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
+    elif "gpt-oss-120b" in low:
+        tier, score = "FRONTIER", 0.94
+        tags += ["reasoning", "coding", "math"]
+    elif "glm-5.3" in low and "flash" not in low:
+        tier, score = "FRONTIER", 0.92
+        tags += ["reasoning", "coding", "agentic"]
+    elif "mistral-nemotron" in low:
+        tier, score = "ADVANCED", 0.88
+        tags += ["reasoning", "coding", "agentic"]
+    elif "muse-glimmer-30b" in low:
+        tier, score = "ADVANCED", 0.82
+        tags += ["reasoning", "creative"]
+    elif "glm-5.3-flash" in low:
+        tier, score = "ADVANCED", 0.76
+        tags += ["reasoning", "fast"]
+    elif "gpt-oss-20b" in low:
+        tier, score = "ADVANCED", 0.72
+        tags += ["reasoning", "math", "efficient"]
+    elif "nemotron" in low:
+        tier, score = "ADVANCED", 0.74
+        tags += ["reasoning", "agentic"]
+
+    windfall = tier in {"ADVANCED", "FRONTIER"} and score >= 0.82
+    tasks = ["general_text", "simple_public_text"]
+    if tier in {"ADVANCED", "FRONTIER"}:
+        tasks.extend(_HIGH_VALUE_TASK_CLASSES)
+    return {
+        "capability_tier": tier,
+        "capability_score": score,
+        "capability_tags": list(dict.fromkeys(tags)),
+        "capability_source": "MODEL_PROFILE_PRIOR",
+        "windfall_eligible": windfall,
+        "task_classes": list(dict.fromkeys(tasks)),
+    }
+
+
 def sync_llm_resource_pool(
     *,
     state_root: Path,
@@ -120,6 +176,11 @@ def sync_llm_resource_pool(
             "quota_reset_at": None,
             "expires_at": None,
             "task_classes": ["general_text"],
+            "capability_tier": "STANDARD",
+            "capability_score": 0.70,
+            "capability_tags": ["general_text", "stable_reserve"],
+            "capability_source": "CONFIGURED_PRIOR",
+            "windfall_eligible": False,
             "evidence_refs": [
                 "configured:stable-deepseek-reserve",
                 "bootstrap-prior:stable-paid-resource",
@@ -177,6 +238,7 @@ def sync_llm_resource_pool(
             else lead.official_root.replace(".", "-").lower()
         )
         metadata = _env_metadata(lead.credential_env)
+        capability = model_capability_profile(model)
         resources.append({
             "resource_id": _resource_id(provider_id, model),
             "provider_id": provider_id,
@@ -192,7 +254,12 @@ def sync_llm_resource_pool(
             "success_rate": round(success_rate, 6),
             "mean_latency_ms": round(mean(latencies), 3) if latencies else None,
             **metadata,
-            "task_classes": ["general_text", "simple_public_text"],
+            "task_classes": capability["task_classes"],
+            "capability_tier": capability["capability_tier"],
+            "capability_score": capability["capability_score"],
+            "capability_tags": capability["capability_tags"],
+            "capability_source": capability["capability_source"],
+            "windfall_eligible": capability["windfall_eligible"],
             "evidence_refs": list(dict.fromkeys(
                 [lead_id, *[row.trial_id for row in rows]]
             )),
@@ -223,6 +290,7 @@ def sync_llm_resource_pool(
         "resource_count": len(resources),
         "free_count": sum(1 for row in resources if row["pricing_class"] == "FREE"),
         "paid_count": sum(1 for row in resources if row["pricing_class"] == "PAID"),
+        "windfall_count": sum(1 for row in resources if row.get("windfall_eligible")),
         "resource_ids": [row["resource_id"] for row in resources],
     }
 
@@ -244,6 +312,11 @@ def pool_metrics(state_root: Path) -> dict[str, float]:
     }
     free_count = sum(1 for row in resources if row.get("pricing_class") == "FREE")
     paid_count = sum(1 for row in resources if row.get("pricing_class") == "PAID")
+    windfall_count = sum(1 for row in resources if row.get("windfall_eligible"))
+    best_capability = max(
+        (float(row.get("capability_score") or 0.0) for row in resources),
+        default=0.0,
+    )
     decisions_dir = folder / "runtime" / "decisions"
     selected_free = selected_paid = failovers = failures = 0
     paths = sorted(decisions_dir.glob("*.json"))[-64:] if decisions_dir.exists() else []
@@ -265,6 +338,8 @@ def pool_metrics(state_root: Path) -> dict[str, float]:
         "llm_pool_resource_count": float(len(resources)),
         "llm_pool_free_resource_count": float(free_count),
         "llm_pool_paid_resource_count": float(paid_count),
+        "llm_pool_windfall_resource_count": float(windfall_count),
+        "llm_pool_best_capability_score": float(best_capability),
         "llm_pool_recent_free_selections": float(selected_free),
         "llm_pool_recent_paid_selections": float(selected_paid),
         "llm_pool_recent_failovers": float(failovers),
@@ -282,4 +357,8 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-__all__ = ["pool_metrics", "sync_llm_resource_pool"]
+__all__ = [
+    "model_capability_profile",
+    "pool_metrics",
+    "sync_llm_resource_pool",
+]

@@ -846,6 +846,20 @@ class LiveAgentService:
                 ),
             })
 
+        def operator_session_response(request: Request, session_id: str):
+            response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+            forwarded_https = request.headers.get("x-forwarded-proto") == "https"
+            response.set_cookie(
+                "ferro_operator_session",
+                session_id,
+                max_age=1800,
+                httponly=True,
+                secure=(request.url.scheme == "https" or forwarded_https),
+                samesite="strict",
+                path="/operator",
+            )
+            return response
+
         async def operator_login(request: Request):
             if operator_console is None:
                 return JSONResponse({"error": "not_found"}, status_code=404)
@@ -861,14 +875,24 @@ class LiveAgentService:
             session_id = operator_console.auth.login(token)
             if session_id is None:
                 return JSONResponse({"error": "invalid_operator_token"}, status_code=401)
-            response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
-            forwarded_https = request.headers.get("x-forwarded-proto") == "https"
-            response.set_cookie(
-                "ferro_operator_session", session_id, max_age=1800, httponly=True,
-                secure=(request.url.scheme == "https" or forwarded_https),
-                samesite="strict", path="/operator",
-            )
-            return response
+            return operator_session_response(request, session_id)
+
+        async def operator_bootstrap(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"error": "invalid_json"}, status_code=400)
+            token = str(body.get("token") or "") if isinstance(body, dict) else ""
+            session_id = operator_console.auth.consume_one_time_access(token)
+            if session_id is None:
+                return JSONResponse({"error": "invalid_or_expired_one_time_link"}, status_code=401)
+            return operator_session_response(request, session_id)
 
         async def operator_status(request: Request):
             if not operator_authorized(request):
@@ -936,6 +960,7 @@ class LiveAgentService:
                 Route("/operator", operator_page, methods=["GET"]),
                 Route("/operator/", operator_page, methods=["GET"]),
                 Route("/operator/api/session", operator_login, methods=["POST"]),
+                Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
                 Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
