@@ -514,6 +514,21 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+        if self.web_outcome_collector is not None and self.content_mind is not None:
+            try:
+                from .content_strategy import collect_mature_strategy_outcomes
+                mature = collect_mature_strategy_outcomes(
+                    state_root=self.state_root,
+                    account=self.web_base_url,
+                    as_of=now,
+                )
+                rows["audience_strategy_learning"] = self.content_mind.observe_strategy_outcomes(mature)
+                rows["resource_outcome_settlement"] = self.resource_economy.settle_audience_outcomes(
+                    now=now
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["audience_strategy_learning"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         if self.website_experiment_evaluator is not None:
             try:
                 rows["website_experiment_evaluation"] = self.website_experiment_evaluator.evaluate(as_of=now)
