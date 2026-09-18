@@ -23,12 +23,22 @@ def _clean_provider_env(monkeypatch):
         "CEREBRAS_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY",
         "VIRTUALBRAIN_LLM_API_KEY",
     )
+    managed = []
     for key in keys:
-        monkeypatch.delenv(key, raising=False)
+        managed.append(key)
         for suffix in (
             "_QUOTA_REMAINING", "_QUOTA_LIMIT", "_QUOTA_UNIT", "_RESET_AT", "_EXPIRES_AT"
         ):
-            monkeypatch.delenv(key + suffix, raising=False)
+            managed.append(key + suffix)
+    for key in managed:
+        monkeypatch.delenv(key, raising=False)
+    yield
+    # OperatorSecretVault intentionally updates os.environ so a newly provisioned
+    # credential is usable by this process immediately. Clean those direct writes
+    # explicitly so one operator-console test cannot change provider discovery in
+    # later resource-routing tests.
+    for key in managed:
+        os.environ.pop(key, None)
 
 
 def test_secret_vault_is_write_only_and_persists_mode_0600(tmp_path):
