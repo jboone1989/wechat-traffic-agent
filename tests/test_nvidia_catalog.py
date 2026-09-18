@@ -117,3 +117,15 @@ def test_catalog_missing_credential_does_not_create_fake_inventory(tmp_path, mon
         "credential_env": "NVIDIA_API_KEY",
     }
     assert not catalog.path.exists()
+
+
+def test_catalog_does_not_treat_reward_diffusion_or_clip_as_general_chat():
+    assert classify_nvidia_model(
+        "nvidia/nemotron-4-340b-reward"
+    )["category"] == "reward_model"
+    assert classify_nvidia_model(
+        "google/diffusiongemma-26b-a4b-it"
+    )["category"] == "physical_media"
+    clip = classify_nvidia_model("nvidia/nvclip")
+    assert clip["category"] == "retrieval_embedding"
+    assert clip["endpoint_family"] == "embeddings"

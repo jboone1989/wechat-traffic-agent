@@ -322,22 +322,26 @@ def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, mo
             else ProviderTrialTarget(env,"https://example/v1","openai/gpt-oss-20b")
         ),
     )
+    calls=[]
     def fake(plan, *, api_key, now, target, **kwargs):
-        assert kwargs["timeout_seconds"]==30.0
+        calls.append((plan.max_requests, kwargs["timeout_seconds"]))
         assert plan.task_class=="capability_windfall"
         assert api_key=="n-secret"
         return [ProviderTrialMeasurement(
-            trial_id=f"trial:windfall:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            trial_id=f"trial:windfall:{plan.plan_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
             provider_label=plan.provider_label,credential_env=plan.credential_env,
             model=target.model,task_id=f"t{i}",status="COMPLETED",
             observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=1200,
             observed_cost=0.0,response_sha256="sha256:x",
-        ) for i in range(3)]
+        ) for i in range(plan.max_requests)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
 
     result=scout.probe_capability_windfall(now=NOW)
 
     assert result["status"]=="AVAILABLE"
+    assert result["preflight_status"]=="PASSED"
+    assert result["benchmark_ran"] is True
+    assert calls==[(1,12.0),(3,30.0)]
     assert result["capability_tier"]=="FRONTIER"
     assert result["windfall_eligible"] is True
     assert result["llm_resource_pool"]["windfall_count"]==1
@@ -364,28 +368,38 @@ def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediatel
         model=next(x for x in candidates if x not in excluded_seen[-1])
         return ProviderTrialTarget(env,"https://example/v1",model,False,128)
     monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
     def fake(plan, *, api_key, now, target, **kwargs):
-        assert kwargs["timeout_seconds"]==30.0
+        calls.append((target.model,plan.max_requests,kwargs["timeout_seconds"]))
         if target.model.startswith("nvidia/"):
             return [ProviderTrialMeasurement(
-                trial_id=f"trial:503:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+                trial_id=f"trial:503:{plan.plan_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
                 provider_label=plan.provider_label,credential_env=plan.credential_env,
                 model=target.model,task_id=f"t{i}",status="FAILED",
                 observed_at=NOW.isoformat(),error_code="HTTP_503",
-            ) for i in range(3)]
+            ) for i in range(plan.max_requests)]
         return [ProviderTrialMeasurement(
-            trial_id=f"trial:ok:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            trial_id=f"trial:ok:{plan.plan_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
             provider_label=plan.provider_label,credential_env=plan.credential_env,
             model=target.model,task_id=f"t{i}",status="COMPLETED",
             observed_at=NOW.isoformat(),quality_score=1.0,latency_ms=10,observed_cost=0.0,
-        ) for i in range(3)]
+        ) for i in range(plan.max_requests)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
 
     first=scout.probe_capability_windfall(now=NOW)
     second=scout.probe_capability_windfall(now=NOW)
 
     assert first["status"]=="TEMPORARILY_UNAVAILABLE"
+    assert first["preflight_status"]=="FAILED"
+    assert first["benchmark_ran"] is False
     assert second["model"]=="z-ai/glm-5.3"
+    assert second["preflight_status"]=="PASSED"
+    assert second["benchmark_ran"] is True
+    assert calls == [
+        ("nvidia/nemotron-3-super-120b-a12b",1,12.0),
+        ("z-ai/glm-5.3",1,12.0),
+        ("z-ai/glm-5.3",3,30.0),
+    ]
     assert "nvidia/nemotron-3-super-120b-a12b" in excluded_seen[1]
 
 
@@ -460,18 +474,23 @@ def test_windfall_timeout_enters_short_retry_window(tmp_path, monkeypatch):
             128,
         ),
     )
+    calls=[]
     def fake(plan, *, api_key, now, target, **kwargs):
+        calls.append((plan.max_requests,kwargs["timeout_seconds"]))
         return [ProviderTrialMeasurement(
-            trial_id=f"trial:timeout:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            trial_id=f"trial:timeout:{plan.plan_id}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
             provider_label=plan.provider_label,credential_env=plan.credential_env,
             model=target.model,task_id=f"t{i}",status="FAILED",
             observed_at=NOW.isoformat(),error_code="TIMEOUT",
-        ) for i in range(3)]
+        ) for i in range(plan.max_requests)]
     monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
 
     result=scout.probe_capability_windfall(now=NOW)
 
     assert result["status"]=="TEMPORARILY_UNAVAILABLE"
+    assert result["preflight_status"]=="FAILED"
+    assert result["benchmark_ran"] is False
+    assert calls==[(1,12.0)]
     assert result["error_codes"]==["TIMEOUT"]
     retry=datetime.fromisoformat(result["retry_at"])
     assert retry - NOW == timedelta(hours=1)

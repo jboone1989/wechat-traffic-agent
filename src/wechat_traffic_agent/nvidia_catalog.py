@@ -48,7 +48,7 @@ def classify_nvidia_model(model_id: str) -> dict[str, Any]:
         category = "retrieval_rerank"
         endpoint_family = "rerank"
         tags += ["retrieval", "rerank"]
-    elif any(token in low for token in ("embed", "embedding")):
+    elif any(token in low for token in ("embed", "embedding", "nvclip")):
         category = "retrieval_embedding"
         endpoint_family = "embeddings"
         tags += ["retrieval", "embedding"]
@@ -69,15 +69,20 @@ def classify_nvidia_model(model_id: str) -> dict[str, Any]:
         category = "speech_audio"
         endpoint_family = "specialized"
         tags += ["speech", "audio", "translation"]
+    elif "reward" in low:
+        category = "reward_model"
+        endpoint_family = "specialized"
+        tags += ["reward"]
     elif any(token in low for token in (
-        "cosmos", "synthetic-video", "image-edit", "text-to-image", "video"
+        "cosmos", "synthetic-video", "image-edit", "text-to-image",
+        "video", "diffusion"
     )):
         category = "physical_media"
         endpoint_family = "specialized"
         tags += ["physical_ai", "image_video"]
     elif any(token in low for token in (
         "vision", "vlm", "omni", "vila", "neva", "fuyu", "kosmos",
-        "muse-glimmer", "kimi-k3", "glm-5.3-flash", "nvclip",
+        "muse-glimmer", "kimi-k3", "glm-5.3-flash",
     )):
         category = "vision_multimodal"
         endpoint_family = "openai_chat"
@@ -100,10 +105,6 @@ def classify_nvidia_model(model_id: str) -> dict[str, Any]:
         endpoint_family = "openai_chat"
         probe_supported = True
         tags += ["quantum", "vision", "scientific"]
-    elif any(token in low for token in ("reward",)):
-        category = "reward_model"
-        endpoint_family = "specialized"
-        tags += ["reward"]
     else:
         # Unknown models remain visible rather than silently disappearing.
         tags.append("unclassified")
