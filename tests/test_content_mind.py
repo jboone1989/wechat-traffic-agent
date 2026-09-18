@@ -294,23 +294,25 @@ def test_mature_website_outcomes_become_persistent_virtualbrain_strategy_experie
     mind = ContentMind(root=root, subject_id="content-agent")
     result = mind.observe_strategy_outcomes([
         {"outcome_id": "o1", "publication_id": "1", "topic": "crypto-market", "profile_name": "evidence-brief",
-         "pageviews_24h": 100, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
+         "pageviews_24h": 100, "tracked_pageviews_24h": 80, "engaged_readers_30s_24h": 40, "engagement_rate_24h": 0.5, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
         {"outcome_id": "o2", "publication_id": "2", "topic": "crypto-market", "profile_name": "practical-guide",
-         "pageviews_24h": 20, "observed_at": "2026-09-17T01:00:00+00:00", "evidence_refs": ["metric:2"]},
+         "pageviews_24h": 20, "tracked_pageviews_24h": 20, "engaged_readers_30s_24h": 2, "engagement_rate_24h": 0.1, "observed_at": "2026-09-17T01:00:00+00:00", "evidence_refs": ["metric:2"]},
         {"outcome_id": "o3", "publication_id": "3", "topic": "crypto-market", "profile_name": "evidence-brief",
-         "pageviews_24h": 120, "observed_at": "2026-09-17T02:00:00+00:00", "evidence_refs": ["metric:3"]},
+         "pageviews_24h": 120, "tracked_pageviews_24h": 100, "engaged_readers_30s_24h": 70, "engagement_rate_24h": 0.7, "observed_at": "2026-09-17T02:00:00+00:00", "evidence_refs": ["metric:3"]},
     ])
     assert result["status"] == "OBSERVED"
     assert result["causal_claim"] is False
     context = mind.strategy_context(topic="crypto-market")
-    assert context["samples_by_profile"]["evidence-brief"] == 2
+    assert context["samples_by_profile"]["evidence-brief"] == 1
     assert context["samples_by_profile"]["practical-guide"] == 1
     assert context["mean_relative_reward_by_profile"]["evidence-brief"] is not None
+    assert context["mean_engagement_rate_24h_by_profile"]["evidence-brief"] == 0.6
+    assert result["applied"][0]["settlement_status"] == "UNKNOWN_BASELINE"
     restarted = ContentMind(root=root, subject_id="content-agent")
     assert restarted.strategy_context(topic="crypto-market") == context
     duplicate = restarted.observe_strategy_outcomes([
         {"outcome_id": "o1", "publication_id": "1", "topic": "crypto-market", "profile_name": "evidence-brief",
-         "pageviews_24h": 100, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
+         "pageviews_24h": 100, "tracked_pageviews_24h": 80, "engaged_readers_30s_24h": 40, "engagement_rate_24h": 0.5, "observed_at": "2026-09-17T00:00:00+00:00", "evidence_refs": ["metric:1"]},
     ])
     assert duplicate["status"] == "NO_NEW_OUTCOMES"
     assert duplicate["duplicates"] == 1
