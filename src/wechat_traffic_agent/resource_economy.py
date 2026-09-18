@@ -369,6 +369,8 @@ class ContentResourceEconomy:
             })
         if settled:
             self.mind.persist_resource_awareness()
+            if force_override is not None:
+                self._consume_force_wake_override(now=now, decision=decision)
         return {
             "status": "SETTLED" if settled else "NO_NEW_SETTLEMENTS",
             "settled": settled,
@@ -470,6 +472,51 @@ class ContentResourceEconomy:
         except (OSError, ValueError, json.JSONDecodeError):
             return None
         return row if isinstance(row, dict) and row.get("status") == "HIBERNATE" else None
+
+
+    @property
+    def force_wake_override_path(self) -> Path:
+        return self.hibernation_path.parent / "hibernation_override.json"
+
+    def _force_wake_override(self, now: datetime) -> dict[str, Any] | None:
+        try:
+            row = json.loads(self.force_wake_override_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(row, dict) or row.get("status") != "ACTIVE":
+            return None
+        try:
+            expires = datetime.fromisoformat(str(row.get("expires_at") or "").replace("Z", "+00:00"))
+        except ValueError:
+            self.force_wake_override_path.unlink(missing_ok=True)
+            return None
+        if expires.tzinfo is None or expires.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+            self.force_wake_override_path.unlink(missing_ok=True)
+            return None
+        return row
+
+    def _consume_force_wake_override(self, *, now: datetime, decision: str) -> None:
+        override = self._force_wake_override(now)
+        if override is None:
+            return
+        payload = {
+            **override,
+            "status": "CONSUMED",
+            "consumed_at": _iso(now),
+            "decision": str(decision),
+        }
+        root = self.hibernation_path.parent / "force_wake_consumption_receipts"
+        root.mkdir(parents=True, exist_ok=True)
+        receipt_id = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        target = root / f"{receipt_id}.json"
+        if not target.exists():
+            target.write_text(
+                json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        self.force_wake_override_path.unlink(missing_ok=True)
 
     def _enter_hibernation(self, *, now: datetime, pressure: str, evidence_refs: tuple[str, ...]) -> dict[str, Any]:
         payload = {
@@ -582,7 +629,8 @@ class ContentResourceEconomy:
         routing = self._routing_policy()
         windfall_active = bool(routing.get("windfall_active"))
         prefer_free = bool(routing.get("prefer_free", True))
-        if pressure == "CRITICAL":
+        force_override = self._force_wake_override(now)
+        if pressure == "CRITICAL" and force_override is None:
             hibernation = self._enter_hibernation(
                 now=now, pressure=pressure, evidence_refs=evidence
             )
@@ -594,8 +642,15 @@ class ContentResourceEconomy:
         existing = next((item for item in awareness.episodes if item.proposal_id == proposal_id), None)
         if existing is None:
             paid_available = current.quotas.get("deepseek_api_available", 1.0) >= 1.0
-            if pressure == "CRITICAL":
+            if pressure == "CRITICAL" and force_override is None:
                 decision = "DEFER"
+            elif pressure == "CRITICAL":
+                decision = (
+                    "EXECUTE"
+                    if (prefer_free and windfall_active)
+                    or (paid_available and current.available_funds >= estimated_cost)
+                    else "ASK_HUMAN"
+                )
             elif pressure == "CONSERVE":
                 decision = "EXECUTE" if prefer_free and windfall_active else "DEFER"
             else:
@@ -628,6 +683,7 @@ class ContentResourceEconomy:
             "prefer_free": prefer_free,
             "windfall_active": windfall_active,
             "hibernation": hibernation,
+            "force_wake_override": None if force_override is None else force_override.get("receipt_ref"),
             "defer_interval_multiplier": 2 if pressure == "CONSERVE" else 1,
             "evidence_refs": list(existing.evidence_refs),
         }
