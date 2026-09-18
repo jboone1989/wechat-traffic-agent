@@ -327,6 +327,13 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["self_maintenance"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+        self_repair = getattr(self, "self_repair", None)
+        if self_repair is not None:
+            try:
+                rows["self_repair"] = self_repair.run_once(now=now)
+            except Exception as exc:  # noqa: BLE001
+                rows["self_repair"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
             rows["evolution_deliberation"] = self._evolution_deliberation(now)
         except Exception as exc:  # noqa: BLE001
