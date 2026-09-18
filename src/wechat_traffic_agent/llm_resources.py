@@ -84,33 +84,51 @@ def model_capability_profile(model: str) -> dict[str, Any]:
     tier = "STANDARD"
     score = 0.55
     tags = ["general_text"]
-    if "kimi-k3" in low:
+    if "nemotron-3-ultra-550b" in low:
+        tier, score = "FRONTIER", 0.995
+        tags += [
+            "reasoning", "coding", "planning", "tool_calling",
+            "long_context", "agentic", "multilingual",
+        ]
+    elif "glm-5.3" in low and "flash" not in low:
         tier, score = "FRONTIER", 0.99
+        tags += [
+            "reasoning", "coding", "planning", "tool_calling",
+            "long_context", "agentic",
+        ]
+    elif "kimi-k3" in low:
+        tier, score = "FRONTIER", 0.985
         tags += [
             "reasoning", "coding", "planning", "tool_calling",
             "long_context", "multimodal", "long_horizon",
         ]
-    elif "nemotron-3-super-120b" in low:
+    elif "deepseek-v4-flash" in low:
         tier, score = "FRONTIER", 0.97
+        tags += [
+            "reasoning", "coding", "agentic", "long_context",
+            "temporary_opportunity",
+        ]
+    elif "nemotron-3-super-120b" in low:
+        tier, score = "FRONTIER", 0.965
         tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
-    elif "kimi-k2.6" in low:
+    elif "glm-5.3-flash" in low:
         tier, score = "FRONTIER", 0.95
+        tags += ["reasoning", "tool_calling", "multimodal", "fast"]
+    elif "kimi-k2.6" in low:
+        tier, score = "FRONTIER", 0.945
         tags += ["reasoning", "coding", "planning", "tool_calling", "long_context"]
     elif "gpt-oss-120b" in low:
         tier, score = "FRONTIER", 0.94
         tags += ["reasoning", "coding", "math"]
-    elif "glm-5.3" in low and "flash" not in low:
-        tier, score = "FRONTIER", 0.92
-        tags += ["reasoning", "coding", "agentic"]
+    elif "nemotron-3.5-lightning-30b" in low:
+        tier, score = "ADVANCED", 0.92
+        tags += ["reasoning", "agentic", "long_running", "efficient"]
+    elif "muse-glimmer-30b" in low:
+        tier, score = "ADVANCED", 0.90
+        tags += ["reasoning", "multimodal", "tool_calling"]
     elif "mistral-nemotron" in low:
         tier, score = "ADVANCED", 0.88
         tags += ["reasoning", "coding", "agentic"]
-    elif "muse-glimmer-30b" in low:
-        tier, score = "ADVANCED", 0.82
-        tags += ["reasoning", "creative"]
-    elif "glm-5.3-flash" in low:
-        tier, score = "ADVANCED", 0.76
-        tags += ["reasoning", "fast"]
     elif "gpt-oss-20b" in low:
         tier, score = "ADVANCED", 0.72
         tags += ["reasoning", "math", "efficient"]

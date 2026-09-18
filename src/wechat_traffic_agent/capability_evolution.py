@@ -7,6 +7,7 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from agent_runtime.capabilities import (
     CapabilityChallenger,
@@ -28,8 +29,8 @@ _SLOT_SPECS: tuple[dict[str, Any], ...] = (
         "current_binding_id": "playwright:current",
         "current_provider": "playwright",
         "search_terms": (
-            "open source browser automation agent library Playwright alternative GitHub",
-            "ultrafast browser agent automation library GitHub",
+            "site:github.com browser automation agent library Playwright alternative",
+            "site:pypi.org browser automation Playwright alternative Python",
         ),
     },
     {
@@ -37,8 +38,8 @@ _SLOT_SPECS: tuple[dict[str, Any], ...] = (
         "current_binding_id": "tinyfish:current",
         "current_provider": "tinyfish",
         "search_terms": (
-            "AI agent cloud browser service alternative TinyFish browser automation",
-            "open source remote browser automation agent service GitHub",
+            "cloud browser automation API for AI agents developer",
+            "site:github.com remote browser automation agent service Playwright",
         ),
     },
     {
@@ -46,7 +47,8 @@ _SLOT_SPECS: tuple[dict[str, Any], ...] = (
         "current_binding_id": "httpx:current",
         "current_provider": "httpx",
         "search_terms": (
-            "Python async HTTP client library httpx alternative maintained",
+            "site:github.com Python async HTTP client httpx alternative maintained",
+            "site:pypi.org async HTTP client Python httpx alternative",
         ),
     },
     {
@@ -54,11 +56,38 @@ _SLOT_SPECS: tuple[dict[str, Any], ...] = (
         "current_binding_id": "runtime-web-fetch:current",
         "current_provider": "agent-runtime",
         "search_terms": (
-            "open source web content extraction library crawl4ai trafilatura readability GitHub",
-            "agent web crawling extraction library maintained GitHub",
+            "site:github.com web content extraction crawl4ai trafilatura readability alternative",
+            "site:pypi.org web content extraction crawler markdown Python",
         ),
     },
 )
+
+_CODE_HOSTS = frozenset({
+    "github.com", "www.github.com", "gitlab.com", "www.gitlab.com",
+    "pypi.org", "www.pypi.org",
+})
+_NOISE_HOSTS = frozenset({
+    "openai.com", "www.openai.com", "python.org", "www.python.org",
+    "wikipedia.org", "en.wikipedia.org", "ja.wikipedia.org",
+    "baike.baidu.com",
+})
+_CAPABILITY_TOKENS: dict[str, tuple[str, ...]] = {
+    "browser_automation": (
+        "browser", "playwright", "chromium", "automation", "browser-use",
+        "selenium", "puppeteer", "agent-browser",
+    ),
+    "http_transport": (
+        "http", "client", "async", "requests", "httpx", "aiohttp",
+    ),
+    "web_content_extraction": (
+        "crawl", "crawler", "extract", "reader", "readability", "trafilatura",
+        "markdown", "scrape", "scraper", "crawl4ai",
+    ),
+    "remote_browser_service": (
+        "browser", "playwright", "chromium", "automation", "browserbase",
+        "browserless", "tinyfish", "steel", "browser-use",
+    ),
+}
 
 
 class ContentCapabilityEvolution:
@@ -180,18 +209,53 @@ class ContentCapabilityEvolution:
     ) -> CapabilityChallenger | None:
         url = str(result.get("url") or "").strip()
         title = " ".join(str(result.get("title") or "").split())[:300]
+        summary = " ".join(
+            str(
+                result.get("summary")
+                or result.get("snippet")
+                or result.get("content")
+                or ""
+            ).split()
+        )[:800]
         if not url or not title:
             return None
+        parsed = urlparse(url)
+        host = str(parsed.hostname or "").lower()
+        if not host or host in _NOISE_HOSTS:
+            return None
+
+        text = f"{title} {summary} {url}".lower()
+        tokens = _CAPABILITY_TOKENS.get(capability_id, ())
+        if tokens and not any(token in text for token in tokens):
+            return None
+
+        technical_source = host in _CODE_HOSTS
+        if capability_id == "remote_browser_service":
+            service_signal = any(
+                token in text
+                for token in (
+                    "api", "developer", "docs", "sdk", "cloud browser",
+                    "browser automation", "browserbase", "browserless",
+                    "tinyfish", "steel.dev",
+                )
+            )
+            technical_source = technical_source or service_signal
+        if not technical_source:
+            return None
+
         digest = sha256(f"{capability_id}\0{url}".encode()).hexdigest()[:24]
-        host = url.split("://", 1)[-1].split("/", 1)[0].lower()
         return CapabilityChallenger(
             capability_id=capability_id,
             candidate_id=f"challenger:{capability_id}:{digest}",
-            provider=host or "web-discovery",
+            provider=host,
             source=url,
             description=title,
             discovered_cycle=int(cycle),
-            evidence_refs=(evidence_ref, "url-sha256:" + sha256(url.encode()).hexdigest()),
+            evidence_refs=(
+                evidence_ref,
+                "technical-source-qualified:v1",
+                "url-sha256:" + sha256(url.encode()).hexdigest(),
+            ),
         )
 
     def status(self) -> dict[str, Any]:
