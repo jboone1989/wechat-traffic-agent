@@ -139,6 +139,7 @@ def test_malformed_model_json_failure_gets_fail_closed_repair_proposal(tmp_path)
             "cycle": "v2-json",
             "error_type": "ValueError",
             "message": "backend did not return a JSON object",
+            "failure_site": "content_goal_loop.py:_run>content_explorer.py:filter_for_goal",
         },
         now=NOW,
     )
@@ -164,6 +165,7 @@ def test_review_enriches_historical_known_problem_with_new_repair_knowledge(tmp_
         "status": "DIAGNOSING",
         "symptom": "backend did not return a JSON object",
         "error_type": "ValueError",
+        "failure_site": "content_goal_loop.py:_run>content_explorer.py:filter_for_goal",
         "occurrences": 6,
         "cycles": ["v2-1", "v2-2"],
         "last_seen_at": NOW.isoformat(),
@@ -176,3 +178,121 @@ def test_review_enriches_historical_known_problem_with_new_repair_knowledge(tmp_
     updated = json.loads(problem.read_text())
     assert updated["status"] == "REPAIR_PROPOSED"
     assert updated["repair_proposal"]["repair_kind"] == "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT"
+
+
+def _diagnostic(state_root, cycle, frames):
+    path = state_root / "content/continuous/cycles" / cycle / "error_diagnostic.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    trace = "Traceback (most recent call last):\n" + "\n".join(
+        f'  File "/repo/src/wechat_traffic_agent/{name}", line 10, in {func}\n    x()'
+        for name, func in frames
+    ) + "\nValueError: backend did not return a JSON object\n"
+    path.write_text(json.dumps({"traceback": trace}))
+
+
+def test_same_error_text_at_different_callsites_becomes_different_self_problems(tmp_path):
+    _diagnostic(tmp_path, "v2-filter", [
+        ("content_loop.py", "run_once"),
+        ("content_goal_loop.py", "_run"),
+        ("content_explorer.py", "filter_for_goal"),
+        ("content_service.py", "_extract_json"),
+    ])
+    _diagnostic(tmp_path, "v2-select", [
+        ("content_loop.py", "run_once"),
+        ("content_goal_loop.py", "_run"),
+        ("content_loop.py", "_structured"),
+        ("content_service.py", "_extract_json"),
+    ])
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+
+    first = service.ingest_failure({
+        "status": "ERROR", "cycle": "v2-filter", "error_type": "ValueError",
+        "message": "backend did not return a JSON object",
+    }, now=NOW)
+    second = service.ingest_failure({
+        "status": "ERROR", "cycle": "v2-select", "error_type": "ValueError",
+        "message": "backend did not return a JSON object",
+    }, now=NOW)
+
+    assert first["problem_id"] != second["problem_id"]
+    assert first["repair_proposal"]["repair_kind"] == "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT"
+    assert second["repair_proposal"]["repair_kind"] == "DETERMINISTIC_FALLBACK_ON_INVALID_EVIDENCE_SELECTION"
+
+
+def test_unknown_json_callsite_does_not_receive_wrong_classifier_repair(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+
+    result = service.ingest_failure({
+        "status": "ERROR", "cycle": "v2-unknown", "error_type": "ValueError",
+        "message": "backend did not return a JSON object",
+        "failure_site": "content_writer.py:compose",
+    }, now=NOW)
+
+    assert result["problem_status"] == "DIAGNOSING"
+    assert result["repair_proposal"] is None
+
+
+def test_reindex_legacy_problem_splits_different_callsites_and_quarantines_aggregate(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+    legacy = tmp_path / "application/self_maintenance/problems/legacy.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:legacy",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "backend did not return a JSON object",
+        "error_type": "ValueError",
+        "occurrences": 2,
+        "cycles": ["v2-filter", "v2-select"],
+        "repair_proposal": {"repair_kind": "OLD_WRONG_REPAIR"},
+    }))
+    for cycle in ("v2-filter", "v2-select"):
+        result = tmp_path / "content/continuous/cycles" / cycle / "result.json"
+        result.parent.mkdir(parents=True, exist_ok=True)
+        result.write_text(json.dumps({
+            "status": "ERROR",
+            "cycle": cycle,
+            "error_type": "ValueError",
+            "message": "backend did not return a JSON object",
+        }))
+    _diagnostic(tmp_path, "v2-filter", [
+        ("content_goal_loop.py", "_run"),
+        ("content_explorer.py", "filter_for_goal"),
+        ("content_explorer.py", "checked"),
+        ("content_service.py", "_extract_json"),
+    ])
+    _diagnostic(tmp_path, "v2-select", [
+        ("content_goal_loop.py", "_run"),
+        ("content_loop.py", "_structured"),
+        ("content_loop.py", "checked"),
+        ("content_service.py", "_extract_json"),
+    ])
+
+    result = service.reindex_legacy_problems_by_callsite(now=NOW)
+
+    assert result["legacy_rows"] == 1
+    assert result["new_problem_count"] == 2
+    updated = json.loads(legacy.read_text())
+    assert updated["status"] == "LEGACY_AGGREGATE"
+    assert updated["repair_proposal"] is None
+    assert len(updated["superseded_by"]) == 2
+    review = service.review()
+    assert review["open_count"] == 2
+    kinds = {
+        row["repair_proposal"]["repair_kind"]
+        for row in review["problems"]
+        if row.get("repair_proposal")
+    }
+    assert kinds == {
+        "FAIL_CLOSED_ON_INVALID_RELEVANCE_CLASSIFIER_OUTPUT",
+        "DETERMINISTIC_FALLBACK_ON_INVALID_EVIDENCE_SELECTION",
+    }

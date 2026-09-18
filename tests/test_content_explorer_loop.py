@@ -930,3 +930,29 @@ def test_unpersisted_belief_change_is_normalized_instead_of_failing_cycle(tmp_pa
     assert result["cognition"]["cognition_state"] == "INVESTIGATING"
     assert result["cognition"]["belief_proposition"] is None
     assert "no durable worldview change" in result["cognition"]["what_changed"].lower()
+
+
+class InvalidEvidenceSelectionRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SELECT_EVIDENCE:"):
+            self.calls.append(task)
+            return "not-json"
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_invalid_evidence_selection_model_output_falls_back_to_supplied_evidence(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = InvalidEvidenceSelectionRuntime()
+    worker = v2(legacy, runtime, publisher, explorer=Explorer())
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    # The later generic article fixture intentionally does not follow the
+    # fallback title, so only prove this failure boundary recovered.
+    assert result.get("message") != "backend did not return a JSON object"
+    cycle_dir = next((legacy.state / "content/continuous/cycles").glob("v2-*"))
+    fallback = json.loads((cycle_dir / "selection_fallback.json").read_text())
+    assert fallback["reason"] == "MODEL_OUTPUT_INVALID_AFTER_REPAIR"
+    assert fallback["selected_evidence_id"] == "news-1"
+    assert fallback["topic"] == "evidence"
+    assert sum(1 for call in runtime.calls if call.startswith("SELECT_EVIDENCE:")) == 2

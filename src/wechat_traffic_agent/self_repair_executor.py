@@ -170,6 +170,25 @@ DEFAULT_RECIPES: dict[str, RepairRecipe] = {
             "tests/test_self_maintenance.py",
         ),
     ),
+    "DETERMINISTIC_FALLBACK_ON_INVALID_EVIDENCE_SELECTION": RepairRecipe(
+        repair_kind="DETERMINISTIC_FALLBACK_ON_INVALID_EVIDENCE_SELECTION",
+        target_files=("src/wechat_traffic_agent/content_goal_loop.py",),
+        implementation_markers=(
+            (
+                "src/wechat_traffic_agent/content_goal_loop.py",
+                "def _fallback_evidence_selection(",
+            ),
+            (
+                "src/wechat_traffic_agent/content_goal_loop.py",
+                "MODEL_OUTPUT_INVALID_AFTER_REPAIR",
+            ),
+        ),
+        edits=(),
+        focused_tests=(
+            "tests/test_content_explorer_loop.py",
+            "tests/test_self_maintenance.py",
+        ),
+    ),
 }
 
 
@@ -342,6 +361,12 @@ class SelfRepairExecutor:
     def _build_candidate(
         self, problem: dict[str, Any], recipe: RepairRecipe, now: datetime
     ) -> dict[str, Any]:
+        if not recipe.edits:
+            return {
+                "status": "NO_BOUNDED_EDIT_RECIPE",
+                "problem_id": problem.get("problem_id"),
+                "repair_kind": recipe.repair_kind,
+            }
         provider = self._provider(recipe)
         inspect = provider.invoke(CAP_CODE_INSPECT, {})
         branch = str(inspect.get("branch") or "")
