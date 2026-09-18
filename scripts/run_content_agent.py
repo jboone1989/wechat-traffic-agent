@@ -122,6 +122,14 @@ def main() -> int:
     )
     if self_maintenance_backfill.get("recorded"):
         print(json.dumps({"self_maintenance_backfill": self_maintenance_backfill}, sort_keys=True))
+    from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
+    repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
+    self_repair = SelfRepairExecutor(
+        state_root=state_root,
+        workspace_root=Path(repair_workspace_raw) if repair_workspace_raw else None,
+        deployed_root=ROOT,
+        python_executable=sys.executable,
+    )
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)
     try:
@@ -238,6 +246,7 @@ def main() -> int:
         capability_evolution=capability_evolution,
         daily_reflection=daily_reflection,
         self_maintenance=self_maintenance,
+        self_repair=self_repair,
         human_assistance=human_assistance,
         network_service=network_service,
         draft_worker=draft_worker,
