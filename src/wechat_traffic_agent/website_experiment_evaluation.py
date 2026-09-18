@@ -22,7 +22,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from .content_admission import _write_once
 from .web_editorial import digest
-from .website_experiment import EXPERIMENT_VERSION, TREATMENTS
+from .website_experiment import EXPERIMENT_VERSION, PROMOTED_EXPERIMENT_VERSION, TREATMENTS
+from .website_experiment_governance import active_conclusion, record_conclusion, record_revocation
 SCHEMA = "website-experiment-evaluation.v1"
 PRIMARY_METRIC = "http_pageviews"
 PRIMARY_OBJECTIVE = "website_pageviews"
@@ -110,20 +111,20 @@ class WebsiteExperimentEvaluator:
         if as_of.utcoffset() is None:
             raise ValueError("evaluation cutoff must be timezone-aware")
         as_of = as_of.astimezone(timezone.utc)
-        samples = self._samples(as_of)
+        samples = self._samples(as_of, experiment_version=EXPERIMENT_VERSION)
         grouped = {name: [] for name in TREATMENTS}
         for sample in samples:
             grouped[sample.treatment].append(sample)
         if any(len(grouped[name]) > MAX_SAMPLES_PER_TREATMENT for name in TREATMENTS):
             evaluation = self._budget_evaluation(grouped)
-            return self._persist(evaluation)
+            return self._with_governance(self._persist(evaluation), as_of)
 
         if not samples:
             evaluation = self._build(
                 grouped, status="NO_EVIDENCE", favored=None,
                 difference=None, relative_lift=None, p_value=None,
             )
-            return evaluation.model_dump(mode="json")
+            return self._with_governance(evaluation.model_dump(mode="json"), as_of)
 
         counts = [len(grouped[name]) for name in TREATMENTS]
         if min(counts) < self.min_samples:
@@ -131,7 +132,7 @@ class WebsiteExperimentEvaluator:
                 grouped, status="OBSERVING", favored=None,
                 difference=None, relative_lift=None, p_value=None,
             )
-            return self._persist(evaluation)
+            return self._with_governance(self._persist(evaluation), as_of)
 
         # Fixed-horizon v1: freeze the first min_samples mature observations per arm.
         # Later evidence cannot repeatedly re-test the same hypothesis until it crosses alpha.
@@ -159,10 +160,10 @@ class WebsiteExperimentEvaluator:
             decision_grouped, status=status, favored=favored,
             difference=difference, relative_lift=relative_lift, p_value=p_value,
         )
-        return self._persist(evaluation)
+        return self._with_governance(self._persist(evaluation), as_of)
 
-    def _samples(self, as_of: datetime) -> list[_Sample]:
-        expected = {f"{EXPERIMENT_VERSION}:{name}": name for name in TREATMENTS}
+    def _samples(self, as_of: datetime, *, experiment_version: str) -> list[_Sample]:
+        expected = {f"{experiment_version}:{name}": name for name in TREATMENTS}
         publications = self._validated_publications()
         rows = []
         for row in self.store.as_of(as_of):
@@ -283,6 +284,98 @@ class WebsiteExperimentEvaluator:
             evaluation.model_dump_json(indent=2) + "\n",
         )
         return {**payload, "evaluation_ref": f"website-experiment-evaluation:sha256:{evaluation_id}"}
+
+
+    def _with_governance(self, result: dict, as_of: datetime) -> dict:
+        if result.get("status") == "EVIDENCE_FAVORS_TREATMENT":
+            record_conclusion(
+                state_root=self.state_root,
+                evaluation=result,
+                concluded_at=as_of,
+            )
+        conclusion = active_conclusion(self.state_root)
+        if conclusion is None:
+            return result
+        governed = dict(result)
+        governed["experiment_conclusion"] = conclusion.model_dump(mode="json")
+        governed["promotion_monitor"] = self._monitor_promoted_holdout(
+            as_of=as_of, conclusion=conclusion
+        )
+        return governed
+
+    def _monitor_promoted_holdout(self, *, as_of: datetime, conclusion) -> dict:
+        samples = self._samples(
+            as_of, experiment_version=PROMOTED_EXPERIMENT_VERSION
+        )
+        grouped = {name: [] for name in TREATMENTS}
+        for sample in samples:
+            grouped[sample.treatment].append(sample)
+        counts = {name: len(grouped[name]) for name in TREATMENTS}
+        base = {
+            "schema_version": "website-promotion-monitor.v1",
+            "experiment_version": PROMOTED_EXPERIMENT_VERSION,
+            "conclusion_id": conclusion.conclusion_id,
+            "champion_treatment": conclusion.favored_treatment,
+            "samples": counts,
+            "min_samples_per_treatment": self.min_samples,
+            "causal_claim": False,
+        }
+        if min(counts.values()) < self.min_samples:
+            return {**base, "status": "OBSERVING"}
+
+        decision_grouped = {
+            name: grouped[name][: self.min_samples] for name in TREATMENTS
+        }
+        reader = [sample.value for sample in decision_grouped["reader_question_first"]]
+        evidence = [sample.value for sample in decision_grouped["evidence_first"]]
+        difference = mean(reader) - mean(evidence)
+        high, low = (reader, evidence) if difference >= 0 else (evidence, reader)
+        relative_lift = (mean(high) - mean(low)) / max(mean(low), 1.0)
+        p_value = _permutation_p_value(
+            reader, evidence,
+            seed_material="|".join(sorted(
+                sample.publication_id
+                for name in TREATMENTS for sample in decision_grouped[name]
+            )),
+        )
+        favored = None
+        if p_value <= ALPHA and relative_lift >= MIN_RELATIVE_LIFT and difference != 0:
+            favored = "reader_question_first" if difference > 0 else "evidence_first"
+        refs = tuple(sorted({
+            ref
+            for name in TREATMENTS
+            for sample in decision_grouped[name]
+            for ref in sample.evidence_refs
+        }))
+        evaluation_payload = {
+            **base,
+            "status": (
+                "EVIDENCE_FAVORS_HOLDOUT"
+                if favored is not None and favored != conclusion.favored_treatment
+                else "CHAMPION_CONFIRMED"
+                if favored == conclusion.favored_treatment
+                else "NO_CLEAR_DIFFERENCE"
+            ),
+            "favored_treatment": favored,
+            "relative_lift_of_higher": relative_lift,
+            "permutation_p_value": p_value,
+            "publication_ids": {
+                name: [sample.publication_id for sample in decision_grouped[name]]
+                for name in TREATMENTS
+            },
+            "evidence_refs": list(refs[:1000]),
+        }
+        if favored is not None and favored != conclusion.favored_treatment:
+            revocation = record_revocation(
+                state_root=self.state_root,
+                conclusion=conclusion,
+                favored_treatment=favored,
+                evaluation_payload=evaluation_payload,
+                revoked_at=as_of,
+                evidence_refs=refs,
+            )
+            evaluation_payload["revocation"] = revocation.model_dump(mode="json")
+        return evaluation_payload
 
 
 def raw_artifact_id(publication: dict) -> str | None:
