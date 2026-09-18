@@ -56,13 +56,24 @@ class ContentWakefulRuntime:
         )
 
     def ensure_initial_plans(self, now: datetime) -> None:
-        existing = {wake.task for wake in self.core.snapshot().pending_plans}
-        for task in ("OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
+        snapshot = self.core.snapshot()
+        critical = str(snapshot.resource_pressure or "UNKNOWN").upper() == "CRITICAL"
+        existing = {wake.task for wake in snapshot.pending_plans}
+        initial_tasks = (
+            ("RESOURCE_REVIEW", "CHECK_OUTCOMES")
+            if critical
+            else ("OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT")
+        )
+        for task in initial_tasks:
             if task not in existing:
                 self.core.schedule(PlannedWake(
                     wake_id=f"content:{task}", at=now, reason=self._reason(task), task=task,
                 ))
-        if os.environ.get("CONTENT_X_ENABLED", "").lower() in {"1", "true", "yes", "on"} and "CHECK_X" not in existing:
+        if (
+            not critical
+            and os.environ.get("CONTENT_X_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+            and "CHECK_X" not in existing
+        ):
             self.core.schedule(PlannedWake(
                 wake_id="content:CHECK_X", at=now, reason=self._reason("CHECK_X"), task="CHECK_X",
             ))
@@ -72,6 +83,11 @@ class ContentWakefulRuntime:
         from .prospective_predictions import ProspectivePredictionLedger
         ledger = ProspectivePredictionLedger(self.state_root)
         rows = {row.prediction_id: row for row in ledger.open()}
+        if str(self.core.snapshot().resource_pressure or "UNKNOWN").upper() == "CRITICAL":
+            for wake in tuple(self.core.snapshot().pending_plans):
+                if wake.task == "VERIFY_PREDICTION":
+                    self.core.cancel(wake.wake_id)
+            return
         for wake in self.core.snapshot().pending_plans:
             ref = wake.wake_id[5:] if wake.wake_id.startswith("wake:prediction:") else None
             if ref is not None and ref not in rows:
@@ -144,7 +160,9 @@ class ContentWakefulRuntime:
     def schedule_windfall_reflection(
         self, now: datetime, *, seconds: int = 60
     ) -> None:
-        """Spend a newly verified high-capability free window on bounded reflection."""
+        """Spend a free windfall only when hibernation permits reflection."""
+        if str(self.core.snapshot().resource_pressure or "UNKNOWN").upper() == "CRITICAL":
+            return
         delay = max(30, min(int(seconds), 900))
         at = now + timedelta(seconds=delay)
         wake_id = "content:REFLECT"
