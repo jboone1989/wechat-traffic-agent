@@ -9,7 +9,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .channel_evidence import ChannelEvidenceStore
+from .audience_reward import audience_reward, collect_mature_audience_observations
 from .content_admission import _write_once
 from .traffic_learning import TopicTrafficSignal
 
@@ -70,6 +70,7 @@ class ContentStrategyBinding(BaseModel):
     decision_reason: str = Field(min_length=1, max_length=500)
     samples_by_profile: dict[str, int]
     mean_pageviews_24h_by_profile: dict[str, float | None]
+    mean_audience_reward_by_profile: dict[str, float | None] = Field(default_factory=dict)
     mind_mean_relative_reward_by_profile: dict[str, float | None] = Field(default_factory=dict)
     mind_strategy_evidence_refs: tuple[str, ...] = ()
     prediction_expected_pageviews_24h_by_profile: dict[str, float] = Field(default_factory=dict)
@@ -115,7 +116,7 @@ def strategy_instruction(binding: ContentStrategyBinding) -> str:
 def collect_mature_strategy_outcomes(
     *, state_root: Path, account: str, as_of: datetime
 ) -> list[dict[str, Any]]:
-    """Project attributable mature 24h Website outcomes into cognition-safe records."""
+    """Project complete mature Website audience outcomes into cognition-safe records."""
     publications: dict[str, dict[str, Any]] = {}
     root = Path(state_root) / "content" / "continuous" / "cycles"
     for path in sorted(root.glob("*/publication.json")):
@@ -136,74 +137,80 @@ def collect_mature_strategy_outcomes(
                 "profile_name": profile["name"],
                 "strategy_id": strategy["strategy_id"],
             }
-    store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
+    observations = collect_mature_audience_observations(
+        state_root=state_root, account=account, as_of=as_of
+    )
     outcomes: list[dict[str, Any]] = []
-    for row in store.as_of(as_of):
-        if not (
-            row.channel == "website"
-            and row.account.rstrip("/") == account.rstrip("/")
-            and row.metric == "http_pageviews"
-            and row.source == "nginx-access-log:v1"
-            and row.value is not None
-            and row.agent_candidate_sha256 == row.published_content_sha256
-            and row.window_end - row.window_start == timedelta(hours=24)
-        ):
-            continue
-        binding = publications.get(row.publication_id)
-        if binding is None or row.topic != binding["topic"]:
+    for publication_id, observation in observations.items():
+        binding = publications.get(publication_id)
+        if binding is None:
             continue
         identity = json.dumps({
-            "publication_id": row.publication_id,
+            "publication_id": publication_id,
             "strategy_id": binding["strategy_id"],
-            "window_start": row.window_start.astimezone(timezone.utc).isoformat(),
-            "window_end": row.window_end.astimezone(timezone.utc).isoformat(),
-            "source": row.source,
+            "published_at": observation.published_at.isoformat(),
+            "metric": "audience_reward:v1",
         }, sort_keys=True, separators=(",", ":"))
         outcomes.append({
             "outcome_id": "strategy-outcome:" + hashlib.sha256(identity.encode()).hexdigest()[:24],
-            "publication_id": row.publication_id,
+            "publication_id": publication_id,
             "topic": binding["topic"],
             "profile_name": binding["profile_name"],
-            "pageviews_24h": float(row.value),
-            "observed_at": row.observed_at.astimezone(timezone.utc).isoformat(),
-            "evidence_refs": list(dict.fromkeys([*row.evidence_refs, binding["strategy_id"]])),
+            "pageviews_24h": observation.pageviews,
+            "tracked_pageviews_24h": observation.tracked_pageviews,
+            "engaged_readers_30s_24h": observation.engaged_readers_30s,
+            "engagement_rate_24h": observation.engagement_rate,
+            "observed_at": observation.observed_at.isoformat(),
+            "evidence_refs": list(dict.fromkeys([
+                *observation.evidence_refs, binding["strategy_id"],
+            ])),
         })
     outcomes.sort(key=lambda row: (row["observed_at"], row["outcome_id"]))
     return outcomes
 
 
-def _historical_pageviews(*, state_root: Path, account: str, topic: str, as_of: datetime) -> dict[str, list[float]]:
-    publications = {}
+def _historical_audience_rewards(
+    *, state_root: Path, account: str, topic: str, as_of: datetime
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    strategy_to_profile: dict[str, str] = {}
     root = Path(state_root) / "content" / "continuous" / "cycles"
-    for path in sorted(root.glob("*/publication.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
-        strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
-        if isinstance(strategy, dict) and isinstance(strategy.get("strategy_id"), str):
-            publications[str(raw.get("revision"))] = strategy["strategy_id"]
-    grouped: dict[str, list[float]] = {profile.name: [] for profile in PROFILES}
-    strategy_to_profile = {}
     for path in sorted(root.glob("*/publication.json")):
         raw = json.loads(path.read_text(encoding="utf-8"))
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         if isinstance(strategy, dict) and strategy.get("topic") == topic:
             profile = strategy.get("profile")
-            if isinstance(profile, dict) and profile.get("name") in grouped:
+            if isinstance(profile, dict) and profile.get("name") in PROFILE_BY_NAME:
                 strategy_to_profile[str(raw.get("revision"))] = profile["name"]
-    store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
-    for row in store.as_of(as_of):
-        if not (
-            row.channel == "website" and row.account.rstrip("/") == account.rstrip("/")
-            and row.metric == "http_pageviews" and row.source == "nginx-access-log:v1"
-            and row.value is not None and row.agent_candidate_sha256 == row.published_content_sha256
-            and row.window_end - row.window_start == timedelta(hours=24)
-        ):
-            continue
-        profile_name = strategy_to_profile.get(row.publication_id)
-        if profile_name:
-            grouped[profile_name].append(float(row.value))
-    return grouped
+    rewards: dict[str, list[float]] = {profile.name: [] for profile in PROFILES}
+    pageviews: dict[str, list[float]] = {profile.name: [] for profile in PROFILES}
+    observations = collect_mature_audience_observations(
+        state_root=state_root, account=account, as_of=as_of
+    )
+    ordered = sorted(
+        (
+            obs for publication_id, obs in observations.items()
+            if publication_id in strategy_to_profile
+        ),
+        key=lambda obs: (obs.published_at, obs.publication_id),
+    )
+    prior_pageviews: list[float] = []
+    for observation in ordered:
+        profile_name = strategy_to_profile[observation.publication_id]
+        baseline = (
+            sorted(prior_pageviews)[len(prior_pageviews) // 2]
+            if prior_pageviews else None
+        )
+        reward = audience_reward(
+            pageviews=observation.pageviews,
+            baseline_pageviews=baseline,
+            engagement_rate_value=observation.engagement_rate,
+        )
+        pageviews[profile_name].append(observation.pageviews)
+        if reward is not None:
+            rewards[profile_name].append(reward)
+        prior_pageviews.append(observation.pageviews)
+    return rewards, pageviews
 
 
 def _traffic_profile(signal: TopicTrafficSignal) -> StrategyProfile | None:
@@ -225,9 +232,15 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
     if as_of.utcoffset() is None:
         raise ValueError("strategy cutoff must be timezone-aware")
     as_of = as_of.astimezone(timezone.utc)
-    history = _historical_pageviews(state_root=state_root, account=account, topic=topic, as_of=as_of)
+    history, pageview_history = _historical_audience_rewards(
+        state_root=state_root, account=account, topic=topic, as_of=as_of
+    )
     counts = {name: len(values) for name, values in history.items()}
     means = {name: (sum(values) / len(values) if values else None) for name, values in history.items()}
+    pageview_means = {
+        name: (sum(values) / len(values) if values else None)
+        for name, values in pageview_history.items()
+    }
     mind_counts = {profile.name: 0 for profile in PROFILES}
     mind_rewards = {profile.name: None for profile in PROFILES}
     mind_refs: tuple[str, ...] = ()
@@ -342,8 +355,8 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
                         profile = max(PROFILES, key=lambda item: (means[item.name] or 0.0, -PROFILES.index(item)))
                         mode = "EXPLOIT"
                         reason = (
-                            "highest associated mean 24h pageviews; observational fallback because "
-                            "no mature VirtualBrain strategy belief is available"
+                            "highest world-settled audience reward (reach plus 30s engagement); "
+                            "observational fallback because no mature VirtualBrain strategy belief is available"
                         )
     return ContentStrategyBinding(
         strategy_id=_strategy_id(topic=topic, profile=profile, opening_mode=opening_mode),
@@ -355,7 +368,8 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
         selection_mode=mode,
         decision_reason=reason,
         samples_by_profile=counts,
-        mean_pageviews_24h_by_profile=means,
+        mean_pageviews_24h_by_profile=pageview_means,
+        mean_audience_reward_by_profile=means,
         mind_mean_relative_reward_by_profile=mind_rewards if any(mind_counts.values()) else {},
         mind_strategy_evidence_refs=mind_refs,
         prediction_expected_pageviews_24h_by_profile=forecast_expected,
