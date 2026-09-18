@@ -117,11 +117,17 @@ def main() -> int:
         evolution_runtime=app.domain_runtime,
         capability_runtime=app.runtime,
     )
+    self_maintenance_now = datetime.now(timezone.utc).replace(microsecond=0)
     self_maintenance_backfill = self_maintenance.backfill_recent_failures(
-        now=datetime.now(timezone.utc).replace(microsecond=0)
+        now=self_maintenance_now
     )
     if self_maintenance_backfill.get("recorded"):
         print(json.dumps({"self_maintenance_backfill": self_maintenance_backfill}, sort_keys=True))
+    self_maintenance_reindex = self_maintenance.reindex_legacy_problems_by_callsite(
+        now=self_maintenance_now
+    )
+    if self_maintenance_reindex.get("legacy_rows"):
+        print(json.dumps({"self_maintenance_reindex": self_maintenance_reindex}, sort_keys=True))
     from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
     repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
     self_repair = SelfRepairExecutor(
