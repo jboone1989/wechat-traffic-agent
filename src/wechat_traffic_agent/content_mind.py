@@ -190,6 +190,45 @@ class ContentMind:
                     if refs:
                         self._archive_summary["last_strategy_evidence_ref"] = refs[-1]
 
+    def _archived_strategy_rows(self) -> list[dict[str, Any]]:
+        archive_root = self.root / "archive"
+        if not archive_root.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        for path in sorted(archive_root.glob("*.jsonl")):
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Content Mind archive is corrupt at {path.name}:{line_number}"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"Content Mind archive row is invalid at {path.name}:{line_number}"
+                    )
+                rows.append(row)
+        return rows
+
+    def _all_strategy_outcomes(self) -> list[dict[str, Any]]:
+        """Read durable strategy memory with hot state winning duplicate ids."""
+        merged: dict[str, dict[str, Any]] = {}
+        for row in self._archived_strategy_rows():
+            outcome_id = str(row.get("outcome_id") or "").strip()
+            if outcome_id:
+                merged[outcome_id] = row
+        for outcome_id, row in self._strategy_outcomes.items():
+            merged[str(outcome_id)] = deepcopy(row)
+        return sorted(
+            merged.values(),
+            key=lambda row: (
+                str(row.get("observed_at") or ""),
+                str(row.get("outcome_id") or ""),
+            ),
+        )
+
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
         mapped = self._inquiry_topics.get(str(inquiry_id))
         if isinstance(mapped, str) and mapped.strip():
@@ -707,8 +746,10 @@ class ContentMind:
                 continue
             prior = [
                 float(item["pageviews_24h"])
-                for item in self._strategy_outcomes.values()
-                if item.get("topic") == topic and isinstance(item.get("pageviews_24h"), (int, float))
+                for item in self._all_strategy_outcomes()
+                if item.get("topic") == topic
+                and isinstance(item.get("pageviews_24h"), (int, float))
+                and not isinstance(item.get("pageviews_24h"), bool)
             ]
             baseline = float(median(prior)) if prior else None
             reward = audience_reward(
@@ -768,47 +809,21 @@ class ContentMind:
         }
 
     def audience_outcome_for_publication(self, publication_id: str) -> dict[str, Any] | None:
-        """Return world-settled audience outcome from hot state or durable archive."""
+        """Return world-settled audience outcome from durable strategy memory."""
         publication_id = str(publication_id).strip()
         if not publication_id:
             return None
         matches = [
-            row for row in self._strategy_outcomes.values()
+            row for row in self._all_strategy_outcomes()
             if str(row.get("publication_id") or "") == publication_id
         ]
-        archive_root = self.root / "archive"
-        if archive_root.exists():
-            for path in sorted(archive_root.glob("*.jsonl")):
-                for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-                    if not line.strip():
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except json.JSONDecodeError as exc:
-                        raise ValueError(
-                            f"Content Mind archive is corrupt at {path.name}:{line_number}"
-                        ) from exc
-                    if not isinstance(row, dict):
-                        raise ValueError(
-                            f"Content Mind archive row is invalid at {path.name}:{line_number}"
-                        )
-                    if str(row.get("publication_id") or "") == publication_id:
-                        matches.append(row)
-        if not matches:
-            return None
-        matches.sort(
-            key=lambda row: (
-                str(row.get("observed_at") or ""),
-                str(row.get("outcome_id") or ""),
-            )
-        )
-        return deepcopy(matches[-1])
+        return deepcopy(matches[-1]) if matches else None
 
     def strategy_context(self, *, topic: str) -> dict[str, Any]:
         """Expose world-settled audience beliefs for the next prospective decision."""
         topic = str(topic).strip()
         grouped: dict[str, list[dict[str, Any]]] = {}
-        for row in self._strategy_outcomes.values():
+        for row in self._all_strategy_outcomes():
             if row.get("topic") == topic:
                 grouped.setdefault(str(row.get("profile_name") or ""), []).append(row)
         counts: dict[str, int] = {}
