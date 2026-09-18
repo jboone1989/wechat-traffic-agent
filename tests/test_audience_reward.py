@@ -32,3 +32,9 @@ def test_reward_combines_reach_and_quality_without_double_counting_volume():
     assert low_quality is not None and high_quality is not None and high_reach is not None
     assert low_quality < high_quality < high_reach
     assert 0.0 <= high_reach <= 1.0
+
+
+def test_inconsistent_engagement_counts_stay_unknown():
+    assert engagement_rate(
+        engaged_readers_30s=11, tracked_pageviews=10
+    ) is None
