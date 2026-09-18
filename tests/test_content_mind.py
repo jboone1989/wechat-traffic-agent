@@ -316,3 +316,43 @@ def test_mature_website_outcomes_become_persistent_virtualbrain_strategy_experie
     ])
     assert duplicate["status"] == "NO_NEW_OUTCOMES"
     assert duplicate["duplicates"] == 1
+
+
+def test_strategy_history_archives_and_old_replay_remains_deduped(tmp_path, monkeypatch):
+    import wechat_traffic_agent.content_mind as content_mind_module
+
+    monkeypatch.setattr(content_mind_module, "MAX_STRATEGY_OUTCOMES", 2)
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+
+    rows = []
+    for index, pageviews in enumerate((10, 20, 30, 40)):
+        tracked = 10 + index
+        engaged = 5 + index
+        rows.append({
+            "outcome_id": f"archive-{index}",
+            "publication_id": f"pub-{index}",
+            "topic": "archive-topic",
+            "profile_name": "evidence-brief",
+            "pageviews_24h": pageviews,
+            "tracked_pageviews_24h": tracked,
+            "engaged_readers_30s_24h": engaged,
+            "engagement_rate_24h": engaged / tracked,
+            "observed_at": f"2026-09-1{index + 1}T00:00:00+00:00",
+            "evidence_refs": [f"metric:archive:{index}"],
+        })
+    result = mind.observe_strategy_outcomes(rows)
+    assert result["status"] == "OBSERVED"
+    assert len(mind._strategy_outcomes) == 2
+    archive_files = sorted((root / "application/content_mind/archive").glob("*.jsonl"))
+    assert archive_files
+    assert sum(len(path.read_text().splitlines()) for path in archive_files) == 2
+
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    replay = restarted.observe_strategy_outcomes([rows[0]])
+    assert replay["status"] == "NO_NEW_OUTCOMES"
+    assert replay["duplicates"] == 1
+    projection = restarted.public_projection()
+    checkpoint = json.loads((root / "application/content_mind/checkpoint.json").read_text())
+    assert checkpoint["archive_summary"]["strategy_outcomes_archived"] == 2
+    assert (root / "application/content_mind/seen_event_ids.jsonl").exists()
