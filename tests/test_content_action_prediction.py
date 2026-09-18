@@ -68,6 +68,26 @@ def _evidence(state, *, revision, topic, window_hours, value, observed_at):
     ChannelEvidenceStore(state / "content/channel_evidence").record(row)
 
 
+def _engagement_evidence(state, *, revision, topic, tracked, engaged, observed_at):
+    store = ChannelEvidenceStore(state / "content/channel_evidence")
+    for metric, value in (
+        ("tracked_pageviews", tracked),
+        ("engaged_readers_30s", engaged),
+    ):
+        store.record(ChannelEvidence(
+            channel="website", account=ACCOUNT, publication_id=revision,
+            artifact_id="artifact", published_content_sha256="a" * 64,
+            agent_candidate_sha256="a" * 64, topic=topic,
+            title_version="title:v1", structure_version="structure:v1",
+            strategy_version="strategy:v1", objective="website_engagement",
+            distribution_cohort="first-party-anonymous-events:v1",
+            metric=metric, metric_definition=metric, unit="count", value=float(value),
+            published_at=NOW, window_start=NOW, window_end=NOW + timedelta(hours=24),
+            observed_at=observed_at, revision=1, source="first-party-engagement:v1",
+            evidence_refs=(f"engagement:{revision}:{metric}",),
+        ))
+
+
 def _non_explore_cycle(topic):
     for index in range(1000):
         cycle = f"v2-predict-{index}"
@@ -218,3 +238,46 @@ def test_virtualbrain_prediction_calibration_changes_next_forecast_under_same_cu
     assert over_context["prediction_calibration_by_profile"]["evidence-brief"]["mean_signed_error"] < 0
     assert under["evidence-brief"]["expected_utility"] > over["evidence-brief"]["expected_utility"]
     assert under["evidence-brief"]["information_gain"] == over["evidence-brief"]["information_gain"]
+
+
+def test_24h_action_prediction_registers_and_settles_engaged_reader_target(tmp_path):
+    state = tmp_path / "state"
+    topic = "reader-quality"
+    profile = next(item for item in PROFILES if item.name == "evidence-brief")
+    cycle = "v2-predict-engaged"
+    cycle_root, strategy_id = _publication(
+        state, cycle=cycle, revision="d" * 64, topic=topic, profile=profile,
+        published_at=NOW + timedelta(minutes=1),
+    )
+    forecasts = forecast_strategy_candidates(
+        state_root=state, account=ACCOUNT, topic=topic, as_of=NOW
+    )
+    forecasts[profile.name]["expected_engagement_rate_24h"] = 0.5
+    forecasts[profile.name]["expected_engaged_readers_30s_24h"] = 0.5
+    forecasts[profile.name]["engagement_evidence_refs"] = ["engagement-prior:test"]
+    prediction = bind_action_prediction(
+        cycle_root / "action_prediction.json", cycle=cycle, topic=topic,
+        strategy_id=strategy_id, selected_profile_name=profile.name,
+        created_at=NOW, candidate_forecasts=forecasts,
+    )
+    _evidence(
+        state, revision="d" * 64, topic=topic, window_hours=24, value=4,
+        observed_at=NOW + timedelta(hours=24, minutes=5),
+    )
+    _engagement_evidence(
+        state, revision="d" * 64, topic=topic, tracked=4, engaged=2,
+        observed_at=NOW + timedelta(hours=24, minutes=5),
+    )
+    mind = ContentMind(root=state, subject_id="content-agent")
+    settled = settle_action_predictions(
+        state_root=state, account=ACCOUNT, as_of=NOW + timedelta(hours=25), mind=mind,
+    )
+    mature = next(row for row in settled["recorded"] if row["window"] == "24h")
+    assert mature["expected_engaged_readers_30s"] == 0.5
+    assert mature["actual_engaged_readers_30s"] == 2.0
+    assert mature["engaged_prediction_error"] is not None
+    predictions = mind.session.predictive_learning.predictions
+    engaged_id = f"{prediction.prediction_id}:engaged-readers-30s:24h"
+    assert predictions[engaged_id]["target"] == "website:engaged_readers_30s:24h"
+    outcome_id = f"content-outcome:{'d' * 64}:engaged-readers-30s:24h"
+    assert outcome_id in mind.session.predictive_learning.outcomes
