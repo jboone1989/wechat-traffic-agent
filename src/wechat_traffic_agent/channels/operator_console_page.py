@@ -53,13 +53,13 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 <h2>Executable resource pool</h2>
 <div id="resources" class="grid"></div>
 
+<h2>Resource requests & lifecycle</h2>
+<p class="muted">Authorize a resource before provisioning its credential. Provider onboarding is scheduled immediately after approval or credential handoff.</p>
+<div id="requests" class="stack"></div>
+
 <h2>Protected credentials & limits</h2>
 <p class="muted">Secret values are write-only. Quota, reset and expiry metadata are non-secret control data used by the Survival Router.</p>
 <div id="secrets" class="grid"></div>
-
-<h2>Resource requests & lifecycle</h2>
-<p class="muted">A resource must be explicitly authorized before credential provisioning. Provider onboarding is scheduled immediately after approval or credential handoff.</p>
-<div id="requests" class="stack"></div>
 </section>
 
 <script>
@@ -135,7 +135,7 @@ function renderRequests(rows){
   const c=node('div',undefined,'card'),head=node('div',undefined,'row');
   head.append(node('h3',row.provider_label+' · '+row.credential_env,'grow'));
   const auth=row.authorization_status||'PENDING';head.append(badge(auth,auth==='APPROVED'||auth==='LEGACY_APPROVED'?'ok':auth==='REJECTED'?'bad':'pending'));c.append(head,node('p',row.summary));
-  const flow=node('div',undefined,'row');for(const stage of (row.stages||[])){const complete=stage.status==='COMPLETE'||stage.status==='APPROVED'||stage.status==='LEGACY_APPROVED';const bad=stage.status==='REJECTED';flow.append(badge(stage.stage+' · '+stage.status,bad?'bad':complete?'ok':'pending'))}c.append(flow);
+  const flow=node('div',undefined,'row');for(const stage of (row.stages||[])){const complete=stage.status==='COMPLETE'||stage.status==='APPROVED'||stage.status==='LEGACY_APPROVED';const bad=stage.status==='REJECTED';const b=badge(stage.stage+' · '+stage.status,bad?'bad':complete?'ok':'pending');if(stage.at)b.title=stage.at;flow.append(b)}c.append(flow);
   const detail=node('p');detail.textContent='trials '+fmt(row.completed_trial_count)+' · active models '+fmt((row.active_models||[]).join(', '))+' · used '+(row.used?'yes':'no');c.append(detail);
   const actions=node('div',undefined,'row');
   if(auth==='PENDING'){const approve=node('button','Approve');approve.onclick=async()=>{approve.disabled=true;try{const out=await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash(out.credential_configured?'Approved; onboarding scheduled.':'Approved. Configure the credential below; onboarding will start immediately after save.');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};

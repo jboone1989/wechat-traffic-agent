@@ -165,6 +165,41 @@ def test_operator_http_flow_never_echoes_secret(tmp_path, monkeypatch):
     )
 
 
+
+def test_operator_approval_schedules_immediate_resource_onboarding(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    request = HumanAssistanceService(state_root=tmp_path).request(
+        kind="MODEL_RESOURCE_ACCESS", summary="Cerebras access", requested_action="authorize",
+        now=NOW, details={"credential_env":"CEREBRAS_API_KEY","provider_label":"Cerebras"},
+    )
+
+    class Wakeful:
+        def __init__(self):
+            self.calls = []
+        def schedule_resource_followup(self, now, *, seconds=300):
+            self.calls.append((now, seconds))
+
+    wakeful = Wakeful()
+    service = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None, wakeful=wakeful,
+    )
+    client = TestClient(service._app())
+    token = (tmp_path / "secrets" / "operator-console.token").read_text().strip()
+    login = client.post(
+        "/operator/api/session", headers={"X-Operator-Request":"1"}, json={"token":token},
+    )
+    assert login.status_code == 200
+    decision = client.post(
+        f"/operator/api/requests/{request['request_id']}/decision",
+        headers={"X-Operator-Request":"1"}, json={"decision":"APPROVE"},
+    )
+    assert decision.status_code == 200
+    assert decision.json()["authorization_status"] == "APPROVED"
+    assert decision.json()["onboarding_scheduled"] is True
+    assert len(wakeful.calls) == 1
+    assert wakeful.calls[0][1] == 5
+
+
 def test_resource_lifecycle_projects_request_through_verified_active_and_used(tmp_path, monkeypatch):
     request = HumanAssistanceService(state_root=tmp_path).request(
         kind="MODEL_RESOURCE_ACCESS", summary="NVIDIA credential needed", requested_action="authorize",
