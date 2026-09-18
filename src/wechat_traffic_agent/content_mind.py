@@ -158,7 +158,8 @@ class ContentMind:
                 "event_hash": sha256(event_id.encode()).hexdigest(),
             }, sort_keys=True, separators=(",", ":")) + "\n")
         self._seen_event_ids.add(event_id)
-        self._remember_event_id(event_id)
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
 
     def _archive_strategy_rows(self, rows: Iterable[Mapping[str, Any]]) -> None:
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -246,8 +247,7 @@ class ContentMind:
                     "effort": 0.5, "learning_rate": 0.1,
                 },
             )
-            self._observed_event_ids.append(event_id)
-            self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+            self._remember_event_id(event_id)
             interest = self.session.interests.get(topic)
             update = {
                 "topic": topic, "status": "OBSERVED",
@@ -577,8 +577,7 @@ class ContentMind:
                     "inquiry_id": inquiry_id, "question": self.session.inquiry.inquiries[str(inquiry_id)]["question"],
                     "prediction_id": prediction_id, "window": window, "prediction_error": error,
                 })
-            self._observed_event_ids.append(event_id)
-            self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+            self._remember_event_id(event_id)
             applied.append({
                 "event_id": event_id, "prediction_id": prediction_id, "window": window,
                 "prediction_error": error, "reliability": reliability,
