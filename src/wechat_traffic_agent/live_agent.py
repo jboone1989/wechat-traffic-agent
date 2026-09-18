@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -709,15 +709,17 @@ def public_agent_snapshot(
 
 
 class _RateLimiter:
-    def __init__(self) -> None:
+    def __init__(self, *, limit: int = RATE_REQUESTS, window_seconds: int = RATE_WINDOW_SECONDS) -> None:
+        self.limit = int(limit)
+        self.window_seconds = int(window_seconds)
         self._hits: dict[str, deque[float]] = defaultdict(deque)
 
     def allow(self, key: str, now: float) -> bool:
         rows = self._hits[key]
-        cutoff = now - RATE_WINDOW_SECONDS
+        cutoff = now - self.window_seconds
         while rows and rows[0] < cutoff:
             rows.popleft()
-        if len(rows) >= RATE_REQUESTS:
+        if len(rows) >= self.limit:
             return False
         rows.append(now)
         return True
@@ -741,6 +743,8 @@ class LiveAgentService:
         self.host, self.port, self.poll_seconds, self.wakeful = host, int(port), int(poll_seconds), wakeful
         self.started_at = datetime.now(timezone.utc)
         self._limiter = _RateLimiter()
+        self._operator_login_ip_limiter = _RateLimiter(limit=3, window_seconds=600)
+        self._operator_login_global_limiter = _RateLimiter(limit=1, window_seconds=45)
         self._server: Any | None = None
         self._thread: Thread | None = None
 
@@ -882,6 +886,43 @@ class LiveAgentService:
             )
             return response
 
+        async def operator_request_login(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            key = request.client.host if request.client else "unknown"
+            now_mono = time.monotonic()
+            if not self._operator_login_ip_limiter.allow(key, now_mono):
+                return JSONResponse({"error": "login_request_rate_limited"}, status_code=429)
+            if not self._operator_login_global_limiter.allow("global", now_mono):
+                return JSONResponse({"error": "login_request_rate_limited"}, status_code=429)
+            token = operator_console.auth.issue_one_time_access(ttl=timedelta(minutes=10))
+            public_url = str(os.environ.get("CONTENT_OPERATOR_PUBLIC_URL") or "https://livingruntime.com/operator/").strip()
+            if not public_url.startswith("https://"):
+                operator_console.auth.revoke_one_time_access()
+                return JSONResponse({"error": "login_delivery_unavailable"}, status_code=503)
+            link = public_url.rstrip("/") + "/#bootstrap=" + token
+            message = (
+                "Ferro Operator Console 登录请求\n"
+                "一次性登录链接，10 分钟内有效且仅可使用一次：\n"
+                + link
+                + "\n如果这不是你发起的请求，请忽略。"
+            )
+            try:
+                from .human_assistance import operator_notifier
+                delivered = operator_notifier().send_text(message)
+                if str(delivered.get("status") or "") != "SENT":
+                    raise RuntimeError("operator delivery unavailable")
+            except Exception:
+                operator_console.auth.revoke_one_time_access()
+                return JSONResponse({"error": "login_delivery_unavailable"}, status_code=503)
+            return JSONResponse(
+                {"ok": True, "status": "SENT", "expires_in_seconds": 600},
+                status_code=202,
+                headers={"Cache-Control": "no-store"},
+            )
+
         async def operator_login(request: Request):
             if operator_console is None:
                 return JSONResponse({"error": "not_found"}, status_code=404)
@@ -1016,6 +1057,7 @@ class LiveAgentService:
             routes.extend([
                 Route("/operator", operator_page, methods=["GET"]),
                 Route("/operator/", operator_page, methods=["GET"]),
+                Route("/operator/api/request-login", operator_request_login, methods=["POST"]),
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),

@@ -34,8 +34,13 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 
 <section id="login" class="card">
 <h2>Operator sign in</h2>
-<p>Use a one-time access link when available. The durable operator token remains a server-only fallback and never needs to be sent through chat.</p>
-<div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin">Sign in</button></div>
+<p>Send a one-time login link to the configured Enterprise WeChat operator. The link expires in 10 minutes and can be used once.</p>
+<div class="row"><button id="wecomSignin">Send login link to Enterprise WeChat</button><span id="loginStatus" class="muted"></span></div>
+<div class="divider"></div>
+<details><summary class="muted">Emergency token fallback</summary>
+<p class="muted">Use the durable operator token only for recovery when Enterprise WeChat delivery is unavailable.</p>
+<div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin" class="ghost">Sign in with token</button></div>
+</details>
 </section>
 
 <section id="dash" class="hidden">
@@ -167,6 +172,7 @@ function renderSecrets(rows){
  }
 }
 async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
