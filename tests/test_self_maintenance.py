@@ -367,3 +367,26 @@ def test_reconcile_does_not_merge_same_message_with_different_cycles(tmp_path):
 
     assert result["archived_duplicates"] == 0
     assert service.review()["open_count"] == 2
+
+
+
+def test_stale_model_recovery_input_change_gets_invalidation_repair_proposal(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+
+    result = service.ingest_failure({
+        "status": "ERROR",
+        "cycle": "v2-stale",
+        "error_type": "ValueError",
+        "message": "model phase input changed during recovery",
+        "failure_site": "content_goal_loop.py:_run>content_loop.py:_structured>content_loop.py:cognitive_probe",
+    }, now=NOW)
+
+    assert result["status"] == "RECORDED"
+    assert result["problem_status"] == "REPAIR_PROPOSED"
+    assert result["repair_proposal"]["repair_kind"] == "INVALIDATE_STALE_MODEL_RECOVERY_INPUT_CHANGE"
+    assert result["repair_proposal"]["target_files"] == [
+        "src/wechat_traffic_agent/content_loop.py"
+    ]

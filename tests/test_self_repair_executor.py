@@ -154,7 +154,9 @@ def test_deployed_repair_waits_for_real_outcome_instead_of_self_declaring_succes
     result = executor.run_once(now=NOW)
 
     assert result["status"] == "OBSERVING_PRODUCTION"
-    assert json.loads(problem_path.read_text())["status"] == "REPAIR_PROPOSED"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "OBSERVING_PRODUCTION"
+    assert updated["repair_proposal"]["status"] == "OBSERVING_PRODUCTION"
 
 
 def test_no_push_or_deploy_capability_is_exposed_by_executor(tmp_path):
@@ -173,3 +175,49 @@ def test_no_push_or_deploy_capability_is_exposed_by_executor(tmp_path):
 
     assert inspected["push_available"] is False
     assert inspected["deploy_available"] is False
+
+
+
+def test_new_repair_proposal_is_selected_before_observing_problem(tmp_path):
+    state = tmp_path / "state"
+    root = state / "application/self_maintenance/problems"
+    root.mkdir(parents=True)
+    (root / "observing.json").write_text(json.dumps({
+        "problem_id": "self-problem:observing",
+        "status": "OBSERVING_PRODUCTION",
+        "symptom": "old",
+        "error_type": "ValueError",
+        "occurrences": 99,
+        "last_seen_at": "2026-09-19T00:00:00+00:00",
+        "cycles": ["v2-100"],
+        "repair_proposal": {
+            "proposal_id": "repair-proposal:old",
+            "status": "OBSERVING_PRODUCTION",
+            "repair_kind": KIND,
+        },
+    }))
+    (root / "proposed.json").write_text(json.dumps({
+        "problem_id": "self-problem:proposed",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "new",
+        "error_type": "ValueError",
+        "occurrences": 1,
+        "last_seen_at": "2026-09-18T00:00:00+00:00",
+        "cycles": ["v2-200"],
+        "repair_proposal": {
+            "proposal_id": "repair-proposal:new",
+            "status": "PROPOSED",
+            "repair_kind": KIND,
+        },
+    }))
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=None,
+        deployed_root=None,
+        recipes={KIND: _recipe()},
+        python_executable=sys.executable,
+    )
+
+    selected = executor._next_problem()
+
+    assert selected["problem_id"] == "self-problem:proposed"

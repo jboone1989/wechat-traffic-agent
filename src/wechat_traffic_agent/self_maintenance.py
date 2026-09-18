@@ -18,6 +18,7 @@ from agent_runtime.evolution import EvolutionFactKind
 
 _KNOWN_COGNITION_ERROR = "BELIEF_CHANGED requires a persisted worldview change"
 _KNOWN_MODEL_JSON_ERROR = "backend did not return a JSON object"
+_KNOWN_RECOVERY_INPUT_CHANGE = "model phase input changed during recovery"
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -253,6 +254,29 @@ class SelfMaintenanceService:
             case.record_remediation(
                 "Bind only supplied evidence, preserve authoritative topic constraints and title de-duplication, and record that model selection failed."
             )
+        elif _KNOWN_RECOVERY_INPUT_CHANGE in message:
+            contract_observation = case.observe(
+                statement="A persisted model receipt no longer matches the phase input after runtime code changed.",
+                scope="content-cognition-contract",
+                kind=ObservationKind.FAILURE,
+                evidence_refs=evidence_refs,
+                now=now,
+            )
+            hypothesis = case.hypothesize(
+                statement="A stale partial cycle is being treated as a fresh runtime failure instead of an invalidated recovery attempt.",
+                scope="content-cognition-contract",
+                predicts="The mismatch appears only while replaying persisted model-call receipts from an interrupted earlier cycle.",
+                falsifier="The same input mismatch occurs in a new cycle with no persisted model receipts.",
+            )
+            case.support(hypothesis.hypothesis_id, [contract_observation.observation_id])
+            case.conclude(
+                hypothesis.hypothesis_id,
+                summary="The stale cycle must be invalidated without reusing or replaying mismatched model calls.",
+                now=now,
+            )
+            case.record_remediation(
+                "Preserve the diagnostic receipt, mark the stale cycle RECOVERY_INVALIDATED, and let a future fresh cycle restart cognition."
+            )
         return case
 
     @staticmethod
@@ -284,6 +308,14 @@ class SelfMaintenanceService:
                 "two malformed SELECT_EVIDENCE responses bind only supplied evidence",
                 "fallback keeps authoritative topic constraints and title de-duplication",
                 "full content regression before release",
+            ]
+        elif _KNOWN_RECOVERY_INPUT_CHANGE in message:
+            target_file = "src/wechat_traffic_agent/content_loop.py"
+            repair_kind = "INVALIDATE_STALE_MODEL_RECOVERY_INPUT_CHANGE"
+            verification = [
+                "mismatched persisted model receipt becomes RECOVERY_INVALIDATED rather than ERROR",
+                "no mismatched model response is reused or replayed",
+                "future fresh cycle remains eligible",
             ]
         else:
             return None

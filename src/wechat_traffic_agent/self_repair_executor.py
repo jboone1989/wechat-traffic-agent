@@ -189,6 +189,25 @@ DEFAULT_RECIPES: dict[str, RepairRecipe] = {
             "tests/test_self_maintenance.py",
         ),
     ),
+    "INVALIDATE_STALE_MODEL_RECOVERY_INPUT_CHANGE": RepairRecipe(
+        repair_kind="INVALIDATE_STALE_MODEL_RECOVERY_INPUT_CHANGE",
+        target_files=("src/wechat_traffic_agent/content_loop.py",),
+        implementation_markers=(
+            (
+                "src/wechat_traffic_agent/content_loop.py",
+                "'status': 'RECOVERY_INVALIDATED'",
+            ),
+            (
+                "src/wechat_traffic_agent/content_loop.py",
+                "'reason': 'MODEL_PHASE_INPUT_CHANGED'",
+            ),
+        ),
+        edits=(),
+        focused_tests=(
+            "tests/test_content_loop.py",
+            "tests/test_self_maintenance.py",
+        ),
+    ),
 }
 
 
@@ -258,7 +277,7 @@ class SelfRepairExecutor:
                 continue
             if not isinstance(row, dict):
                 continue
-            if str(row.get("status") or "") != "REPAIR_PROPOSED":
+            if str(row.get("status") or "") not in {"REPAIR_PROPOSED", "OBSERVING_PRODUCTION"}:
                 continue
             if not isinstance(row.get("repair_proposal"), dict):
                 continue
@@ -266,6 +285,7 @@ class SelfRepairExecutor:
             rows.append(row)
         rows.sort(
             key=lambda row: (
+                str(row.get("status") or "") == "REPAIR_PROPOSED",
                 int(row.get("occurrences") or 0),
                 str(row.get("last_seen_at") or ""),
             ),
@@ -338,7 +358,7 @@ class SelfRepairExecutor:
                 status="OBSERVING_PRODUCTION",
                 now=now,
                 extra={"repair_kind": recipe.repair_kind, "test": test},
-                update_problem=False,
+                update_problem=True,
             )
 
         workspace_sha = self._git_sha(self.workspace_root)
