@@ -24,6 +24,11 @@ class Runtime:
                     {
                         "title": f"{slug} maintained candidate",
                         "url": f"https://github.com/example/{slug}",
+                        "summary": (
+                            "Open source browser automation agent library"
+                            if "browser" in query.lower()
+                            else "Maintained async HTTP client or extraction library"
+                        ),
                     }
                 ],
             },
@@ -81,3 +86,58 @@ def test_capability_evolution_state_survives_restart(tmp_path):
     assert second.engine.challengers
     assert second.engine.last_search_cycle["browser_automation"] == 100
     assert second.engine.slots["subject_continuity"].core_protected is True
+
+
+def test_noise_search_results_do_not_become_challengers():
+    noise = ContentCapabilityEvolution._challenger(
+        "browser_automation",
+        {
+            "title": "OpenAI | Research & Deployment",
+            "url": "https://openai.com/",
+            "summary": "AI research company",
+        },
+        cycle=1,
+        evidence_ref="receipt:noise",
+    )
+    assert noise is None
+
+
+def test_qualified_github_library_result_becomes_challenger():
+    challenger = ContentCapabilityEvolution._challenger(
+        "browser_automation",
+        {
+            "title": "browser-use: browser automation for AI agents",
+            "url": "https://github.com/browser-use/browser-use",
+            "summary": "Open source browser automation agent library built around Chromium.",
+        },
+        cycle=1,
+        evidence_ref="receipt:github",
+    )
+    assert challenger is not None
+    assert challenger.provider == "github.com"
+    assert "technical-source-qualified:v1" in challenger.evidence_refs
+
+
+def test_remote_browser_service_requires_technical_signal():
+    bad = ContentCapabilityEvolution._challenger(
+        "remote_browser_service",
+        {
+            "title": "ChatGPT",
+            "url": "https://chatgpt.com/",
+            "summary": "Chat with an AI assistant",
+        },
+        cycle=1,
+        evidence_ref="receipt:bad",
+    )
+    good = ContentCapabilityEvolution._challenger(
+        "remote_browser_service",
+        {
+            "title": "Browserbase developer API",
+            "url": "https://www.browserbase.com/docs",
+            "summary": "Cloud browser automation API and SDK for agents.",
+        },
+        cycle=1,
+        evidence_ref="receipt:good",
+    )
+    assert bad is None
+    assert good is not None

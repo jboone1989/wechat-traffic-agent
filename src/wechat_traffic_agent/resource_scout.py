@@ -19,6 +19,7 @@ from agent_runtime.resource_trials import (
     resolve_trial_target, run_bounded_provider_trial,
 )
 
+from .nvidia_catalog import classify_nvidia_model
 from .provider_diagnostics import diagnose_provider_trials
 
 
@@ -42,12 +43,14 @@ def rank_high_capability_model(
         model = str(raw or "").strip()
         if not model or model in excluded_models:
             continue
-        low = model.lower()
-        if any(token in low for token in (
-            "embed", "embedding", "rerank", "guard", "safety",
-            "speech", "audio", "diffusion", "detector",
-        )):
+        classification = classify_nvidia_model(model)
+        if classification.get("endpoint_family") != "openai_chat":
             continue
+        if classification.get("category") not in {
+            "text_reasoning", "vision_multimodal"
+        }:
+            continue
+        low = model.lower()
         profile = model_capability_profile(model)
         score = float(profile.get("capability_score") or 0.0)
         if str(profile.get("capability_tier") or "") == "FRONTIER":

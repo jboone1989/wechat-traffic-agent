@@ -90,6 +90,8 @@ def main() -> int:
     print(json.dumps({"llm_routing_policy": routing_policy}, sort_keys=True))
     from wechat_traffic_agent.resource_scout import ContentResourceScout
     resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
+    from wechat_traffic_agent.nvidia_catalog import NvidiaCapabilityCatalog
+    nvidia_catalog = NvidiaCapabilityCatalog(state_root=state_root)
     from wechat_traffic_agent.capability_evolution import ContentCapabilityEvolution
     capability_evolution = ContentCapabilityEvolution(
         state_root=state_root,
@@ -218,6 +220,7 @@ def main() -> int:
         content_mind=content_mind,
         resource_economy=resource_economy,
         resource_scout=resource_scout,
+        nvidia_catalog=nvidia_catalog,
         capability_evolution=capability_evolution,
         daily_reflection=daily_reflection,
         human_assistance=human_assistance,

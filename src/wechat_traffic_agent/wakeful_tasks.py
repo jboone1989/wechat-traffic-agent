@@ -103,6 +103,13 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        nvidia_catalog = getattr(self, "nvidia_catalog", None)
+        if nvidia_catalog is not None:
+            try:
+                rows["nvidia_capability_catalog"] = nvidia_catalog.observe(now=now)
+            except Exception as exc:  # noqa: BLE001
+                rows["nvidia_capability_catalog"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
             rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
         except Exception as exc:  # noqa: BLE001

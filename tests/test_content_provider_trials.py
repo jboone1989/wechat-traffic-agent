@@ -389,7 +389,7 @@ def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediatel
     assert "nvidia/nemotron-3-super-120b-a12b" in excluded_seen[1]
 
 
-def test_dynamic_high_capability_ranker_prefers_kimi_k3_over_known_frontier_models():
+def test_dynamic_high_capability_ranker_starts_with_strongest_known_general_challenger():
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
     chosen = rank_high_capability_model(
@@ -398,23 +398,49 @@ def test_dynamic_high_capability_ranker_prefers_kimi_k3_over_known_frontier_mode
             "nvidia/nemotron-3-super-120b-a12b",
             "moonshotai/kimi-k3",
             "z-ai/glm-5.3",
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "deepseek-ai/deepseek-v4-flash-0731",
         ],
         frozenset(),
     )
 
-    assert chosen == "moonshotai/kimi-k3"
+    assert chosen == "nvidia/nemotron-3-ultra-550b-a55b"
 
 
-def test_dynamic_high_capability_ranker_moves_to_next_challenger_after_kimi_cooldown():
+def test_dynamic_high_capability_ranker_rotates_across_mainstream_frontier_challengers():
+    from wechat_traffic_agent.resource_scout import rank_high_capability_model
+
+    models = [
+        "nvidia/nemotron-3-ultra-550b-a55b",
+        "z-ai/glm-5.3",
+        "moonshotai/kimi-k3",
+        "deepseek-ai/deepseek-v4-flash-0731",
+        "nvidia/nemotron-3-super-120b-a12b",
+    ]
+    assert rank_high_capability_model(
+        models,
+        frozenset({"nvidia/nemotron-3-ultra-550b-a55b"}),
+    ) == "z-ai/glm-5.3"
+    assert rank_high_capability_model(
+        models,
+        frozenset({
+            "nvidia/nemotron-3-ultra-550b-a55b",
+            "z-ai/glm-5.3",
+        }),
+    ) == "moonshotai/kimi-k3"
+
+
+def test_dynamic_high_capability_ranker_does_not_mistake_specialized_nemotron_for_chat_model():
     from wechat_traffic_agent.resource_scout import rank_high_capability_model
 
     chosen = rank_high_capability_model(
         [
-            "moonshotai/kimi-k3",
+            "nvidia/nemotron-parse-2.0",
+            "nvidia/nemotron-3.5-content-safety",
+            "nvidia/nemotron-3-embed-1b",
             "nvidia/nemotron-3-super-120b-a12b",
-            "z-ai/glm-5.3",
         ],
-        frozenset({"moonshotai/kimi-k3"}),
+        frozenset(),
     )
 
     assert chosen == "nvidia/nemotron-3-super-120b-a12b"
