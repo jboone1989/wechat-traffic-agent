@@ -390,6 +390,9 @@ class OperatorConsole:
         policy = self._load_json(root / "policy.json")
         health_doc = self._load_json(root / "runtime" / "health.json")
         latest = self._load_json(root / "runtime" / "latest.json")
+        hibernation = self._load_json(
+            self.state_root / "application" / "resource_observations" / "hibernation.json"
+        )
         health_rows = health_doc.get("resources")
         health_rows = health_rows if isinstance(health_rows, dict) else {}
         resources = []
@@ -453,6 +456,7 @@ class OperatorConsole:
             "resources": resources,
             "policy": safe_policy,
             "latest_route": safe_latest,
+            "hibernation": hibernation if hibernation.get("status") == "HIBERNATE" else None,
         }
 
     def status(self) -> dict[str, Any]:
@@ -495,6 +499,52 @@ class OperatorConsole:
     ) -> dict[str, Any]:
         result = self.vault.put_metadata(env_name, raw)
         return {**result, "resource_pool_sync": self._sync_pool()}
+
+
+    def force_wake(self, *, now: datetime | None = None) -> dict[str, Any]:
+        instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        root = self.state_root / "application" / "resource_observations"
+        hibernation_path = root / "hibernation.json"
+        current = self._load_json(hibernation_path)
+        if current.get("status") != "HIBERNATE":
+            return {"status": "NOT_HIBERNATING"}
+        receipt = {
+            "schema_version": "operator-force-wake.v1",
+            "status": "AUTHORIZED",
+            "authorized_at": instant.replace(microsecond=0).isoformat(),
+            "operator_ref": "authenticated-operator-console",
+            "prior_hibernation": current,
+            "scope": "ONE_CONTENT_CYCLE",
+        }
+        receipt_id = "force-wake:" + sha256(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        receipt["receipt_id"] = receipt_id
+        receipts = root / "operator_force_wake_receipts"
+        receipts.mkdir(parents=True, exist_ok=True)
+        target = receipts / f"{receipt_id.split(':', 1)[1]}.json"
+        if not target.exists():
+            target.write_text(
+                json.dumps(receipt, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+        override = {
+            "schema_version": "operator-force-wake-override.v1",
+            "status": "ACTIVE",
+            "authorized_at": receipt["authorized_at"],
+            "expires_at": (instant + timedelta(minutes=30)).replace(microsecond=0).isoformat(),
+            "receipt_ref": receipt_id,
+            "scope": "ONE_CONTENT_CYCLE",
+        }
+        override_path = root / "hibernation_override.json"
+        tmp = override_path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(override, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, override_path)
+        hibernation_path.unlink(missing_ok=True)
+        return {"status": "FORCED_AWAKE", "receipt": receipt, "override": override}
 
 
 def operator_console_enabled() -> bool:
