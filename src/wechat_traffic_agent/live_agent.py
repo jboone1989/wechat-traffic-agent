@@ -996,6 +996,100 @@ class LiveAgentService:
                 return JSONResponse({"error": "resource_decision_failed"}, status_code=500)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
+        async def operator_survival_need_decision(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                decision = str(body.get("decision") or "").strip().upper()
+                if decision not in {"APPROVE", "REJECT"}:
+                    raise ValueError("decision must be APPROVE or REJECT")
+                result = operator_console.decide_survival_need(
+                    str(request.path_params["need_id"]),
+                    approved=(decision == "APPROVE"),
+                )
+                result["followup_scheduled"] = (
+                    schedule_operator_resource_onboarding() if decision == "APPROVE" else False
+                )
+            except FileNotFoundError:
+                return JSONResponse({"error": "survival_need_not_found"}, status_code=404)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_register_remote_host(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("remote host body must be an object")
+                capacity = body.get("capacity") if isinstance(body.get("capacity"), dict) else {}
+                result = operator_console.register_remote_host(
+                    name=str(body.get("name") or ""),
+                    health_url=str(body.get("health_url") or ""),
+                    control_url=str(body.get("control_url") or ""),
+                    capacity=capacity,
+                    reliability=str(body.get("reliability") or "UNKNOWN"),
+                )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(result, status_code=201, headers={"Cache-Control": "no-store"})
+
+        async def operator_verify_remote_host(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                result = operator_console.verify_remote_host(str(request.path_params["host_id"]))
+            except FileNotFoundError:
+                return JSONResponse({"error": "remote_host_not_found"}, status_code=404)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_plan_service_offload(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("offload body must be an object")
+                result = operator_console.plan_service_offload(
+                    str(body.get("service_id") or ""),
+                    str(body.get("host_id") or ""),
+                )
+            except FileNotFoundError as exc:
+                return JSONResponse({"error": "resource_not_found", "resource": str(exc)}, status_code=404)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(result, status_code=201, headers={"Cache-Control": "no-store"})
+
+        async def operator_execute_service_offload(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                result = operator_console.execute_service_offload(
+                    str(request.path_params["action_id"])
+                )
+            except FileNotFoundError:
+                return JSONResponse({"error": "offload_action_not_found"}, status_code=404)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except Exception as exc:
+                return JSONResponse({
+                    "error": "offload_execution_failed",
+                    "error_type": type(exc).__name__,
+                }, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         async def operator_store_secret(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -1062,6 +1156,11 @@ class LiveAgentService:
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
+                Route("/operator/api/survival/needs/{need_id}/decision", operator_survival_need_decision, methods=["POST"]),
+                Route("/operator/api/survival/hosts", operator_register_remote_host, methods=["POST"]),
+                Route("/operator/api/survival/hosts/{host_id}/verify", operator_verify_remote_host, methods=["POST"]),
+                Route("/operator/api/survival/offload", operator_plan_service_offload, methods=["POST"]),
+                Route("/operator/api/survival/offload/{action_id}/execute", operator_execute_service_offload, methods=["POST"]),
                 Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
                 Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
                 Route("/operator/api/logout", operator_logout, methods=["POST"]),

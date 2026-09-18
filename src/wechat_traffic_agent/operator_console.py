@@ -615,35 +615,26 @@ class OperatorConsole:
             "latest_route": safe_latest,
         }
 
+    def _survival_manager(self):
+        from .survival_resources import SurvivalResourceManager
+        return SurvivalResourceManager(self.state_root)
+
     def survival_status(self) -> dict[str, Any]:
         llm = self.resource_status()
-        disk = shutil.disk_usage(self.state_root)
-        disk_used_ratio = (disk.used / disk.total) if disk.total else 1.0
-        mem_total_kib = mem_available_kib = None
-        try:
-            values = {}
-            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-                if ":" not in line:
-                    continue
-                key, value = line.split(":", 1)
-                values[key] = int(value.strip().split()[0])
-            mem_total_kib = values.get("MemTotal")
-            mem_available_kib = values.get("MemAvailable")
-        except (OSError, ValueError, IndexError):
-            pass
-        memory_used_ratio = None
-        if mem_total_kib and mem_available_kib is not None:
-            memory_used_ratio = 1.0 - (mem_available_kib / mem_total_kib)
-        load_1m = None
-        try:
-            load_1m = os.getloadavg()[0]
-        except (AttributeError, OSError):
-            pass
-        disk_pressure = disk.free < 5 * 1024**3 or disk_used_ratio >= 0.90
-        memory_pressure = (
-            mem_available_kib is not None and mem_available_kib < 1024 * 1024
-        ) or (memory_used_ratio is not None and memory_used_ratio >= 0.90)
+        manager = self._survival_manager()
+        observed = manager.observe(now=datetime.now(timezone.utc))
+        resources = list(observed.get("resources") or [])
+        by_domain: dict[str, list[dict[str, Any]]] = {}
+        for row in resources:
+            by_domain.setdefault(str(row.get("domain") or "UNKNOWN"), []).append(row)
+
+        storage = next(iter(by_domain.get("STORAGE", [])), {})
+        compute = next(iter(by_domain.get("COMPUTE", [])), {})
+        hosting = next(iter(by_domain.get("HOSTING", [])), {})
+        remote = by_domain.get("REMOTE_MACHINE", [])
+        services = by_domain.get("SERVICE", [])
         return {
+            "pressure": observed.get("pressure"),
             "domains": [
                 {
                     "domain": "LLM",
@@ -652,34 +643,24 @@ class OperatorConsole:
                     "free_count": llm.get("free_count", 0),
                     "pressure": (llm.get("policy") or {}).get("pressure") or "UNKNOWN",
                 },
+                {**storage, "domain": "STORAGE"},
+                {**compute, "domain": "COMPUTE"},
+                {**hosting, "domain": "HOSTING"},
                 {
-                    "domain": "STORAGE",
-                    "status": "PRESSURE" if disk_pressure else "HEALTHY",
-                    "total_gib": round(disk.total / 1024**3, 3),
-                    "free_gib": round(disk.free / 1024**3, 3),
-                    "used_ratio": round(disk_used_ratio, 4),
+                    "domain": "REMOTE_MACHINE",
+                    "status": "ACTIVE" if any(row.get("status") == "ACTIVE" for row in remote) else "MISSING",
+                    "resource_count": len(remote),
+                    "active_count": sum(1 for row in remote if row.get("status") == "ACTIVE"),
                 },
                 {
-                    "domain": "COMPUTE",
-                    "status": "PRESSURE" if memory_pressure else "HEALTHY",
-                    "cpu_count": os.cpu_count(),
-                    "load_1m": round(load_1m, 3) if load_1m is not None else None,
-                    "memory_available_gib": (
-                        round(mem_available_kib / 1024**2, 3)
-                        if mem_available_kib is not None else None
-                    ),
-                    "memory_used_ratio": (
-                        round(memory_used_ratio, 4)
-                        if memory_used_ratio is not None else None
+                    "domain": "SERVICE",
+                    "status": "ACTIVE" if services else "MISSING",
+                    "resource_count": len(services),
+                    "movable_count": sum(
+                        1 for row in services if row.get("migration_class") != "PRIMARY_STATEFUL"
                     ),
                 },
-                {
-                    "domain": "HOSTING",
-                    "status": "LOCAL_PRIMARY",
-                    "state_root": "configured",
-                    "relocation": "resource-planner-managed",
-                },
-            ]
+            ],
         }
 
     def status(self) -> dict[str, Any]:
@@ -690,7 +671,46 @@ class OperatorConsole:
             "resource_requests": self.resource_requests(),
             "llm_resources": self.resource_status(),
             "survival_resources": self.survival_status(),
+            "survival_control": self._survival_manager().status(),
         }
+
+    def decide_survival_need(
+        self, need_id: str, *, approved: bool, now: datetime | None = None
+    ) -> dict[str, Any]:
+        return self._survival_manager().decide_need(
+            need_id, approved=approved, now=now or datetime.now(timezone.utc)
+        )
+
+    def register_remote_host(
+        self, *, name: str, health_url: str, capacity: dict[str, Any],
+        reliability: str, control_url: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        return self._survival_manager().register_remote_host(
+            name=name, health_url=health_url, control_url=control_url,
+            capacity=capacity, reliability=reliability,
+            now=now or datetime.now(timezone.utc),
+        )
+
+    def verify_remote_host(
+        self, host_id: str, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        return self._survival_manager().verify_remote_host(
+            host_id, now=now or datetime.now(timezone.utc)
+        )
+
+    def plan_service_offload(
+        self, service_id: str, host_id: str, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        return self._survival_manager().plan_offload(
+            service_id, host_id, now=now or datetime.now(timezone.utc)
+        )
+
+    def execute_service_offload(
+        self, action_id: str, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        return self._survival_manager().execute_offload(
+            action_id, now=now or datetime.now(timezone.utc)
+        )
 
     def _sync_pool(self) -> dict[str, Any]:
         try:

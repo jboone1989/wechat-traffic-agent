@@ -281,7 +281,7 @@ def test_provider_discovery_does_not_claim_credential_verification(tmp_path):
 def test_survival_status_unifies_llm_storage_compute_and_hosting(tmp_path):
     status = OperatorConsole(tmp_path).survival_status()
     domains = {row["domain"]: row for row in status["domains"]}
-    assert set(domains) == {"LLM", "STORAGE", "COMPUTE", "HOSTING"}
+    assert set(domains) == {"LLM", "STORAGE", "COMPUTE", "HOSTING", "REMOTE_MACHINE", "SERVICE"}
     assert domains["STORAGE"]["total_gib"] > 0
     assert domains["COMPUTE"]["cpu_count"] >= 1
     assert domains["HOSTING"]["status"] == "LOCAL_PRIMARY"
@@ -623,3 +623,131 @@ def test_failed_operator_login_delivery_revokes_one_time_token(tmp_path, monkeyp
     assert response.status_code == 503
     assert response.json() == {"error": "login_delivery_unavailable"}
     assert not (tmp_path / "secrets" / "operator-console-bootstrap.json").exists()
+
+
+def test_survival_control_http_registers_verifies_and_executes_signed_offload(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    from agent_network.crypto import Identity
+    from wechat_traffic_agent.survival_resources import SurvivalResourceManager
+
+    remote_identity = Identity.generate("remote.edge.http")
+
+    def remote_call(self, url, *, method, payload=None, timeout):
+        if method == "GET":
+            return {
+                "status":"HEALTHY",
+                "agent_id":remote_identity.agent_id,
+                "key_id":remote_identity.key_id,
+                "public_key":remote_identity.public_key,
+                "capabilities":["survival.workload.deploy.v1"],
+            }
+        receipt = {
+            "type":"survival.workload.deploy.receipt.v1",
+            "status":"DEPLOYED",
+            "action_id":payload["action_id"],
+            "request_hash":payload["object_hash"],
+            "deployment_id":"deployment:http-1",
+            "agent_id":remote_identity.agent_id,
+            "key_id":remote_identity.key_id,
+        }
+        receipt["signature"] = remote_identity.sign_object(receipt)
+        return receipt
+
+    monkeypatch.setattr(SurvivalResourceManager, "_http_json", remote_call)
+
+    class Wakeful:
+        def schedule_resource_followup(self, now, *, seconds=300):
+            self.followup = (now, seconds)
+
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None, wakeful=Wakeful(),
+    )._app())
+    token = (tmp_path / "secrets" / "operator-console.token").read_text().strip()
+    assert client.post(
+        "/operator/api/session", headers={"X-Operator-Request":"1"}, json={"token":token}
+    ).status_code == 200
+
+    created = client.post(
+        "/operator/api/survival/hosts",
+        headers={"X-Operator-Request":"1"},
+        json={
+            "name":"edge-one",
+            "health_url":"https://edge.example.test/health",
+            "control_url":"https://edge.example.test/v1/workloads",
+            "reliability":"BEST_EFFORT",
+            "capacity":{"cpu_count":2,"memory_gib":4},
+        },
+    )
+    assert created.status_code == 201
+    host_id = created.json()["host_id"]
+
+    verified = client.post(
+        "/operator/api/survival/hosts/" + host_id + "/verify",
+        headers={"X-Operator-Request":"1"}, json={},
+    )
+    assert verified.status_code == 200
+    assert verified.json()["deployment_capable"] is True
+
+    planned = client.post(
+        "/operator/api/survival/offload",
+        headers={"X-Operator-Request":"1"},
+        json={"service_id":"website-static","host_id":host_id},
+    )
+    assert planned.status_code == 201
+    action_id = planned.json()["action_id"]
+
+    deployed = client.post(
+        "/operator/api/survival/offload/" + action_id + "/execute",
+        headers={"X-Operator-Request":"1"}, json={},
+    )
+    assert deployed.status_code == 200
+    assert deployed.json()["status"] == "DEPLOYED"
+
+    primary = client.post(
+        "/operator/api/survival/offload",
+        headers={"X-Operator-Request":"1"},
+        json={"service_id":"content-agent-core","host_id":host_id},
+    )
+    assert primary.status_code == 400
+    assert "primary stateful" in primary.json()["error"]
+
+
+def test_survival_need_operator_decision_http(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    from wechat_traffic_agent.survival_resources import SurvivalResourceManager
+
+    manager = SurvivalResourceManager(tmp_path)
+    manager.needs_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.needs_path.write_text(json.dumps([{
+        "need_id":"survival-need:manual-offload",
+        "domain":"SERVICE",
+        "action":"OFFLOAD_NON_CORE_SERVICE",
+        "status":"PENDING",
+        "authorization":"OPERATOR_REQUIRED",
+        "urgency":"NORMAL",
+        "reason":"relieve local pressure",
+        "created_at":NOW.isoformat(),
+    }]))
+
+    class Wakeful:
+        def __init__(self): self.calls=[]
+        def schedule_resource_followup(self, now, *, seconds=300):
+            self.calls.append(seconds)
+
+    wakeful = Wakeful()
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None, wakeful=wakeful,
+    )._app())
+    token = (tmp_path / "secrets" / "operator-console.token").read_text().strip()
+    assert client.post(
+        "/operator/api/session", headers={"X-Operator-Request":"1"}, json={"token":token}
+    ).status_code == 200
+
+    response = client.post(
+        "/operator/api/survival/needs/survival-need:manual-offload/decision",
+        headers={"X-Operator-Request":"1"}, json={"decision":"APPROVE"},
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "APPROVED"
+    assert response.json()["followup_scheduled"] is True
+    assert wakeful.calls == [5]
