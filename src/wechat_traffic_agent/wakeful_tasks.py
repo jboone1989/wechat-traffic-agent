@@ -4,12 +4,74 @@ from __future__ import annotations
 import asyncio
 from contextlib import nullcontext
 from datetime import datetime
+from hashlib import sha256
+import json
+from pathlib import Path
 from typing import Any
 
 
 class WakefulContentTaskRunner:
     def __init__(self, **components: Any) -> None:
         self.__dict__.update(components)
+
+    def _windfall_pending_path(self) -> Path | None:
+        state_root = getattr(self, "state_root", None)
+        if state_root is None:
+            return None
+        return Path(state_root) / "application" / "llm_resource_pool" / "windfall_feast_pending.json"
+
+    def _record_windfall_pending(self, windfall: dict[str, Any], now: datetime) -> None:
+        path = self._windfall_pending_path()
+        if path is None:
+            return
+        model = str(windfall.get("model") or "").strip()
+        if not model:
+            return
+        payload = {
+            "schema_version": "llm-windfall-feast.v1",
+            "model": model,
+            "provider_label": str(windfall.get("provider_label") or ""),
+            "observed_at": str(windfall.get("observed_at") or now.isoformat()),
+            "capability_tier": str(windfall.get("capability_tier") or ""),
+            "capability_score": float(windfall.get("capability_score") or 0.0),
+            "trial_ids": [str(x) for x in windfall.get("trial_ids") or () if str(x)],
+            "status": "PENDING",
+        }
+        payload["event_id"] = "windfall-feast:" + sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:24]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+    def _load_windfall_pending(self) -> dict[str, Any] | None:
+        path = self._windfall_pending_path()
+        if path is None or not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return raw if isinstance(raw, dict) and raw.get("status") == "PENDING" else None
+
+    def _consume_windfall_pending(self, pending: dict[str, Any], hypothesis_id: str, now: datetime) -> None:
+        path = self._windfall_pending_path()
+        if path is None or not path.exists():
+            return
+        receipt_dir = path.parent / "windfall_feast_receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        receipt = {
+            **pending,
+            "status": "CONSUMED",
+            "hypothesis_id": str(hypothesis_id),
+            "consumed_at": now.isoformat(),
+        }
+        receipt_path = receipt_dir / (str(pending.get("event_id") or "windfall") + ".json")
+        tmp = receipt_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+        tmp.replace(receipt_path)
+        path.unlink(missing_ok=True)
 
     def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
         if task == "RESOURCE_REVIEW":
@@ -30,12 +92,14 @@ class WakefulContentTaskRunner:
 
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
+        pressure = "UNKNOWN"
         try:
             observation = self.resource_economy.observe(now)
             rows["resource_observation"] = observation
             projection = self.content_mind.public_projection().get("resource_awareness") or {}
             current = projection.get("current") or {}
-            self.wakeful.set_resource_pressure(str(current.get("pressure") or "UNKNOWN"))
+            pressure = str(current.get("pressure") or "UNKNOWN")
+            self.wakeful.set_resource_pressure(pressure)
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
@@ -44,6 +108,17 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["resource_scout"] = self._error(exc)
             rows["status"] = "DEGRADED"
+        capability_evolution = getattr(self, "capability_evolution", None)
+        if capability_evolution is not None:
+            try:
+                rows["capability_evolution"] = capability_evolution.review(
+                    now=now,
+                    cycle=int(now.timestamp() // 3600),
+                    pressure=pressure,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["capability_evolution"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
             rows["resource_verification"] = self.resource_scout.verify_pending(now=now, limit=8)
         except Exception as exc:  # noqa: BLE001
@@ -127,6 +202,7 @@ class WakefulContentTaskRunner:
                     windfall = probe_windfall(now=now)
                     rows["capability_windfall"] = windfall
                     if windfall.get("status") == "AVAILABLE":
+                        self._record_windfall_pending(windfall, now)
                         sync_policy = getattr(
                             self.resource_economy, "sync_llm_routing_policy", None
                         )
@@ -202,14 +278,55 @@ class WakefulContentTaskRunner:
             rows["status"] = "DEGRADED"
         return rows
 
+    def _windfall_deliberation(
+        self, runtime: Any, pending: dict[str, Any], now: datetime
+    ) -> dict[str, Any]:
+        deliberate = getattr(runtime, "deliberate_windfall_self_review", None)
+        if not callable(deliberate):
+            return {"status": "WINDFALL_RUNTIME_CAPABILITY_UNAVAILABLE"}
+        if not bool(getattr(runtime, "has_advisory_backend", False)):
+            return {"status": "WINDFALL_BACKEND_UNAVAILABLE"}
+        refs = [
+            str(x) for x in pending.get("trial_ids") or () if str(x)
+        ]
+        event_id = str(pending.get("event_id") or "")
+        model = str(pending.get("model") or "")
+        if event_id:
+            refs.append(event_id)
+        if model:
+            refs.append("windfall-model:" + model)
+        hypothesis = asyncio.run(
+            deliberate(evidence_refs=refs, max_tokens=1800)
+        )
+        persist = getattr(runtime, "persist", None)
+        if callable(persist):
+            persist()
+        hypothesis_id = str(getattr(hypothesis, "hypothesis_id", "") or "")
+        self._consume_windfall_pending(pending, hypothesis_id, now)
+        return {
+            "status": "WINDFALL_PROPOSED",
+            "hypothesis_id": hypothesis_id,
+            "model": model,
+            "confidence": float(getattr(hypothesis, "confidence", 0.0) or 0.0),
+            "fitness_dimensions": sorted(
+                dict(getattr(hypothesis, "expected_fitness", {}) or {})
+            ),
+            "observed_at": now.isoformat(),
+            "windfall_used": True,
+            "token_budget": 1800,
+        }
+
     def _evolution_deliberation(self, now: datetime) -> dict[str, Any]:
         runtime = getattr(self.app, "domain_runtime", None)
         deliberate = getattr(runtime, "deliberate_evolution_need", None)
         if runtime is None or not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
 
+        pending_windfall = self._load_windfall_pending()
         needs = list(getattr(runtime, "evolution_needs", ()) or ())
         if not needs:
+            if pending_windfall is not None:
+                return self._windfall_deliberation(runtime, pending_windfall, now)
             return {"status": "NO_OPEN_NEEDS"}
 
         active_hypothesis_needs: set[str] = set()
@@ -242,6 +359,8 @@ class WakefulContentTaskRunner:
             None,
         )
         if candidate is None:
+            if pending_windfall is not None:
+                return self._windfall_deliberation(runtime, pending_windfall, now)
             return {
                 "status": "ALREADY_PROPOSED",
                 "open_need_count": len(needs),
@@ -277,6 +396,13 @@ class WakefulContentTaskRunner:
         persist = getattr(runtime, "persist", None)
         if callable(persist):
             persist()
+        hypothesis_id = str(
+            getattr(hypothesis, "hypothesis_id", "") or ""
+        )
+        if pending_windfall is not None and windfall_active:
+            self._consume_windfall_pending(
+                pending_windfall, hypothesis_id, now
+            )
         expected_fitness = dict(
             getattr(hypothesis, "expected_fitness", {}) or {}
         )
