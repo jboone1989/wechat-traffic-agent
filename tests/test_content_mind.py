@@ -356,3 +356,35 @@ def test_strategy_history_archives_and_old_replay_remains_deduped(tmp_path, monk
     checkpoint = json.loads((root / "application/content_mind/checkpoint.json").read_text())
     assert checkpoint["archive_summary"]["strategy_outcomes_archived"] == 2
     assert (root / "application/content_mind/seen_event_ids.jsonl").exists()
+
+
+def test_archived_strategy_outcome_remains_available_for_delayed_resource_settlement(tmp_path, monkeypatch):
+    import wechat_traffic_agent.content_mind as content_mind_module
+
+    monkeypatch.setattr(content_mind_module, "MAX_STRATEGY_OUTCOMES", 1)
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    rows = [
+        {
+            "outcome_id": "archive-resource-1", "publication_id": "pub-old",
+            "topic": "archive-topic", "profile_name": "evidence-brief",
+            "pageviews_24h": 10, "tracked_pageviews_24h": 10,
+            "engaged_readers_30s_24h": 5, "engagement_rate_24h": 0.5,
+            "observed_at": "2026-09-11T00:00:00+00:00",
+            "evidence_refs": ["metric:old"],
+        },
+        {
+            "outcome_id": "archive-resource-2", "publication_id": "pub-new",
+            "topic": "archive-topic", "profile_name": "evidence-brief",
+            "pageviews_24h": 20, "tracked_pageviews_24h": 20,
+            "engaged_readers_30s_24h": 10, "engagement_rate_24h": 0.5,
+            "observed_at": "2026-09-12T00:00:00+00:00",
+            "evidence_refs": ["metric:new"],
+        },
+    ]
+    mind.observe_strategy_outcomes(rows)
+    assert "archive-resource-1" not in mind._strategy_outcomes
+    archived = mind.audience_outcome_for_publication("pub-old")
+    assert archived is not None
+    assert archived["outcome_id"] == "archive-resource-1"
+    assert archived["publication_id"] == "pub-old"
