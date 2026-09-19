@@ -203,15 +203,21 @@ function renderDomains(data){
   root.append(c)}
 }
 function renderSurvivalControl(data){
- const ctl=data.survival_control||{},needs=(ctl.needs||[]).filter(x=>x.status==='PENDING'),actions=ctl.actions||[],root=el('survivalNeeds'),log=el('survivalActions');
+ const ctl=data.survival_control||{},needs=(ctl.needs||[]).filter(x=>['PENDING','APPROVED','AWAITING_RESOURCE'].includes(x.status)),actions=ctl.actions||[],root=el('survivalNeeds'),log=el('survivalActions');
  root.replaceChildren();log.replaceChildren();
  if(!needs.length)root.append(node('div','暂无需要处理的操作','card muted'));
- for(const row of needs){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',fmt(row.action),'grow'),badge(fmt(row.urgency||'NORMAL'),'pending'));c.append(head,node('p',row.reason||'','muted'));
-  const controls=node('div',undefined,'row');
-  const approve=node('button','批准','primary'),reject=node('button','拒绝','ghost');
-  approve.onclick=async()=>{approve.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash('已批准');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};
-  reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});flash('已拒绝');await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};
-  controls.append(approve,reject);c.append(controls);root.append(c)}
+ for(const row of needs){
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row'),kind=row.status==='APPROVED'?'ok':row.status==='AWAITING_RESOURCE'?'info':'pending';
+  head.append(node('h3',fmt(row.action),'grow'),badge(fmt(row.status),kind),badge(fmt(row.urgency||'NORMAL'),'pending'));c.append(head,node('p',row.reason||'','muted'));
+  if(row.authorization)c.append(node('div',fmt(row.authorization),'mono muted'));
+  if(row.retry_count)c.append(node('div','重试 '+fmt(row.retry_count)+' · 下次 '+fmt(row.next_retry_at)+' · 最近错误 '+fmt(row.last_error_type||row.last_result_status),'mono muted'));
+  if(row.status==='PENDING'&&row.authorization!=='AUTONOMOUS_SAFE_POLICY'){
+   const controls=node('div',undefined,'row'),approve=node('button','批准','primary'),reject=node('button','拒绝','ghost');
+   approve.onclick=async()=>{approve.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash('已批准');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};
+   reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});flash('已拒绝');await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};
+   controls.append(approve,reject);c.append(controls)
+  }else if(row.authorization==='AUTONOMOUS_SAFE_POLICY'){c.append(node('p','Ferro 自动处理，无需人工批准','muted'))}
+  root.append(c)}
  if(!actions.length)log.append(node('div','暂无历史操作','muted'));
  for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('strong',fmt(row.action),'grow'),badge(fmt(row.status),row.status==='FAILED'?'bad':'info'));c.append(head,node('p',fmt(row.observed_at),'muted'));
   if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','执行迁移');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}
@@ -219,9 +225,11 @@ function renderSurvivalControl(data){
 function renderRemoteHosts(data){
  const rows=((data.survival_control||{}).remote_hosts||[]),root=el('remoteHosts');root.replaceChildren();
  if(!rows.length){root.append(node('div','暂无远程主机','card muted'));return}
- for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'UNKNOWN',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));c.append(head);
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'UNKNOWN',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));if(row.receiver_status)head.append(badge('receiver '+fmt(row.receiver_status),row.receiver_status==='VERIFIED'?'ok':row.receiver_status==='DEGRADED'||row.receiver_status==='PROVISION_FAILED'?'bad':'pending'));if(row.active_receiver_transport)head.append(badge(fmt(row.active_receiver_transport),'info'));c.append(head);
   c.append(node('p',row.ssh_host?fmt(row.ssh_username)+'@'+fmt(row.ssh_host)+':'+fmt(row.ssh_port):fmt(row.health_url),'muted'));
-  const detail=document.createElement('details'),summary=node('summary','查看详情','muted'),body=node('div',undefined,'mono muted');body.textContent='可靠性 '+fmt(row.reliability)+' · '+JSON.stringify(row.capacity||{});detail.append(summary,body);c.append(detail);
+  if(row.ssh_receiver_status)c.append(node('div','SSH receiver '+fmt(row.ssh_receiver_status)+' · '+fmt(row.ssh_receiver_release_sha),'mono muted'));
+  if(row.ssh_receiver_last_error)c.append(node('div','最近安装错误 '+fmt(row.ssh_receiver_last_error),'mono bad'));
+  const detail=document.createElement('details'),summary=node('summary','查看详情','muted'),body=node('div',undefined,'mono muted');body.textContent='可靠性 '+fmt(row.reliability)+' · '+JSON.stringify(row.capacity||{})+' · host '+fmt(row.host_instance_id)+' · receiver '+fmt(row.receiver_transport);detail.append(summary,body);c.append(detail);
   if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','验证并启用');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
 }
 function renderServicePlacements(data){
