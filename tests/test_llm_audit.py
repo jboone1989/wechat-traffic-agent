@@ -11,6 +11,10 @@ class FakeProvider:
     async def complete(self, prompt, **kwargs):
         return "reply:" + prompt
 
+    async def stream(self, prompt, **kwargs):
+        yield "reply:"
+        yield prompt
+
 
 def test_audited_provider_preserves_type_and_records_call(tmp_path):
     provider = FakeProvider()
@@ -50,3 +54,18 @@ def test_audit_rolls_old_rows_when_storage_limit_is_crossed(tmp_path):
     assert rows[0]["prompt"] == "11"
     assert len(rows) < 12
     assert store.path.stat().st_size <= 1024 * 1024
+
+
+def test_audited_provider_records_native_stream_and_first_token(tmp_path):
+    provider = audited_provider(FakeProvider(), tmp_path, scope="owner-chat")
+
+    async def consume():
+        return [chunk async for chunk in provider.stream("hello", system="owner")]
+
+    assert asyncio.run(consume()) == ["reply:", "hello"]
+    row = LLMRequestAuditStore(tmp_path).recent()[0]
+    assert row["scope"] == "owner-chat"
+    assert row["operation"] == "stream"
+    assert row["response"] == "reply:hello"
+    assert row["status"] == "OK"
+    assert row["first_token_ms"] is not None

@@ -7,7 +7,11 @@ from types import SimpleNamespace
 from starlette.testclient import TestClient
 
 from wechat_traffic_agent.live_agent import LiveAgentService
-from wechat_traffic_agent.operator_private_chat import OperatorConversationStore, parse_model_json
+from wechat_traffic_agent.operator_private_chat import (
+    OperatorConversationStore,
+    ReplyJSONStreamDecoder,
+    parse_model_json,
+)
 
 
 class FakeRuntime:
@@ -58,9 +62,10 @@ class FakeApplication:
 class StructuredProvider:
     def __init__(self) -> None:
         self.calls = []
+        self.stream_calls = []
 
-    async def complete(self, prompt, **kwargs):
-        self.calls.append((prompt, kwargs))
+    @staticmethod
+    def response() -> str:
         return json.dumps({
             "reply": "这个目标已经足够具体，我先把它整理成目标草案，正式激活前不会执行。",
             "goal_candidate": {
@@ -69,7 +74,18 @@ class StructuredProvider:
                 "reason": "Owner and Ferro need to discuss goals before committing them.",
                 "constraints": ["private owner context", "no hidden chain-of-thought"],
             },
+            "memory_candidates": [],
         }, ensure_ascii=False)
+
+    async def complete(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        return self.response()
+
+    async def stream(self, prompt, **kwargs):
+        self.stream_calls.append((prompt, kwargs))
+        raw = self.response()
+        for offset in range(0, len(raw), 7):
+            yield raw[offset:offset + 7]
 
 
 class FakeBackend:
@@ -101,6 +117,22 @@ def test_parse_model_json_accepts_fenced_object():
 {"reply":"ok","goal_candidate":null}
 ```""")
     assert parsed == {"reply": "ok", "goal_candidate": None}
+
+
+def test_reply_json_stream_decoder_handles_chunk_boundaries_and_escapes():
+    decoder = ReplyJSONStreamDecoder()
+    chunks = [
+        '{"re',
+        'ply":"你',
+        '好\\n下一行 \\uD83D',
+        '\\uDE80","goal_candidate":null}',
+    ]
+
+    visible = "".join(decoder.feed(chunk) for chunk in chunks)
+
+    assert visible == "你好\n下一行 🚀"
+    assert decoder.started is True
+    assert decoder.finished is True
 
 
 def test_operator_conversation_store_persists_and_activates_general_goal(tmp_path):
@@ -201,8 +233,14 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         events = [json.loads(line) for line in streamed.text.splitlines() if line.strip()]
         assert events[0]["type"] == "ack"
         assert any(row["type"] == "status" and row.get("stage") == "memory" for row in events)
-        assert any(row["type"] == "delta" for row in events)
+        assert any(row["type"] == "status" and row.get("stage") == "reply" for row in events)
+        assert backend.provider.stream_calls
+        visible_reply = "".join(
+            str(row.get("text") or "") for row in events if row["type"] == "delta"
+        )
+        assert visible_reply == "这个目标已经足够具体，我先把它整理成目标草案，正式激活前不会执行。"
         assert events[-1]["type"] == "done"
+        assert events[-1]["transport"] == "native"
 
         activated = client.post(
             "/operator/api/chat/goals/" + proposal_id.replace(":", "%3A") + "/activate",

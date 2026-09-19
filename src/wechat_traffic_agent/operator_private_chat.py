@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -30,6 +31,96 @@ def parse_model_json(raw: str) -> dict[str, Any]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
     return value if isinstance(value, dict) else {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
+
+
+class ReplyJSONStreamDecoder:
+    """Incrementally expose only the JSON string value of the first reply field."""
+
+    _reply_prefix = re.compile(r'"reply"\s*:\s*"')
+
+    def __init__(self) -> None:
+        self._buffer = ""
+        self._position = 0
+        self._started = False
+        self._finished = False
+        self._escaped = False
+        self._unicode_digits: str | None = None
+        self._pending_high_surrogate: int | None = None
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
+
+    def feed(self, chunk: str) -> str:
+        if self._finished or not chunk:
+            return ""
+        self._buffer += str(chunk)
+        if not self._started:
+            match = self._reply_prefix.search(self._buffer)
+            if match is None:
+                return ""
+            self._started = True
+            self._position = match.end()
+
+        output: list[str] = []
+        while self._position < len(self._buffer) and not self._finished:
+            char = self._buffer[self._position]
+            self._position += 1
+            if self._unicode_digits is not None:
+                if char.lower() not in "0123456789abcdef":
+                    self._unicode_digits = None
+                    output.append("\ufffd")
+                    continue
+                self._unicode_digits += char
+                if len(self._unicode_digits) == 4:
+                    codepoint = int(self._unicode_digits, 16)
+                    self._unicode_digits = None
+                    self._emit_codepoint(codepoint, output)
+                continue
+            if self._escaped:
+                self._escaped = False
+                if char == "u":
+                    self._unicode_digits = ""
+                    continue
+                output.append({
+                    '"': '"', "\\": "\\", "/": "/",
+                    "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t",
+                }.get(char, char))
+                continue
+            if char == "\\":
+                self._escaped = True
+                continue
+            if char == '"':
+                if self._pending_high_surrogate is not None:
+                    output.append("\ufffd")
+                    self._pending_high_surrogate = None
+                self._finished = True
+                break
+            output.append(char)
+        return "".join(output)
+
+    def _emit_codepoint(self, codepoint: int, output: list[str]) -> None:
+        if 0xD800 <= codepoint <= 0xDBFF:
+            if self._pending_high_surrogate is not None:
+                output.append("\ufffd")
+            self._pending_high_surrogate = codepoint
+            return
+        if 0xDC00 <= codepoint <= 0xDFFF and self._pending_high_surrogate is not None:
+            high = self._pending_high_surrogate
+            self._pending_high_surrogate = None
+            combined = 0x10000 + ((high - 0xD800) << 10) + (codepoint - 0xDC00)
+            output.append(chr(combined))
+            return
+        if self._pending_high_surrogate is not None:
+            output.append("\ufffd")
+            self._pending_high_surrogate = None
+        output.append(chr(codepoint))
+
+
 class OperatorConversationStore:
     """Durable private owner↔Ferro conversation and goal-draft store."""
 
@@ -190,4 +281,4 @@ class OperatorConversationStore:
         os.replace(tmp, path)
 
 
-__all__ = ["OperatorConversationStore", "parse_model_json"]
+__all__ = ["OperatorConversationStore", "ReplyJSONStreamDecoder", "parse_model_json"]

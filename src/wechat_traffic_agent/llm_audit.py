@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable
+from typing import Any, AsyncIterator, Callable
 from uuid import uuid4
 
 
@@ -144,10 +144,12 @@ async def _record_complete(
 ) -> Any:
     started_wall = _utc_iso()
     started = time.perf_counter()
+    call_kwargs = dict(kwargs)
+    call_scope = str(call_kwargs.pop("_audit_scope", scope) or scope)
     prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
-    system_text, system_truncated = _clip(_redact(str(kwargs.get("system") or "")))
+    system_text, system_truncated = _clip(_redact(str(call_kwargs.get("system") or "")))
     base = {
-        "scope": scope,
+        "scope": call_scope,
         "operation": "complete",
         "started_at": started_wall,
         "provider": _provider_meta(provider),
@@ -155,10 +157,10 @@ async def _record_complete(
         "system": system_text,
         "prompt_truncated": prompt_truncated,
         "system_truncated": system_truncated,
-        "max_tokens": kwargs.get("max_tokens"),
+        "max_tokens": call_kwargs.get("max_tokens"),
     }
     try:
-        result = original_complete(prompt, **kwargs)
+        result = original_complete(prompt, **call_kwargs)
         if inspect.isawaitable(result):
             result = await result
     except Exception as exc:
@@ -185,6 +187,71 @@ async def _record_complete(
     return result
 
 
+async def _record_stream(
+    provider: Any,
+    original_stream: Callable[..., Any],
+    audit: LLMRequestAuditStore,
+    scope: str,
+    prompt: str,
+    kwargs: dict[str, Any],
+) -> AsyncIterator[str]:
+    started_wall = _utc_iso()
+    started = time.perf_counter()
+    first_token_ms: float | None = None
+    response_parts: list[str] = []
+    call_kwargs = dict(kwargs)
+    call_scope = str(call_kwargs.pop("_audit_scope", scope) or scope)
+    prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
+    system_text, system_truncated = _clip(_redact(str(call_kwargs.get("system") or "")))
+    base = {
+        "scope": call_scope,
+        "operation": "stream",
+        "started_at": started_wall,
+        "provider": _provider_meta(provider),
+        "prompt": prompt_text,
+        "system": system_text,
+        "prompt_truncated": prompt_truncated,
+        "system_truncated": system_truncated,
+        "max_tokens": call_kwargs.get("max_tokens"),
+    }
+    try:
+        stream = original_stream(prompt, **call_kwargs)
+        async for chunk in stream:
+            text = str(chunk or "")
+            if not text:
+                continue
+            if first_token_ms is None:
+                first_token_ms = round((time.perf_counter() - started) * 1000, 1)
+            response_parts.append(text)
+            yield text
+    except Exception as exc:
+        response_text, response_truncated = _clip(_redact("".join(response_parts)))
+        audit.append({
+            **base,
+            "status": "ERROR",
+            "finished_at": _utc_iso(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "first_token_ms": first_token_ms,
+            "response": response_text,
+            "response_truncated": response_truncated,
+            "error_type": type(exc).__name__,
+            "error": _redact(str(exc))[:2000],
+            "routing": _routing_snapshot(provider),
+        })
+        raise
+    response_text, response_truncated = _clip(_redact("".join(response_parts)))
+    audit.append({
+        **base,
+        "status": "OK",
+        "finished_at": _utc_iso(),
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        "first_token_ms": first_token_ms,
+        "response": response_text,
+        "response_truncated": response_truncated,
+        "routing": _routing_snapshot(provider),
+    })
+
+
 class AuditedLLMProvider:
     """Fallback proxy when a provider cannot be instrumented in place."""
 
@@ -206,9 +273,24 @@ class AuditedLLMProvider:
             kwargs,
         )
 
+    async def stream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+        original_stream = getattr(self._provider, "stream", None)
+        if not callable(original_stream):
+            yield str(await self.complete(prompt, **kwargs))
+            return
+        async for chunk in _record_stream(
+            self._provider,
+            original_stream,
+            self._audit,
+            self._scope,
+            prompt,
+            kwargs,
+        ):
+            yield chunk
+
 
 def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-agent") -> Any:
-    """Audit complete() while preserving provider type whenever possible."""
+    """Audit complete()/stream() while preserving provider type whenever possible."""
     if isinstance(provider, AuditedLLMProvider) or bool(
         getattr(provider, "_ferro_llm_audit_instrumented", False)
     ):
@@ -217,6 +299,7 @@ def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-a
     audit = LLMRequestAuditStore(state_root)
     effective_scope = str(scope or "content-agent")
     original_complete = provider.complete
+    original_stream = getattr(provider, "stream", None)
     base_type = type(provider)
 
     async def complete(self: Any, prompt: str, **kwargs: Any) -> Any:
@@ -229,11 +312,32 @@ def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-a
             kwargs,
         )
 
+    async def stream(self: Any, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+        if not callable(original_stream):
+            yield str(await complete(self, prompt, **kwargs))
+            return
+        async for chunk in _record_stream(
+            self,
+            original_stream,
+            audit,
+            effective_scope,
+            prompt,
+            kwargs,
+        ):
+            yield chunk
+
+    methods: dict[str, Any] = {
+        "complete": complete,
+        "__module__": base_type.__module__,
+    }
+    if callable(original_stream):
+        methods["stream"] = stream
+
     try:
         audited_type = type(
             "Audited" + base_type.__name__,
             (base_type,),
-            {"complete": complete, "__module__": base_type.__module__},
+            methods,
         )
         provider.__class__ = audited_type
         setattr(provider, "_ferro_llm_audit_instrumented", True)
