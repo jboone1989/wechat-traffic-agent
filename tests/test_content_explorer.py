@@ -155,3 +155,42 @@ def test_relevance_filter_fails_closed_after_two_malformed_model_responses(tmp_p
     assert result["classifier_status"] == "MODEL_OUTPUT_INVALID"
     assert result["classifier_error"] == "ValueError"
     assert len(runtime.calls) == 2
+
+
+def test_mission_web_query_preserves_explicit_research_intent(tmp_path):
+    calls = []
+
+    async def searcher(query, now):
+        calls.append((query, now))
+        return [{
+            "source_revision": "mission-search-1",
+            "source": "runtime:web.fetch:test",
+            "title": "Persistent AI agent runtime evidence",
+            "summary": "A public source describes a continuously running agent runtime.",
+            "url": "https://example.org/persistent-agent",
+            "observed_at": now.isoformat(),
+            "published_at": now.isoformat(),
+            "evidence_refs": ["web:mission-search-1"],
+            "search_query": query,
+            "search_rank": 1,
+        }]
+
+    async def rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+
+    worker = GoalEvidenceExplorer(
+        state_root=tmp_path,
+        feeds=("https://example.org/feed",),
+        rss_fetcher=rss,
+        web_searcher=searcher,
+    )
+    result = asyncio.run(worker.search_web_query(
+        query="persistent AI agents continuous runtime evidence",
+        goal_topic="persistent-ai-agents",
+        now=NOW,
+    ))
+
+    assert calls == [("persistent AI agents continuous runtime evidence", NOW)]
+    assert result["query_authority"] == "EXTERNAL_MISSION_DISCOVERY"
+    assert result["goal_topic"] == "persistent-ai-agents"
+    assert result["items"][0]["evidence_id"]

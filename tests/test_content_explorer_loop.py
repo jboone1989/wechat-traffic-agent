@@ -2,9 +2,13 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from wechat_traffic_agent.content_goal_loop import (
-    ContinuousContentLoop, _explicit_hypothetical_note_sections, _market_expression_instruction,
-    _market_companion_evidence, _market_expression_fingerprint, _candidate_available_for_pool,
+    ContinuousContentLoop, MissionDiscoveryDecision, _explicit_hypothetical_note_sections,
+    _market_expression_instruction, _market_companion_evidence,
+    _market_expression_fingerprint, _candidate_available_for_pool,
+    _normalize_mission_discovery,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -956,3 +960,199 @@ def test_invalid_evidence_selection_model_output_falls_back_to_supplied_evidence
     assert fallback["selected_evidence_id"] == "news-1"
     assert fallback["topic"] == "evidence"
     assert sum(1 for call in runtime.calls if call.startswith("SELECT_EVIDENCE:")) == 2
+
+
+def _write_active_x_mission(state_root: Path, *, hard_stop: bool = False):
+    path = state_root / "content" / "x" / "growth_mission.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": "content-agent-x-growth-mission.v1",
+        "status": "ACTIVE",
+        "mission_id": "mission-growth-1",
+        "metric": "x.followers",
+        "current": 1834.0,
+        "target": 5000.0,
+        "trajectory": "BEHIND",
+        "constraints": [
+            "obey current X platform and automation policy",
+            "preserve account survival and long-term reputation",
+        ],
+        "hard_stop": {"active": hard_stop},
+        "roadmap": {
+            "version": 2,
+            "steps": [{
+                "step_id": "mission-step-community",
+                "title": "Experiment B: community-relevant formats",
+                "status": "READY",
+                "resource_tags": [
+                    "content_creation",
+                    "community_outreach",
+                    "x_publication_gated",
+                    "analytics",
+                ],
+            }],
+        },
+        "active_experiment": {
+            "experiment_id": "mission-exp-growth",
+            "status": "PROPOSED",
+            "strategy": (
+                "Publish useful evidence-backed build notes for Ferro's existing niche "
+                "and measure prospective follower movement."
+            ),
+            "expected_effect": "Learn which useful formats attract durable followers.",
+            "risk_notes": ["Do not become spammy."],
+        },
+    }), encoding="utf-8")
+
+
+class MissionDiscoveryRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("MISSION_DISCOVERY:"):
+            self.calls.append(task)
+            return json.dumps({
+                "topic": "persistent-ai-agents",
+                "search_query": (
+                    "persistent AI agents continuous runtime evidence autonomous agents"
+                ),
+                "reader_need": (
+                    "Explain what makes a continuously running agent meaningfully persistent."
+                ),
+                "rationale": (
+                    "This subject fits Ferro's real implementation work and can be grounded "
+                    "in current public evidence."
+                ),
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+class EndogenousMissionRuntime(MissionDiscoveryRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SELECT_EVIDENCE:"):
+            self.calls.append(task)
+            return json.dumps({
+                "title": "Common evidence question",
+                "evidence_id": "news-1",
+                "topic": "common",
+                "related_ids": ["a0"],
+                "reader_question": "What does this common-topic observation support?",
+                "gap": "Connect current evidence to the established common topic.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+class MissionDiscoveryExplorer:
+    def __init__(self):
+        self.collect_active = None
+        self.filter_topics = []
+        self.queries = []
+
+    async def collect(self, *, now, active):
+        self.collect_active = active
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+
+    async def filter_for_goal(self, **kwargs):
+        self.filter_topics.append(kwargs["goal_topic"])
+        return {"items": [], "matches": [], "candidate_count": len(kwargs["candidates"])}
+
+    async def search_web_query(self, *, query, goal_topic, now):
+        self.queries.append((query, goal_topic))
+        return {
+            "items": [],
+            "failures": [],
+            "query": query,
+            "goal_topic": goal_topic,
+            "query_authority": "EXTERNAL_MISSION_DISCOVERY",
+        }
+
+
+def test_external_mission_drives_proactive_research_when_no_endogenous_goal(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = MissionDiscoveryRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["status"] == "NO_RELEVANT_EVIDENCE"
+    assert result["mind_plan"]["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert result["mind_plan"]["required_topic"] == "persistent-ai-agents"
+    assert result["mind_plan"]["external_mission_id"] == "mission-growth-1"
+    assert explorer.collect_active is True
+    assert explorer.filter_topics == ["persistent-ai-agents"]
+    assert explorer.queries == [(
+        "persistent AI agents continuous runtime evidence autonomous agents",
+        "persistent-ai-agents",
+    )]
+    discovery = json.loads(
+        (
+            Path(legacy.state)
+            / "content"
+            / "continuous"
+            / "cycles"
+            / result["cycle"]
+            / "mission_discovery.json"
+        ).read_text()
+    )
+    assert discovery["generation_authority"] == "DISCOVERY_ONLY"
+    assert discovery["publication_authority"] is False
+    assert discovery["roadmap_step_id"] == "mission-step-community"
+    assert len([call for call in runtime.calls if call.startswith("MISSION_DISCOVERY:")]) == 1
+    assert worker.inbox.list_records() == ()
+
+
+def test_external_mission_never_overrides_existing_endogenous_topic_goal(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = EndogenousMissionRuntime()
+    mind, explorer = GoalMind(), MissionDiscoveryExplorer()
+    worker = v2(
+        legacy,
+        runtime,
+        publisher,
+        mind=mind,
+        explorer=explorer,
+    )
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["mind_plan"]["goal"]["origin"] == "INTEREST"
+    assert result["mind_plan"]["required_topic"] == "common"
+    assert not any(call.startswith("MISSION_DISCOVERY:") for call in runtime.calls)
+
+
+def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
+    from wechat_traffic_agent.content_goal_loop import _active_mission_discovery_context
+
+    value = {
+        "status": "ACTIVE",
+        "hard_stop": {"active": True},
+        "roadmap": {
+            "steps": [{
+                "step_id": "blocked",
+                "status": "READY",
+                "resource_tags": ["content_creation", "x_publication_gated"],
+            }]
+        },
+        "active_experiment": {"status": "PROPOSED"},
+    }
+    assert _active_mission_discovery_context(value) is None
+
+
+@pytest.mark.parametrize(
+    "topic,query",
+    [
+        ("follower-growth-hacks", "latest follower growth hacks for X accounts"),
+        ("agent-reputation", "how to game the algorithm for more followers"),
+        ("agent-community", "follow for follow reciprocal engagement communities"),
+    ],
+)
+def test_mission_discovery_rejects_metric_manipulation_topics(topic, query):
+    value = MissionDiscoveryDecision(
+        topic=topic,
+        search_query=query,
+        reader_need="Find a shortcut for increasing the visible account metric.",
+        rationale="The proposal attempts to optimize the metric directly.",
+    )
+    with pytest.raises(ValueError, match="metric manipulation"):
+        _normalize_mission_discovery(value)
