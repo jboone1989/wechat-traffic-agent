@@ -15,7 +15,7 @@ from wechat_traffic_agent.x_browser import (
     XBrowserTransportRouter,
 )
 from wechat_traffic_agent.x_browser_mentions import LocalHarnessXMentionsObserver
-from wechat_traffic_agent.x_local_browser import AccountJevXTransport, LocalHarnessXTransport
+from wechat_traffic_agent.x_local_browser import AccountJevXTransport, ExistingProfileJevXTransport, LocalHarnessXTransport
 from wechat_traffic_agent.x_outcomes import LocalHarnessXMetricsTransport
 
 
@@ -132,6 +132,20 @@ class _LocalSuccess:
         )
 
 
+class _ExistingSuccess:
+    def __init__(self, calls: list[str]):
+        self.calls = calls
+
+    async def publish(self, *, text: str):
+        self.calls.append(text)
+        return XBrowserPublishResult(
+            post_id="2100486738342765003",
+            url="https://x.com/ferro/status/2100486738342765003",
+            handle="ferro",
+            provider="JEV_EXISTING_PROFILE",
+        )
+
+
 class _TinyFishUnavailable:
     async def publish(self, *, text: str):
         raise TinyFishProfileUnavailable("TinyFish profile unavailable before write")
@@ -180,7 +194,68 @@ def test_x_write_router_prefers_account_jev_before_tinyfish(tmp_path, monkeypatc
     assert jev_calls == ["hello"]
 
 
-def test_x_write_router_falls_back_to_tinyfish_only_when_account_jev_cannot_start(
+def test_x_write_router_prefers_existing_session_jev_before_tinyfish(
+    tmp_path, monkeypatch
+):
+    calls: list[str] = []
+    monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
+    monkeypatch.setattr(
+        AccountJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalUnavailable()),
+    )
+    monkeypatch.setattr(
+        ExistingProfileJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _ExistingSuccess(calls)),
+    )
+    from wechat_traffic_agent.x_browser import TinyFishXTransport
+    monkeypatch.setattr(
+        TinyFishXTransport,
+        "from_environment",
+        classmethod(lambda cls: (_ for _ in ()).throw(
+            AssertionError("TinyFish Playwright fallback should not run")
+        )),
+    )
+    result = asyncio.run(
+        XBrowserTransportRouter(state_root=tmp_path).publish(text="hello")
+    )
+    assert result.provider == "JEV_EXISTING_PROFILE"
+    assert calls == ["hello"]
+
+
+
+
+def test_x_write_router_never_retries_unverified_existing_session_jev(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
+    monkeypatch.setattr(
+        AccountJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalUnavailable()),
+    )
+    monkeypatch.setattr(
+        ExistingProfileJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalUnverified()),
+    )
+    from wechat_traffic_agent.x_browser import TinyFishXTransport
+    monkeypatch.setattr(
+        TinyFishXTransport,
+        "from_environment",
+        classmethod(lambda cls: (_ for _ in ()).throw(
+            AssertionError("TinyFish retry would risk a duplicate JEV write")
+        )),
+    )
+    with pytest.raises(XBrowserPublicationUnverified):
+        asyncio.run(
+            XBrowserTransportRouter(state_root=tmp_path).publish(text="hello")
+        )
+
+def test_x_write_router_falls_back_to_tinyfish_only_when_both_jev_paths_cannot_start(
     tmp_path, monkeypatch
 ):
     tinyfish_calls: list[str] = []
@@ -188,6 +263,11 @@ def test_x_write_router_falls_back_to_tinyfish_only_when_account_jev_cannot_star
     monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
     monkeypatch.setattr(
         AccountJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalUnavailable()),
+    )
+    monkeypatch.setattr(
+        ExistingProfileJevXTransport,
         "from_environment",
         classmethod(lambda cls, state_root: _LocalUnavailable()),
     )
@@ -236,6 +316,11 @@ def test_x_write_router_falls_back_to_legacy_local_when_account_and_tinyfish_una
     monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
     monkeypatch.setattr(
         AccountJevXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalUnavailable()),
+    )
+    monkeypatch.setattr(
+        ExistingProfileJevXTransport,
         "from_environment",
         classmethod(lambda cls, state_root: _LocalUnavailable()),
     )
@@ -345,6 +430,149 @@ def test_account_jev_x_transport_requires_explicit_account_when_multiple_exist(
     with pytest.raises(BrowserRuntimeUnavailable, match="CONTENT_X_ACCOUNT_ID"):
         asyncio.run(transport.publish(text="hello"))
 
+
+
+def test_existing_profile_jev_reconciles_ambiguous_write_in_fresh_session(
+    tmp_path, monkeypatch
+):
+    record = SimpleNamespace(
+        account_id="acct_x_existing1234",
+        provider_id="x",
+        identity="ferro",
+    )
+
+    class Registry:
+        def list(self, *, provider_id=None):
+            assert provider_id == "x"
+            return [record]
+
+    class Client:
+        def __init__(self):
+            self.starts = []
+            self.saved = []
+            self.cancelled = []
+
+        def start_setup(self, *, url, timeout_seconds):
+            self.starts.append((url, timeout_seconds))
+            index = len(self.starts)
+            return {
+                "session_id": f"session-{index}",
+                "cdp_url": f"wss://example.invalid/{index}",
+            }
+
+        def save(self, *, session_id):
+            self.saved.append(session_id)
+            return {"status": "SAVED"}
+
+        def cancel(self, *, session_id):
+            self.cancelled.append(session_id)
+            return {"status": "CANCELLED"}
+    client = Client()
+    calls = []
+
+    def runner(command, **kwargs):
+        request = json.loads(kwargs["input"])
+        calls.append((command, kwargs, request))
+        if request["mode"] == "publish":
+            body = {
+                "status": "PUBLICATION_UNVERIFIED",
+                "attempted": True,
+                "action_count": 1,
+                "message": "clicked but URL not visible yet",
+            }
+        else:
+            body = {
+                "status": "POSTED",
+                "action_count": 0,
+                "post_id": "2101310183855333514",
+                "url": "https://x.com/ferro/status/2101310183855333514",
+                "handle": "ferro",
+                "duplicate_found": False,
+            }
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(body) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.delenv("CONTENT_X_ACCOUNT_ID", raising=False)
+    transport = ExistingProfileJevXTransport(
+        state_root=tmp_path,
+        client=client,
+        registry=Registry(),
+        runner=runner,
+    )
+    result = asyncio.run(transport.publish(text="hello"))
+    assert result.provider == "JEV_EXISTING_PROFILE"
+    assert result.post_id == "2101310183855333514"
+    assert [item[2]["mode"] for item in calls] == ["publish", "reconcile"]
+    assert calls[0][1]["env"]["BU_CDP_WS"] == "wss://example.invalid/1"
+    assert calls[1][1]["env"]["BU_CDP_WS"] == "wss://example.invalid/2"
+    assert "BU_CDP_URL" not in calls[0][1]["env"]
+    assert client.saved == ["session-1"]
+    assert client.cancelled == ["session-2"]
+
+    event = json.loads(
+        (tmp_path / "browser/runtime-events.jsonl").read_text()
+    )
+    assert event["provider"] == "JEV_EXISTING_PROFILE"
+    assert event["status"] == "COMPLETED"
+    assert event["action_count"] == 1
+
+
+def test_existing_profile_jev_prewrite_failure_is_safe_to_fallback(
+    tmp_path, monkeypatch
+):
+    record = SimpleNamespace(
+        account_id="acct_x_existing1234",
+        provider_id="x",
+        identity="ferro",
+    )
+
+    class Registry:
+        def list(self, *, provider_id=None):
+            return [record]
+    class Client:
+        def __init__(self):
+            self.cancelled = []
+
+        def start_setup(self, **kwargs):
+            return {
+                "session_id": "session-1",
+                "cdp_url": "wss://example.invalid/1",
+            }
+
+        def save(self, **kwargs):
+            raise AssertionError("pre-write failure must not save")
+
+        def cancel(self, *, session_id):
+            self.cancelled.append(session_id)
+            return {}
+
+    client = Client()
+
+    def runner(command, **kwargs):
+        return SimpleNamespace(
+            returncode=1,
+            stdout=json.dumps({
+                "status": "SESSION_UNAVAILABLE",
+                "attempted": False,
+                "action_count": 0,
+                "error_type": "NOT_AUTHENTICATED",
+            }) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.delenv("CONTENT_X_ACCOUNT_ID", raising=False)
+    transport = ExistingProfileJevXTransport(
+        state_root=tmp_path,
+        client=client,
+        registry=Registry(),
+        runner=runner,
+    )
+    with pytest.raises(BrowserRuntimeUnavailable):
+        asyncio.run(transport.publish(text="hello"))
+    assert client.cancelled == ["session-1"]
 
 def test_browser_runtime_status_exposes_local_cdp_separately_from_jev(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)

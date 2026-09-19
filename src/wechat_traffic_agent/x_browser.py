@@ -301,6 +301,20 @@ class XBrowserTransportRouter:
                 # XBrowserPublicationUnverified deliberately propagates.
                 errors.append("JEV_ACCOUNT: " + str(exc))
 
+        if _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED") and tinyfish_x_enabled():
+            from .browser_runtime import BrowserRuntimeUnavailable
+            from .x_local_browser import ExistingProfileJevXTransport
+
+            try:
+                existing_jev = ExistingProfileJevXTransport.from_environment(
+                    state_root=self.state_root
+                )
+                return await existing_jev.publish(text=text)
+            except BrowserRuntimeUnavailable as exc:
+                # This path reuses an authenticated remote profile but executes
+                # all page actions through JEV. Fallback is safe only pre-write.
+                errors.append("JEV_EXISTING_PROFILE: " + str(exc))
+
         if tinyfish_x_enabled():
             try:
                 return await TinyFishXTransport.from_environment().publish(text=text)
