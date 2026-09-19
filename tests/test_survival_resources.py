@@ -462,6 +462,7 @@ def test_resource_review_degrades_and_recovers_receiver_and_replica(tmp_path, mo
             "status":"ACTIVE",
             "deployment_id":"deployment:test",
             "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+            "source_manifest_sha256":manager._local_static_manifest_sha256(),
             "index_sha256":"sha256:" + __import__('hashlib').sha256(index).hexdigest(),
         }],
     }]))
@@ -744,3 +745,159 @@ def test_signed_static_replica_can_deploy_over_ssh_receiver_without_https(tmp_pa
     assert replica["deployment_transport"] == "SSH"
     assert replica["deployment_url"] is None
     assert replica["deployment_path"].endswith("/website-static/current")
+
+def test_failed_autonomous_receiver_provision_retries_with_backoff(tmp_path, monkeypatch):
+    from datetime import timedelta
+    from wechat_traffic_agent.survival_receiver_ssh import SSHReceiverProvisioner
+
+    manager = SurvivalResourceManager(tmp_path)
+    key_dir = tmp_path / "secrets" / "survival-hosts" / "retry-key"
+    key_dir.mkdir(parents=True)
+    (key_dir / "id_ed25519").write_text("fake-key")
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:retry",
+        "name":"retry-vps",
+        "ssh_host":"203.0.113.20",
+        "ssh_port":22,
+        "ssh_username":"root",
+        "ssh_host_key_sha256":"SHA256:test",
+        "ssh_key_ref":"retry-key",
+        "management_transport":"SSH_KEY",
+        "status":"ACTIVE",
+        "receiver_status":"NOT_PROVISIONED",
+        "deployment_capable":False,
+        "host_instance_id":"host-instance:retry",
+        "capacity":{"cpu_count":1,"memory_available_gib":1.0,"disk_free_gib":10.0},
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+    monkeypatch.setattr(
+        SSHReceiverProvisioner,
+        "provision",
+        lambda self, **kwargs: (_ for _ in ()).throw(RuntimeError("temporary install failure")),
+    )
+
+    first = manager.observe(now=NOW)
+    need = next(x for x in first["needs"] if x["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "APPROVED"
+    manager.execute_approved(now=NOW)
+    need = next(x for x in manager.needs() if x["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "AWAITING_RESOURCE"
+    assert need["retry_count"] == 1
+    assert need["last_error_type"] == "RuntimeError"
+    assert need["next_retry_at"] == (NOW + timedelta(minutes=5)).isoformat()
+
+    manager.observe(now=NOW + timedelta(minutes=4, seconds=59))
+    need = next(x for x in manager.needs() if x["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "AWAITING_RESOURCE"
+
+    retry_at = NOW + timedelta(minutes=5)
+    manager.observe(now=retry_at)
+    need = next(x for x in manager.needs() if x["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "APPROVED"
+    assert need["retry_rearmed_at"] == retry_at.isoformat()
+    manager.execute_approved(now=retry_at)
+    need = next(x for x in manager.needs() if x["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "AWAITING_RESOURCE"
+    assert need["retry_count"] == 2
+    assert need["next_retry_at"] == (retry_at + timedelta(minutes=15)).isoformat()
+
+def test_static_replica_detects_non_index_drift_and_redeploys(tmp_path, monkeypatch):
+    from agent_network.crypto import Identity
+
+    site = tmp_path / "site"
+    site.mkdir()
+    index = b"<h1>stable index</h1>"
+    (site / "index.html").write_bytes(index)
+    (site / "article.html").write_text("version one", encoding="utf-8")
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("seed.drift.edge")
+    host_id = "remote-host:drift-edge"
+    health_url = "https://edge.example.test/application/survival/host"
+    control_url = "https://edge.example.test/application/survival/workloads"
+    deployment_url = "https://edge.example.test/application/survival/workloads/website-static/"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":host_id,
+        "name":"drift-edge",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "host_instance_id":"host-instance:drift-edge",
+        "health_url":health_url,
+        "control_url":control_url,
+        "agent_id":remote.agent_id,
+        "key_id":remote.key_id,
+        "public_key":remote.public_key,
+        "deployment_profiles":["content.website-static.v1"],
+        "capacity":{"cpu_count":1,"memory_available_gib":1.0,"disk_free_gib":8.0},
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+
+    deployments = []
+    def remote_call(url, *, method, payload=None, timeout):
+        if method == "GET":
+            return {
+                "status":"HEALTHY",
+                "host_instance_id":"host-instance:drift-edge",
+                "agent_id":remote.agent_id,
+                "key_id":remote.key_id,
+                "public_key":remote.public_key,
+                "capabilities":["survival.workload.deploy.v1"],
+                "deployment_profiles":["content.website-static.v1"],
+                "capacity":{"cpu_count":1,"memory_available_gib":1.0,"disk_free_gib":8.0},
+            }
+        deployments.append(payload["artifact"]["source_manifest_sha256"])
+        receipt = {
+            "type":"survival.workload.deploy.receipt.v1",
+            "status":"DEPLOYED",
+            "action_id":payload["action_id"],
+            "request_hash":payload["object_hash"],
+            "deployment_id":"deployment:drift:" + str(len(deployments)),
+            "deployment_url":deployment_url,
+            "artifact_sha256":payload["artifact"]["sha256"],
+            "agent_id":remote.agent_id,
+            "key_id":remote.key_id,
+        }
+        receipt["signature"] = remote.sign_object(receipt)
+        return receipt
+
+    monkeypatch.setattr(manager, "_http_json", remote_call)
+    monkeypatch.setattr(manager, "_http_bytes", lambda *args, **kwargs: index)
+
+    first = manager.observe(now=NOW)
+    assert next(x for x in first["needs"] if x["action"] == "ENSURE_SERVICE_REPLICA")["status"] == "APPROVED"
+    first_actions = manager.execute_approved(now=NOW)
+    assert any(x.get("status") == "DEPLOYED" for x in first_actions["results"])
+    service = next(x for x in manager.services() if x["service_id"] == "website-static")
+    first_manifest = service["replicas"][0]["source_manifest_sha256"]
+    assert service["replicas"][0]["status"] == "ACTIVE"
+
+    (site / "article.html").write_text("version two", encoding="utf-8")
+    drifted = manager.observe(now=NOW.replace(minute=5))
+    service = next(x for x in manager.services() if x["service_id"] == "website-static")
+    replica = service["replicas"][0]
+    assert replica["status"] == "STALE"
+    assert replica["last_error"] == "PRIMARY_ARTIFACT_CHANGED"
+    restore = next(x for x in drifted["needs"] if x["action"] == "RESTORE_SERVICE_REPLICA")
+    assert restore["status"] == "APPROVED"
+
+    repaired = manager.execute_approved(now=NOW.replace(minute=5))
+    assert any(x.get("status") == "DEPLOYED" for x in repaired["results"])
+    service = next(x for x in manager.services() if x["service_id"] == "website-static")
+    replica = service["replicas"][0]
+    assert replica["status"] == "ACTIVE"
+    assert replica["source_manifest_sha256"] != first_manifest
+    assert len(deployments) == 2
