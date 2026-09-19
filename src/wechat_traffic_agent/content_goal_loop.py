@@ -198,9 +198,10 @@ def _recent_mission_noop_attempts(
 
 
 def _normalize_mission_discovery(value: MissionDiscoveryDecision) -> MissionDiscoveryDecision:
-    topic = value.topic.strip().lower()
+    # Topic formatting is deterministic metadata, not a reason to spend another LLM call.
+    topic = re.sub(r"[^a-z0-9]+", "-", value.topic.strip().lower()).strip("-")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", topic):
-        raise ValueError("mission discovery topic must be a lowercase kebab-case slug")
+        raise ValueError("mission discovery topic cannot be normalized to a valid slug")
     query = _normalize_mission_search_query(
         query=value.search_query,
         goal_topic=topic,
@@ -697,6 +698,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'schema_version': 'content-mission-discovery-error.v1',
                         'error_type': type(exc).__name__,
                         'message': str(exc)[:500],
+                        'mission_id': str(mission_context.get('mission_id') or ''),
+                        'roadmap_step_id': str(
+                            (mission_context.get('roadmap_step') or {}).get('step_id')
+                            or ''
+                        ),
+                        'experiment_id': str(
+                            (mission_context.get('active_experiment') or {}).get('experiment_id')
+                            or ''
+                        ),
+                        'retryable': True,
                         'publication_authority': False,
                     })
             if mission_decision is not None:

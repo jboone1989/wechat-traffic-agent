@@ -813,6 +813,91 @@ class WakefulContentTaskRunner:
         tmp.replace(folder / "recovery.json")
         return metadata
 
+    def _mission_followup_identity(
+        self,
+        *,
+        prior: dict[str, Any],
+        result_path: Path,
+    ) -> dict[str, str] | None:
+        """Resolve which external mission owns a no-op or interrupted discovery cycle."""
+        error_path = result_path.parent / "mission_discovery_error.json"
+        error: dict[str, Any] | None = None
+        if error_path.exists():
+            try:
+                payload = json.loads(error_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                payload = None
+            if isinstance(payload, dict):
+                error = payload
+
+        # An interrupted discovery artifact is authoritative for this cycle even
+        # when the ordinary fallback path later published something. That
+        # publication did not execute the mission-bound discovery, so it must
+        # not erase the mission retry identity.
+        if error is None:
+            mind_plan = prior.get("mind_plan")
+            if isinstance(mind_plan, dict):
+                goal = mind_plan.get("goal")
+                if isinstance(goal, dict) and str(goal.get("origin") or "") == "EXTERNAL_MISSION":
+                    goal_id = str(goal.get("goal_id") or "").strip()
+                    mission_id = str(mind_plan.get("external_mission_id") or "").strip()
+                    if goal_id:
+                        return {
+                            "goal_id": goal_id,
+                            "mission_id": mission_id,
+                            "reason": "EXTERNAL_MISSION_NO_MATERIAL_CHANGE",
+                        }
+            return None
+        mission_id = str(error.get("mission_id") or "").strip()
+        step_id = str(error.get("roadmap_step_id") or "").strip()
+        experiment_id = str(error.get("experiment_id") or "").strip()
+
+        # Compatibility for discovery errors written before mission identity was
+        # persisted in the error artifact.
+        if not mission_id:
+            state_root = getattr(self, "state_root", None)
+            if state_root is None:
+                return None
+            try:
+                from .x_growth_mission import x_growth_mission_context
+
+                mission = x_growth_mission_context(Path(state_root))
+            except Exception:  # noqa: BLE001
+                return None
+            if str(mission.get("status") or "") != "ACTIVE":
+                return None
+            hard_stop = mission.get("hard_stop")
+            if isinstance(hard_stop, dict) and hard_stop.get("active") is True:
+                return None
+            mission_id = str(mission.get("mission_id") or "").strip()
+            roadmap = mission.get("roadmap") if isinstance(mission.get("roadmap"), dict) else {}
+            candidates = [
+                row for row in list(roadmap.get("steps") or ())
+                if isinstance(row, dict)
+                and row.get("status") in {"RUNNING", "READY"}
+                and "content_creation" in set(row.get("resource_tags") or ())
+            ]
+            candidates.sort(
+                key=lambda row: (
+                    0 if row.get("status") == "RUNNING" else 1,
+                    str(row.get("step_id") or ""),
+                )
+            )
+            if candidates:
+                step_id = str(candidates[0].get("step_id") or "").strip()
+            experiment = mission.get("active_experiment")
+            if isinstance(experiment, dict):
+                experiment_id = str(experiment.get("experiment_id") or "").strip()
+
+        if not mission_id:
+            return None
+        anchor = step_id or experiment_id or "research"
+        return {
+            "goal_id": f"external-mission-retry:{mission_id}:{anchor}",
+            "mission_id": mission_id,
+            "reason": "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED",
+        }
+
     def _content_mission_followup(
         self,
         *,
@@ -830,18 +915,23 @@ class WakefulContentTaskRunner:
             prior = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
-        if str(prior.get("status") or "").upper() != "COGNITION_ONLY":
+        identity = self._mission_followup_identity(
+            prior=prior,
+            result_path=result_path,
+        )
+        if identity is None:
             return None
-        mind_plan = prior.get("mind_plan")
-        if not isinstance(mind_plan, dict):
-            return None
-        goal = mind_plan.get("goal")
-        if not isinstance(goal, dict) or str(goal.get("origin") or "") != "EXTERNAL_MISSION":
+        prior_status = str(prior.get("status") or "").upper()
+        interrupted_discovery = (
+            str(identity.get("reason") or "")
+            == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
+        )
+        if prior_status != "COGNITION_ONLY" and not interrupted_discovery:
             return None
 
         source_cycle = str(preflight.get("cycle") or "").strip()
-        goal_id = str(goal.get("goal_id") or "").strip()
-        mission_id = str(mind_plan.get("external_mission_id") or "").strip()
+        goal_id = str(identity.get("goal_id") or "").strip()
+        mission_id = str(identity.get("mission_id") or "").strip()
         state_root = getattr(self, "state_root", None)
         if not source_cycle or not goal_id or state_root is None:
             return None
@@ -904,7 +994,7 @@ class WakefulContentTaskRunner:
             "mission_id": mission_id,
             "attempt": attempt,
             "triggered_at": now.isoformat(),
-            "reason": "EXTERNAL_MISSION_NO_MATERIAL_CHANGE",
+            "reason": str(identity.get("reason") or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"),
             "publication_authority": False,
         }
         folder = cycles_root / followup_cycle
@@ -1165,24 +1255,47 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        mind_plan = continuous.get("mind_plan") if isinstance(continuous, dict) else None
-        mission_goal = (
-            mind_plan.get("goal")
-            if isinstance(mind_plan, dict) and isinstance(mind_plan.get("goal"), dict)
-            else {}
+        followup_identity = None
+        state_root = getattr(self, "state_root", None)
+        cycle = str(continuous.get("cycle") or "").strip()
+        if state_root is not None and cycle:
+            followup_identity = self._mission_followup_identity(
+                prior=continuous,
+                result_path=(
+                    Path(state_root)
+                    / "content"
+                    / "continuous"
+                    / "cycles"
+                    / cycle
+                    / "result.json"
+                ),
+            )
+        continuous_status = str(continuous.get("status") or "").upper()
+        followup_reason = (
+            str(followup_identity.get("reason") or "")
+            if followup_identity is not None
+            else ""
         )
-        if (
-            str(continuous.get("status") or "").upper() == "COGNITION_ONLY"
-            and str(mission_goal.get("origin") or "") == "EXTERNAL_MISSION"
-        ):
+        should_schedule_followup = (
+            followup_identity is not None
+            and (
+                continuous_status == "COGNITION_ONLY"
+                or followup_reason == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
+            )
+        )
+        if should_schedule_followup:
             schedule = getattr(self.wakeful, "schedule_goal_followup", None)
             if callable(schedule):
                 schedule(now, seconds=5)
                 rows["mission_followup_schedule"] = {
                     "status": "SCHEDULED",
                     "seconds": 5,
-                    "goal_id": str(mission_goal.get("goal_id") or ""),
-                    "reason": "EXTERNAL_MISSION_NO_MATERIAL_CHANGE",
+                    "goal_id": str(followup_identity.get("goal_id") or ""),
+                    "mission_id": str(followup_identity.get("mission_id") or ""),
+                    "reason": str(
+                        followup_identity.get("reason")
+                        or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"
+                    ),
                 }
         self.wakeful.mark_cognition(now)
         return rows

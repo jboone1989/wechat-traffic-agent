@@ -398,3 +398,133 @@ def test_recovered_external_mission_noop_can_continue_into_followup(tmp_path):
     assert json.loads(base_path.read_text()) == base_payload
     assert len(loop.calls) == 2
     assert len(economy.calls) == 2
+
+
+def _write_mission_discovery_error(
+    state_root: Path,
+    *,
+    with_identity: bool,
+    result_status: str = "PUBLISHED",
+):
+    folder = (
+        state_root
+        / "content"
+        / "continuous"
+        / "cycles"
+        / BASE_CYCLE
+    )
+    folder.mkdir(parents=True, exist_ok=True)
+    result = {
+        "status": result_status,
+        "cycle": BASE_CYCLE,
+        "mind_plan": {
+            "cycle": BASE_CYCLE,
+            "goal": None,
+            "required_topic": None,
+        },
+    }
+    (folder / "result.json").write_text(
+        json.dumps(result) + "\n",
+        encoding="utf-8",
+    )
+    error = {
+        "schema_version": "content-mission-discovery-error.v1",
+        "error_type": "ValueError",
+        "message": "model call interrupted without receipt; skip this cycle",
+        "publication_authority": False,
+    }
+    if with_identity:
+        error.update({
+            "mission_id": "mission-growth-1",
+            "roadmap_step_id": "mission-step-community",
+            "experiment_id": "mission-exp-growth",
+            "retryable": True,
+        })
+    (folder / "mission_discovery_error.json").write_text(
+        json.dumps(error) + "\n",
+        encoding="utf-8",
+    )
+    return folder
+
+
+def _write_active_growth_mission_for_retry(state_root: Path):
+    path = state_root / "content" / "x" / "growth_mission.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "schema_version": "content-agent-x-growth-mission.v1",
+            "status": "ACTIVE",
+            "mission_id": "mission-growth-1",
+            "metric": "x.followers",
+            "current": 1837.0,
+            "target": 5000.0,
+            "trajectory": "ON_TRACK",
+            "hard_stop": {"active": False},
+            "roadmap": {
+                "steps": [{
+                    "step_id": "mission-step-community",
+                    "status": "READY",
+                    "resource_tags": ["content_creation", "x_publication_gated"],
+                }],
+            },
+            "active_experiment": {
+                "experiment_id": "mission-exp-growth",
+                "status": "PROPOSED",
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_interrupted_mission_discovery_identity_creates_followup_even_if_fallback_published(tmp_path):
+    state_root = tmp_path / "state"
+    folder = _write_mission_discovery_error(
+        state_root,
+        with_identity=True,
+        result_status="PUBLISHED",
+    )
+    runner = WakefulContentTaskRunner(state_root=state_root)
+
+    identity = runner._mission_followup_identity(
+        prior=json.loads((folder / "result.json").read_text()),
+        result_path=folder / "result.json",
+    )
+    assert identity == {
+        "goal_id": "external-mission-retry:mission-growth-1:mission-step-community",
+        "mission_id": "mission-growth-1",
+        "reason": "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED",
+    }
+
+    followup = runner._content_mission_followup(
+        preflight={
+            "cycle": BASE_CYCLE,
+            "status": "ALREADY_PROCESSED",
+            "result_path": str(folder / "result.json"),
+        },
+        now=NOW,
+    )
+    assert followup["status"] == "READY"
+    assert followup["mission_id"] == "mission-growth-1"
+    assert followup["reason"] == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
+
+
+def test_legacy_mission_discovery_error_recovers_identity_from_active_mission(tmp_path):
+    state_root = tmp_path / "state"
+    folder = _write_mission_discovery_error(
+        state_root,
+        with_identity=False,
+        result_status="COGNITION_ONLY",
+    )
+    _write_active_growth_mission_for_retry(state_root)
+    runner = WakefulContentTaskRunner(state_root=state_root)
+
+    identity = runner._mission_followup_identity(
+        prior=json.loads((folder / "result.json").read_text()),
+        result_path=folder / "result.json",
+    )
+
+    assert identity == {
+        "goal_id": "external-mission-retry:mission-growth-1:mission-step-community",
+        "mission_id": "mission-growth-1",
+        "reason": "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED",
+    }
