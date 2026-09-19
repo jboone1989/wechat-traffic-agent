@@ -59,15 +59,37 @@ class XMcpError(RuntimeError):
 class XMcpClient:
     """Small synchronous MCP stdio client around the official xurl bridge."""
 
-    def __init__(self, *, endpoint: str = X_MCP_ENDPOINT, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        endpoint: str = X_MCP_ENDPOINT,
+        timeout_seconds: float = 30.0,
+        app: str | None = None,
+        username: str | None = None,
+    ) -> None:
         self.endpoint = endpoint
         self.timeout_seconds = max(2.0, float(timeout_seconds))
+        self.app = str(
+            app
+            if app is not None
+            else os.environ.get("CONTENT_X_APP_NAME", "content-agent")
+        ).strip() or "content-agent"
+        self.username = str(
+            username
+            if username is not None
+            else os.environ.get("CONTENT_X_USERNAME", "")
+        ).strip().lstrip("@")
 
     def _command(self) -> list[str]:
         configured = os.environ.get("CONTENT_X_MCP_COMMAND", "").strip()
         if configured:
-            return [*shlex.split(configured), self.endpoint]
-        return ["xurl", "mcp", self.endpoint]
+            command = [*shlex.split(configured), self.endpoint]
+        else:
+            command = ["xurl", "mcp", self.endpoint]
+        command.extend(["--app", self.app])
+        if self.username:
+            command.extend(["--username", self.username])
+        return command
 
     def _spawn(self) -> subprocess.Popen[str]:
         try:
@@ -179,11 +201,25 @@ class XMcpClient:
 class XurlCommandClient:
     """Official xurl OAuth2 shortcuts for write actions absent from hosted xMCP."""
 
-    def __init__(self, *, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 30.0,
+        app: str | None = None,
+        username: str | None = None,
+    ) -> None:
         self.timeout_seconds = max(2.0, float(timeout_seconds))
         self.binary = os.environ.get("CONTENT_X_XURL_BINARY", "xurl").strip() or "xurl"
-        self.app = os.environ.get("CONTENT_X_APP_NAME", "content-agent").strip() or "content-agent"
-        self.username = os.environ.get("CONTENT_X_USERNAME", "").strip()
+        self.app = str(
+            app
+            if app is not None
+            else os.environ.get("CONTENT_X_APP_NAME", "content-agent")
+        ).strip() or "content-agent"
+        self.username = str(
+            username
+            if username is not None
+            else os.environ.get("CONTENT_X_USERNAME", "")
+        ).strip().lstrip("@")
 
     def call(self, capability_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         args = dict(payload)
@@ -334,13 +370,35 @@ def _capability_row(capability_id: str, *, side_effect: str, permission: str | N
 
 class XCapabilityProvider:
     """Agent Runtime provider using only official X MCP/API tooling."""
-    def __init__(self, client: XMcpClient | None = None, write_client: XurlCommandClient | None = None) -> None:
+
+    def __init__(
+        self,
+        client: XMcpClient | None = None,
+        write_client: XurlCommandClient | None = None,
+        *,
+        app: str | None = None,
+        username: str | None = None,
+    ) -> None:
+        timeout = float(os.environ.get("CONTENT_X_MCP_TIMEOUT_SECONDS", "30"))
         self.client = client or XMcpClient(
             endpoint=os.environ.get("CONTENT_X_MCP_ENDPOINT", X_MCP_ENDPOINT).strip() or X_MCP_ENDPOINT,
-            timeout_seconds=float(os.environ.get("CONTENT_X_MCP_TIMEOUT_SECONDS", "30")),
+            timeout_seconds=timeout,
+            app=app,
+            username=username,
         )
         self.write_client = write_client or XurlCommandClient(
-            timeout_seconds=float(os.environ.get("CONTENT_X_MCP_TIMEOUT_SECONDS", "30")),
+            timeout_seconds=timeout,
+            app=app,
+            username=username,
+        )
+
+    @classmethod
+    def for_account(cls, account) -> "XCapabilityProvider":
+        if str(getattr(account, "provider_id", "")) != "x":
+            raise ValueError("XCapabilityProvider requires an X account")
+        return cls(
+            app=str(getattr(account, "oauth_app", "") or "content-agent"),
+            username=str(getattr(account, "oauth_user", "") or getattr(account, "identity", "")),
         )
 
     def manifest(self) -> dict[str, Any]:

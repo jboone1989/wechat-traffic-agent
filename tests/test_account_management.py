@@ -111,3 +111,31 @@ def test_connected_x_account_keeps_browser_login_failure_scoped_to_browser_bindi
     refreshed = next(x for x in manager.status()["accounts"] if x["provider_id"] == "x")
     browser = next(x for x in refreshed["bindings"] if x["binding_id"] == "browser_session")
     assert browser["last_error"] == ""
+
+
+def test_account_status_exposes_multiple_x_instances_without_global_identity_collision(tmp_path, monkeypatch):
+    status = """▸ content-agent  [client_id: example]
+      oauth2: first_x
+"""
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
+    manager.registry.ensure(
+        provider_id="x",
+        identity="second_x",
+        oauth_app="content-agent",
+        oauth_user="second_x",
+        oauth_status="CONNECTED",
+    )
+    monkeypatch.setenv("TINYFISH_API_KEY", "tinyfish-test-key")
+    monkeypatch.setenv("TINYFISH_X_PROFILE_ID", "prof_first")
+
+    body = manager.status()
+    rows = {row["identity"]: row for row in body["instances"]}
+
+    assert body["supports_multiple_accounts"] is True
+    assert set(rows) == {"first_x", "second_x"}
+    assert rows["first_x"]["oauth_user"] == "first_x"
+    assert rows["second_x"]["oauth_user"] == "second_x"
+    assert rows["first_x"]["automation"]["primary_engine"] == "JEV"
+    assert rows["first_x"]["automation"]["compatibility_fallback"] == "TINYFISH"
+    assert rows["second_x"]["automation"]["compatibility_fallback"] == ""
+    assert rows["first_x"]["account_id"] != rows["second_x"]["account_id"]

@@ -778,6 +778,7 @@ class LiveAgentService:
         from .channels.agent_live_page import live_agent_document
         from .channels.agent_talk_page import talk_agent_document
         from .account_management import AccountManager
+        from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
         from .channels.operator_console_page import operator_console_document
         from .channels.operator_private_chat_page import operator_private_chat_document
         from .channels.operator_llm_audit_page import operator_llm_audit_document
@@ -794,6 +795,7 @@ class LiveAgentService:
 
         operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
+        x_oauth_manager = XOAuthHeadlessManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
         operator_memory = OperatorLongTermMemory(self.state_root) if operator_console is not None else None
@@ -1459,6 +1461,145 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
+        async def operator_x_oauth_start(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 2048:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                username = str(body.get("username") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(x_oauth_manager.start, username)
+            except (ValueError, XOAuthSessionError) as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]},
+                    status_code=409,
+                    headers={"Cache-Control": "no-store"},
+                )
+            except Exception:
+                return JSONResponse(
+                    {"error": "x_oauth_start_failed"},
+                    status_code=502,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_x_oauth_complete(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 8192:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                session_id = str(body.get("session_id") or "") if isinstance(body, dict) else ""
+                callback = str(body.get("callback") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(
+                    x_oauth_manager.complete, session_id, callback
+                )
+            except (ValueError, XOAuthSessionError) as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]},
+                    status_code=409,
+                    headers={"Cache-Control": "no-store"},
+                )
+            except Exception:
+                return JSONResponse(
+                    {"error": "x_oauth_complete_failed"},
+                    status_code=502,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_x_oauth_cancel(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                session_id = str(body.get("session_id") or "") if isinstance(body, dict) else ""
+                await asyncio.to_thread(x_oauth_manager.cancel, session_id)
+            except Exception:
+                return JSONResponse({"error": "x_oauth_cancel_failed"}, status_code=502)
+            return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_browser_provision(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            account_id = str(request.path_params["account_id"]).strip()
+            try:
+                from .account_browser_profiles import (
+                    AccountBrowserProfileError,
+                    AccountBrowserProfileManager,
+                )
+                manager = AccountBrowserProfileManager(self.state_root)
+                runtime = await asyncio.to_thread(manager.ensure, account_id)
+            except (ValueError, KeyError) as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=404)
+            except AccountBrowserProfileError as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=503)
+            return JSONResponse(
+                {
+                    "account_id": runtime.account_id,
+                    "profile_id": runtime.profile_id,
+                    "running": runtime.running,
+                    "status": "READY" if runtime.running else "STOPPED",
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_account_browser_jev_test(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            account_id = str(request.path_params["account_id"]).strip()
+            try:
+                from .browser_runtime import AccountJevExecutor, BrowserRuntimeUnavailable
+                executor = AccountJevExecutor.from_environment(state_root=self.state_root)
+                result = await asyncio.wait_for(
+                    executor.run(
+                        account_id=account_id,
+                        url="https://example.com",
+                        goal=(
+                            "Observe this page. If the title and main heading say Example Domain, "
+                            "finish without typing or navigating away."
+                        ),
+                        task_type="ACCOUNT_JEV_OPERATOR_SMOKE",
+                    ),
+                    timeout=80,
+                )
+            except (ValueError, KeyError) as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=404)
+            except BrowserRuntimeUnavailable as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=409)
+            except asyncio.TimeoutError:
+                return JSONResponse({"error": "account_jev_test_timeout"}, status_code=504)
+            except Exception as exc:
+                return JSONResponse(
+                    {"error": "account_jev_test_failed", "error_type": type(exc).__name__},
+                    status_code=502,
+                )
+            return JSONResponse(
+                {
+                    "ok": result.status == "COMPLETED",
+                    "account_id": account_id,
+                    "provider": result.provider,
+                    "status": result.status,
+                    "elapsed_ms": result.elapsed_ms,
+                    "action_count": result.action_count,
+                    "final_url": result.final_url,
+                },
+                status_code=200 if result.status == "COMPLETED" else 502,
+                headers={"Cache-Control": "no-store"},
+            )
+
         async def operator_account_stream(websocket: WebSocket):
             if operator_console is None:
                 await websocket.close(code=4404)
@@ -1987,6 +2128,11 @@ class LiveAgentService:
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
+                Route("/operator/api/accounts/x/oauth/start", operator_x_oauth_start, methods=["POST"]),
+                Route("/operator/api/accounts/x/oauth/complete", operator_x_oauth_complete, methods=["POST"]),
+                Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
+                Route("/operator/api/account-instances/{account_id}/browser/provision", operator_account_browser_provision, methods=["POST"]),
+                Route("/operator/api/account-instances/{account_id}/browser/jev-test", operator_account_browser_jev_test, methods=["POST"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
                 Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),

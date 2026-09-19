@@ -18,7 +18,7 @@ button,a{border:1px solid #34414c;border-radius:9px;background:#182027;color:#ee
 button.primary,a.primary{background:#edf3f7;color:#111;border-color:#edf3f7}button.ghost{background:transparent}button:disabled{opacity:.5;cursor:not-allowed}
 .card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:15px;min-width:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px}.stack{display:grid;gap:9px}
 .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
-label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;min-width:0;border:1px solid #34414c;border-radius:8px;background:#090d11;color:#fff;padding:10px;font:inherit}
+label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select,textarea{width:100%;min-width:0;border:1px solid #34414c;border-radius:8px;background:#090d11;color:#fff;padding:10px;font:inherit}textarea{min-height:86px;resize:vertical}
 .badge{display:inline-block;font-size:11px;padding:3px 7px;border:1px solid #46535e;border-radius:99px}.ok{color:#8ee1b2;border-color:#2d7052}.pending{color:#e8c875;border-color:#806a32}.bad{color:#ffaaa7;border-color:#7a3c3b}.info{color:#9ac8ff;border-color:#315b7e}
 .hidden{display:none!important}.error{color:#ffaaa7}.success{color:#8ee1b2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
 .nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:5px;margin-bottom:18px;border:1px solid #252f38;border-radius:11px;background:rgba(10,13,16,.95);backdrop-filter:blur(10px)}
@@ -80,8 +80,24 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
  </section>
 
  <section class="panel" data-panel="accounts">
-  <div class="page-head"><div><h2>账户管理</h2><p class="muted">统一管理 X、YouTube、邮箱等外部身份。账户是长期资源，登录方式只是适配器。</p></div></div>
+  <div class="page-head"><div><h2>账户管理</h2><p class="muted">统一管理 X、YouTube、邮箱等外部身份。每个账户拥有独立认证和浏览器环境。</p></div><button id="addXAccount" class="primary">添加 X 账号</button></div>
   <div id="accounts" class="grid"></div>
+  <div id="xOAuthShell" class="account-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="xOAuthTitle">
+   <div class="account-login-dialog">
+    <div class="row"><div class="grow"><h3 id="xOAuthTitle">添加 X 账号</h3><p class="muted">使用 X 官方 OAuth。不会要求你登录 Ferro 的服务器浏览器，也不会覆盖已有账号。</p></div><button id="xOAuthClose" class="ghost">关闭</button></div>
+    <div id="xOAuthStepOne">
+     <label>X 用户名<input id="xOAuthUsername" autocomplete="off" placeholder="例如 another_account"></label>
+     <div class="row"><button id="xOAuthStart" class="primary">生成授权链接</button><span id="xOAuthStatus" class="muted"></span></div>
+    </div>
+    <div id="xOAuthStepTwo" class="hidden">
+     <p class="muted">1. 在手机或电脑打开下面的官方 X 授权页并完成授权。</p>
+     <div class="row"><a id="xOAuthLink" class="primary" target="_blank" rel="noopener noreferrer">打开 X 授权页</a></div>
+     <p class="muted">2. 授权后地址栏会跳到 localhost。页面打不开没关系，把完整地址复制到下面。</p>
+     <label>回调地址<input id="xOAuthCallback" autocomplete="off" placeholder="http://localhost:8080/callback?state=...&code=..."></label>
+     <div class="row"><button id="xOAuthComplete" class="primary">完成绑定</button><button id="xOAuthRestart" class="ghost">重新开始</button></div>
+    </div>
+   </div>
+  </div>
   <div id="accountLoginShell" class="account-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="accountLoginTitle">
    <div class="account-login-dialog">
     <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
@@ -291,53 +307,41 @@ function accountStatusLabel(status){
  return ({CONNECTED:'已连接',NEEDS_LOGIN:'未登录',NEEDS_AUTHORIZATION:'未授权',AUTHENTICATING:'登录中',DEGRADED:'异常',ADAPTER_NOT_INSTALLED:'待接入'})[status]||status||'未知'
 }
 function renderAccounts(data){
- const rows=((data.accounts||{}).accounts||[]),root=el('accounts');root.replaceChildren();
- if(!rows.length){root.append(node('div','暂无账户提供方','card muted'));return}
- for(const row of rows){
-  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row'),bindings=row.bindings||[];
-  head.append(node('h3',row.label,'grow'),badge(accountStatusLabel(row.status),accountStatusKind(row.status)));c.append(head);
-  if(row.identity)c.append(node('div','@'+row.identity,'mono'));
-  if(row.provider_id==='x'){
-   const apiBinding=bindings.find(x=>x.binding_id==='api_oauth')||{},web=bindings.find(x=>x.binding_id==='browser_session')||{};
-   const runtimes=((data.browser_runtime||{}).providers||[]),tinyfish=runtimes.find(x=>x.provider==='TINYFISH')||{};
-   const apiBox=node('div',undefined,'account-binding'),apiTitle=node('div',undefined,'account-binding-title');
-   apiTitle.append(node('strong','API 连接'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
-   apiBox.append(apiTitle,node('p','正常 X 操作优先走官方 OAuth/API：读取、发布、提及和数据统计。','muted'));
-   if(apiBinding.identity)apiBox.append(node('div','@'+apiBinding.identity,'mono muted'));
-   c.append(apiBox);
-   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
-   const webReady=tinyfish.status==='READY';
-   webTitle.append(node('strong','网页备用'),badge(webReady?'已就绪':'需配置',webReady?'ok':'pending'));
-   webBox.append(webTitle);
-   if(webReady){
-    webBox.append(node('p','TinyFish 已保持 X 登录态。只有官方 API 不够用时，Ferro 才会自动使用网页备用；你无需再登录服务器浏览器。','muted'))
-   }else if(web.status==='CONNECTED'){
-    webBox.append(node('p','TinyFish 尚未就绪，但服务器浏览器已登录，可作为临时网页备用。','muted'))
-   }else{
-    webBox.append(node('p','当前没有已登录的网页备用。正常 OAuth/API 功能仍可使用。','muted'))
-   }
-   c.append(webBox);
-   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
-   const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
-   for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));
-   tech.append(meta,node('div','Fallback: TinyFish → Local CDP · API: '+fmt(apiBinding.auth_mode),'mono muted'));
-   const actions=node('div',undefined,'account-actions');
-   const connect=node('button',web.status==='CONNECTED'?'打开本地服务器浏览器':'登录本地服务器浏览器','ghost');
-   connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
-   const verify=node('button','检查本地网页登录','ghost');
-   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(out.status==='CONNECTED'?'本地服务器浏览器已登录':'本地服务器浏览器尚未登录');await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
-   actions.append(connect,verify);tech.append(actions);c.append(tech)
-  }else{
-   const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
-   for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
-   if(row.last_error)c.append(node('p',row.last_error,'error'));
-   const actions=node('div',undefined,'account-actions');
-   if(row.implemented){const connect=node('button','连接','primary');connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));actions.append(connect)}
-   else actions.append(badge('待接入适配器','info'));
-   c.append(actions)
-  }
-  root.append(c)
+ const payload=data.accounts||{},instances=payload.instances||[],providers=payload.accounts||[],root=el('accounts');root.replaceChildren();
+ for(const acct of instances){
+  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row');
+  head.append(node('h3',(acct.label||acct.provider_id)+' · '+(acct.display_label||acct.identity),'grow'),badge(accountStatusLabel(acct.status),accountStatusKind(acct.status)));c.append(head);
+  const apiBinding=(acct.bindings||[]).find(x=>x.binding_id==='api_oauth')||{};
+  const profile=(acct.bindings||[]).find(x=>x.binding_id==='browser_profile')||{},automation=acct.automation||{};
+  const apiBox=node('div',undefined,'account-binding'),apiTitle=node('div',undefined,'account-binding-title');
+  apiTitle.append(node('strong','官方 API'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
+  apiBox.append(apiTitle,node('p','OAuth 身份独立绑定到这个账号。调用 X API 时显式使用该账号，不依赖全局默认用户。','muted'));c.append(apiBox);
+  const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
+  const profileReady=profile.status==='READY';
+  webTitle.append(node('strong','网页自动化'),badge(profileReady?'独立环境已创建':'按需创建',profileReady?'ok':'info'));
+  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie，不与其他 X 账号混用。','muted'));
+  if(automation.compatibility_fallback)webBox.append(node('p','当前兼容 fallback：'+automation.compatibility_fallback+'（临时，不是长期依赖）。','muted'));
+  c.append(webBox);
+  const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
+  const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
+  tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
+  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost');
+  provision.onclick=async()=>{provision.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/provision',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · 浏览器环境 '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{provision.disabled=false}};
+  test.onclick=async()=>{test.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/jev-test',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · Jev '+out.status)}catch(e){flash(e.message,true)}finally{test.disabled=false}};
+  actions.append(provision,test);tech.append(actions);c.append(tech);root.append(c)
  }
+ const instanceProviders=new Set(instances.map(x=>x.provider_id));
+ for(const row of providers){
+  if(row.provider_id==='x'){
+   if(!instanceProviders.has('x')){
+    const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row');head.append(node('h3','X','grow'),badge('未绑定','pending'));c.append(head,node('p','点击“添加 X 账号”使用官方 OAuth 绑定，可添加多个账号。','muted'));root.append(c)
+   }
+   continue
+  }
+  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row');head.append(node('h3',row.label,'grow'),badge(accountStatusLabel(row.status),accountStatusKind(row.status)));c.append(head);
+  const meta=node('div',undefined,'account-meta');for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta,badge('待接入适配器','info'));root.append(c)
+ }
+ if(!instances.length&&!providers.length)root.append(node('div','暂无账户提供方','card muted'))
 }
 let accountStream=null,accountStreamGeneration=0,streamFramePending=null,streamFrameDrawing=false;
 function closeAccountStream(){
@@ -461,6 +465,65 @@ for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPan
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
+let xOAuthSessionId='';
+function closeXOAuthModal(){
+ el('xOAuthShell').classList.add('hidden');
+ document.body.classList.remove('modal-open');
+ el('xOAuthStepOne').classList.remove('hidden');
+ el('xOAuthStepTwo').classList.add('hidden');
+ el('xOAuthStatus').textContent='';
+ el('xOAuthCallback').value='';
+ el('xOAuthLink').removeAttribute('href');
+ xOAuthSessionId=''
+}
+el('addXAccount').onclick=()=>{
+ selectPanel('accounts');
+ el('xOAuthShell').classList.remove('hidden');
+ document.body.classList.add('modal-open');
+ el('xOAuthUsername').focus()
+};
+el('xOAuthClose').onclick=async()=>{
+ if(xOAuthSessionId){
+  try{await api('/operator/api/accounts/x/oauth/cancel',{method:'POST',body:JSON.stringify({session_id:xOAuthSessionId})})}catch{}
+ }
+ closeXOAuthModal()
+};
+el('xOAuthShell').onclick=ev=>{if(ev.target===el('xOAuthShell'))el('xOAuthClose').click()};
+el('xOAuthStart').onclick=async()=>{
+ const btn=el('xOAuthStart'),username=el('xOAuthUsername').value.trim().replace(/^@/,'');
+ if(!username){el('xOAuthStatus').textContent='请输入 X 用户名';return}
+ btn.disabled=true;el('xOAuthStatus').textContent='正在生成官方授权链接…';
+ try{
+  const out=await api('/operator/api/accounts/x/oauth/start',{method:'POST',body:JSON.stringify({username})});
+  xOAuthSessionId=out.session_id;
+  el('xOAuthLink').href=out.authorization_url;
+  el('xOAuthStepOne').classList.add('hidden');
+  el('xOAuthStepTwo').classList.remove('hidden');
+  el('xOAuthStatus').textContent=''
+ }catch(e){el('xOAuthStatus').textContent=e.message;flash(e.message,true)}
+ finally{btn.disabled=false}
+};
+el('xOAuthComplete').onclick=async()=>{
+ const btn=el('xOAuthComplete'),callback=el('xOAuthCallback').value.trim();
+ if(!xOAuthSessionId||!callback){flash('请先授权并粘贴回调地址',true);return}
+ btn.disabled=true;
+ try{
+  const out=await api('/operator/api/accounts/x/oauth/complete',{method:'POST',body:JSON.stringify({session_id:xOAuthSessionId,callback})});
+  flash('X @'+out.identity+' 已绑定');
+  closeXOAuthModal();
+  await refresh()
+ }catch(e){flash(e.message,true)}
+ finally{btn.disabled=false}
+};
+el('xOAuthRestart').onclick=async()=>{
+ if(xOAuthSessionId){try{await api('/operator/api/accounts/x/oauth/cancel',{method:'POST',body:JSON.stringify({session_id:xOAuthSessionId})})}catch{}}
+ xOAuthSessionId='';
+ el('xOAuthCallback').value='';
+ el('xOAuthStepTwo').classList.add('hidden');
+ el('xOAuthStepOne').classList.remove('hidden');
+ el('xOAuthUsername').focus()
+};
+
 el('accountLoginClose').onclick=async()=>{
  const provider=activeAccountProvider;closeAccountStream();activeAccountProvider='';
  try{if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})}catch{}

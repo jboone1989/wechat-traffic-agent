@@ -1157,3 +1157,68 @@ def test_operator_live_browser_websocket_requires_auth_and_same_origin(tmp_path,
         message = websocket.receive_json()
         assert message["type"] == "status"
         assert message["url"] == "https://x.com/"
+
+
+def test_operator_multi_x_oauth_endpoints_are_authenticated_and_non_secret(tmp_path, monkeypatch):
+    import wechat_traffic_agent.x_oauth_headless as oauth_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    calls = []
+
+    class FakeOAuth:
+        def __init__(self, state_root):
+            self.state_root = state_root
+
+        def start(self, username):
+            calls.append(("start", username))
+            return {
+                "session_id": "oauth-session-1",
+                "username": username,
+                "authorization_url": "https://x.com/i/oauth2/authorize?state=test",
+                "expires_in_seconds": 600,
+            }
+
+        def complete(self, session_id, callback):
+            calls.append(("complete", session_id, callback))
+            return {
+                "account_id": "acct_x_123456789abc",
+                "provider_id": "x",
+                "identity": "second_x",
+                "status": "CONNECTED",
+            }
+
+        def cancel(self, session_id):
+            calls.append(("cancel", session_id))
+
+    monkeypatch.setattr(oauth_module, "XOAuthHeadlessManager", FakeOAuth)
+    service = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )
+    client = TestClient(service._app())
+
+    unauthorized = client.post(
+        "/operator/api/accounts/x/oauth/start",
+        headers={"X-Operator-Request": "1"},
+        json={"username": "second_x"},
+    )
+    assert unauthorized.status_code == 401
+
+    _login_operator(client, tmp_path)
+    started = client.post(
+        "/operator/api/accounts/x/oauth/start",
+        headers={"X-Operator-Request": "1"},
+        json={"username": "second_x"},
+    )
+    assert started.status_code == 200
+    assert started.json()["authorization_url"].startswith("https://x.com/i/oauth2/authorize")
+
+    callback = "http://localhost:8080/callback?state=s&code=secret-code"
+    completed = client.post(
+        "/operator/api/accounts/x/oauth/complete",
+        headers={"X-Operator-Request": "1"},
+        json={"session_id": "oauth-session-1", "callback": callback},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["identity"] == "second_x"
+    assert callback not in completed.text
+    assert calls[-1] == ("complete", "oauth-session-1", callback)
