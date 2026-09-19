@@ -6,10 +6,14 @@ CDP tab; Chrome's normal profile storage retains the resulting site session.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
 import threading
 import time
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
+import urllib.request
 
 
 DEFAULT_LOGIN_URL = "https://x.com/i/flow/login"
@@ -36,8 +40,12 @@ class LocalBrowserSnapshot:
 class LocalBrowserControl:
     """One operator-owned browser tab protected by the Operator Console session."""
 
-    def __init__(self, *, browser_factory=None) -> None:
+    def __init__(self, *, browser_factory=None, state_root: Path | None = None) -> None:
         self.browser_factory = browser_factory
+        self.state_path = (
+            Path(state_root) / "operator" / "browser-session-target.json"
+            if state_root is not None else None
+        )
         self._browser: Any | None = None
         self._lock = threading.RLock()
 
@@ -58,6 +66,59 @@ class LocalBrowserControl:
             raise ValueError("local login browser is restricted to x.com")
         return raw
 
+    def _read_persisted_target(self) -> str:
+        if self.state_path is None:
+            return ""
+        try:
+            body = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return ""
+        return str(body.get("target_id") or "") if isinstance(body, dict) else ""
+
+    def _persist_target(self, target_id: str) -> None:
+        if self.state_path is None:
+            return
+        target = str(target_id or "")
+        if not target:
+            return
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.state_path.parent, 0o700)
+        tmp = self.state_path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"schema_version": 1, "target_id": target},
+                handle,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.state_path)
+        os.chmod(self.state_path, 0o600)
+
+    def _clear_persisted_target(self) -> None:
+        if self.state_path is None:
+            return
+        try:
+            self.state_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _close_target(target_id: str) -> None:
+        target = str(target_id or "")
+        if not target:
+            return
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:9333/json/close/" + quote(target, safe=""),
+                timeout=2,
+            ):
+                pass
+        except Exception:
+            pass
+
     def start(self, url: str = DEFAULT_LOGIN_URL) -> dict[str, Any]:
         target = self._validate_url(url)
         with self._lock:
@@ -67,12 +128,22 @@ class LocalBrowserControl:
             except Exception as exc:
                 self._browser = None
                 raise LocalBrowserControlUnavailable(type(exc).__name__) from exc
+            self._persist_target(str(getattr(self._browser, "target", "") or ""))
             return self.status()
 
     def _require(self):
         if self._browser is None:
             raise LocalBrowserControlUnavailable("local login browser session is not running")
         return self._browser
+
+    def target_id(self) -> str:
+        with self._lock:
+            if self._browser is not None:
+                return str(getattr(self._browser, "target", "") or "")
+            target = self._read_persisted_target()
+            if target:
+                return target
+            raise LocalBrowserControlUnavailable("local login browser session is not running")
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -192,11 +263,18 @@ class LocalBrowserControl:
 
     def _close_unlocked(self) -> None:
         browser, self._browser = self._browser, None
+        persisted = self._read_persisted_target()
+        current = str(getattr(browser, "target", "") or "") if browser is not None else ""
         if browser is not None:
             try:
                 browser.close()
             except Exception:
-                pass
+                self._close_target(current)
+            if persisted and persisted != current:
+                self._close_target(persisted)
+        elif persisted:
+            self._close_target(persisted)
+        self._clear_persisted_target()
 
 
 __all__ = [
