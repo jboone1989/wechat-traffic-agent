@@ -21,7 +21,7 @@ class _Runtime:
         self.calls.append((capability_id, dict(payload)))
         rid = "receipt:" + capability_id + ":" + str(len(self.calls))
         if capability_id == "x.identity":
-            data = {"data": {"id": "me", "username": "agent", "name": "Agent", "profile_image_url": "https://img.example/a.jpg"}}
+            data = {"data": {"id": "me", "username": "agent", "name": "Agent", "profile_image_url": "https://img.example/a.jpg", "public_metrics": {"followers_count": 2000}}}
             return SimpleNamespace(payload={"ok": True, "data": data}, receipt_id=rid)
         if capability_id == "x.mentions":
             if not self.mentions_ok:
@@ -44,10 +44,22 @@ class _GrowthMission:
     def publication_guardrail(self):
         return {"allowed": True, "status": "ALLOWED"}
 
+    def publication_binding(self, *, cycle):
+        return {"status": "BOUND", "bound": True, "cycle": cycle}
+
+    def record_publication_baseline(self, *, cycle, user, identity_receipt_id, now):
+        return {
+            "status": "RECORDED",
+            "cycle": cycle,
+            "followers": user["public_metrics"]["followers_count"],
+            "identity_receipt_id": identity_receipt_id,
+        }
+
     def start_experiment_from_publication(
-        self, *, publication_receipt_id, post_id, now
+        self, *, cycle, publication_receipt_id, post_id, now
     ):
         self.calls.append({
+            "cycle": cycle,
             "publication_receipt_id": publication_receipt_id,
             "post_id": post_id,
             "now": now,
@@ -143,6 +155,7 @@ def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_
     assert row["lineage"]["cognition_file"] == "cognition.json"
     assert result["mission_experiment_transition"]["status"] == "STARTED"
     assert growth.calls == [{
+        "cycle": cycle,
         "publication_receipt_id": "receipt:x.post:2",
         "post_id": "p42",
         "now": NOW,

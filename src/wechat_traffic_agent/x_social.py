@@ -205,6 +205,23 @@ class XAutonomyLoop:
         existing = _read_json(self.profile_path)
         _write_json(self.profile_path, {**existing, **profile})
         return user, receipt.receipt_id
+
+    async def capture_mission_publication_baseline(
+        self, *, cycle: str, now: datetime
+    ) -> dict[str, Any]:
+        if self.growth_mission is None:
+            return {"status": "NO_GROWTH_MISSION"}
+        user, identity_receipt = self._identity(now=now)
+        record = getattr(self.growth_mission, "record_publication_baseline", None)
+        if not callable(record):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        return record(
+            cycle=cycle,
+            user=user,
+            identity_receipt_id=identity_receipt,
+            now=now,
+        )
+
     async def observe(self, *, now: datetime) -> dict[str, Any]:
         cycle = "x-observe-" + str(int(now.timestamp()))
         try:
@@ -401,6 +418,25 @@ class XAutonomyLoop:
                     "guardrail": guard,
                 }
         me, _identity_receipt = self._identity(now=now)
+        mission_binding = None
+        if self.growth_mission is not None:
+            binding_method = getattr(self.growth_mission, "publication_binding", None)
+            if callable(binding_method):
+                mission_binding = binding_method(cycle=cycle)
+            if isinstance(mission_binding, dict) and bool(mission_binding.get("bound")):
+                baseline = self.growth_mission.record_publication_baseline(
+                    cycle=cycle,
+                    user=me,
+                    identity_receipt_id=_identity_receipt,
+                    now=now,
+                )
+                if str((baseline or {}).get("status") or "") != "RECORDED":
+                    return {
+                        "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
+                        "cycle": cycle,
+                        "binding": mission_binding,
+                        "baseline": baseline,
+                    }
         post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
         if not post.payload.get("ok"):
             return {"status": str(post.payload.get("status") or "X_POST_FAILED"), "cycle": cycle,
@@ -413,6 +449,7 @@ class XAutonomyLoop:
             try:
                 mission_experiment_transition = (
                     self.growth_mission.start_experiment_from_publication(
+                        cycle=cycle,
                         publication_receipt_id=post.receipt_id,
                         post_id=post_id,
                         now=now,

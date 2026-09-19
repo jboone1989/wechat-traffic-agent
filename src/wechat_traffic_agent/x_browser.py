@@ -318,12 +318,14 @@ class XBrowserPublisher:
         enabled: bool | None = None,
         writes_enabled: bool | None = None,
         growth_mission: Any | None = None,
+        mission_baseline_observer: Any | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.transport = transport
         self.enabled = x_browser_enabled() if enabled is None else bool(enabled)
         self.writes_enabled = x_browser_writes_enabled() if writes_enabled is None else bool(writes_enabled)
         self.growth_mission = growth_mission
+        self.mission_baseline_observer = mission_baseline_observer
 
     def _folder(self, cycle: str) -> Path:
         return self.state_root / "content" / "continuous" / "cycles" / cycle
@@ -340,6 +342,7 @@ class XBrowserPublisher:
         receipt_id = f"x-browser-publication:{cycle}:{str(post_id).strip()}"
         try:
             return self.growth_mission.start_experiment_from_publication(
+                cycle=cycle,
                 publication_receipt_id=receipt_id,
                 post_id=str(post_id).strip(),
                 now=now,
@@ -400,6 +403,35 @@ class XBrowserPublisher:
                     "status": "HELD_BY_MISSION_GUARDRAIL",
                     "cycle": cycle,
                     "guardrail": guard,
+                }
+        binding = None
+        binding_method = getattr(self.growth_mission, "publication_binding", None)
+        if callable(binding_method):
+            binding = binding_method(cycle=cycle)
+        if isinstance(binding, dict) and bool(binding.get("bound")):
+            observer = self.mission_baseline_observer
+            if observer is None:
+                return {
+                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
+                    "cycle": cycle,
+                    "binding": binding,
+                }
+            try:
+                baseline = await observer(cycle=cycle, now=now)
+            except Exception as exc:
+                return {
+                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
+                    "cycle": cycle,
+                    "binding": binding,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
+            if str((baseline or {}).get("status") or "") != "RECORDED":
+                return {
+                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
+                    "cycle": cycle,
+                    "binding": binding,
+                    "baseline": baseline,
                 }
         transport = self.transport
         if transport is None:

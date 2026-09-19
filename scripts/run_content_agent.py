@@ -197,6 +197,11 @@ def main() -> int:
     x_browser_publisher = XBrowserPublisher(
         state_root=state_root,
         growth_mission=x_growth_mission,
+        mission_baseline_observer=(
+            x_loop.capture_mission_publication_baseline
+            if x_loop is not None
+            else None
+        ),
     )
     live_agent_service = None
     from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled

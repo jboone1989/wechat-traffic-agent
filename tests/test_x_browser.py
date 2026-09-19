@@ -56,10 +56,14 @@ class _GrowthMission:
     def publication_guardrail(self) -> dict:
         return {"allowed": True, "status": "ALLOWED"}
 
+    def publication_binding(self, *, cycle: str) -> dict:
+        return {"status": "BOUND", "bound": True, "cycle": cycle}
+
     def start_experiment_from_publication(
-        self, *, publication_receipt_id: str, post_id: str, now: datetime
+        self, *, cycle: str, publication_receipt_id: str, post_id: str, now: datetime
     ) -> dict:
         self.calls.append({
+            "cycle": cycle,
             "publication_receipt_id": publication_receipt_id,
             "post_id": post_id,
             "now": now,
@@ -68,6 +72,10 @@ class _GrowthMission:
             "status": "STARTED" if len(self.calls) == 1 else "ALREADY_RUNNING",
             "experiment_id": "mission-exp-browser",
         }
+
+
+async def _baseline_observer(*, cycle: str, now: datetime) -> dict:
+    return {"status": "RECORDED", "cycle": cycle, "observed_at": now.isoformat()}
 
 
 def test_tinyfish_x_publisher_is_double_gated(tmp_path: Path):
@@ -90,6 +98,7 @@ def test_premium_long_post_is_published_once_and_bound_to_draft(tmp_path: Path):
         enabled=True,
         writes_enabled=True,
         growth_mission=growth,
+        mission_baseline_observer=_baseline_observer,
     )
     first = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
     second = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
@@ -104,11 +113,13 @@ def test_premium_long_post_is_published_once_and_bound_to_draft(tmp_path: Path):
     assert second["mission_experiment_transition"]["status"] == "ALREADY_RUNNING"
     assert growth.calls == [
         {
+            "cycle": "v2-browser",
             "publication_receipt_id": "x-browser-publication:v2-browser:2100431447047741762",
             "post_id": "2100431447047741762",
             "now": NOW,
         },
         {
+            "cycle": "v2-browser",
             "publication_receipt_id": "x-browser-publication:v2-browser:2100431447047741762",
             "post_id": "2100431447047741762",
             "now": NOW,
@@ -152,6 +163,7 @@ def test_unverified_browser_write_does_not_create_fake_receipt_or_history(tmp_pa
             enabled=True,
             writes_enabled=True,
             growth_mission=growth,
+            mission_baseline_observer=_baseline_observer,
         ).after_content_cycle(cycle="v2-browser", now=NOW)
     )
     assert result["status"] == "PUBLICATION_UNVERIFIED"
