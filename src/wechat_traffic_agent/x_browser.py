@@ -1,4 +1,4 @@
-"""X Web publishing through a TinyFish Browser Context Profile."""
+"""Provider-routed X Web publishing with independently verified outcomes."""
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +22,11 @@ X_COMPOSE_URL = "https://x.com/compose/post"
 X_PREMIUM_LONG_POST_MAX_CHARS = 25_000
 
 
-class TinyFishProfileUnavailable(RuntimeError):
+class XBrowserSessionUnavailable(RuntimeError):
+    """No browser transport can safely start the requested X session."""
+
+
+class TinyFishProfileUnavailable(XBrowserSessionUnavailable):
     """TinyFish credentials/profile are absent or cannot open an authenticated session."""
 
 
@@ -36,6 +40,7 @@ class XBrowserPublishResult:
     url: str
     handle: str
     duplicate_found: bool = False
+    provider: str = "UNKNOWN"
 
 
 class XBrowserTransport(Protocol):
@@ -52,6 +57,21 @@ def tinyfish_x_enabled() -> bool:
 
 def tinyfish_x_writes_enabled() -> bool:
     return _enabled("CONTENT_TINYFISH_X_WRITES_ENABLED")
+
+
+def x_browser_enabled() -> bool:
+    return (
+        _enabled("CONTENT_X_BROWSER_ENABLED")
+        or _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED")
+        or tinyfish_x_enabled()
+    )
+
+
+def x_browser_writes_enabled() -> bool:
+    return (
+        _enabled("CONTENT_X_BROWSER_WRITES_ENABLED")
+        or tinyfish_x_writes_enabled()
+    )
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -248,8 +268,43 @@ class TinyFishXTransport:
                 post_id = _post_id_from_url(raw_url)
                 if post_id:
                     url = f"https://x.com/{handle}/status/{post_id}"
-                    return XBrowserPublishResult(post_id=post_id, url=url, handle=handle, duplicate_found=duplicate_found)
+                    return XBrowserPublishResult(
+                        post_id=post_id,
+                        url=url,
+                        handle=handle,
+                        duplicate_found=duplicate_found,
+                        provider="TINYFISH",
+                    )
         return None
+
+
+class XBrowserTransportRouter:
+    """Prefer the owned local browser; retain TinyFish only as a safe-start fallback."""
+
+    def __init__(self, *, state_root: Path) -> None:
+        self.state_root = Path(state_root)
+
+    async def publish(self, *, text: str) -> XBrowserPublishResult:
+        errors: list[str] = []
+
+        if _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED"):
+            from .browser_runtime import BrowserRuntimeUnavailable
+            from .x_local_browser import LocalHarnessXTransport
+
+            try:
+                local = LocalHarnessXTransport.from_environment(state_root=self.state_root)
+                return await local.publish(text=text)
+            except BrowserRuntimeUnavailable as exc:
+                errors.append("LOCAL_CDP: " + str(exc))
+
+        if tinyfish_x_enabled():
+            try:
+                return await TinyFishXTransport.from_environment().publish(text=text)
+            except TinyFishProfileUnavailable as exc:
+                errors.append("TINYFISH: " + str(exc))
+
+        detail = "; ".join(errors) or "no X browser provider is configured"
+        raise XBrowserSessionUnavailable(detail)
 
 
 class XBrowserPublisher:
@@ -257,8 +312,8 @@ class XBrowserPublisher:
                  enabled: bool | None = None, writes_enabled: bool | None = None) -> None:
         self.state_root = Path(state_root)
         self.transport = transport
-        self.enabled = tinyfish_x_enabled() if enabled is None else bool(enabled)
-        self.writes_enabled = tinyfish_x_writes_enabled() if writes_enabled is None else bool(writes_enabled)
+        self.enabled = x_browser_enabled() if enabled is None else bool(enabled)
+        self.writes_enabled = x_browser_writes_enabled() if writes_enabled is None else bool(writes_enabled)
 
     def _folder(self, cycle: str) -> Path:
         return self.state_root / "content" / "continuous" / "cycles" / cycle
@@ -293,15 +348,12 @@ class XBrowserPublisher:
             return {"status": "ALREADY_POSTED", "cycle": cycle, "publication": existing}
         transport = self.transport
         if transport is None:
-            try:
-                transport = TinyFishXTransport.from_environment()
-            except TinyFishProfileUnavailable as exc:
-                return {"status": "SESSION_UNAVAILABLE", "cycle": cycle, "detail": str(exc)}
+            transport = XBrowserTransportRouter(state_root=self.state_root)
         emit_public_activity(self.state_root, cycle=cycle, phase="X", title="Publishing on X",
                              detail=text[:220], status="working", kind="social")
         try:
             published = await transport.publish(text=text)
-        except TinyFishProfileUnavailable as exc:
+        except XBrowserSessionUnavailable as exc:
             return {"status": "SESSION_UNAVAILABLE", "cycle": cycle, "detail": str(exc)}
         except XBrowserPublicationUnverified as exc:
             return {"status": "PUBLICATION_UNVERIFIED", "cycle": cycle, "detail": str(exc)}
@@ -310,7 +362,7 @@ class XBrowserPublisher:
             "cycle": cycle, "published_at": now.isoformat(), "draft_sha256": digest,
             "post_id": published.post_id, "url": published.url, "handle": published.handle,
             "duplicate_found": published.duplicate_found,
-            "source": "TinyFish Browser Context Profile + X Web UI", "publication_authority": True,
+            "source": f"{published.provider} + X Web UI", "publication_authority": True,
         }
         _write_json(receipt_path, publication)
         history = XHistoryLedger(self.state_root)
@@ -338,5 +390,7 @@ class XBrowserPublisher:
 __all__ = [
     "TinyFishProfileClient", "TinyFishProfileUnavailable", "TinyFishXTransport",
     "XBrowserPublicationUnverified", "XBrowserPublishResult", "XBrowserPublisher",
-    "tinyfish_x_enabled", "tinyfish_x_writes_enabled", "_post_id_from_url",
+    "XBrowserSessionUnavailable", "XBrowserTransportRouter",
+    "tinyfish_x_enabled", "tinyfish_x_writes_enabled", "x_browser_enabled",
+    "x_browser_writes_enabled", "_post_id_from_url",
 ]
