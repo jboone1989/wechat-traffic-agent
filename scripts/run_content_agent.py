@@ -56,6 +56,19 @@ def _enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
 
 
+def _shutdown_task_summary(task: str | None, result: dict | None) -> dict | None:
+    if task is None:
+        return None
+    result = dict(result or {})
+    return {
+        "status": "SHUTDOWN_CHECKPOINT",
+        "task": task,
+        "reason": "SIGTERM_OR_SIGINT",
+        "interrupted_status": str(result.get("status") or "UNKNOWN"),
+        "interrupted_keys": sorted(str(key) for key in result.keys())[:24],
+    }
+
+
 def _write_shutdown_checkpoint(state_root: Path, payload: dict) -> None:
     path = Path(state_root) / "application" / "shutdown_checkpoint.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -351,7 +364,7 @@ def main() -> int:
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
             if stopping or status == "SHUTDOWN_CHECKPOINT":
-                shutdown_task_result = dict(task_result)
+                shutdown_task_result = _shutdown_task_summary(task, task_result)
                 emit_public_activity(
                     state_root,
                     cycle=runtime_event_cycle,
