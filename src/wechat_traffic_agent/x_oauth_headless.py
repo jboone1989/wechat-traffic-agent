@@ -48,13 +48,34 @@ class XOAuthHeadlessManager:
         self.popen_factory = popen_factory or subprocess.Popen
         self._pending: dict[str, _Pending] = {}
 
+    @staticmethod
+    def _stop_process(process: subprocess.Popen) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=0.5)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
     def _prune(self) -> None:
         cutoff = datetime.now(timezone.utc) - self.ttl
         for session_id, pending in list(self._pending.items()):
             if pending.started_at >= cutoff and pending.process.poll() is None:
                 continue
-            if pending.process.poll() is None:
-                pending.process.terminate()
+            self._stop_process(pending.process)
             self._pending.pop(session_id, None)
 
     @staticmethod
@@ -102,13 +123,11 @@ class XOAuthHeadlessManager:
         try:
             output = self._read_until(process, "Paste the full redirected URL", 6.0)
         except Exception:
-            if process.poll() is None:
-                process.terminate()
+            self._stop_process(process)
             raise
         match = _AUTH_URL.search(output)
         if not match:
-            if process.poll() is None:
-                process.terminate()
+            self._stop_process(process)
             raise XOAuthSessionError("xurl authorization URL was not found")
         session_id = secrets.token_urlsafe(24)
         self._pending[session_id] = _Pending(
@@ -183,8 +202,8 @@ class XOAuthHeadlessManager:
 
     def cancel(self, session_id: str) -> None:
         pending = self._pending.pop(str(session_id), None)
-        if pending is not None and pending.process.poll() is None:
-            pending.process.terminate()
+        if pending is not None:
+            self._stop_process(pending.process)
 
 
 __all__ = [
