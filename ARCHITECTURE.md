@@ -21,3 +21,10 @@ for an explicitly requested website build; it does not deploy the build.
 ADR-0010 and `docs/CONTENT_AGENT_PLAN.md` define the current product boundary.
 Trading evidence enters through Agent Network only. Editorial approval cannot
 grant Trading execution permissions or mutate the source draft.
+
+## Evolution ownership
+
+Ferro self-improvement is governed by Agent Runtime's canonical Evolution Engine.
+This repository contributes domain observations, outcome adapters, metrics, replay
+adapters, and bounded mutation executors; it must not implement a second promotion
+or activation state machine. See `docs/EVOLUTION_ENGINE_INTEGRATION.md`.
