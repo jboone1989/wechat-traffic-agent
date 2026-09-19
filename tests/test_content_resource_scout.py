@@ -286,3 +286,53 @@ def test_acquisition_outcome_is_immutable_for_same_evidence(tmp_path):
     rows=scout.acquisition_outcomes()
     assert len(rows)==2
     assert min(row.observed_at for row in rows)==NOW.isoformat()
+
+
+def test_fetch_prefers_remote_resource_research_when_placed(tmp_path, monkeypatch):
+    from wechat_traffic_agent.survival_resources import SurvivalResourceManager
+
+    class NoLocalFetch:
+        def invoke(self, capability, payload):
+            raise AssertionError("local fetch should not run")
+    monkeypatch.setattr(
+        SurvivalResourceManager,
+        "fetch_remote_resource_research",
+        lambda self, url, max_chars, now: {
+            "receipt_id":"remote-research:test",
+            "host_id":"remote-host:test",
+            "transport":"SSH",
+            "result":{
+                "url":url,
+                "status_code":200,
+                "content_type":"text/plain",
+                "text":"Free tier evidence",
+            },
+        },
+    )
+    scout = ContentResourceScout(state_root=tmp_path, capability_runtime=NoLocalFetch())
+    receipt = scout._fetch("https://provider.example/pricing", 24000)
+    assert receipt.receipt_id == "remote-research:test"
+    assert receipt.payload["page"]["markdown"] == "Free tier evidence"
+    assert receipt.payload["page"]["remote_transport"] == "SSH"
+
+
+def test_fetch_falls_back_local_when_remote_resource_research_fails(tmp_path, monkeypatch):
+    from wechat_traffic_agent.survival_resources import SurvivalResourceManager
+
+    class LocalRuntime:
+        def __init__(self): self.calls=[]; self.persisted=0
+        def invoke(self, capability, payload):
+            self.calls.append((capability,payload))
+            return SimpleNamespace(receipt_id="local:fetch",payload={
+                "ok":True,"page":{"success":True,"url":payload["url"],"markdown":"local evidence"}
+            })
+        def persist(self): self.persisted += 1
+    def unavailable(self, url, max_chars, now):
+        raise RuntimeError("remote down")
+    monkeypatch.setattr(SurvivalResourceManager, "fetch_remote_resource_research", unavailable)
+    runtime=LocalRuntime()
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=runtime)
+    receipt=scout._fetch("https://provider.example/pricing",24000)
+    assert receipt.receipt_id == "local:fetch"
+    assert runtime.calls == [("web.fetch",{"url":"https://provider.example/pricing","max_chars":24000})]
+    assert runtime.persisted == 1
