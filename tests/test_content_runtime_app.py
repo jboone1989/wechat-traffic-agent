@@ -133,12 +133,21 @@ def test_status_reports_only_explicit_website_automatic_mode(tmp_path, monkeypat
 def test_capability_pack_deployment_is_explicit(monkeypatch):
     monkeypatch.setenv("CONTENT_RUNTIME_TRUSTED_PACKS", "searxng-search,jina-reader")
     monkeypatch.setenv("CONTENT_SEARXNG_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv(
+        "CONTENT_SEARXNG_PRIMARY_ENGINES",
+        "google,duckduckgo web,mwmbl",
+    )
+    monkeypatch.setenv("CONTENT_SEARXNG_FALLBACK_ENGINES", "google")
     monkeypatch.setenv("CONTENT_JINA_READER_URL", "https://r.jina.ai")
     monkeypatch.setenv("CONTENT_JINA_API_KEY", "deployment-only-test-key")
     trusted, preferred, configs = _capability_pack_deployment()
     assert trusted == ("searxng-search", "jina-reader")
     assert preferred == {"web.search": "searxng-search", "web.fetch": "jina-reader"}
     assert configs["searxng-search"]["base_url"] == "http://127.0.0.1:8080"
+    assert configs["searxng-search"]["primary_engines"] == (
+        "google", "duckduckgo web", "mwmbl",
+    )
+    assert configs["searxng-search"]["fallback_engines"] == ("google",)
     assert configs["jina-reader"]["reader_base_url"] == "https://r.jina.ai"
     assert configs["jina-reader"]["api_key"] == "deployment-only-test-key"
 

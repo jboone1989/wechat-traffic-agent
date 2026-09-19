@@ -173,9 +173,27 @@ def _capability_pack_deployment() -> tuple[tuple[str, ...], dict[str, str], dict
     if search_pack and search_pack in trusted:
         preferred["web.search"] = search_pack
         if search_pack == "searxng-search":
+            primary_engines = tuple(
+                item.strip()
+                for item in os.environ.get(
+                    "CONTENT_SEARXNG_PRIMARY_ENGINES",
+                    "google,duckduckgo web,mwmbl",
+                ).split(",")
+                if item.strip()
+            )
+            fallback_engines = tuple(
+                item.strip()
+                for item in os.environ.get(
+                    "CONTENT_SEARXNG_FALLBACK_ENGINES",
+                    "google",
+                ).split(",")
+                if item.strip()
+            )
             configs[search_pack] = {
                 "base_url": os.environ.get("CONTENT_SEARXNG_URL", "http://127.0.0.1:8080").strip(),
                 "max_results": 8,
+                "primary_engines": primary_engines,
+                "fallback_engines": fallback_engines,
             }
 
     fetch_pack = os.environ.get("CONTENT_WEB_FETCH_PACK", "jina-reader").strip()
