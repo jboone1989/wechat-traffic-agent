@@ -45,7 +45,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v5"
+PLANNER_VERSION = "generated-repair.v6"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -112,10 +112,41 @@ class GeneratedRepairPlanner:
                 hits.append(relative)
         return hits[:2] if 0 < len(hits) <= 2 else []
 
+    def _counterevidence_test_paths(self, problem: dict[str, Any]) -> list[str]:
+        trial = problem.get("repair_trial")
+        if not isinstance(trial, dict):
+            return []
+        selected: list[str] = []
+        for value in trial.get("failed_tests") or ():
+            test_id = str(value or "").strip()
+            relative = test_id.split("::", 1)[0].strip()
+            try:
+                path = PurePosixPath(relative)
+            except Exception:
+                continue
+            if (
+                path.is_absolute()
+                or ".." in path.parts
+                or len(path.parts) != 2
+                or path.parts[0] != "tests"
+                or not path.name.startswith("test_")
+                or path.suffix != ".py"
+            ):
+                continue
+            normalized = path.as_posix()
+            if not (self.workspace_root / normalized).is_file():
+                continue
+            if normalized not in selected:
+                selected.append(normalized)
+            if len(selected) >= 4:
+                break
+        return selected
+
     def candidate_test_paths(self, problem: dict[str, Any], sources: list[str]) -> list[str]:
         tests_root = self.workspace_root / "tests"
         if not tests_root.is_dir():
             return []
+        counterevidence = self._counterevidence_test_paths(problem)
         symptom_words = {
             word.lower().strip(" :,_-")
             for word in str(problem.get("symptom") or "").split()
@@ -140,7 +171,12 @@ class GeneratedRepairPlanner:
             if score:
                 scored.append((score, relative))
         scored.sort(key=lambda item: (-item[0], item[1]))
-        selected = [path for _, path in scored[:8]]
+        selected = list(counterevidence)
+        for path in (path for _, path in scored):
+            if path not in selected:
+                selected.append(path)
+            if len(selected) >= 10:
+                break
         if not selected:
             fallback = tests_root / "test_content_loop.py"
             if fallback.is_file():

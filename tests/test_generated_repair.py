@@ -283,7 +283,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v5"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v6"
 
 
 
@@ -350,7 +350,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v5"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v6"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -374,7 +374,7 @@ def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occur
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v5",
+        "planner_version": "generated-repair.v6",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "LLMProviderError:all eligible LLM resources failed without exposing provider responses",
@@ -485,7 +485,7 @@ def test_historical_rejected_validation_error_is_retryable_without_new_occurrenc
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v5",
+        "planner_version": "generated-repair.v6",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "ValidationError:1 validation error for GeneratedRepairPlan Invalid JSON: trailing characters",
@@ -575,7 +575,7 @@ def test_counterevidence_is_included_in_next_generated_repair_prompt(tmp_path):
     }
     problem["planner_attempt"] = {
         "status": "COUNTEREVIDENCE_READY",
-        "planner_version": "generated-repair.v5",
+        "planner_version": "generated-repair.v6",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
     }
@@ -599,3 +599,113 @@ def test_counterevidence_is_included_in_next_generated_repair_prompt(tmp_path):
     assert "tests/test_app_logic.py::test_original_contract" in prompt
     assert "Return an empty JSON object when parsing fails." in prompt
     assert "Do not repeat the rejected edit" in prompt
+
+
+
+def test_counterevidence_failed_test_files_are_authoritative_allowed_tests(tmp_path):
+    workspace = _workspace(tmp_path)
+    (workspace / "tests/test_counter_contract.py").write_text(
+        "def test_preserved_contract():\n    assert True\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "state-counter-tests"
+    problem = json.loads(_problem(state).read_text())
+    problem["repair_trial"] = {
+        "status": "REJECTED_BY_AUTHORITATIVE_REPLAY",
+        "baseline_status": "PASSED",
+        "candidate_replay_status": "FAILED",
+        "failed_tests": [
+            "tests/test_counter_contract.py::test_preserved_contract",
+            "tests/test_app_logic.py::test_topic_fallback_exists",
+        ],
+        "assertion_evidence": ["AssertionError: preserve this contract"],
+    }
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    selected = planner.candidate_test_paths(problem, [SOURCE_PATH])
+
+    assert selected[:2] == [
+        "tests/test_counter_contract.py",
+        "tests/test_app_logic.py",
+    ]
+
+
+def test_counterevidence_test_paths_reject_traversal_non_tests_and_missing_files(tmp_path):
+    workspace = _workspace(tmp_path)
+    (workspace / "tests/test_safe_contract.py").write_text(
+        "def test_safe():\n    assert True\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "state-counter-test-boundary"
+    problem = json.loads(_problem(state).read_text())
+    problem["repair_trial"] = {
+        "failed_tests": [
+            "../tests/test_escape.py::test_escape",
+            "/tmp/test_absolute.py::test_absolute",
+            "src/wechat_traffic_agent/app_logic.py::test_not_a_test",
+            "tests/helper.py::test_helper",
+            "tests/test_missing.py::test_missing",
+            "tests/test_safe_contract.py::test_safe",
+        ]
+    }
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    selected = planner._counterevidence_test_paths(problem)
+
+    assert selected == ["tests/test_safe_contract.py"]
+
+
+def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover(tmp_path):
+    workspace = _workspace(tmp_path)
+    counter_test = "tests/test_counter_contract.py"
+    (workspace / counter_test).write_text(
+        "def test_preserved_contract():\n    assert True\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "state-counter-plan"
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["repair_trial"] = {
+        "status": "REJECTED_BY_AUTHORITATIVE_REPLAY",
+        "baseline_status": "PASSED",
+        "candidate_replay_status": "FAILED",
+        "failed_tests": [
+            counter_test + "::test_preserved_contract",
+        ],
+        "assertion_evidence": [
+            "AssertionError: prior candidate violated preserved contract",
+        ],
+    }
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v5",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "ValueError:selected an unapproved test",
+    }
+    problem_path.write_text(json.dumps(problem))
+    payload = _valid_plan()
+    payload["focused_tests"] = [counter_test]
+    runtime = PlannerRuntime(payload)
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert result["focused_tests"] == [counter_test]
+    updated = json.loads(problem_path.read_text())
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v6"
+    assert counter_test in updated["planner_attempt"]["allowed_tests"]
