@@ -64,6 +64,9 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
             if "not configured" in str(exc).lower():
                 return None
             raise
+    if state_root is not None:
+        from .llm_audit import audited_provider
+        provider = audited_provider(provider, Path(state_root))
     return LegacyProviderBackend(provider)
 
 

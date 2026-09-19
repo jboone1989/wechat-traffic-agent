@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import inspect
+import json
+import os
+from pathlib import Path
+import re
+import time
+from typing import Any, Callable
+from uuid import uuid4
+
+
+_MAX_FIELD_CHARS = 65536
+_DEFAULT_MAX_ROWS = 5000
+_DEFAULT_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _utc_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _clip(value: Any) -> tuple[str, bool]:
+    text = str(value or "")
+    if len(text) <= _MAX_FIELD_CHARS:
+        return text, False
+    return text[:_MAX_FIELD_CHARS], True
+
+
+def _redact(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer [REDACTED]", value)
+    value = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]", value)
+    value = re.sub(
+        r"(?i)((?:api[_-]?key|token|secret|password)\s*[\"']?\s*[:=]\s*[\"'])([^\"']+)",
+        r"\1[REDACTED]",
+        value,
+    )
+    value = re.sub(r"\bsk-[A-Za-z0-9_-]{12,}\b", "sk-[REDACTED]", value)
+    return value
+
+
+def _provider_meta(provider: Any) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for name in ("model", "model_name", "_model", "base_url", "provider_name"):
+        raw = getattr(provider, name, None)
+        if isinstance(raw, str) and raw.strip():
+            fields[name.lstrip("_")] = raw.strip()[:300]
+    fields["class"] = type(provider).__name__
+    return fields
+
+
+def _routing_snapshot(provider: Any) -> dict[str, Any] | None:
+    state_dir = getattr(provider, "state_dir", None)
+    if state_dir is None:
+        return None
+    path = Path(state_dir) / "latest.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    return {
+        key: value.get(key)
+        for key in (
+            "decision_id", "operation", "task_class", "selected_resource_id",
+            "attempted_resource_ids", "result", "pressure", "reason",
+        )
+        if key in value
+    }
+
+
+class LLMRequestAuditStore:
+    """Durable owner-visible LLM request ledger with bounded raw-log retention."""
+
+    def __init__(
+        self,
+        state_root: Path,
+        *,
+        max_rows: int = _DEFAULT_MAX_ROWS,
+        max_bytes: int = _DEFAULT_MAX_BYTES,
+    ) -> None:
+        self.root = Path(state_root) / "application" / "llm_audit"
+        self.path = self.root / "requests.jsonl"
+        self.max_rows = max(100, int(max_rows))
+        self.max_bytes = max(1024 * 1024, int(max_bytes))
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def append(self, row: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(row)
+        payload.setdefault("request_id", "llm-request:" + uuid4().hex)
+        payload.setdefault("recorded_at", _utc_iso())
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+        self._trim_if_needed()
+        return payload
+    def recent(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        rows: list[dict[str, Any]] = []
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        value = json.loads(line)
+                    except (ValueError, json.JSONDecodeError):
+                        continue
+                    if isinstance(value, dict):
+                        rows.append(value)
+        except OSError:
+            return []
+        return list(reversed(rows[-max(1, min(int(limit), 500)) :]))
+
+    def _trim_if_needed(self) -> None:
+        try:
+            if self.path.stat().st_size <= self.max_bytes:
+                return
+            lines = self.path.read_text(encoding="utf-8").splitlines()[-self.max_rows :]
+            target_bytes = int(self.max_bytes * 0.8)
+            kept: list[str] = []
+            used = 0
+            for line in reversed(lines):
+                size = len(line.encode("utf-8")) + 1
+                if kept and used + size > target_bytes:
+                    break
+                kept.append(line)
+                used += size
+            kept.reverse()
+            tmp = self.path.with_suffix(".jsonl.tmp")
+            tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            return
+
+
+async def _record_complete(
+    provider: Any,
+    original_complete: Callable[..., Any],
+    audit: LLMRequestAuditStore,
+    scope: str,
+    prompt: str,
+    kwargs: dict[str, Any],
+) -> Any:
+    started_wall = _utc_iso()
+    started = time.perf_counter()
+    prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
+    system_text, system_truncated = _clip(_redact(str(kwargs.get("system") or "")))
+    base = {
+        "scope": scope,
+        "operation": "complete",
+        "started_at": started_wall,
+        "provider": _provider_meta(provider),
+        "prompt": prompt_text,
+        "system": system_text,
+        "prompt_truncated": prompt_truncated,
+        "system_truncated": system_truncated,
+        "max_tokens": kwargs.get("max_tokens"),
+    }
+    try:
+        result = original_complete(prompt, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        audit.append({
+            **base,
+            "status": "ERROR",
+            "finished_at": _utc_iso(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error_type": type(exc).__name__,
+            "error": _redact(str(exc))[:2000],
+            "routing": _routing_snapshot(provider),
+        })
+        raise
+    response_text, response_truncated = _clip(_redact(str(result or "")))
+    audit.append({
+        **base,
+        "status": "OK",
+        "finished_at": _utc_iso(),
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        "response": response_text,
+        "response_truncated": response_truncated,
+        "routing": _routing_snapshot(provider),
+    })
+    return result
+
+
+class AuditedLLMProvider:
+    """Fallback proxy when a provider cannot be instrumented in place."""
+
+    def __init__(self, provider: Any, state_root: Path, *, scope: str = "content-agent") -> None:
+        self._provider = provider
+        self._audit = LLMRequestAuditStore(state_root)
+        self._scope = str(scope or "content-agent")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
+    async def complete(self, prompt: str, **kwargs: Any) -> Any:
+        return await _record_complete(
+            self._provider,
+            self._provider.complete,
+            self._audit,
+            self._scope,
+            prompt,
+            kwargs,
+        )
+
+
+def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-agent") -> Any:
+    """Audit complete() while preserving provider type whenever possible."""
+    if isinstance(provider, AuditedLLMProvider) or bool(
+        getattr(provider, "_ferro_llm_audit_instrumented", False)
+    ):
+        return provider
+
+    audit = LLMRequestAuditStore(state_root)
+    effective_scope = str(scope or "content-agent")
+    original_complete = provider.complete
+    base_type = type(provider)
+
+    async def complete(self: Any, prompt: str, **kwargs: Any) -> Any:
+        return await _record_complete(
+            self,
+            original_complete,
+            audit,
+            effective_scope,
+            prompt,
+            kwargs,
+        )
+
+    try:
+        audited_type = type(
+            "Audited" + base_type.__name__,
+            (base_type,),
+            {"complete": complete, "__module__": base_type.__module__},
+        )
+        provider.__class__ = audited_type
+        setattr(provider, "_ferro_llm_audit_instrumented", True)
+        return provider
+    except (AttributeError, TypeError):
+        return AuditedLLMProvider(provider, state_root, scope=effective_scope)
+
+
+__all__ = ["AuditedLLMProvider", "LLMRequestAuditStore", "audited_provider"]

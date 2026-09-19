@@ -52,8 +52,9 @@ def bootstrap_runtime(state_dir: Path) -> AgentRuntime:
     """Same bootstrap rules as the legacy flow in __main__."""
     package_root = Path(__file__).resolve().parents[2]
     manifest = load_agent_manifest(package_root / "agent.yaml")
-    backend = LegacyProviderBackend(load_llm_provider())
     state_dir = state_dir.resolve()
+    from .llm_audit import audited_provider
+    backend = LegacyProviderBackend(audited_provider(load_llm_provider(), state_dir, scope="cli-workflow"))
     if (state_dir / "agent_state.json").exists():
         runtime = AgentRuntime.restore(state_dir, agent_backend=backend)
         if runtime.agent_manifest is None:
