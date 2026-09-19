@@ -381,7 +381,10 @@ def test_self_repair_test_profile_uses_explicit_test_pythonpath(tmp_path):
 
     assert result["ok"] is True
     command = result["results"][0]["command"]
-    assert command[:2] == ["env", f"PYTHONPATH={deps}:src"]
+    assert command[:2] == ["env", "-i"]
+    assert "PYTHONPATH=" + str(deps) + ":src" in command
+    assert any(part.startswith("HOME=") for part in command)
+    assert "LANG=C.UTF-8" in command
 
 
 def test_paused_baseline_retries_after_test_environment_recovers(tmp_path):
@@ -498,3 +501,32 @@ def test_environment_false_rejection_replays_clean_then_retries_candidate(tmp_pa
     assert second["status"] == "CANDIDATE_COMMITTED"
     assert second["commit"]["pushed"] is False
     assert "# safe candidate" in (workspace / "app.py").read_text()
+
+
+
+def test_self_repair_tests_do_not_inherit_production_content_environment(tmp_path, monkeypatch):
+    state = tmp_path / "state-hermetic-env"
+    workspace = _regression_repo(tmp_path)
+    (workspace / "tests/test_focused.py").write_text(
+        "import os\n"
+        "def test_focused():\n"
+        "    assert os.environ.get('CONTENT_PUBLIC_NAME') is None\n"
+        "    assert os.environ.get('CONTENT_OPERATOR_CONSOLE_ENABLED') is None\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CONTENT_PUBLIC_NAME", "Ferro")
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "1")
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _regression_recipe()},
+        python_executable=sys.executable,
+    )
+
+    provider = executor._provider(_regression_recipe())
+    result = provider.invoke("code.test", {"profile": "repair-focused"})
+
+    assert result["ok"] is True
+    command = result["results"][0]["command"]
+    assert command[:2] == ["env", "-i"]
