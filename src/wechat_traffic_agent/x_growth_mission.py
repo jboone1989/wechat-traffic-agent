@@ -19,6 +19,7 @@ DEFAULT_TARGET = 5000
 DEFAULT_DURATION_DAYS = 30
 DEFAULT_EXPERIMENT_HOURS = 24
 MIN_OBSERVATION_INTERVAL = timedelta(hours=6)
+MISSION_PLANNING_CONTEXT_REF = "x-mission-planning-context:v1"
 
 MISSION_CONSTRAINTS = (
     "obey applicable law",
@@ -249,13 +250,61 @@ class XGrowthMissionCoordinator:
             "expected_pace_delta": expected_delta,
         }
 
+    def _planning_context(self) -> dict[str, Any]:
+        return {
+            "schema_version": MISSION_PLANNING_CONTEXT_REF,
+            "measurement": {
+                "follower_metric_source": (
+                    "official X identity public_metrics.followers_count"
+                ),
+                "prospective_follower_snapshots": "AVAILABLE",
+                "post_public_metrics": (
+                    "LIMITED_TO_X_PUBLIC_METRICS_WHEN_API_READS_ARE_AVAILABLE"
+                ),
+                "historical_post_level_follower_attribution": "UNAVAILABLE",
+                "post_level_profile_visits": "UNAVAILABLE",
+                "post_level_follows": "UNAVAILABLE",
+                "retrospective_90_day_new_follower_uplift": "UNAVAILABLE",
+                "browser_fallback_is_metric_authority": False,
+                "causal_attribution": (
+                    "UNAVAILABLE; use bounded prospective observational evidence"
+                ),
+            },
+            "execution": {
+                "website_content_pipeline": "AVAILABLE",
+                "x_publication": (
+                    "AVAILABLE only through existing gated official API or "
+                    "independently verified browser publication paths"
+                ),
+                "publication_starts_experiment": True,
+                "automated_follow_like_repost": "FORBIDDEN_BY_MISSION_CONSTRAINTS",
+            },
+            "learning": {
+                "measurement_window_hours": (
+                    self.experiment_window.total_seconds() / 3600.0
+                ),
+                "settlement_metric": MISSION_METRIC,
+                "settlement_is_causal_claim": False,
+                "replan_when_required_evidence_is_unavailable": True,
+            },
+            "operator_authority": {
+                "mission_goal_is_approved": True,
+                "routine_bounded_execution_requires_new_operator_approval": False,
+                "existing_execution_gates_remain_authoritative": True,
+            },
+        }
+
     async def _ensure_roadmap(self, mission: Any) -> dict[str, Any]:
         needs_revision = getattr(self.runtime.missions, "roadmap_needs_revision", None)
         latest = getattr(self.runtime.missions, "latest_roadmap", None)
         if not callable(needs_revision) or not callable(latest):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
-        if not needs_revision(mission.mission_id):
-            roadmap = latest(mission.mission_id)
+        roadmap = latest(mission.mission_id)
+        context_applied = (
+            roadmap is not None
+            and MISSION_PLANNING_CONTEXT_REF in set(roadmap.evidence_refs)
+        )
+        if not needs_revision(mission.mission_id) and context_applied:
             return {
                 "status": "ACTIVE",
                 "roadmap_id": roadmap.roadmap_id,
@@ -266,14 +315,22 @@ class XGrowthMissionCoordinator:
         deliberate = getattr(self.runtime, "deliberate_mission_roadmap", None)
         if not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
-        roadmap = await deliberate(mission.mission_id, max_tokens=1800)
+        force_revision = roadmap is not None and not context_applied
+        roadmap = await deliberate(
+            mission.mission_id,
+            max_tokens=1800,
+            force_revision=force_revision,
+            planning_context=self._planning_context(),
+            evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+        )
         self._persist_runtime()
         return {
-            "status": "PLANNED",
+            "status": "REPLANNED" if force_revision else "PLANNED",
             "roadmap_id": roadmap.roadmap_id,
             "version": roadmap.version,
             "rationale": roadmap.rationale,
             "step_count": len(roadmap.steps),
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
         }
 
     async def _ensure_experiment(self, mission: Any) -> dict[str, Any]:
