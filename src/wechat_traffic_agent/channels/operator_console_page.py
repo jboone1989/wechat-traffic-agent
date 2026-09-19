@@ -11,29 +11,37 @@ def operator_console_document() -> str:
 <style>
 :root{color-scheme:dark;background:#080b0e;color:#edf2f6;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#14202b 0,#080b0e 34%);min-height:100vh}
-main{width:min(1180px,calc(100% - 32px));margin:auto;padding:42px 0 72px}
-h1{font-size:clamp(34px,5vw,54px);line-height:1.02;margin:8px 0 12px}h2{margin:28px 0 12px}h3{margin:0 0 8px}
-p,.muted{color:#aeb9c5;line-height:1.55}.eyebrow{font-size:12px;letter-spacing:.16em;color:#89a0b7;text-transform:uppercase}
-.card{border:1px solid #293641;background:#0e141a;border-radius:16px;padding:18px;box-shadow:0 14px 44px rgba(0,0,0,.16)}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}.stack{display:grid;gap:10px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:210px}
-input,select{width:100%;border:1px solid #354550;border-radius:9px;background:#080d11;color:#fff;padding:10px 11px;font:inherit}
+main{width:min(1160px,calc(100% - 28px));margin:auto;padding:28px 0 72px}
+h1{font-size:clamp(32px,5vw,50px);line-height:1.04;margin:6px 0 8px}h2{margin:0;font-size:24px}h3{margin:0 0 8px;font-size:17px}
+p,.muted{color:#aeb9c5;line-height:1.5}.eyebrow{font-size:11px;letter-spacing:.15em;color:#89a0b7;text-transform:uppercase}
+.card{border:1px solid #293641;background:#0e141a;border-radius:16px;padding:16px;box-shadow:0 14px 44px rgba(0,0,0,.14);min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}.stack{display:grid;gap:10px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}
+input,select{width:100%;min-width:0;border:1px solid #354550;border-radius:9px;background:#080d11;color:#fff;padding:10px 11px;font:inherit}
 label{display:grid;gap:6px;font-size:12px;color:#9aabb9}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 button,a{border:0;border-radius:9px;background:#edf3f7;color:#111;padding:10px 14px;font-weight:700;text-decoration:none;cursor:pointer}
 button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:disabled{opacity:.5;cursor:not-allowed}
 .badge{display:inline-block;font-size:11px;padding:4px 8px;border:1px solid #43505d;border-radius:99px;letter-spacing:.04em}
 .ok{color:#91e5b7;border-color:#2c7654}.pending{color:#f0ce7d;border-color:#8a6d2f}.bad{color:#ffaaa7;border-color:#7f3d3b}.info{color:#9dc9ff;border-color:#315b7e}
 .hidden{display:none!important}.error{color:#ffaaa7}.success{color:#92e7b8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
-.metric{font-size:28px;font-weight:750}.kicker{font-size:11px;color:#7f93a4;text-transform:uppercase;letter-spacing:.12em}
+.metric{font-size:26px;font-weight:750}.kicker{font-size:11px;color:#7f93a4;text-transform:uppercase;letter-spacing:.12em}
 .divider{height:1px;background:#26343e;margin:12px 0}.resource.free{border-color:#285d49}.resource.paid{border-color:#604f2b}
 .browser-shot{width:100%;height:auto;display:block;border-radius:10px;border:1px solid #34434f;background:#05080a;touch-action:manipulation}
 .browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
 details.browser-login>summary{cursor:pointer;font-weight:750}
-@media(max-width:640px){.two{grid-template-columns:1fr}main{width:min(100% - 20px,1180px);padding-top:28px}.browser-keys button{flex:1 1 30%}}
+@media(max-width:640px){.browser-keys button{flex:1 1 30%}}
+.page-intro{max-width:720px;margin:0 0 18px}.dash-head{margin:4px 0 12px}.toolbar{justify-content:flex-end}.toolbar button{padding:8px 11px}
+.console-nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:7px;margin:12px 0 18px;border:1px solid #293641;border-radius:14px;background:rgba(8,11,14,.94);backdrop-filter:blur(14px)}
+.console-nav button{min-width:0;padding:10px 8px;background:transparent;color:#9eafbd;border:1px solid transparent;font-size:13px}.console-nav button.active{background:#edf3f7;color:#111;border-color:#edf3f7}.tab-count{display:inline-block;min-width:18px;margin-left:4px;padding:1px 5px;border-radius:99px;background:#7f3d3b;color:#fff;font-size:10px}
+.panel{display:none}.panel.active{display:block}.section-head{display:flex;gap:12px;align-items:end;justify-content:space-between;margin:6px 0 12px}.section-head p{margin:4px 0 0}.panel-block{margin-top:18px}
+.hero{display:grid;gap:12px;margin-bottom:12px;border-color:#3a5264;background:linear-gradient(135deg,#101b24,#0d1419)}.hero-main{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}.hero h3{font-size:20px}.hero p{margin:4px 0 0}.hero-reason{padding-top:10px;border-top:1px solid #26343e}.hero-actions{display:flex;gap:8px;flex-wrap:wrap}
+.fold{margin-top:12px}.fold>summary{cursor:pointer;font-weight:750;padding:12px 2px;color:#dce6ed}.fold>summary::marker{color:#71889b}.fold>.grid,.fold>.stack,.fold>.card{margin-top:8px}
+.subsection{margin:20px 0 10px}.subsection p{margin:3px 0 0}.empty{padding:14px}.mobile-note{display:none}
+@media(max-width:640px){main{width:calc(100% - 16px);padding:18px 0 88px}h1{font-size:28px}h2{font-size:21px}.page-intro{font-size:14px;margin-bottom:12px}.card{padding:14px;border-radius:13px}.two{grid-template-columns:1fr}.dash-head{align-items:flex-start}.toolbar{width:100%;justify-content:flex-start}.toolbar button{flex:1}.console-nav{top:6px;margin:10px 0 14px;padding:5px;gap:3px;border-radius:12px}.console-nav button{padding:9px 4px;font-size:11px}.tab-count{display:block;width:max-content;margin:3px auto 0}.section-head{align-items:flex-start;flex-direction:column;gap:2px}.hero-main{display:block}.hero-main .badge{margin-top:8px}.row:not(.toolbar){align-items:stretch}.row:not(.toolbar)>button,.row:not(.toolbar)>a{flex:1 1 140px;text-align:center}.metric{font-size:24px}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.summary-grid .card{padding:11px}.summary-grid .metric{font-size:20px}.summary-grid p{font-size:11px;margin:4px 0 0}.fold>summary{padding:10px 2px}.mono{font-size:11px;overflow-x:auto}.mobile-note{display:block;font-size:12px;color:#7f93a4;margin:0 0 10px}}
 </style></head><body><main>
 <div class="eyebrow">LivingRuntime · private operator plane</div>
 <h1>Ferro Operator Console</h1>
-<p>Manage model resources without exposing secret values to Ferro, chat, logs, or status APIs.</p>
+<p class="page-intro">See what Ferro is doing with survival resources, handle only the decisions that need you, and keep advanced controls out of the way until you need them.</p>
 
 <section id="login" class="card">
 <h2>Operator sign in</h2>
@@ -47,72 +55,89 @@ details.browser-login>summary{cursor:pointer;font-weight:750}
 </section>
 
 <section id="dash" class="hidden">
-<div class="row"><h2 class="grow">Survival resources</h2><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
+<div class="row dash-head">
+ <div class="grow"><div class="eyebrow">Survival resource control</div><h2>Ferro resources</h2><p class="muted">Start with what needs attention. Everything else is grouped by purpose.</p></div>
+ <div class="row toolbar"><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
+</div>
 <div id="flash"></div>
 
-<div id="summary" class="grid"></div>
+<nav id="consoleNav" class="console-nav" aria-label="Operator console sections">
+ <button class="nav-tab active" data-panel-target="overview">Overview</button>
+ <button class="nav-tab" data-panel-target="actions">Needs you <span id="actionTabCount" class="tab-count hidden">0</span></button>
+ <button class="nav-tab" data-panel-target="resources">Resources</button>
+ <button class="nav-tab" data-panel-target="setup">Add / configure</button>
+</nav>
 
-<h2>Resource domains</h2>
-<div id="domains" class="grid"></div>
+<section class="panel active" data-panel="overview">
+ <div class="section-head"><div><div class="eyebrow">Right now</div><h2>What Ferro is doing</h2><p class="muted">The current survival pressure, resource policy and last model-routing decision.</p></div></div>
+ <div id="attention" class="card hero"></div>
+ <div id="summary" class="grid summary-grid"></div>
+ <details class="fold" open><summary>Resource domains</summary><div id="domains" class="grid"></div></details>
+ <details class="fold"><summary>VirtualBrain routing details</summary><div id="routing" class="card"></div></details>
+</section>
 
-<h2>Survival needs & actions</h2>
-<p class="muted">Low-risk local repairs can self-authorize under policy. Remote offload and primary relocation remain operator-controlled.</p>
-<div id="survivalNeeds" class="stack"></div>
-<div id="survivalActions" class="stack"></div>
+<section class="panel" data-panel="actions">
+ <div class="section-head"><div><div class="eyebrow">Operator inbox</div><h2>Needs your decision</h2><p class="muted">Only actions that Ferro cannot safely authorize for itself belong here.</p></div></div>
+ <div class="subsection"><h3>Survival needs</h3><p class="muted">Low-risk local repairs can self-authorize. Remote offload and primary relocation stay operator-controlled.</p></div>
+ <div id="survivalNeeds" class="stack"></div>
+ <div class="subsection"><h3>Resource access requests</h3><p class="muted">Approve access first; credential handoff and provider onboarding follow separately.</p></div>
+ <div id="requests" class="stack"></div>
+ <details class="fold"><summary>Recent resource actions</summary><div id="survivalActions" class="stack"></div></details>
+</section>
 
-<h2>Remote machines</h2>
-<div class="card">
-<h3>Hand a server to Ferro</h3>
-<p class="muted">For a normal VPS, IP + password is enough. The password is used once to install a per-host SSH key, then discarded. Ferro keeps the key and host fingerprint, not the password.</p>
-<div class="two"><label>IP or hostname<input id="sshHost" autocomplete="off" placeholder="207.246.99.253"></label><label>Password<input id="sshPassword" type="password" autocomplete="new-password" placeholder="One-time SSH password"></label></div>
-<details><summary>Advanced SSH settings</summary>
-<div class="two"><label>Name<input id="sshName" placeholder="vultr-edge-1"></label><label>SSH user<input id="sshUser" value="root" autocomplete="off"></label></div>
-<label>SSH port<input id="sshPort" type="number" min="1" max="65535" value="22"></label>
-</details>
-<button id="bootstrapHost">Connect, audit & hand over to Ferro</button>
-<div id="bootstrapStatus" class="muted"></div>
-</div>
-<details class="card"><summary>Advanced: register an already-running signed receiver</summary>
-<div class="two"><label>Name<input id="hostName" placeholder="edge-node-1"></label><label>Reliability<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
-<label>HTTPS health URL<input id="hostHealth" placeholder="https://node.example.com/health"></label>
-<label>Signed deployment control URL (optional)<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
-<div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>Memory GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div>
-<button id="addHost">Add signed receiver candidate</button>
-</details>
-<div id="remoteHosts" class="stack"></div>
+<section class="panel" data-panel="resources">
+ <div class="section-head"><div><div class="eyebrow">Inventory</div><h2>Resources Ferro can use</h2><p class="muted">Machines, movable services and executable model capacity in one place.</p></div></div>
+ <div class="subsection"><h3>Remote machines</h3></div>
+ <div id="remoteHosts" class="stack"></div>
+ <div class="subsection"><h3>Movable services</h3></div>
+ <div id="servicePlacements" class="stack"></div>
+ <div class="subsection"><h3>Browser runtime</h3><p class="muted">Local Chrome handles learned deterministic skills. Jev handles adaptive navigation. TinyFish remains a compatibility fallback.</p></div>
+ <div id="browserRuntime" class="grid"></div>
+ <div class="subsection"><h3>Executable model resources</h3></div>
+ <div id="resources" class="grid"></div>
+</section>
 
-<h2>Movable services</h2>
-<div id="servicePlacements" class="stack"></div>
-
-<h2>VirtualBrain routing</h2>
-<div id="routing" class="card"></div>
-
-<h2>Browser runtime</h2>
-<p class="muted">Local Chrome handles learned deterministic skills. Jev handles adaptive navigation. TinyFish remains a compatibility fallback.</p>
-<div id="browserRuntime" class="grid"></div>
-<details class="card browser-login">
-<summary>Local X login · one-time setup</summary>
-<p class="muted">Use this only to sign Ferro's persistent local Chrome into X. Typed text is sent directly to the browser tab, is not stored by Ferro, and is cleared from this page immediately.</p>
-<div class="row"><button id="localBrowserStart">Open X login</button><button id="localBrowserRefresh" class="ghost">Refresh image</button><button id="localBrowserStop" class="ghost">Close login tab</button></div>
-<div id="localBrowserStatus" class="mono muted">Not started.</div>
-<img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
-<div class="browser-controls">
-<label>Text / password / verification code<input id="localBrowserText" type="password" autocomplete="off" placeholder="Tap the field in the screenshot first"></label>
-<div class="row"><button id="localBrowserSend">Send text</button></div>
-<div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
-</div>
-</details>
-
-<h2>Executable resource pool</h2>
-<div id="resources" class="grid"></div>
-
-<h2>Resource requests & lifecycle</h2>
-<p class="muted">Authorize a resource before provisioning its credential. Provider onboarding is scheduled immediately after approval or credential handoff.</p>
-<div id="requests" class="stack"></div>
-
-<h2>Protected credentials & limits</h2>
-<p class="muted">Secret values are write-only. Quota, reset and expiry metadata are non-secret control data used by the Survival Router.</p>
-<div id="secrets" class="grid"></div>
+<section class="panel" data-panel="setup">
+ <div class="section-head"><div><div class="eyebrow">Provisioning</div><h2>Give Ferro a resource</h2><p class="muted">Common setup first. Advanced receiver and credential controls stay collapsed.</p></div></div>
+ <p class="mobile-note">On mobile, finish one setup card at a time. Advanced controls are collapsed by default.</p>
+ <div class="card">
+  <h3>Hand a server to Ferro</h3>
+  <p class="muted">For a normal VPS, IP + password is enough. The password is used once to install a per-host SSH key, then discarded. Ferro keeps the key and host fingerprint, not the password.</p>
+  <div class="two"><label>IP or hostname<input id="sshHost" autocomplete="off" placeholder="207.246.99.253"></label><label>Password<input id="sshPassword" type="password" autocomplete="new-password" placeholder="One-time SSH password"></label></div>
+  <details class="fold"><summary>Advanced SSH settings</summary>
+   <div class="two"><label>Name<input id="sshName" placeholder="vultr-edge-1"></label><label>SSH user<input id="sshUser" value="root" autocomplete="off"></label></div>
+   <label>SSH port<input id="sshPort" type="number" min="1" max="65535" value="22"></label>
+  </details>
+  <button id="bootstrapHost">Connect, audit & hand over to Ferro</button>
+  <div id="bootstrapStatus" class="muted"></div>
+ </div>
+ <details class="fold"><summary>Advanced: register an already-running signed receiver</summary>
+  <div class="card">
+   <div class="two"><label>Name<input id="hostName" placeholder="edge-node-1"></label><label>Reliability<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
+   <label>HTTPS health URL<input id="hostHealth" placeholder="https://node.example.com/health"></label>
+   <label>Signed deployment control URL (optional)<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
+   <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>Memory GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div>
+   <button id="addHost">Add signed receiver candidate</button>
+  </div>
+ </details>
+ <details class="fold"><summary>Protected credentials & limits</summary>
+  <p class="muted">Secret values are write-only. Quota, reset and expiry metadata are non-secret control data used by the Survival Router.</p>
+  <div id="secrets" class="grid"></div>
+ </details>
+ <details class="fold browser-login"><summary>Local X login · one-time setup</summary>
+  <div class="card">
+   <p class="muted">Use this only to sign Ferro's persistent local Chrome into X. Typed text is sent directly to the browser tab, is not stored by Ferro, and is cleared from this page immediately.</p>
+   <div class="row"><button id="localBrowserStart">Open X login</button><button id="localBrowserRefresh" class="ghost">Refresh image</button><button id="localBrowserStop" class="ghost">Close login tab</button></div>
+   <div id="localBrowserStatus" class="mono muted">Not started.</div>
+   <img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
+   <div class="browser-controls">
+    <label>Text / password / verification code<input id="localBrowserText" type="password" autocomplete="off" placeholder="Tap the field in the screenshot first"></label>
+    <div class="row"><button id="localBrowserSend">Send text</button></div>
+    <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+   </div>
+  </div>
+ </details>
+</section>
 </section>
 
 <script>
@@ -133,12 +158,43 @@ function badge(text,kind='info'){const b=node('span',text,'badge '+kind);return 
 function metricCard(label,value,detail){
  const c=node('div',undefined,'card');c.append(node('div',label,'kicker'),node('div',fmt(value),'metric'));if(detail)c.append(node('p',detail,'muted'));return c
 }
+function operatorItems(data){
+ const ctl=data.survival_control||{},requests=data.resource_requests||[];
+ const survival=(ctl.needs||[]).filter(x=>x.status==='PENDING');
+ const approvals=requests.filter(x=>(x.authorization_status||'PENDING')==='PENDING');
+ const credentials=requests.filter(x=>['APPROVED','LEGACY_APPROVED'].includes(x.authorization_status)&&!x.credential_configured);
+ return {survival,approvals,credentials,total:survival.length+approvals.length+credentials.length}
+}
+function rememberedPanel(){try{return localStorage.getItem('ferro.operator.panel')||'overview'}catch{return 'overview'}}
+function selectPanel(name,remember=true){
+ const allowed=['overview','actions','resources','setup'];if(!allowed.includes(name))name='overview';
+ for(const panel of document.querySelectorAll('[data-panel]'))panel.classList.toggle('active',panel.dataset.panel===name);
+ for(const tab of document.querySelectorAll('.nav-tab'))tab.classList.toggle('active',tab.dataset.panelTarget===name);
+ if(remember){try{localStorage.setItem('ferro.operator.panel',name)}catch{}}
+}
+function renderAttention(data){
+ const root=el('attention'),items=operatorItems(data),r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{};
+ const survival=data.survival_resources||{},count=el('actionTabCount');
+ count.textContent=String(items.total);count.classList.toggle('hidden',items.total===0);root.replaceChildren();
+ const top=node('div',undefined,'hero-main'),copy=node('div'),title=node('h3',items.total?items.total+' item'+(items.total===1?'':'s')+' need your attention':'No operator action is blocking Ferro');
+ copy.append(title,node('p',items.total?'Ferro can keep operating, but these approvals or credentials are waiting on you.':'Ferro currently has no pending operator-only decision.','muted'));
+ top.append(copy,badge(items.total?'NEEDS YOU':'AUTONOMOUS',items.total?'pending':'ok'));root.append(top);
+ const decision=node('div',undefined,'hero-reason');
+ decision.append(node('div','Current resource policy','kicker'));
+ decision.append(node('p','Survival pressure '+fmt(survival.pressure||p.pressure)+' · routing '+fmt(p.routing_mode)+' · free preferred '+(p.prefer_free?'yes':'no')));
+ decision.append(node('div','Last model decision','kicker'));
+ decision.append(node('p',fmt(latest.result||'NO ROUTE')+' · '+fmt(latest.selected_resource_id),'mono'));
+ if(latest.reason)decision.append(node('p',latest.reason,'muted'));
+ root.append(decision);
+ if(items.total){const actions=node('div',undefined,'hero-actions'),b=node('button','Review what needs me');b.onclick=()=>selectPanel('actions');actions.append(b);root.append(actions)}
+}
 function renderSummary(data){
- const r=data.llm_resources||{};const root=el('summary');root.replaceChildren();
- root.append(metricCard('Resources',r.resource_count||0,(r.free_count||0)+' free · '+(r.paid_count||0)+' paid · '+(r.windfall_count||0)+' windfall'));
- const p=r.policy||{};root.append(metricCard('VB pressure',p.pressure||'UNKNOWN','mode '+fmt(p.routing_mode)));
- root.append(metricCard('Paid reserve',fmt(p.paid_reserve_floor), 'available '+fmt(p.paid_available_funds)));
- const latest=r.latest_route||{};root.append(metricCard('Latest route',latest.result||'NO ROUTE',fmt(latest.selected_resource_id)));
+ const r=data.llm_resources||{},p=r.policy||{},items=operatorItems(data),root=el('summary'),ctl=data.survival_control||{};
+ const hosts=ctl.remote_hosts||[],activeHosts=hosts.filter(x=>x.status==='ACTIVE').length;root.replaceChildren();
+ root.append(metricCard('Needs you',items.total,items.total?'Open the Needs you tab':'No pending operator-only action'));
+ root.append(metricCard('Survival pressure',fmt((data.survival_resources||{}).pressure||p.pressure),'routing '+fmt(p.routing_mode)));
+ root.append(metricCard('Model capacity',r.resource_count||0,(r.free_count||0)+' free · '+(r.paid_count||0)+' paid · '+(r.windfall_count||0)+' windfall'));
+ root.append(metricCard('Remote bodies',activeHosts,activeHosts+' active · '+hosts.length+' known'));
 }
 function renderDomains(data){
  const rows=((data.survival_resources||{}).domains||[]),root=el('domains');root.replaceChildren();
@@ -171,7 +227,7 @@ function renderSurvivalControl(data){
   root.append(c)
  }
  const log=el('survivalActions');log.replaceChildren();
- if(actions.length){log.append(node('h3','Recent resource actions'));for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card');c.append(node('div',fmt(row.action)+' · '+fmt(row.status),'mono'),node('p',fmt(row.observed_at)+' · '+fmt(row.need_id||row.host_id||row.service_id),'muted'));if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','Execute signed offload');b.onclick=async()=>{b.disabled=true;try{const out=await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});flash('Remote deployment '+fmt(out.status)+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}}
+ if(actions.length){for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card');c.append(node('div',fmt(row.action)+' · '+fmt(row.status),'mono'),node('p',fmt(row.observed_at)+' · '+fmt(row.need_id||row.host_id||row.service_id),'muted'));if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','Execute signed offload');b.onclick=async()=>{b.disabled=true;try{const out=await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});flash('Remote deployment '+fmt(out.status)+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}}
 }
 function renderRemoteHosts(data){
  const ctl=data.survival_control||{},rows=ctl.remote_hosts||[],root=el('remoteHosts');root.replaceChildren();
@@ -283,7 +339,9 @@ function renderSecrets(rows){
   root.append(c);
  }
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderAttention(data);renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
+selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
 el('localBrowserStart').onclick=async()=>{const b=el('localBrowserStart');b.disabled=true;try{await localBrowserAction('/operator/api/browser/local/start',{url:'https://x.com/i/flow/login'});flash('Local X login tab opened.')}catch(e){el('localBrowserStatus').textContent=e.message;flash(e.message,true)}finally{b.disabled=false}};
