@@ -33,6 +33,9 @@ SECRET_SPECS = {
     "CEREBRAS_API_KEY": SecretSpec("CEREBRAS_API_KEY", "Cerebras"),
     "NVIDIA_API_KEY": SecretSpec("NVIDIA_API_KEY", "NVIDIA NIM"),
     "OPENROUTER_API_KEY": SecretSpec("OPENROUTER_API_KEY", "OpenRouter"),
+    "TYPESAFE_API_KEY": SecretSpec(
+        "TYPESAFE_API_KEY", "Jev / TypeSafe", quota_metadata=False
+    ),
     "VIRTUALBRAIN_LLM_API_KEY": SecretSpec(
         "VIRTUALBRAIN_LLM_API_KEY", "DeepSeek stable reserve", quota_metadata=False
     ),
@@ -664,9 +667,11 @@ class OperatorConsole:
         }
 
     def status(self) -> dict[str, Any]:
+        from .browser_runtime import browser_runtime_status
         return {
             "ok": True,
             "secrets": self.vault.status(),
+            "browser_runtime": browser_runtime_status(),
             "pending_requests": self.pending_requests(),
             "resource_requests": self.resource_requests(),
             "llm_resources": self.resource_status(),
