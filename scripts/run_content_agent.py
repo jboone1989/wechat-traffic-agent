@@ -135,12 +135,16 @@ def main() -> int:
         print(json.dumps({"self_maintenance_reconcile": self_maintenance_reconcile}, sort_keys=True))
     from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
     repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
+    repair_test_pythonpath = os.environ.get(
+        "CONTENT_SELF_REPAIR_TEST_PYTHONPATH", ""
+    ).strip()
     self_repair = SelfRepairExecutor(
         state_root=state_root,
         workspace_root=Path(repair_workspace_raw) if repair_workspace_raw else None,
         deployed_root=ROOT,
         python_executable=sys.executable,
         planner_runtime=app.domain_runtime,
+        test_pythonpath=repair_test_pythonpath,
     )
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)

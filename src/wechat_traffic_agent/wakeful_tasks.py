@@ -363,7 +363,10 @@ class WakefulContentTaskRunner:
                 schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
                 if repair_status == "GENERATED_REPAIR_PROPOSED" and callable(schedule):
                     schedule(now, seconds=60)
-                elif repair_status == "CANDIDATE_REJECTED_REPLAN_QUEUED" and callable(schedule):
+                elif repair_status in {
+                    "CANDIDATE_REJECTED_REPLAN_QUEUED",
+                    "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
+                } and callable(schedule):
                     schedule(
                         now,
                         seconds=int(rows["self_repair"].get("retry_seconds") or 60),

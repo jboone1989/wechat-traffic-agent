@@ -349,3 +349,152 @@ def test_existing_quarantined_trial_is_migrated_to_counterevidence_without_reapp
     assert updated["status"] == "DIAGNOSING"
     assert updated["repair_proposal"] is None
     assert updated["repair_trial"]["baseline_status"] == "PASSED"
+
+
+
+def test_self_repair_test_profile_uses_explicit_test_pythonpath(tmp_path):
+    state = tmp_path / "state-test-pythonpath"
+    workspace = _regression_repo(tmp_path)
+    deps = tmp_path / "test-deps"
+    deps.mkdir()
+    (deps / "external_test_helper.py").write_text(
+        "READY = True\n",
+        encoding="utf-8",
+    )
+    (workspace / "tests/test_focused.py").write_text(
+        "import external_test_helper\n"
+        "def test_focused():\n"
+        "    assert external_test_helper.READY is True\n",
+        encoding="utf-8",
+    )
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _regression_recipe()},
+        python_executable=sys.executable,
+        test_pythonpath=f"{deps}:src",
+    )
+
+    provider = executor._provider(_regression_recipe())
+    result = provider.invoke("code.test", {"profile": "repair-focused"})
+
+    assert result["ok"] is True
+    command = result["results"][0]["command"]
+    assert command[:2] == ["env", f"PYTHONPATH={deps}:src"]
+
+
+def test_paused_baseline_retries_after_test_environment_recovers(tmp_path):
+    state = tmp_path / "state-paused-recovery"
+    workspace = _regression_repo(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["status"] = "REPAIR_PAUSED_BASELINE_UNHEALTHY"
+    problem["repair_proposal"]["status"] = "PAUSED_BASELINE_UNHEALTHY"
+    problem_path.write_text(json.dumps(problem), encoding="utf-8")
+    trial_path = (
+        state
+        / "application/self_maintenance/repair_trials/self-problem-test.json"
+    )
+    trial_path.parent.mkdir(parents=True, exist_ok=True)
+    trial_path.write_text(json.dumps({
+        "schema_version": "self-repair-trial.v1",
+        "problem_id": "self-problem:test",
+        "proposal_id": "repair-proposal:test",
+        "status": "REPAIR_PAUSED_BASELINE_UNHEALTHY",
+        "observed_at": NOW.isoformat(),
+        "repair_kind": KIND,
+        "full": {
+            "ok": False,
+            "profile": "repair-full",
+            "results": [{
+                "exit_code": 1,
+                "stdout": "FAILED environment-only failure\n",
+                "stderr": "",
+            }],
+        },
+    }), encoding="utf-8")
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _regression_recipe()},
+        python_executable=sys.executable,
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "CANDIDATE_REJECTED_REPLAN_QUEUED"
+    assert result["baseline_status"] == "PASSED"
+    assert result["candidate_replay_status"] == "FAILED"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "DIAGNOSING"
+    assert updated["repair_proposal"] is None
+
+
+def _safe_replay_recipe() -> RepairRecipe:
+    return RepairRecipe(
+        repair_kind=KIND,
+        target_files=("app.py",),
+        implementation_markers=(("app.py", "# safe candidate"),),
+        edits=(
+            RepairEdit(
+                "app.py",
+                "VALUE = 1\n",
+                "VALUE = 1\n# safe candidate\n",
+            ),
+        ),
+        focused_tests=("tests/test_focused.py",),
+    )
+
+
+def test_environment_false_rejection_replays_clean_then_retries_candidate(tmp_path):
+    state = tmp_path / "state-false-rejection"
+    workspace = _regression_repo(tmp_path)
+    problem_path = _problem(state)
+    trial_path = (
+        state
+        / "application/self_maintenance/repair_trials/self-problem-test.json"
+    )
+    trial_path.parent.mkdir(parents=True, exist_ok=True)
+    trial_path.write_text(json.dumps({
+        "schema_version": "self-repair-trial.v1",
+        "problem_id": "self-problem:test",
+        "proposal_id": "repair-proposal:test",
+        "status": "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+        "observed_at": NOW.isoformat(),
+        "repair_kind": KIND,
+        "full": {
+            "ok": False,
+            "profile": "repair-full",
+            "results": [{
+                "exit_code": 1,
+                "stdout": "FAILED tests/test_fake_environment.py::test_missing_plugin\n",
+                "stderr": "pytest plugin missing",
+            }],
+        },
+    }), encoding="utf-8")
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _safe_replay_recipe()},
+        python_executable=sys.executable,
+    )
+
+    first = executor.run_once(now=NOW)
+
+    assert first["status"] == "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED"
+    assert first["baseline_status"] == "PASSED"
+    assert first["candidate_replay_status"] == "PASSED"
+    assert _git(workspace, "status", "--porcelain") == ""
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "REPAIR_PROPOSED"
+    assert updated["repair_proposal"]["status"] == "PROPOSED"
+    assert updated["repair_trial"]["failed_tests"] == []
+
+    second = executor.run_once(now=NOW)
+
+    assert second["status"] == "CANDIDATE_COMMITTED"
+    assert second["commit"]["pushed"] is False
+    assert "# safe candidate" in (workspace / "app.py").read_text()
