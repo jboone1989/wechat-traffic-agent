@@ -33,6 +33,9 @@ class GeneratedRepairPlan(BaseModel):
     implementation_markers: list[GeneratedRepairMarker] = Field(min_length=1, max_length=4)
 
 
+PLANNER_VERSION = "generated-repair.v2"
+
+
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
     "credential", "secret", "operator", "network", "auth", "deploy",
@@ -164,10 +167,12 @@ class GeneratedRepairPlanner:
         index = 0 if index is None else index
         start = max(0, index - 45)
         end = min(len(lines), index + 55)
-        snippet = "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end))
+        snippet = "\n".join(lines[start:end])
         return {
-            "path": relative, "start_line": start + 1,
-            "end_line": end, "snippet": snippet[:12000],
+            "path": relative,
+            "start_line": start + 1,
+            "end_line": end,
+            "snippet": snippet[:12000],
         }
 
     @staticmethod
@@ -259,8 +264,9 @@ class GeneratedRepairPlanner:
         prompt = (
             "GENERATE_BOUNDED_SELF_REPAIR_PLAN. Return JSON only. "
             "Make the smallest reversible logic change. Edit ONLY allowed_source_paths; "
-            "select focused tests ONLY from allowed_test_paths. Copy old_text VERBATIM "
-            "from source_context and identify exactly one block. Do not add process execution, "
+            "select focused tests ONLY from allowed_test_paths. source_context.snippet contains RAW source text "
+            "without synthetic line-number prefixes; copy old_text VERBATIM from it and identify exactly one block. "
+            "Do not add process execution, "
             "filesystem deletion, network access, credentials, auth, deployment, git push, "
             "self-maintenance changes, or authority changes. If evidence is insufficient, "
             "return low confidence rather than guessing. risk must be LOW for execution.\n"
@@ -284,5 +290,5 @@ class GeneratedRepairPlanner:
 
 __all__ = [
     "GeneratedRepairEdit", "GeneratedRepairMarker",
-    "GeneratedRepairPlan", "GeneratedRepairPlanner",
+    "GeneratedRepairPlan", "GeneratedRepairPlanner", "PLANNER_VERSION",
 ]

@@ -215,3 +215,52 @@ def test_planner_rejects_low_confidence_instead_of_guessing(tmp_path):
             allowed_sources=["src/wechat_traffic_agent/app_logic.py"],
             allowed_tests=["tests/test_app_logic.py"],
         )
+
+
+def test_source_context_exposes_raw_source_without_synthetic_line_prefixes(tmp_path):
+    workspace = _workspace(tmp_path)
+    state = tmp_path / "state"
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    context = planner.source_context(
+        problem, "src/wechat_traffic_agent/app_logic.py"
+    )
+
+    assert context["snippet"].startswith("def normalize_topic(topic):")
+    assert 'raise ValueError("Traffic opportunity requires topic: risk")' in context["snippet"]
+    assert not context["snippet"].startswith("1:")
+
+
+def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
+    state = tmp_path / "state"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v1",
+        "occurrences_seen": 1,
+        "reason": "old planner could not produce exact source text",
+    }
+    problem_path.write_text(json.dumps(problem))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
+    updated = json.loads(problem_path.read_text())
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v2"
