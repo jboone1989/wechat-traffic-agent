@@ -139,3 +139,28 @@ def test_account_status_exposes_multiple_x_instances_without_global_identity_col
     assert rows["first_x"]["automation"]["compatibility_fallback"] == "TINYFISH"
     assert rows["second_x"]["automation"]["compatibility_fallback"] == ""
     assert rows["first_x"]["account_id"] != rows["second_x"]["account_id"]
+
+
+def test_browser_profile_status_means_provisioned_not_authenticated(tmp_path):
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: "")
+    account = manager.registry.ensure(provider_id="x", identity="profile_x")
+    profile = (
+        tmp_path
+        / "accounts"
+        / "browser-profiles"
+        / account.account_id
+        / "chrome-profile"
+    )
+    profile.mkdir(parents=True)
+
+    row = next(
+        x for x in manager.status()["instances"]
+        if x["account_id"] == account.account_id
+    )
+    browser = next(
+        x for x in row["bindings"]
+        if x["binding_id"] == "browser_profile"
+    )
+
+    assert browser["status"] == "PROVISIONED"
+    assert browser["status"] != "CONNECTED"
