@@ -289,7 +289,7 @@ def test_failed_candidate_becomes_counterevidence_and_restores_clean_baseline(tm
     assert updated["status"] == "DIAGNOSING"
     assert updated["repair_proposal"] is None
     assert updated["planner_attempt"]["status"] == "COUNTEREVIDENCE_READY"
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v5"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v6"
     assert updated["repair_trial"]["baseline_status"] == "PASSED"
     assert updated["repair_trial"]["previous_hypothesis"] is None
     assert any(
