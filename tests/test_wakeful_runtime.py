@@ -1,4 +1,7 @@
 from datetime import datetime, timedelta, timezone
+import json
+import threading
+import time
 
 from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
 from agent_runtime.wakeful import PlannedWake
@@ -255,3 +258,126 @@ def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
     runtime.schedule_next("RESOURCE_REVIEW", NOW)
     wake = next(row for row in runtime.core.snapshot().pending_plans if row.task == "RESOURCE_REVIEW")
     assert wake.at == NOW + timedelta(hours=1)
+
+
+
+def test_external_self_maintenance_request_wakes_live_runtime_without_restart(tmp_path):
+    live = ContentWakefulRuntime(
+        state_root=tmp_path,
+        content_interval_hours=6,
+        watchdog_seconds=60,
+    )
+    now = datetime.now(timezone.utc)
+    live.core.schedule(PlannedWake(
+        wake_id="content:REFLECT",
+        at=now + timedelta(hours=1),
+        reason="daily reflection",
+        task="REFLECT",
+    ))
+    results = []
+
+    thread = threading.Thread(
+        target=lambda: results.append(live.wait(stopping=lambda: False)),
+        daemon=True,
+    )
+    thread.start()
+    time.sleep(0.15)
+
+    external = ContentWakefulRuntime(
+        state_root=tmp_path,
+        content_interval_hours=6,
+        watchdog_seconds=60,
+    )
+    external._enqueue_external_wake(PlannedWake(
+        wake_id="content:REFLECT",
+        at=datetime.now(timezone.utc) + timedelta(milliseconds=350),
+        reason="diagnose production failure and form bounded self-repair hypothesis",
+        task="REFLECT",
+    ))
+
+    thread.join(timeout=3.0)
+
+    assert thread.is_alive() is False
+    assert len(results) == 1
+    assert results[0].kind == "PLAN"
+    assert results[0].wake_id == "content:REFLECT"
+    assert results[0].task == "REFLECT"
+    assert list((tmp_path / "application/wake_requests").glob("*.json")) == []
+
+
+def test_external_wake_requests_can_only_make_existing_plan_earlier(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime.now(timezone.utc)
+    original_at = now + timedelta(minutes=10)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:REFLECT",
+        at=original_at,
+        reason="daily reflection",
+        task="REFLECT",
+    ))
+
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:REFLECT",
+        at=now + timedelta(minutes=20),
+        reason="later request must not postpone",
+        task="REFLECT",
+    ))
+    assert runtime._drain_external_wake_requests() == 0
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:REFLECT"
+    )
+    assert wake.at == original_at
+
+    earlier_at = now + timedelta(minutes=1)
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:REFLECT",
+        at=earlier_at,
+        reason="urgent self maintenance",
+        task="REFLECT",
+    ))
+    assert runtime._drain_external_wake_requests() == 1
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:REFLECT"
+    )
+    assert wake.at == earlier_at
+    assert wake.reason == "urgent self maintenance"
+
+
+def test_external_wake_spool_rejects_unapproved_task(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    root = tmp_path / "application/wake_requests"
+    root.mkdir(parents=True)
+    request = root / "untrusted.json"
+    request.write_text(json.dumps({
+        "schema_version": "content-wake-request.v1",
+        "wake_id": "content:DEPLOY",
+        "at": datetime.now(timezone.utc).isoformat(),
+        "reason": "try to gain deployment authority",
+        "task": "DEPLOY",
+        "preemptible": True,
+    }), encoding="utf-8")
+
+    merged = runtime._drain_external_wake_requests()
+
+    assert merged == 0
+    assert request.exists() is False
+    assert not any(
+        row.wake_id == "content:DEPLOY"
+        for row in runtime.core.snapshot().pending_plans
+    )
+
+
+def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime.now(timezone.utc)
+
+    runtime.schedule_self_maintenance(now, seconds=30)
+
+    requests = list((tmp_path / "application/wake_requests").glob("*.json"))
+    assert len(requests) == 1
+    payload = json.loads(requests[0].read_text(encoding="utf-8"))
+    assert payload["wake_id"] == "content:REFLECT"
+    assert payload["task"] == "REFLECT"
+    assert payload["at"] == (now + timedelta(seconds=30)).isoformat()
