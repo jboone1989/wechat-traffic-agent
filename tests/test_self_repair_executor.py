@@ -139,6 +139,32 @@ def test_unimplemented_repair_branches_edits_tests_and_commits_locally_without_p
     assert _git(workspace, "status", "--porcelain") == ""
 
 
+def test_new_candidate_uses_fresh_lineage_branch_when_prior_attempt_branch_exists(tmp_path):
+    state = tmp_path / "state-lineage"
+    workspace = _repo(tmp_path, implemented=False)
+    deployed = tmp_path / "deployed-lineage"
+    deployed.mkdir()
+    (deployed / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(workspace, "branch", "agent/repair-self-problem-test")
+    problem_path = _problem(state)
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=deployed,
+        recipes={KIND: _recipe()},
+        python_executable=sys.executable,
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "CANDIDATE_COMMITTED"
+    assert result["commit"]["branch"].startswith("agent/repair-self-problem-test-")
+    assert result["commit"]["branch"] != "agent/repair-self-problem-test"
+    assert _git(workspace, "branch", "--list", "agent/repair-self-problem-test")
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "CANDIDATE_COMMITTED"
+
+
 def test_deployed_repair_waits_for_real_outcome_instead_of_self_declaring_success(tmp_path):
     state = tmp_path / "state"
     workspace = _repo(tmp_path, implemented=True)
