@@ -1,6 +1,8 @@
 """Bounded model-generated repair planning without execution authority."""
 from __future__ import annotations
 
+import ast
+from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
@@ -11,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class GeneratedRepairEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     path: str = Field(min_length=3, max_length=240)
-    old_text: str = Field(min_length=1, max_length=5000)
+    block_id: str = Field(min_length=12, max_length=80)
     new_text: str = Field(min_length=1, max_length=5000)
 
 
@@ -33,8 +35,17 @@ class GeneratedRepairPlan(BaseModel):
     implementation_markers: list[GeneratedRepairMarker] = Field(min_length=1, max_length=4)
 
 
-PLANNER_VERSION = "generated-repair.v2"
+class EditableBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    block_id: str
+    path: str
+    symbol: str
+    start_line: int
+    end_line: int
+    old_text: str
 
+
+PLANNER_VERSION = "generated-repair.v3"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -136,50 +147,100 @@ class GeneratedRepairPlanner:
                 selected.append(fallback.relative_to(self.workspace_root).as_posix())
         return selected
 
+    @staticmethod
+    def _failure_functions(problem: dict[str, Any], relative: str) -> set[str]:
+        names: set[str] = set()
+        filename = Path(relative).name
+        for frame in str(problem.get("failure_site") or "").split(">"):
+            parts = frame.split(":", 1)
+            if len(parts) == 2 and parts[0].strip() == filename:
+                names.add(parts[1].strip())
+        return names
+
+    def editable_blocks(
+        self, problem: dict[str, Any], sources: list[str]
+    ) -> list[EditableBlock]:
+        symptom = " ".join(str(problem.get("symptom") or "").split())
+        rows: list[tuple[int, EditableBlock]] = []
+        for relative in sources:
+            path = self.workspace_root / relative
+            try:
+                source = path.read_text(encoding="utf-8")
+                tree = ast.parse(source)
+            except (OSError, SyntaxError):
+                continue
+            lines = source.splitlines(keepends=True)
+            failure_functions = self._failure_functions(problem, relative)
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.end_lineno is None:
+                    continue
+                old_text = "".join(lines[node.lineno - 1 : node.end_lineno])
+                if not old_text or len(old_text) > 5000 or source.count(old_text) != 1:
+                    continue
+                score = 0
+                if node.name in failure_functions:
+                    score += 20
+                if symptom and symptom in old_text:
+                    score += 12
+                if not score:
+                    continue
+                digest = sha256((relative + "\0" + old_text).encode("utf-8")).hexdigest()[:24]
+                rows.append((
+                    score,
+                    EditableBlock(
+                        block_id=f"block:{digest}",
+                        path=relative,
+                        symbol=node.name,
+                        start_line=node.lineno,
+                        end_line=node.end_lineno,
+                        old_text=old_text,
+                    ),
+                ))
+        rows.sort(key=lambda item: (-item[0], item[1].path, item[1].start_line))
+        seen: set[str] = set()
+        result: list[EditableBlock] = []
+        for _, block in rows:
+            if block.block_id in seen:
+                continue
+            seen.add(block.block_id)
+            result.append(block)
+            if len(result) >= 6:
+                break
+        return result
+
     def source_context(self, problem: dict[str, Any], relative: str) -> dict[str, Any]:
         path = self.workspace_root / relative
         lines = path.read_text(encoding="utf-8").splitlines()
+        index = 0
         symptom = " ".join(str(problem.get("symptom") or "").split())
-        needles = [symptom]
-        if ":" in symptom:
-            prefix = symptom.rsplit(":", 1)[0].strip() + ":"
-            if len(prefix) >= 12:
-                needles.insert(0, prefix)
-        index = None
         for i, line in enumerate(lines):
-            if any(needle and needle in line for needle in needles):
+            if symptom and symptom in line:
                 index = i
                 break
-        if index is None:
-            failure_site = str(problem.get("failure_site") or "")
-            for frame in failure_site.split(">"):
-                parts = frame.split(":", 1)
-                if len(parts) != 2 or parts[0] != Path(relative).name:
-                    continue
-                func = parts[1].strip()
-                for i, line in enumerate(lines):
-                    prefixes = ("def " + func + "(", "async def " + func + "(")
-                    if line.lstrip().startswith(prefixes):
-                        index = i
-                        break
-                if index is not None:
+        else:
+            functions = self._failure_functions(problem, relative)
+            for i, line in enumerate(lines):
+                stripped = line.lstrip()
+                if any(stripped.startswith(("def " + f + "(", "async def " + f + "(")) for f in functions):
+                    index = i
                     break
-        index = 0 if index is None else index
-        start = max(0, index - 45)
-        end = min(len(lines), index + 55)
-        snippet = "\n".join(lines[start:end])
+        start = max(0, index - 30)
+        end = min(len(lines), index + 45)
         return {
             "path": relative,
             "start_line": start + 1,
             "end_line": end,
-            "snippet": snippet[:12000],
+            "snippet": "\n".join(lines[start:end])[:9000],
         }
 
     @staticmethod
     def _extract_json(raw: str) -> str:
         text = str(raw or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`").strip()
+        fence = chr(96) * 3
+        if text.startswith(fence):
+            text = text.strip(chr(96)).strip()
             if text.lower().startswith("json"):
                 text = text[4:].lstrip()
         start, end = text.find("{"), text.rfind("}")
@@ -209,6 +270,7 @@ class GeneratedRepairPlanner:
         *,
         allowed_sources: list[str],
         allowed_tests: list[str],
+        editable_blocks: list[EditableBlock],
     ) -> GeneratedRepairPlan:
         if plan.risk != "LOW":
             raise ValueError("generated repair risk must be LOW")
@@ -220,31 +282,41 @@ class GeneratedRepairPlanner:
             raise ValueError("target escaped localized source boundary")
         if not set(plan.focused_tests).issubset(set(allowed_tests)):
             raise ValueError("selected an unapproved test")
-        prospective: dict[str, str] = {}
+        block_map = {row.block_id: row for row in editable_blocks}
+        prospective = {
+            target: (self.workspace_root / target).read_text(encoding="utf-8")
+            for target in plan.target_files
+        }
         for target in plan.target_files:
             if not self.safe_source_path(target):
                 raise ValueError("unsafe target file")
-            prospective[target] = (self.workspace_root / target).read_text(encoding="utf-8")
         for test in plan.focused_tests:
             if not (self.workspace_root / test).is_file():
                 raise ValueError("focused test does not exist")
 
         total = 0
+        used_blocks: set[str] = set()
         for edit in plan.edits:
-            if edit.path not in plan.target_files:
-                raise ValueError("edit path not declared")
-            if edit.old_text == edit.new_text:
-                raise ValueError("edit makes no change")
+            block = block_map.get(edit.block_id)
+            if block is None:
+                raise ValueError("generated edit referenced unknown block_id")
+            if edit.block_id in used_blocks:
+                raise ValueError("generated edit reused block_id")
+            used_blocks.add(edit.block_id)
+            if edit.path not in plan.target_files or block.path != edit.path:
+                raise ValueError("generated edit escaped block path")
             current = prospective[edit.path]
-            if current.count(edit.old_text) != 1:
-                raise ValueError("old_text must match exactly once")
+            if current.count(block.old_text) != 1:
+                raise ValueError("editable block is stale or ambiguous")
+            if block.old_text == edit.new_text:
+                raise ValueError("edit makes no change")
             lower_new = edit.new_text.lower()
             if any(token in lower_new for token in FORBIDDEN_GENERATED_TEXT):
                 raise ValueError("edit introduces forbidden capability")
-            total += len(edit.old_text) + len(edit.new_text)
+            total += len(block.old_text) + len(edit.new_text)
             if total > 9000:
                 raise ValueError("repair exceeds change budget")
-            prospective[edit.path] = current.replace(edit.old_text, edit.new_text, 1)
+            prospective[edit.path] = current.replace(block.old_text, edit.new_text, 1)
 
         for marker in plan.implementation_markers:
             if marker.path not in plan.target_files:
@@ -253,23 +325,34 @@ class GeneratedRepairPlanner:
                 raise ValueError("implementation marker absent after edits")
         return plan
 
+    @staticmethod
+    def materialize_edits(
+        plan: GeneratedRepairPlan, editable_blocks: list[EditableBlock]
+    ) -> list[tuple[str, str, str]]:
+        block_map = {row.block_id: row for row in editable_blocks}
+        return [
+            (edit.path, block_map[edit.block_id].old_text, edit.new_text)
+            for edit in plan.edits
+        ]
+
     async def plan(
         self, problem: dict[str, Any]
-    ) -> tuple[GeneratedRepairPlan, list[str], list[str]]:
+    ) -> tuple[GeneratedRepairPlan, list[str], list[str], list[EditableBlock]]:
         sources = self.candidate_source_paths(problem)
         tests = self.candidate_test_paths(problem, sources)
-        if not sources or not tests:
+        blocks = self.editable_blocks(problem, sources)
+        if not sources or not tests or not blocks:
             raise ValueError("insufficient localization")
         contexts = [self.source_context(problem, path) for path in sources]
         prompt = (
             "GENERATE_BOUNDED_SELF_REPAIR_PLAN. Return JSON only. "
             "Make the smallest reversible logic change. Edit ONLY allowed_source_paths; "
-            "select focused tests ONLY from allowed_test_paths. source_context.snippet contains RAW source text "
-            "without synthetic line-number prefixes; copy old_text VERBATIM from it and identify exactly one block. "
-            "Do not add process execution, "
-            "filesystem deletion, network access, credentials, auth, deployment, git push, "
-            "self-maintenance changes, or authority changes. If evidence is insufficient, "
-            "return low confidence rather than guessing. risk must be LOW for execution.\n"
+            "select focused tests ONLY from allowed_test_paths. Do NOT copy old source text. "
+            "For each edit, select exactly one server-generated editable_blocks.block_id and provide replacement new_text. "
+            "The block_id cryptographically binds the authoritative old_text and becomes invalid if source changes. "
+            "Do not add process execution, filesystem deletion, network access, credentials, auth, deployment, git push, "
+            "self-maintenance changes, or authority changes. If evidence is insufficient, return low confidence rather "
+            "than guessing. risk must be LOW for execution.\n"
             + json.dumps(
                 {
                     "problem": {k: problem.get(k) for k in (
@@ -279,16 +362,29 @@ class GeneratedRepairPlanner:
                     "allowed_source_paths": sources,
                     "allowed_test_paths": tests,
                     "source_context": contexts,
+                    "editable_blocks": [
+                        row.model_dump(mode="json") for row in blocks
+                    ],
                     "schema": GeneratedRepairPlan.model_json_schema(),
                 },
                 ensure_ascii=False,
             )
         )
         plan = await self._ask(prompt)
-        return self.validate(plan, allowed_sources=sources, allowed_tests=tests), sources, tests
+        return (
+            self.validate(
+                plan,
+                allowed_sources=sources,
+                allowed_tests=tests,
+                editable_blocks=blocks,
+            ),
+            sources,
+            tests,
+            blocks,
+        )
 
 
 __all__ = [
-    "GeneratedRepairEdit", "GeneratedRepairMarker",
+    "EditableBlock", "GeneratedRepairEdit", "GeneratedRepairMarker",
     "GeneratedRepairPlan", "GeneratedRepairPlanner", "PLANNER_VERSION",
 ]

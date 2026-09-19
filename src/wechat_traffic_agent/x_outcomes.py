@@ -1,18 +1,29 @@
 """Bounded public X outcome evidence from verified browser publications."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
+import importlib.util
 import json
+import os
 from pathlib import Path
 import re
+import time
 from typing import Any, Protocol
 
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
 from .content_admission import _write_once
 from .web_editorial import digest
-from .x_browser import TinyFishProfileClient, _draft_sha256, _post_id_from_url
+from .browser_runtime import BrowserRuntimeUnavailable, BrowserTaskResult, BrowserTelemetryLedger
+from .x_browser import (
+    TinyFishProfileClient,
+    XBrowserSessionUnavailable,
+    _draft_sha256,
+    _post_id_from_url,
+    tinyfish_x_enabled,
+)
 
 SOURCE = "x-public-page:v1"
 SNAPSHOT_SCHEMA = "x-public-metrics-snapshot:v1"
@@ -128,11 +139,162 @@ class TinyFishXMetricsTransport:
             except Exception:
                 pass
 
+class LocalHarnessXMetricsTransport:
+    """Read public X counters through Ferro's owned Chrome runtime."""
+
+    def __init__(
+        self, *, state_root: Path, timeout_ms: int = 30_000, browser_factory=None
+    ) -> None:
+        self.state_root = Path(state_root)
+        self.timeout_ms = int(timeout_ms)
+        self.browser_factory = browser_factory
+        self.telemetry = BrowserTelemetryLedger(self.state_root)
+
+    @classmethod
+    def from_environment(cls, *, state_root: Path) -> "LocalHarnessXMetricsTransport":
+        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise BrowserRuntimeUnavailable("CONTENT_LOCAL_X_BROWSER_ENABLED is false")
+        if importlib.util.find_spec("jev_ultrafast") is None:
+            raise BrowserRuntimeUnavailable("jev-ultrafast is not installed")
+        if importlib.util.find_spec("browser_harness") is None:
+            raise BrowserRuntimeUnavailable("browser-harness is not installed")
+        return cls(
+            state_root=state_root,
+            timeout_ms=int(os.environ.get("CONTENT_LOCAL_X_BROWSER_TIMEOUT_MS", "30000")),
+        )
+
+    def _factory(self):
+        if self.browser_factory is not None:
+            return self.browser_factory
+        try:
+            from jev_ultrafast.browser import Browser
+        except ImportError as exc:
+            raise BrowserRuntimeUnavailable("local Browser Harness runtime is not installed") from exc
+        return Browser
+
+    async def collect(self, *, url: str) -> XPublicMetrics:
+        started = time.perf_counter()
+        try:
+            metrics = await asyncio.to_thread(self._collect_sync, url)
+        except Exception as exc:
+            self.telemetry.append(
+                task_type="X_PUBLIC_METRICS_READ",
+                site="x.com",
+                result=BrowserTaskResult(
+                    provider="LOCAL_CDP",
+                    status="FAILED",
+                    elapsed_ms=round((time.perf_counter() - started) * 1000),
+                    action_count=0,
+                    failure_reason=type(exc).__name__,
+                ),
+            )
+            raise
+        self.telemetry.append(
+            task_type="X_PUBLIC_METRICS_READ",
+            site="x.com",
+            result=BrowserTaskResult(
+                provider="LOCAL_CDP",
+                status="COMPLETED",
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+                action_count=0,
+                final_url=url,
+            ),
+        )
+        return metrics
+
+    def _collect_sync(self, url: str) -> XPublicMetrics:
+        post_id = _post_id_from_url(url)
+        if not post_id:
+            raise ValueError("X outcome URL must be a public x.com status URL")
+        browser = self._factory()(url)
+        try:
+            deadline = time.monotonic() + min(15.0, max(2.0, self.timeout_ms / 1000))
+            marker = f'/status/{post_id}'
+            while time.monotonic() < deadline:
+                found = browser.evaluate(
+                    "(() => [...document.querySelectorAll('article')].some("
+                    + "a => [...a.querySelectorAll('a')].some(x => (x.getAttribute('href')||'').includes("
+                    + repr(marker)
+                    + "))))()"
+                )
+                if found:
+                    break
+                time.sleep(0.1)
+            else:
+                raise RuntimeError("X public post article did not render")
+
+            raw = browser.evaluate(
+                """(() => {
+                  const marker=%s;
+                  const article=[...document.querySelectorAll('article')].find(
+                    a => [...a.querySelectorAll('a')].some(x => (x.getAttribute('href')||'').includes(marker))
+                  );
+                  if(!article) return null;
+                  const counter=(testid) => {
+                    const n=article.querySelector('[data-testid="'+testid+'"]');
+                    return n ? (n.getAttribute('aria-label') || n.innerText || '') : '';
+                  };
+                  let analytics=[...article.querySelectorAll('a')].find(
+                    x => (x.getAttribute('href')||'').includes(marker+'/analytics')
+                  );
+                  if(!analytics) analytics=article.querySelector('a[href$="/analytics"]');
+                  return {
+                    replies:counter('reply'),
+                    reposts:counter('retweet'),
+                    likes:counter('like'),
+                    views:analytics ? (analytics.innerText || '') : ''
+                  };
+                })()""" % json.dumps(marker)
+            )
+            if not isinstance(raw, dict):
+                raise RuntimeError("X public counters were unavailable")
+            metrics = XPublicMetrics(
+                views=_count_or_none(str(raw.get("views") or "")),
+                replies=_count_or_none(str(raw.get("replies") or "")),
+                reposts=_count_or_none(str(raw.get("reposts") or "")),
+                likes=_count_or_none(str(raw.get("likes") or "")),
+            )
+            if all(getattr(metrics, name) is None for name in METRICS):
+                raise RuntimeError("no public X engagement counters were parseable")
+            return metrics
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
+
+
+class XMetricsTransportRouter:
+    """Prefer local Chrome; use TinyFish only as a read-only compatibility fallback."""
+
+    def __init__(self, *, state_root: Path) -> None:
+        self.state_root = Path(state_root)
+
+    async def collect(self, *, url: str) -> XPublicMetrics:
+        errors: list[str] = []
+        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                local = LocalHarnessXMetricsTransport.from_environment(state_root=self.state_root)
+                return await local.collect(url=url)
+            except Exception as exc:
+                errors.append("LOCAL_CDP:" + type(exc).__name__)
+
+        if tinyfish_x_enabled():
+            try:
+                return await TinyFishXMetricsTransport.from_environment().collect(url=url)
+            except Exception as exc:
+                errors.append("TINYFISH:" + type(exc).__name__)
+
+        raise XBrowserSessionUnavailable(
+            "; ".join(errors) or "no X metrics browser provider is configured"
+        )
+
+
 class XOutcomeCollector:
     def __init__(self, *, state_root: Path, transport: XMetricsTransport | None=None,
                  max_capture_lag: timedelta=MAX_CAPTURE_LAG) -> None:
         self.state_root=Path(state_root)
-        self.transport=transport or TinyFishXMetricsTransport.from_environment()
+        self.transport=transport or XMetricsTransportRouter(state_root=self.state_root)
         self.max_capture_lag=max_capture_lag
         self.store=ChannelEvidenceStore(self.state_root/"content"/"channel_evidence")
         self.snapshot_root=self.state_root/"content"/"channel_evidence_sources"
@@ -219,4 +381,8 @@ class XOutcomeCollector:
     def _report(status: str, **extra: Any) -> dict[str, Any]:
         return {"status":status,"source":SOURCE,"publication_authority":False,"learning_authority":False,"causal_claim":False,**extra}
 
-__all__=["MAX_CAPTURE_LAG","METRICS","SOURCE","WINDOWS","TinyFishXMetricsTransport","XMetricsTransport","XOutcomeCollector","XPublicMetrics","_parse_compact_count","_published_at_from_status_id"]
+__all__=[
+    "LocalHarnessXMetricsTransport","MAX_CAPTURE_LAG","METRICS","SOURCE","WINDOWS",
+    "TinyFishXMetricsTransport","XMetricsTransport","XMetricsTransportRouter",
+    "XOutcomeCollector","XPublicMetrics","_parse_compact_count","_published_at_from_status_id"
+]

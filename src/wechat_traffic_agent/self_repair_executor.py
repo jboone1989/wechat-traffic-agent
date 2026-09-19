@@ -393,7 +393,10 @@ class SelfRepairExecutor:
         return attempt
 
     @staticmethod
-    def _recipe_from_plan(plan: GeneratedRepairPlan) -> RepairRecipe:
+    def _recipe_from_plan(
+        plan: GeneratedRepairPlan,
+        materialized_edits: list[tuple[str, str, str]],
+    ) -> RepairRecipe:
         return RepairRecipe(
             repair_kind=_GENERATED_REPAIR_KIND,
             target_files=tuple(plan.target_files),
@@ -402,8 +405,8 @@ class SelfRepairExecutor:
                 for marker in plan.implementation_markers
             ),
             edits=tuple(
-                RepairEdit(edit.path, edit.old_text, edit.new_text)
-                for edit in plan.edits
+                RepairEdit(path, old_text, new_text)
+                for path, old_text, new_text in materialized_edits
             ),
             focused_tests=tuple(plan.focused_tests),
         )
@@ -415,7 +418,7 @@ class SelfRepairExecutor:
         if planner is None:
             return {"status": "PLANNER_UNAVAILABLE", "problem_id": problem.get("problem_id")}
         try:
-            plan, source_paths, test_paths = asyncio.run(planner.plan(problem))
+            plan, source_paths, test_paths, editable_blocks = asyncio.run(planner.plan(problem))
         except Exception as exc:
             attempt = self._planner_attempt(
                 problem,
@@ -432,7 +435,10 @@ class SelfRepairExecutor:
                 "planner_status": attempt.get("status"),
             }
 
-        recipe = self._recipe_from_plan(plan)
+        recipe = self._recipe_from_plan(
+            plan,
+            planner.materialize_edits(plan, editable_blocks),
+        )
         body = plan.model_dump(mode="json")
         proposal_id = "repair-proposal:generated:" + sha256(
             json.dumps(body, sort_keys=True, separators=(",", ":")).encode()
@@ -449,7 +455,7 @@ class SelfRepairExecutor:
             "reversible": True,
             "target_files": list(recipe.target_files),
             "verification": [
-                "old_text matched exactly once inside localized source boundary",
+                "server-generated block_id still resolves to exactly one authoritative source block",
                 "approved focused tests must pass",
                 "full repository regression must pass before local commit",
                 "push and deployment remain unavailable",
@@ -508,12 +514,17 @@ class SelfRepairExecutor:
             plan = GeneratedRepairPlan.model_validate(raw)
             sources = planner.candidate_source_paths(problem)
             tests = planner.candidate_test_paths(problem, sources)
+            editable_blocks = planner.editable_blocks(problem, sources)
             validated = planner.validate(
                 plan,
                 allowed_sources=sources,
                 allowed_tests=tests,
+                editable_blocks=editable_blocks,
             )
-            return self._recipe_from_plan(validated)
+            return self._recipe_from_plan(
+                validated,
+                planner.materialize_edits(validated, editable_blocks),
+            )
         except Exception:
             return None
 

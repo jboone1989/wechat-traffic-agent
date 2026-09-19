@@ -237,17 +237,22 @@ class XAutonomyLoop:
                 try:
                     observer = self.browser_mentions_observer
                     if observer is None:
-                        from .x_browser import tinyfish_x_enabled
-                        from .x_browser_mentions import TinyFishXMentionsObserver
-                        if not tinyfish_x_enabled():
-                            raise RuntimeError("TinyFish X browser fallback is disabled")
-                        observer = TinyFishXMentionsObserver.from_environment()
+                        from .x_browser_mentions import XBrowserMentionsObserverRouter
+                        observer = XBrowserMentionsObserverRouter(state_root=self.state_root)
                     raw_mentions = await observer.observe(now=now, max_results=20)
                     mentions = normalize_posts(raw_mentions, observed_at=now)
                     browser_fallback = True
                     mentions_receipt_id = None
-                    self._write_status(now=now, status="OK_BROWSER_FALLBACK", detail="Official X credits depleted; mentions read through TinyFish browser.")
-                    self._activity(cycle=cycle, title="Reading X through browser fallback", detail="Official X credits are depleted, so I used the authenticated browser profile for a read-only mention scan.")
+                    self._write_status(
+                        now=now,
+                        status="OK_BROWSER_FALLBACK",
+                        detail="Official X credits depleted; mentions read through the authenticated browser runtime.",
+                    )
+                    self._activity(
+                        cycle=cycle,
+                        title="Reading X through browser fallback",
+                        detail="Official X credits are depleted, so I used an authenticated read-only browser provider.",
+                    )
                 except Exception as fallback_exc:
                     self._write_status(now=now, status=status, detail=detail)
                     self._activity(cycle=cycle, title="X observation paused", detail="X API credits are depleted and the read-only browser fallback was unavailable.", status="stopped")

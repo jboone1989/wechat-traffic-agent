@@ -971,6 +971,65 @@ class LiveAgentService:
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
             return JSONResponse(operator_console.status(), headers={"Cache-Control": "no-store"})
 
+        async def operator_test_jev(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                from .browser_runtime import BrowserRuntimeUnavailable, JevBrowserExecutor
+                executor = JevBrowserExecutor.from_environment(state_root=self.state_root)
+                result = await asyncio.wait_for(
+                    executor.run(
+                        url="https://example.com",
+                        goal=(
+                            "Observe this page. If the page title and main heading say Example Domain, "
+                            "finish without typing text or navigating away."
+                        ),
+                        task_type="JEV_OPERATOR_SMOKE",
+                    ),
+                    timeout=60,
+                )
+            except BrowserRuntimeUnavailable as exc:
+                return JSONResponse(
+                    {"ok": False, "status": "JEV_NOT_READY", "detail": str(exc)[:240]},
+                    status_code=409,
+                    headers={"Cache-Control": "no-store"},
+                )
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    {"ok": False, "status": "JEV_TEST_TIMEOUT"},
+                    status_code=504,
+                    headers={"Cache-Control": "no-store"},
+                )
+            except Exception as exc:
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "JEV_TEST_FAILED",
+                        "error_type": type(exc).__name__,
+                    },
+                    status_code=502,
+                    headers={"Cache-Control": "no-store"},
+                )
+            verified = (
+                result.status == "COMPLETED"
+                and str(result.final_url or "").startswith("https://example.com")
+            )
+            payload = {
+                "ok": verified,
+                "status": "JEV_TEST_PASSED" if verified else "JEV_TEST_FAILED",
+                "provider": result.provider,
+                "elapsed_ms": result.elapsed_ms,
+                "action_count": result.action_count,
+                "final_url": result.final_url,
+            }
+            return JSONResponse(
+                payload,
+                status_code=200 if verified else 502,
+                headers={"Cache-Control": "no-store"},
+            )
+
         def schedule_operator_resource_onboarding() -> bool:
             scheduler = getattr(self.wakeful, "schedule_resource_followup", None)
             if not callable(scheduler):
@@ -1192,6 +1251,7 @@ class LiveAgentService:
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
+                Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
                 Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
                 Route("/operator/api/survival/needs/{need_id}/decision", operator_survival_need_decision, methods=["POST"]),
                 Route("/operator/api/survival/hosts/bootstrap", operator_bootstrap_remote_host, methods=["POST"]),

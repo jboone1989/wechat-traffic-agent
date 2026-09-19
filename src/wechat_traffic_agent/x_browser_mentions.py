@@ -1,13 +1,23 @@
-"""Read-only X mention discovery through TinyFish Browser Context Profiles."""
+"""Provider-routed, read-only X mention discovery."""
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import importlib.util
 import os
+from pathlib import Path
 import re
+import time
 from typing import Any
 
-from .x_browser import TINYFISH_BASE_URL, TinyFishProfileClient, TinyFishProfileUnavailable
+from .browser_runtime import BrowserRuntimeUnavailable, BrowserTaskResult, BrowserTelemetryLedger
+from .x_browser import (
+    TINYFISH_BASE_URL,
+    TinyFishProfileClient,
+    TinyFishProfileUnavailable,
+    XBrowserSessionUnavailable,
+    tinyfish_x_enabled,
+)
 
 X_MENTIONS_URL = "https://x.com/notifications/mentions"
 
@@ -32,6 +42,121 @@ def browser_mention_post(*, text: str, href: str, own_handle: str) -> dict[str, 
         "username": author,
         "url": f"https://x.com/{author}/status/{post_id}",
     }
+
+
+class LocalHarnessXMentionsObserver:
+    """Read mentions from Ferro's owned persistent Chrome runtime."""
+
+    def __init__(
+        self, *, state_root: Path, timeout_ms: int = 30_000, browser_factory=None
+    ) -> None:
+        self.state_root = Path(state_root)
+        self.timeout_ms = int(timeout_ms)
+        self.browser_factory = browser_factory
+        self.telemetry = BrowserTelemetryLedger(self.state_root)
+
+    @classmethod
+    def from_environment(cls, *, state_root: Path) -> "LocalHarnessXMentionsObserver":
+        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() not in {"1", "true", "yes", "on"}:
+            raise BrowserRuntimeUnavailable("CONTENT_LOCAL_X_BROWSER_ENABLED is false")
+        if importlib.util.find_spec("jev_ultrafast") is None:
+            raise BrowserRuntimeUnavailable("jev-ultrafast is not installed")
+        if importlib.util.find_spec("browser_harness") is None:
+            raise BrowserRuntimeUnavailable("browser-harness is not installed")
+        return cls(
+            state_root=state_root,
+            timeout_ms=int(os.environ.get("CONTENT_LOCAL_X_BROWSER_TIMEOUT_MS", "30000")),
+        )
+
+    def _factory(self):
+        if self.browser_factory is not None:
+            return self.browser_factory
+        try:
+            from jev_ultrafast.browser import Browser
+        except ImportError as exc:
+            raise BrowserRuntimeUnavailable("local Browser Harness runtime is not installed") from exc
+        return Browser
+
+    async def observe(self, *, now: datetime, max_results: int = 20) -> list[dict[str, Any]]:
+        del now
+        started = time.perf_counter()
+        try:
+            rows = await asyncio.to_thread(self._observe_sync, max_results)
+        except Exception as exc:
+            self.telemetry.append(
+                task_type="X_MENTIONS_READ",
+                site="x.com",
+                result=BrowserTaskResult(
+                    provider="LOCAL_CDP",
+                    status="FAILED",
+                    elapsed_ms=round((time.perf_counter() - started) * 1000),
+                    action_count=0,
+                    failure_reason=type(exc).__name__,
+                ),
+            )
+            raise
+        self.telemetry.append(
+            task_type="X_MENTIONS_READ",
+            site="x.com",
+            result=BrowserTaskResult(
+                provider="LOCAL_CDP",
+                status="COMPLETED",
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+                action_count=0,
+                final_url=X_MENTIONS_URL,
+            ),
+        )
+        return rows
+
+    def _wait_selector(self, browser: Any, selector: str) -> bool:
+        deadline = time.monotonic() + min(15.0, max(2.0, self.timeout_ms / 1000))
+        expression = "(() => Boolean(document.querySelector(" + repr(selector) + ")))()"
+        while time.monotonic() < deadline:
+            try:
+                if browser.evaluate(expression):
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.1)
+        return False
+
+    def _observe_sync(self, max_results: int) -> list[dict[str, Any]]:
+        browser = self._factory()(X_MENTIONS_URL)
+        try:
+            href = str(browser.evaluate(
+                """(() => document.querySelector('[data-testid="AppTabBar_Profile_Link"]')?.getAttribute('href') || '')()"""
+            ) or "")
+            own_handle = href.strip("/").split("/", 1)[0]
+            if not own_handle:
+                raise BrowserRuntimeUnavailable("local X browser profile is not authenticated")
+            if not self._wait_selector(browser, "article"):
+                return []
+            limit = max(1, min(int(max_results), 50))
+            raw_rows = browser.evaluate(
+                """(() => [...document.querySelectorAll('article')].slice(0,50).map(a => ({
+                  text:a.innerText || '',
+                  hrefs:[...a.querySelectorAll('a[href*="/status/"]')].map(x => x.getAttribute('href') || '')
+                })))()"""
+            )
+            rows: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for raw in (raw_rows if isinstance(raw_rows, list) else [])[:limit]:
+                for href in (raw or {}).get("hrefs") or []:
+                    row = browser_mention_post(
+                        text=str((raw or {}).get("text") or ""),
+                        href=str(href),
+                        own_handle=own_handle,
+                    )
+                    if row is not None and row["id"] not in seen:
+                        seen.add(row["id"])
+                        rows.append(row)
+                        break
+            return rows
+        finally:
+            try:
+                browser.close()
+            except Exception:
+                pass
 
 
 class TinyFishXMentionsObserver:
@@ -106,4 +231,37 @@ class TinyFishXMentionsObserver:
             return rows
 
 
-__all__ = ["TinyFishXMentionsObserver", "browser_mention_post"]
+class XBrowserMentionsObserverRouter:
+    """Prefer local Chrome; fall back to TinyFish for read-only mention scans."""
+
+    def __init__(self, *, state_root: Path) -> None:
+        self.state_root = Path(state_root)
+
+    async def observe(self, *, now: datetime, max_results: int = 20) -> list[dict[str, Any]]:
+        errors: list[str] = []
+        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                local = LocalHarnessXMentionsObserver.from_environment(state_root=self.state_root)
+                return await local.observe(now=now, max_results=max_results)
+            except Exception as exc:
+                errors.append("LOCAL_CDP:" + type(exc).__name__)
+
+        if tinyfish_x_enabled():
+            try:
+                return await TinyFishXMentionsObserver.from_environment().observe(
+                    now=now, max_results=max_results
+                )
+            except Exception as exc:
+                errors.append("TINYFISH:" + type(exc).__name__)
+
+        raise XBrowserSessionUnavailable(
+            "; ".join(errors) or "no read-only X browser provider is configured"
+        )
+
+
+__all__ = [
+    "LocalHarnessXMentionsObserver",
+    "TinyFishXMentionsObserver",
+    "XBrowserMentionsObserverRouter",
+    "browser_mention_post",
+]
