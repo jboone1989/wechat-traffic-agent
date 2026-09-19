@@ -503,6 +503,13 @@ def test_invalid_publication_start_can_be_repaired_to_proposed_with_audit(tmp_pa
         now=clock.now(),
     )
     assert started["status"] == "STARTED"
+    # Legacy production projections may have lost the receipt/post fields after
+    # a later mission observation even though the runtime experiment still
+    # carries the exact publication evidence.
+    projection = json.loads(coordinator.path.read_text())
+    projection["active_experiment"].pop("publication_receipt_id", None)
+    projection["active_experiment"].pop("x_post_id", None)
+    coordinator.path.write_text(json.dumps(projection), encoding="utf-8")
 
     repaired = coordinator.repair_invalid_experiment_start(
         cycle=cycle,
