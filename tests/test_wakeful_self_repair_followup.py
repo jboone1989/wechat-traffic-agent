@@ -21,7 +21,10 @@ class Repair:
         self.status = status
 
     def run_once(self, *, now):
-        return {"status": self.status, "problem_id": "self-problem:test"}
+        result = {"status": self.status, "problem_id": "self-problem:test"}
+        if self.status == "GENERATED_PLAN_DEFERRED":
+            result["retry_seconds"] = 900
+        return result
 
 
 class Wakeful:
@@ -50,6 +53,16 @@ def test_generated_repair_proposal_schedules_prompt_second_reflect():
     assert result["status"] == "OK"
     assert result["self_repair"]["status"] == "GENERATED_REPAIR_PROPOSED"
     assert wakeful.calls == [(NOW, 60)]
+
+
+def test_deferred_generated_plan_schedules_resource_retry_without_busy_loop():
+    runner, wakeful = _runner("GENERATED_PLAN_DEFERRED")
+
+    result = runner._reflect(NOW)
+
+    assert result["status"] == "OK"
+    assert result["self_repair"]["status"] == "GENERATED_PLAN_DEFERRED"
+    assert wakeful.calls == [(NOW, 900)]
 
 
 def test_other_self_repair_states_do_not_create_busy_loop():
