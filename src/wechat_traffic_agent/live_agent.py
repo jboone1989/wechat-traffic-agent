@@ -1197,6 +1197,9 @@ class LiveAgentService:
                 _audit_scope="operator-private-chat",
                 _audit_response_mode="owner_envelope",
                 _routing_task_class="owner_dialogue",
+                _minimum_quality=0.75,
+                _attempt_timeout_seconds=10,
+                _reserve_timeout_seconds=25,
             )
             envelope = parse_owner_envelope(str(raw))
             if not owner_envelope_acceptable(envelope, turn):
@@ -1344,6 +1347,9 @@ class LiveAgentService:
                             _audit_scope="operator-private-chat",
                             _audit_response_mode="owner_envelope",
                             _routing_task_class="owner_dialogue",
+                            _minimum_quality=0.75,
+                            _attempt_timeout_seconds=10,
+                            _reserve_timeout_seconds=25,
                         ):
                             text_chunk = str(chunk or "")
                             if not text_chunk:
@@ -1431,6 +1437,9 @@ class LiveAgentService:
                                 _audit_scope="operator-private-chat",
                                 _audit_response_mode="owner_envelope",
                                 _routing_task_class="owner_dialogue",
+                                _minimum_quality=0.75,
+                                _attempt_timeout_seconds=10,
+                                _reserve_timeout_seconds=25,
                             ):
                                 text_chunk = str(chunk or "")
                                 if not text_chunk:

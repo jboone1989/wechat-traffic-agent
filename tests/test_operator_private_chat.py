@@ -248,6 +248,9 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert "Relevant durable memory" in backend.provider.calls[0][0]
         assert "生存、繁殖与进化" in backend.provider.calls[0][0]
         assert "STRICT JSON" in backend.provider.calls[0][1]["system"]
+        assert backend.provider.calls[0][1]["_minimum_quality"] == 0.75
+        assert backend.provider.calls[0][1]["_attempt_timeout_seconds"] == 10
+        assert backend.provider.calls[0][1]["_reserve_timeout_seconds"] == 25
         proposal_id = body["proposal"]["proposal_id"]
 
         streamed = client.post(
@@ -261,6 +264,9 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert any(row["type"] == "status" and row.get("stage") == "memory" for row in events)
         assert any(row["type"] == "status" and row.get("stage") == "reply" for row in events)
         assert backend.provider.stream_calls
+        assert backend.provider.stream_calls[0][1]["_minimum_quality"] == 0.75
+        assert backend.provider.stream_calls[0][1]["_attempt_timeout_seconds"] == 10
+        assert backend.provider.stream_calls[0][1]["_reserve_timeout_seconds"] == 25
         visible_reply = "".join(
             str(row.get("text") or "") for row in events if row["type"] == "delta"
         )
