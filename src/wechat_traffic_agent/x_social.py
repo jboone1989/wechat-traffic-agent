@@ -399,6 +399,22 @@ class XAutonomyLoop:
         post_id = first_post_id(post.payload.get("data"))
         if not post_id:
             return {"status": "X_POST_ID_MISSING", "cycle": cycle, "receipt_id": post.receipt_id}
+        mission_experiment_transition: dict[str, Any] | None = None
+        if self.growth_mission is not None:
+            try:
+                mission_experiment_transition = (
+                    self.growth_mission.start_experiment_from_publication(
+                        publication_receipt_id=post.receipt_id,
+                        post_id=post_id,
+                        now=now,
+                    )
+                )
+            except Exception as exc:
+                mission_experiment_transition = {
+                    "status": "DEGRADED",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
         handle = str(me.get("username") or "").lstrip("@")
         url = f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
         worldview = context.get("worldview") or {}
@@ -421,12 +437,20 @@ class XAutonomyLoop:
                     if isinstance(x_mission.get("active_experiment"), dict)
                     else None
                 ),
+                "mission_experiment_transition": mission_experiment_transition,
             },
         })
         self._update_recent_public_posts(row)
         label = str(cognition.get("expression_kind") or "THOUGHT").replace("_", " ").lower()
         self._activity(cycle=cycle, title="Posted a thought", detail=f"Published {label} on X: {decision.post_text}")
-        return {"status": "POSTED", "cycle": cycle, "post_id": post_id, "url": url, "receipt_id": post.receipt_id}
+        return {
+            "status": "POSTED",
+            "cycle": cycle,
+            "post_id": post_id,
+            "url": url,
+            "receipt_id": post.receipt_id,
+            "mission_experiment_transition": mission_experiment_transition,
+        }
 
     async def _safety_check(self, *, model_runtime: ReceiptRuntime, text: str, context: dict[str, Any]) -> XSafetyDecision:
         prompt = (

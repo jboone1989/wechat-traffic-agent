@@ -37,6 +37,21 @@ class _Runtime:
         raise AssertionError(capability_id)
 
 
+class _GrowthMission:
+    def __init__(self):
+        self.calls = []
+
+    def start_experiment_from_publication(
+        self, *, publication_receipt_id, post_id, now
+    ):
+        self.calls.append({
+            "publication_receipt_id": publication_receipt_id,
+            "post_id": post_id,
+            "now": now,
+        })
+        return {"status": "STARTED", "experiment_id": "mission-exp-1"}
+
+
 class _ModelRuntime:
     agent_manifest = SimpleNamespace(agent_type="content-agent")
 
@@ -107,7 +122,14 @@ def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_
          "rationale": "The post only summarizes persisted public cognition and makes no unsupported factual claim."},
     ])
     runtime = _Runtime(post_ok=True)
-    loop = XAutonomyLoop(runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="https://example.com")
+    growth = _GrowthMission()
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="https://example.com",
+        growth_mission=growth,
+    )
     result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
     assert result["status"] == "POSTED"
     assert result["post_id"] == "p42"
@@ -116,6 +138,13 @@ def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_
     assert row["cycle"] == cycle
     assert row["inquiry_refs"] == ["inq-1"]
     assert row["lineage"]["cognition_file"] == "cognition.json"
+    assert result["mission_experiment_transition"]["status"] == "STARTED"
+    assert growth.calls == [{
+        "publication_receipt_id": "receipt:x.post:2",
+        "post_id": "p42",
+        "now": NOW,
+    }]
+    assert row["lineage"]["mission_experiment_transition"]["status"] == "STARTED"
 
 
 def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch):
