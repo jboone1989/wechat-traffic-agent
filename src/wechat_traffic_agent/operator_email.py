@@ -62,6 +62,13 @@ class OperatorEmailSettings:
             clean["smtp_port"] = 587
         return OperatorEmailConfig(**clean)
 
+    def save_recipient(self, recipient: str) -> OperatorEmailConfig:
+        return self.save({
+            "provider": "RESEND",
+            "recipient": str(recipient or "").strip(),
+            "sender": "login@livingruntime.com",
+        })
+
     def save(self, raw: dict[str, Any]) -> OperatorEmailConfig:
         provider = str(raw.get("provider") or "RESEND").strip().upper()
         if provider not in {"RESEND", "SMTP"}:

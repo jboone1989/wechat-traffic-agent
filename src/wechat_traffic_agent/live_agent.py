@@ -767,8 +767,8 @@ class LiveAgentService:
         self.host, self.port, self.poll_seconds, self.wakeful = host, int(port), int(poll_seconds), wakeful
         self.started_at = datetime.now(timezone.utc)
         self._limiter = _RateLimiter()
-        self._operator_login_ip_limiter = _RateLimiter(limit=3, window_seconds=600)
-        self._operator_login_global_limiter = _RateLimiter(limit=1, window_seconds=45)
+        self._operator_login_ip_limiter = _RateLimiter(limit=6, window_seconds=600)
+        self._operator_login_global_limiter = _RateLimiter(limit=3, window_seconds=30)
         self._server: Any | None = None
         self._thread: Thread | None = None
 
@@ -1575,7 +1575,7 @@ class LiveAgentService:
                         "scope": "GLOBAL_CHANNEL",
                     },
                     status_code=429,
-                    headers={"Retry-After": "45"},
+                    headers={"Retry-After": "30"},
                 )
             token = operator_console.auth.issue_one_time_access(ttl=timedelta(minutes=10))
             public_url = str(
@@ -1641,7 +1641,8 @@ class LiveAgentService:
                 body = await request.json()
                 if not isinstance(body, dict):
                     raise ValueError("invalid email settings")
-                config = OperatorEmailSettings(self.state_root).save(body)
+                recipient = str(body.get("recipient") or "").strip()
+                config = OperatorEmailSettings(self.state_root).save_recipient(recipient)
             except (ValueError, TypeError) as exc:
                 return JSONResponse({"error": str(exc)[:240]}, status_code=400)
             return JSONResponse(
