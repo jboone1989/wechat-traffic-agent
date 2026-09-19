@@ -15,6 +15,9 @@ class FakeProvider:
         yield "reply:"
         yield prompt
 
+    async def structured(self, prompt, schema, **kwargs):
+        return {"reply": prompt, "goal_candidate": None, "memory_candidates": []}
+
 
 def test_audited_provider_preserves_type_and_records_call(tmp_path):
     provider = FakeProvider()
@@ -69,3 +72,39 @@ def test_audited_provider_records_native_stream_and_first_token(tmp_path):
     assert row["response"] == "reply:hello"
     assert row["status"] == "OK"
     assert row["first_token_ms"] is not None
+
+
+def test_audited_provider_records_structured_repair_scope(tmp_path):
+    provider = audited_provider(FakeProvider(), tmp_path, scope="content-agent")
+
+    result = asyncio.run(provider.structured(
+        "repair me",
+        {"type": "object"},
+        system="owner",
+        _audit_scope="operator-private-chat-repair",
+    ))
+
+    assert result["reply"] == "repair me"
+    row = LLMRequestAuditStore(tmp_path).recent()[0]
+    assert row["scope"] == "operator-private-chat-repair"
+    assert row["operation"] == "structured"
+    assert row["status"] == "OK"
+    assert "repair me" in row["response"]
+
+
+def test_owner_audit_redacts_invalid_protocol_stream_body(tmp_path):
+    provider = audited_provider(FakeProvider(), tmp_path, scope="content-agent")
+
+    async def consume():
+        return [
+            chunk async for chunk in provider.stream(
+                "hello",
+                _audit_scope="operator-private-chat",
+                _audit_response_mode="owner_envelope",
+            )
+        ]
+
+    assert asyncio.run(consume()) == ["reply:", "hello"]
+    row = LLMRequestAuditStore(tmp_path).recent()[0]
+    assert row["scope"] == "operator-private-chat"
+    assert row["response"] == "[INVALID_OWNER_ENVELOPE_REDACTED]"

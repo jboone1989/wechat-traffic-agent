@@ -40,6 +40,22 @@ def _redact(text: str) -> str:
     return value
 
 
+def _audit_response(value: Any, mode: str) -> str:
+    text = str(value or "")
+    if mode != "owner_envelope":
+        return _redact(text)
+    stripped = text.strip()
+    if not stripped.startswith("{") or not stripped.endswith("}"):
+        return "[INVALID_OWNER_ENVELOPE_REDACTED]"
+    try:
+        parsed = json.loads(stripped)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "[INVALID_OWNER_ENVELOPE_REDACTED]"
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("reply"), str):
+        return "[INVALID_OWNER_ENVELOPE_REDACTED]"
+    return _redact(json.dumps(parsed, ensure_ascii=False, separators=(",", ":")))
+
+
 def _provider_meta(provider: Any) -> dict[str, str]:
     fields: dict[str, str] = {}
     for name in ("model", "model_name", "_model", "base_url", "provider_name"):
@@ -146,6 +162,7 @@ async def _record_complete(
     started = time.perf_counter()
     call_kwargs = dict(kwargs)
     call_scope = str(call_kwargs.pop("_audit_scope", scope) or scope)
+    response_mode = str(call_kwargs.pop("_audit_response_mode", "") or "")
     prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
     system_text, system_truncated = _clip(_redact(str(call_kwargs.get("system") or "")))
     base = {
@@ -174,7 +191,9 @@ async def _record_complete(
             "routing": _routing_snapshot(provider),
         })
         raise
-    response_text, response_truncated = _clip(_redact(str(result or "")))
+    response_text, response_truncated = _clip(
+        _audit_response(result, response_mode)
+    )
     audit.append({
         **base,
         "status": "OK",
@@ -185,6 +204,63 @@ async def _record_complete(
         "routing": _routing_snapshot(provider),
     })
     return result
+
+
+async def _record_structured(
+    provider: Any,
+    original_structured: Callable[..., Any],
+    audit: LLMRequestAuditStore,
+    scope: str,
+    prompt: str,
+    schema: dict[str, Any],
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    started_wall = _utc_iso()
+    started = time.perf_counter()
+    call_kwargs = dict(kwargs)
+    call_scope = str(call_kwargs.pop("_audit_scope", scope) or scope)
+    response_mode = str(call_kwargs.pop("_audit_response_mode", "") or "")
+    prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
+    system_text, system_truncated = _clip(_redact(str(call_kwargs.get("system") or "")))
+    base = {
+        "scope": call_scope,
+        "operation": "structured",
+        "started_at": started_wall,
+        "provider": _provider_meta(provider),
+        "prompt": prompt_text,
+        "system": system_text,
+        "prompt_truncated": prompt_truncated,
+        "system_truncated": system_truncated,
+        "max_tokens": call_kwargs.get("max_tokens"),
+    }
+    try:
+        result = original_structured(prompt, schema, **call_kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        audit.append({
+            **base,
+            "status": "ERROR",
+            "finished_at": _utc_iso(),
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error_type": type(exc).__name__,
+            "error": _redact(str(exc))[:2000],
+            "routing": _routing_snapshot(provider),
+        })
+        raise
+    response_text, response_truncated = _clip(
+        _redact(json.dumps(result, ensure_ascii=False, default=str))
+    )
+    audit.append({
+        **base,
+        "status": "OK",
+        "finished_at": _utc_iso(),
+        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+        "response": response_text,
+        "response_truncated": response_truncated,
+        "routing": _routing_snapshot(provider),
+    })
+    return dict(result)
 
 
 async def _record_stream(
@@ -201,6 +277,7 @@ async def _record_stream(
     response_parts: list[str] = []
     call_kwargs = dict(kwargs)
     call_scope = str(call_kwargs.pop("_audit_scope", scope) or scope)
+    response_mode = str(call_kwargs.pop("_audit_response_mode", "") or "")
     prompt_text, prompt_truncated = _clip(_redact(str(prompt or "")))
     system_text, system_truncated = _clip(_redact(str(call_kwargs.get("system") or "")))
     base = {
@@ -225,7 +302,9 @@ async def _record_stream(
             response_parts.append(text)
             yield text
     except Exception as exc:
-        response_text, response_truncated = _clip(_redact("".join(response_parts)))
+        response_text, response_truncated = _clip(
+            _audit_response("".join(response_parts), response_mode)
+        )
         audit.append({
             **base,
             "status": "ERROR",
@@ -239,7 +318,9 @@ async def _record_stream(
             "routing": _routing_snapshot(provider),
         })
         raise
-    response_text, response_truncated = _clip(_redact("".join(response_parts)))
+    response_text, response_truncated = _clip(
+        _audit_response("".join(response_parts), response_mode)
+    )
     audit.append({
         **base,
         "status": "OK",
@@ -273,6 +354,22 @@ class AuditedLLMProvider:
             kwargs,
         )
 
+    async def structured(
+        self, prompt: str, schema: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        original_structured = getattr(self._provider, "structured", None)
+        if not callable(original_structured):
+            raise AttributeError("structured")
+        return await _record_structured(
+            self._provider,
+            original_structured,
+            self._audit,
+            self._scope,
+            prompt,
+            schema,
+            kwargs,
+        )
+
     async def stream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
         original_stream = getattr(self._provider, "stream", None)
         if not callable(original_stream):
@@ -299,6 +396,7 @@ def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-a
     audit = LLMRequestAuditStore(state_root)
     effective_scope = str(scope or "content-agent")
     original_complete = provider.complete
+    original_structured = getattr(provider, "structured", None)
     original_stream = getattr(provider, "stream", None)
     base_type = type(provider)
 
@@ -309,6 +407,21 @@ def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-a
             audit,
             effective_scope,
             prompt,
+            kwargs,
+        )
+
+    async def structured(
+        self: Any, prompt: str, schema: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        if not callable(original_structured):
+            raise AttributeError("structured")
+        return await _record_structured(
+            self,
+            original_structured,
+            audit,
+            effective_scope,
+            prompt,
+            schema,
             kwargs,
         )
 
@@ -330,6 +443,8 @@ def audited_provider(provider: Any, state_root: Path, *, scope: str = "content-a
         "complete": complete,
         "__module__": base_type.__module__,
     }
+    if callable(original_structured):
+        methods["structured"] = structured
     if callable(original_stream):
         methods["stream"] = stream
 

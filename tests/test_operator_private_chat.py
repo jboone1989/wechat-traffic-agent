@@ -11,6 +11,7 @@ from wechat_traffic_agent.operator_private_chat import (
     OperatorConversationStore,
     ReplyJSONStreamDecoder,
     parse_model_json,
+    parse_owner_envelope,
 )
 
 
@@ -133,6 +134,30 @@ def test_reply_json_stream_decoder_handles_chunk_boundaries_and_escapes():
     assert visible == "你好\n下一行 🚀"
     assert decoder.started is True
     assert decoder.finished is True
+
+
+def test_reply_decoder_rejects_reasoning_before_root_json():
+    decoder = ReplyJSONStreamDecoder()
+
+    visible = decoder.feed('We need to reason first. Example: {"reply":"do not leak"}')
+
+    assert visible == ""
+    assert decoder.rejected is True
+    assert decoder.started is False
+
+
+def test_parse_owner_envelope_rejects_embedded_or_incomplete_json():
+    assert parse_owner_envelope(
+        '{"reply":"ok","goal_candidate":null,"memory_candidates":[]}'
+    ) == {
+        "reply": "ok",
+        "goal_candidate": None,
+        "memory_candidates": [],
+    }
+    assert parse_owner_envelope(
+        'analysis first {"reply":"ok","goal_candidate":null,"memory_candidates":[]}'
+    ) is None
+    assert parse_owner_envelope('{"reply":"partial') is None
 
 
 def test_operator_conversation_store_persists_and_activates_general_goal(tmp_path):
@@ -262,3 +287,147 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
     assert any(row["role"] == "operator" for row in reloaded.history())
     assert reloaded.proposals()[0]["status"] == "ACTIVATED"
     assert not (root / "content" / "persona" / "interactions.jsonl").exists()
+
+
+class RepairingProvider:
+    def __init__(self) -> None:
+        self.stream_calls = []
+        self.structured_calls = []
+
+    async def complete(self, prompt, **kwargs):
+        return "analysis first, invalid envelope"
+
+    async def stream(self, prompt, **kwargs):
+        self.stream_calls.append((prompt, kwargs))
+        yield 'We need to reason first. Example: {"reply":"must not leak"}'
+
+    async def structured(self, prompt, schema, **kwargs):
+        self.structured_calls.append((prompt, schema, kwargs))
+        return {
+            "reply": "结构已修复，并形成目标草案。",
+            "goal_candidate": {
+                "kind": "GENERAL",
+                "description": "Repair owner chat structured output",
+                "reason": "The owner requested a bounded draft.",
+                "constraints": [],
+            },
+            "memory_candidates": [],
+        }
+
+
+def test_private_stream_repairs_invalid_envelope_without_leaking_reasoning(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    backend = SimpleNamespace(provider=RepairingProvider())
+    service = LiveAgentService(
+        state_root=root,
+        application=FakeApplication(),
+        backend=backend,
+        wakeful=FakeWakeful(),
+    )
+
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "请形成目标草案，但不要激活。"},
+        )
+
+    assert response.status_code == 200
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    visible = "".join(
+        str(row.get("text") or "")
+        for row in events
+        if row.get("type") in {"delta", "replace"}
+    )
+    assert "We need to reason" not in visible
+    assert "must not leak" not in visible
+    assert "结构已修复" in visible
+    assert any(row.get("stage") == "repair" for row in events if row.get("type") == "status")
+    assert events[-1]["transport"] == "native-repaired"
+    assert events[-1]["proposal"]["status"] == "DRAFT"
+    assert backend.provider.structured_calls
+
+
+class LanguageRepairProvider(RepairingProvider):
+    async def stream(self, prompt, **kwargs):
+        self.stream_calls.append((prompt, kwargs))
+        yield json.dumps({
+            "reply": "Here is the draft.",
+            "goal_candidate": None,
+            "memory_candidates": [],
+        }, ensure_ascii=False)
+
+    async def structured(self, prompt, schema, **kwargs):
+        self.structured_calls.append((prompt, schema, kwargs))
+        return {
+            "reply": "这是修复后的中文回复。",
+            "goal_candidate": None,
+            "memory_candidates": [],
+        }
+
+
+def test_private_stream_repairs_language_mismatch_for_chinese_owner(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    backend = SimpleNamespace(provider=LanguageRepairProvider())
+    service = LiveAgentService(
+        state_root=root,
+        application=FakeApplication(),
+        backend=backend,
+        wakeful=FakeWakeful(),
+    )
+
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "请继续用中文回答。"},
+        )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    final = events[-1]
+    assert final["transport"] == "native-repaired"
+    assert final["message"]["text"] == "这是修复后的中文回复。"
+    assert backend.provider.structured_calls
+
+
+class XMissionProvider:
+    async def stream(self, prompt, **kwargs):
+        yield json.dumps({
+            "reply": "已形成 X 增长目标草案。",
+            "goal_candidate": {
+                "kind": "EXTERNAL_MISSION",
+                "description": "一个月内将 X 粉丝从 2000 提升到 5000",
+                "reason": "owner 提出了可衡量增长目标",
+                "metric": "followers",
+                "baseline": 2000,
+                "target": 5000,
+                "deadline": "2026-10-19T10:00:00+00:00",
+                "direction": "AT_LEAST",
+                "constraints": ["遵守 X 平台政策"],
+            },
+            "memory_candidates": [],
+        }, ensure_ascii=False)
+
+
+def test_x_follower_goal_metric_is_canonicalized(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    service = LiveAgentService(
+        state_root=root,
+        application=FakeApplication(),
+        backend=SimpleNamespace(provider=XMissionProvider()),
+        wakeful=FakeWakeful(),
+    )
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "请形成 X 粉丝增长目标草案，不要激活。"},
+        )
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert events[-1]["proposal"]["metric"] == "x.followers"
