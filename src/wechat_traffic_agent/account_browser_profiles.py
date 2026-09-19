@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import time
@@ -184,6 +185,13 @@ class AccountBrowserProfileManager:
         except Exception:
             pass
         raise AccountBrowserProfileError("account Chromium did not become ready")
+
+    def delete_profile(self, account_id: str) -> None:
+        self.registry.get(account_id)
+        self.stop(account_id)
+        folder = self._folder(account_id)
+        if folder.exists():
+            shutil.rmtree(folder)
 
     def stop(self, account_id: str) -> AccountBrowserRuntime:
         current = self.status(account_id)

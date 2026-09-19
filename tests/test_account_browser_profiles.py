@@ -48,3 +48,24 @@ def test_account_browser_profile_is_account_scoped_and_persistent(tmp_path, monk
     assert profile.exists()
     assert oct(state.stat().st_mode & 0o777) == "0o600"
     assert oct(profile.stat().st_mode & 0o777) == "0o700"
+
+
+def test_delete_profile_removes_only_target_account_directory(tmp_path, monkeypatch):
+    registry = AccountRegistry(tmp_path)
+    first = registry.ensure(provider_id="x", identity="alice_one")
+    second = registry.ensure(provider_id="x", identity="bob_two")
+    manager = AccountBrowserProfileManager(tmp_path)
+
+    first_dir = tmp_path / "accounts" / "browser-profiles" / first.account_id
+    second_dir = tmp_path / "accounts" / "browser-profiles" / second.account_id
+    (first_dir / "chrome-profile").mkdir(parents=True)
+    (second_dir / "chrome-profile").mkdir(parents=True)
+    (first_dir / "chrome-profile" / "cookie-state").write_text("first")
+    (second_dir / "chrome-profile" / "cookie-state").write_text("second")
+    monkeypatch.setattr(manager, "stop", lambda account_id: None)
+
+    manager.delete_profile(first.account_id)
+
+    assert first_dir.exists() is False
+    assert second_dir.exists() is True
+    assert (second_dir / "chrome-profile" / "cookie-state").read_text() == "second"
