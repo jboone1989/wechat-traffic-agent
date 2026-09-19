@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import importlib.util
+from pathlib import Path
 from threading import Event, Timer
 import time
 from types import SimpleNamespace
@@ -74,3 +76,26 @@ def test_network_request_stop_is_non_blocking():
     service.request_stop()
 
     assert server.should_exit is True
+
+
+def test_shutdown_checkpoint_summary_is_bounded():
+    entrypoint = Path(__file__).resolve().parents[1] / "scripts" / "run_content_agent.py"
+    spec = importlib.util.spec_from_file_location("run_content_agent_shutdown_test", entrypoint)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    summary = module._shutdown_task_summary(
+        "CHECK_X",
+        {
+            "status": "OK",
+            "task": "CHECK_X",
+            "x_social_observation": {"huge": "x" * 100_000},
+        },
+    )
+
+    assert summary["status"] == "SHUTDOWN_CHECKPOINT"
+    assert summary["interrupted_status"] == "OK"
+    assert summary["task"] == "CHECK_X"
+    assert "x_social_observation" in summary["interrupted_keys"]
+    assert "huge" not in str(summary)
