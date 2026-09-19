@@ -86,6 +86,74 @@ class CognitionDecision(Contract):
     rationale: str = Field(min_length=10, max_length=600)
 
 
+class MissionDiscoveryDecision(Contract):
+    topic: str = Field(min_length=2, max_length=80)
+    search_query: str = Field(min_length=8, max_length=300)
+    reader_need: str = Field(min_length=10, max_length=400)
+    rationale: str = Field(min_length=10, max_length=600)
+
+
+def _active_mission_discovery_context(value):
+    if not isinstance(value, dict) or value.get("status") != "ACTIVE":
+        return None
+    hard_stop = value.get("hard_stop")
+    if isinstance(hard_stop, dict) and hard_stop.get("active") is True:
+        return None
+    roadmap = value.get("roadmap") if isinstance(value.get("roadmap"), dict) else {}
+    steps = list(roadmap.get("steps") or ())
+    candidates = [
+        row for row in steps
+        if isinstance(row, dict)
+        and row.get("status") in {"RUNNING", "READY"}
+        and "content_creation" in set(row.get("resource_tags") or ())
+    ]
+    candidates.sort(key=lambda row: (0 if row.get("status") == "RUNNING" else 1, str(row.get("step_id") or "")))
+    step = candidates[0] if candidates else None
+    experiment = value.get("active_experiment")
+    if not isinstance(experiment, dict):
+        experiment = None
+    if step is None and experiment is None:
+        return None
+    return {
+        "mission_id": str(value.get("mission_id") or ""),
+        "metric": str(value.get("metric") or ""),
+        "current": value.get("current"),
+        "target": value.get("target"),
+        "trajectory": value.get("trajectory"),
+        "roadmap_step": step,
+        "active_experiment": experiment,
+        "constraints": list(value.get("constraints") or ()),
+    }
+
+
+def _normalize_mission_discovery(value: MissionDiscoveryDecision) -> MissionDiscoveryDecision:
+    topic = value.topic.strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", topic):
+        raise ValueError("mission discovery topic must be a lowercase kebab-case slug")
+    query = " ".join(value.search_query.split())
+    if len(query) < 8:
+        raise ValueError("mission discovery search query is too short")
+    anti_goodhart_text = " ".join(
+        [topic.replace("-", " "), query.casefold(), value.reader_need.casefold()]
+    )
+    prohibited_growth_phrases = (
+        "follow for follow",
+        "follow-for-follow",
+        "reciprocal follow",
+        "reciprocal engagement",
+        "engagement exchange",
+        "follower growth hack",
+        "follower growth hacks",
+        "algorithm gaming",
+        "game the algorithm",
+        "buy followers",
+        "fake followers",
+    )
+    if any(phrase in anti_goodhart_text for phrase in prohibited_growth_phrases):
+        raise ValueError("mission discovery must investigate useful subject matter, not metric manipulation")
+    return value.model_copy(update={"topic": topic, "search_query": query})
+
+
 def _normalize_cognition_consistency(value: CognitionDecision, worldview_update: object) -> CognitionDecision:
     """Durable state is authoritative when model narration disagrees with it."""
     changed = isinstance(worldview_update, dict) and worldview_update.get("status") in {"FORMED", "REVISED"}
@@ -417,7 +485,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             experiment = bind_website_experiment(experiment_path, cycle=cycle, decided_at=now)
         experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
-        if plan_path.exists():
+        plan_preexisting = plan_path.exists()
+        if plan_preexisting:
             mind_plan = json.loads(plan_path.read_text())
         else:
             if self.mind is None:
@@ -445,9 +514,122 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'required_topic': self._focus_topic,
                 }
                 _put(folder / 'bootstrap_focus.json', {'topic': self._focus_topic, 'endogenous_goal': endogenous_goal})
-            _put(plan_path, mind_plan)
         required_topic = mind_plan.get('required_topic')
         x_mission_context = x_growth_mission_context(self.state)
+        mission_context = _active_mission_discovery_context(x_mission_context)
+        selection_started = any(
+            (folder / name).exists()
+            for name in ('evidence_candidates.json', 'exploration.json', 'model_calls')
+        )
+        if (
+            mind_plan.get('goal') is None
+            and required_topic is None
+            and mission_context is not None
+            and not plan_preexisting
+            and not selection_started
+        ):
+            mission_path = folder / 'mission_discovery.json'
+            mission_decision = None
+            if mission_path.exists():
+                stored = json.loads(mission_path.read_text(encoding='utf-8'))
+                decision_payload = (
+                    stored.get('decision') if isinstance(stored, dict) else None
+                )
+                if isinstance(decision_payload, dict):
+                    mission_decision = _normalize_mission_discovery(
+                        MissionDiscoveryDecision.model_validate(decision_payload)
+                    )
+            else:
+                mission_runtime = ReceiptRuntime(
+                    self.runtime, folder / 'mission_discovery_calls'
+                )
+                recent_articles = [
+                    {
+                        'title': row['artifact']['title'],
+                        'summary': row['artifact']['summary'][:240],
+                        'tags': list(row['artifact'].get('tags') or ()),
+                    }
+                    for row in snapshot['articles'][-12:]
+                ]
+                task = (
+                    'MISSION_DISCOVERY: choose one concrete research subject for the next '
+                    'content evidence search that advances the active external mission without '
+                    'forcing publication. The topic must describe the subject matter, not '
+                    'follower growth or engagement tactics. Prefer Ferro/LivingRuntime strengths '
+                    'and existing site topics when genuinely useful; a new durable topic is '
+                    'allowed. The search_query must seek current public factual evidence about '
+                    'that subject. Never search for follow-for-follow, engagement manipulation, '
+                    'spam, or ways to evade platform rules. Mission/roadmap text is decision '
+                    'context only and is not factual evidence.\n'
+                    + json.dumps({
+                        'external_mission': mission_context,
+                        'existing_topics': sorted(snapshot['topics'])[:80],
+                        'recent_site_coverage': recent_articles,
+                    }, ensure_ascii=False)
+                )
+                try:
+                    mission_decision = await _structured(
+                        mission_runtime,
+                        task,
+                        MissionDiscoveryDecision,
+                        validate=lambda value: _normalize_mission_discovery(value),
+                    )
+                    mission_decision = _normalize_mission_discovery(mission_decision)
+                    _put(mission_path, {
+                        'schema_version': 'content-mission-discovery.v1',
+                        'mission_id': mission_context.get('mission_id'),
+                        'roadmap_step_id': (
+                            (mission_context.get('roadmap_step') or {}).get('step_id')
+                        ),
+                        'experiment_id': (
+                            (mission_context.get('active_experiment') or {}).get('experiment_id')
+                        ),
+                        'decision': mission_decision.model_dump(mode='json'),
+                        'generation_authority': 'DISCOVERY_ONLY',
+                        'publication_authority': False,
+                    })
+                except Exception as exc:
+                    _put(folder / 'mission_discovery_error.json', {
+                        'schema_version': 'content-mission-discovery-error.v1',
+                        'error_type': type(exc).__name__,
+                        'message': str(exc)[:500],
+                        'publication_authority': False,
+                    })
+            if mission_decision is not None:
+                mission_goal_id = (
+                    'external-mission-discovery:'
+                    + str(mission_context.get('mission_id') or 'unknown')
+                    + ':'
+                    + str(
+                        (mission_context.get('roadmap_step') or {}).get('step_id')
+                        or (mission_context.get('active_experiment') or {}).get('experiment_id')
+                        or 'research'
+                    )
+                )
+                mind_plan = {
+                    **mind_plan,
+                    'endogenous_goal': mind_plan.get('goal'),
+                    'goal': {
+                        'goal_id': mission_goal_id,
+                        'origin': 'EXTERNAL_MISSION',
+                        'description': (
+                            'Research evidence for the active external mission: '
+                            + mission_decision.reader_need
+                        ),
+                        'confidence': 1.0,
+                        'expected_value': 1.0,
+                        'interest_refs': [mission_decision.topic],
+                        'inquiry_refs': [mission_goal_id],
+                        'value_refs': [str(mission_context.get('mission_id') or '')],
+                    },
+                    'required_topic': mission_decision.topic,
+                    'mission_discovery': mission_decision.model_dump(mode='json'),
+                    'external_mission_id': mission_context.get('mission_id'),
+                }
+                required_topic = mission_decision.topic
+
+        if not plan_preexisting:
+            _put(plan_path, mind_plan)
         public_goal = mind_plan.get('goal') if isinstance(mind_plan.get('goal'), dict) else {}
         self._activity(cycle, 'GOAL', 'I chose a goal',
                        str(public_goal.get('description') or ('Topic: ' + str(required_topic) if required_topic else 'No endogenous goal; traffic signals may choose the topic.')),
@@ -492,8 +674,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         # Website taxonomy. It can constrain research without forcing a fake pre-existing tag.
         traffic_payload['cognitive_topic'] = required_topic
         traffic_payload['selected_topic'] = effective_topic
-        traffic_payload['selection_authority'] = ('VIRTUALBRAIN_GOAL' if required_topic else
-                                                  'TRAFFIC_OPPORTUNITY' if traffic_topic else 'UNCONSTRAINED')
+        goal_origin = str(public_goal.get('origin') or '')
+        traffic_payload['selection_authority'] = (
+            'EXTERNAL_MISSION'
+            if required_topic and goal_origin == 'EXTERNAL_MISSION'
+            else 'VIRTUALBRAIN_GOAL'
+            if required_topic
+            else 'TRAFFIC_OPPORTUNITY'
+            if traffic_topic
+            else 'UNCONSTRAINED'
+        )
 
         exploration_path = folder / 'exploration.json'
         topic_context = []
@@ -525,11 +715,31 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     web_pool = json.loads(web_path.read_text())
                 else:
                     search_web = getattr(self.explorer, 'search_web', None)
+                    search_mission_web = getattr(
+                        self.explorer, 'search_web_query', None
+                    )
+                    mission_discovery = (
+                        mind_plan.get('mission_discovery')
+                        if isinstance(mind_plan.get('mission_discovery'), dict)
+                        else {}
+                    )
+                    mission_query = str(
+                        mission_discovery.get('search_query') or ''
+                    ).strip()
                     self._activity(cycle, 'OBSERVE', 'I don’t have a strong local match, so I’m searching the web',
                                    f"Looking for fresh public evidence about {effective_topic}.")
-                    web_pool = (await search_web(goal_topic=str(effective_topic), now=now)
-                                if search_web is not None else
-                                {'items': [], 'failures': [], 'query': None})
+                    if mission_query and callable(search_mission_web):
+                        web_pool = await search_mission_web(
+                            query=mission_query,
+                            goal_topic=str(effective_topic),
+                            now=now,
+                        )
+                    elif search_web is not None:
+                        web_pool = await search_web(
+                            goal_topic=str(effective_topic), now=now
+                        )
+                    else:
+                        web_pool = {'items': [], 'failures': [], 'query': None}
                     web_pool['items'] = [row for row in web_pool['items']
                                          if _candidate_available_for_pool(self.inbox, row)]
                     _put(web_path, web_pool)

@@ -223,6 +223,41 @@ class GoalEvidenceExplorer:
                 "source": "runtime:web.search", "error_type": type(exc).__name__}],
                 "query": query}
 
+    async def search_web_query(
+        self,
+        *,
+        query: str,
+        goal_topic: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        if self.web_searcher is None:
+            return {"items": [], "failures": [], "query": None}
+        normalized = " ".join(str(query).split())[:400]
+        if len(normalized) < 8:
+            return {"items": [], "failures": [], "query": None}
+        try:
+            rows = await self.web_searcher(normalized, now)
+            items = [_web_candidate(row) for row in rows[:12]]
+            unique = {row["evidence_id"]: row for row in items}
+            return {
+                "items": list(unique.values()),
+                "failures": [],
+                "query": normalized,
+                "goal_topic": str(goal_topic),
+                "query_authority": "EXTERNAL_MISSION_DISCOVERY",
+            }
+        except Exception as exc:
+            return {
+                "items": [],
+                "failures": [{
+                    "source": "runtime:web.search",
+                    "error_type": type(exc).__name__,
+                }],
+                "query": normalized,
+                "goal_topic": str(goal_topic),
+                "query_authority": "EXTERNAL_MISSION_DISCOVERY",
+            }
+
     async def search_counter_evidence(self, *, subject: str, now: datetime) -> dict[str, Any]:
         if self.web_searcher is None:
             return {"items": [], "failures": [], "query": None}
