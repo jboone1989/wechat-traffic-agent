@@ -538,7 +538,7 @@ def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_p
         "receipt_id": "capability-receipt:owner-tool:1",
         "ok": True,
     }]
-    assert application.runtime.calls == [("web.search", {"query": "Ferro"})]
+    assert application.runtime.calls == [("web.search", {"query": "Ferro", "limit": 8})]
     assert "Owner Tool Results round 1" in provider.complete_calls[0][0]
 
 

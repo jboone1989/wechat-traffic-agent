@@ -56,7 +56,7 @@ def test_execute_readonly_tool_invokes_runtime_and_returns_receipt():
         [{"capability_id": "web.search", "payload": {"query": "Ferro"}}],
     )
 
-    assert runtime.calls == [("web.search", {"query": "Ferro"})]
+    assert runtime.calls == [("web.search", {"query": "Ferro", "limit": 8})]
     assert results[0]["ok"] is True
     assert results[0]["receipt_id"] == "capability-receipt:test:1"
     assert runtime.persisted == 1
@@ -75,3 +75,21 @@ def test_execute_readonly_tool_rejects_side_effect_and_secret_payload():
     assert runtime.calls == []
     assert results[0]["status"] == "FORBIDDEN_SIDE_EFFECT"
     assert results[1]["status"] == "SENSITIVE_PAYLOAD_REJECTED"
+
+
+def test_web_search_payload_is_bounded_to_runtime_contract():
+    runtime = FakeRuntime()
+    app = SimpleNamespace(runtime=runtime)
+
+    execute_readonly_tool_requests(
+        app,
+        [{
+            "capability_id": "web.search",
+            "payload": {"query": "Ferro", "limit": 99, "page": 99, "safesearch": 99},
+        }],
+    )
+
+    assert runtime.calls == [(
+        "web.search",
+        {"query": "Ferro", "limit": 8, "page": 10, "safesearch": 2},
+    )]
