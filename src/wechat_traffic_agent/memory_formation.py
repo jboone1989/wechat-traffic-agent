@@ -132,6 +132,10 @@ class MemoryFormationPipeline:
         payload = dict(raw.get("payload") or {}) if isinstance(raw.get("payload"), Mapping) else {}
         if claim_key:
             payload["claim_key"] = claim_key
+        source_refs = list(dict.fromkeys([
+            context.source_ref,
+            *[str(item).strip() for item in (raw.get("source_refs") or []) if str(item).strip()],
+        ]))
         memory = {
             "memory_id": str(raw.get("memory_id") or self._new_memory_id(context.source_type)),
             "memory_type": memory_type,
@@ -141,7 +145,8 @@ class MemoryFormationPipeline:
             "confidence": confidence,
             "source_type": context.source_type,
             "source_ref": context.source_ref,
-            "source_refs": [context.source_ref],
+            "source_refs": source_refs,
+            "evidence_refs": list(raw.get("evidence_refs") or []),
             "access_scope": context.access_scope,
             "entities": list(raw.get("entities") or []),
             "topics": list(raw.get("topics") or []),
