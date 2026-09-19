@@ -378,21 +378,26 @@ class ContentNetworkService:
             self.stop()
             raise RuntimeError("Agent Network local endpoint did not become ready")
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
+        """Stop accepting new network requests without waiting for teardown."""
+        if self._server is not None:
+            self._server.should_exit = True
         loop = self._loop
         if self._join_task is not None and loop is not None and loop.is_running():
             try:
                 loop.call_soon_threadsafe(self._join_task.cancel)
             except Exception:
                 pass
+
+    def stop(self) -> None:
+        self.request_stop()
+        loop = self._loop
         if self.joined and self._network is not None and loop is not None and loop.is_running():
             try:
                 future = asyncio.run_coroutine_threadsafe(self._network.leave(), loop)
                 future.result(timeout=2.0)
             except Exception:
                 pass
-        if self._server is not None:
-            self._server.should_exit = True
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
         self._joined.clear()

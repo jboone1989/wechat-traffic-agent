@@ -10,9 +10,49 @@ from pathlib import Path
 from typing import Any
 
 
+class _ShutdownRequested(BaseException):
+    """Internal cooperative-cancellation signal; bypass broad Exception handlers."""
+
+
 class WakefulContentTaskRunner:
     def __init__(self, **components: Any) -> None:
         self.__dict__.update(components)
+        self.stop_requested = components.get("stop_requested") or (lambda: False)
+
+    def _stopping(self) -> bool:
+        try:
+            return bool(self.stop_requested())
+        except Exception:
+            return False
+
+    def _raise_if_stopping(self) -> None:
+        if self._stopping():
+            raise _ShutdownRequested()
+
+    async def _await_with_shutdown(self, awaitable: Any) -> Any:
+        task = asyncio.create_task(awaitable)
+        try:
+            while not task.done():
+                if self._stopping():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    raise _ShutdownRequested()
+                await asyncio.wait({task}, timeout=0.1)
+            return task.result()
+        finally:
+            if not task.done():
+                task.cancel()
+
+    def _run_async(self, awaitable: Any) -> Any:
+        if self._stopping():
+            close = getattr(awaitable, "close", None)
+            if callable(close):
+                close()
+            raise _ShutdownRequested()
+        return asyncio.run(self._await_with_shutdown(awaitable))
 
     def _windfall_pending_path(self) -> Path | None:
         state_root = getattr(self, "state_root", None)
@@ -74,21 +114,29 @@ class WakefulContentTaskRunner:
         path.unlink(missing_ok=True)
 
     def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
-        if task == "RESOURCE_REVIEW":
-            return self._resource(now)
-        if task == "REFLECT":
-            return self._reflect(now)
-        if task == "CHECK_X":
-            return self._x(now)
-        if task == "CHECK_OUTCOMES":
-            return self._outcomes(now)
-        if task == "OBSERVE_WORLD":
-            return self._observe(now)
-        if task == "VERIFY_PREDICTION":
-            return self._verify_prediction(now)
-        if task == "CONTENT_COGNITION":
-            return self._content(now, focus_topic=focus_topic)
-        return {"status": "NOOP", "task": task}
+        try:
+            self._raise_if_stopping()
+            if task == "RESOURCE_REVIEW":
+                return self._resource(now)
+            if task == "REFLECT":
+                return self._reflect(now)
+            if task == "CHECK_X":
+                return self._x(now)
+            if task == "CHECK_OUTCOMES":
+                return self._outcomes(now)
+            if task == "OBSERVE_WORLD":
+                return self._observe(now)
+            if task == "VERIFY_PREDICTION":
+                return self._verify_prediction(now)
+            if task == "CONTENT_COGNITION":
+                return self._content(now, focus_topic=focus_topic)
+            return {"status": "NOOP", "task": task}
+        except _ShutdownRequested:
+            return {
+                "status": "SHUTDOWN_CHECKPOINT",
+                "task": task,
+                "reason": "SIGTERM_OR_SIGINT",
+            }
 
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
@@ -403,7 +451,7 @@ class WakefulContentTaskRunner:
             refs.append(event_id)
         if model:
             refs.append("windfall-model:" + model)
-        hypothesis = asyncio.run(
+        hypothesis = self._run_async(
             deliberate(evidence_refs=refs, max_tokens=1800)
         )
         persist = getattr(runtime, "persist", None)
@@ -525,7 +573,7 @@ class WakefulContentTaskRunner:
         token_budget = 1800 if windfall_active else 800
         fallback_reason = None
         try:
-            hypothesis = asyncio.run(
+            hypothesis = self._run_async(
                 deliberate(
                     str(getattr(candidate, "need_id")),
                     max_tokens=token_budget,
@@ -570,7 +618,7 @@ class WakefulContentTaskRunner:
         if self.x_loop is None:
             return {"task": "CHECK_X", "status": "DISABLED"}
         try:
-            result = asyncio.run(self.x_loop.observe(now=now))
+            result = self._run_async(self.x_loop.observe(now=now))
             self.wakeful.emit_x_mentions(count=int(result.get("new_mentions") or 0), observed_at=now)
             return {"task": "CHECK_X", "status": "OK", "x_social_observation": result}
         except Exception as exc:  # noqa: BLE001
@@ -591,7 +639,7 @@ class WakefulContentTaskRunner:
         if result is None or not result.generation_ready or self.draft_worker is None:
             return rows
         try:
-            draft = asyncio.run(self.draft_worker.run_once(now=now))
+            draft = self._run_async(self.draft_worker.run_once(now=now))
             draft_payload = draft.to_payload()
             rows["draft_worker"] = draft_payload
             evidence_ref = str(
@@ -669,7 +717,7 @@ class WakefulContentTaskRunner:
                     self.wakeful.emit_prediction_due(
                         prediction_ref=str(prediction.prediction_id), observed_at=now,
                     )
-            result = asyncio.run(self.continuous_loop.verify_due_predictions(now=now))
+            result = self._run_async(self.continuous_loop.verify_due_predictions(now=now))
             return {"task": "VERIFY_PREDICTION", "status": "OK", "prediction_verification": result}
         except Exception as exc:  # noqa: BLE001
             return {"task": "VERIFY_PREDICTION", "status": "DEGRADED", "prediction_verification": self._error(exc)}
@@ -877,7 +925,7 @@ class WakefulContentTaskRunner:
             return rows
         if self.web_worker is not None:
             try:
-                rows["web_editorial"] = asyncio.run(self.web_worker.run_once(now=now))
+                rows["web_editorial"] = self._run_async(self.web_worker.run_once(now=now))
             except Exception as exc:  # noqa: BLE001
                 rows["web_editorial"] = self._error(exc)
                 rows["status"] = "DEGRADED"
@@ -988,7 +1036,7 @@ class WakefulContentTaskRunner:
             rows["continuous_content"] = {"status": "RESOURCE_DEFERRED", "cycle": cycle_id, "resource_decision": decision}
             rows["status"] = "DEFERRED"
             return rows
-        continuous = asyncio.run(self.continuous_loop.run_once(
+        continuous = self._run_async(self.continuous_loop.run_once(
             now=now, cycle_id=directed_cycle_id, focus_topic=focus_topic,
         ))
         rows["continuous_content"] = continuous
@@ -1094,7 +1142,7 @@ class WakefulContentTaskRunner:
                         rows["self_maintenance"] = self._error(exc)
             return rows
         try:
-            rows["social_expression_drafts"] = asyncio.run(
+            rows["social_expression_drafts"] = self._run_async(
                 self.social_expression_loop.after_content_cycle(result=continuous, now=now)
             )
         except Exception as exc:  # noqa: BLE001
@@ -1105,7 +1153,7 @@ class WakefulContentTaskRunner:
             ("okx_orbit_publication", self.okx_orbit_publisher),
         ):
             try:
-                rows[name] = asyncio.run(publisher.after_content_cycle(
+                rows[name] = self._run_async(publisher.after_content_cycle(
                     cycle=str(continuous.get("cycle") or ""), now=now,
                 ))
             except Exception as exc:  # noqa: BLE001
@@ -1113,7 +1161,7 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         if self.x_loop is not None:
             try:
-                rows["x_social_expression"] = asyncio.run(self.x_loop.after_content_cycle(result=continuous, now=now))
+                rows["x_social_expression"] = self._run_async(self.x_loop.after_content_cycle(result=continuous, now=now))
             except Exception as exc:  # noqa: BLE001
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
