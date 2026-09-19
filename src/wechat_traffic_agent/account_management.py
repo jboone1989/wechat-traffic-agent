@@ -116,7 +116,7 @@ class AccountManager:
                 / record.account_id
                 / "chrome-profile"
             )
-            profile_status = "READY" if profile_dir.exists() else "NOT_PROVISIONED"
+            profile_status = "PROVISIONED" if profile_dir.exists() else "NOT_PROVISIONED"
             compatibility = (
                 "TINYFISH"
                 if tinyfish_ready
