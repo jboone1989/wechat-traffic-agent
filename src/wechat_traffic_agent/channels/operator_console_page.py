@@ -32,9 +32,9 @@ label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;
 details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
 .resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
 .browser-live{width:100%;height:auto;aspect-ratio:1120/780;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:none;cursor:crosshair}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}.live-indicator{display:inline-flex;align-items:center;gap:6px}.live-indicator:before{content:"";width:7px;height:7px;border-radius:50%;background:#5b6872}.live-indicator.live:before{background:#8ee1b2}
-.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.account-login-shell{margin-top:12px}.account-binding{display:grid;gap:5px;padding:11px 0;border-top:1px solid #263038}.account-binding:first-of-type{border-top:0}.account-binding-title{display:flex;align-items:center;gap:8px}.account-binding-title strong{flex:1}.account-binding p{margin:0}.account-tech{margin-top:2px}.account-tech summary{font-size:11px;color:#71818d;cursor:pointer}
+.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.modal-open{overflow:hidden}.account-login-modal{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:16px;background:rgba(3,6,8,.78);backdrop-filter:blur(5px)}.account-login-dialog{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #34414f;border-radius:14px;background:#10151a;padding:14px;box-shadow:0 18px 70px rgba(0,0,0,.5)}.account-binding{display:grid;gap:5px;padding:11px 0;border-top:1px solid #263038}.account-binding:first-of-type{border-top:0}.account-binding-title{display:flex;align-items:center;gap:8px}.account-binding-title strong{flex:1}.account-binding p{margin:0}.account-tech{margin-top:2px}.account-tech summary{font-size:11px;color:#71818d;cursor:pointer}
 .divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
-@media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.account-card{gap:8px;padding:12px}.account-actions{gap:5px}.account-actions button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.account-login-shell{padding:10px;margin-top:8px}.account-login-shell>.row:first-child{align-items:flex-start;gap:6px}.account-login-shell>.row:first-child>button{flex:0 0 auto!important;width:auto;padding:6px 9px;font-size:12px}.account-login-shell h3{font-size:15px}.account-login-shell h3+p{font-size:11px;line-height:1.45;margin:3px 0}.browser-live{border-radius:6px}.browser-controls{gap:6px;margin-top:7px}.browser-controls label{font-size:11px}.browser-controls input{padding:8px}.browser-controls>.row{gap:5px;flex-wrap:wrap}.browser-controls>.row>button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.browser-keys{gap:4px}.browser-keys button{flex:0 0 auto!important;width:auto;padding:6px 8px;font-size:11px;min-width:0}.live-indicator{font-size:10px;line-height:1.35}.mobile-note{display:block;font-size:12px;color:#71818d}}
+@media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.account-card{gap:8px;padding:12px}.account-actions{gap:5px}.account-actions button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.account-login-modal{padding:8px;place-items:end center}.account-login-dialog{width:100%;max-height:calc(100dvh - 16px);border-radius:14px 14px 10px 10px;padding:10px}.account-login-dialog>.row:first-child{align-items:flex-start;gap:6px}.account-login-dialog>.row:first-child>button{flex:0 0 auto!important;width:auto;padding:6px 9px;font-size:12px}.account-login-dialog h3{font-size:15px}.account-login-dialog h3+p{font-size:11px;line-height:1.45;margin:3px 0}.browser-live{border-radius:6px}.browser-controls{gap:6px;margin-top:7px}.browser-controls label{font-size:11px}.browser-controls input{padding:8px}.browser-controls>.row{gap:5px;flex-wrap:wrap}.browser-controls>.row>button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.browser-keys{gap:4px}.browser-keys button{flex:0 0 auto!important;width:auto;padding:6px 8px;font-size:11px;min-width:0}.live-indicator{font-size:10px;line-height:1.35}.mobile-note{display:block;font-size:12px;color:#71818d}}
 </style></head><body><main>
 
 <section id="login" class="card">
@@ -82,14 +82,16 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
  <section class="panel" data-panel="accounts">
   <div class="page-head"><div><h2>账户管理</h2><p class="muted">统一管理 X、YouTube、邮箱等外部身份。账户是长期资源，登录方式只是适配器。</p></div></div>
   <div id="accounts" class="grid"></div>
-  <div id="accountLoginShell" class="card account-login-shell hidden">
-   <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
-   <div id="localBrowserStatus" class="mono muted live-indicator">未连接实时会话。</div>
-   <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
-   <div class="browser-controls">
-    <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
-    <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
-    <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+  <div id="accountLoginShell" class="account-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="accountLoginTitle">
+   <div class="account-login-dialog">
+    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
+    <div id="localBrowserStatus" class="mono muted live-indicator">未连接实时会话。</div>
+    <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
+    <div class="browser-controls">
+     <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
+     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
+     <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+    </div>
    </div>
   </div>
  </section>
@@ -415,7 +417,7 @@ async function openAccountStream(provider,recovery=0){
 }
 async function beginAccountConnect(row){
  activeAccountProvider=row.provider_id;selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent=row.label+' · 实时服务器网页会话';
+ el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');el('accountLoginTitle').textContent=row.label+' · 实时服务器网页会话';
  el('localBrowserStatus').textContent='正在创建 Ferro 服务器上的网页会话…';
  await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
  await openAccountStream(row.provider_id);
@@ -461,9 +463,10 @@ el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{co
 el('accountLoginClose').onclick=async()=>{
  const provider=activeAccountProvider;closeAccountStream();activeAccountProvider='';
  try{if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})}catch{}
- el('accountLoginShell').classList.add('hidden');el('liveBrowserCanvas').classList.add('hidden');
+ el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');el('liveBrowserCanvas').classList.add('hidden');
  el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。'
 };
+el('accountLoginShell').onclick=ev=>{if(ev.target===el('accountLoginShell'))el('accountLoginClose').click()};
 el('liveBrowserReconnect').onclick=async()=>{
  if(!activeAccountProvider)return;
  try{await openAccountStream(activeAccountProvider)}catch(e){flash(e.message,true)}
