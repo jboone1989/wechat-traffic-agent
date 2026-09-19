@@ -242,9 +242,10 @@ class OperatorAuthenticator:
         self.secret_root = Path(state_root) / "secrets"
         self.token_path = self.secret_root / "operator-console.token"
         self.bootstrap_path = self.secret_root / "operator-console-bootstrap.json"
+        self.sessions_path = self.secret_root / "operator-console-sessions.json"
         self.ttl = ttl
-        self._sessions: dict[str, datetime] = {}
         self._ensure_bootstrap_token()
+        self._ensure_sessions_store()
 
     def _ensure_bootstrap_token(self) -> None:
         self.secret_root.mkdir(parents=True, exist_ok=True)
@@ -256,10 +257,59 @@ class OperatorAuthenticator:
                 handle.write(token + "\n")
         os.chmod(self.token_path, 0o600)
 
+    def _ensure_sessions_store(self) -> None:
+        self.secret_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.secret_root, 0o700)
+        if not self.sessions_path.exists():
+            fd = os.open(
+                self.sessions_path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"schema_version": "operator-sessions.v1", "sessions": {}},
+                    handle,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                handle.write("\n")
+        os.chmod(self.sessions_path, 0o600)
+
+    def _read_sessions(self) -> dict[str, str]:
+        try:
+            payload = json.loads(self.sessions_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        rows = payload.get("sessions") if isinstance(payload, dict) else None
+        return rows if isinstance(rows, dict) else {}
+
+    def _write_sessions(self, sessions: dict[str, str]) -> None:
+        tmp = self.sessions_path.with_suffix(".json.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(
+                {"schema_version": "operator-sessions.v1", "sessions": sessions},
+                handle,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.sessions_path)
+        os.chmod(self.sessions_path, 0o600)
+
+    @staticmethod
+    def _session_digest(session_id: str) -> str:
+        return sha256(session_id.encode()).hexdigest()
+
     def _new_session(self, instant: datetime) -> str:
         session_id = secrets.token_urlsafe(32)
-        self._sessions[session_id] = instant + self.ttl
-        self._prune(instant)
+        sessions = self._pruned_sessions(instant)
+        sessions[self._session_digest(session_id)] = (
+            instant + self.ttl
+        ).astimezone(timezone.utc).isoformat()
+        self._write_sessions(sessions)
         return session_id
 
     def login(self, token: str, *, now: datetime | None = None) -> str | None:
@@ -342,18 +392,44 @@ class OperatorAuthenticator:
         if not session_id:
             return False
         instant = now or datetime.now(timezone.utc)
-        self._prune(instant)
-        expires = self._sessions.get(session_id)
-        return bool(expires and expires > instant)
+        sessions = self._pruned_sessions(instant)
+        digest = self._session_digest(str(session_id))
+        expires_raw = sessions.get(digest)
+        if not expires_raw:
+            return False
+        try:
+            expires = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return expires.astimezone(timezone.utc) > instant.astimezone(timezone.utc)
 
     def logout(self, session_id: str | None) -> None:
-        if session_id:
-            self._sessions.pop(session_id, None)
+        if not session_id:
+            return
+        sessions = self._read_sessions()
+        sessions.pop(self._session_digest(str(session_id)), None)
+        self._write_sessions(sessions)
 
-    def _prune(self, now: datetime) -> None:
-        for key, expires in list(self._sessions.items()):
-            if expires <= now:
-                self._sessions.pop(key, None)
+    def _pruned_sessions(self, now: datetime) -> dict[str, str]:
+        instant = now.astimezone(timezone.utc)
+        sessions = self._read_sessions()
+        kept: dict[str, str] = {}
+        changed = False
+        for digest, expires_raw in sessions.items():
+            try:
+                expires = datetime.fromisoformat(
+                    str(expires_raw).replace("Z", "+00:00")
+                )
+            except ValueError:
+                changed = True
+                continue
+            if expires.tzinfo is None or expires.astimezone(timezone.utc) <= instant:
+                changed = True
+                continue
+            kept[str(digest)] = expires.astimezone(timezone.utc).isoformat()
+        if changed:
+            self._write_sessions(kept)
+        return kept
 
 
 class OperatorConsole:
