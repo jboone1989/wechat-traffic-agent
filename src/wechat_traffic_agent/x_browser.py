@@ -279,13 +279,21 @@ class TinyFishXTransport:
 
 
 class XBrowserTransportRouter:
-    """Prefer the owned local browser; retain TinyFish only as a safe-start fallback."""
+    """Prefer the already-authenticated TinyFish profile; keep local Chrome as last fallback."""
 
     def __init__(self, *, state_root: Path) -> None:
         self.state_root = Path(state_root)
 
     async def publish(self, *, text: str) -> XBrowserPublishResult:
         errors: list[str] = []
+
+        if tinyfish_x_enabled():
+            try:
+                return await TinyFishXTransport.from_environment().publish(text=text)
+            except TinyFishProfileUnavailable as exc:
+                # Safe to try another provider only when TinyFish failed before a write
+                # could have become ambiguous. XBrowserPublicationUnverified propagates.
+                errors.append("TINYFISH: " + str(exc))
 
         if _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED"):
             from .browser_runtime import BrowserRuntimeUnavailable
@@ -296,12 +304,6 @@ class XBrowserTransportRouter:
                 return await local.publish(text=text)
             except BrowserRuntimeUnavailable as exc:
                 errors.append("LOCAL_CDP: " + str(exc))
-
-        if tinyfish_x_enabled():
-            try:
-                return await TinyFishXTransport.from_environment().publish(text=text)
-            except TinyFishProfileUnavailable as exc:
-                errors.append("TINYFISH: " + str(exc))
 
         detail = "; ".join(errors) or "no X browser provider is configured"
         raise XBrowserSessionUnavailable(detail)

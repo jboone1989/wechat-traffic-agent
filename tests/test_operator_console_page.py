@@ -53,13 +53,15 @@ def test_browser_login_uses_modal_overlay_instead_of_inline_expansion():
     assert "document.body.classList.add('modal-open')" in page
     assert "document.body.classList.remove('modal-open')" in page
 
-def test_x_account_ui_separates_api_connection_from_browser_automation():
+def test_x_account_ui_uses_oauth_and_tinyfish_without_requiring_local_browser_login():
     page = operator_console_document()
 
     assert "API 连接" in page
-    assert "网页自动化" in page
-    assert "服务器浏览器尚未登录 X。这不影响上面的 API 连接" in page
-    assert "登录服务器浏览器" in page
-    assert "检查网页登录" in page
-    assert "技术信息" in page
+    assert "网页备用" in page
+    assert "TinyFish 已保持 X 登录态" in page
+    assert "你无需再登录服务器浏览器" in page
+    assert "高级操作 / 技术信息" in page
+    assert "登录本地服务器浏览器" in page
+    assert "检查本地网页登录" in page
+    assert "Fallback: TinyFish → Local CDP" in page
     assert "网页登录（网页自动化）" not in page

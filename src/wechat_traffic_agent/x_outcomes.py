@@ -265,25 +265,25 @@ class LocalHarnessXMetricsTransport:
 
 
 class XMetricsTransportRouter:
-    """Prefer local Chrome; use TinyFish only as a read-only compatibility fallback."""
+    """Prefer the authenticated TinyFish profile; keep local Chrome as read-only fallback."""
 
     def __init__(self, *, state_root: Path) -> None:
         self.state_root = Path(state_root)
 
     async def collect(self, *, url: str) -> XPublicMetrics:
         errors: list[str] = []
+        if tinyfish_x_enabled():
+            try:
+                return await TinyFishXMetricsTransport.from_environment().collect(url=url)
+            except Exception as exc:
+                errors.append("TINYFISH:" + type(exc).__name__)
+
         if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
             try:
                 local = LocalHarnessXMetricsTransport.from_environment(state_root=self.state_root)
                 return await local.collect(url=url)
             except Exception as exc:
                 errors.append("LOCAL_CDP:" + type(exc).__name__)
-
-        if tinyfish_x_enabled():
-            try:
-                return await TinyFishXMetricsTransport.from_environment().collect(url=url)
-            except Exception as exc:
-                errors.append("TINYFISH:" + type(exc).__name__)
 
         raise XBrowserSessionUnavailable(
             "; ".join(errors) or "no X metrics browser provider is configured"

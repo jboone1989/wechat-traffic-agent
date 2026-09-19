@@ -232,20 +232,13 @@ class TinyFishXMentionsObserver:
 
 
 class XBrowserMentionsObserverRouter:
-    """Prefer local Chrome; fall back to TinyFish for read-only mention scans."""
+    """Prefer the authenticated TinyFish profile; keep local Chrome as read-only fallback."""
 
     def __init__(self, *, state_root: Path) -> None:
         self.state_root = Path(state_root)
 
     async def observe(self, *, now: datetime, max_results: int = 20) -> list[dict[str, Any]]:
         errors: list[str] = []
-        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
-            try:
-                local = LocalHarnessXMentionsObserver.from_environment(state_root=self.state_root)
-                return await local.observe(now=now, max_results=max_results)
-            except Exception as exc:
-                errors.append("LOCAL_CDP:" + type(exc).__name__)
-
         if tinyfish_x_enabled():
             try:
                 return await TinyFishXMentionsObserver.from_environment().observe(
@@ -253,6 +246,13 @@ class XBrowserMentionsObserverRouter:
                 )
             except Exception as exc:
                 errors.append("TINYFISH:" + type(exc).__name__)
+
+        if os.environ.get("CONTENT_LOCAL_X_BROWSER_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                local = LocalHarnessXMentionsObserver.from_environment(state_root=self.state_root)
+                return await local.observe(now=now, max_results=max_results)
+            except Exception as exc:
+                errors.append("LOCAL_CDP:" + type(exc).__name__)
 
         raise XBrowserSessionUnavailable(
             "; ".join(errors) or "no read-only X browser provider is configured"
