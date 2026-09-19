@@ -192,6 +192,25 @@ class XGrowthMissionCoordinator:
         ]
         return rows[-1] if rows else None
 
+    def _experiment_window(self, experiment: Any) -> timedelta:
+        raw = getattr(experiment, "measurement_window_hours", None)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            hours = float(raw)
+            if hours > 0:
+                return timedelta(hours=hours)
+        return self.experiment_window
+
+    def _experiment_contract_matches(self, experiment: Any) -> bool:
+        raw = getattr(experiment, "measurement_window_hours", None)
+        metric = getattr(experiment, "settlement_metric", None)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return False
+        expected_hours = self.experiment_window.total_seconds() / 3600.0
+        return (
+            abs(float(raw) - expected_hours) <= 1e-9
+            and str(metric or "").strip() == MISSION_METRIC
+        )
+
     def _experiment_outcome(
         self,
         *,
@@ -205,7 +224,8 @@ class XGrowthMissionCoordinator:
         before = getattr(experiment, "before_value", None)
         if started_at is None or before is None:
             return None
-        due_at = started_at + self.experiment_window
+        experiment_window = self._experiment_window(experiment)
+        due_at = started_at + experiment_window
         if now < due_at:
             return {
                 "status": "RUNNING",
@@ -214,12 +234,12 @@ class XGrowthMissionCoordinator:
             }
 
         remaining_at_start = max(
-            self.experiment_window.total_seconds(),
+            experiment_window.total_seconds(),
             (mission.deadline - started_at).total_seconds(),
         )
         required_remaining = max(0.0, float(mission.target) - float(before))
         expected_delta = required_remaining * (
-            self.experiment_window.total_seconds() / remaining_at_start
+            experiment_window.total_seconds() / remaining_at_start
         )
         actual_delta = float(followers) - float(before)
         from agent_runtime.goals import MissionConclusion
@@ -283,6 +303,12 @@ class XGrowthMissionCoordinator:
                 ),
                 "publication_starts_experiment": True,
                 "automated_follow_like_repost": "FORBIDDEN_BY_MISSION_CONSTRAINTS",
+            },
+            "experiment_contract": {
+                "measurement_window_hours": (
+                    self.experiment_window.total_seconds() / 3600.0
+                ),
+                "settlement_metric": MISSION_METRIC,
             },
             "learning": {
                 "measurement_window_hours": (
@@ -689,8 +715,11 @@ class XGrowthMissionCoordinator:
             existing is not None
             and MISSION_PLANNING_CONTEXT_REF in set(existing.evidence_refs)
         )
+        contract_matches = (
+            existing is not None and self._experiment_contract_matches(existing)
+        )
         if existing is not None and (
-            existing_status == "RUNNING" or context_applied
+            existing_status == "RUNNING" or (context_applied and contract_matches)
         ):
             return {
                 "status": existing_status,
@@ -699,12 +728,16 @@ class XGrowthMissionCoordinator:
                 "planning_context_ref": (
                     MISSION_PLANNING_CONTEXT_REF if context_applied else None
                 ),
+                "measurement_window_hours": getattr(
+                    existing, "measurement_window_hours", None
+                ),
+                "settlement_metric": getattr(existing, "settlement_metric", None),
             }
 
         force_revision = (
             existing is not None
             and existing_status == "PROPOSED"
-            and not context_applied
+            and (not context_applied or not contract_matches)
         )
         if not bool(getattr(self.runtime, "has_advisory_backend", False)):
             if force_revision:
@@ -731,6 +764,8 @@ class XGrowthMissionCoordinator:
             "expected_effect": experiment.expected_effect,
             "risk_notes": list(experiment.risk_notes),
             "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
+            "measurement_window_hours": experiment.measurement_window_hours,
+            "settlement_metric": experiment.settlement_metric,
         }
 
     def start_experiment_from_publication(
@@ -968,7 +1003,12 @@ class XGrowthMissionCoordinator:
                         else active_experiment.started_at.isoformat()
                     ),
                     "measurement_window_hours": (
-                        self.experiment_window.total_seconds() / 3600.0
+                        active_experiment.measurement_window_hours
+                        if active_experiment.measurement_window_hours is not None
+                        else self.experiment_window.total_seconds() / 3600.0
+                    ),
+                    "settlement_metric": (
+                        active_experiment.settlement_metric or MISSION_METRIC
                     ),
                 }
             ),

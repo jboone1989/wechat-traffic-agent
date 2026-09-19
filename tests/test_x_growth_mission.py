@@ -64,6 +64,8 @@ def _advice(request):
                 "Posting too frequently could damage reputation",
             ],
             "confidence": 0.55,
+            "measurement_window_hours": 24.0,
+            "settlement_metric": "x.followers",
         }
     )
 
@@ -130,6 +132,7 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert result["active_experiment"]["status"] == "PROPOSED"
     assert result["active_experiment"]["started_at"] is None
     assert result["active_experiment"]["measurement_window_hours"] == 24.0
+    assert result["active_experiment"]["settlement_metric"] == "x.followers"
     assert len(backend.requests) == 2
     assert backend.requests[0].token_budget == 1800
     assert backend.requests[0].context["revision_requested"] is False
@@ -146,6 +149,13 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert experiment_measurement["post_level_profile_visits"] == "UNAVAILABLE"
     assert experiment_measurement["post_level_follows"] == "UNAVAILABLE"
     assert experiment_measurement["causal_attribution"].startswith("UNAVAILABLE")
+    experiment_contract = backend.requests[1].context["application_context"][
+        "experiment_contract"
+    ]
+    assert experiment_contract == {
+        "measurement_window_hours": 24.0,
+        "settlement_metric": "x.followers",
+    }
 
     mission = runtime.external_missions[-1]
     assert mission.status is MissionStatus.ACTIVE
@@ -663,6 +673,8 @@ def test_legacy_proposed_experiment_is_replanned_with_measurement_context(tmp_pa
         if row.experiment_id == second["active_experiment"]["experiment_id"]
     )
     assert MISSION_PLANNING_CONTEXT_REF in replacement.evidence_refs
+    assert replacement.measurement_window_hours == 24.0
+    assert replacement.settlement_metric == "x.followers"
     assert len(backend.requests) == 3
     request = backend.requests[-1]
     assert request.context["revision_requested"] is True
@@ -716,3 +728,60 @@ def test_running_experiment_is_not_replanned_when_context_marker_is_missing(tmp_
     assert second["experiment_transition"]["status"] == "RUNNING"
     assert experiment.status is MissionExperimentStatus.RUNNING
     assert len(backend.requests) == 2
+
+
+def test_context_marked_proposed_experiment_is_replanned_when_contract_is_missing(tmp_path):
+    runtime, _clock, backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        duration_days=30,
+        experiment_hours=24,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:contract-legacy-1",
+            now=NOW,
+        )
+    )
+    original_id = first["active_experiment"]["experiment_id"]
+    original = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == original_id
+    )
+    assert MISSION_PLANNING_CONTEXT_REF in original.evidence_refs
+    original.measurement_window_hours = None
+    original.settlement_metric = None
+    original.strategy = (
+        "Run a 14-day posting experiment even though Runtime settles after one day."
+    )
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:contract-legacy-2",
+            now=NOW,
+        )
+    )
+
+    assert second["experiment_transition"]["status"] == "REPLANNED"
+    assert original.status is MissionExperimentStatus.CANCELLED
+    replacement = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == second["active_experiment"]["experiment_id"]
+    )
+    assert replacement.experiment_id != original_id
+    assert replacement.measurement_window_hours == 24.0
+    assert replacement.settlement_metric == "x.followers"
+    assert second["active_experiment"]["measurement_window_hours"] == 24.0
+    assert second["active_experiment"]["settlement_metric"] == "x.followers"
+    request = backend.requests[-1]
+    assert request.context["revision_requested"] is True
+    assert request.context["application_context"]["experiment_contract"] == {
+        "measurement_window_hours": 24.0,
+        "settlement_metric": "x.followers",
+    }
