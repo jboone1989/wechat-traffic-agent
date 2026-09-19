@@ -20,6 +20,7 @@ _DEFAULT_INTERVALS = {
     "RESOURCE_REVIEW": 3600,
     "CHECK_OUTCOMES": 3600,
     "CHECK_X": 1800,
+    "NEURAL_INTEROCEPTION": 300,
 }
 
 _EXTERNAL_WAKE_TASKS = frozenset({
@@ -29,6 +30,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "CONTENT_COGNITION",
     "REFLECT",
     "CHECK_X",
+    "NEURAL_INTEROCEPTION",
 })
 
 
@@ -37,6 +39,9 @@ class ContentWakefulRuntime:
         self.state_root = Path(state_root)
         self.content_interval_hours = max(1, int(content_interval_hours))
         self.watchdog_seconds = max(60, int(watchdog_seconds))
+        from .neural_life import FerroNeuralLife
+        self.neural_life_enabled = os.environ.get("CONTENT_NEURAL_LIFE_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+        self.neural_life = FerroNeuralLife(self.state_root)
         semantic = LIFNeuralGraph()
         self.connectome_enabled = os.environ.get("CONTENT_FLY_CONNECTOME_ENABLED", "").lower() in {"1", "true", "yes", "on"}
         self.connectome_error: dict[str, str] | None = None
@@ -149,7 +154,7 @@ class ContentWakefulRuntime:
 
     def ensure_initial_plans(self, now: datetime) -> None:
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
-        for task in ("OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
+        for task in ("NEURAL_INTEROCEPTION", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
             if task not in existing:
                 self.core.schedule(PlannedWake(
                     wake_id=f"content:{task}", at=now, reason=self._reason(task), task=task,
@@ -207,6 +212,81 @@ class ContentWakefulRuntime:
         self.core.schedule(PlannedWake(
             wake_id=wake_id, at=at, reason=self._reason(task), task=task,
         ))
+
+    def refresh_neural_life(self, now: datetime | None = None) -> dict:
+        """Update Ferro's non-LLM body, drives and affective state.
+
+        The connectome receives endogenous drive stimulation without requiring a
+        model call.  Strong drives can schedule ordinary runtime work directly.
+        """
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not self.neural_life_enabled:
+            return {"status": "DISABLED"}
+        snap = self.core.snapshot()
+        wakeful = {
+            "neural_graph": dict(snap.neural_state),
+            "neural_feedback": [
+                {
+                    "outcome_id": row.outcome_id,
+                    "observed_at": row.observed_at.isoformat(),
+                    "pathway": list(row.pathway),
+                    "source_event_id": row.source_event_id,
+                }
+                for row in snap.recent_neural_feedback[-16:]
+            ],
+            "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-16:]],
+            "last_cognition_at": snap.last_cognition_at.isoformat() if snap.last_cognition_at else None,
+        }
+        projection = self.neural_life.update(now=now, wakeful=wakeful)
+
+        if self.neural_life.should_stimulate(now):
+            drives = projection.get("drives") or {}
+            mapping = {
+                "survival": ("resource_pressure", "INTEROCEPTION_SURVIVAL"),
+                "reproduction": ("social_attention", "INTEROCEPTION_REPRODUCTION"),
+                "evolution": ("curiosity", "INTEROCEPTION_EVOLUTION"),
+            }
+            for drive_name, (channel, kind) in mapping.items():
+                magnitude = max(0.0, min(1.0, float(drives.get(drive_name) or 0.0)))
+                if magnitude < 0.05:
+                    continue
+                event_id = f"interoception:{drive_name}:{int(now.timestamp() // 240)}"
+                self.core.emit(StimulusEvent(
+                    event_id=event_id,
+                    source="ferro-nervous-system",
+                    kind=kind,
+                    observed_at=now,
+                    salience=magnitude,
+                    novelty=0.12,
+                    urgency=magnitude,
+                    persistence=0.90,
+                    payload_ref=f"neural-drive:{drive_name}",
+                    attention_channel=channel,
+                ), enqueue=False)
+            self.neural_life.mark_stimulated(now)
+
+        recommendation = self.neural_life.authority_recommendation(now)
+        if recommendation is not None:
+            task = str(recommendation["task"])
+            if task == "CHECK_X" and os.environ.get("CONTENT_X_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
+                task = "CONTENT_COGNITION"
+                recommendation = {**recommendation, "task": task}
+            existing = [
+                wake for wake in self.core.snapshot().pending_plans
+                if wake.task == task and wake.at <= now + timedelta(minutes=15)
+            ]
+            if not existing:
+                self.core.schedule(PlannedWake(
+                    wake_id=f"neural:{str(recommendation['intention']).lower()}",
+                    at=now + timedelta(seconds=5),
+                    reason=str(recommendation["reason"]),
+                    task=task,
+                    relevant_refs=(f"neural-intention:{recommendation['intention']}",),
+                    preemptible=True,
+                ))
+                self.neural_life.mark_authority_action(now, recommendation)
+                projection = self.neural_life.projection()
+        return projection
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
         # Operator-authorized resource onboarding is event-driven and should not
@@ -480,6 +560,7 @@ class ContentWakefulRuntime:
             "pending_plan_count": len(snap.pending_plans),
             "cognition_threshold_crossed": bool(snap.cognition_triggers),
             "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-8:]],
+            "neural_life": self.neural_life.projection() if self.neural_life_enabled else {"status": "DISABLED"},
             "connectome": {
                 "enabled": self.connectome_enabled,
                 "status": (
@@ -499,6 +580,7 @@ class ContentWakefulRuntime:
             "CONTENT_COGNITION": "run the next due content cognition cycle",
             "CHECK_X": "check X for new social evidence",
             "REFLECT": "daily reflection",
+            "NEURAL_INTEROCEPTION": "sense body state and update endogenous drives",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
