@@ -3,7 +3,9 @@ import json
 
 import pytest
 
-from wechat_traffic_agent.content_explorer import GoalEvidenceExplorer, _topic_candidate
+from wechat_traffic_agent.content_explorer import (
+    GoalEvidenceExplorer, _normalize_mission_search_query, _topic_candidate,
+)
 from wechat_traffic_agent.models import TopicSignal
 from test_content_loop import NOW
 
@@ -194,3 +196,47 @@ def test_mission_web_query_preserves_explicit_research_intent(tmp_path):
     assert result["query_authority"] == "EXTERNAL_MISSION_DISCOVERY"
     assert result["goal_topic"] == "persistent-ai-agents"
     assert result["items"][0]["evidence_id"]
+
+
+def test_mission_search_query_puts_subject_before_generic_freshness_boilerplate():
+    query = _normalize_mission_search_query(
+        query=(
+            "Recent public case studies on evaluating AI trading model performance "
+            "using out-of-sample metrics and statistical validation."
+        ),
+        goal_topic="model-evaluation",
+    )
+    assert query.startswith("model evaluation ")
+    assert not query.casefold().startswith(("recent ", "latest ", "current ", "public "))
+    assert "out-of-sample" in query
+    assert len(query) <= 180
+
+
+def test_mission_web_query_executes_subject_first_query(tmp_path):
+    calls = []
+
+    async def searcher(query, now):
+        calls.append(query)
+        return []
+
+    async def rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+
+    worker = GoalEvidenceExplorer(
+        state_root=tmp_path,
+        feeds=("https://example.org/feed",),
+        rss_fetcher=rss,
+        web_searcher=searcher,
+    )
+    result = asyncio.run(worker.search_web_query(
+        query=(
+            "Recent public case studies on evaluating AI trading model performance "
+            "using out-of-sample metrics and statistical validation."
+        ),
+        goal_topic="model-evaluation",
+        now=NOW,
+    ))
+
+    assert calls == [result["query"]]
+    assert result["query"].startswith("model evaluation ")
+    assert result["query_authority"] == "EXTERNAL_MISSION_DISCOVERY"
