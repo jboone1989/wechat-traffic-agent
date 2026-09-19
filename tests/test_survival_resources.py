@@ -394,6 +394,7 @@ def test_ssh_managed_host_binds_only_matching_signed_receiver(tmp_path, monkeypa
     assert row["deployment_capable"] is True
     assert row["expected_agent_id"] == remote.agent_id
     assert row["deployment_profiles"] == ["content.website-static.v1"]
+    assert row["capabilities"] == ["survival.workload.deploy.v1"]
 
     card["survival_resource"]["host_instance_id"] = "host-instance:someone-else"
     with pytest.raises(Exception):
@@ -611,7 +612,9 @@ def test_resource_review_auto_deploys_missing_static_replica(tmp_path, monkeypat
     assert service["replicas"][0]["host_id"] == host_id
 
 def test_resource_review_auto_provisions_ssh_managed_receiver(tmp_path, monkeypatch):
-    from wechat_traffic_agent.survival_receiver_ssh import ReceiverProvisionResult, SSHReceiverProvisioner
+    from wechat_traffic_agent.survival_receiver_ssh import (
+        ReceiverProvisionResult, SSHReceiverProvisioner, desired_receiver_sha,
+    )
 
     manager = SurvivalResourceManager(tmp_path)
     key_dir = tmp_path / "secrets" / "survival-hosts" / "key-ref-auto"
@@ -644,15 +647,22 @@ def test_resource_review_auto_provisions_ssh_managed_receiver(tmp_path, monkeypa
     def fake_provision(self, **kwargs):
         captured.update(kwargs)
         return ReceiverProvisionResult(
-            release_sha="7"*40,
+            release_sha=desired_receiver_sha(),
             receiver_command="receiver-command",
             receiver_root="/root/.ferro-survival-receiver/state/workloads",
             agent_id="survival.bare.network.cai",
             key_id="key-remote",
             public_key="ed25519:remote",
             host_instance_id="host-instance:bare-vps",
-            deployment_profiles=("content.website-static.v1",),
+            deployment_profiles=(
+                "content.website-static.v1",
+                "content.resource-research.v1",
+            ),
             capacity={"cpu_count":1,"memory_available_gib":0.75,"disk_free_gib":9.0},
+            capabilities=(
+                "survival.workload.deploy.v1",
+                "survival.workload.task.v1",
+            ),
         )
     monkeypatch.setattr(SSHReceiverProvisioner, "provision", fake_provision)
 
@@ -668,8 +678,9 @@ def test_resource_review_auto_provisions_ssh_managed_receiver(tmp_path, monkeypa
     assert row["ssh_receiver_status"] == "VERIFIED"
     assert row["receiver_transport"] == "SSH"
     assert row["deployment_capable"] is True
-    assert row["ssh_receiver_release_sha"] == "7"*40
-    assert row["deployment_profiles"] == ["content.website-static.v1"]
+    assert row["ssh_receiver_release_sha"] == desired_receiver_sha()
+    assert set(row["deployment_profiles"]) == {"content.website-static.v1", "content.resource-research.v1"}
+    assert set(row["capabilities"]) == {"survival.workload.deploy.v1", "survival.workload.task.v1"}
     assert row["capacity"]["memory_available_gib"] == 0.75
     assert captured["controller"]["agent_id"]
 
@@ -1161,3 +1172,73 @@ def test_remote_resource_research_requires_valid_signed_receipt(tmp_path, monkey
         manager.fetch_remote_resource_research(
             "https://docs.example.test/pricing", max_chars=24000, now=NOW
         )
+
+
+def test_https_health_merges_verified_ssh_receiver_capabilities(tmp_path, monkeypatch):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:dual",
+        "health_url":"https://dual.example.test/health",
+        "control_url":"https://dual.example.test/workloads",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "ssh_receiver_status":"VERIFIED",
+        "ssh_receiver_command":"receiver-command",
+        "ssh_receiver_capabilities":["survival.workload.task.v1"],
+        "ssh_receiver_profiles":["content.resource-research.v1"],
+        "host_instance_id":"host-instance:dual",
+    }]))
+    payload = {
+        "status":"HEALTHY",
+        "host_instance_id":"host-instance:dual",
+        "agent_id":"https-receiver",
+        "key_id":"https-key",
+        "public_key":"ed25519:https",
+        "capabilities":["survival.workload.deploy.v1"],
+        "deployment_profiles":["content.website-static.v1"],
+        "capacity":{"cpu_count":2,"memory_available_gib":2.0,"disk_free_gib":20.0},
+    }
+    monkeypatch.setattr(manager, "_receiver_health", lambda row: (payload, "HTTPS"))
+    manager._refresh_remote_hosts(now=NOW)
+    row = manager.remote_hosts()[0]
+    assert set(row["capabilities"]) == {
+        "survival.workload.deploy.v1", "survival.workload.task.v1",
+    }
+    assert set(row["deployment_profiles"]) == {
+        "content.website-static.v1", "content.resource-research.v1",
+    }
+    assert row["deployment_capable"] is True
+
+
+def test_automatic_move_remains_blocked_without_local_pressure(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:idle",
+        "name":"idle-worker",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "control_url":"https://idle.example.test/workloads",
+        "deployment_profiles":["content.resource-research.v1"],
+        "capabilities":["survival.workload.deploy.v1","survival.workload.task.v1"],
+        "capacity":{"cpu_count":2,"memory_available_gib":2.0,"disk_free_gib":20.0},
+    }]))
+    manager.policy_path.write_text(json.dumps({"pressure":"NORMAL"}))
+    manager.needs_path.write_text(json.dumps([{
+        "need_id":"survival-need:stale-offload",
+        "domain":"SERVICE",
+        "action":"OFFLOAD_NON_CORE_SERVICE",
+        "status":"APPROVED",
+        "authorization":"AUTONOMOUS_SAFE_POLICY",
+        "created_at":NOW.isoformat(),
+        "reason":"stale pressure",
+        "urgency":"NORMAL",
+    }]))
+    assert manager._automatic_offload_target() is None
+    result = manager.execute_approved(now=NOW)
+    row = next(x for x in result["results"] if x["action"] == "OFFLOAD_NON_CORE_SERVICE")
+    assert row["status"] == "AWAITING_RESOURCE"
+    service = next(x for x in manager.services() if x["service_id"] == "resource-research")
+    assert service["placement"] == "host:local"

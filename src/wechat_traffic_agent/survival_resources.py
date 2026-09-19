@@ -1791,7 +1791,15 @@ class SurvivalResourceManager:
             "reason": "no automatic replica placement is currently eligible",
         }
 
-    def _automatic_offload_target(self) -> dict[str, Any] | None:
+    def _automatic_offload_target(
+        self, *, local_pressure: bool | None = None
+    ) -> dict[str, Any] | None:
+        if local_pressure is None:
+            policy = _load_json(self.policy_path, {}) or {}
+            local_pressure = str(policy.get("pressure") or "NORMAL").upper() in {
+                "CONSERVE",
+                "CRITICAL",
+            }
         candidates = self.placement_candidates()
         services = {
             str(row.get("service_id") or ""): row
@@ -1810,6 +1818,7 @@ class SurvivalResourceManager:
                 not policy.get("automatic")
                 or str(policy.get("mode") or "") != "MOVE"
                 or not policy.get("only_when_local_pressure")
+                or not local_pressure
                 or str(service.get("placement") or "host:local") != "host:local"
                 or str(service.get("migration_class") or "") == "PRIMARY_STATEFUL"
             ):
@@ -2006,7 +2015,9 @@ class SurvivalResourceManager:
         if (
             (storage_pressure or compute_pressure)
             and usable_remote
-            and self._automatic_offload_target() is not None
+            and self._automatic_offload_target(
+                local_pressure=(storage_pressure or compute_pressure)
+            ) is not None
         ):
             desired.append(("SERVICE", "OFFLOAD_NON_CORE_SERVICE", "NORMAL",
                             "Move non-core workloads before considering primary migration"))

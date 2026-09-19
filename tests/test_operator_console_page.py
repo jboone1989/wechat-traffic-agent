@@ -31,6 +31,11 @@ def test_operator_console_keeps_existing_admin_controls():
     assert "/operator/api/accounts/" in page
     assert 'id="localBrowserStart"' not in page
     assert 'href="/operator/chat/"' in page
+    assert "SSH receiver " in page
+    assert "pinned " in page
+    assert "Profiles · " in page
+    assert "Capabilities · " in page
+    assert "placement_candidates" in page
 
 def test_operator_console_compacts_account_browser_controls_on_mobile():
     page = operator_console_document()
