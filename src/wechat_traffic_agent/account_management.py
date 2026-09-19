@@ -1,0 +1,172 @@
+"""External account inventory and authentication lifecycle for Ferro.
+
+Account metadata is non-secret. Credentials, passwords, verification codes and
+browser cookies are never copied into this store.
+"""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+
+@dataclass(frozen=True)
+class AccountProvider:
+    provider_id: str
+    label: str
+    auth_surface: str
+    capabilities: tuple[str, ...]
+    implemented: bool
+    login_url: str | None = None
+    note: str = ""
+
+
+_PROVIDERS = {
+    "x": AccountProvider(
+        "x", "X", "PERSISTENT_BROWSER_SESSION",
+        ("READ", "PUBLISH", "MENTIONS", "METRICS"), True,
+        "https://x.com/i/flow/login",
+        "Owned local Chrome session; TinyFish remains fallback during migration.",
+    ),
+    "youtube": AccountProvider(
+        "youtube", "YouTube", "PROVIDER_ADAPTER",
+        ("READ", "PUBLISH", "ANALYTICS"), False, None,
+        "Google/YouTube adapter slot. Prefer OAuth when implemented.",
+    ),
+    "email": AccountProvider(
+        "email", "Email", "PROVIDER_ADAPTER",
+        ("READ", "SEND", "SEARCH"), False, None,
+        "Mailbox adapter slot. Provider-specific OAuth/app authentication belongs here.",
+    ),
+}
+
+
+class AccountManager:
+    def __init__(self, state_root: Path, *, browser_factory=None) -> None:
+        self.state_root = Path(state_root)
+        self.path = self.state_root / "accounts" / "accounts.json"
+        self.browser_factory = browser_factory
+
+    def provider(self, provider_id: str) -> AccountProvider:
+        try:
+            return _PROVIDERS[str(provider_id).strip().lower()]
+        except KeyError as exc:
+            raise ValueError("unsupported account provider") from exc
+
+    def _read(self) -> dict[str, Any]:
+        if not self.path.exists():
+            return {"schema_version": 1, "accounts": {}}
+        try:
+            body = json.loads(self.path.read_text(encoding="utf-8"))
+            if isinstance(body, dict) and isinstance(body.get("accounts"), dict):
+                return body
+        except (OSError, json.JSONDecodeError):
+            pass
+        return {"schema_version": 1, "accounts": {}}
+
+    def _write(self, body: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.path.parent, 0o700)
+        tmp = self.path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(body, handle, ensure_ascii=False, sort_keys=True, indent=2)
+            handle.write("\n")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, self.path)
+        os.chmod(self.path, 0o600)
+
+    def status(self) -> dict[str, Any]:
+        state = self._read()
+        saved = state["accounts"]
+        rows = []
+        for spec in _PROVIDERS.values():
+            row = saved.get(spec.provider_id) or {}
+            default_status = "NEEDS_LOGIN" if spec.implemented else "ADAPTER_NOT_INSTALLED"
+            rows.append({
+                **asdict(spec),
+                "capabilities": list(spec.capabilities),
+                "status": str(row.get("status") or default_status),
+                "identity": str(row.get("identity") or ""),
+                "verified_at": row.get("verified_at"),
+                "last_error": str(row.get("last_error") or ""),
+            })
+        return {"schema_version": 1, "accounts": rows}
+
+    def _record(
+        self, provider_id: str, *, status: str, identity: str = "",
+        last_error: str = "", now: datetime | None = None,
+    ) -> dict[str, Any]:
+        spec = self.provider(provider_id)
+        state = self._read()
+        instant = now or datetime.now(timezone.utc)
+        state["accounts"][spec.provider_id] = {
+            "provider_id": spec.provider_id,
+            "status": status,
+            "identity": identity[:160],
+            "verified_at": instant.isoformat(),
+            "last_error": last_error[:240],
+        }
+        self._write(state)
+        return next(x for x in self.status()["accounts"] if x["provider_id"] == spec.provider_id)
+
+    def mark_authenticating(self, provider_id: str) -> dict[str, Any]:
+        spec = self.provider(provider_id)
+        if not spec.implemented:
+            raise ValueError("account adapter is not installed")
+        return self._record(provider_id, status="AUTHENTICATING")
+
+    def record_connected(self, provider_id: str, *, identity: str = "") -> dict[str, Any]:
+        spec = self.provider(provider_id)
+        if not spec.implemented:
+            raise ValueError("account adapter is not installed")
+        return self._record(provider_id, status="CONNECTED", identity=identity)
+
+    def mark_needs_login(self, provider_id: str, *, reason: str = "") -> dict[str, Any]:
+        spec = self.provider(provider_id)
+        if not spec.implemented:
+            raise ValueError("account adapter is not installed")
+        return self._record(provider_id, status="NEEDS_LOGIN", last_error=reason)
+
+    def verify(self, provider_id: str) -> dict[str, Any]:
+        spec = self.provider(provider_id)
+        if not spec.implemented:
+            raise ValueError("account adapter is not installed")
+        if spec.provider_id != "x":
+            raise ValueError("account verifier is not implemented")
+        return self._verify_x()
+
+    def _verify_x(self) -> dict[str, Any]:
+        try:
+            if self.browser_factory is None:
+                from jev_ultrafast.browser import Browser
+                factory = Browser
+            else:
+                factory = self.browser_factory
+            browser = factory("https://x.com/home")
+            try:
+                profile = str(browser.evaluate(
+                    "document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]')"
+                    "?.getAttribute('href') || ''"
+                ) or "")
+                url = str(browser.evaluate("location.href") or "")
+            finally:
+                browser.close()
+        except Exception as exc:
+            return self._record(
+                "x", status="DEGRADED", last_error=type(exc).__name__
+            )
+
+        if profile:
+            identity = profile.strip("/").split("/", 1)[0]
+            return self._record("x", status="CONNECTED", identity=identity)
+        return self._record(
+            "x", status="NEEDS_LOGIN",
+            last_error="authenticated X profile was not visible at " + url[:120],
+        )
+
+
+__all__ = ["AccountManager", "AccountProvider"]

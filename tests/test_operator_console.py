@@ -971,5 +971,104 @@ def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text
     assert calls["typed"] == [secret]
 
     page = client.get("/operator/")
-    assert "X 账号登录" in page.text
-    assert "/operator/api/browser/local/type" in page.text
+    assert "账户管理" in page.text
+    assert 'data-panel-target="accounts"' in page.text
+    assert "/operator/api/accounts/" in page.text
+    assert "X 账号登录" not in page.text
+    assert "img-src 'self' data:" in page.headers["content-security-policy"]
+def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypatch):
+    import types
+    import wechat_traffic_agent.account_management as account_module
+    import wechat_traffic_agent.local_browser_control as local_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    calls = {"typed": []}
+
+    class FakeAccountManager:
+        def __init__(self, state_root):
+            self.state_root = state_root
+        def provider(self, provider_id):
+            if provider_id == "x":
+                return types.SimpleNamespace(
+                    provider_id="x", label="X", implemented=True,
+                    login_url="https://x.com/i/flow/login",
+                )
+            return types.SimpleNamespace(
+                provider_id=provider_id, label=provider_id, implemented=False,
+                login_url=None,
+            )
+        def mark_authenticating(self, provider_id):
+            return {"provider_id": provider_id, "status": "AUTHENTICATING"}
+        def record_connected(self, provider_id, *, identity=""):
+            return {"provider_id": provider_id, "status": "CONNECTED", "identity": identity}
+        def verify(self, provider_id):
+            return {"provider_id": provider_id, "status": "CONNECTED", "identity": "ferro"}
+        def status(self):
+            return {"schema_version": 1, "accounts": []}
+
+    class FakeControl:
+        def __init__(self):
+            pass
+        def start(self, url):
+            return {
+                "running": True, "url": url, "title": "X",
+                "x_authenticated": False, "account_identity": "",
+            }
+        def snapshot(self):
+            return types.SimpleNamespace(
+                url="https://x.com/i/flow/login", title="X",
+                width=1120, height=780, x_authenticated=False,
+                account_identity="", screenshot_b64="ZmFrZS1qcGVn",
+            )
+        def click(self, *, x_ratio, y_ratio):
+            return {"ok": True}
+        def type_text(self, text):
+            calls["typed"].append(text)
+            return {"ok": True, "length": len(text)}
+        def key(self, key):
+            return {"ok": True}
+        def stop(self):
+            return {"ok": True, "running": False}
+
+    monkeypatch.setattr(account_module, "AccountManager", FakeAccountManager)
+    monkeypatch.setattr(local_module, "LocalBrowserControl", FakeControl)
+
+    service = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )
+    client = TestClient(service._app())
+
+    unauth = client.post(
+        "/operator/api/accounts/x/connect",
+        headers={"X-Operator-Request": "1"}, json={},
+    )
+    assert unauth.status_code == 401
+    _login_operator(client, tmp_path)
+
+    connected = client.post(
+        "/operator/api/accounts/x/connect",
+        headers={"X-Operator-Request": "1"}, json={},
+    )
+    assert connected.status_code == 200
+    assert connected.json()["account"]["status"] == "AUTHENTICATING"
+
+    snap = client.get("/operator/api/accounts/x/login/snapshot")
+    assert snap.status_code == 200
+    assert snap.json()["screenshot_b64"] == "ZmFrZS1qcGVn"
+
+    secret = "not-to-be-echoed-account-secret"
+    typed = client.post(
+        "/operator/api/accounts/x/login/type",
+        headers={"X-Operator-Request": "1"},
+        json={"text": secret},
+    )
+    assert typed.status_code == 200
+    assert secret not in typed.text
+    assert calls["typed"] == [secret]
+
+    unsupported = client.post(
+        "/operator/api/accounts/youtube/connect",
+        headers={"X-Operator-Request": "1"}, json={},
+    )
+    assert unsupported.status_code == 409
+    assert unsupported.json()["error"] == "account adapter is not installed"

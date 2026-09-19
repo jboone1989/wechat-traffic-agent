@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,6 +30,7 @@ class LocalBrowserSnapshot:
     width: int = _VIEWPORT_WIDTH
     height: int = _VIEWPORT_HEIGHT
     x_authenticated: bool = False
+    account_identity: str = ""
 
 
 class LocalBrowserControl:
@@ -77,34 +79,63 @@ class LocalBrowserControl:
             browser = self._require()
             url = str(browser.evaluate("location.href") or "")
             title = str(browser.evaluate("document.title") or "")
-            x_authenticated = bool(browser.evaluate(
-                "Boolean(document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]'))"
-            ))
+            profile = str(browser.evaluate(
+                "document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]')"
+                "?.getAttribute('href') || ''"
+            ) or "")
+            x_authenticated = bool(profile)
             return {
                 "running": True,
                 "url": url,
                 "title": title,
                 "x_authenticated": x_authenticated,
+                "account_identity": profile.strip("/").split("/", 1)[0] if profile else "",
             }
 
     def snapshot(self) -> LocalBrowserSnapshot:
         with self._lock:
             browser = self._require()
-            state = browser.observe(screenshot=True)
-            shot = str(state.get("screenshot") or "")
-            if not shot:
-                raise LocalBrowserControlUnavailable("browser screenshot unavailable")
-            url = str((state.get("page") or {}).get("url") or state.get("url") or browser.evaluate("location.href") or "")
-            title = str((state.get("page") or {}).get("title") or state.get("title") or browser.evaluate("document.title") or "")
-            x_authenticated = bool(browser.evaluate(
-                "Boolean(document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]'))"
-            ))
-            return LocalBrowserSnapshot(
-                url=url,
-                title=title,
-                screenshot_b64=shot,
-                x_authenticated=x_authenticated,
-            )
+            last_error: Exception | None = None
+            for attempt in range(6):
+                try:
+                    state = browser.observe(screenshot=True)
+                    shot = str(state.get("screenshot") or "")
+                    if not shot:
+                        raise LocalBrowserControlUnavailable("browser screenshot unavailable")
+                    url = str(
+                        (state.get("page") or {}).get("url")
+                        or state.get("url")
+                        or browser.evaluate("location.href")
+                        or ""
+                    )
+                    title = str(
+                        (state.get("page") or {}).get("title")
+                        or state.get("title")
+                        or browser.evaluate("document.title")
+                        or ""
+                    )
+                    profile = str(browser.evaluate(
+                        "document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]')"
+                        "?.getAttribute('href') || ''"
+                    ) or "")
+                    x_authenticated = bool(profile)
+                    return LocalBrowserSnapshot(
+                        url=url,
+                        title=title,
+                        screenshot_b64=shot,
+                        x_authenticated=x_authenticated,
+                        account_identity=profile.strip("/").split("/", 1)[0] if profile else "",
+                    )
+                except LocalBrowserControlUnavailable:
+                    raise
+                except Exception as exc:
+                    last_error = exc
+                    if attempt == 5:
+                        break
+                    time.sleep(0.15)
+            raise LocalBrowserControlUnavailable(
+                type(last_error).__name__ if last_error else "browser snapshot unavailable"
+            ) from last_error
 
     def click(self, *, x_ratio: float, y_ratio: float) -> dict[str, Any]:
         x = float(x_ratio)

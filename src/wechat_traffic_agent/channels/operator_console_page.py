@@ -21,7 +21,7 @@ button.primary,a.primary{background:#edf3f7;color:#111;border-color:#edf3f7}butt
 label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;min-width:0;border:1px solid #34414c;border-radius:8px;background:#090d11;color:#fff;padding:10px;font:inherit}
 .badge{display:inline-block;font-size:11px;padding:3px 7px;border:1px solid #46535e;border-radius:99px}.ok{color:#8ee1b2;border-color:#2d7052}.pending{color:#e8c875;border-color:#806a32}.bad{color:#ffaaa7;border-color:#7a3c3b}.info{color:#9ac8ff;border-color:#315b7e}
 .hidden{display:none!important}.error{color:#ffaaa7}.success{color:#8ee1b2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
-.nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(4,1fr);gap:5px;padding:5px;margin-bottom:18px;border:1px solid #252f38;border-radius:11px;background:rgba(10,13,16,.95);backdrop-filter:blur(10px)}
+.nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:5px;margin-bottom:18px;border:1px solid #252f38;border-radius:11px;background:rgba(10,13,16,.95);backdrop-filter:blur(10px)}
 .nav button{background:transparent;border-color:transparent;color:#91a0ad;padding:10px 6px}.nav button.active{background:#202a32;color:#fff;border-color:#33414d}.tab-count{margin-left:4px;padding:1px 5px;border-radius:99px;background:#7a3c3b;color:white;font-size:10px}
 .panel{display:none}.panel.active{display:block}.page-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:12px}.page-head p{margin:4px 0 0}
 .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px}.metric-card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:14px}.metric-label{font-size:12px;color:#8e9ca8}.metric-value{font-size:26px;font-weight:760;margin-top:5px}.metric-detail{font-size:12px;color:#7f8d99;margin-top:3px}
@@ -32,6 +32,7 @@ label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;
 details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
 .resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
 .browser-shot{width:100%;height:auto;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:manipulation}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
+.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.account-login-shell{margin-top:12px}
 .divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
 @media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.mobile-note{display:block;font-size:12px;color:#71818d}}
 </style></head><body><main>
@@ -55,6 +56,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
  <nav id="consoleNav" class="nav" aria-label="后台导航">
   <button class="nav-tab active" data-panel-target="dashboard">仪表盘</button>
   <button class="nav-tab" data-panel-target="todos">待办 <span id="actionTabCount" class="tab-count hidden">0</span></button>
+  <button class="nav-tab" data-panel-target="accounts">账户</button>
   <button class="nav-tab" data-panel-target="resources">资源</button>
   <button class="nav-tab" data-panel-target="config">配置</button>
  </nav>
@@ -75,6 +77,21 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
   <div class="section"><div class="section-title"><h3>审批与操作</h3></div><div id="survivalNeeds" class="stack"></div></div>
   <div class="section"><div class="section-title"><h3>资源申请</h3></div><div id="requests" class="stack"></div></div>
   <details class="fold"><summary>历史操作</summary><div class="fold-body"><div id="survivalActions" class="stack"></div></div></details>
+ </section>
+
+ <section class="panel" data-panel="accounts">
+  <div class="page-head"><div><h2>账户管理</h2><p class="muted">统一管理 X、YouTube、邮箱等外部身份。账户是长期资源，登录方式只是适配器。</p></div></div>
+  <div id="accounts" class="grid"></div>
+  <div id="accountLoginShell" class="card account-login-shell hidden">
+   <div class="row"><div class="grow"><h3 id="accountLoginTitle">连接账户</h3><p class="muted">密码和验证码只发送到当前登录页，不写入 Ferro 的账户元数据。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
+   <div id="localBrowserStatus" class="mono muted">未启动。</div>
+   <img id="localBrowserShot" class="browser-shot hidden" alt="Ferro account login browser">
+   <div class="browser-controls">
+    <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击截图中的输入框"></label>
+    <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="localBrowserRefresh" class="ghost">刷新画面</button></div>
+    <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+   </div>
+  </div>
  </section>
 
  <section class="panel" data-panel="resources">
@@ -101,13 +118,6 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
    <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>内存 GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div><button id="addHost">添加候选主机</button>
   </div></details>
   <div class="section"><div class="section-title"><div><h3>API 与密钥</h3><p class="muted">密钥只写入，不会在页面回显。</p></div></div><div id="secrets" class="grid"></div></div>
-  <details class="fold browser-login"><summary>X 账号登录</summary><div class="fold-body">
-   <p class="muted">用于登录 Ferro 的持久化本地浏览器。</p>
-   <div class="row"><button id="localBrowserStart">打开 X 登录</button><button id="localBrowserRefresh" class="ghost">刷新画面</button><button id="localBrowserStop" class="ghost">关闭登录页</button></div>
-   <div id="localBrowserStatus" class="mono muted">未启动。</div><img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
-   <div class="browser-controls"><label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击截图中的输入框"></label><div class="row"><button id="localBrowserSend">发送</button></div>
-   <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div></div>
-  </div></details>
  </section>
 </section>
 
@@ -122,7 +132,7 @@ async function api(path,opts={}){
  const r=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json','X-Operator-Request':'1'},...opts});
  let body={};try{body=await r.json()}catch{}
  if(r.status===401){showLogin();throw new Error('authentication required')}
- if(!r.ok)throw new Error(body.error||'request failed');return body;
+ if(!r.ok){const e=new Error(body.error||'request failed');e.status=r.status;e.body=body;throw e}return body;
 }
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
 function badge(text,kind='info'){const b=node('span',text,'badge '+kind);return b}
@@ -138,7 +148,7 @@ function operatorItems(data){
 }
 function rememberedPanel(){try{return localStorage.getItem('ferro.operator.panel')||'dashboard'}catch{return 'dashboard'}}
 function selectPanel(name,remember=true){
- const allowed=['dashboard','todos','resources','config'];if(!allowed.includes(name))name='dashboard';
+ const allowed=['dashboard','todos','accounts','resources','config'];if(!allowed.includes(name))name='dashboard';
  for(const panel of document.querySelectorAll('[data-panel]'))panel.classList.toggle('active',panel.dataset.panel===name);
  for(const tab of document.querySelectorAll('.nav-tab'))tab.classList.toggle('active',tab.dataset.panelTarget===name);
  if(remember){try{localStorage.setItem('ferro.operator.panel',name)}catch{}}
@@ -237,17 +247,58 @@ function renderBrowserRuntime(data){
   if(row.provider==='JEV'){c.append(node('p','用于自适应网页操作','muted'));const result=node('div','可在配置页保存 Jev 密钥后测试','mono muted'),test=node('button','测试 Jev');test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};c.append(test,result)}
   if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
-async function localBrowserSnapshot(){
- const shot=el('localBrowserShot'),status=el('localBrowserStatus');
- const out=await api('/operator/api/browser/local/snapshot');
- shot.src='data:image/jpeg;base64,'+out.screenshot_b64;shot.classList.remove('hidden');
- status.textContent=(out.x_authenticated?'AUTHENTICATED · ':'')+fmt(out.url)+' · '+fmt(out.title);
- return out
+let activeAccountProvider='';
+function accountStatusKind(status){
+ if(status==='CONNECTED')return 'ok';
+ if(status==='DEGRADED')return 'bad';
+ if(status==='AUTHENTICATING'||status==='NEEDS_LOGIN')return 'pending';
+ return 'info'
 }
-async function localBrowserAction(path,body={}){
- await api(path,{method:'POST',body:JSON.stringify(body)});
- await new Promise(r=>setTimeout(r,350));
- return localBrowserSnapshot()
+function renderAccounts(data){
+ const rows=((data.accounts||{}).accounts||[]),root=el('accounts');root.replaceChildren();
+ if(!rows.length){root.append(node('div','暂无账户提供方','card muted'));return}
+ for(const row of rows){
+  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row');
+  head.append(node('h3',row.label,'grow'),badge(row.status||'UNKNOWN',accountStatusKind(row.status)));c.append(head);
+  if(row.identity)c.append(node('div','@'+row.identity,'mono'));
+  const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
+  for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
+  if(row.note)c.append(node('p',row.note,'muted'));if(row.last_error)c.append(node('p',row.last_error,'error'));
+  const actions=node('div',undefined,'account-actions');
+  if(row.implemented){
+   const connect=node('button',row.status==='CONNECTED'?'重新连接':'连接','primary');
+   connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
+   const verify=node('button','验证','ghost');
+   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(row.label+' · '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
+   actions.append(connect,verify)
+  }else actions.append(badge('待接入适配器','info'));
+  c.append(actions);root.append(c)
+ }
+}
+async function beginAccountConnect(row){
+ activeAccountProvider=row.provider_id;selectPanel('accounts');
+ el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent='连接 '+row.label;
+ el('localBrowserStatus').textContent='正在打开安全登录页…';
+ const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
+ if(out.account&&out.account.status==='CONNECTED')flash(row.label+' 已连接');
+ await new Promise(r=>setTimeout(r,250));await accountLoginSnapshot(5);await refresh()
+}
+async function accountLoginSnapshot(retries=3){
+ if(!activeAccountProvider)throw new Error('没有正在进行的账户登录');
+ const shot=el('localBrowserShot'),status=el('localBrowserStatus');let last;
+ for(let i=0;i<retries;i++){
+  try{
+   const out=await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/snapshot');
+   shot.src='data:image/jpeg;base64,'+out.screenshot_b64;shot.classList.remove('hidden');
+   status.textContent=(out.authenticated?'已连接'+(out.identity?' · @'+out.identity:'')+' · ':'')+fmt(out.url)+' · '+fmt(out.title);
+   if(out.authenticated){flash('账户已连接');await refresh()}return out
+  }catch(e){last=e;if(e.status!==502||i===retries-1)throw e;await new Promise(r=>setTimeout(r,350))}
+ }throw last
+}
+async function accountLoginAction(action,body={}){
+ if(!activeAccountProvider)throw new Error('没有正在进行的账户登录');
+ await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/'+action,{method:'POST',body:JSON.stringify(body)});
+ await new Promise(r=>setTimeout(r,250));return accountLoginSnapshot(5)
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
@@ -281,17 +332,16 @@ function renderSecrets(rows){
    const meta=node('button','保存额度','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' 额度已更新');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};box.append(meta);details.append(box);c.append(details)}
   root.append(c)}
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
-el('localBrowserStart').onclick=async()=>{const b=el('localBrowserStart');b.disabled=true;try{await localBrowserAction('/operator/api/browser/local/start',{url:'https://x.com/i/flow/login'});flash('Local X login tab opened.')}catch(e){el('localBrowserStatus').textContent=e.message;flash(e.message,true)}finally{b.disabled=false}};
-el('localBrowserRefresh').onclick=()=>localBrowserSnapshot().catch(e=>{el('localBrowserStatus').textContent=e.message;flash(e.message,true)});
-el('localBrowserStop').onclick=async()=>{try{await api('/operator/api/browser/local/stop',{method:'POST',body:'{}'});el('localBrowserShot').classList.add('hidden');el('localBrowserShot').removeAttribute('src');el('localBrowserStatus').textContent='Closed. X login state remains in the persistent Chrome profile.'}catch(e){flash(e.message,true)}};
-el('localBrowserShot').onclick=async ev=>{const img=el('localBrowserShot'),r=img.getBoundingClientRect();if(!r.width||!r.height)return;const x=(ev.clientX-r.left)/r.width,y=(ev.clientY-r.top)/r.height;try{await localBrowserAction('/operator/api/browser/local/click',{x_ratio:x,y_ratio:y})}catch(e){flash(e.message,true)}};
-el('localBrowserSend').onclick=async()=>{const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;try{await localBrowserAction('/operator/api/browser/local/type',{text:value})}catch(e){flash(e.message,true)}};
-for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=async()=>{try{await localBrowserAction('/operator/api/browser/local/key',{key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
+el('accountLoginClose').onclick=async()=>{try{if(activeAccountProvider)await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/stop',{method:'POST',body:'{}'})}catch{}activeAccountProvider='';el('accountLoginShell').classList.add('hidden');el('localBrowserShot').classList.add('hidden');el('localBrowserShot').removeAttribute('src');el('localBrowserStatus').textContent='已关闭。账户会话仍保存在对应的持久化认证存储中。'};
+el('localBrowserRefresh').onclick=()=>accountLoginSnapshot(5).catch(e=>{el('localBrowserStatus').textContent=e.message;flash(e.message,true)});
+el('localBrowserShot').onclick=async ev=>{const img=el('localBrowserShot'),r=img.getBoundingClientRect();if(!r.width||!r.height)return;const x=(ev.clientX-r.left)/r.width,y=(ev.clientY-r.top)/r.height;try{await accountLoginAction('click',{x_ratio:x,y_ratio:y})}catch(e){flash(e.message,true)}};
+el('localBrowserSend').onclick=async()=>{const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;try{await accountLoginAction('type',{text:value})}catch(e){flash(e.message,true)}};
+for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=async()=>{try{await accountLoginAction('key',{key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));

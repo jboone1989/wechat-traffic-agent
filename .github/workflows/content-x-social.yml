@@ -9,6 +9,8 @@ on:
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
+      - "src/wechat_traffic_agent/account_management.py"
+      - "src/wechat_traffic_agent/channels/operator_console_page.py"
       - "src/wechat_traffic_agent/x_outcomes.py"
       - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/social_performance.py"
@@ -27,6 +29,9 @@ on:
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
+      - "tests/test_account_management.py"
+      - "tests/test_local_browser_control.py"
+      - "tests/test_operator_console.py"
       - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
       - "tests/test_okx_orbit.py"
@@ -43,6 +48,8 @@ on:
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
+      - "src/wechat_traffic_agent/account_management.py"
+      - "src/wechat_traffic_agent/channels/operator_console_page.py"
       - "src/wechat_traffic_agent/x_outcomes.py"
       - "src/wechat_traffic_agent/social_evidence.py"
       - "src/wechat_traffic_agent/social_performance.py"
@@ -61,6 +68,9 @@ on:
       - "tests/test_x_*.py"
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
+      - "tests/test_account_management.py"
+      - "tests/test_local_browser_control.py"
+      - "tests/test_operator_console.py"
       - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
       - "tests/test_okx_orbit.py"
@@ -89,6 +99,8 @@ jobs:
           src/wechat_traffic_agent/x_growth_mission.py
           src/wechat_traffic_agent/x_browser.py
           src/wechat_traffic_agent/local_browser_control.py
+          src/wechat_traffic_agent/account_management.py
+          src/wechat_traffic_agent/channels/operator_console_page.py
           src/wechat_traffic_agent/x_outcomes.py
           src/wechat_traffic_agent/social_expression.py
           src/wechat_traffic_agent/social_evidence.py
@@ -114,7 +126,7 @@ jobs:
           PYTHONPATH: .x-ci:src
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_local_browser_control.py tests/test_x_outcomes.py tests/test_x_site.py
+          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_local_browser_control.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
           tests/test_world_feed.py tests/test_live_agent.py

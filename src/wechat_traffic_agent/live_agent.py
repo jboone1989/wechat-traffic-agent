@@ -773,6 +773,7 @@ class LiveAgentService:
         from starlette.routing import Route
         from .channels.agent_live_page import live_agent_document
         from .channels.agent_talk_page import talk_agent_document
+        from .account_management import AccountManager
         from .channels.operator_console_page import operator_console_document
         from .channels.operator_private_chat_page import operator_private_chat_document
         from .operator_console import OperatorConsole, operator_console_enabled
@@ -780,6 +781,7 @@ class LiveAgentService:
         from .operator_private_chat import OperatorConversationStore, parse_model_json
 
         operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
+        account_manager = AccountManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl() if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
 
@@ -890,7 +892,7 @@ class LiveAgentService:
                 "Cache-Control": "no-store",
                 "Content-Security-Policy": (
                     "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                    "connect-src 'self'; img-src 'self'; frame-ancestors 'none'; "
+                    "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
                     "base-uri 'none'; form-action 'self'"
                 ),
             })
@@ -1231,6 +1233,153 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
+        async def operator_account_connect(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                result = await asyncio.to_thread(local_browser_control.start, spec.login_url)
+                if result.get("x_authenticated"):
+                    account = account_manager.record_connected(
+                        provider_id, identity=str(result.get("account_identity") or "")
+                    )
+                else:
+                    account = account_manager.mark_authenticating(provider_id)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_unavailable"}, status_code=503)
+            except Exception:
+                return JSONResponse({"error": "account_connect_failed"}, status_code=502)
+            return JSONResponse(
+                {"account": account, "browser": result},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_account_verify(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                result = await asyncio.to_thread(account_manager.verify, provider_id)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_snapshot(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                snap = await asyncio.to_thread(local_browser_control.snapshot)
+                if snap.x_authenticated:
+                    account_manager.record_connected(
+                        provider_id, identity=snap.account_identity
+                    )
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "account_login_not_running"}, status_code=409)
+            except Exception:
+                return JSONResponse({"error": "account_snapshot_failed"}, status_code=502)
+            return JSONResponse({
+                "provider_id": provider_id,
+                "url": snap.url,
+                "title": snap.title,
+                "width": snap.width,
+                "height": snap.height,
+                "authenticated": snap.x_authenticated,
+                "identity": snap.account_identity,
+                "screenshot_b64": snap.screenshot_b64,
+            }, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_login_click(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                body = await request.json()
+                result = await asyncio.to_thread(
+                    local_browser_control.click,
+                    x_ratio=float(body.get("x_ratio")),
+                    y_ratio=float(body.get("y_ratio")),
+                )
+            except (TypeError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "account_login_not_running"}, status_code=409)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_login_type(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                body = await request.json()
+                text = str(body.get("text") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(local_browser_control.type_text, text)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "account_login_not_running"}, status_code=409)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_login_key(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                body = await request.json()
+                key = str(body.get("key") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(local_browser_control.key, key)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "account_login_not_running"}, status_code=409)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_account_login_stop(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            provider_id = str(request.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                result = await asyncio.to_thread(local_browser_control.stop)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=409)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         async def operator_local_browser_start(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -1561,6 +1710,13 @@ class LiveAgentService:
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/login/snapshot", operator_account_snapshot, methods=["GET"]),
+                Route("/operator/api/accounts/{provider_id}/login/click", operator_account_login_click, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/login/type", operator_account_login_type, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/login/key", operator_account_login_key, methods=["POST"]),
+                Route("/operator/api/accounts/{provider_id}/login/stop", operator_account_login_stop, methods=["POST"]),
                 Route("/operator/api/browser/local/start", operator_local_browser_start, methods=["POST"]),
                 Route("/operator/api/browser/local/snapshot", operator_local_browser_snapshot, methods=["GET"]),
                 Route("/operator/api/browser/local/click", operator_local_browser_click, methods=["POST"]),
