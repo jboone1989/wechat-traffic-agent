@@ -317,7 +317,7 @@ function renderAccounts(data){
   apiTitle.append(node('strong','官方 API'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
   apiBox.append(apiTitle,node('p','OAuth 身份独立绑定到这个账号。调用 X API 时显式使用该账号，不依赖全局默认用户。','muted'));c.append(apiBox);
   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
-  const profileReady=profile.status==='READY';
+  const profileReady=profile.status==='PROVISIONED';
   webTitle.append(node('strong','网页自动化'),badge(profileReady?'独立环境已创建':'按需创建',profileReady?'ok':'info'));
   webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie，不与其他 X 账号混用。','muted'));
   if(automation.compatibility_fallback)webBox.append(node('p','当前兼容 fallback：'+automation.compatibility_fallback+'（临时，不是长期依赖）。','muted'));
