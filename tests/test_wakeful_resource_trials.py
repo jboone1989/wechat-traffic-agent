@@ -77,3 +77,42 @@ def test_resource_review_schedules_followup_when_trials_require_replan():
     assert result["resource_followup"]["reason"]=="provider trial evidence requires alternate routes"
     assert wakeful.followup[1]==300
     assert not assistance.calls
+
+def test_resource_review_executes_one_chained_safe_survival_phase(tmp_path, monkeypatch):
+    class Survival:
+        def __init__(self):
+            self.observe_calls = 0
+            self.execute_calls = 0
+        def observe(self, *, now):
+            self.observe_calls += 1
+            return {"status":"OBSERVED","pressure":"NORMAL","needs":[]}
+        def remote_hosts(self):
+            return [{"status":"ACTIVE"}]
+        def execute_approved(self, *, now):
+            self.execute_calls += 1
+            if self.execute_calls == 1:
+                return {"status":"OK","results":[{
+                    "action":"PROVISION_REMOTE_RECEIVER","status":"VERIFIED"
+                }]}
+            if self.execute_calls == 2:
+                return {"status":"OK","results":[{
+                    "action":"ENSURE_SERVICE_REPLICA","status":"DEPLOYED"
+                }]}
+            raise AssertionError("resource review must be bounded to two action phases")
+
+    survival = Survival()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.SurvivalResourceManager",
+        lambda path: survival,
+    )
+    runner=WakefulContentTaskRunner(
+        resource_economy=Economy(), content_mind=Mind(), wakeful=Wakeful(),
+        resource_scout=Scout(), human_assistance=Assistance(), state_root=tmp_path,
+    )
+    result=runner.run("RESOURCE_REVIEW",now=NOW)
+    assert result["status"]=="OK"
+    assert result["survival_resource_actions"]["results"][0]["action"]=="PROVISION_REMOTE_RECEIVER"
+    assert result["survival_resource_followup_actions"]["results"][0]["action"]=="ENSURE_SERVICE_REPLICA"
+    assert "survival_resource_after_followup_actions" in result
+    assert survival.execute_calls==2
+    assert survival.observe_calls==3
