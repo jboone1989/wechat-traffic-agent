@@ -1067,9 +1067,24 @@ class SelfRepairExecutor:
             }
 
         baseline_sha = self._git_sha(self.workspace_root)
+        problem_id = str(problem.get("problem_id") or "self-problem")
+        proposal = problem.get("repair_proposal")
+        proposal_id = (
+            str(proposal.get("proposal_id") or "")
+            if isinstance(proposal, dict)
+            else ""
+        )
+        lineage = sha256(
+            (problem_id + "\0" + proposal_id + "\0" + now.isoformat()).encode("utf-8")
+        ).hexdigest()[:16]
+        branch_task_id = (
+            problem_id.replace(":", "-")[:40].rstrip("-._")
+            + "-"
+            + lineage
+        )
         provider.invoke(
             CAP_CODE_BRANCH,
-            {"task_id": str(problem.get("problem_id") or "self-problem").replace(":", "-")},
+            {"task_id": branch_task_id},
         )
         for edit in recipe.edits:
             provider.invoke(
