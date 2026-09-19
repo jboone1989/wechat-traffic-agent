@@ -225,11 +225,34 @@ function renderRemoteHosts(data){
   if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','验证并启用');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
 }
 function renderServicePlacements(data){
- const ctl=data.survival_control||{},services=ctl.services||[],hosts=(ctl.remote_hosts||[]).filter(x=>x.status==='ACTIVE'&&x.deployment_capable),root=el('servicePlacements');root.replaceChildren();
+ const ctl=data.survival_control||{},services=ctl.services||[],hosts=ctl.remote_hosts||[],candidates=ctl.placement_candidates||[],root=el('servicePlacements');root.replaceChildren();
+ const hostById=new Map(hosts.map(x=>[x.host_id,x]));
  if(!services.length){root.append(node('div','暂无服务','card muted'));return}
- for(const row of services){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.service_id,'grow'),badge(fmt(row.placement||'LOCAL'),'info'));c.append(head,node('p',fmt(row.role)+' · '+fmt(row.migration_class),'muted'));
-  if(row.migration_class!=='PRIMARY_STATEFUL'&&hosts.length){const controls=node('div',undefined,'row'),select=document.createElement('select');for(const host of hosts){const o=node('option',host.name||host.host_id);o.value=host.host_id;select.append(o)}
-   const b=node('button','迁移到主机');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash('迁移计划已创建');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};controls.append(select,b);c.append(controls)}root.append(c)}
+ for(const row of services){
+  const policy=row.placement_policy||{},requirements=row.resource_requirements||{},replicas=row.replicas||[];
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
+  head.append(node('h3',row.service_id,'grow'),badge('主实例 '+fmt(row.primary_placement||row.placement||'LOCAL'),'info'));
+  c.append(head,node('p',fmt(row.role)+' · '+fmt(row.migration_class)+' · '+fmt(policy.mode||'MANAGED'),'muted'));
+  c.append(node('p','最低资源：CPU '+fmt(requirements.cpu_count)+' · 可用内存 '+fmt(requirements.memory_available_gib)+' GiB · 可用磁盘 '+fmt(requirements.disk_free_gib)+' GiB','muted'));
+  if(replicas.length){
+   const box=node('div',undefined,'stack');
+   for(const replica of replicas){const h=hostById.get(replica.host_id)||{},line=node('div',undefined,'row');line.append(node('span','副本 '+fmt(h.name||replica.host_id),'grow'),badge(fmt(replica.status),replica.status==='ACTIVE'?'ok':'bad'));box.append(line)}
+   c.append(box)
+  }else if(policy.mode==='REPLICA')c.append(node('p','当前没有远程副本','muted'));
+  const options=candidates.filter(x=>x.service_id===row.service_id&&x.eligible);
+  const rejected=candidates.filter(x=>x.service_id===row.service_id&&!x.eligible);
+  if(row.migration_class!=='PRIMARY_STATEFUL'&&options.length){
+   const controls=node('div',undefined,'row'),select=document.createElement('select');
+   for(const fit of options){const o=node('option',(fit.host_name||fit.host_id)+' · fit '+fmt(fit.score));o.value=fit.host_id;select.append(o)}
+   const label=policy.mode==='REPLICA'?'复制到主机':'迁移到主机',b=node('button',label);
+   b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash((policy.mode==='REPLICA'?'复制':'迁移')+'计划已创建');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};
+   controls.append(select,b);c.append(controls)
+  }else if(row.migration_class!=='PRIMARY_STATEFUL'){
+   c.append(node('p','当前无符合资源约束的远程主机','muted'));
+   for(const fit of rejected.slice(0,3))c.append(node('div',fmt(fit.host_name||fit.host_id)+' · '+(fit.reasons||[]).join(', '),'mono muted'))
+  }
+  root.append(c)
+ }
 }
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();

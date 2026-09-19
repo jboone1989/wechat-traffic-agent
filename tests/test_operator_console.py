@@ -645,6 +645,7 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
                 "public_key":remote_identity.public_key,
                 "capabilities":["survival.workload.deploy.v1"],
                 "deployment_profiles":["content.website-static.v1"],
+                "capacity":{"cpu_count":2,"memory_available_gib":2.0,"disk_free_gib":10.0},
             }
         receipt = {
             "type":"survival.workload.deploy.receipt.v1",
