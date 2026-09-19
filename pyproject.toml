@@ -21,6 +21,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 okx-orbit = ["playwright>=1.55,<2"]
 tinyfish-browser = ["playwright>=1.55,<2"]
+jev-browser = ["jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git@1231850a0bf1a0c0341fe408ef1668dbbfdfac46"]
 
 [project.scripts]
 wechat-tietu-agent = "wechat_traffic_agent.__main__:main"
