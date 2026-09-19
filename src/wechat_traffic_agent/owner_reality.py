@@ -6,6 +6,8 @@ from pathlib import Path
 import shutil
 from typing import Any, Mapping
 
+from .owner_tools import readonly_capability_rows
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -21,6 +23,7 @@ def _compact_capability(row: Mapping[str, Any]) -> dict[str, Any]:
         "description": str(row.get("description") or "")[:300],
         "side_effect_level": str(row.get("side_effect_level") or "READ_ONLY"),
         "required_permissions": list(row.get("required_permissions") or []),
+        "input_schema": dict(row.get("input_schema") or {}),
     }
 
 
@@ -121,13 +124,16 @@ def build_owner_reality(
             "goal_draft_create",
             "explicit_goal_activation_only",
             "read_only_reality_snapshot",
+            "runtime_readonly_capability_invoke",
         ],
+        "owner_chat_readonly_runtime_capabilities": readonly_capability_rows(application)[:80],
         "runtime_capabilities": manifest[:80],
         "accounts": accounts,
         "local_resources": local_resources,
         "llm_resources": llm_resources[:24],
         "execution_boundary": {
             "owner_chat_arbitrary_capability_invocation": False,
+            "owner_chat_readonly_capability_invocation": True,
             "owner_chat_side_effect_execution": False,
             "goal_activation_requires_explicit_owner_action": True,
             "reality_snapshot_is_read_only": True,
