@@ -258,7 +258,8 @@ class ContentMind:
     def record_research_belief(
         self, *, cycle: str, topic: str, question: str, source_evidence: Mapping[str, Any],
         proposition: str, stance: float, reliability: float, support: float,
-        inquiry_id: str | None = None, commit: bool = True,
+        inquiry_id: str | None = None, inquiry_origin: str = "self_question",
+        commit: bool = True,
     ) -> dict[str, Any]:
         """Attach trusted research evidence to an inquiry and optionally revise worldview."""
         topic, question, proposition = (str(value).strip() for value in (topic, question, proposition))
@@ -300,14 +301,21 @@ class ContentMind:
 
         inquiries = self.session.inquiry.inquiries
         active_id = str(inquiry_id or "").strip()
+        inquiry_origin = str(inquiry_origin or "self_question").strip()
         if active_id and active_id in inquiries and inquiries[active_id]["status"] != "OPEN":
             active_id = ""
+        if active_id and active_id not in inquiries:
+            self.session.inquiry.open(
+                inquiry_id=active_id, question=question, origin=inquiry_origin,
+                personal_relevance=0.7, hypotheses={proposition: 0.5},
+            )
+            self._inquiry_topics[active_id] = topic
         if not active_id:
             digest = sha256(f"{cycle}|{topic}|{question}".encode()).hexdigest()[:16]
             active_id = f"research-{digest}"
             if active_id not in inquiries:
                 self.session.inquiry.open(
-                    inquiry_id=active_id, question=question, origin="self_question",
+                    inquiry_id=active_id, question=question, origin=inquiry_origin,
                     personal_relevance=0.7, hypotheses={proposition: 0.5},
                 )
             self._inquiry_topics[active_id] = topic
