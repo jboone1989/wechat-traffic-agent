@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -16,6 +17,14 @@ from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
 
 
 NOW = datetime(2026, 9, 19, 1, 0, tzinfo=timezone.utc)
+SOURCE_PATH = "src/wechat_traffic_agent/app_logic.py"
+SOURCE_BLOCK = (
+    'def normalize_topic(topic):\n'
+    '    if not topic:\n'
+    '        raise ValueError("Traffic opportunity requires topic: risk")\n'
+    '    return topic\n'
+)
+BLOCK_ID = "block:" + sha256((SOURCE_PATH + "\0" + SOURCE_BLOCK).encode()).hexdigest()[:24]
 
 
 def _git(root: Path, *args: str) -> str:
@@ -38,12 +47,7 @@ def _workspace(tmp_path: Path) -> Path:
     (root / "src/wechat_traffic_agent").mkdir(parents=True)
     (root / "tests").mkdir()
     source = root / "src/wechat_traffic_agent/app_logic.py"
-    source.write_text(
-        'def normalize_topic(topic):\n'
-        '    if not topic:\n'
-        '        raise ValueError("Traffic opportunity requires topic: risk")\n'
-        '    return topic\n'
-    )
+    source.write_text(SOURCE_BLOCK)
     (root / "tests/test_app_logic.py").write_text(
         "from pathlib import Path\n"
         "def test_topic_fallback_exists():\n"
@@ -83,15 +87,10 @@ def _valid_plan() -> dict:
         "rationale": "The crash is raised by one localized guard and a deterministic fallback is reversible.",
         "risk": "LOW",
         "confidence": 0.91,
-        "target_files": ["src/wechat_traffic_agent/app_logic.py"],
+        "target_files": [SOURCE_PATH],
         "edits": [{
-            "path": "src/wechat_traffic_agent/app_logic.py",
-            "old_text": (
-                'def normalize_topic(topic):\n'
-                '    if not topic:\n'
-                '        raise ValueError("Traffic opportunity requires topic: risk")\n'
-                '    return topic\n'
-            ),
+            "path": SOURCE_PATH,
+            "block_id": BLOCK_ID,
             "new_text": (
                 'def normalize_topic(topic):\n'
                 '    return topic or "risk"\n'
@@ -99,7 +98,7 @@ def _valid_plan() -> dict:
         }],
         "focused_tests": ["tests/test_app_logic.py"],
         "implementation_markers": [{
-            "path": "src/wechat_traffic_agent/app_logic.py",
+            "path": SOURCE_PATH,
             "marker": 'return topic or "risk"',
         }],
     }
@@ -191,11 +190,14 @@ def test_planner_rejects_generated_network_or_process_capability(tmp_path):
     )
     plan = GeneratedRepairPlan.model_validate(payload)
 
+    problem = json.loads(_problem(tmp_path / "state-capability").read_text())
+    blocks = planner.editable_blocks(problem, [SOURCE_PATH])
     with pytest.raises(ValueError, match="forbidden capability"):
         planner.validate(
             plan,
-            allowed_sources=["src/wechat_traffic_agent/app_logic.py"],
+            allowed_sources=[SOURCE_PATH],
             allowed_tests=["tests/test_app_logic.py"],
+            editable_blocks=blocks,
         )
 
 
@@ -209,11 +211,14 @@ def test_planner_rejects_low_confidence_instead_of_guessing(tmp_path):
     payload["confidence"] = 0.4
     plan = GeneratedRepairPlan.model_validate(payload)
 
+    problem = json.loads(_problem(tmp_path / "state-confidence").read_text())
+    blocks = planner.editable_blocks(problem, [SOURCE_PATH])
     with pytest.raises(ValueError, match="confidence below"):
         planner.validate(
             plan,
-            allowed_sources=["src/wechat_traffic_agent/app_logic.py"],
+            allowed_sources=[SOURCE_PATH],
             allowed_tests=["tests/test_app_logic.py"],
+            editable_blocks=blocks,
         )
 
 
@@ -263,4 +268,45 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v2"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v3"
+
+
+
+def test_editable_block_id_binds_authoritative_source(tmp_path):
+    workspace = _workspace(tmp_path)
+    state = tmp_path / "state-block"
+    problem = json.loads(_problem(state).read_text())
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    blocks = planner.editable_blocks(problem, [SOURCE_PATH])
+
+    assert len(blocks) == 1
+    assert blocks[0].block_id == BLOCK_ID
+    assert blocks[0].old_text == SOURCE_BLOCK
+    assert blocks[0].symbol == "normalize_topic"
+
+
+def test_stale_block_id_is_rejected_after_source_changes(tmp_path):
+    workspace = _workspace(tmp_path)
+    state = tmp_path / "state-stale"
+    problem = json.loads(_problem(state).read_text())
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+    plan = GeneratedRepairPlan.model_validate(_valid_plan())
+    old_blocks = planner.editable_blocks(problem, [SOURCE_PATH])
+    (workspace / SOURCE_PATH).write_text(SOURCE_BLOCK.replace("return topic", "return str(topic)"))
+    new_blocks = planner.editable_blocks(problem, [SOURCE_PATH])
+
+    assert old_blocks[0].block_id != new_blocks[0].block_id
+    with pytest.raises(ValueError, match="unknown block_id"):
+        planner.validate(
+            plan,
+            allowed_sources=[SOURCE_PATH],
+            allowed_tests=["tests/test_app_logic.py"],
+            editable_blocks=new_blocks,
+        )
