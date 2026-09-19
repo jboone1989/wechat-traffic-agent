@@ -84,6 +84,10 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 <h2>VirtualBrain routing</h2>
 <div id="routing" class="card"></div>
 
+<h2>Browser runtime</h2>
+<p class="muted">Local Chrome handles learned deterministic skills. Jev handles adaptive navigation. TinyFish remains a compatibility fallback.</p>
+<div id="browserRuntime" class="grid"></div>
+
 <h2>Executable resource pool</h2>
 <div id="resources" class="grid"></div>
 
@@ -173,6 +177,27 @@ function renderRouting(data){
  const d=node('div',undefined,'divider');root.append(d);
  const route=node('p');route.textContent='Latest: '+fmt(latest.result)+' · selected '+fmt(latest.selected_resource_id)+' · attempted '+fmt((latest.attempted_resource_ids||[]).join(' → '));root.append(route);
 }
+function renderBrowserRuntime(data){
+ const runtime=data.browser_runtime||{},rows=runtime.providers||[],root=el('browserRuntime');root.replaceChildren();
+ if(!rows.length){root.append(node('div','Browser runtime status unavailable.','card muted'));return}
+ for(const row of rows){
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
+  head.append(node('h3',row.provider||'UNKNOWN','grow'));
+  const kind=row.status==='READY'?'ok':row.status==='NOT_CONFIGURED'||row.status==='DISABLED'?'pending':'bad';
+  head.append(badge(row.status||'UNKNOWN',kind));c.append(head);
+  if(row.reason)c.append(node('p',row.reason,'muted'));
+  if(row.provider==='LOCAL_CDP')c.append(node('p','Owned persistent Chrome/CDP · deterministic browser skills','muted'));
+  if(row.provider==='JEV'){
+   c.append(node('p','Adaptive controller · TypeSafe action selection · bounded telemetry','muted'));
+   const result=node('div','Save the Jev / TypeSafe key below, then run a real smoke test.','mono muted');
+   const test=node('button','Test Jev');
+   test.onclick=async()=>{test.disabled=true;result.textContent='Running Jev against an isolated read-only smoke page…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' action(s) · '+fmt(out.final_url);flash('Jev browser test passed.')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};
+   c.append(test,result);
+  }
+  if(row.provider==='TINYFISH')c.append(node('p','Fallback only while the owned browser runtime proves equivalent coverage.','muted'));
+  root.append(c)
+ }
+}
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
  if(!rows.length){root.append(node('div','No executable LLM resources yet.','card muted'));return}
@@ -231,7 +256,7 @@ function renderSecrets(rows){
   root.append(c);
  }
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};

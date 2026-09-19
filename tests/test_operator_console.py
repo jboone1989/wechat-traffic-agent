@@ -21,7 +21,7 @@ NOW = datetime(2026, 9, 18, tzinfo=timezone.utc)
 def _clean_provider_env(monkeypatch):
     keys = (
         "CEREBRAS_API_KEY", "NVIDIA_API_KEY", "OPENROUTER_API_KEY",
-        "VIRTUALBRAIN_LLM_API_KEY",
+        "TYPESAFE_API_KEY", "TEXT_MODEL_API_KEY", "VIRTUALBRAIN_LLM_API_KEY",
     )
     managed = []
     for key in keys:
@@ -810,3 +810,85 @@ def test_operator_can_bootstrap_remote_host_with_one_time_ssh_secret(tmp_path, m
     assert "Hand a server to Ferro" in page.text
     assert "IP or hostname" in page.text
     assert "One-time SSH password" in page.text
+
+def _login_operator(client: TestClient, root) -> None:
+    token = (root / "secrets" / "operator-console.token").read_text().strip()
+    response = client.post(
+        "/operator/api/session",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert response.status_code == 200
+
+
+def test_operator_page_exposes_browser_runtime_and_jev_smoke_action(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    service = LiveAgentService(
+        state_root=tmp_path,
+        application=None,
+        backend=None,
+        mind=None,
+    )
+    client = TestClient(service._app())
+    page = client.get("/operator/")
+    assert page.status_code == 200
+    assert "Browser runtime" in page.text
+    assert "Test Jev" in page.text
+    assert "/operator/api/browser/jev/test" in page.text
+
+
+def test_operator_jev_smoke_endpoint_is_authenticated_and_bounded(tmp_path, monkeypatch):
+    from wechat_traffic_agent.browser_runtime import BrowserTaskResult, JevBrowserExecutor
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeExecutor:
+        async def run(self, **kwargs):
+            assert kwargs["url"] == "https://example.com"
+            assert kwargs["task_type"] == "JEV_OPERATOR_SMOKE"
+            return BrowserTaskResult(
+                provider="JEV",
+                status="COMPLETED",
+                elapsed_ms=17,
+                action_count=0,
+                final_url="https://example.com/",
+            )
+
+    monkeypatch.setattr(
+        JevBrowserExecutor,
+        "from_environment",
+        classmethod(lambda cls, state_root: FakeExecutor()),
+    )
+    service = LiveAgentService(
+        state_root=tmp_path,
+        application=None,
+        backend=None,
+        mind=None,
+    )
+
+    client = TestClient(service._app())
+    unauth = client.post(
+        "/operator/api/browser/jev/test",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert unauth.status_code == 401
+
+    _login_operator(client, tmp_path)
+    no_header = client.post("/operator/api/browser/jev/test", json={})
+    assert no_header.status_code == 403
+
+    result = client.post(
+        "/operator/api/browser/jev/test",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert result.status_code == 200
+    assert result.json() == {
+        "ok": True,
+        "status": "JEV_TEST_PASSED",
+        "provider": "JEV",
+        "elapsed_ms": 17,
+        "action_count": 0,
+        "final_url": "https://example.com/",
+    }
