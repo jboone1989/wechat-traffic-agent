@@ -362,6 +362,67 @@ class CanonicalMemoryStore:
             decoded["source_message_id"] = decoded["source_ref"]
         return decoded
 
+    def get_memory(self, memory_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT rowid, * FROM memories WHERE memory_id=?",
+                (str(memory_id),),
+            ).fetchone()
+            return self._decode_row(connection, row) if row is not None else None
+
+    def query_memories(
+        self,
+        *,
+        memory_types: list[str] | None = None,
+        statuses: list[str] | None = None,
+        source_type: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        entity: str | None = None,
+        topic: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        joins: list[str] = []
+        if memory_types:
+            marks = ",".join("?" for _ in memory_types)
+            clauses.append(f"m.memory_type IN ({marks})")
+            params.extend(str(item).upper() for item in memory_types)
+        if statuses:
+            marks = ",".join("?" for _ in statuses)
+            clauses.append(f"m.status IN ({marks})")
+            params.extend(str(item).upper() for item in statuses)
+        if source_type:
+            clauses.append("m.source_type=?")
+            params.append(str(source_type).upper())
+        if created_from:
+            clauses.append("m.created_at>=?")
+            params.append(str(created_from))
+        if created_to:
+            clauses.append("m.created_at<?")
+            params.append(str(created_to))
+        if entity:
+            joins.append("JOIN memory_entities me ON me.memory_id=m.memory_id")
+            clauses.append("me.entity=?")
+            params.append(str(entity))
+        if topic:
+            joins.append("JOIN memory_topics mt ON mt.memory_id=m.memory_id")
+            clauses.append("mt.topic=?")
+            params.append(str(topic))
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT DISTINCT m.rowid, m.* FROM memories m "
+            + " ".join(joins)
+            + where
+            + " ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?"
+        )
+        params.append(max(1, min(int(limit), 5000)))
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+            result = [self._decode_row(connection, row) for row in rows]
+        return result
+
     def events(self) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(

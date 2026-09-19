@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 from .memory_formation import FormationContext, MemoryFormationPipeline
+from .memory_retrieval import MemoryRouter
 from .memory_system import CanonicalMemoryStore
 
 
@@ -75,6 +76,7 @@ class OperatorLongTermMemory:
         self.store = CanonicalMemoryStore(state_root)
         self.formation = MemoryFormationPipeline(state_root, store=self.store)
         self.store.import_legacy_jsonl(self.path)
+        self.router = MemoryRouter(state_root, store=self.store)
         self._repair_legacy_mirror()
 
     def _repair_legacy_mirror(self) -> None:
@@ -136,24 +138,14 @@ class OperatorLongTermMemory:
         return list(result["saved"])
 
     def relevant(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
-        rows = self.all(limit=5000)
-        query_terms = _terms(query)
-        core = [row for row in rows if str(row.get("memory_id") or "").startswith("core:")]
-        learned = [row for row in rows if row not in core]
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for index, row in enumerate(learned):
-            row_terms = _terms(str(row.get("text") or ""))
-            overlap = len(query_terms & row_terms)
-            union = max(1, len(query_terms | row_terms))
-            lexical = overlap / union
-            importance = float(row.get("importance") or 0.0)
-            recency = index / max(1, len(learned))
-            score = lexical * 4.0 + importance + recency * 0.15
-            if overlap or importance >= 0.9:
-                scored.append((score, row))
-        scored.sort(key=lambda item: item[0], reverse=True)
+        core = [dict(row) for row in CORE_MEMORIES]
         remaining = max(0, int(limit) - len(core))
-        return core + [row for _, row in scored[:remaining]]
+        learned = self.router.recall(
+            query,
+            limit=max(1, remaining),
+            source_type="OWNER_CONVERSATION",
+        ) if remaining else []
+        return core + learned
 
 
 __all__ = ["CORE_MEMORIES", "OperatorLongTermMemory", "memory_promotion_allowed_for_turn"]
