@@ -61,6 +61,29 @@ def _request_error(capability_id: str, code: str, reason: str) -> dict[str, Any]
         "status": code,
         "reason": reason,
     }
+
+
+def _normalized_payload(capability_id: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    if capability_id == "web.search":
+        try:
+            limit = int(normalized.get("limit", 8))
+        except (TypeError, ValueError):
+            limit = 8
+        normalized["limit"] = max(1, min(limit, 8))
+        if "page" in normalized:
+            try:
+                normalized["page"] = max(1, min(int(normalized["page"]), 10))
+            except (TypeError, ValueError):
+                normalized["page"] = 1
+        if "safesearch" in normalized:
+            try:
+                normalized["safesearch"] = max(0, min(int(normalized["safesearch"]), 2))
+            except (TypeError, ValueError):
+                normalized["safesearch"] = 1
+    return normalized
+
+
 def execute_readonly_tool_requests(
     application: Any, requests: list[Any]
 ) -> list[dict[str, Any]]:
@@ -78,6 +101,7 @@ def execute_readonly_tool_requests(
         capability_id = str(raw.get("capability_id") or "").strip()
         payload = raw.get("payload")
         payload = dict(payload) if isinstance(payload, Mapping) else {}
+        payload = _normalized_payload(capability_id, payload)
         row = manifest.get(capability_id)
         if row is None:
             results.append(_request_error(capability_id, "UNKNOWN_CAPABILITY", "capability is not registered"))
