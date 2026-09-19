@@ -789,6 +789,7 @@ class LiveAgentService:
         from .channels.operator_llm_audit_page import operator_llm_audit_document
         from .llm_audit import LLMRequestAuditStore
         from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
+        from .memory_self import ProspectiveSelfMemoryService
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
         from .account_browser_login import (
@@ -1007,6 +1008,9 @@ class LiveAgentService:
                     "status": _enum_value(getattr(mission, "status", "")),
                 })
             wakeful_state = (((snapshot.get("life") or {}).get("presence") or {}).get("wakeful") or {})
+            self_memory = ProspectiveSelfMemoryService.snapshot_from_runtime(
+                self.application, self.mind
+            )
             return {
                 "as_of": snapshot.get("as_of"),
                 "agent": snapshot.get("agent"),
@@ -1015,6 +1019,14 @@ class LiveAgentService:
                 "neural_life": wakeful_state.get("neural_life"),
                 "active_goals": goals,
                 "external_missions": missions,
+                "memory_self": {
+                    "current_intent": list(self_memory.current_intent),
+                    "current_resources": dict(self_memory.current_resources),
+                    "current_capabilities": list(self_memory.current_capabilities),
+                    "current_predictions": list(self_memory.current_predictions),
+                    "self_model": dict(self_memory.self_model),
+                    "authority": "live_runtime_and_virtualbrain",
+                },
                 "owner_reality": build_owner_reality(
                     state_root=self.state_root,
                     application=self.application,
