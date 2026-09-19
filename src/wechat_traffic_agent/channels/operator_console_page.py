@@ -83,7 +83,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
   <div class="page-head"><div><h2>账户管理</h2><p class="muted">统一管理 X、YouTube、邮箱等外部身份。账户是长期资源，登录方式只是适配器。</p></div></div>
   <div id="accounts" class="grid"></div>
   <div id="accountLoginShell" class="card account-login-shell hidden">
-   <div class="row"><div class="grow"><h3 id="accountLoginTitle">连接账户</h3><p class="muted">密码和验证码只发送到当前登录页，不写入 Ferro 的账户元数据。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
+   <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
    <div id="localBrowserStatus" class="mono muted">未启动。</div>
    <img id="localBrowserShot" class="browser-shot hidden" alt="Ferro account login browser">
    <div class="browser-controls">
@@ -225,11 +225,34 @@ function renderRemoteHosts(data){
   if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','验证并启用');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
 }
 function renderServicePlacements(data){
- const ctl=data.survival_control||{},services=ctl.services||[],hosts=(ctl.remote_hosts||[]).filter(x=>x.status==='ACTIVE'&&x.deployment_capable),root=el('servicePlacements');root.replaceChildren();
+ const ctl=data.survival_control||{},services=ctl.services||[],hosts=ctl.remote_hosts||[],candidates=ctl.placement_candidates||[],root=el('servicePlacements');root.replaceChildren();
+ const hostById=new Map(hosts.map(x=>[x.host_id,x]));
  if(!services.length){root.append(node('div','暂无服务','card muted'));return}
- for(const row of services){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.service_id,'grow'),badge(fmt(row.placement||'LOCAL'),'info'));c.append(head,node('p',fmt(row.role)+' · '+fmt(row.migration_class),'muted'));
-  if(row.migration_class!=='PRIMARY_STATEFUL'&&hosts.length){const controls=node('div',undefined,'row'),select=document.createElement('select');for(const host of hosts){const o=node('option',host.name||host.host_id);o.value=host.host_id;select.append(o)}
-   const b=node('button','迁移到主机');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash('迁移计划已创建');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};controls.append(select,b);c.append(controls)}root.append(c)}
+ for(const row of services){
+  const policy=row.placement_policy||{},requirements=row.resource_requirements||{},replicas=row.replicas||[];
+  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
+  head.append(node('h3',row.service_id,'grow'),badge('主实例 '+fmt(row.primary_placement||row.placement||'LOCAL'),'info'));
+  c.append(head,node('p',fmt(row.role)+' · '+fmt(row.migration_class)+' · '+fmt(policy.mode||'MANAGED'),'muted'));
+  c.append(node('p','最低资源：CPU '+fmt(requirements.cpu_count)+' · 可用内存 '+fmt(requirements.memory_available_gib)+' GiB · 可用磁盘 '+fmt(requirements.disk_free_gib)+' GiB','muted'));
+  if(replicas.length){
+   const box=node('div',undefined,'stack');
+   for(const replica of replicas){const h=hostById.get(replica.host_id)||{},line=node('div',undefined,'row');line.append(node('span','副本 '+fmt(h.name||replica.host_id),'grow'),badge(fmt(replica.status),replica.status==='ACTIVE'?'ok':'bad'));box.append(line)}
+   c.append(box)
+  }else if(policy.mode==='REPLICA')c.append(node('p','当前没有远程副本','muted'));
+  const options=candidates.filter(x=>x.service_id===row.service_id&&x.eligible);
+  const rejected=candidates.filter(x=>x.service_id===row.service_id&&!x.eligible);
+  if(row.migration_class!=='PRIMARY_STATEFUL'&&options.length){
+   const controls=node('div',undefined,'row'),select=document.createElement('select');
+   for(const fit of options){const o=node('option',(fit.host_name||fit.host_id)+' · fit '+fmt(fit.score));o.value=fit.host_id;select.append(o)}
+   const label=policy.mode==='REPLICA'?'复制到主机':'迁移到主机',b=node('button',label);
+   b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash((policy.mode==='REPLICA'?'复制':'迁移')+'计划已创建');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};
+   controls.append(select,b);c.append(controls)
+  }else if(row.migration_class!=='PRIMARY_STATEFUL'){
+   c.append(node('p','当前无符合资源约束的远程主机','muted'));
+   for(const fit of rejected.slice(0,3))c.append(node('div',fmt(fit.host_name||fit.host_id)+' · '+(fit.reasons||[]).join(', '),'mono muted'))
+  }
+  root.append(c)
+ }
 }
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();
@@ -251,7 +274,7 @@ let activeAccountProvider='';
 function accountStatusKind(status){
  if(status==='CONNECTED')return 'ok';
  if(status==='DEGRADED')return 'bad';
- if(status==='AUTHENTICATING'||status==='NEEDS_LOGIN')return 'pending';
+ if(status==='AUTHENTICATING'||status==='NEEDS_LOGIN'||status==='NEEDS_AUTHORIZATION')return 'pending';
  return 'info'
 }
 function renderAccounts(data){
@@ -263,22 +286,33 @@ function renderAccounts(data){
   if(row.identity)c.append(node('div','@'+row.identity,'mono'));
   const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
   for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
+  const bindings=row.bindings||[];
+  for(const binding of bindings){
+   const line=node('div',undefined,'row'),copy=node('div',undefined,'grow');
+   copy.append(node('strong',binding.label||binding.binding_id),node('div',(binding.purpose||'')+' · '+(binding.auth_mode||''),'muted'));
+   line.append(copy,badge(binding.status||'UNKNOWN',accountStatusKind(binding.status)));
+   if(binding.identity)line.append(node('span','@'+binding.identity,'mono muted'));
+   c.append(line)
+  }
   if(row.note)c.append(node('p',row.note,'muted'));if(row.last_error)c.append(node('p',row.last_error,'error'));
   const actions=node('div',undefined,'account-actions');
-  if(row.implemented){
-   const connect=node('button',row.status==='CONNECTED'?'重新连接':'连接','primary');
+  if(row.provider_id==='x'){
+   const web=bindings.find(x=>x.binding_id==='browser_session');
+   const connect=node('button',web&&web.status==='CONNECTED'?'重新连接网页会话':'网页登录（网页自动化）','ghost');
    connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
-   const verify=node('button','验证','ghost');
-   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(row.label+' · '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
+   const verify=node('button','验证网页会话','ghost');
+   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash('Browser session · '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
    actions.append(connect,verify)
-  }else actions.append(badge('待接入适配器','info'));
+  }else if(row.implemented){
+   const connect=node('button','连接','primary');connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));actions.append(connect)
+  }else actions.append(badge('OAuth adapter slot','info'));
   c.append(actions);root.append(c)
  }
 }
 async function beginAccountConnect(row){
  activeAccountProvider=row.provider_id;selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent='连接 '+row.label;
- el('localBrowserStatus').textContent='正在打开安全登录页…';
+ el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent=row.label+' · 服务器网页会话';
+ el('localBrowserStatus').textContent='正在打开 Ferro 服务器上的网页会话…';
  const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
  if(out.account&&out.account.status==='CONNECTED')flash(row.label+' 已连接');
  await new Promise(r=>setTimeout(r,250));await accountLoginSnapshot(5);await refresh()
@@ -292,12 +326,28 @@ async function accountLoginSnapshot(retries=3){
    shot.src='data:image/jpeg;base64,'+out.screenshot_b64;shot.classList.remove('hidden');
    status.textContent=(out.authenticated?'已连接'+(out.identity?' · @'+out.identity:'')+' · ':'')+fmt(out.url)+' · '+fmt(out.title);
    if(out.authenticated){flash('账户已连接');await refresh()}return out
-  }catch(e){last=e;if(e.status!==502||i===retries-1)throw e;await new Promise(r=>setTimeout(r,350))}
+  }catch(e){
+   last=e;
+   if(e.status===409&&i<retries-1){
+    await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/connect',{method:'POST',body:'{}'});
+    await new Promise(r=>setTimeout(r,300));continue
+   }
+   if(e.status!==502||i===retries-1)throw e;
+   await new Promise(r=>setTimeout(r,350))
+  }
  }throw last
 }
 async function accountLoginAction(action,body={}){
  if(!activeAccountProvider)throw new Error('没有正在进行的账户登录');
- await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/'+action,{method:'POST',body:JSON.stringify(body)});
+ const provider=activeAccountProvider;
+ try{
+  await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/'+action,{method:'POST',body:JSON.stringify(body)})
+ }catch(e){
+  if(e.status!==409)throw e;
+  await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/connect',{method:'POST',body:'{}'});
+  await new Promise(r=>setTimeout(r,250));await accountLoginSnapshot(5);
+  throw new Error('服务器网页会话刚刚恢复，请再操作一次')
+ }
  await new Promise(r=>setTimeout(r,250));return accountLoginSnapshot(5)
 }
 function renderResources(data){

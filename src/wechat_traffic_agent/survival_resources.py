@@ -26,6 +26,46 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 DOMAINS = ("STORAGE", "COMPUTE", "HOSTING", "REMOTE_MACHINE", "SERVICE")
 OPEN_NEED_STATES = {"PENDING", "APPROVED", "AWAITING_RESOURCE"}
 
+SERVICE_PLACEMENT_DEFAULTS: dict[str, dict[str, Any]] = {
+    "content-agent-core": {
+        "resource_requirements": {
+            "cpu_count": 2,
+            "memory_available_gib": 2.0,
+            "disk_free_gib": 5.0,
+        },
+        "placement_policy": {
+            "mode": "PRIMARY_STATEFUL",
+            "desired_remote_replicas": 0,
+            "automatic": False,
+        },
+    },
+    "website-static": {
+        "resource_requirements": {
+            "cpu_count": 1,
+            "memory_available_gib": 0.05,
+            "disk_free_gib": 0.25,
+        },
+        "placement_policy": {
+            "mode": "REPLICA",
+            "desired_remote_replicas": 1,
+            "automatic": True,
+        },
+    },
+    "resource-research": {
+        "resource_requirements": {
+            "cpu_count": 1,
+            "memory_available_gib": 0.5,
+            "disk_free_gib": 1.0,
+        },
+        "placement_policy": {
+            "mode": "MOVE",
+            "desired_remote_replicas": 0,
+            "automatic": False,
+            "only_when_local_pressure": True,
+        },
+    },
+}
+
 
 def _iso(now: datetime) -> str:
     if now.tzinfo is None or now.utcoffset() is None:
@@ -116,6 +156,8 @@ class SurvivalResourceManager:
             "memory_used_ratio": None if mem_ratio is None else round(mem_ratio, 4),
             "observed_at": instant,
         }
+        self._refresh_remote_hosts(now=now)
+        self._refresh_service_replicas(now=now)
         remote_hosts = self._remote_host_resources(instant)
         services = self._service_resources(instant)
         resources = [storage, compute, local_host, *remote_hosts, *services]
@@ -124,10 +166,27 @@ class SurvivalResourceManager:
             "observed_at": instant,
             "resources": resources,
         })
+        active_remote = any(row.get("status") == "ACTIVE" for row in remote_hosts)
+        usable_remote = any(
+            row.get("status") == "ACTIVE"
+            and row.get("receiver_status") == "VERIFIED"
+            and row.get("deployment_capable")
+            for row in self.remote_hosts()
+        )
+        degraded_replica = any(
+            replica.get("status") != "ACTIVE"
+            for service in self.services()
+            for replica in service.get("replicas") or ()
+        )
+        automatic_replica_gap = self._has_automatic_replica_gap()
         needs = self._reconcile_needs(
-            now=now, storage_pressure=storage_pressure,
+            now=now,
+            storage_pressure=storage_pressure,
             compute_pressure=compute_pressure,
-            active_remote=any(row.get("status") == "ACTIVE" for row in remote_hosts),
+            active_remote=active_remote,
+            usable_remote=usable_remote,
+            degraded_replica=degraded_replica,
+            automatic_replica_gap=automatic_replica_gap,
         )
         pressure = "CRITICAL" if storage_pressure and compute_pressure else (
             "CONSERVE" if storage_pressure or compute_pressure else "NORMAL"
@@ -139,7 +198,12 @@ class SurvivalResourceManager:
             "prefer_restructure_before_relocation": True,
             "remote_offload_requires_verified_host": True,
             "primary_migration_requires_explicit_approval": True,
-            "safe_local_actions": ["RECLAIM_TRANSIENT_STORAGE", "APPLY_CONSERVATION_POLICY"],
+            "safe_local_actions": [
+                "RECLAIM_TRANSIENT_STORAGE",
+                "APPLY_CONSERVATION_POLICY",
+                "ENSURE_SERVICE_REPLICA",
+                "RESTORE_SERVICE_REPLICA",
+            ],
         }
         _atomic_json(self.policy_path, policy)
         return {
@@ -157,6 +221,7 @@ class SurvivalResourceManager:
             "needs": self.needs(),
             "remote_hosts": self.remote_hosts(),
             "services": self.services(),
+            "placement_candidates": self.placement_candidates(),
             "policy": _load_json(self.policy_path, {}),
             "actions": self.actions(limit=30),
         }
@@ -177,24 +242,87 @@ class SurvivalResourceManager:
                     "service_id": "content-agent-core",
                     "role": "PRIMARY_STATEFUL",
                     "placement": "host:local",
+                    "primary_placement": "host:local",
+                    "replicas": [],
                     "migration_class": "PRIMARY_STATEFUL",
                     "deployment_profile": "content.core.v1",
+                    **json.loads(json.dumps(SERVICE_PLACEMENT_DEFAULTS["content-agent-core"])),
                 },
                 {
                     "service_id": "website-static",
                     "role": "PUBLIC_SURFACE",
                     "placement": "host:local",
+                    "primary_placement": "host:local",
+                    "replicas": [],
                     "migration_class": "REPLICABLE",
                     "deployment_profile": "content.website-static.v1",
+                    **json.loads(json.dumps(SERVICE_PLACEMENT_DEFAULTS["website-static"])),
                 },
                 {
                     "service_id": "resource-research",
                     "role": "BACKGROUND_WORK",
                     "placement": "host:local",
+                    "primary_placement": "host:local",
+                    "replicas": [],
                     "migration_class": "DISPOSABLE_COMPUTE",
                     "deployment_profile": "content.resource-research.v1",
+                    **json.loads(json.dumps(SERVICE_PLACEMENT_DEFAULTS["resource-research"])),
                 },
             ]
+            _atomic_json(self.services_path, value)
+            return value
+
+        changed = False
+        for row in value:
+            if not isinstance(row, dict):
+                continue
+            service_id = str(row.get("service_id") or "")
+            defaults = SERVICE_PLACEMENT_DEFAULTS.get(service_id) or {}
+            for field in ("resource_requirements", "placement_policy"):
+                if field not in row and field in defaults:
+                    row[field] = json.loads(json.dumps(defaults[field]))
+                    changed = True
+            migration_class = str(row.get("migration_class") or "")
+            replicas = row.get("replicas")
+            if not isinstance(replicas, list):
+                replicas = []
+                row["replicas"] = replicas
+                changed = True
+            primary = str(row.get("primary_placement") or "").strip()
+            placement = str(row.get("placement") or "host:local").strip() or "host:local"
+            if migration_class == "REPLICABLE":
+                if not primary:
+                    primary = "host:local"
+                    row["primary_placement"] = primary
+                    changed = True
+                if placement != primary and row.get("deployment_id"):
+                    if not any(
+                        str(item.get("host_id") or "") == placement
+                        for item in replicas
+                        if isinstance(item, dict)
+                    ):
+                        replicas.append({
+                            "host_id": placement,
+                            "status": "ACTIVE",
+                            "deployment_id": row.get("deployment_id"),
+                            "deployment_url": row.get("deployment_url"),
+                            "artifact_sha256": row.get("artifact_sha256"),
+                            "updated_at": row.get("updated_at"),
+                        })
+                    for field in (
+                        "deployment_id", "deployment_url", "artifact_sha256", "updated_at"
+                    ):
+                        row.pop(field, None)
+                    row["placement"] = primary
+                    changed = True
+                elif placement != primary:
+                    row["placement"] = primary
+                    changed = True
+            else:
+                if not primary:
+                    row["primary_placement"] = placement
+                    changed = True
+        if changed:
             _atomic_json(self.services_path, value)
         return value
 
@@ -231,8 +359,23 @@ class SurvivalResourceManager:
             elif action == "APPLY_CONSERVATION_POLICY":
                 result = {"status": "APPLIED", "mode": "CONSERVE"}
                 row["status"] = "EXECUTED"
-            elif action in {"DISCOVER_REMOTE_MACHINE", "OFFLOAD_NON_CORE_SERVICE", "MIGRATE_PRIMARY"}:
-                result = {"status": "AWAITING_RESOURCE", "reason": "verified remote host required"}
+            elif action == "RESTORE_SERVICE_REPLICA":
+                result = self._restore_degraded_replica(now=now)
+                row["status"] = (
+                    "EXECUTED" if result.get("status") == "DEPLOYED" else "AWAITING_RESOURCE"
+                )
+            elif action == "ENSURE_SERVICE_REPLICA":
+                result = self._ensure_automatic_replica(now=now)
+                row["status"] = (
+                    "EXECUTED" if result.get("status") == "DEPLOYED" else "AWAITING_RESOURCE"
+                )
+            elif action in {
+                "DISCOVER_REMOTE_MACHINE",
+                "RESTORE_REMOTE_RECEIVER",
+                "OFFLOAD_NON_CORE_SERVICE",
+                "MIGRATE_PRIMARY",
+            }:
+                result = {"status": "AWAITING_RESOURCE", "reason": "verified remote host or receiver required"}
                 row["status"] = "AWAITING_RESOURCE"
             else:
                 result = {"status": "UNSUPPORTED", "action": action}
@@ -570,6 +713,12 @@ class SurvivalResourceManager:
                 and bool(target["agent_id"])
                 and bool(target["public_key"])
             )
+            if isinstance(payload.get("capacity"), dict):
+                target["capacity"] = dict(payload["capacity"])
+            target["receiver_status"] = (
+                "VERIFIED" if target["deployment_capable"] else "UNAVAILABLE"
+            )
+            target["last_health_at"] = _iso(now)
             target["health_evidence"] = "remote-health:" + sha256(
                 json.dumps(payload, sort_keys=True).encode()
             ).hexdigest()
@@ -590,6 +739,85 @@ class SurvivalResourceManager:
         }, now)
         return target
 
+    def placement_candidates(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        services = self.services()
+        hosts = self.remote_hosts()
+        for service in services:
+            service_id = str(service.get("service_id") or "")
+            for host in hosts:
+                fit = self._placement_fit(service, host)
+                rows.append({
+                    "service_id": service_id,
+                    "host_id": host.get("host_id"),
+                    "host_name": host.get("name"),
+                    "eligible": fit["eligible"],
+                    "reasons": fit["reasons"],
+                    "requirements": dict(service.get("resource_requirements") or {}),
+                    "capacity": dict(host.get("capacity") or {}),
+                    "deployment_profile": service.get("deployment_profile"),
+                    "placement_mode": (service.get("placement_policy") or {}).get("mode"),
+                    "score": fit["score"],
+                })
+        rows.sort(
+            key=lambda row: (
+                str(row.get("service_id") or ""),
+                not bool(row.get("eligible")),
+                -float(row.get("score") or 0.0),
+                str(row.get("host_id") or ""),
+            )
+        )
+        return rows
+
+    def _placement_fit(
+        self, service: dict[str, Any], host: dict[str, Any]
+    ) -> dict[str, Any]:
+        reasons: list[str] = []
+        if host.get("status") != "ACTIVE":
+            reasons.append("HOST_NOT_ACTIVE")
+        if host.get("receiver_status") != "VERIFIED":
+            reasons.append("RECEIVER_NOT_VERIFIED")
+        if not host.get("deployment_capable"):
+            reasons.append("DEPLOYMENT_CAPABILITY_UNAVAILABLE")
+
+        profile = str(service.get("deployment_profile") or "")
+        if profile and profile not in set(host.get("deployment_profiles") or ()):
+            reasons.append("DEPLOYMENT_PROFILE_UNSUPPORTED")
+
+        requirements = dict(service.get("resource_requirements") or {})
+        capacity = dict(host.get("capacity") or {})
+        checks = (
+            ("cpu_count", "CPU_CAPACITY_INSUFFICIENT"),
+            ("memory_available_gib", "MEMORY_HEADROOM_INSUFFICIENT"),
+            ("disk_free_gib", "DISK_HEADROOM_INSUFFICIENT"),
+        )
+        ratios: list[float] = []
+        for field, reason in checks:
+            required_raw = requirements.get(field)
+            if required_raw is None:
+                continue
+            try:
+                required = float(required_raw)
+                available = float(capacity.get(field))
+            except (TypeError, ValueError):
+                reasons.append(field.upper() + "_UNKNOWN")
+                continue
+            if available < required:
+                reasons.append(reason)
+            elif required > 0:
+                ratios.append(available / required)
+
+        migration_class = str(service.get("migration_class") or "")
+        if migration_class == "PRIMARY_STATEFUL":
+            reasons.append("PRIMARY_STATEFUL_REQUIRES_DEDICATED_MIGRATION")
+
+        score = min(ratios) if ratios else 0.0
+        return {
+            "eligible": not reasons,
+            "reasons": reasons,
+            "score": round(score, 4),
+        }
+
     def plan_offload(
         self, service_id: str, host_id: str, *, now: datetime
     ) -> dict[str, Any]:
@@ -606,6 +834,12 @@ class SurvivalResourceManager:
         profile = str(service.get("deployment_profile") or "")
         if profile not in set(host.get("deployment_profiles") or ()):
             raise ValueError("remote host does not support this deployment profile")
+        fit = self._placement_fit(service, host)
+        if not fit["eligible"]:
+            raise ValueError(
+                "remote host does not satisfy workload requirements: "
+                + ",".join(fit["reasons"])
+            )
         plan = {
             "action_id": "placement:" + sha256(
                 (service_id + "|" + host_id + "|" + _iso(now)).encode()
@@ -678,9 +912,34 @@ class SurvivalResourceManager:
                 artifact=dict(payload["artifact"]),
             )
 
+        placement_mode = "MOVED"
         for row in service_rows:
-            if row.get("service_id") == service_id:
+            if row.get("service_id") != service_id:
+                continue
+            if str(row.get("migration_class") or "") == "REPLICABLE":
+                placement_mode = "REPLICA"
+                row["primary_placement"] = str(
+                    row.get("primary_placement") or row.get("placement") or "host:local"
+                )
+                row["placement"] = row["primary_placement"]
+                replicas = [
+                    item for item in row.get("replicas") or []
+                    if isinstance(item, dict) and str(item.get("host_id") or "") != host_id
+                ]
+                replicas.append({
+                    "host_id": host_id,
+                    "status": "ACTIVE",
+                    "deployment_id": deployment_id,
+                    "deployment_url": deployment_url or None,
+                    "artifact_sha256": str(receipt.get("artifact_sha256") or ""),
+                    "index_sha256": str(payload["artifact"].get("index_sha256") or ""),
+                    "last_verified_at": _iso(now),
+                    "updated_at": _iso(now),
+                })
+                row["replicas"] = replicas
+            else:
                 row["placement"] = host_id
+                row["primary_placement"] = host_id
                 row["deployment_id"] = deployment_id
                 row["deployment_url"] = deployment_url or None
                 row["artifact_sha256"] = str(receipt.get("artifact_sha256") or "")
@@ -689,6 +948,7 @@ class SurvivalResourceManager:
         result = {
             "action_id": action_id,
             "action": "OFFLOAD_NON_CORE_SERVICE",
+            "placement_mode": placement_mode,
             "service_id": service_id,
             "host_id": host_id,
             "status": "DEPLOYED",
@@ -783,9 +1043,250 @@ class SurvivalResourceManager:
                 rows.append(value)
         return rows[-max(1, int(limit)):]
 
+    def _refresh_remote_hosts(self, *, now: datetime) -> None:
+        rows = self.remote_hosts()
+        changed = False
+        for row in rows:
+            health_url = str(row.get("health_url") or "").strip()
+            if not health_url:
+                continue
+            try:
+                payload = self._http_json(health_url, method="GET", timeout=8.0)
+                healthy = str(payload.get("status") or payload.get("health") or "").upper()
+                if healthy not in {"OK", "HEALTHY", "READY"}:
+                    raise RuntimeError("remote receiver health is not ready")
+                remote_instance = str(payload.get("host_instance_id") or "").strip()
+                expected_instance = str(row.get("host_instance_id") or "").strip()
+                if expected_instance and remote_instance != expected_instance:
+                    raise RuntimeError("remote receiver physical host identity changed")
+                expected_agent = str(row.get("agent_id") or row.get("expected_agent_id") or "").strip()
+                if expected_agent and str(payload.get("agent_id") or "") != expected_agent:
+                    raise RuntimeError("remote receiver agent identity changed")
+                expected_key = str(row.get("key_id") or row.get("expected_key_id") or "").strip()
+                if expected_key and str(payload.get("key_id") or "") != expected_key:
+                    raise RuntimeError("remote receiver key identity changed")
+                expected_public = str(
+                    row.get("public_key") or row.get("expected_public_key") or ""
+                ).strip()
+                if expected_public and str(payload.get("public_key") or "") != expected_public:
+                    raise RuntimeError("remote receiver public key changed")
+                capabilities = [
+                    str(item) for item in payload.get("capabilities") or ()
+                    if str(item).strip()
+                ]
+                profiles = [
+                    str(item) for item in payload.get("deployment_profiles") or ()
+                    if str(item).strip()
+                ]
+                row["status"] = "ACTIVE"
+                row["receiver_status"] = "VERIFIED"
+                row["deployment_capable"] = (
+                    bool(row.get("control_url"))
+                    and "survival.workload.deploy.v1" in capabilities
+                    and bool(payload.get("agent_id"))
+                    and bool(payload.get("public_key"))
+                )
+                row["capabilities"] = capabilities
+                row["deployment_profiles"] = profiles
+                if isinstance(payload.get("capacity"), dict):
+                    row["capacity"] = dict(payload["capacity"])
+                row["last_health_at"] = _iso(now)
+                row["last_verified_at"] = _iso(now)
+                row.pop("last_health_error", None)
+                changed = True
+            except Exception as exc:
+                if row.get("receiver_status") not in {None, "NOT_PROVISIONED"}:
+                    row["receiver_status"] = "DEGRADED"
+                    row["deployment_capable"] = False
+                    if row.get("management_transport") != "SSH_KEY":
+                        row["status"] = "DEGRADED"
+                    row["last_health_at"] = _iso(now)
+                    row["last_health_error"] = type(exc).__name__
+                    changed = True
+        if changed:
+            _atomic_json(self.hosts_path, rows)
+
+    def _refresh_service_replicas(self, *, now: datetime) -> None:
+        services = self.services()
+        hosts = {
+            str(row.get("host_id") or ""): row
+            for row in self.remote_hosts()
+            if isinstance(row, dict)
+        }
+        changed = False
+        for service in services:
+            replicas = service.get("replicas")
+            if not isinstance(replicas, list):
+                continue
+            profile = str(service.get("deployment_profile") or "")
+            for replica in replicas:
+                if not isinstance(replica, dict):
+                    continue
+                host = hosts.get(str(replica.get("host_id") or ""))
+                error = ""
+                try:
+                    if (
+                        host is None
+                        or host.get("status") != "ACTIVE"
+                        or host.get("receiver_status") != "VERIFIED"
+                        or not host.get("deployment_capable")
+                    ):
+                        raise RuntimeError("replica host receiver is unavailable")
+                    deployment_url = str(replica.get("deployment_url") or "").strip()
+                    if not deployment_url:
+                        raise RuntimeError("replica has no deployment URL")
+                    if profile == "content.website-static.v1":
+                        expected = str(replica.get("index_sha256") or "").strip()
+                        if not expected:
+                            expected = self._local_static_index_sha256()
+                            if expected:
+                                replica["index_sha256"] = expected
+                        body = self._http_bytes(
+                            deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024
+                        )
+                        actual = "sha256:" + sha256(body).hexdigest()
+                        if not expected or actual != expected:
+                            raise RuntimeError("replica content hash mismatch")
+                    replica["status"] = "ACTIVE"
+                    replica["last_verified_at"] = _iso(now)
+                    replica.pop("last_error", None)
+                    changed = True
+                except Exception as exc:
+                    error = type(exc).__name__
+                    if replica.get("status") != "DEGRADED" or replica.get("last_error") != error:
+                        changed = True
+                    replica["status"] = "DEGRADED"
+                    replica["last_error"] = error
+                    replica["last_verified_at"] = _iso(now)
+        if changed:
+            _atomic_json(self.services_path, services)
+
+    def _local_static_index_sha256(self) -> str:
+        raw_root = str(os.environ.get("CONTENT_WEB_SITE_ROOT") or "").strip()
+        if not raw_root:
+            return ""
+        try:
+            body = (Path(raw_root).resolve(strict=True) / "index.html").read_bytes()
+        except OSError:
+            return ""
+        return "sha256:" + sha256(body).hexdigest()
+
+    def _has_automatic_replica_gap(self) -> bool:
+        candidates = self.placement_candidates()
+        by_service: dict[str, list[dict[str, Any]]] = {}
+        for row in candidates:
+            by_service.setdefault(str(row.get("service_id") or ""), []).append(row)
+        for service in self.services():
+            policy = dict(service.get("placement_policy") or {})
+            if not policy.get("automatic") or str(policy.get("mode") or "") != "REPLICA":
+                continue
+            desired = max(0, int(policy.get("desired_remote_replicas") or 0))
+            replicas = [
+                item for item in service.get("replicas") or ()
+                if isinstance(item, dict)
+            ]
+            if len(replicas) >= desired:
+                continue
+            occupied = {str(item.get("host_id") or "") for item in replicas}
+            if any(
+                row.get("eligible") and str(row.get("host_id") or "") not in occupied
+                for row in by_service.get(str(service.get("service_id") or ""), ())
+            ):
+                return True
+        return False
+
+    def _ensure_automatic_replica(self, *, now: datetime) -> dict[str, Any]:
+        candidates = self.placement_candidates()
+        for service in self.services():
+            policy = dict(service.get("placement_policy") or {})
+            if not policy.get("automatic") or str(policy.get("mode") or "") != "REPLICA":
+                continue
+            desired = max(0, int(policy.get("desired_remote_replicas") or 0))
+            replicas = [
+                item for item in service.get("replicas") or ()
+                if isinstance(item, dict)
+            ]
+            if len(replicas) >= desired:
+                continue
+            occupied = {str(item.get("host_id") or "") for item in replicas}
+            eligible = [
+                row for row in candidates
+                if row.get("service_id") == service.get("service_id")
+                and row.get("eligible")
+                and str(row.get("host_id") or "") not in occupied
+            ]
+            if not eligible:
+                continue
+            eligible.sort(
+                key=lambda row: (-float(row.get("score") or 0.0), str(row.get("host_id") or ""))
+            )
+            target = eligible[0]
+            try:
+                plan = self.plan_offload(
+                    str(service.get("service_id") or ""),
+                    str(target.get("host_id") or ""),
+                    now=now,
+                )
+                result = self.execute_offload(plan["action_id"], now=now)
+                result["automatic_replica"] = True
+                result["placement_score"] = target.get("score")
+                return result
+            except Exception as exc:
+                return {
+                    "status": "FAILED",
+                    "reason": "automatic replica deployment failed",
+                    "error_type": type(exc).__name__,
+                    "service_id": service.get("service_id"),
+                    "host_id": target.get("host_id"),
+                }
+        return {
+            "status": "AWAITING_RESOURCE",
+            "reason": "no automatic replica placement is currently eligible",
+        }
+
+    def _restore_degraded_replica(self, *, now: datetime) -> dict[str, Any]:
+        hosts = {
+            str(row.get("host_id") or ""): row
+            for row in self.remote_hosts()
+            if (
+                row.get("status") == "ACTIVE"
+                and row.get("receiver_status") == "VERIFIED"
+                and row.get("deployment_capable")
+            )
+        }
+        for service in self.services():
+            if str(service.get("migration_class") or "") != "REPLICABLE":
+                continue
+            for replica in service.get("replicas") or ():
+                if not isinstance(replica, dict) or replica.get("status") == "ACTIVE":
+                    continue
+                host_id = str(replica.get("host_id") or "")
+                if host_id not in hosts:
+                    continue
+                try:
+                    plan = self.plan_offload(
+                        str(service.get("service_id") or ""), host_id, now=now
+                    )
+                    result = self.execute_offload(plan["action_id"], now=now)
+                    result["repair_of_replica"] = host_id
+                    return result
+                except Exception as exc:
+                    return {
+                        "status": "FAILED",
+                        "reason": "replica repair attempt failed",
+                        "error_type": type(exc).__name__,
+                        "repair_of_replica": host_id,
+                    }
+        return {
+            "status": "AWAITING_RESOURCE",
+            "reason": "no degraded replica has a verified deployment-capable host",
+        }
+
     def _reconcile_needs(
         self, *, now: datetime, storage_pressure: bool,
         compute_pressure: bool, active_remote: bool,
+        usable_remote: bool, degraded_replica: bool,
+        automatic_replica_gap: bool,
     ) -> list[dict[str, Any]]:
         rows = self.needs()
         desired: list[tuple[str, str, str, str]] = []
@@ -798,9 +1299,37 @@ class SurvivalResourceManager:
         if not active_remote:
             desired.append(("REMOTE_MACHINE", "DISCOVER_REMOTE_MACHINE", "NORMAL",
                             "No verified remote body is available for continuity or pressure relief"))
-        if (storage_pressure or compute_pressure) and active_remote:
+        elif not usable_remote:
+            desired.append(("REMOTE_MACHINE", "RESTORE_REMOTE_RECEIVER", "HIGH",
+                            "A remote body exists but its signed workload receiver is unavailable"))
+        if degraded_replica:
+            desired.append(("SERVICE", "RESTORE_SERVICE_REPLICA", "HIGH",
+                            "A managed service replica failed its remote health or content verification"))
+        if automatic_replica_gap:
+            desired.append(("SERVICE", "ENSURE_SERVICE_REPLICA", "NORMAL",
+                            "A service policy requires a remote replica and an eligible host is available"))
+        if (storage_pressure or compute_pressure) and usable_remote:
             desired.append(("SERVICE", "OFFLOAD_NON_CORE_SERVICE", "NORMAL",
                             "Move non-core workloads before considering primary migration"))
+
+        desired_keys = {(domain, action) for domain, action, _, _ in desired}
+        managed_actions = {
+            "DISCOVER_REMOTE_MACHINE",
+            "RESTORE_REMOTE_RECEIVER",
+            "RESTORE_SERVICE_REPLICA",
+            "ENSURE_SERVICE_REPLICA",
+            "OFFLOAD_NON_CORE_SERVICE",
+        }
+        for row in rows:
+            key = (str(row.get("domain") or ""), str(row.get("action") or ""))
+            if (
+                str(row.get("action") or "") in managed_actions
+                and row.get("status") in OPEN_NEED_STATES
+                and key not in desired_keys
+            ):
+                row["status"] = "SATISFIED"
+                row["satisfied_at"] = _iso(now)
+
         for domain, action, urgency, reason in desired:
             existing = next(
                 (row for row in rows
@@ -814,6 +1343,8 @@ class SurvivalResourceManager:
                     "RECLAIM_TRANSIENT_STORAGE",
                     "APPLY_CONSERVATION_POLICY",
                     "DISCOVER_REMOTE_MACHINE",
+                    "RESTORE_SERVICE_REPLICA",
+                    "ENSURE_SERVICE_REPLICA",
                 }
                 rows.append({
                     "need_id": "survival-need:" + sha256(signature.encode()).hexdigest()[:20],
@@ -853,6 +1384,10 @@ class SurvivalResourceManager:
             "location": row.get("name"),
             "reliability": row.get("reliability"),
             "capacity": row.get("capacity") or {},
+            "receiver_status": row.get("receiver_status"),
+            "deployment_capable": bool(row.get("deployment_capable")),
+            "deployment_profiles": list(row.get("deployment_profiles") or ()),
+            "last_health_at": row.get("last_health_at"),
             "observed_at": observed_at,
         } for row in self.remote_hosts()]
 
@@ -861,9 +1396,24 @@ class SurvivalResourceManager:
             "resource_id": "service:" + str(row.get("service_id")),
             "domain": "SERVICE",
             "kind": str(row.get("role") or "WORKLOAD"),
-            "status": "ACTIVE",
+            "status": "DEGRADED" if any(
+                isinstance(replica, dict) and replica.get("status") != "ACTIVE"
+                for replica in row.get("replicas") or ()
+            ) else "ACTIVE",
             "placement": row.get("placement"),
+            "primary_placement": row.get("primary_placement") or row.get("placement"),
             "migration_class": row.get("migration_class"),
+            "deployment_profile": row.get("deployment_profile"),
+            "resource_requirements": dict(row.get("resource_requirements") or {}),
+            "placement_policy": dict(row.get("placement_policy") or {}),
+            "replica_count": sum(
+                1 for replica in row.get("replicas") or () if isinstance(replica, dict)
+            ),
+            "active_replica_count": sum(
+                1 for replica in row.get("replicas") or ()
+                if isinstance(replica, dict) and replica.get("status") == "ACTIVE"
+            ),
+            "replicas": list(row.get("replicas") or ()),
             "observed_at": observed_at,
         } for row in self.services()]
 

@@ -115,6 +115,7 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
                 "public_key":remote_identity.public_key,
                 "capabilities":["survival.workload.deploy.v1"],
                 "deployment_profiles":["content.website-static.v1"],
+                "capacity":{"cpu_count":2,"memory_available_gib":2.0,"disk_free_gib":10.0},
             }
         assert payload and payload["type"] == "survival.workload.deploy.v1"
         artifact = payload["artifact"]
@@ -147,7 +148,12 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
     deployed = manager.execute_offload(plan["action_id"], now=NOW)
     assert deployed["status"] == "DEPLOYED"
     service = next(row for row in manager.services() if row["service_id"] == "website-static")
-    assert service["placement"] == host["host_id"]
+    assert service["placement"] == "host:local"
+    assert service["primary_placement"] == "host:local"
+    assert len(service["replicas"]) == 1
+    assert service["replicas"][0]["host_id"] == host["host_id"]
+    assert service["replicas"][0]["status"] == "ACTIVE"
+    assert deployed["placement_mode"] == "REPLICA"
     with pytest.raises(ValueError, match="primary stateful"):
         manager.plan_offload("content-agent-core", host["host_id"], now=NOW)
 
@@ -392,3 +398,213 @@ def test_ssh_managed_host_binds_only_matching_signed_receiver(tmp_path, monkeypa
     card["survival_resource"]["host_instance_id"] = "host-instance:someone-else"
     with pytest.raises(Exception):
         manager.bind_signed_receiver(host_id, origin=origin, now=NOW)
+
+def test_replicable_legacy_remote_placement_migrates_to_primary_plus_replica(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text("legacy", encoding="utf-8")
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    manager.services_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.services_path.write_text(json.dumps([{
+        "service_id":"website-static",
+        "role":"PUBLIC_SURFACE",
+        "placement":"remote-host:legacy",
+        "migration_class":"REPLICABLE",
+        "deployment_profile":"content.website-static.v1",
+        "deployment_id":"deployment:legacy",
+        "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+        "artifact_sha256":"sha256:artifact",
+        "updated_at":NOW.isoformat(),
+    }]))
+    row = manager.services()[0]
+    assert row["placement"] == "host:local"
+    assert row["primary_placement"] == "host:local"
+    assert len(row["replicas"]) == 1
+    assert row["replicas"][0]["host_id"] == "remote-host:legacy"
+    assert row["replicas"][0]["deployment_id"] == "deployment:legacy"
+    assert "deployment_id" not in row
+
+
+def test_resource_review_degrades_and_recovers_receiver_and_replica(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    index = b"<h1>replica</h1>"
+    (site / "index.html").write_bytes(index)
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    host_id = "remote-host:health-test"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":host_id,
+        "name":"edge",
+        "management_transport":"SSH_KEY",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "host_instance_id":"host-instance:edge",
+        "health_url":"https://edge.example.test/application/survival/host",
+        "control_url":"https://edge.example.test/application/survival/workloads",
+        "agent_id":"seed.edge",
+        "key_id":"key-edge",
+        "public_key":"ed25519:edge",
+        "capacity":{"memory_available_gib":1.0},
+    }]))
+    manager.services_path.write_text(json.dumps([{
+        "service_id":"website-static",
+        "role":"PUBLIC_SURFACE",
+        "placement":"host:local",
+        "primary_placement":"host:local",
+        "migration_class":"REPLICABLE",
+        "deployment_profile":"content.website-static.v1",
+        "replicas":[{
+            "host_id":host_id,
+            "status":"ACTIVE",
+            "deployment_id":"deployment:test",
+            "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+            "index_sha256":"sha256:" + __import__('hashlib').sha256(index).hexdigest(),
+        }],
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+    monkeypatch.setattr(manager, "_http_json", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("down")))
+    degraded = manager.observe(now=NOW)
+    host = manager.remote_hosts()[0]
+    service = manager.services()[0]
+    assert host["status"] == "ACTIVE"
+    assert host["receiver_status"] == "DEGRADED"
+    assert host["deployment_capable"] is False
+    assert service["replicas"][0]["status"] == "DEGRADED"
+    needs = {(x["action"], x["status"]) for x in degraded["needs"]}
+    assert ("RESTORE_REMOTE_RECEIVER", "PENDING") in needs
+    assert ("RESTORE_SERVICE_REPLICA", "APPROVED") in needs
+
+    def healthy(url, *, method, payload=None, timeout):
+        return {
+            "status":"HEALTHY",
+            "host_instance_id":"host-instance:edge",
+            "agent_id":"seed.edge",
+            "key_id":"key-edge",
+            "public_key":"ed25519:edge",
+            "capabilities":["survival.workload.deploy.v1"],
+            "deployment_profiles":["content.website-static.v1"],
+            "capacity":{"cpu_count":2,"memory_available_gib":3.25,"disk_free_gib":20.0},
+        }
+    monkeypatch.setattr(manager, "_http_json", healthy)
+    monkeypatch.setattr(manager, "_http_bytes", lambda *args, **kwargs: index)
+    recovered = manager.observe(now=NOW.replace(minute=5))
+    host = manager.remote_hosts()[0]
+    service = manager.services()[0]
+    assert host["receiver_status"] == "VERIFIED"
+    assert host["deployment_capable"] is True
+    assert host["capacity"]["memory_available_gib"] == 3.25
+    assert service["replicas"][0]["status"] == "ACTIVE"
+    current = {x["action"]:x["status"] for x in recovered["needs"]}
+    assert current["RESTORE_REMOTE_RECEIVER"] == "SATISFIED"
+    assert current["RESTORE_SERVICE_REPLICA"] == "SATISFIED"
+
+def test_placement_policy_accepts_static_but_rejects_research_on_tiny_host(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:tiny",
+        "name":"tiny-edge",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "control_url":"https://edge.example.test/application/survival/workloads",
+        "deployment_profiles":["content.website-static.v1","content.resource-research.v1"],
+        "capacity":{"cpu_count":1,"memory_available_gib":0.17,"disk_free_gib":8.4},
+    }]))
+    rows = manager.placement_candidates()
+    by_service = {row["service_id"]:row for row in rows}
+    assert by_service["website-static"]["eligible"] is True
+    assert by_service["website-static"]["placement_mode"] == "REPLICA"
+    assert by_service["resource-research"]["eligible"] is False
+    assert "MEMORY_HEADROOM_INSUFFICIENT" in by_service["resource-research"]["reasons"]
+    assert by_service["content-agent-core"]["eligible"] is False
+    assert "PRIMARY_STATEFUL_REQUIRES_DEDICATED_MIGRATION" in by_service["content-agent-core"]["reasons"]
+
+
+def test_resource_review_auto_deploys_missing_static_replica(tmp_path, monkeypatch):
+    from agent_network.crypto import Identity
+
+    site = tmp_path / "site"
+    site.mkdir()
+    index = b"<h1>automatic replica</h1>"
+    (site / "index.html").write_bytes(index)
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("seed.auto.edge")
+    host_id = "remote-host:auto-edge"
+    health_url = "https://edge.example.test/application/survival/host"
+    control_url = "https://edge.example.test/application/survival/workloads"
+    deployment_url = "https://edge.example.test/application/survival/workloads/website-static/"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":host_id,
+        "name":"auto-edge",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "host_instance_id":"host-instance:auto-edge",
+        "health_url":health_url,
+        "control_url":control_url,
+        "agent_id":remote.agent_id,
+        "key_id":remote.key_id,
+        "public_key":remote.public_key,
+        "deployment_profiles":["content.website-static.v1"],
+        "capacity":{"cpu_count":1,"memory_available_gib":0.2,"disk_free_gib":8.0},
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+
+    def remote_call(url, *, method, payload=None, timeout):
+        if method == "GET":
+            assert url == health_url
+            return {
+                "status":"HEALTHY",
+                "host_instance_id":"host-instance:auto-edge",
+                "agent_id":remote.agent_id,
+                "key_id":remote.key_id,
+                "public_key":remote.public_key,
+                "capabilities":["survival.workload.deploy.v1"],
+                "deployment_profiles":["content.website-static.v1"],
+                "capacity":{"cpu_count":1,"memory_available_gib":0.2,"disk_free_gib":8.0},
+            }
+        assert url == control_url
+        receipt = {
+            "type":"survival.workload.deploy.receipt.v1",
+            "status":"DEPLOYED",
+            "action_id":payload["action_id"],
+            "request_hash":payload["object_hash"],
+            "deployment_id":"deployment:auto",
+            "deployment_url":deployment_url,
+            "artifact_sha256":payload["artifact"]["sha256"],
+            "agent_id":remote.agent_id,
+            "key_id":remote.key_id,
+        }
+        receipt["signature"] = remote.sign_object(receipt)
+        return receipt
+
+    monkeypatch.setattr(manager, "_http_json", remote_call)
+    monkeypatch.setattr(manager, "_http_bytes", lambda *args, **kwargs: index)
+    observed = manager.observe(now=NOW)
+    ensure = next(row for row in observed["needs"] if row["action"] == "ENSURE_SERVICE_REPLICA")
+    assert ensure["status"] == "APPROVED"
+    result = manager.execute_approved(now=NOW)
+    deployed = next(row for row in result["results"] if row["action"] == "ENSURE_SERVICE_REPLICA")
+    assert deployed["status"] == "DEPLOYED"
+    assert deployed["automatic_replica"] is True
+    service = next(row for row in manager.services() if row["service_id"] == "website-static")
+    assert service["placement"] == "host:local"
+    assert len(service["replicas"]) == 1
+    assert service["replicas"][0]["host_id"] == host_id

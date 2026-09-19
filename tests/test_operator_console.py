@@ -645,6 +645,7 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
                 "public_key":remote_identity.public_key,
                 "capabilities":["survival.workload.deploy.v1"],
                 "deployment_profiles":["content.website-static.v1"],
+                "capacity":{"cpu_count":2,"memory_available_gib":2.0,"disk_free_gib":10.0},
             }
         receipt = {
             "type":"survival.workload.deploy.receipt.v1",
@@ -1084,3 +1085,21 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
     )
     assert unsupported.status_code == 409
     assert unsupported.json()["error"] == "account adapter is not installed"
+
+
+def test_operator_session_survives_authenticator_restart_without_persisting_raw_secret(tmp_path):
+    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
+    token = auth.token_path.read_text().strip()
+    session = auth.login(token, now=NOW)
+    assert session
+
+    persisted = auth.sessions_path.read_text()
+    assert session not in persisted
+    assert oct(auth.sessions_path.stat().st_mode & 0o777) == "0o600"
+
+    restarted = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
+    assert restarted.valid(session, now=NOW + timedelta(minutes=1))
+
+    restarted.logout(session)
+    again = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
+    assert not again.valid(session, now=NOW + timedelta(minutes=1))

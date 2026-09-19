@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
+import subprocess
 from typing import Any
 
 
@@ -26,10 +28,10 @@ class AccountProvider:
 
 _PROVIDERS = {
     "x": AccountProvider(
-        "x", "X", "PERSISTENT_BROWSER_SESSION",
+        "x", "X", "MULTI_BINDING",
         ("READ", "PUBLISH", "MENTIONS", "METRICS"), True,
         "https://x.com/i/flow/login",
-        "Owned local Chrome session; TinyFish remains fallback during migration.",
+        "OAuth/API identity is primary; the local browser session is only for web automation. TinyFish remains fallback during migration.",
     ),
     "youtube": AccountProvider(
         "youtube", "YouTube", "PROVIDER_ADAPTER",
@@ -45,10 +47,13 @@ _PROVIDERS = {
 
 
 class AccountManager:
-    def __init__(self, state_root: Path, *, browser_factory=None) -> None:
+    def __init__(
+        self, state_root: Path, *, browser_factory=None, xurl_status_provider=None
+    ) -> None:
         self.state_root = Path(state_root)
         self.path = self.state_root / "accounts" / "accounts.json"
         self.browser_factory = browser_factory
+        self.xurl_status_provider = xurl_status_provider
 
     def provider(self, provider_id: str) -> AccountProvider:
         try:
@@ -86,15 +91,93 @@ class AccountManager:
         for spec in _PROVIDERS.values():
             row = saved.get(spec.provider_id) or {}
             default_status = "NEEDS_LOGIN" if spec.implemented else "ADAPTER_NOT_INSTALLED"
+            saved_status = str(row.get("status") or default_status)
+            browser_status = (
+                "NEEDS_LOGIN" if saved_status == "AUTHENTICATING" else saved_status
+            )
+            bindings: list[dict[str, Any]] = []
+            overall_status = browser_status
+            identity = str(row.get("identity") or "")
+            if spec.provider_id == "x":
+                oauth = self._x_oauth_binding()
+                bindings.append(oauth)
+                bindings.append({
+                    "binding_id": "browser_session",
+                    "label": "Browser Web Session",
+                    "auth_mode": "PERSISTENT_BROWSER_SESSION",
+                    "status": browser_status,
+                    "identity": identity,
+                    "purpose": "WEB_AUTOMATION",
+                    "login_kind": "REMOTE_BROWSER",
+                })
+                if oauth["status"] == "CONNECTED":
+                    overall_status = "CONNECTED"
+                    identity = identity or str(oauth.get("identity") or "")
+            elif spec.provider_id == "youtube":
+                bindings.append({
+                    "binding_id": "oauth",
+                    "label": "Google OAuth",
+                    "auth_mode": "OAUTH2_REDIRECT",
+                    "status": "ADAPTER_NOT_INSTALLED",
+                    "identity": "",
+                    "purpose": "API_IDENTITY",
+                    "login_kind": "REDIRECT",
+                })
+            elif spec.provider_id == "email":
+                bindings.append({
+                    "binding_id": "oauth",
+                    "label": "Mailbox OAuth",
+                    "auth_mode": "OAUTH2_REDIRECT",
+                    "status": "ADAPTER_NOT_INSTALLED",
+                    "identity": "",
+                    "purpose": "API_IDENTITY",
+                    "login_kind": "REDIRECT",
+                })
             rows.append({
                 **asdict(spec),
                 "capabilities": list(spec.capabilities),
-                "status": str(row.get("status") or default_status),
-                "identity": str(row.get("identity") or ""),
+                "status": overall_status,
+                "identity": identity,
                 "verified_at": row.get("verified_at"),
                 "last_error": str(row.get("last_error") or ""),
+                "bindings": bindings,
             })
-        return {"schema_version": 1, "accounts": rows}
+        return {"schema_version": 2, "accounts": rows}
+
+    def _x_oauth_binding(self) -> dict[str, Any]:
+        status = ""
+        try:
+            if self.xurl_status_provider is not None:
+                status = str(self.xurl_status_provider() or "")
+            else:
+                completed = subprocess.run(
+                    ["xurl", "auth", "status"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                status = completed.stdout if completed.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            status = ""
+
+        block = ""
+        for candidate in re.split(r"\n\s*\n", status):
+            if "content-agent" in candidate:
+                block = candidate
+                break
+        match = re.search(r"oauth2:\s*([^\s]+)", block)
+        identity = match.group(1) if match and match.group(1) != "(none)" else ""
+        return {
+            "binding_id": "api_oauth",
+            "label": "X API OAuth",
+            "auth_mode": "OAUTH2_PKCE",
+            "status": "CONNECTED" if identity else "NEEDS_AUTHORIZATION",
+            "identity": identity,
+            "purpose": "API_IDENTITY",
+            "login_kind": "REDIRECT",
+            "headless_authorization_supported": True,
+        }
 
     def _record(
         self, provider_id: str, *, status: str, identity: str = "",
@@ -117,7 +200,11 @@ class AccountManager:
         spec = self.provider(provider_id)
         if not spec.implemented:
             raise ValueError("account adapter is not installed")
-        return self._record(provider_id, status="AUTHENTICATING")
+        return {
+            "provider_id": spec.provider_id,
+            "status": "AUTHENTICATING",
+            "identity": "",
+        }
 
     def record_connected(self, provider_id: str, *, identity: str = "") -> dict[str, Any]:
         spec = self.provider(provider_id)
