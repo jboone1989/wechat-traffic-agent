@@ -160,8 +160,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_parser().error("--audience and --topics are required (or use --serve)")
     package_root = Path(__file__).resolve().parents[2]
     manifest = load_agent_manifest(package_root / "agent.yaml")
-    backend = LegacyProviderBackend(load_llm_provider())
     state_dir = args.state_dir.resolve()
+    from .llm_audit import audited_provider
+    backend = LegacyProviderBackend(audited_provider(load_llm_provider(), state_dir, scope="cli"))
     if (state_dir / "agent_state.json").exists():
         runtime = AgentRuntime.restore(state_dir, agent_backend=backend)
         if runtime.agent_manifest is None:

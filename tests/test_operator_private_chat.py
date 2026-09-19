@@ -171,7 +171,8 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert page.status_code == 200
         assert "和 Ferro 私下交流" in page.text
         assert "Goal Drafts" in page.text
-        assert "/operator/api/chat" in page.text
+        assert "长期记忆" in page.text
+        assert "/operator/api/chat/stream" in page.text
 
         forbidden = client.post("/operator/api/chat", json={"message": "hello"})
         assert forbidden.status_code == 403
@@ -186,8 +187,22 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert body["proposal"]["status"] == "DRAFT"
         assert [row["role"] for row in body["history"][-2:]] == ["operator", "ferro"]
         assert "Private owner context" in backend.provider.calls[0][0]
+        assert "Relevant durable memory" in backend.provider.calls[0][0]
+        assert "生存、繁殖与进化" in backend.provider.calls[0][0]
         assert "STRICT JSON" in backend.provider.calls[0][1]["system"]
         proposal_id = body["proposal"]["proposal_id"]
+
+        streamed = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "请用中文继续，并保留我们的上下文。"},
+        )
+        assert streamed.status_code == 200
+        events = [json.loads(line) for line in streamed.text.splitlines() if line.strip()]
+        assert events[0]["type"] == "ack"
+        assert any(row["type"] == "status" and row.get("stage") == "memory" for row in events)
+        assert any(row["type"] == "delta" for row in events)
+        assert events[-1]["type"] == "done"
 
         activated = client.post(
             "/operator/api/chat/goals/" + proposal_id.replace(":", "%3A") + "/activate",
@@ -202,6 +217,7 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         state = client.get("/operator/api/chat").json()
         assert state["proposals"][0]["status"] == "ACTIVATED"
         assert state["history"][-1]["role"] == "system"
+        assert any("生存、繁殖与进化" in row["text"] for row in state["memories"])
 
     # The channel is durable state, not an in-memory browser transcript.
     reloaded = OperatorConversationStore(root)

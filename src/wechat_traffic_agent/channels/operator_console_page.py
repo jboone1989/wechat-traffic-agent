@@ -50,7 +50,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
 <section id="dash" class="hidden">
 <div class="topbar">
  <div class="brand"><h1>Ferro 管理后台</h1><p class="muted">资源、配置和待办事项统一管理。</p></div>
- <div class="toolbar"><a href="/operator/chat/">和 Ferro 对话</a><button id="refresh" class="ghost">刷新</button><button id="logout" class="ghost">退出</button></div>
+ <div class="toolbar"><a href="/operator/chat/">和 Ferro 对话</a><a href="/operator/llm/">LLM 请求</a><button id="refresh" class="ghost">刷新</button><button id="logout" class="ghost">退出</button></div>
 </div>
 
  <nav id="consoleNav" class="nav" aria-label="后台导航">

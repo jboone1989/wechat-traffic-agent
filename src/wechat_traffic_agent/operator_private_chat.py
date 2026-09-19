@@ -28,8 +28,8 @@ def parse_model_json(raw: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except (TypeError, ValueError, json.JSONDecodeError):
-        return {"reply": str(raw or "").strip(), "goal_candidate": None}
-    return value if isinstance(value, dict) else {"reply": str(raw or "").strip(), "goal_candidate": None}
+        return {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
+    return value if isinstance(value, dict) else {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
 class OperatorConversationStore:
     """Durable private owner↔Ferro conversation and goal-draft store."""
 
@@ -55,7 +55,7 @@ class OperatorConversationStore:
                         rows.append(row)
         except OSError:
             return []
-        return rows[-max(1, min(int(limit), 200)) :]
+        return rows[-max(1, min(int(limit), 2000)) :]
 
     def append(self, role: str, text: str, *, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
         role = str(role or "").strip().lower()
