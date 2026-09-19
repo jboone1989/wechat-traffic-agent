@@ -1,0 +1,80 @@
+from __future__ import annotations
+
+import pytest
+
+from wechat_traffic_agent.local_browser_control import LocalBrowserControl
+
+
+class FakeBrowser:
+    def __init__(self, url: str):
+        self.url = url
+        self.calls = []
+        self.closed = False
+
+    def evaluate(self, expression: str):
+        if expression == "location.href":
+            return self.url
+        if expression == "document.title":
+            return "X"
+        if "AppTabBar_Profile_Link" in expression:
+            return False
+        raise AssertionError(expression)
+
+    def observe(self, screenshot=True):
+        assert screenshot is True
+        return {
+            "url": self.url,
+            "title": "X",
+            "screenshot": "ZmFrZS1qcGVn",
+        }
+
+    def call(self, method: str, **kwargs):
+        self.calls.append((method, kwargs))
+        return {}
+
+    def close(self):
+        self.closed = True
+
+
+def test_local_browser_control_is_restricted_to_x_and_never_persists_typed_text():
+    made = []
+    def factory(url):
+        browser = FakeBrowser(url)
+        made.append(browser)
+        return browser
+
+    control = LocalBrowserControl(browser_factory=factory)
+    with pytest.raises(ValueError, match="restricted to x.com"):
+        control.start("https://example.com")
+
+    status = control.start("https://x.com/i/flow/login")
+    assert status["running"] is True
+    assert status["url"].startswith("https://x.com/")
+    browser = made[-1]
+
+    snap = control.snapshot()
+    assert snap.screenshot_b64 == "ZmFrZS1qcGVn"
+    control.click(x_ratio=0.5, y_ratio=0.25)
+    control.type_text("secret-that-must-not-be-stored")
+    control.key("Enter")
+
+    inserted = [
+        kwargs["text"]
+        for method, kwargs in browser.calls
+        if method == "Input.insertText"
+    ]
+    assert inserted == ["secret-that-must-not-be-stored"]
+    assert "secret-that-must-not-be-stored" not in repr(control.__dict__)
+
+    result = control.stop()
+    assert result == {"ok": True, "running": False}
+    assert browser.closed is True
+
+
+def test_local_browser_control_rejects_bad_coordinates_and_keys():
+    control = LocalBrowserControl(browser_factory=FakeBrowser)
+    control.start("https://x.com/")
+    with pytest.raises(ValueError, match="normalized"):
+        control.click(x_ratio=-0.1, y_ratio=0.5)
+    with pytest.raises(ValueError, match="unsupported key"):
+        control.key("F12")

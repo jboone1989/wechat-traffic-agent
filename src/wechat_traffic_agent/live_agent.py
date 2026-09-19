@@ -766,8 +766,10 @@ class LiveAgentService:
         from .channels.agent_talk_page import talk_agent_document
         from .channels.operator_console_page import operator_console_document
         from .operator_console import OperatorConsole, operator_console_enabled
+        from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
 
         operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
+        local_browser_control = LocalBrowserControl() if operator_console is not None else None
 
         async def live_page(_request: Request):
             return HTMLResponse(live_agent_document(), headers={"Cache-Control": "no-cache"})
@@ -1030,6 +1032,108 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
+        async def operator_local_browser_start(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                url = str(body.get("url") or "https://x.com/i/flow/login") if isinstance(body, dict) else "https://x.com/i/flow/login"
+                result = await asyncio.to_thread(local_browser_control.start, url)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_unavailable"}, status_code=503)
+            except Exception:
+                return JSONResponse({"error": "local_browser_start_failed"}, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_local_browser_snapshot(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            try:
+                snap = await asyncio.to_thread(local_browser_control.snapshot)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_not_running"}, status_code=409)
+            except Exception:
+                return JSONResponse({"error": "local_browser_snapshot_failed"}, status_code=502)
+            return JSONResponse({
+                "url": snap.url,
+                "title": snap.title,
+                "width": snap.width,
+                "height": snap.height,
+                "x_authenticated": snap.x_authenticated,
+                "screenshot_b64": snap.screenshot_b64,
+            }, headers={"Cache-Control": "no-store"})
+
+        async def operator_local_browser_click(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                result = await asyncio.to_thread(
+                    local_browser_control.click,
+                    x_ratio=float(body.get("x_ratio")),
+                    y_ratio=float(body.get("y_ratio")),
+                )
+            except (TypeError, ValueError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_not_running"}, status_code=409)
+            except Exception:
+                return JSONResponse({"error": "local_browser_click_failed"}, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_local_browser_type(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 4096:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                text = str(body.get("text") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(local_browser_control.type_text, text)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_not_running"}, status_code=409)
+            except Exception:
+                return JSONResponse({"error": "local_browser_type_failed"}, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_local_browser_key(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                body = await request.json()
+                key = str(body.get("key") or "") if isinstance(body, dict) else ""
+                result = await asyncio.to_thread(local_browser_control.key, key)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except LocalBrowserControlUnavailable:
+                return JSONResponse({"error": "local_browser_not_running"}, status_code=409)
+            except Exception:
+                return JSONResponse({"error": "local_browser_key_failed"}, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_local_browser_stop(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            try:
+                result = await asyncio.to_thread(local_browser_control.stop)
+            except Exception:
+                return JSONResponse({"error": "local_browser_stop_failed"}, status_code=502)
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
         def schedule_operator_resource_onboarding() -> bool:
             scheduler = getattr(self.wakeful, "schedule_resource_followup", None)
             if not callable(scheduler):
@@ -1252,6 +1356,12 @@ class LiveAgentService:
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
+                Route("/operator/api/browser/local/start", operator_local_browser_start, methods=["POST"]),
+                Route("/operator/api/browser/local/snapshot", operator_local_browser_snapshot, methods=["GET"]),
+                Route("/operator/api/browser/local/click", operator_local_browser_click, methods=["POST"]),
+                Route("/operator/api/browser/local/type", operator_local_browser_type, methods=["POST"]),
+                Route("/operator/api/browser/local/key", operator_local_browser_key, methods=["POST"]),
+                Route("/operator/api/browser/local/stop", operator_local_browser_stop, methods=["POST"]),
                 Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
                 Route("/operator/api/survival/needs/{need_id}/decision", operator_survival_need_decision, methods=["POST"]),
                 Route("/operator/api/survival/hosts/bootstrap", operator_bootstrap_remote_host, methods=["POST"]),

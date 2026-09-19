@@ -26,7 +26,10 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 .hidden{display:none!important}.error{color:#ffaaa7}.success{color:#92e7b8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
 .metric{font-size:28px;font-weight:750}.kicker{font-size:11px;color:#7f93a4;text-transform:uppercase;letter-spacing:.12em}
 .divider{height:1px;background:#26343e;margin:12px 0}.resource.free{border-color:#285d49}.resource.paid{border-color:#604f2b}
-@media(max-width:640px){.two{grid-template-columns:1fr}main{width:min(100% - 20px,1180px);padding-top:28px}}
+.browser-shot{width:100%;height:auto;display:block;border-radius:10px;border:1px solid #34434f;background:#05080a;touch-action:manipulation}
+.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
+details.browser-login>summary{cursor:pointer;font-weight:750}
+@media(max-width:640px){.two{grid-template-columns:1fr}main{width:min(100% - 20px,1180px);padding-top:28px}.browser-keys button{flex:1 1 30%}}
 </style></head><body><main>
 <div class="eyebrow">LivingRuntime · private operator plane</div>
 <h1>Ferro Operator Console</h1>
@@ -87,6 +90,18 @@ button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:di
 <h2>Browser runtime</h2>
 <p class="muted">Local Chrome handles learned deterministic skills. Jev handles adaptive navigation. TinyFish remains a compatibility fallback.</p>
 <div id="browserRuntime" class="grid"></div>
+<details class="card browser-login">
+<summary>Local X login · one-time setup</summary>
+<p class="muted">Use this only to sign Ferro's persistent local Chrome into X. Typed text is sent directly to the browser tab, is not stored by Ferro, and is cleared from this page immediately.</p>
+<div class="row"><button id="localBrowserStart">Open X login</button><button id="localBrowserRefresh" class="ghost">Refresh image</button><button id="localBrowserStop" class="ghost">Close login tab</button></div>
+<div id="localBrowserStatus" class="mono muted">Not started.</div>
+<img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
+<div class="browser-controls">
+<label>Text / password / verification code<input id="localBrowserText" type="password" autocomplete="off" placeholder="Tap the field in the screenshot first"></label>
+<div class="row"><button id="localBrowserSend">Send text</button></div>
+<div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+</div>
+</details>
 
 <h2>Executable resource pool</h2>
 <div id="resources" class="grid"></div>
@@ -198,6 +213,18 @@ function renderBrowserRuntime(data){
   root.append(c)
  }
 }
+async function localBrowserSnapshot(){
+ const shot=el('localBrowserShot'),status=el('localBrowserStatus');
+ const out=await api('/operator/api/browser/local/snapshot');
+ shot.src='data:image/jpeg;base64,'+out.screenshot_b64;shot.classList.remove('hidden');
+ status.textContent=(out.x_authenticated?'AUTHENTICATED · ':'')+fmt(out.url)+' · '+fmt(out.title);
+ return out
+}
+async function localBrowserAction(path,body={}){
+ await api(path,{method:'POST',body:JSON.stringify(body)});
+ await new Promise(r=>setTimeout(r,350));
+ return localBrowserSnapshot()
+}
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
  if(!rows.length){root.append(node('div','No executable LLM resources yet.','card muted'));return}
@@ -259,6 +286,12 @@ function renderSecrets(rows){
 async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
+el('localBrowserStart').onclick=async()=>{const b=el('localBrowserStart');b.disabled=true;try{await localBrowserAction('/operator/api/browser/local/start',{url:'https://x.com/i/flow/login'});flash('Local X login tab opened.')}catch(e){el('localBrowserStatus').textContent=e.message;flash(e.message,true)}finally{b.disabled=false}};
+el('localBrowserRefresh').onclick=()=>localBrowserSnapshot().catch(e=>{el('localBrowserStatus').textContent=e.message;flash(e.message,true)});
+el('localBrowserStop').onclick=async()=>{try{await api('/operator/api/browser/local/stop',{method:'POST',body:'{}'});el('localBrowserShot').classList.add('hidden');el('localBrowserShot').removeAttribute('src');el('localBrowserStatus').textContent='Closed. X login state remains in the persistent Chrome profile.'}catch(e){flash(e.message,true)}};
+el('localBrowserShot').onclick=async ev=>{const img=el('localBrowserShot'),r=img.getBoundingClientRect();if(!r.width||!r.height)return;const x=(ev.clientX-r.left)/r.width,y=(ev.clientY-r.top)/r.height;try{await localBrowserAction('/operator/api/browser/local/click',{x_ratio:x,y_ratio:y})}catch(e){flash(e.message,true)}};
+el('localBrowserSend').onclick=async()=>{const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;try{await localBrowserAction('/operator/api/browser/local/type',{text:value})}catch(e){flash(e.message,true)}};
+for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=async()=>{try{await localBrowserAction('/operator/api/browser/local/key',{key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
