@@ -5,7 +5,9 @@ from wechat_traffic_agent.x_mcp import (
     READ_CAPABILITIES,
     WRITE_CAPABILITIES,
     XCapabilityProvider,
+    XMcpClient,
     XMcpError,
+    XurlCommandClient,
 )
 
 
@@ -96,3 +98,44 @@ def test_search_uses_real_mcp_tool_and_recency_defaults(monkeypatch):
     assert capability == "x.search"
     assert payload["query"] == "bitcoin"
     assert payload["sort_order"] == "recency"
+
+
+def test_official_x_clients_bind_explicit_oauth_user_per_account(monkeypatch):
+    monkeypatch.delenv("CONTENT_X_MCP_COMMAND", raising=False)
+    mcp = XMcpClient(
+        endpoint="https://api.x.com/mcp",
+        app="content-agent",
+        username="@second_x",
+    )
+    assert mcp._command() == [
+        "xurl",
+        "mcp",
+        "https://api.x.com/mcp",
+        "--app",
+        "content-agent",
+        "--username",
+        "second_x",
+    ]
+
+    writer = XurlCommandClient(app="content-agent", username="@second_x")
+    assert writer.app == "content-agent"
+    assert writer.username == "second_x"
+
+
+def test_x_capability_provider_can_be_bound_from_account_record():
+    from wechat_traffic_agent.account_registry import AccountRecord
+
+    account = AccountRecord(
+        account_id="acct_x_123456789abc",
+        provider_id="x",
+        identity="second_x",
+        display_label="@second_x",
+        oauth_app="content-agent",
+        oauth_user="second_x",
+        oauth_status="CONNECTED",
+    )
+    provider = XCapabilityProvider.for_account(account)
+
+    assert provider.client.app == "content-agent"
+    assert provider.client.username == "second_x"
+    assert provider.write_client.username == "second_x"

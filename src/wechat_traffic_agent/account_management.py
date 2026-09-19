@@ -14,6 +14,8 @@ import re
 import subprocess
 from typing import Any
 
+from .account_registry import AccountRegistry
+
 
 @dataclass(frozen=True)
 class AccountProvider:
@@ -54,6 +56,7 @@ class AccountManager:
         self.path = self.state_root / "accounts" / "accounts.json"
         self.browser_factory = browser_factory
         self.xurl_status_provider = xurl_status_provider
+        self.registry = AccountRegistry(self.state_root)
 
     def provider(self, provider_id: str) -> AccountProvider:
         try:
@@ -84,9 +87,80 @@ class AccountManager:
         os.replace(tmp, self.path)
         os.chmod(self.path, 0o600)
 
+    def _account_instances(self, oauth: dict[str, Any]) -> list[dict[str, Any]]:
+        identity = str(oauth.get("identity") or "")
+        existing_x = self.registry.list(provider_id="x")
+        if (
+            oauth.get("status") == "CONNECTED"
+            and identity
+            and not any(row.identity.lower() == identity.lower() for row in existing_x)
+        ):
+            self.registry.ensure(
+                provider_id="x",
+                identity=identity,
+                oauth_app="content-agent",
+                oauth_user=identity,
+                oauth_status="CONNECTED",
+            )
+        tinyfish_ready = bool(
+            os.environ.get("TINYFISH_API_KEY", "").strip()
+            and os.environ.get("TINYFISH_X_PROFILE_ID", "").strip()
+        )
+        rows: list[dict[str, Any]] = []
+        for record in self.registry.list():
+            spec = self.provider(record.provider_id)
+            profile_dir = (
+                self.state_root
+                / "accounts"
+                / "browser-profiles"
+                / record.account_id
+                / "chrome-profile"
+            )
+            profile_status = "READY" if profile_dir.exists() else "NOT_PROVISIONED"
+            compatibility = (
+                "TINYFISH"
+                if tinyfish_ready
+                and record.provider_id == "x"
+                and identity.lower() == record.identity.lower()
+                else ""
+            )
+            rows.append({
+                "account_id": record.account_id,
+                "provider_id": record.provider_id,
+                "label": spec.label,
+                "identity": record.identity,
+                "display_label": record.display_label,
+                "status": record.oauth_status,
+                "capabilities": list(spec.capabilities),
+                "oauth_app": record.oauth_app,
+                "oauth_user": record.oauth_user,
+                "bindings": [
+                    {
+                        "binding_id": "api_oauth",
+                        "label": "API OAuth",
+                        "status": record.oauth_status,
+                        "auth_mode": "OAUTH2_PKCE",
+                    },
+                    {
+                        "binding_id": "browser_profile",
+                        "label": "Account Browser Profile",
+                        "status": profile_status,
+                        "profile_id": record.browser_profile_id,
+                        "automation_engine": record.automation_engine,
+                    },
+                ],
+                "automation": {
+                    "primary_engine": record.automation_engine,
+                    "preferred_browser_provider": record.web_fallback_provider,
+                    "compatibility_fallback": compatibility,
+                },
+            })
+        return rows
+
     def status(self) -> dict[str, Any]:
         state = self._read()
         saved = state["accounts"]
+        x_oauth = self._x_oauth_binding()
         rows = []
         for spec in _PROVIDERS.values():
             row = saved.get(spec.provider_id) or {}
@@ -99,7 +173,7 @@ class AccountManager:
             overall_status = browser_status
             identity = str(row.get("identity") or "")
             if spec.provider_id == "x":
-                oauth = self._x_oauth_binding()
+                oauth = x_oauth
                 bindings.append(oauth)
                 browser_error = str(row.get("last_error") or "")
                 bindings.append({
@@ -148,7 +222,12 @@ class AccountManager:
                 ),
                 "bindings": bindings,
             })
-        return {"schema_version": 2, "accounts": rows}
+        return {
+            "schema_version": 3,
+            "accounts": rows,
+            "instances": self._account_instances(x_oauth),
+            "supports_multiple_accounts": True,
+        }
 
     def _x_oauth_binding(self) -> dict[str, Any]:
         status = ""

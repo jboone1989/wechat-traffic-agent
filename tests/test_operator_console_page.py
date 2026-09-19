@@ -53,15 +53,28 @@ def test_browser_login_uses_modal_overlay_instead_of_inline_expansion():
     assert "document.body.classList.add('modal-open')" in page
     assert "document.body.classList.remove('modal-open')" in page
 
-def test_x_account_ui_uses_oauth_and_tinyfish_without_requiring_local_browser_login():
+def test_x_account_ui_uses_account_scoped_oauth_and_jev():
     page = operator_console_document()
 
-    assert "API 连接" in page
-    assert "网页备用" in page
-    assert "TinyFish 已保持 X 登录态" in page
-    assert "你无需再登录服务器浏览器" in page
-    assert "高级操作 / 技术信息" in page
-    assert "登录本地服务器浏览器" in page
-    assert "检查本地网页登录" in page
-    assert "Fallback: TinyFish → Local CDP" in page
+    assert "官方 API" in page
+    assert "网页自动化" in page
+    assert "OAuth 身份独立绑定到这个账号" in page
+    assert "长期执行器：" in page
+    assert "每个账号拥有独立 Chrome profile/cookie" in page
+    assert "当前兼容 fallback：" in page
+    assert "创建独立浏览器环境" in page
+    assert "测试该账号 Jev" in page
     assert "网页登录（网页自动化）" not in page
+
+
+def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
+    page = operator_console_document()
+
+    assert 'id="addXAccount"' in page
+    assert 'id="xOAuthShell"' in page
+    assert "添加 X 账号" in page
+    assert "/operator/api/accounts/x/oauth/start" in page
+    assert "/operator/api/accounts/x/oauth/complete" in page
+    assert "每个账号拥有独立 Chrome profile/cookie" in page
+    assert "测试该账号 Jev" in page
+    assert "调用 X API 时显式使用该账号" in page
