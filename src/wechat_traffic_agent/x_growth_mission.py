@@ -266,7 +266,7 @@ class XGrowthMissionCoordinator:
         deliberate = getattr(self.runtime, "deliberate_mission_roadmap", None)
         if not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
-        roadmap = await deliberate(mission.mission_id, max_tokens=1200)
+        roadmap = await deliberate(mission.mission_id, max_tokens=1800)
         self._persist_runtime()
         return {
             "status": "PLANNED",
