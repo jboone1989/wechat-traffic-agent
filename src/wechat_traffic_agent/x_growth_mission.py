@@ -908,11 +908,24 @@ class XGrowthMissionCoordinator:
         active = payload.get("active_experiment")
         if not isinstance(active, dict):
             return {"status": "PROJECTION_MISSING"}
-        if (
-            str(active.get("experiment_id") or "") != experiment.experiment_id
-            or str(active.get("publication_receipt_id") or "") != str(publication_receipt_id)
-            or str(active.get("x_post_id") or "") != str(post_id)
-        ):
+        if str(active.get("experiment_id") or "") != experiment.experiment_id:
+            return {"status": "START_EVIDENCE_MISMATCH", "experiment_id": experiment.experiment_id}
+        projected_receipt = str(active.get("publication_receipt_id") or "").strip()
+        projected_post = str(active.get("x_post_id") or "").strip()
+        expected_receipt = str(publication_receipt_id).strip()
+        expected_post = str(post_id).strip()
+        if projected_receipt or projected_post:
+            evidence_matches = (
+                projected_receipt == expected_receipt
+                and projected_post == expected_post
+            )
+        else:
+            refs = {str(ref) for ref in experiment.evidence_refs}
+            evidence_matches = (
+                expected_receipt in refs
+                and f"x-post:{expected_post}" in refs
+            )
+        if not evidence_matches:
             return {"status": "START_EVIDENCE_MISMATCH", "experiment_id": experiment.experiment_id}
         from agent_runtime.goals import MissionExperimentStatus
         experiment.status = MissionExperimentStatus.PROPOSED
