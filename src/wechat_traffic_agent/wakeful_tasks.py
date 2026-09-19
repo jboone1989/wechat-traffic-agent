@@ -765,6 +765,111 @@ class WakefulContentTaskRunner:
         tmp.replace(folder / "recovery.json")
         return metadata
 
+    def _content_mission_followup(
+        self,
+        *,
+        preflight: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Derive a bounded fresh cycle when an external mission learned nothing useful."""
+        if str(preflight.get("status") or "") != "ALREADY_PROCESSED":
+            return None
+        result_path_raw = str(preflight.get("result_path") or "").strip()
+        if not result_path_raw:
+            return None
+        result_path = Path(result_path_raw)
+        try:
+            prior = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if str(prior.get("status") or "").upper() != "COGNITION_ONLY":
+            return None
+        mind_plan = prior.get("mind_plan")
+        if not isinstance(mind_plan, dict):
+            return None
+        goal = mind_plan.get("goal")
+        if not isinstance(goal, dict) or str(goal.get("origin") or "") != "EXTERNAL_MISSION":
+            return None
+
+        source_cycle = str(preflight.get("cycle") or "").strip()
+        goal_id = str(goal.get("goal_id") or "").strip()
+        mission_id = str(mind_plan.get("external_mission_id") or "").strip()
+        state_root = getattr(self, "state_root", None)
+        if not source_cycle or not goal_id or state_root is None:
+            return None
+
+        cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
+        completed: list[tuple[dict[str, Any], str]] = []
+        if cycles_root.exists():
+            for folder in cycles_root.glob("v2-mission-followup-*"):
+                metadata_path = folder / "mission_followup.json"
+                result_file = folder / "result.json"
+                if not metadata_path.exists() or not result_file.exists():
+                    continue
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    payload = json.loads(result_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if str(metadata.get("followup_of") or "") != source_cycle:
+                    continue
+                if str(metadata.get("goal_id") or "") != goal_id:
+                    continue
+                completed.append(
+                    (metadata, str(payload.get("status") or "").upper())
+                )
+        completed.sort(key=lambda item: int(item[0].get("attempt") or 0))
+
+        for metadata, status in reversed(completed):
+            if status != "COGNITION_ONLY":
+                return {
+                    "status": "ALREADY_FOLLOWED_UP",
+                    "followup_of": source_cycle,
+                    "followup_cycle": metadata.get("followup_cycle"),
+                    "goal_id": goal_id,
+                    "mission_id": mission_id,
+                    "attempt_count": len(completed),
+                    "result_status": status,
+                }
+
+        if len(completed) >= 3:
+            return {
+                "status": "FOLLOWUP_LIMIT_REACHED",
+                "followup_of": source_cycle,
+                "goal_id": goal_id,
+                "mission_id": mission_id,
+                "attempt_count": len(completed),
+            }
+
+        attempt = len(completed) + 1
+        suffix = int(now.timestamp())
+        followup_cycle = f"v2-mission-followup-{attempt}-{suffix}"
+        while (cycles_root / followup_cycle).exists():
+            suffix += 1
+            followup_cycle = f"v2-mission-followup-{attempt}-{suffix}"
+        metadata = {
+            "schema_version": "content-mission-followup.v1",
+            "status": "READY",
+            "followup_of": source_cycle,
+            "followup_cycle": followup_cycle,
+            "goal_id": goal_id,
+            "mission_id": mission_id,
+            "attempt": attempt,
+            "triggered_at": now.isoformat(),
+            "reason": "EXTERNAL_MISSION_NO_MATERIAL_CHANGE",
+            "publication_authority": False,
+        }
+        folder = cycles_root / followup_cycle
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / "mission_followup.json.tmp"
+        tmp.write_text(
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(folder / "mission_followup.json")
+        return metadata
+
     def _content(self, now: datetime, *, focus_topic: str | None) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
@@ -791,14 +896,12 @@ class WakefulContentTaskRunner:
         preflight = self.continuous_loop.preflight(now=now, cycle_id=directed_cycle_id)
         base_cycle_id = str(preflight["cycle"])
         recovery = None
+        mission_followup = None
         if focus_topic is None:
             recovery = self._content_recovery(preflight=preflight, now=now)
             if recovery is not None:
                 rows["content_cycle_recovery"] = recovery
-                if recovery["status"] in {
-                    "ALREADY_RECOVERED",
-                    "RECOVERY_LIMIT_REACHED",
-                }:
+                if recovery["status"] == "RECOVERY_LIMIT_REACHED":
                     rows["resource_decision"] = {
                         "status": "SKIPPED_NOOP",
                         "decision": "NO_RESOURCE_ACTION",
@@ -812,9 +915,65 @@ class WakefulContentTaskRunner:
                         "attempt_count": recovery.get("attempt_count"),
                     }
                     return rows
-                directed_cycle_id = str(recovery["recovery_cycle"])
+                if recovery["status"] == "ALREADY_RECOVERED":
+                    recovered_cycle = str(recovery.get("recovery_cycle") or "")
+                    recovered_preflight = self.continuous_loop.preflight(
+                        now=now,
+                        cycle_id=recovered_cycle,
+                    )
+                    mission_followup = self._content_mission_followup(
+                        preflight=recovered_preflight,
+                        now=now,
+                    )
+                    if mission_followup is None:
+                        rows["resource_decision"] = {
+                            "status": "SKIPPED_NOOP",
+                            "decision": "NO_RESOURCE_ACTION",
+                            "cycle": base_cycle_id,
+                        }
+                        rows["continuous_content"] = {
+                            "status": recovery["status"],
+                            "cycle": base_cycle_id,
+                            "recovery_cycle": recovery.get("recovery_cycle"),
+                            "previous_status": recovery.get("previous_status"),
+                            "attempt_count": recovery.get("attempt_count"),
+                        }
+                        return rows
+                elif recovery["status"] == "READY":
+                    directed_cycle_id = str(recovery["recovery_cycle"])
+                    preflight = self.continuous_loop.preflight(
+                        now=now, cycle_id=directed_cycle_id
+                    )
+            else:
+                mission_followup = self._content_mission_followup(
+                    preflight=preflight,
+                    now=now,
+                )
+
+            if mission_followup is not None:
+                rows["content_mission_followup"] = mission_followup
+                if mission_followup["status"] in {
+                    "ALREADY_FOLLOWED_UP",
+                    "FOLLOWUP_LIMIT_REACHED",
+                }:
+                    rows["resource_decision"] = {
+                        "status": "SKIPPED_NOOP",
+                        "decision": "NO_RESOURCE_ACTION",
+                        "cycle": base_cycle_id,
+                    }
+                    rows["continuous_content"] = {
+                        "status": mission_followup["status"],
+                        "cycle": base_cycle_id,
+                        "followup_cycle": mission_followup.get("followup_cycle"),
+                        "followup_of": mission_followup.get("followup_of"),
+                        "attempt_count": mission_followup.get("attempt_count"),
+                        "result_status": mission_followup.get("result_status"),
+                    }
+                    return rows
+                directed_cycle_id = str(mission_followup["followup_cycle"])
                 preflight = self.continuous_loop.preflight(
-                    now=now, cycle_id=directed_cycle_id
+                    now=now,
+                    cycle_id=directed_cycle_id,
                 )
         cycle_id = str(preflight["cycle"])
         if preflight["status"] == "ALREADY_PROCESSED":
@@ -866,6 +1025,41 @@ class WakefulContentTaskRunner:
             )
             tmp.replace(recovery_path)
             rows["content_cycle_recovery"] = finished
+        if mission_followup is not None and mission_followup.get("status") == "READY":
+            followup_path = (
+                Path(self.state_root)
+                / "content"
+                / "continuous"
+                / "cycles"
+                / str(mission_followup["followup_cycle"])
+                / "mission_followup.json"
+            )
+            result_status = str(continuous.get("status") or "UNKNOWN").upper()
+            if result_status in {"ERROR", "DEGRADED"}:
+                followup_status = "FAILED"
+            elif result_status == "COGNITION_ONLY":
+                followup_status = "NO_MATERIAL_CHANGE"
+            else:
+                followup_status = "COMPLETED"
+            finished_followup = {
+                **mission_followup,
+                "status": followup_status,
+                "result_status": str(continuous.get("status") or "UNKNOWN"),
+                "completed_at": datetime.now(now.tzinfo).isoformat(),
+            }
+            tmp = followup_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(
+                    finished_followup,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(followup_path)
+            rows["content_mission_followup"] = finished_followup
         action_prediction = continuous.get("action_prediction") if isinstance(continuous, dict) else None
         prediction_id = str((action_prediction or {}).get("prediction_id") or "")
         if prediction_id:
@@ -923,6 +1117,25 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+        mind_plan = continuous.get("mind_plan") if isinstance(continuous, dict) else None
+        mission_goal = (
+            mind_plan.get("goal")
+            if isinstance(mind_plan, dict) and isinstance(mind_plan.get("goal"), dict)
+            else {}
+        )
+        if (
+            str(continuous.get("status") or "").upper() == "COGNITION_ONLY"
+            and str(mission_goal.get("origin") or "") == "EXTERNAL_MISSION"
+        ):
+            schedule = getattr(self.wakeful, "schedule_goal_followup", None)
+            if callable(schedule):
+                schedule(now, seconds=5)
+                rows["mission_followup_schedule"] = {
+                    "status": "SCHEDULED",
+                    "seconds": 5,
+                    "goal_id": str(mission_goal.get("goal_id") or ""),
+                    "reason": "EXTERNAL_MISSION_NO_MATERIAL_CHANGE",
+                }
         self.wakeful.mark_cognition(now)
         return rows
 

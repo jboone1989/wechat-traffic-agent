@@ -1156,3 +1156,81 @@ def test_mission_discovery_rejects_metric_manipulation_topics(topic, query):
     )
     with pytest.raises(ValueError, match="metric manipulation"):
         _normalize_mission_discovery(value)
+
+
+def _write_prior_mission_noop(state_root: Path):
+    folder = (
+        state_root
+        / "content"
+        / "continuous"
+        / "cycles"
+        / "v2-mission-followup-1-1789700000"
+    )
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mission_discovery.json").write_text(
+        json.dumps({
+            "schema_version": "content-mission-discovery.v1",
+            "mission_id": "mission-growth-1",
+            "roadmap_step_id": "mission-step-community",
+            "experiment_id": "mission-exp-growth",
+            "decision": {
+                "topic": "crypto-market-volatility-patterns",
+                "search_query": "crypto market volatility patterns",
+                "reader_need": "Readers want a snapshot of current crypto volatility.",
+                "rationale": "This was a plausible first angle for the mission.",
+            },
+            "generation_authority": "DISCOVERY_ONLY",
+            "publication_authority": False,
+        }),
+        encoding="utf-8",
+    )
+    (folder / "result.json").write_text(
+        json.dumps({
+            "status": "COGNITION_ONLY",
+            "cycle": folder.name,
+            "cognition": {
+                "cognition_state": "NO_MATERIAL_CHANGE",
+                "worth_saying": False,
+                "expression_kind": "NONE",
+                "what_changed": "No durable new information emerged.",
+                "what_matters": "A point-in-time volatility snapshot was not predictive.",
+                "belief_proposition": None,
+                "rationale": "The evidence only repeated known market turbulence.",
+            },
+        }),
+        encoding="utf-8",
+    )
+    return folder
+
+
+def test_external_mission_discovery_uses_no_material_change_as_negative_search_feedback(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    prior = _write_prior_mission_noop(Path(legacy.state))
+    runtime = MissionDiscoveryRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["mind_plan"]["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert result["mind_plan"]["required_topic"] == "persistent-ai-agents"
+    mission_call = next(
+        call for call in runtime.calls if call.startswith("MISSION_DISCOVERY:")
+    )
+    assert "recent_no_material_change_attempts" in mission_call
+    assert "crypto-market-volatility-patterns" in mission_call
+    assert "crypto market volatility patterns" in mission_call
+    cycle_dir = (
+        Path(legacy.state)
+        / "content"
+        / "continuous"
+        / "cycles"
+        / result["cycle"]
+    )
+    discovery = json.loads((cycle_dir / "mission_discovery.json").read_text())
+    attempts = discovery["recent_no_material_change_attempts"]
+    assert attempts[0]["cycle"] == prior.name
+    assert attempts[0]["cognition_state"] == "NO_MATERIAL_CHANGE"
+    assert attempts[0]["topic"] == "crypto-market-volatility-patterns"
+    assert discovery["decision"]["topic"] == "persistent-ai-agents"

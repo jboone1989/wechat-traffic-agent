@@ -129,6 +129,74 @@ def _active_mission_discovery_context(value):
     }
 
 
+def _recent_mission_noop_attempts(
+    state_root: Path,
+    mission_context: dict[str, Any],
+    *,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """Return bounded prior mission angles that produced no useful public trace."""
+    mission_id = str(mission_context.get("mission_id") or "").strip()
+    roadmap_step = mission_context.get("roadmap_step")
+    step_id = (
+        str(roadmap_step.get("step_id") or "").strip()
+        if isinstance(roadmap_step, dict)
+        else ""
+    )
+    if not mission_id:
+        return []
+    cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
+    if not cycles_root.exists():
+        return []
+
+    folders: list[tuple[float, Path]] = []
+    for folder in cycles_root.iterdir():
+        if not folder.is_dir():
+            continue
+        try:
+            modified = folder.stat().st_mtime
+        except OSError:
+            continue
+        folders.append((modified, folder))
+    folders.sort(key=lambda item: item[0], reverse=True)
+
+    attempts: list[dict[str, Any]] = []
+    for _modified, folder in folders:
+        discovery_path = folder / "mission_discovery.json"
+        result_path = folder / "result.json"
+        if not discovery_path.exists() or not result_path.exists():
+            continue
+        try:
+            discovery = json.loads(discovery_path.read_text(encoding="utf-8"))
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if str(discovery.get("mission_id") or "") != mission_id:
+            continue
+        if step_id and str(discovery.get("roadmap_step_id") or "") != step_id:
+            continue
+        if str(result.get("status") or "").upper() != "COGNITION_ONLY":
+            continue
+        decision = discovery.get("decision")
+        if not isinstance(decision, dict):
+            continue
+        cognition = result.get("cognition")
+        if not isinstance(cognition, dict):
+            cognition = {}
+        attempts.append({
+            "cycle": folder.name,
+            "topic": str(decision.get("topic") or ""),
+            "search_query": str(decision.get("search_query") or ""),
+            "reader_need": str(decision.get("reader_need") or ""),
+            "cognition_state": str(cognition.get("cognition_state") or ""),
+            "rationale": str(cognition.get("rationale") or "")[:400],
+            "what_matters": str(cognition.get("what_matters") or "")[:400],
+        })
+        if len(attempts) >= max(1, min(int(limit), 8)):
+            break
+    return attempts
+
+
 def _normalize_mission_discovery(value: MissionDiscoveryDecision) -> MissionDiscoveryDecision:
     topic = value.topic.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", topic):
@@ -555,6 +623,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     }
                     for row in snapshot['articles'][-12:]
                 ]
+                recent_noop_attempts = _recent_mission_noop_attempts(
+                    self.state,
+                    mission_context,
+                )
                 task = (
                     'MISSION_DISCOVERY: choose one concrete research subject for the next '
                     'content evidence search that advances the active external mission without '
@@ -566,20 +638,44 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'the subject/core entities; do not begin it with generic words such as recent, '
                     'latest, current, public, research, evidence, or case studies. Never search for '
                     'follow-for-follow, engagement manipulation, '
-                    'spam, or ways to evade platform rules. Mission/roadmap text is decision '
-                    'context only and is not factual evidence.\n'
+                    'spam, or ways to evade platform rules. When '
+                    'recent_no_material_change_attempts is non-empty, treat those rows as '
+                    'negative search feedback: choose a materially different reader need, '
+                    'subject angle, or factual search query instead of repeating a semantically '
+                    'equivalent attempt. Do not lower the publication/evidence bar merely to '
+                    'make progress. Mission/roadmap text is decision context only and is not '
+                    'factual evidence.\n'
                     + json.dumps({
                         'external_mission': mission_context,
                         'existing_topics': sorted(snapshot['topics'])[:80],
                         'recent_site_coverage': recent_articles,
+                        'recent_no_material_change_attempts': recent_noop_attempts,
                     }, ensure_ascii=False)
                 )
+                prior_pairs = {
+                    (
+                        str(row.get('topic') or '').strip().lower(),
+                        str(row.get('search_query') or '').strip().casefold(),
+                    )
+                    for row in recent_noop_attempts
+                }
+                def validate_mission_discovery(value):
+                    normalized = _normalize_mission_discovery(value)
+                    pair = (
+                        normalized.topic.strip().lower(),
+                        normalized.search_query.strip().casefold(),
+                    )
+                    if pair in prior_pairs:
+                        raise ValueError(
+                            'mission discovery must change angle after a no-material-change attempt'
+                        )
+                    return normalized
                 try:
                     mission_decision = await _structured(
                         mission_runtime,
                         task,
                         MissionDiscoveryDecision,
-                        validate=lambda value: _normalize_mission_discovery(value),
+                        validate=validate_mission_discovery,
                     )
                     mission_decision = _normalize_mission_discovery(mission_decision)
                     _put(mission_path, {
@@ -592,6 +688,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                             (mission_context.get('active_experiment') or {}).get('experiment_id')
                         ),
                         'decision': mission_decision.model_dump(mode='json'),
+                        'recent_no_material_change_attempts': recent_noop_attempts,
                         'generation_authority': 'DISCOVERY_ONLY',
                         'publication_authority': False,
                     })
