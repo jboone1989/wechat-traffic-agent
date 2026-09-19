@@ -161,6 +161,34 @@ def test_parse_owner_envelope_rejects_embedded_or_incomplete_json():
     assert parse_owner_envelope('{"reply":"partial') is None
 
 
+def test_operator_conversation_store_retrieves_relevant_archived_turn_with_neighbor(tmp_path):
+    store = OperatorConversationStore(tmp_path)
+    store.append("operator", "你是谁")
+    store.append("ferro", "I am Ferro, the persistent agent on LivingRuntime, serving as your content agent.")
+    for index in range(6):
+        store.append("operator", f"unrelated filler {index}")
+        store.append("ferro", f"ack {index}")
+
+    found = store.relevant_archive(
+        "我最早问‘你是谁’时，你当时用什么语言回答？", recent_limit=8, limit=6
+    )
+
+    texts = [row["text"] for row in found]
+    assert "你是谁" in texts
+    assert "I am Ferro, the persistent agent on LivingRuntime, serving as your content agent." in texts
+
+
+def test_operator_conversation_store_does_not_return_unrelated_archive(tmp_path):
+    store = OperatorConversationStore(tmp_path)
+    store.append("operator", "ancient unrelated note about invoices")
+    store.append("ferro", "acknowledged")
+    for index in range(5):
+        store.append("operator", f"recent filler {index}")
+        store.append("ferro", f"recent ack {index}")
+
+    assert store.relevant_archive("量子纠缠实验", recent_limit=6) == []
+
+
 def test_operator_conversation_store_persists_and_activates_general_goal(tmp_path):
     store = OperatorConversationStore(tmp_path)
     first = store.append("operator", "I want to discuss a durable private channel.")

@@ -203,6 +203,61 @@ class OperatorConversationStore:
             return []
         return rows[-max(1, min(int(limit), 2000)) :]
 
+    def relevant_archive(
+        self, query: str, *, recent_limit: int = 80, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        """Retrieve old owner-chat excerpts without inflating the hot context window."""
+        rows = self.history(limit=2000)
+        recent_limit = max(1, min(int(recent_limit), 2000))
+        archive = rows[:-recent_limit] if len(rows) > recent_limit else []
+        if not archive:
+            return []
+        raw_query = str(query or "").strip()
+        if not raw_query:
+            return []
+
+        quoted = [
+            value.casefold().strip()
+            for value in re.findall(r'[\"“‘]([^\"”’]{2,80})[\"”’]', raw_query)
+            if value.strip()
+        ]
+        latin = {
+            token.casefold()
+            for token in re.findall(r"[A-Za-z0-9_.:-]{3,}", raw_query)
+            if token.casefold() not in {"the", "and", "that", "this", "with", "from", "your"}
+        }
+        han_terms: set[str] = set()
+        for chunk in re.findall(r"[\u3400-\u9fff]{2,}", raw_query):
+            for size in (2, 3, 4):
+                if len(chunk) < size:
+                    continue
+                han_terms.update(chunk[i : i + size] for i in range(len(chunk) - size + 1))
+
+        scored: list[tuple[float, int]] = []
+        for index, row in enumerate(archive):
+            text = str(row.get("text") or "").casefold()
+            if not text:
+                continue
+            score = 0.0
+            score += 12.0 * sum(1 for term in quoted if term and term in text)
+            score += 2.0 * sum(1 for term in latin if term in text)
+            score += sum(min(len(term), 4) / 4 for term in han_terms if term in text)
+            if score > 0:
+                if str(row.get("role") or "") == "operator":
+                    score += 0.25
+                scored.append((score, index))
+        if not scored:
+            return []
+
+        selected: set[int] = set()
+        seed_limit = max(1, min(4, int(limit)))
+        for _, index in sorted(scored, key=lambda item: (item[0], item[1]), reverse=True)[:seed_limit]:
+            for neighbor in (index - 1, index, index + 1):
+                if 0 <= neighbor < len(archive):
+                    selected.add(neighbor)
+        ordered = [archive[index] for index in sorted(selected)]
+        return ordered[-max(1, min(int(limit), 40)) :]
+
     def append(self, role: str, text: str, *, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
         role = str(role or "").strip().lower()
         body = str(text or "").strip()

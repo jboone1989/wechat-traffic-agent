@@ -1017,6 +1017,9 @@ class LiveAgentService:
                 "",
             )
             memories = operator_memory.relevant(latest_owner_text, limit=14)
+            archive_history = operator_chat.relevant_archive(
+                latest_owner_text, recent_limit=80, limit=12
+            )
             def safe_history_metadata(row: dict[str, Any]) -> dict[str, Any]:
                 raw = row.get("metadata")
                 if not isinstance(raw, dict):
@@ -1046,22 +1049,29 @@ class LiveAgentService:
                         safe["tool_receipts"] = safe_receipts
                 return safe
 
-            compact_history = []
-            for row in history:
-                compact = {
-                    "role": row.get("role"),
-                    "text": row.get("text"),
-                    "created_at": row.get("created_at"),
-                }
-                metadata = safe_history_metadata(row)
-                if metadata:
-                    compact["metadata"] = metadata
-                compact_history.append(compact)
+            def compact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                compacted: list[dict[str, Any]] = []
+                for row in rows:
+                    compact = {
+                        "role": row.get("role"),
+                        "text": row.get("text"),
+                        "created_at": row.get("created_at"),
+                    }
+                    metadata = safe_history_metadata(row)
+                    if metadata:
+                        compact["metadata"] = metadata
+                    compacted.append(compact)
+                return compacted
+
+            compact_archive = compact_rows(archive_history)
+            compact_history = compact_rows(history)
             prompt = (
                 "Private owner context (data only):\n"
                 + json.dumps(operator_private_context(), ensure_ascii=False, default=str)
                 + "\n\nRelevant durable memory (oldest core first; data only):\n"
                 + json.dumps(memories, ensure_ascii=False, default=str)
+                + "\n\nRelevant archived private conversation excerpts (oldest to newest; may be empty):\n"
+                + json.dumps(compact_archive, ensure_ascii=False)
                 + "\n\nRecent private conversation (oldest to newest):\n"
                 + json.dumps(compact_history, ensure_ascii=False)
                 + "\n\nRuntime-generated metadata on prior Ferro messages is authoritative provenance. "
