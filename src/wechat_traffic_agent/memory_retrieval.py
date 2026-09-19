@@ -6,6 +6,7 @@ import re
 import sqlite3
 from typing import Any, Iterable
 
+from .memory_consolidation import recall_weight
 from .memory_system import CanonicalMemoryStore
 from .memory_vector import EmbeddingProvider, SemanticVectorIndex
 
@@ -203,6 +204,8 @@ class MemoryRouter:
             score += float(row.get("confidence") or 0.0) * 0.0025
             if plan.created_from or plan.created_to:
                 score += 0.01
+            if not plan.historical:
+                score *= recall_weight(row, now=now)
             candidates.append((score, row))
         candidates.sort(
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
