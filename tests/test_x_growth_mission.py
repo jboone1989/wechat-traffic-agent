@@ -11,6 +11,7 @@ from agent_runtime.runtime import AgentRuntime
 
 from wechat_traffic_agent.x_growth_mission import (
     MISSION_CONSTRAINTS,
+    MISSION_PLANNING_CONTEXT_REF,
     XGrowthMissionCoordinator,
     follower_count_from_user,
     x_growth_mission_context,
@@ -130,6 +131,13 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert result["active_experiment"]["measurement_window_hours"] == 24.0
     assert len(backend.requests) == 2
     assert backend.requests[0].token_budget == 1800
+    assert backend.requests[0].context["revision_requested"] is False
+    assert (
+        backend.requests[0].context["application_context"]["measurement"][
+            "historical_post_level_follower_attribution"
+        ]
+        == "UNAVAILABLE"
+    )
 
     mission = runtime.external_missions[-1]
     assert mission.status is MissionStatus.ACTIVE
@@ -138,6 +146,9 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert "obey current X platform and automation policy" in mission.constraints
     assert "do not use artificial account-metric inflation" in mission.constraints
     assert set(MISSION_CONSTRAINTS) <= set(mission.constraints)
+    roadmap = runtime.missions.latest_roadmap(mission.mission_id)
+    assert roadmap is not None
+    assert MISSION_PLANNING_CONTEXT_REF in roadmap.evidence_refs
 
     persisted = x_growth_mission_context(tmp_path)
     assert persisted["mission_id"] == mission.mission_id
@@ -315,3 +326,63 @@ def test_successful_publication_is_the_experiment_start_boundary(tmp_path):
     persisted = x_growth_mission_context(tmp_path)
     assert persisted["active_experiment"]["status"] == "RUNNING"
     assert persisted["active_experiment"]["x_post_id"] == "42"
+
+
+def test_legacy_roadmap_is_replanned_once_with_real_x_capability_context(tmp_path):
+    runtime, _clock, backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        duration_days=30,
+        experiment_hours=24,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:legacy-roadmap",
+            now=NOW,
+        )
+    )
+    mission_id = first["mission_id"]
+    original = runtime.missions.latest_roadmap(mission_id)
+    assert original is not None
+    original.evidence_refs = [
+        ref for ref in original.evidence_refs
+        if ref != MISSION_PLANNING_CONTEXT_REF
+    ]
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:legacy-roadmap-2",
+            now=NOW,
+        )
+    )
+
+    assert second["roadmap_transition"]["status"] == "REPLANNED"
+    assert second["roadmap"]["version"] == 2
+    revised = runtime.missions.latest_roadmap(mission_id)
+    assert revised is not None
+    assert revised.version == 2
+    assert MISSION_PLANNING_CONTEXT_REF in revised.evidence_refs
+    assert len(backend.requests) == 3
+    replan_request = backend.requests[-1]
+    assert replan_request.context["revision_requested"] is True
+    assert replan_request.context["current_roadmap"]["version"] == 1
+    measurement = replan_request.context["application_context"]["measurement"]
+    assert measurement["historical_post_level_follower_attribution"] == "UNAVAILABLE"
+    assert measurement["retrospective_90_day_new_follower_uplift"] == "UNAVAILABLE"
+
+    third = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:legacy-roadmap-3",
+            now=NOW,
+        )
+    )
+    assert third["roadmap_transition"]["status"] == "ACTIVE"
+    assert third["roadmap"]["version"] == 2
+    assert len(backend.requests) == 3
