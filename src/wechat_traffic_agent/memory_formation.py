@@ -114,13 +114,15 @@ class MemoryFormationPipeline:
             }
         claim_key = str(raw.get("claim_key") or "").strip()
         prior = claims.get(claim_key) if claim_key else None
+        supersedes = str(raw.get("supersedes") or "").strip()
         if prior is not None and _normalize(str(prior.get("text") or "")) != normalized:
-            return {
-                "status": "REJECTED",
-                "reason": "conflict_requires_revision",
-                "existing_memory_id": prior.get("memory_id"),
-                "claim_key": claim_key,
-            }
+            if supersedes != str(prior.get("memory_id") or ""):
+                return {
+                    "status": "REJECTED",
+                    "reason": "conflict_requires_revision",
+                    "existing_memory_id": prior.get("memory_id"),
+                    "claim_key": claim_key,
+                }
         try:
             importance = min(1.0, max(0.0, float(raw.get("importance", 0.7))))
         except (TypeError, ValueError):
@@ -147,6 +149,7 @@ class MemoryFormationPipeline:
             "source_ref": context.source_ref,
             "source_refs": source_refs,
             "evidence_refs": list(raw.get("evidence_refs") or []),
+            "supersedes": supersedes,
             "access_scope": context.access_scope,
             "entities": list(raw.get("entities") or []),
             "topics": list(raw.get("topics") or []),
@@ -155,6 +158,13 @@ class MemoryFormationPipeline:
         if raw.get("created_at"):
             memory["created_at"] = str(raw["created_at"])
         self.store.append_memory(memory, event_type="MEMORY_FORMED")
+        if supersedes:
+            self.store.transition_memory(
+                supersedes,
+                status="SUPERSEDED",
+                superseded_by=memory["memory_id"],
+                event_type="MEMORY_SUPERSEDED",
+            )
         return {"status": "ACCEPTED", "reason": "formed", "memory": memory}
 
     @staticmethod

@@ -362,6 +362,58 @@ class CanonicalMemoryStore:
             decoded["source_message_id"] = decoded["source_ref"]
         return decoded
 
+    def transition_memory(
+        self,
+        memory_id: str,
+        *,
+        status: str,
+        superseded_by: str = "",
+        event_type: str = "MEMORY_STATE_CHANGED",
+    ) -> dict[str, Any]:
+        current = self.get_memory(memory_id)
+        if current is None:
+            raise KeyError(memory_id)
+        next_status = str(status or "").upper()
+        if next_status not in MEMORY_STATUSES:
+            raise ValueError(f"invalid memory status: {next_status}")
+        updated = dict(current)
+        updated["status"] = next_status
+        if superseded_by:
+            updated["superseded_by"] = str(superseded_by)
+        normalized = self._normalize(updated)
+        event = {
+            "event_id": "memory-event:" + uuid4().hex,
+            "memory_id": memory_id,
+            "event_type": str(event_type or "MEMORY_STATE_CHANGED").strip().upper()[:80],
+            "occurred_at": _utc_iso(),
+            "record_hash": normalized["content_hash"],
+        }
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE memories SET status=?, superseded_by=?, content_hash=? WHERE memory_id=?",
+                (
+                    normalized["status"], normalized["superseded_by"],
+                    normalized["content_hash"], memory_id,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO memory_events(
+                    event_id, memory_id, event_type, occurred_at, record_hash, payload_json
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    event["event_id"], event["memory_id"], event["event_type"],
+                    event["occurred_at"], event["record_hash"],
+                    _json({"status": next_status, "superseded_by": str(superseded_by or "")}),
+                ),
+            )
+        self.repair_event_mirror()
+        result = self.get_memory(memory_id)
+        if result is None:
+            raise RuntimeError("memory transition lost canonical record")
+        return result
+
     def get_memory(self, memory_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
