@@ -542,8 +542,8 @@ def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypa
 
     page = client.get("/operator/")
     assert page.status_code == 200
-    assert "Send login link to Enterprise WeChat" in page.text
-    assert "Emergency token fallback" in page.text
+    assert "发送登录链接" in page.text
+    assert "备用 Token 登录" in page.text
 
     missing_header = client.post("/operator/api/request-login", json={})
     assert missing_header.status_code == 403
@@ -807,9 +807,9 @@ def test_operator_can_bootstrap_remote_host_with_one_time_ssh_secret(tmp_path, m
     assert secret not in response.text
     assert wakeful.calls==[5]
     page=client.get("/operator/")
-    assert "Hand a server to Ferro" in page.text
-    assert "IP or hostname" in page.text
-    assert "One-time SSH password" in page.text
+    assert "添加服务器" in page.text
+    assert "IP 或主机名" in page.text
+    assert "一次性 SSH 密码" in page.text
 
 def _login_operator(client: TestClient, root) -> None:
     token = (root / "secrets" / "operator-console.token").read_text().strip()
@@ -832,8 +832,8 @@ def test_operator_page_exposes_browser_runtime_and_jev_smoke_action(tmp_path, mo
     client = TestClient(service._app())
     page = client.get("/operator/")
     assert page.status_code == 200
-    assert "Browser runtime" in page.text
-    assert "Test Jev" in page.text
+    assert "浏览器" in page.text
+    assert "测试 Jev" in page.text
     assert "/operator/api/browser/jev/test" in page.text
 
 
@@ -971,5 +971,5 @@ def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text
     assert calls["typed"] == [secret]
 
     page = client.get("/operator/")
-    assert "Local X login · one-time setup" in page.text
+    assert "X 账号登录" in page.text
     assert "/operator/api/browser/local/type" in page.text
