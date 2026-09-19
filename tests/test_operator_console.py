@@ -892,3 +892,84 @@ def test_operator_jev_smoke_endpoint_is_authenticated_and_bounded(tmp_path, monk
         "action_count": 0,
         "final_url": "https://example.com/",
     }
+
+
+def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text(tmp_path, monkeypatch):
+    import types
+    import wechat_traffic_agent.local_browser_control as local_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    calls = {"typed": []}
+
+    class FakeControl:
+        def __init__(self):
+            pass
+        def start(self, url):
+            assert url.startswith("https://x.com/")
+            return {"running": True, "url": url, "title": "X", "x_authenticated": False}
+        def snapshot(self):
+            return types.SimpleNamespace(
+                url="https://x.com/i/flow/login",
+                title="X",
+                width=1120,
+                height=780,
+                x_authenticated=False,
+                screenshot_b64="ZmFrZS1qcGVn",
+            )
+        def click(self, *, x_ratio, y_ratio):
+            assert 0 <= x_ratio <= 1 and 0 <= y_ratio <= 1
+            return {"ok": True}
+        def type_text(self, text):
+            calls["typed"].append(text)
+            return {"ok": True, "length": len(text)}
+        def key(self, key):
+            return {"ok": True, "key": key}
+        def stop(self):
+            return {"ok": True, "running": False}
+
+    monkeypatch.setattr(local_module, "LocalBrowserControl", FakeControl)
+    service = LiveAgentService(
+        state_root=tmp_path,
+        application=None,
+        backend=None,
+        mind=None,
+    )
+    client = TestClient(service._app())
+
+    unauth = client.post(
+        "/operator/api/browser/local/start",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert unauth.status_code == 401
+
+    _login_operator(client, tmp_path)
+
+    no_header = client.post("/operator/api/browser/local/start", json={})
+    assert no_header.status_code == 403
+
+    started = client.post(
+        "/operator/api/browser/local/start",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert started.status_code == 200
+
+    snap = client.get("/operator/api/browser/local/snapshot")
+    assert snap.status_code == 200
+    assert snap.json()["screenshot_b64"] == "ZmFrZS1qcGVn"
+
+    secret = "x-password-not-to-echo"
+    typed = client.post(
+        "/operator/api/browser/local/type",
+        headers={"X-Operator-Request": "1"},
+        json={"text": secret},
+    )
+    assert typed.status_code == 200
+    assert typed.json()["length"] == len(secret)
+    assert secret not in typed.text
+    assert calls["typed"] == [secret]
+
+    page = client.get("/operator/")
+    assert "Local X login · one-time setup" in page.text
+    assert "/operator/api/browser/local/type" in page.text
