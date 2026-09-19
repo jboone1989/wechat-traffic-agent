@@ -279,13 +279,27 @@ class TinyFishXTransport:
 
 
 class XBrowserTransportRouter:
-    """Prefer the already-authenticated TinyFish profile; keep local Chrome as last fallback."""
+    """Prefer account-scoped JEV; retain TinyFish and legacy local CDP as safe-start fallbacks."""
 
     def __init__(self, *, state_root: Path) -> None:
         self.state_root = Path(state_root)
 
     async def publish(self, *, text: str) -> XBrowserPublishResult:
         errors: list[str] = []
+
+        if _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED"):
+            from .browser_runtime import BrowserRuntimeUnavailable
+            from .x_local_browser import AccountJevXTransport
+
+            try:
+                account_jev = AccountJevXTransport.from_environment(
+                    state_root=self.state_root
+                )
+                return await account_jev.publish(text=text)
+            except BrowserRuntimeUnavailable as exc:
+                # Safe fallback is allowed only before a write was attempted.
+                # XBrowserPublicationUnverified deliberately propagates.
+                errors.append("JEV_ACCOUNT: " + str(exc))
 
         if tinyfish_x_enabled():
             try:

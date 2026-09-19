@@ -303,7 +303,7 @@ function renderBrowserRuntime(data){
   if(row.provider==='JEV'){c.append(node('p','用于自适应网页操作','muted'));const result=node('div','可在配置页保存 Jev 密钥后测试','mono muted'),test=node('button','测试 Jev');test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};c.append(test,result)}
   if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
-let activeAccountProvider='';
+let activeAccountProvider='',activeAccountId='';
 function accountStatusKind(status){
  if(status==='CONNECTED')return 'ok';
  if(status==='DEGRADED')return 'bad';
@@ -332,11 +332,12 @@ function renderAccounts(data){
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
   tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
-  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost'),remove=node('button','删除账户','danger');
+  const actions=node('div',undefined,'account-actions'),login=node('button','网页登录','ghost'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost'),remove=node('button','删除账户','danger');
+  login.onclick=()=>beginAccountInstanceLogin(acct);
   provision.onclick=async()=>{provision.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/provision',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · 浏览器环境 '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{provision.disabled=false}};
   test.onclick=async()=>{test.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/jev-test',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · Jev '+out.status)}catch(e){flash(e.message,true)}finally{test.disabled=false}};
   remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？\n\n将删除该账号的本地浏览器 profile 和运行状态。'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
-  actions.append(provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
+  actions.append(login,provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
  }
  const instanceProviders=new Set(instances.map(x=>x.provider_id));
  for(const row of providers){
@@ -381,14 +382,19 @@ function drawAccountFrame(data){
  };
  drawNext()
 }
-function accountStreamUrl(provider){
+function accountStreamUrl(provider,accountId=''){
  const scheme=location.protocol==='https:'?'wss:':'ws:';
+ if(accountId)return scheme+'//'+location.host+'/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stream';
  return scheme+'//'+location.host+'/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stream'
 }
-async function openAccountStream(provider,recovery=0){
+function accountConnectUrl(provider,accountId=''){
+ if(accountId)return '/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/connect';
+ return '/operator/api/accounts/'+encodeURIComponent(provider)+'/connect'
+}
+async function openAccountStream(provider,recovery=0,accountId=''){
  closeAccountStream();
- activeAccountProvider=provider;
- const generation=accountStreamGeneration,ws=new WebSocket(accountStreamUrl(provider));
+ activeAccountProvider=provider;activeAccountId=accountId;
+ const generation=accountStreamGeneration,ws=new WebSocket(accountStreamUrl(provider,accountId));
  accountStream=ws;
  const status=el('localBrowserStatus');
  status.textContent='正在连接实时浏览器…';
@@ -419,8 +425,8 @@ async function openAccountStream(provider,recovery=0){
    if(ev.code===4409&&recovery<1){
     status.textContent='网页会话已重建，正在恢复实时连接…';
     try{
-     await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/connect',{method:'POST',body:'{}'});
-     await openAccountStream(provider,recovery+1)
+     await api(accountConnectUrl(provider,accountId),{method:'POST',body:'{}'});
+     await openAccountStream(provider,recovery+1,accountId)
     }catch(e){status.textContent=e.message;flash(e.message,true)}
     return
    }
@@ -429,11 +435,19 @@ async function openAccountStream(provider,recovery=0){
  })
 }
 async function beginAccountConnect(row){
- activeAccountProvider=row.provider_id;selectPanel('accounts');
+ activeAccountProvider=row.provider_id;activeAccountId='';selectPanel('accounts');
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');el('accountLoginTitle').textContent=row.label+' · 实时服务器网页会话';
  el('localBrowserStatus').textContent='正在创建 Ferro 服务器上的网页会话…';
- await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
- await openAccountStream(row.provider_id);
+ await api(accountConnectUrl(row.provider_id),{method:'POST',body:'{}'});
+ await openAccountStream(row.provider_id,0,'');
+ await refresh()
+}
+async function beginAccountInstanceLogin(acct){
+ activeAccountProvider=acct.provider_id||'x';activeAccountId=acct.account_id;selectPanel('accounts');
+ el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');el('accountLoginTitle').textContent=(acct.display_label||('@'+acct.identity))+' · 独立 JEV 网页登录';
+ el('localBrowserStatus').textContent='正在启动该账号的独立 Chrome profile…';
+ await api(accountConnectUrl(activeAccountProvider,activeAccountId),{method:'POST',body:'{}'});
+ await openAccountStream(activeAccountProvider,0,activeAccountId);
  await refresh()
 }
 function renderResources(data){
@@ -550,15 +564,19 @@ el('xOAuthRestart').onclick=async()=>{
 };
 
 el('accountLoginClose').onclick=async()=>{
- const provider=activeAccountProvider;closeAccountStream();activeAccountProvider='';
- try{if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})}catch{}
+ const provider=activeAccountProvider,accountId=activeAccountId;closeAccountStream();activeAccountProvider='';activeAccountId='';
+ try{
+  if(accountId)await api('/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stop',{method:'POST',body:'{}'});
+  else if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})
+ }catch{}
  el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');el('liveBrowserCanvas').classList.add('hidden');
- el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。'
+ el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。';
+ await refresh().catch(()=>{})
 };
 el('accountLoginShell').onclick=ev=>{if(ev.target===el('accountLoginShell'))el('accountLoginClose').click()};
 el('liveBrowserReconnect').onclick=async()=>{
  if(!activeAccountProvider)return;
- try{await openAccountStream(activeAccountProvider)}catch(e){flash(e.message,true)}
+ try{await openAccountStream(activeAccountProvider,0,activeAccountId)}catch(e){flash(e.message,true)}
 };
 const liveCanvas=el('liveBrowserCanvas');
 let livePointer=null;

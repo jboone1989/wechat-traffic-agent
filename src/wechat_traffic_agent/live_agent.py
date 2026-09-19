@@ -789,6 +789,10 @@ class LiveAgentService:
         from .operator_memory import OperatorLongTermMemory
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
+        from .account_browser_login import (
+            AccountBrowserLoginControl,
+            AccountBrowserLoginUnavailable,
+        )
         from .browser_session_stream import BrowserSessionStream, BrowserStreamUnavailable
         from .operator_private_chat import (
             OWNER_ENVELOPE_SCHEMA,
@@ -2068,6 +2072,144 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
+
+        def account_instance_login_control(account_id: str):
+            from .account_registry import AccountRegistry
+
+            registry = AccountRegistry(self.state_root)
+            record = registry.get(str(account_id).strip())
+            if record.provider_id != "x":
+                raise ValueError("account browser login is only implemented for X")
+            return record, AccountBrowserLoginControl(
+                state_root=self.state_root,
+                account_id=record.account_id,
+            )
+
+        async def operator_account_instance_login_connect(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse(
+                    {"error": "authentication_required"}, status_code=401
+                )
+            if not operator_write_allowed(request):
+                return JSONResponse(
+                    {"error": "operator_header_required"}, status_code=403
+                )
+            account_id = str(request.path_params["account_id"]).strip()
+            try:
+                record, control = account_instance_login_control(account_id)
+                result = await asyncio.to_thread(control.start)
+                identity = str(result.get("account_identity") or "")
+                if (
+                    result.get("x_authenticated")
+                    and identity.lower() != record.identity.lower()
+                ):
+                    await asyncio.to_thread(control.stop)
+                    return JSONResponse(
+                        {
+                            "error": "account_browser_identity_mismatch",
+                            "expected_identity": record.identity,
+                            "actual_identity": identity,
+                        },
+                        status_code=409,
+                    )
+            except (ValueError, KeyError) as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]}, status_code=404
+                )
+            except AccountBrowserLoginUnavailable:
+                return JSONResponse(
+                    {"error": "account_browser_unavailable"}, status_code=503
+                )
+            return JSONResponse(
+                {
+                    "account_id": record.account_id,
+                    "expected_identity": record.identity,
+                    "browser": result,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_account_instance_login_stop(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse(
+                    {"error": "authentication_required"}, status_code=401
+                )
+            if not operator_write_allowed(request):
+                return JSONResponse(
+                    {"error": "operator_header_required"}, status_code=403
+                )
+            account_id = str(request.path_params["account_id"]).strip()
+            try:
+                record, control = account_instance_login_control(account_id)
+                result = await asyncio.to_thread(control.stop)
+            except (ValueError, KeyError) as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]}, status_code=404
+                )
+            identity = str(result.get("identity") or "")
+            mismatch = bool(
+                result.get("authenticated")
+                and identity
+                and identity.lower() != record.identity.lower()
+            )
+            return JSONResponse(
+                {
+                    **result,
+                    "account_id": record.account_id,
+                    "expected_identity": record.identity,
+                    "identity_match": not mismatch,
+                },
+                status_code=409 if mismatch else 200,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_account_instance_login_stream(websocket: WebSocket):
+            if operator_console is None:
+                await websocket.close(code=4404)
+                return
+            session_id = websocket.cookies.get("ferro_operator_session")
+            if not operator_console.auth.valid(session_id):
+                await websocket.close(code=4401)
+                return
+            origin = str(websocket.headers.get("origin") or "")
+            host = str(websocket.headers.get("host") or "")
+            if origin:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(origin)
+                if parsed.netloc and parsed.netloc != host:
+                    await websocket.close(code=4403)
+                    return
+            account_id = str(websocket.path_params["account_id"]).strip()
+            try:
+                record, control = account_instance_login_control(account_id)
+                control.target_id()
+            except (ValueError, KeyError, AccountBrowserLoginUnavailable):
+                await websocket.close(code=4409)
+                return
+            await websocket.accept()
+            try:
+                stream = BrowserSessionStream(control)
+                await stream.run(
+                    websocket,
+                    authorize=lambda: operator_console.auth.valid(session_id),
+                )
+            except WebSocketDisconnect:
+                return
+            except BrowserStreamUnavailable as exc:
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": str(exc)[:160],
+                    })
+                except Exception:
+                    pass
+                try:
+                    await websocket.close(code=1011)
+                except Exception:
+                    pass
+
+
         async def operator_account_stream(websocket: WebSocket):
             if operator_console is None:
                 await websocket.close(code=4404)
@@ -2602,6 +2744,9 @@ class LiveAgentService:
                 Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/provision", operator_account_browser_provision, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/jev-test", operator_account_browser_jev_test, methods=["POST"]),
+                Route("/operator/api/account-instances/{account_id}/browser/login/connect", operator_account_instance_login_connect, methods=["POST"]),
+                WebSocketRoute("/operator/api/account-instances/{account_id}/browser/login/stream", operator_account_instance_login_stream),
+                Route("/operator/api/account-instances/{account_id}/browser/login/stop", operator_account_instance_login_stop, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),

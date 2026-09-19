@@ -117,7 +117,7 @@ def browser_runtime_status() -> dict[str, Any]:
     return {
         "schema_version": "content-browser-runtime-status.v1",
         "routing_policy": "DETERMINISTIC_SKILL_THEN_JEV_THEN_TINYFISH",
-        "x_fallback_policy": "OFFICIAL_API_THEN_TINYFISH_THEN_LOCAL_CDP",
+        "x_fallback_policy": "OFFICIAL_API_THEN_ACCOUNT_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP",
         "adaptive_default": "JEV",
         "providers": [
             local_cdp_readiness(),
