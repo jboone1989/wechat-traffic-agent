@@ -7,6 +7,8 @@ import re
 from typing import Any, Iterable
 from uuid import uuid4
 
+from .memory_system import CanonicalMemoryStore
+
 
 CORE_MEMORIES = (
     {
@@ -71,24 +73,48 @@ class OperatorLongTermMemory:
         self.root = Path(state_root) / "application" / "operator_chat"
         self.path = self.root / "long_term_memory.jsonl"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.store = CanonicalMemoryStore(state_root)
+        self.store.import_legacy_jsonl(self.path)
+        self._repair_legacy_mirror()
+
+    def _repair_legacy_mirror(self) -> None:
+        existing_ids: set[str] = set()
+        if self.path.exists():
+            try:
+                with self.path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            row = json.loads(line)
+                        except (ValueError, json.JSONDecodeError):
+                            continue
+                        if isinstance(row, dict) and str(row.get("memory_id") or "").strip():
+                            existing_ids.add(str(row["memory_id"]))
+            except OSError:
+                existing_ids = set()
+        missing = [
+            row for row in self.store.list_memories(limit=5000)
+            if row.get("source_type") == "OWNER_CONVERSATION"
+            and str(row.get("memory_id") or "") not in existing_ids
+        ]
+        if not missing:
+            return
+        with self.path.open("a", encoding="utf-8") as handle:
+            for row in missing:
+                mirror = {
+                    "memory_id": row["memory_id"],
+                    "kind": row["kind"],
+                    "text": row["text"],
+                    "importance": row["importance"],
+                    "source_message_id": row.get("source_message_id") or row.get("source_ref") or "",
+                    "created_at": row["created_at"],
+                }
+                handle.write(json.dumps(mirror, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
 
     def all(self, *, limit: int = 1000) -> list[dict[str, Any]]:
-        rows = [dict(row) for row in CORE_MEMORIES]
-        if not self.path.exists():
-            return rows
-        learned: list[dict[str, Any]] = []
-        try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except (ValueError, json.JSONDecodeError):
-                        continue
-                    if isinstance(row, dict) and str(row.get("text") or "").strip():
-                        learned.append(row)
-        except OSError:
-            pass
-        return rows + learned[-max(1, min(int(limit), 5000)):]
+        learned = self.store.list_memories(limit=max(1, min(int(limit), 5000)))
+        owner_rows = [row for row in learned if row.get("source_type") == "OWNER_CONVERSATION"]
+        return [dict(row) for row in CORE_MEMORIES] + owner_rows
+
     def remember_many(self, memories: Iterable[dict[str, Any]], *, source_message_id: str = "") -> list[dict[str, Any]]:
         existing = {_normalize(str(row.get("text") or "")) for row in self.all(limit=5000)}
         saved: list[dict[str, Any]] = []
@@ -106,16 +132,21 @@ class OperatorLongTermMemory:
                 importance = 0.7
             row = {
                 "memory_id": "owner-memory:" + uuid4().hex,
+                "memory_type": "SEMANTIC",
                 "kind": kind,
                 "text": text[:4000],
                 "importance": importance,
+                "confidence": 1.0,
+                "source_type": "OWNER_CONVERSATION",
                 "source_message_id": str(source_message_id or ""),
+                "source_ref": str(source_message_id or ""),
+                "access_scope": "PRIVATE_OWNER",
                 "created_at": _utc_iso(),
             }
-            with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+            self.store.append_memory(row)
             existing.add(key)
             saved.append(row)
+        self._repair_legacy_mirror()
         return saved
 
     def relevant(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
