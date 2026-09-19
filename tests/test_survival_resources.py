@@ -86,6 +86,12 @@ def test_operator_decision_required_for_non_core_offload_need(tmp_path, monkeypa
 def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_path, monkeypatch):
     from agent_network.crypto import Identity
 
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text("<h1>hello edge</h1>", encoding="utf-8")
+    (site / "about.html").write_text("about", encoding="utf-8")
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+
     manager = SurvivalResourceManager(tmp_path)
     remote_identity = Identity.generate("remote.edge.1")
     host = manager.register_remote_host(
@@ -108,14 +114,20 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
                 "key_id":remote_identity.key_id,
                 "public_key":remote_identity.public_key,
                 "capabilities":["survival.workload.deploy.v1"],
+                "deployment_profiles":["content.website-static.v1"],
             }
         assert payload and payload["type"] == "survival.workload.deploy.v1"
+        artifact = payload["artifact"]
+        assert artifact["media_type"] == "application/gzip"
+        assert artifact["file_count"] == 2
         receipt = {
             "type":"survival.workload.deploy.receipt.v1",
             "status":"DEPLOYED",
             "action_id":payload["action_id"],
             "request_hash":payload["object_hash"],
             "deployment_id":"deployment:test-1",
+            "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+            "artifact_sha256":payload["artifact"]["sha256"],
             "agent_id":remote_identity.agent_id,
             "key_id":remote_identity.key_id,
         }
@@ -123,6 +135,10 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
         return receipt
 
     monkeypatch.setattr(manager, "_http_json", remote_call)
+    monkeypatch.setattr(
+        manager, "_http_bytes",
+        lambda url, *, timeout, max_bytes: (site / "index.html").read_bytes(),
+    )
     verified = manager.verify_remote_host(host["host_id"], now=NOW)
     assert verified["status"] == "ACTIVE"
     assert verified["deployment_capable"] is True
@@ -314,3 +330,65 @@ def test_ssh_bootstrap_persists_key_managed_host_without_secret(tmp_path, monkey
     need = next(x for x in manager.needs() if x["action"] == "DISCOVER_REMOTE_MACHINE")
     assert need["status"] == "SATISFIED"
     assert need["resource_id"] == row["host_id"]
+
+def test_ssh_managed_host_binds_only_matching_signed_receiver(tmp_path, monkeypatch):
+    from agent_network.a2a_card import signed_agent_card
+    from agent_network.crypto import Identity
+
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("seed01.network.cai")
+    host_id = "remote-host:ssh-managed"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id": host_id,
+        "name": "vultr-edge",
+        "ssh_host": "207.246.99.253",
+        "ssh_port": 22,
+        "ssh_username": "root",
+        "management_transport": "SSH_KEY",
+        "status": "ACTIVE",
+        "deployment_capable": False,
+        "receiver_status": "NOT_PROVISIONED",
+        "host_instance_id": "host-instance:vultr-body",
+        "capacity": {},
+    }]))
+    origin = "https://edge.example.test"
+    endpoint = origin + "/a2a"
+    card = signed_agent_card(
+        identity=remote,
+        name="network seed",
+        description="receiver",
+        url=endpoint,
+        network_id="network.cai",
+        skills=[{"id":"survival.workload.deploy.v1","name":"Deploy bounded survival workload"}],
+        extra={"survival_resource":{
+            "host_instance_id":"host-instance:vultr-body",
+            "health_url":origin + "/application/survival/host",
+            "control_url":origin + "/application/survival/workloads",
+            "deployment_profiles":["content.website-static.v1"],
+        }},
+    )
+
+    def remote_call(url, *, method, payload=None, timeout):
+        if url.endswith("/.well-known/agent-card.json"):
+            return card
+        return {
+            "status":"HEALTHY",
+            "host_instance_id":"host-instance:vultr-body",
+            "agent_id":remote.agent_id,
+            "key_id":remote.key_id,
+            "public_key":remote.public_key,
+            "capabilities":["survival.workload.deploy.v1"],
+            "deployment_profiles":["content.website-static.v1"],
+        }
+
+    monkeypatch.setattr(manager, "_http_json", remote_call)
+    row = manager.bind_signed_receiver(host_id, origin=origin, now=NOW)
+    assert row["receiver_status"] == "VERIFIED"
+    assert row["deployment_capable"] is True
+    assert row["expected_agent_id"] == remote.agent_id
+    assert row["deployment_profiles"] == ["content.website-static.v1"]
+
+    card["survival_resource"]["host_instance_id"] = "host-instance:someone-else"
+    with pytest.raises(Exception):
+        manager.bind_signed_receiver(host_id, origin=origin, now=NOW)

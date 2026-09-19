@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import base64
+import io
 import ipaddress
 import json
 import os
 from pathlib import Path
 import shutil
 import socket
+import tarfile
 from typing import Any
 from urllib.parse import urlparse
 import urllib.error
@@ -439,6 +442,85 @@ class SurvivalResourceManager:
             "rejected": rejected,
         }
 
+    def bind_signed_receiver(
+        self, host_id: str, *, origin: str, now: datetime
+    ) -> dict[str, Any]:
+        rows = self.remote_hosts()
+        target = next((row for row in rows if row.get("host_id") == host_id), None)
+        if target is None:
+            raise FileNotFoundError(host_id)
+        if target.get("management_transport") != "SSH_KEY":
+            raise ValueError("signed receiver binding requires an SSH-managed host")
+        base = str(origin or "").strip().rstrip("/")
+        self._validate_remote_url(base)
+        card_url = base + "/.well-known/agent-card.json"
+        health_url = base + "/application/survival/host"
+        control_url = base + "/application/survival/workloads"
+        card = self._http_json(card_url, method="GET", timeout=8.0)
+        public_key = str(card.get("public_key") or "").strip()
+        agent_id = str(card.get("agent_id") or "").strip()
+        key_id = str(card.get("key_id") or "").strip()
+        endpoint = str(card.get("url") or "").strip()
+        if not public_key or not agent_id or not key_id or not endpoint:
+            raise ValueError("signed receiver Agent Card is missing identity fields")
+        from agent_network.a2a_card import verify_signed_agent_card
+
+        verify_signed_agent_card(
+            card,
+            public_key=public_key,
+            network_id=str(card.get("network_id") or "") or None,
+            seed_agent_id=agent_id,
+            key_id=key_id,
+            endpoint=endpoint,
+        )
+        descriptor = card.get("survival_resource") or {}
+        if not isinstance(descriptor, dict):
+            raise ValueError("signed receiver Agent Card has no survival resource descriptor")
+        if str(descriptor.get("health_url") or "").rstrip("/") != health_url:
+            raise ValueError("signed receiver health URL does not match expected origin")
+        if str(descriptor.get("control_url") or "").rstrip("/") != control_url:
+            raise ValueError("signed receiver control URL does not match expected origin")
+        remote_instance_id = str(descriptor.get("host_instance_id") or "").strip()
+        expected_instance_id = str(target.get("host_instance_id") or "").strip()
+        if not remote_instance_id or remote_instance_id != expected_instance_id:
+            raise ValueError("signed receiver physical host identity mismatch")
+        skills = {
+            str(item.get("id") or "")
+            for item in card.get("skills") or ()
+            if isinstance(item, dict)
+        }
+        if "survival.workload.deploy.v1" not in skills:
+            raise ValueError("signed receiver does not advertise workload deployment")
+        target.update({
+            "health_url": health_url,
+            "control_url": control_url,
+            "agent_card_url": card_url,
+            "network_endpoint": endpoint,
+            "expected_agent_id": agent_id,
+            "expected_key_id": key_id,
+            "expected_public_key": public_key,
+            "trust_source": "OPERATOR_SSH_BOOTSTRAP+SIGNED_AGENT_CARD",
+            "receiver_status": "DISCOVERED",
+        })
+        _atomic_json(self.hosts_path, rows)
+        verified = self.verify_remote_host(host_id, now=now)
+        if verified.get("status") != "ACTIVE" or not verified.get("deployment_capable"):
+            raise RuntimeError("signed receiver failed workload-capability verification")
+        rows = self.remote_hosts()
+        current = next(row for row in rows if row.get("host_id") == host_id)
+        current["receiver_status"] = "VERIFIED"
+        current["receiver_origin"] = base
+        _atomic_json(self.hosts_path, rows)
+        self._record_action({
+            "action": "BIND_SIGNED_RECEIVER",
+            "host_id": host_id,
+            "status": "VERIFIED",
+            "receiver_origin": base,
+            "agent_id": current.get("agent_id"),
+            "key_id": current.get("key_id"),
+        }, now)
+        return current
+
     def verify_remote_host(self, host_id: str, *, now: datetime) -> dict[str, Any]:
         rows = self.remote_hosts()
         target = next((row for row in rows if row.get("host_id") == host_id), None)
@@ -478,6 +560,10 @@ class SurvivalResourceManager:
             target["key_id"] = str(payload.get("key_id") or "")
             target["public_key"] = str(payload.get("public_key") or "")
             target["capabilities"] = capabilities
+            target["deployment_profiles"] = [
+                str(item) for item in payload.get("deployment_profiles") or ()
+                if str(item).strip()
+            ]
             target["deployment_capable"] = (
                 bool(target.get("control_url"))
                 and "survival.workload.deploy.v1" in capabilities
@@ -517,6 +603,9 @@ class SurvivalResourceManager:
             raise ValueError("offload requires verified signed deployment capability")
         if service.get("migration_class") == "PRIMARY_STATEFUL":
             raise ValueError("primary stateful migration requires dedicated migration approval")
+        profile = str(service.get("deployment_profile") or "")
+        if profile not in set(host.get("deployment_profiles") or ()):
+            raise ValueError("remote host does not support this deployment profile")
         plan = {
             "action_id": "placement:" + sha256(
                 (service_id + "|" + host_id + "|" + _iso(now)).encode()
@@ -567,11 +656,12 @@ class SurvivalResourceManager:
             "requester_key_id": identity.key_id,
             "requested_at": _iso(now),
             "public_key": identity.public_key,
+            "artifact": self._deployment_artifact(service),
         }
         payload["object_hash"] = identity.object_hash(payload)
         payload["signature"] = identity.sign_object(payload)
         receipt = self._http_json(
-            str(host["control_url"]), method="POST", payload=payload, timeout=20.0
+            str(host["control_url"]), method="POST", payload=payload, timeout=60.0
         )
         self._verify_deployment_receipt(
             receipt=receipt, host=host, action_id=action_id,
@@ -580,11 +670,20 @@ class SurvivalResourceManager:
         deployment_id = str(receipt.get("deployment_id") or "")
         if not deployment_id:
             raise RuntimeError("remote deployment receipt omitted deployment_id")
+        deployment_url = str(receipt.get("deployment_url") or "").strip()
+        if str(service.get("deployment_profile") or "") == "content.website-static.v1":
+            self._verify_static_deployment(
+                host=host,
+                deployment_url=deployment_url,
+                artifact=dict(payload["artifact"]),
+            )
 
         for row in service_rows:
             if row.get("service_id") == service_id:
                 row["placement"] = host_id
                 row["deployment_id"] = deployment_id
+                row["deployment_url"] = deployment_url or None
+                row["artifact_sha256"] = str(receipt.get("artifact_sha256") or "")
                 row["updated_at"] = _iso(now)
         _atomic_json(self.services_path, service_rows)
         result = {
@@ -594,6 +693,8 @@ class SurvivalResourceManager:
             "host_id": host_id,
             "status": "DEPLOYED",
             "deployment_id": deployment_id,
+            "deployment_url": deployment_url or None,
+            "artifact_sha256": receipt.get("artifact_sha256"),
             "request_hash": payload["object_hash"],
             "receipt_evidence": "remote-deployment:" + sha256(
                 json.dumps(receipt, sort_keys=True).encode()
@@ -601,6 +702,73 @@ class SurvivalResourceManager:
         }
         self._record_action(result, now)
         return result
+
+    def _deployment_artifact(self, service: dict[str, Any]) -> dict[str, Any]:
+        profile = str(service.get("deployment_profile") or "")
+        if profile != "content.website-static.v1":
+            raise ValueError("deployment artifact builder does not support this profile")
+        raw_root = str(os.environ.get("CONTENT_WEB_SITE_ROOT") or "").strip()
+        if not raw_root:
+            raise RuntimeError("CONTENT_WEB_SITE_ROOT is required for website-static offload")
+        root = Path(raw_root).resolve(strict=True)
+        if not root.is_dir() or not (root / "index.html").is_file():
+            raise RuntimeError("website-static source has no index.html")
+
+        buffer = io.BytesIO()
+        file_count = 0
+        extracted_bytes = 0
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+                if path.is_symlink():
+                    raise RuntimeError("website-static source contains a symlink")
+                if path.is_dir():
+                    continue
+                if not path.is_file():
+                    raise RuntimeError("website-static source contains a non-file entry")
+                relative = path.relative_to(root)
+                stat = path.stat()
+                file_count += 1
+                extracted_bytes += int(stat.st_size)
+                if file_count > 5000 or extracted_bytes > 64 * 1024 * 1024:
+                    raise RuntimeError("website-static source exceeds receiver limits")
+                info = tarfile.TarInfo(relative.as_posix())
+                info.size = int(stat.st_size)
+                info.mode = 0o644
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                info.mtime = 0
+                with path.open("rb") as handle:
+                    archive.addfile(info, handle)
+        raw = buffer.getvalue()
+        if not raw or len(raw) > 16 * 1024 * 1024:
+            raise RuntimeError("website-static archive exceeds receiver request limit")
+        index_bytes = (root / "index.html").read_bytes()
+        return {
+            "media_type": "application/gzip",
+            "encoding": "base64",
+            "sha256": "sha256:" + sha256(raw).hexdigest(),
+            "bytes": len(raw),
+            "data": base64.b64encode(raw).decode("ascii"),
+            "file_count": file_count,
+            "index_sha256": "sha256:" + sha256(index_bytes).hexdigest(),
+        }
+
+    def _verify_static_deployment(
+        self, *, host: dict[str, Any], deployment_url: str,
+        artifact: dict[str, Any],
+    ) -> None:
+        if not deployment_url:
+            raise RuntimeError("remote static deployment omitted deployment_url")
+        control_url = str(host.get("control_url") or "")
+        if not self._same_origin(control_url, deployment_url):
+            raise RuntimeError("remote deployment URL origin mismatch")
+        body = self._http_bytes(deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024)
+        expected = str(artifact.get("index_sha256") or "")
+        actual = "sha256:" + sha256(body).hexdigest()
+        if not expected or actual != expected:
+            raise RuntimeError("remote static index verification failed")
 
     def actions(self, *, limit: int = 30) -> list[dict[str, Any]]:
         if not self.actions_path.exists():
@@ -792,6 +960,26 @@ class SurvivalResourceManager:
         if not isinstance(raw, dict):
             raise ValueError("remote endpoint response must be an object")
         return raw
+
+    def _http_bytes(
+        self, url: str, *, timeout: float, max_bytes: int
+    ) -> bytes:
+        self._assert_public_endpoint(url)
+        request = urllib.request.Request(
+            url, headers={"Accept": "text/html,*/*;q=0.8"}, method="GET"
+        )
+        opener = urllib.request.build_opener(_NoRedirect())
+        with opener.open(request, timeout=timeout) as response:
+            final_url = str(response.geturl() or url)
+            if final_url != url:
+                raise RuntimeError("remote endpoint redirect is not allowed")
+            length = response.headers.get("Content-Length")
+            if length and int(length) > max_bytes:
+                raise RuntimeError("remote deployment verification response is too large")
+            body = response.read(max_bytes + 1)
+        if len(body) > max_bytes:
+            raise RuntimeError("remote deployment verification response is too large")
+        return body
 
     @staticmethod
     def _assert_public_endpoint(raw: str) -> None:

@@ -631,6 +631,10 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
     from wechat_traffic_agent.survival_resources import SurvivalResourceManager
 
     remote_identity = Identity.generate("remote.edge.http")
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text("<h1>operator edge</h1>", encoding="utf-8")
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
 
     def remote_call(self, url, *, method, payload=None, timeout):
         if method == "GET":
@@ -640,6 +644,7 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
                 "key_id":remote_identity.key_id,
                 "public_key":remote_identity.public_key,
                 "capabilities":["survival.workload.deploy.v1"],
+                "deployment_profiles":["content.website-static.v1"],
             }
         receipt = {
             "type":"survival.workload.deploy.receipt.v1",
@@ -647,6 +652,8 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
             "action_id":payload["action_id"],
             "request_hash":payload["object_hash"],
             "deployment_id":"deployment:http-1",
+            "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+            "artifact_sha256":payload["artifact"]["sha256"],
             "agent_id":remote_identity.agent_id,
             "key_id":remote_identity.key_id,
         }
@@ -654,6 +661,11 @@ def test_survival_control_http_registers_verifies_and_executes_signed_offload(tm
         return receipt
 
     monkeypatch.setattr(SurvivalResourceManager, "_http_json", remote_call)
+    monkeypatch.setattr(
+        SurvivalResourceManager,
+        "_http_bytes",
+        lambda self, url, *, timeout, max_bytes: (site / "index.html").read_bytes(),
+    )
 
     class Wakeful:
         def schedule_resource_followup(self, now, *, seconds=300):
