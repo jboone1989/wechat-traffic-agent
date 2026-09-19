@@ -24,6 +24,8 @@ class Repair:
         result = {"status": self.status, "problem_id": "self-problem:test"}
         if self.status == "GENERATED_PLAN_DEFERRED":
             result["retry_seconds"] = 900
+        if self.status == "CANDIDATE_REJECTED_REPLAN_QUEUED":
+            result["retry_seconds"] = 60
         return result
 
 
@@ -63,6 +65,18 @@ def test_deferred_generated_plan_schedules_resource_retry_without_busy_loop():
     assert result["status"] == "OK"
     assert result["self_repair"]["status"] == "GENERATED_PLAN_DEFERRED"
     assert wakeful.calls == [(NOW, 900)]
+
+
+
+
+def test_rejected_candidate_schedules_counterevidence_replan():
+    runner, wakeful = _runner("CANDIDATE_REJECTED_REPLAN_QUEUED")
+
+    result = runner._reflect(NOW)
+
+    assert result["status"] == "OK"
+    assert result["self_repair"]["status"] == "CANDIDATE_REJECTED_REPLAN_QUEUED"
+    assert wakeful.calls == [(NOW, 60)]
 
 
 def test_other_self_repair_states_do_not_create_busy_loop():

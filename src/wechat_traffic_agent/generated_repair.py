@@ -45,7 +45,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v4"
+PLANNER_VERSION = "generated-repair.v5"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -355,6 +355,12 @@ class GeneratedRepairPlanner:
                         "problem_id", "symptom", "error_type", "failure_site",
                         "occurrences", "cycles", "evidence_refs",
                     )},
+                    "prior_repair_trial": problem.get("repair_trial"),
+                    "instruction_from_counterevidence": (
+                        "If prior_repair_trial is present, treat its failed tests and assertion evidence "
+                        "as counterevidence against the previous hypothesis. Do not repeat the rejected edit; "
+                        "propose a materially different bounded fix that preserves the failed contracts."
+                    ),
                     "allowed_source_paths": sources,
                     "allowed_test_paths": tests,
                     "source_context": contexts,

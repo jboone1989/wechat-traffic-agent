@@ -283,7 +283,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v4"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v5"
 
 
 
@@ -350,7 +350,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v4"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v5"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -374,7 +374,7 @@ def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occur
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v4",
+        "planner_version": "generated-repair.v5",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "LLMProviderError:all eligible LLM resources failed without exposing provider responses",
@@ -485,7 +485,7 @@ def test_historical_rejected_validation_error_is_retryable_without_new_occurrenc
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v4",
+        "planner_version": "generated-repair.v5",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "ValidationError:1 validation error for GeneratedRepairPlan Invalid JSON: trailing characters",
@@ -549,3 +549,53 @@ def test_generated_repair_plan_does_not_require_model_marker():
     plan = GeneratedRepairPlan.model_validate(payload)
 
     assert plan.implementation_markers == []
+
+
+
+def test_counterevidence_is_included_in_next_generated_repair_prompt(tmp_path):
+    state = tmp_path / "state-counterevidence-prompt"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["repair_trial"] = {
+        "status": "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+        "baseline_status": "PASSED",
+        "previous_hypothesis": "Return an empty JSON object when parsing fails.",
+        "previous_edits": [{
+            "path": SOURCE_PATH,
+            "block_id": BLOCK_ID,
+            "new_text": "def normalize_topic(topic):\n    return {}\n",
+        }],
+        "failed_tests": [
+            "tests/test_app_logic.py::test_original_contract",
+        ],
+        "assertion_evidence": [
+            "AssertionError: original contract changed",
+        ],
+    }
+    problem["planner_attempt"] = {
+        "status": "COUNTEREVIDENCE_READY",
+        "planner_version": "generated-repair.v5",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+    }
+    problem_path.write_text(json.dumps(problem))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
+    prompt = runtime.calls[0]
+    assert "prior_repair_trial" in prompt
+    assert "tests/test_app_logic.py::test_original_contract" in prompt
+    assert "Return an empty JSON object when parsing fails." in prompt
+    assert "Do not repeat the rejected edit" in prompt
