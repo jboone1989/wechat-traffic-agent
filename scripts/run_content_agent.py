@@ -337,6 +337,7 @@ def main() -> int:
     try:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.ensure_initial_plans(now)
+        wakeful_runtime.refresh_neural_life(now)
         if args.once:
             reason_task = "CONTENT_COGNITION"
             wake_reason = None
@@ -379,8 +380,10 @@ def main() -> int:
                     status="completed",
                 )
                 break
+            if task != "NEURAL_INTEROCEPTION":
+                wakeful_runtime.refresh_neural_life(now)
             wakeful_runtime.sync_prediction_wakes(now)
-            if task not in {"EVENT_OBSERVE"}:
+            if task not in {"EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}:
                 wakeful_runtime.core.mark_action(now)
             if wake_reason is not None and wake_reason.kind == "PLAN" and reason_task:
                 wakeful_runtime.schedule_next(reason_task, now)
