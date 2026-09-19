@@ -163,10 +163,10 @@ def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
     assert _git(workspace, "status", "--porcelain") == ""
 
 
-def test_generated_repair_rejects_target_outside_localized_boundary(tmp_path):
+def test_model_cannot_escape_localized_boundary_by_claiming_target_path(tmp_path):
     state = tmp_path / "state"
     workspace = _workspace(tmp_path)
-    _problem(state)
+    problem_path = _problem(state)
     payload = _valid_plan()
     payload["target_files"] = ["src/wechat_traffic_agent/self_repair_executor.py"]
     payload["edits"][0]["path"] = payload["target_files"][0]
@@ -183,13 +183,14 @@ def test_generated_repair_rejects_target_outside_localized_boundary(tmp_path):
 
     result = executor.run_once(now=NOW)
 
-    assert result["status"] == "GENERATED_PLAN_REJECTED"
-    assert "localized source boundary" in result["reason"]
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert result["target_files"] == [SOURCE_PATH]
     assert _git(workspace, "status", "--porcelain") == ""
-
-    second = executor.run_once(now=NOW)
-    assert second["status"] == "NO_REPAIR_WORK"
-    assert len(runtime.calls) == 1
+    stored = json.loads(problem_path.read_text())
+    recipe = stored["repair_proposal"]["generated_recipe"]
+    assert recipe["target_files"] == [SOURCE_PATH]
+    assert recipe["edits"][0]["path"] == SOURCE_PATH
+    assert recipe["implementation_markers"] == []
 
 
 def test_planner_rejects_generated_network_or_process_capability(tmp_path):
@@ -283,7 +284,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v6"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v7"
 
 
 
@@ -350,7 +351,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v6"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v7"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -374,7 +375,7 @@ def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occur
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v6",
+        "planner_version": "generated-repair.v7",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "LLMProviderError:all eligible LLM resources failed without exposing provider responses",
@@ -485,7 +486,7 @@ def test_historical_rejected_validation_error_is_retryable_without_new_occurrenc
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v6",
+        "planner_version": "generated-repair.v7",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "ValidationError:1 validation error for GeneratedRepairPlan Invalid JSON: trailing characters",
@@ -551,6 +552,47 @@ def test_generated_repair_plan_does_not_require_model_marker():
     assert plan.implementation_markers == []
 
 
+def test_model_may_omit_runtime_owned_paths_and_tests():
+    payload = _valid_plan()
+    payload.pop("target_files")
+    payload.pop("focused_tests")
+    payload.pop("implementation_markers")
+    payload["edits"][0].pop("path")
+
+    plan = GeneratedRepairPlan.model_validate(payload)
+
+    assert plan.target_files == []
+    assert plan.focused_tests == []
+    assert plan.edits[0].path == ""
+    assert plan.implementation_markers == []
+
+
+def test_model_selected_unapproved_test_is_ignored_by_authoritative_binding(tmp_path):
+    state = tmp_path / "state-authoritative-tests"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    payload = _valid_plan()
+    payload["focused_tests"] = ["tests/test_model_invented.py"]
+    runtime = PlannerRuntime(payload)
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert result["focused_tests"] == ["tests/test_app_logic.py"]
+    stored = json.loads(problem_path.read_text())
+    recipe = stored["repair_proposal"]["generated_recipe"]
+    assert recipe["focused_tests"] == ["tests/test_app_logic.py"]
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v7"
+
+
 
 def test_counterevidence_is_included_in_next_generated_repair_prompt(tmp_path):
     state = tmp_path / "state-counterevidence-prompt"
@@ -575,7 +617,7 @@ def test_counterevidence_is_included_in_next_generated_repair_prompt(tmp_path):
     }
     problem["planner_attempt"] = {
         "status": "COUNTEREVIDENCE_READY",
-        "planner_version": "generated-repair.v6",
+        "planner_version": "generated-repair.v7",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
     }
@@ -705,7 +747,8 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
     result = executor.run_once(now=NOW)
 
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
-    assert result["focused_tests"] == [counter_test]
+    assert result["focused_tests"][0] == counter_test
+    assert "tests/test_app_logic.py" in result["focused_tests"]
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v6"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v7"
     assert counter_test in updated["planner_attempt"]["allowed_tests"]

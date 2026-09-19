@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class GeneratedRepairEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    path: str = Field(min_length=3, max_length=240)
+    path: str = Field(default="", max_length=240)
     block_id: str = Field(min_length=12, max_length=80)
     new_text: str = Field(min_length=1, max_length=5000)
 
@@ -29,9 +29,9 @@ class GeneratedRepairPlan(BaseModel):
     rationale: str = Field(min_length=12, max_length=1000)
     risk: Literal["LOW", "MEDIUM", "HIGH"]
     confidence: float = Field(ge=0.0, le=1.0)
-    target_files: list[str] = Field(min_length=1, max_length=2)
+    target_files: list[str] = Field(default_factory=list, max_length=2)
     edits: list[GeneratedRepairEdit] = Field(min_length=1, max_length=3)
-    focused_tests: list[str] = Field(min_length=1, max_length=4)
+    focused_tests: list[str] = Field(default_factory=list, max_length=4)
     implementation_markers: list[GeneratedRepairMarker] = Field(default_factory=list, max_length=4)
 
 
@@ -45,7 +45,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v6"
+PLANNER_VERSION = "generated-repair.v7"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -300,6 +300,41 @@ class GeneratedRepairPlanner:
             )
             return GeneratedRepairPlan.model_validate_json(self._extract_json(raw))
 
+    def _bind_authoritative_boundaries(
+        self,
+        plan: GeneratedRepairPlan,
+        *,
+        allowed_sources: list[str],
+        allowed_tests: list[str],
+        editable_blocks: list[EditableBlock],
+    ) -> GeneratedRepairPlan:
+        """Derive source and test authority from runtime-owned evidence, never model text."""
+        block_map = {row.block_id: row for row in editable_blocks}
+        bound_edits: list[GeneratedRepairEdit] = []
+        target_files: list[str] = []
+        for edit in plan.edits:
+            block = block_map.get(edit.block_id)
+            if block is None:
+                raise ValueError("generated edit referenced unknown block_id")
+            if block.path not in allowed_sources:
+                raise ValueError("generated edit escaped localized source boundary")
+            bound_edits.append(edit.model_copy(update={"path": block.path}))
+            if block.path not in target_files:
+                target_files.append(block.path)
+        if not target_files:
+            raise ValueError("generated repair selected no authoritative source block")
+        focused_tests = list(allowed_tests[:4])
+        if not focused_tests:
+            raise ValueError("generated repair has no authoritative focused tests")
+        return plan.model_copy(
+            update={
+                "target_files": target_files,
+                "edits": bound_edits,
+                "focused_tests": focused_tests,
+                "implementation_markers": [],
+            }
+        )
+
     def validate(
         self,
         plan: GeneratedRepairPlan,
@@ -312,12 +347,12 @@ class GeneratedRepairPlanner:
             raise ValueError("generated repair risk must be LOW")
         if plan.confidence < 0.72:
             raise ValueError("generated repair confidence below 0.72")
-        if len(set(plan.target_files)) != len(plan.target_files):
-            raise ValueError("duplicate target files")
-        if not set(plan.target_files).issubset(set(allowed_sources)):
-            raise ValueError("target escaped localized source boundary")
-        if not set(plan.focused_tests).issubset(set(allowed_tests)):
-            raise ValueError("selected an unapproved test")
+        plan = self._bind_authoritative_boundaries(
+            plan,
+            allowed_sources=allowed_sources,
+            allowed_tests=allowed_tests,
+            editable_blocks=editable_blocks,
+        )
         block_map = {row.block_id: row for row in editable_blocks}
         prospective = {
             target: (self.workspace_root / target).read_text(encoding="utf-8")
@@ -377,9 +412,10 @@ class GeneratedRepairPlanner:
         contexts = [self.source_context(problem, path) for path in sources]
         prompt = (
             "GENERATE_BOUNDED_SELF_REPAIR_PLAN. Return JSON only. "
-            "Make the smallest reversible logic change. Edit ONLY allowed_source_paths; "
-            "select focused tests ONLY from allowed_test_paths. Do NOT copy old source text. "
-            "For each edit, select exactly one server-generated editable_blocks.block_id and provide replacement new_text. "
+            "Make the smallest reversible logic change. Source paths and focused tests are runtime-owned authority. "
+            "Leave target_files and focused_tests empty; leave each edit.path empty. Do NOT copy old source text. "
+            "For each edit, choose exactly one server-generated editable_blocks.block_id and provide replacement new_text. "
+            "The runtime derives edit.path and target_files from block_id, and focused_tests from allowed_test_paths. "
             "The block_id cryptographically binds the authoritative old_text and becomes invalid if source changes. "
             "Do not invent adoption markers: leave implementation_markers empty; the runtime derives them from validated new_text. "
             "Do not add process execution, filesystem deletion, network access, credentials, auth, deployment, git push, "
