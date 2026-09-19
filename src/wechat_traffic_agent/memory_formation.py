@@ -106,7 +106,8 @@ class MemoryFormationPipeline:
             return {"status": "REJECTED", "reason": "core_change_not_explicitly_authorized"}
         normalized = _normalize(text)
         duplicate = normalized_texts.get(normalized)
-        if duplicate is not None:
+        supersedes = str(raw.get("supersedes") or "").strip()
+        if duplicate is not None and supersedes != str(duplicate.get("memory_id") or ""):
             return {
                 "status": "REJECTED",
                 "reason": "duplicate_memory",
@@ -114,7 +115,6 @@ class MemoryFormationPipeline:
             }
         claim_key = str(raw.get("claim_key") or "").strip()
         prior = claims.get(claim_key) if claim_key else None
-        supersedes = str(raw.get("supersedes") or "").strip()
         if prior is not None and _normalize(str(prior.get("text") or "")) != normalized:
             if supersedes != str(prior.get("memory_id") or ""):
                 return {
