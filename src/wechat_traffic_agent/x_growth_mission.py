@@ -8,6 +8,7 @@ advisory experiment.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,9 @@ DEFAULT_DURATION_DAYS = 30
 DEFAULT_EXPERIMENT_HOURS = 24
 MIN_OBSERVATION_INTERVAL = timedelta(hours=6)
 MISSION_PLANNING_CONTEXT_REF = "x-mission-planning-context:v1"
+MISSION_BASELINE_GUARDRAIL_SCHEMA = "content-agent-x-mission-baseline-guardrails.v1"
+MISSION_HARD_STOP_WINDOW = timedelta(hours=72)
+MISSION_HARD_STOP_DECLINE = 0.02
 
 MISSION_CONSTRAINTS = (
     "obey applicable law",
@@ -294,6 +298,232 @@ class XGrowthMissionCoordinator:
             },
         }
 
+    def _hard_stop_state(
+        self,
+        *,
+        mission: Any,
+        followers: int,
+        now: datetime,
+    ) -> dict[str, Any]:
+        cutoff = now - MISSION_HARD_STOP_WINDOW
+        points: list[tuple[datetime, float, str]] = []
+        if mission.created_at >= cutoff:
+            points.append((mission.created_at, float(mission.baseline), "mission-baseline"))
+        for row in list(getattr(self.runtime.missions, "observations", ()) or ()):
+            if (
+                row.mission_id == mission.mission_id
+                and row.source == "official-x-identity"
+                and row.observed_at >= cutoff
+            ):
+                points.append((row.observed_at, float(row.value), row.observation_id))
+        points.append((now, float(followers), "current-official-x-identity"))
+        peak_at, peak_value, peak_ref = max(points, key=lambda item: item[1])
+        decline_ratio = (
+            0.0
+            if peak_value <= 0
+            else max(0.0, (peak_value - float(followers)) / peak_value)
+        )
+        active = decline_ratio > MISSION_HARD_STOP_DECLINE
+        return {
+            "active": active,
+            "window_hours": MISSION_HARD_STOP_WINDOW.total_seconds() / 3600.0,
+            "decline_threshold": MISSION_HARD_STOP_DECLINE,
+            "current": float(followers),
+            "peak": peak_value,
+            "peak_at": peak_at.isoformat(),
+            "peak_ref": peak_ref,
+            "decline_ratio": decline_ratio,
+            "action": (
+                "PAUSE_MISSION_LINKED_X_PUBLICATION"
+                if active
+                else "ALLOW_WITH_EXISTING_GATES"
+            ),
+        }
+
+    def publication_guardrail(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"allowed": True, "status": "MISSION_DISABLED"}
+        payload = _read_json(self.path)
+        hard_stop = payload.get("hard_stop")
+        if not isinstance(hard_stop, dict):
+            return {"allowed": True, "status": "NO_ACTIVE_HARD_STOP"}
+        active = bool(hard_stop.get("active"))
+        return {
+            "allowed": not active,
+            "status": "HARD_STOP_ACTIVE" if active else "ALLOWED",
+            "hard_stop": hard_stop,
+        }
+
+    def _baseline_guardrail_report(
+        self,
+        *,
+        mission: Any,
+        roadmap: Any,
+        step: Any,
+        followers: int,
+        identity_receipt_id: str,
+        now: datetime,
+        hard_stop: dict[str, Any],
+    ) -> tuple[Path, dict[str, Any]]:
+        payload = {
+            "schema_version": MISSION_BASELINE_GUARDRAIL_SCHEMA,
+            "generated_at": now.isoformat(),
+            "mission_id": mission.mission_id,
+            "roadmap_id": roadmap.roadmap_id,
+            "roadmap_version": roadmap.version,
+            "step_id": step.step_id,
+            "step_title": step.title,
+            "step_exit_criteria": step.exit_criteria,
+            "baseline": {
+                "metric": MISSION_METRIC,
+                "value": float(followers),
+                "source": "official X identity public_metrics.followers_count",
+                "identity_receipt_id": str(identity_receipt_id),
+            },
+            "measurement": {
+                "prospective_follower_snapshots": "ENABLED",
+                "minimum_required_cadence_hours": 24.0,
+                "runtime_record_interval_hours": (
+                    MIN_OBSERVATION_INTERVAL.total_seconds() / 3600.0
+                ),
+                "authoritative_source": "official-x-identity",
+                "browser_fallback_is_metric_authority": False,
+                "causal_attribution": False,
+                "post_public_metrics_when_available": [
+                    "impression_count",
+                    "like_count",
+                    "reply_count",
+                    "retweet_count",
+                    "quote_count",
+                    "bookmark_count",
+                ],
+                "unavailable_metrics": [
+                    "historical_post_level_follower_attribution",
+                    "post_level_profile_visits",
+                    "post_level_follows",
+                ],
+            },
+            "guardrails": {
+                "hard_stop": hard_stop,
+                "prohibited_tactics": [
+                    "artificial follower inflation",
+                    "follow-churn",
+                    "reciprocal-follow or reciprocal-engagement schemes",
+                    "indiscriminate following",
+                    "automated likes",
+                    "unsolicited repetitive replies",
+                ],
+                "policy_constraints": list(mission.constraints),
+                "ratification": {
+                    "basis": (
+                        "operator-issued mission plus runtime adoption of a protective "
+                        "execution guardrail"
+                    ),
+                    "new_human_approval_event": False,
+                    "existing_execution_gates_remain_authoritative": True,
+                },
+            },
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
+        }
+        material = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        artifact_id = (
+            "x-mission-baseline-guardrails:sha256:"
+            + hashlib.sha256(material).hexdigest()
+        )
+        payload["artifact_id"] = artifact_id
+        workspace = (
+            self.state_root
+            / "content"
+            / "x"
+            / "missions"
+            / str(mission.mission_id)
+        )
+        path = workspace / "baseline_guardrails.json"
+        _write_json(path, payload)
+        return path, payload
+
+    def _advance_ready_baseline_step(
+        self,
+        *,
+        mission: Any,
+        followers: int,
+        identity_receipt_id: str,
+        now: datetime,
+        evidence_refs: list[str],
+        hard_stop: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        start = getattr(self.runtime, "start_mission_step", None)
+        complete = getattr(self.runtime, "complete_mission_step", None)
+        if (
+            roadmap is None
+            or not callable(schedule_method)
+            or not callable(start)
+            or not callable(complete)
+        ):
+            return None
+        schedule = schedule_method(max_parallelism=3)
+        required_tags = {
+            "x_api_oauth_read",
+            "analytics",
+            "legal_policy_review",
+            "brand_review",
+        }
+        candidate = None
+        for item in schedule.items:
+            if item.mission_id != mission.mission_id:
+                continue
+            if _enum_value(item.status) not in {"READY", "RUNNING"}:
+                continue
+            step = self.runtime.missions.get_step(item.step_id)
+            if not required_tags.issubset(set(step.resource_tags)):
+                continue
+            if "prospective follower snapshots" not in step.exit_criteria.lower():
+                continue
+            candidate = step
+            break
+        if candidate is None:
+            return None
+        started = start(candidate.step_id)
+        path, report = self._baseline_guardrail_report(
+            mission=mission,
+            roadmap=roadmap,
+            step=started,
+            followers=followers,
+            identity_receipt_id=identity_receipt_id,
+            now=now,
+            hard_stop=hard_stop,
+        )
+        completed = complete(
+            candidate.step_id,
+            evidence_refs=list(
+                dict.fromkeys(
+                    [
+                        *evidence_refs,
+                        str(report["artifact_id"]),
+                        MISSION_PLANNING_CONTEXT_REF,
+                    ]
+                )
+            ),
+        )
+        self._persist_runtime()
+        return {
+            "status": "COMPLETED",
+            "step_id": completed.step_id,
+            "title": completed.title,
+            "artifact_id": report["artifact_id"],
+            "artifact_path": str(path),
+            "completed_at": (
+                None
+                if completed.completed_at is None
+                else completed.completed_at.isoformat()
+            ),
+        }
+
+
     async def _ensure_roadmap(self, mission: Any) -> dict[str, Any]:
         needs_revision = getattr(self.runtime.missions, "roadmap_needs_revision", None)
         latest = getattr(self.runtime.missions, "latest_roadmap", None)
@@ -480,11 +710,25 @@ class XGrowthMissionCoordinator:
             )
 
         mission = self.runtime.missions.get(mission.mission_id)
+        hard_stop = self._hard_stop_state(
+            mission=mission,
+            followers=followers,
+            now=now,
+        )
         roadmap_result = None
         experiment_result = None
+        roadmap_execution = None
         if _enum_value(mission.status) == "ACTIVE":
             roadmap_result = await self._ensure_roadmap(mission)
             experiment_result = await self._ensure_experiment(mission)
+            roadmap_execution = self._advance_ready_baseline_step(
+                mission=mission,
+                followers=followers,
+                identity_receipt_id=identity_receipt_id,
+                now=now,
+                evidence_refs=evidence_refs,
+                hard_stop=hard_stop,
+            )
 
         progress = self.runtime.mission_progress(mission.mission_id)
         active_experiment = self._open_experiment(mission.mission_id)
@@ -537,6 +781,8 @@ class XGrowthMissionCoordinator:
             ),
             "settlement": settlement,
             "roadmap_transition": roadmap_result,
+            "roadmap_execution": roadmap_execution,
+            "hard_stop": hard_stop,
             "roadmap": (
                 None
                 if roadmap is None

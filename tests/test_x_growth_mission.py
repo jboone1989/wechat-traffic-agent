@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 
 from agent_runtime.backends import FixtureAgentBackend
 from agent_runtime.clock import FrozenClock
@@ -386,3 +387,108 @@ def test_legacy_roadmap_is_replanned_once_with_real_x_capability_context(tmp_pat
     assert third["roadmap_transition"]["status"] == "ACTIVE"
     assert third["roadmap"]["version"] == 2
     assert len(backend.requests) == 3
+
+
+def test_ready_baseline_guardrail_step_completes_with_real_artifact(tmp_path):
+    runtime, _clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:baseline-step-1",
+            now=NOW,
+        )
+    )
+    mission_id = first["mission_id"]
+    roadmap = runtime.set_mission_roadmap(
+        mission_id,
+        steps=[{
+            "key": "baseline",
+            "title": "Baseline, compliance guardrails, and measurement readiness",
+            "objective": (
+                "Verify the real follower count, ratify protective guardrails, "
+                "and enable prospective snapshots."
+            ),
+            "estimated_hours": 1,
+            "depends_on": [],
+            "resource_tags": [
+                "x_api_oauth_read",
+                "analytics",
+                "legal_policy_review",
+                "brand_review",
+                "budget_low",
+            ],
+            "exit_criteria": (
+                "A dated baseline guardrail report exists with prospective follower "
+                "snapshots, the 72-hour decline hard stop, prohibited tactics, and "
+                "official post public_metrics when available."
+            ),
+        }],
+        evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+    )
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:baseline-step-2",
+            now=NOW,
+        )
+    )
+
+    execution = second["roadmap_execution"]
+    assert execution["status"] == "COMPLETED"
+    assert execution["step_id"] == roadmap.steps[0].step_id
+    report_path = Path(execution["artifact_path"])
+    assert report_path.exists()
+    report = json.loads(report_path.read_text())
+    assert report["baseline"]["value"] == 2000.0
+    assert report["measurement"]["prospective_follower_snapshots"] == "ENABLED"
+    assert report["measurement"]["causal_attribution"] is False
+    assert report["guardrails"]["hard_stop"]["active"] is False
+    assert report["guardrails"]["hard_stop"]["decline_threshold"] == 0.02
+    assert report["guardrails"]["ratification"]["new_human_approval_event"] is False
+    completed = runtime.missions.get_step(roadmap.steps[0].step_id)
+    assert completed.completed_at == NOW
+    assert execution["artifact_id"] in completed.evidence_refs
+    assert second["roadmap"]["steps"][0]["status"] == "COMPLETED"
+
+
+def test_verified_follower_drop_over_two_percent_activates_publication_hard_stop(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:hard-stop-start",
+            now=NOW,
+        )
+    )
+    assert first["hard_stop"]["active"] is False
+
+    clock.advance(timedelta(hours=24).total_seconds())
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(1959),
+            identity_receipt_id="receipt:x.identity:hard-stop-drop",
+            now=clock.now(),
+        )
+    )
+
+    assert second["hard_stop"]["active"] is True
+    assert second["hard_stop"]["peak"] == 2000.0
+    assert second["hard_stop"]["current"] == 1959.0
+    assert second["hard_stop"]["decline_ratio"] > 0.02
+    guard = coordinator.publication_guardrail()
+    assert guard["allowed"] is False
+    assert guard["status"] == "HARD_STOP_ACTIVE"
