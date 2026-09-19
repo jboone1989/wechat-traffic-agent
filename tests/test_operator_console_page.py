@@ -31,3 +31,12 @@ def test_operator_console_keeps_existing_admin_controls():
     assert "/operator/api/accounts/" in page
     assert 'id="localBrowserStart"' not in page
     assert 'href="/operator/chat/"' in page
+
+def test_operator_console_compacts_account_browser_controls_on_mobile():
+    page = operator_console_document()
+
+    assert ".account-actions button{flex:0 0 auto!important" in page
+    assert ".account-login-shell>.row:first-child>button{flex:0 0 auto!important" in page
+    assert ".browser-controls>.row>button{flex:0 0 auto!important" in page
+    assert ".browser-keys button{flex:0 0 auto!important" in page
+    assert ".account-login-shell{padding:10px;margin-top:8px}" in page
