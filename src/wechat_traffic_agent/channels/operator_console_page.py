@@ -32,7 +32,7 @@ label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;
 details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
 .resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
 .browser-live{width:100%;height:auto;aspect-ratio:1120/780;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:none;cursor:crosshair}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}.live-indicator{display:inline-flex;align-items:center;gap:6px}.live-indicator:before{content:"";width:7px;height:7px;border-radius:50%;background:#5b6872}.live-indicator.live:before{background:#8ee1b2}
-.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.account-login-shell{margin-top:12px}
+.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.account-login-shell{margin-top:12px}.account-binding{display:grid;gap:5px;padding:11px 0;border-top:1px solid #263038}.account-binding:first-of-type{border-top:0}.account-binding-title{display:flex;align-items:center;gap:8px}.account-binding-title strong{flex:1}.account-binding p{margin:0}.account-tech{margin-top:2px}.account-tech summary{font-size:11px;color:#71818d;cursor:pointer}
 .divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
 @media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.account-card{gap:8px;padding:12px}.account-actions{gap:5px}.account-actions button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.account-login-shell{padding:10px;margin-top:8px}.account-login-shell>.row:first-child{align-items:flex-start;gap:6px}.account-login-shell>.row:first-child>button{flex:0 0 auto!important;width:auto;padding:6px 9px;font-size:12px}.account-login-shell h3{font-size:15px}.account-login-shell h3+p{font-size:11px;line-height:1.45;margin:3px 0}.browser-live{border-radius:6px}.browser-controls{gap:6px;margin-top:7px}.browser-controls label{font-size:11px}.browser-controls input{padding:8px}.browser-controls>.row{gap:5px;flex-wrap:wrap}.browser-controls>.row>button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.browser-keys{gap:4px}.browser-keys button{flex:0 0 auto!important;width:auto;padding:6px 8px;font-size:11px;min-width:0}.live-indicator{font-size:10px;line-height:1.35}.mobile-note{display:block;font-size:12px;color:#71818d}}
 </style></head><body><main>
@@ -285,36 +285,55 @@ function accountStatusKind(status){
  if(status==='AUTHENTICATING'||status==='NEEDS_LOGIN'||status==='NEEDS_AUTHORIZATION')return 'pending';
  return 'info'
 }
+function accountStatusLabel(status){
+ return ({CONNECTED:'已连接',NEEDS_LOGIN:'未登录',NEEDS_AUTHORIZATION:'未授权',AUTHENTICATING:'登录中',DEGRADED:'异常',ADAPTER_NOT_INSTALLED:'待接入'})[status]||status||'未知'
+}
 function renderAccounts(data){
  const rows=((data.accounts||{}).accounts||[]),root=el('accounts');root.replaceChildren();
  if(!rows.length){root.append(node('div','暂无账户提供方','card muted'));return}
  for(const row of rows){
-  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row');
-  head.append(node('h3',row.label,'grow'),badge(row.status||'UNKNOWN',accountStatusKind(row.status)));c.append(head);
+  const c=node('div',undefined,'card account-card'),head=node('div',undefined,'row'),bindings=row.bindings||[];
+  head.append(node('h3',row.label,'grow'),badge(accountStatusLabel(row.status),accountStatusKind(row.status)));c.append(head);
   if(row.identity)c.append(node('div','@'+row.identity,'mono'));
-  const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
-  for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
-  const bindings=row.bindings||[];
-  for(const binding of bindings){
-   const line=node('div',undefined,'row'),copy=node('div',undefined,'grow');
-   copy.append(node('strong',binding.label||binding.binding_id),node('div',(binding.purpose||'')+' · '+(binding.auth_mode||''),'muted'));
-   line.append(copy,badge(binding.status||'UNKNOWN',accountStatusKind(binding.status)));
-   if(binding.identity)line.append(node('span','@'+binding.identity,'mono muted'));
-   c.append(line)
-  }
-  if(row.note)c.append(node('p',row.note,'muted'));if(row.last_error)c.append(node('p',row.last_error,'error'));
-  const actions=node('div',undefined,'account-actions');
   if(row.provider_id==='x'){
-   const web=bindings.find(x=>x.binding_id==='browser_session');
-   const connect=node('button',web&&web.status==='CONNECTED'?'重新连接网页会话':'网页登录（网页自动化）','ghost');
+   const apiBinding=bindings.find(x=>x.binding_id==='api_oauth')||{},web=bindings.find(x=>x.binding_id==='browser_session')||{};
+   const apiBox=node('div',undefined,'account-binding'),apiTitle=node('div',undefined,'account-binding-title');
+   apiTitle.append(node('strong','API 连接'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
+   apiBox.append(apiTitle,node('p','用于读取、发布、提及和数据统计。','muted'));
+   if(apiBinding.identity)apiBox.append(node('div','@'+apiBinding.identity,'mono muted'));
+   c.append(apiBox);
+   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
+   webTitle.append(node('strong','网页自动化'),badge(accountStatusLabel(web.status),accountStatusKind(web.status)));
+   webBox.append(webTitle);
+   if(web.status==='CONNECTED'){
+    webBox.append(node('p','服务器浏览器已登录 X，可供 Ferro 执行网页自动化。','muted'))
+   }else if(web.status==='DEGRADED'){
+    webBox.append(node('p','服务器浏览器会话异常，不影响上面的 API 连接。','muted'))
+   }else{
+    webBox.append(node('p','服务器浏览器尚未登录 X。这不影响上面的 API 连接。只有需要操作网页时才需要登录。','muted'))
+   }
+   if(web.last_error&&web.status==='DEGRADED')webBox.append(node('p','上次检查：'+web.last_error,'error'));
+   c.append(webBox);
+   const actions=node('div',undefined,'account-actions');
+   const connect=node('button',web.status==='CONNECTED'?'打开服务器浏览器':'登录服务器浏览器','ghost');
    connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
-   const verify=node('button','验证网页会话','ghost');
-   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash('Browser session · '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
-   actions.append(connect,verify)
-  }else if(row.implemented){
-   const connect=node('button','连接','primary');connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));actions.append(connect)
-  }else actions.append(badge('OAuth adapter slot','info'));
-  c.append(actions);root.append(c)
+   const verify=node('button','检查网页登录','ghost');
+   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(out.status==='CONNECTED'?'服务器浏览器已登录':'服务器浏览器尚未登录');await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
+   actions.append(connect,verify);c.append(actions);
+   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','技术信息'));
+   const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
+   for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));
+   tech.append(meta,node('div','API: '+fmt(apiBinding.auth_mode)+' · Browser: '+fmt(web.auth_mode),'mono muted'));c.append(tech)
+  }else{
+   const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
+   for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
+   if(row.last_error)c.append(node('p',row.last_error,'error'));
+   const actions=node('div',undefined,'account-actions');
+   if(row.implemented){const connect=node('button','连接','primary');connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));actions.append(connect)}
+   else actions.append(badge('待接入适配器','info'));
+   c.append(actions)
+  }
+  root.append(c)
  }
 }
 let accountStream=null,accountStreamGeneration=0,streamFramePending=null,streamFrameDrawing=false;
