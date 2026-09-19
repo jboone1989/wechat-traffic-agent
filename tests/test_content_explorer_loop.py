@@ -1234,3 +1234,48 @@ def test_external_mission_discovery_uses_no_material_change_as_negative_search_f
     assert attempts[0]["cognition_state"] == "NO_MATERIAL_CHANGE"
     assert attempts[0]["topic"] == "crypto-market-volatility-patterns"
     assert discovery["decision"]["topic"] == "persistent-ai-agents"
+
+
+def test_mission_discovery_normalizes_human_topic_to_kebab_slug():
+    value = MissionDiscoveryDecision(
+        topic="Crypto Market Liquidity Gaps",
+        search_query="crypto market liquidity gaps",
+        reader_need="Readers want evidence on liquidity gaps in crypto markets.",
+        rationale="This is a distinct evidence angle for the active mission.",
+    )
+    normalized = _normalize_mission_discovery(value)
+    assert normalized.topic == "crypto-market-liquidity-gaps"
+    assert normalized.search_query == "crypto market liquidity gaps"
+
+
+class InterruptedMissionDiscoveryRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("MISSION_DISCOVERY:"):
+            self.calls.append(task)
+            raise ValueError("model call interrupted without receipt; skip this cycle")
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_mission_discovery_error_persists_external_mission_identity(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = InterruptedMissionDiscoveryRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    cycle_dir = (
+        Path(legacy.state)
+        / "content"
+        / "continuous"
+        / "cycles"
+        / result["cycle"]
+    )
+    error = json.loads((cycle_dir / "mission_discovery_error.json").read_text())
+    assert error["error_type"] == "ValueError"
+    assert error["mission_id"] == "mission-growth-1"
+    assert error["roadmap_step_id"] == "mission-step-community"
+    assert error["experiment_id"] == "mission-exp-growth"
+    assert error["retryable"] is True
+    assert error["publication_authority"] is False
