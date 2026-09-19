@@ -127,6 +127,23 @@ class ContentWakefulRuntime:
             task="RESOURCE_REVIEW",
         ))
 
+    def schedule_goal_followup(self, now: datetime, *, seconds: int = 5) -> None:
+        delay = max(1, min(int(seconds), 300))
+        at = now + timedelta(seconds=delay)
+        wake_id = "content:CONTENT_COGNITION"
+        existing = next(
+            (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
+            None,
+        )
+        if existing is not None and existing.at <= at:
+            return
+        self.core.schedule(PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason="reconsider priorities after owner activated a goal",
+            task="CONTENT_COGNITION",
+        ))
+
     def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
         delay = max(30, min(int(seconds), 900))
         at = now + timedelta(seconds=delay)

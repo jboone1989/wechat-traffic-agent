@@ -57,7 +57,7 @@ details.browser-login>summary{cursor:pointer;font-weight:750}
 <section id="dash" class="hidden">
 <div class="row dash-head">
  <div class="grow"><div class="eyebrow">Survival resource control</div><h2>Ferro resources</h2><p class="muted">Start with what needs attention. Everything else is grouped by purpose.</p></div>
- <div class="row toolbar"><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
+ <div class="row toolbar"><a href="/operator/chat/">Talk to Ferro</a><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
 </div>
 <div id="flash"></div>
 
