@@ -937,7 +937,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     WorldviewDecision,
                 )
                 _put(belief_path, belief_decision.model_dump(mode='json'))
-            inquiry_refs = list((mind_plan.get('goal') or {}).get('inquiry_refs') or ())
+            mind_goal = mind_plan.get('goal') if isinstance(mind_plan.get('goal'), dict) else {}
+            inquiry_refs = list(mind_goal.get('inquiry_refs') or ())
+            inquiry_origin = (
+                'experience'
+                if str(mind_goal.get('origin') or '') == 'EXTERNAL_MISSION'
+                else 'self_question'
+            )
             if update_path.exists():
                 worldview_update = json.loads(update_path.read_text(encoding='utf-8'))
             else:
@@ -946,6 +952,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     source_evidence=selected, proposition=belief_decision.proposition,
                     stance=belief_decision.stance, reliability=belief_decision.reliability,
                     support=belief_decision.support, inquiry_id=(str(inquiry_refs[0]) if inquiry_refs else None),
+                    inquiry_origin=inquiry_origin,
                     commit=belief_decision.action == 'COMMIT',
                 )
                 _put(update_path, worldview_update)

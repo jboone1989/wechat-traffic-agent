@@ -314,3 +314,41 @@ def test_mature_website_outcomes_become_persistent_virtualbrain_strategy_experie
     ])
     assert duplicate["status"] == "NO_NEW_OUTCOMES"
     assert duplicate["duplicates"] == 1
+
+
+def test_external_mission_inquiry_is_created_and_restart_stable(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    inquiry_id = (
+        "external-mission-discovery:mission_10adf8b48211424d:"
+        "mission-step_9bdf796bfe0842ab"
+    )
+    proposition = "Walk-forward validation is necessary before trusting a trading model."
+
+    result = mind.record_research_belief(
+        cycle="v2-external-mission",
+        topic="model-evaluation",
+        question="What evidence should readers require before trusting an AI trading model?",
+        source_evidence=_research_source("web:model-eval-1", "model-eval-rev-1"),
+        proposition=proposition,
+        stance=0.7,
+        reliability=0.8,
+        support=0.8,
+        inquiry_id=inquiry_id,
+        inquiry_origin="experience",
+        commit=False,
+    )
+
+    assert result["status"] == "DEFERRED"
+    assert result["inquiry_id"] == inquiry_id
+    state = mind.session.inquiry.inquiries[inquiry_id]
+    assert state["status"] == "OPEN"
+    assert state["origin"] == "experience"
+    assert proposition in state["hypotheses"]
+    assert result["evidence_id"] in state["evidence_refs"]
+
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    restored = restarted.session.inquiry.inquiries[inquiry_id]
+    assert restored["origin"] == "experience"
+    assert restored["status"] == "OPEN"
+    assert restarted._prior_inquiry_topic(inquiry_id) == "model-evaluation"
