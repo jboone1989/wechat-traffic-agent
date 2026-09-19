@@ -199,6 +199,56 @@ def test_failed_cycle_runs_fresh_immutable_recovery_cycle(tmp_path):
     assert okx_publisher.calls == [{"cycle": recovery_cycle, "now": NOW}]
 
 
+def test_recovery_invalidated_base_cycle_runs_fresh_immutable_recovery(tmp_path):
+    runner, loop, economy, wakeful, *_, base_path, base_payload = _runner(tmp_path)
+    invalidated = {
+        "status": "RECOVERY_INVALIDATED",
+        "cycle": BASE_CYCLE,
+        "reason": "MODEL_PHASE_INPUT_CHANGED",
+    }
+    base_path.write_text(json.dumps(invalidated) + "\n", encoding="utf-8")
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    recovery = result["content_cycle_recovery"]
+    assert recovery["status"] == "COMPLETED"
+    assert recovery["previous_status"] == "RECOVERY_INVALIDATED"
+    assert recovery["recovery_cycle"].startswith("v2-recovery-1789808400-1-")
+    assert loop.calls == [(NOW, recovery["recovery_cycle"], None)]
+    assert json.loads(base_path.read_text()) == invalidated
+    assert wakeful.cognition_marks == [NOW]
+
+
+def test_invalidated_recovery_attempt_does_not_suppress_next_attempt(tmp_path):
+    runner, loop, economy, wakeful, *_ = _runner(tmp_path)
+    first_recovery = (
+        tmp_path
+        / "state"
+        / "content"
+        / "continuous"
+        / "cycles"
+        / "v2-recovery-1789808400-1-1789808500"
+    )
+    first_recovery.mkdir(parents=True, exist_ok=True)
+    (first_recovery / "result.json").write_text(
+        json.dumps({
+            "status": "RECOVERY_INVALIDATED",
+            "cycle": first_recovery.name,
+            "reason": "MODEL_PHASE_INPUT_CHANGED",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    recovery = result["content_cycle_recovery"]
+    assert recovery["status"] == "COMPLETED"
+    assert recovery["attempt"] == 2
+    assert recovery["recovery_cycle"].startswith("v2-recovery-1789808400-2-")
+    assert loop.calls == [(NOW, recovery["recovery_cycle"], None)]
+    assert wakeful.cognition_marks == [NOW]
+
+
 def test_successful_recovery_prevents_duplicate_work_for_same_base_cycle(tmp_path):
     runner, loop, economy, wakeful, *_ = _runner(tmp_path)
 

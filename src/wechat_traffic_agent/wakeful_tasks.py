@@ -745,7 +745,8 @@ class WakefulContentTaskRunner:
         except (OSError, ValueError, json.JSONDecodeError):
             return None
         prior_status = str(prior.get("status") or "").upper()
-        if prior_status not in {"ERROR", "DEGRADED"}:
+        retryable_statuses = {"ERROR", "DEGRADED", "RECOVERY_INVALIDATED"}
+        if prior_status not in retryable_statuses:
             return None
 
         base_cycle = str(preflight.get("cycle") or "").strip()
@@ -769,7 +770,7 @@ class WakefulContentTaskRunner:
                 completed.append((folder, str(payload.get("status") or "").upper()))
 
         for folder, status in reversed(completed):
-            if status not in {"ERROR", "DEGRADED"}:
+            if status not in retryable_statuses:
                 return {
                     "status": "ALREADY_RECOVERED",
                     "recovery_of": base_cycle,
