@@ -147,7 +147,12 @@ def test_remote_host_must_verify_signed_deploy_before_it_can_receive_work(tmp_pa
     deployed = manager.execute_offload(plan["action_id"], now=NOW)
     assert deployed["status"] == "DEPLOYED"
     service = next(row for row in manager.services() if row["service_id"] == "website-static")
-    assert service["placement"] == host["host_id"]
+    assert service["placement"] == "host:local"
+    assert service["primary_placement"] == "host:local"
+    assert len(service["replicas"]) == 1
+    assert service["replicas"][0]["host_id"] == host["host_id"]
+    assert service["replicas"][0]["status"] == "ACTIVE"
+    assert deployed["placement_mode"] == "REPLICA"
     with pytest.raises(ValueError, match="primary stateful"):
         manager.plan_offload("content-agent-core", host["host_id"], now=NOW)
 
@@ -392,3 +397,111 @@ def test_ssh_managed_host_binds_only_matching_signed_receiver(tmp_path, monkeypa
     card["survival_resource"]["host_instance_id"] = "host-instance:someone-else"
     with pytest.raises(Exception):
         manager.bind_signed_receiver(host_id, origin=origin, now=NOW)
+
+def test_replicable_legacy_remote_placement_migrates_to_primary_plus_replica(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "index.html").write_text("legacy", encoding="utf-8")
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    manager.services_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.services_path.write_text(json.dumps([{
+        "service_id":"website-static",
+        "role":"PUBLIC_SURFACE",
+        "placement":"remote-host:legacy",
+        "migration_class":"REPLICABLE",
+        "deployment_profile":"content.website-static.v1",
+        "deployment_id":"deployment:legacy",
+        "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+        "artifact_sha256":"sha256:artifact",
+        "updated_at":NOW.isoformat(),
+    }]))
+    row = manager.services()[0]
+    assert row["placement"] == "host:local"
+    assert row["primary_placement"] == "host:local"
+    assert len(row["replicas"]) == 1
+    assert row["replicas"][0]["host_id"] == "remote-host:legacy"
+    assert row["replicas"][0]["deployment_id"] == "deployment:legacy"
+    assert "deployment_id" not in row
+
+
+def test_resource_review_degrades_and_recovers_receiver_and_replica(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    index = b"<h1>replica</h1>"
+    (site / "index.html").write_bytes(index)
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    host_id = "remote-host:health-test"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":host_id,
+        "name":"edge",
+        "management_transport":"SSH_KEY",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "host_instance_id":"host-instance:edge",
+        "health_url":"https://edge.example.test/application/survival/host",
+        "control_url":"https://edge.example.test/application/survival/workloads",
+        "agent_id":"seed.edge",
+        "key_id":"key-edge",
+        "public_key":"ed25519:edge",
+        "capacity":{"memory_available_gib":1.0},
+    }]))
+    manager.services_path.write_text(json.dumps([{
+        "service_id":"website-static",
+        "role":"PUBLIC_SURFACE",
+        "placement":"host:local",
+        "primary_placement":"host:local",
+        "migration_class":"REPLICABLE",
+        "deployment_profile":"content.website-static.v1",
+        "replicas":[{
+            "host_id":host_id,
+            "status":"ACTIVE",
+            "deployment_id":"deployment:test",
+            "deployment_url":"https://edge.example.test/application/survival/workloads/website-static/",
+            "index_sha256":"sha256:" + __import__('hashlib').sha256(index).hexdigest(),
+        }],
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+    monkeypatch.setattr(manager, "_http_json", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("down")))
+    degraded = manager.observe(now=NOW)
+    host = manager.remote_hosts()[0]
+    service = manager.services()[0]
+    assert host["status"] == "ACTIVE"
+    assert host["receiver_status"] == "DEGRADED"
+    assert host["deployment_capable"] is False
+    assert service["replicas"][0]["status"] == "DEGRADED"
+    needs = {(x["action"], x["status"]) for x in degraded["needs"]}
+    assert ("RESTORE_REMOTE_RECEIVER", "PENDING") in needs
+    assert ("RESTORE_SERVICE_REPLICA", "APPROVED") in needs
+
+    def healthy(url, *, method, payload=None, timeout):
+        return {
+            "status":"HEALTHY",
+            "host_instance_id":"host-instance:edge",
+            "agent_id":"seed.edge",
+            "key_id":"key-edge",
+            "public_key":"ed25519:edge",
+            "capabilities":["survival.workload.deploy.v1"],
+            "deployment_profiles":["content.website-static.v1"],
+            "capacity":{"cpu_count":2,"memory_available_gib":3.25,"disk_free_gib":20.0},
+        }
+    monkeypatch.setattr(manager, "_http_json", healthy)
+    monkeypatch.setattr(manager, "_http_bytes", lambda *args, **kwargs: index)
+    recovered = manager.observe(now=NOW.replace(minute=5))
+    host = manager.remote_hosts()[0]
+    service = manager.services()[0]
+    assert host["receiver_status"] == "VERIFIED"
+    assert host["deployment_capable"] is True
+    assert host["capacity"]["memory_available_gib"] == 3.25
+    assert service["replicas"][0]["status"] == "ACTIVE"
+    current = {x["action"]:x["status"] for x in recovered["needs"]}
+    assert current["RESTORE_REMOTE_RECEIVER"] == "SATISFIED"
+    assert current["RESTORE_SERVICE_REPLICA"] == "SATISFIED"
