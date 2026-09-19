@@ -1,7 +1,7 @@
 """Unified survival-resource control plane for Ferro."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import base64
 import io
@@ -25,6 +25,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 DOMAINS = ("STORAGE", "COMPUTE", "HOSTING", "REMOTE_MACHINE", "SERVICE")
 OPEN_NEED_STATES = {"PENDING", "APPROVED", "AWAITING_RESOURCE"}
+AUTONOMOUS_RETRY_ACTIONS = {
+    "PROVISION_REMOTE_RECEIVER",
+    "RESTORE_SERVICE_REPLICA",
+    "ENSURE_SERVICE_REPLICA",
+}
+AUTONOMOUS_RETRY_SECONDS = (300, 900, 3600, 21600)
 
 SERVICE_PLACEMENT_DEFAULTS: dict[str, dict[str, Any]] = {
     "content-agent-core": {
@@ -395,6 +401,16 @@ class SurvivalResourceManager:
             else:
                 result = {"status": "UNSUPPORTED", "action": action}
                 row["status"] = "FAILED"
+            if action in AUTONOMOUS_RETRY_ACTIONS:
+                if row.get("status") == "AWAITING_RESOURCE":
+                    self._schedule_autonomous_retry(
+                        row=row, result=result, now=now
+                    )
+                else:
+                    row["retry_count"] = 0
+                    row.pop("next_retry_at", None)
+                    row.pop("last_error_type", None)
+                    row["last_success_at"] = _iso(now)
             row["last_action_at"] = _iso(now)
             result.update({"need_id": row.get("need_id"), "action": action})
             self._record_action(result, now)
@@ -1037,6 +1053,9 @@ class SurvivalResourceManager:
                     "deployment_path": str(receipt.get("deployment_path") or "") or None,
                     "deployment_transport": deployment_transport,
                     "artifact_sha256": str(receipt.get("artifact_sha256") or ""),
+                    "source_manifest_sha256": str(
+                        payload["artifact"].get("source_manifest_sha256") or ""
+                    ),
                     "index_sha256": str(payload["artifact"].get("index_sha256") or ""),
                     "last_verified_at": _iso(now),
                     "updated_at": _iso(now),
@@ -1062,6 +1081,9 @@ class SurvivalResourceManager:
             "deployment_path": str(receipt.get("deployment_path") or "") or None,
             "deployment_transport": deployment_transport,
             "artifact_sha256": receipt.get("artifact_sha256"),
+            "source_manifest_sha256": payload["artifact"].get(
+                "source_manifest_sha256"
+            ),
             "request_hash": payload["object_hash"],
             "receipt_evidence": "remote-deployment:" + sha256(
                 json.dumps(receipt, sort_keys=True).encode()
@@ -1084,6 +1106,7 @@ class SurvivalResourceManager:
         buffer = io.BytesIO()
         file_count = 0
         extracted_bytes = 0
+        manifest = sha256()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
             for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
                 if path.is_symlink():
@@ -1093,21 +1116,25 @@ class SurvivalResourceManager:
                 if not path.is_file():
                     raise RuntimeError("website-static source contains a non-file entry")
                 relative = path.relative_to(root)
-                stat = path.stat()
+                data = path.read_bytes()
                 file_count += 1
-                extracted_bytes += int(stat.st_size)
+                extracted_bytes += len(data)
                 if file_count > 5000 or extracted_bytes > 64 * 1024 * 1024:
                     raise RuntimeError("website-static source exceeds receiver limits")
+                relative_bytes = relative.as_posix().encode("utf-8")
+                manifest.update(len(relative_bytes).to_bytes(4, "big"))
+                manifest.update(relative_bytes)
+                manifest.update(len(data).to_bytes(8, "big"))
+                manifest.update(sha256(data).digest())
                 info = tarfile.TarInfo(relative.as_posix())
-                info.size = int(stat.st_size)
+                info.size = len(data)
                 info.mode = 0o644
                 info.uid = 0
                 info.gid = 0
                 info.uname = ""
                 info.gname = ""
                 info.mtime = 0
-                with path.open("rb") as handle:
-                    archive.addfile(info, handle)
+                archive.addfile(info, io.BytesIO(data))
         raw = buffer.getvalue()
         if not raw or len(raw) > 16 * 1024 * 1024:
             raise RuntimeError("website-static archive exceeds receiver request limit")
@@ -1119,6 +1146,7 @@ class SurvivalResourceManager:
             "bytes": len(raw),
             "data": base64.b64encode(raw).decode("ascii"),
             "file_count": file_count,
+            "source_manifest_sha256": "sha256:" + manifest.hexdigest(),
             "index_sha256": "sha256:" + sha256(index_bytes).hexdigest(),
         }
 
@@ -1322,6 +1350,16 @@ class SurvivalResourceManager:
                     deployment_path = str(replica.get("deployment_path") or "").strip()
                     transport = str(replica.get("deployment_transport") or "").upper()
                     if profile == "content.website-static.v1":
+                        desired_manifest = self._local_static_manifest_sha256()
+                        deployed_manifest = str(
+                            replica.get("source_manifest_sha256") or ""
+                        ).strip()
+                        if not desired_manifest or deployed_manifest != desired_manifest:
+                            replica["status"] = "STALE"
+                            replica["last_error"] = "PRIMARY_ARTIFACT_CHANGED"
+                            replica["last_verified_at"] = _iso(now)
+                            changed = True
+                            continue
                         expected = str(replica.get("index_sha256") or "").strip()
                         if not expected:
                             expected = self._local_static_index_sha256()
@@ -1367,6 +1405,39 @@ class SurvivalResourceManager:
         except OSError:
             return ""
         return "sha256:" + sha256(body).hexdigest()
+
+    def _local_static_manifest_sha256(self) -> str:
+        raw_root = str(os.environ.get("CONTENT_WEB_SITE_ROOT") or "").strip()
+        if not raw_root:
+            return ""
+        try:
+            root = Path(raw_root).resolve(strict=True)
+            manifest = sha256()
+            file_count = 0
+            extracted_bytes = 0
+            for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+                if path.is_symlink():
+                    return ""
+                if path.is_dir():
+                    continue
+                if not path.is_file():
+                    return ""
+                relative = path.relative_to(root)
+                data = path.read_bytes()
+                file_count += 1
+                extracted_bytes += len(data)
+                if file_count > 5000 or extracted_bytes > 64 * 1024 * 1024:
+                    return ""
+                relative_bytes = relative.as_posix().encode("utf-8")
+                manifest.update(len(relative_bytes).to_bytes(4, "big"))
+                manifest.update(relative_bytes)
+                manifest.update(len(data).to_bytes(8, "big"))
+                manifest.update(sha256(data).digest())
+            if file_count == 0:
+                return ""
+            return "sha256:" + manifest.hexdigest()
+        except OSError:
+            return ""
 
     def _provision_pending_receiver(self, *, now: datetime) -> dict[str, Any]:
         for host in self.remote_hosts():
@@ -1506,6 +1577,37 @@ class SurvivalResourceManager:
             "reason": "no degraded replica has a verified deployment-capable host",
         }
 
+    @staticmethod
+    def _schedule_autonomous_retry(
+        *, row: dict[str, Any], result: dict[str, Any], now: datetime
+    ) -> None:
+        retry_count = max(0, int(row.get("retry_count") or 0)) + 1
+        delay = AUTONOMOUS_RETRY_SECONDS[
+            min(retry_count - 1, len(AUTONOMOUS_RETRY_SECONDS) - 1)
+        ]
+        row["retry_count"] = retry_count
+        row["next_retry_at"] = _iso(now + timedelta(seconds=delay))
+        row["last_result_status"] = str(result.get("status") or "")
+        error_type = str(result.get("error_type") or "").strip()
+        if error_type:
+            row["last_error_type"] = error_type
+
+    @staticmethod
+    def _retry_due(row: dict[str, Any], now: datetime) -> bool:
+        raw = str(row.get("next_retry_at") or "").strip()
+        if not raw:
+            return True
+        try:
+            instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        current = now
+        if current.tzinfo is None or current.utcoffset() is None:
+            current = current.replace(tzinfo=timezone.utc)
+        return current >= instant
+
     def _reconcile_needs(
         self, *, now: datetime, storage_pressure: bool,
         compute_pressure: bool, active_remote: bool,
@@ -1565,6 +1667,17 @@ class SurvivalResourceManager:
                  and row.get("status") in OPEN_NEED_STATES),
                 None,
             )
+            if existing is not None:
+                existing["urgency"] = urgency
+                existing["reason"] = reason
+                if (
+                    action in AUTONOMOUS_RETRY_ACTIONS
+                    and existing.get("status") == "AWAITING_RESOURCE"
+                    and self._retry_due(existing, now)
+                ):
+                    existing["status"] = "APPROVED"
+                    existing["authorization"] = "AUTONOMOUS_SAFE_POLICY"
+                    existing["retry_rearmed_at"] = _iso(now)
             if existing is None:
                 signature = f"{domain}|{action}|{reason}"
                 autonomous = action in {
