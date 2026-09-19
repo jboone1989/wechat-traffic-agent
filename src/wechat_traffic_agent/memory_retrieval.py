@@ -7,6 +7,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from .memory_system import CanonicalMemoryStore
+from .memory_vector import EmbeddingProvider, SemanticVectorIndex
 
 
 def _normalize(text: str) -> str:
@@ -107,9 +108,16 @@ class MemorySearchIndex:
 class MemoryRouter:
     """Single M3 recall entry point for canonical owner/agent memories."""
 
-    def __init__(self, state_root, *, store: CanonicalMemoryStore | None = None) -> None:
+    def __init__(
+        self,
+        state_root,
+        *,
+        store: CanonicalMemoryStore | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+    ) -> None:
         self.store = store or CanonicalMemoryStore(state_root)
         self.fts = MemorySearchIndex(self.store)
+        self.vector = SemanticVectorIndex(self.store, provider=embedding_provider)
 
     def plan(
         self,
@@ -162,12 +170,19 @@ class MemoryRouter:
             limit=max(50, int(limit) * 8),
         )
         allowed = {str(row["memory_id"]): row for row in structured}
-        lexical = self.fts.search(query, limit=max(50, int(limit) * 8))
-        lexical_scores = {memory_id: 1.0 / (1.0 + max(0.0, rank)) for memory_id, rank in lexical}
-        if plan.created_from or plan.created_to or plan.entity or plan.topic or plan.memory_types or source_type:
+        search_limit = max(50, int(limit) * 8)
+        lexical = self.fts.search(query, limit=search_limit)
+        vector = self.vector.search(query, limit=search_limit)
+        lexical_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(lexical)}
+        vector_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(vector)}
+        constrained = bool(
+            plan.created_from or plan.created_to or plan.entity or plan.topic
+            or plan.memory_types or source_type
+        )
+        if constrained:
             candidate_ids = set(allowed)
         else:
-            candidate_ids = set(allowed) | set(lexical_scores)
+            candidate_ids = set(allowed) | set(lexical_rank) | set(vector_rank)
         candidates: list[tuple[float, dict[str, Any]]] = []
         for memory_id in candidate_ids:
             row = allowed.get(memory_id) or self.store.get_memory(memory_id)
@@ -175,11 +190,19 @@ class MemoryRouter:
                 continue
             if not plan.historical and str(row.get("status") or "ACTIVE") != "ACTIVE":
                 continue
-            score = lexical_scores.get(memory_id, 0.0) * 4.0
-            score += float(row.get("importance") or 0.0)
-            score += float(row.get("confidence") or 0.0) * 0.25
+            if constrained and memory_id not in allowed:
+                continue
+            score = 0.0
+            if memory_id in lexical_rank:
+                score += 1.0 / (60.0 + lexical_rank[memory_id])
+            if memory_id in vector_rank:
+                score += 1.0 / (60.0 + vector_rank[memory_id])
+            if memory_id in allowed:
+                score += 1.0 / 60.0
+            score += float(row.get("importance") or 0.0) * 0.01
+            score += float(row.get("confidence") or 0.0) * 0.0025
             if plan.created_from or plan.created_to:
-                score += 1.0
+                score += 0.01
             candidates.append((score, row))
         candidates.sort(
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
