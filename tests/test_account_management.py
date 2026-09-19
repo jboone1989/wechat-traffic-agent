@@ -89,3 +89,25 @@ def test_x_account_distinguishes_api_oauth_from_browser_session(tmp_path):
     assert bindings["api_oauth"]["login_kind"] == "REDIRECT"
     assert bindings["browser_session"]["status"] == "NEEDS_LOGIN"
     assert bindings["browser_session"]["purpose"] == "WEB_AUTOMATION"
+
+def test_connected_x_account_keeps_browser_login_failure_scoped_to_browser_binding(tmp_path):
+    oauth_status = """▸ content-agent  [client_id: example]
+      oauth2: caini56006962
+"""
+    manager = AccountManager(
+        tmp_path,
+        browser_factory=lambda url: FakeBrowser(url, authenticated=False),
+        xurl_status_provider=lambda: oauth_status,
+    )
+
+    checked = manager.verify("x")
+    assert checked["status"] == "CONNECTED"
+    assert checked["last_error"] == ""
+    browser = next(x for x in checked["bindings"] if x["binding_id"] == "browser_session")
+    assert browser["status"] == "NEEDS_LOGIN"
+    assert "authenticated X profile was not visible" in browser["last_error"]
+
+    manager.mark_authenticating("x")
+    refreshed = next(x for x in manager.status()["accounts"] if x["provider_id"] == "x")
+    browser = next(x for x in refreshed["bindings"] if x["binding_id"] == "browser_session")
+    assert browser["last_error"] == ""

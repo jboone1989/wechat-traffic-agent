@@ -40,3 +40,14 @@ def test_operator_console_compacts_account_browser_controls_on_mobile():
     assert ".browser-controls>.row>button{flex:0 0 auto!important" in page
     assert ".browser-keys button{flex:0 0 auto!important" in page
     assert ".account-login-shell{padding:10px;margin-top:8px}" in page
+
+def test_x_account_ui_separates_api_connection_from_browser_automation():
+    page = operator_console_document()
+
+    assert "API 连接" in page
+    assert "网页自动化" in page
+    assert "服务器浏览器尚未登录 X。这不影响上面的 API 连接" in page
+    assert "登录服务器浏览器" in page
+    assert "检查网页登录" in page
+    assert "技术信息" in page
+    assert "网页登录（网页自动化）" not in page

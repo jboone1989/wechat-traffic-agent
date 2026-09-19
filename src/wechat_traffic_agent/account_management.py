@@ -101,6 +101,7 @@ class AccountManager:
             if spec.provider_id == "x":
                 oauth = self._x_oauth_binding()
                 bindings.append(oauth)
+                browser_error = str(row.get("last_error") or "")
                 bindings.append({
                     "binding_id": "browser_session",
                     "label": "Browser Web Session",
@@ -109,6 +110,7 @@ class AccountManager:
                     "identity": identity,
                     "purpose": "WEB_AUTOMATION",
                     "login_kind": "REMOTE_BROWSER",
+                    "last_error": browser_error,
                 })
                 if oauth["status"] == "CONNECTED":
                     overall_status = "CONNECTED"
@@ -139,7 +141,11 @@ class AccountManager:
                 "status": overall_status,
                 "identity": identity,
                 "verified_at": row.get("verified_at"),
-                "last_error": str(row.get("last_error") or ""),
+                "last_error": (
+                    ""
+                    if spec.provider_id == "x" and overall_status == "CONNECTED"
+                    else str(row.get("last_error") or "")
+                ),
                 "bindings": bindings,
             })
         return {"schema_version": 2, "accounts": rows}
@@ -200,6 +206,12 @@ class AccountManager:
         spec = self.provider(provider_id)
         if not spec.implemented:
             raise ValueError("account adapter is not installed")
+        state = self._read()
+        row = state["accounts"].get(spec.provider_id)
+        if isinstance(row, dict) and row.get("last_error"):
+            row["last_error"] = ""
+            state["accounts"][spec.provider_id] = row
+            self._write(state)
         return {
             "provider_id": spec.provider_id,
             "status": "AUTHENTICATING",
