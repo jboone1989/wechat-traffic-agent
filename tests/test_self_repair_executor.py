@@ -221,3 +221,131 @@ def test_new_repair_proposal_is_selected_before_observing_problem(tmp_path):
     selected = executor._next_problem()
 
     assert selected["problem_id"] == "self-problem:proposed"
+
+
+
+def _regression_repo(tmp_path: Path) -> Path:
+    root = tmp_path / "regression-workspace"
+    root.mkdir()
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "ferro@example.invalid")
+    _git(root, "config", "user.name", "Ferro Self Repair")
+    (root / "tests").mkdir()
+    (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "tests/test_focused.py").write_text(
+        "def test_focused():\n"
+        "    assert True\n",
+        encoding="utf-8",
+    )
+    (root / "tests/test_regression.py").write_text(
+        "from pathlib import Path\n"
+        "def test_original_contract():\n"
+        "    assert 'VALUE = 1' in Path('app.py').read_text()\n",
+        encoding="utf-8",
+    )
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "baseline")
+    return root
+
+
+def _regression_recipe() -> RepairRecipe:
+    return RepairRecipe(
+        repair_kind=KIND,
+        target_files=("app.py",),
+        implementation_markers=(("app.py", "VALUE = 2"),),
+        edits=(RepairEdit("app.py", "VALUE = 1", "VALUE = 2"),),
+        focused_tests=("tests/test_focused.py",),
+    )
+
+
+def test_failed_candidate_becomes_counterevidence_and_restores_clean_baseline(tmp_path):
+    state = tmp_path / "state-counterevidence"
+    workspace = _regression_repo(tmp_path)
+    problem_path = _problem(state)
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _regression_recipe()},
+        python_executable=sys.executable,
+    )
+    baseline_sha = _git(workspace, "rev-parse", "HEAD")
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "CANDIDATE_REJECTED_REPLAN_QUEUED"
+    assert result["trial_status"] == "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED"
+    assert result["baseline_status"] == "PASSED"
+    assert any(
+        "tests/test_regression.py::test_original_contract" in row
+        for row in result["counterevidence"]["failed_tests"]
+    )
+    assert _git(workspace, "rev-parse", "HEAD") == baseline_sha
+    assert _git(workspace, "status", "--porcelain") == ""
+    assert _git(workspace, "branch", "--show-current") == ""
+    assert (workspace / "app.py").read_text() == "VALUE = 1\n"
+
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "DIAGNOSING"
+    assert updated["repair_proposal"] is None
+    assert updated["planner_attempt"]["status"] == "COUNTEREVIDENCE_READY"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v5"
+    assert updated["repair_trial"]["baseline_status"] == "PASSED"
+    assert updated["repair_trial"]["previous_hypothesis"] is None
+    assert any(
+        "tests/test_regression.py::test_original_contract" in row
+        for row in updated["repair_trial"]["failed_tests"]
+    )
+
+
+def test_existing_quarantined_trial_is_migrated_to_counterevidence_without_reapplying_edit(tmp_path):
+    state = tmp_path / "state-existing-quarantine"
+    workspace = _regression_repo(tmp_path)
+    problem_path = _problem(state)
+    baseline_sha = _git(workspace, "rev-parse", "HEAD")
+    _git(workspace, "switch", "-c", "agent/repair-self-problem-test")
+    (workspace / "app.py").write_text("VALUE = 2\n", encoding="utf-8")
+    trial_path = (
+        state
+        / "application/self_maintenance/repair_trials/self-problem-test.json"
+    )
+    trial_path.parent.mkdir(parents=True, exist_ok=True)
+    trial_path.write_text(json.dumps({
+        "schema_version": "self-repair-trial.v1",
+        "problem_id": "self-problem:test",
+        "proposal_id": "repair-proposal:test",
+        "status": "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+        "observed_at": NOW.isoformat(),
+        "repair_kind": KIND,
+        "full": {
+            "ok": False,
+            "profile": "repair-full",
+            "results": [{
+                "exit_code": 1,
+                "stdout": (
+                    "FAILED tests/test_regression.py::test_original_contract - "
+                    "AssertionError: assert 'VALUE = 1'\n"
+                    "E       AssertionError: original contract changed\n"
+                ),
+                "stderr": "",
+            }],
+        },
+    }), encoding="utf-8")
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={KIND: _regression_recipe()},
+        python_executable=sys.executable,
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "CANDIDATE_REJECTED_REPLAN_QUEUED"
+    assert _git(workspace, "rev-parse", "HEAD") == baseline_sha
+    assert _git(workspace, "status", "--porcelain") == ""
+    assert (workspace / "app.py").read_text() == "VALUE = 1\n"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "DIAGNOSING"
+    assert updated["repair_proposal"] is None
+    assert updated["repair_trial"]["baseline_status"] == "PASSED"

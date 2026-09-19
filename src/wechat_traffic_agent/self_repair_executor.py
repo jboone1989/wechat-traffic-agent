@@ -219,6 +219,10 @@ _GENERATED_REPAIR_KIND = "GENERATED_BOUNDED_EDIT"
 _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS = 900
 _GENERATED_REPAIR_OUTPUT_RETRY_SECONDS = 300
 _GENERATED_REPAIR_MAX_TRANSIENT_RETRIES = 3
+_REJECTED_CANDIDATE_TRIALS = frozenset({
+    "REJECTED_FOCUSED_TESTS_WORKSPACE_QUARANTINED",
+    "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+})
 
 
 def _planner_retry_policy(value: object) -> tuple[str, int] | None:
@@ -309,6 +313,15 @@ class SelfRepairExecutor:
                 "problem_id": problem.get("problem_id"),
                 "repair_kind": kind,
             }
+
+        rejected_trial = self._existing_rejected_candidate_trial(problem)
+        if rejected_trial is not None:
+            return self._requeue_failed_candidate(
+                problem,
+                recipe,
+                rejected_trial,
+                now=now,
+            )
 
         if self._implemented(self.deployed_root, recipe):
             return self._verify_adopted(problem, recipe, now)
@@ -715,6 +728,183 @@ class SelfRepairExecutor:
             update_problem=True,
         )
 
+    def _existing_rejected_candidate_trial(
+        self, problem: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        problem_id = str(problem.get("problem_id") or "unknown")
+        safe = problem_id.replace(":", "-")
+        path = self.root / "repair_trials" / f"{safe}.json"
+        try:
+            trial = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        if not isinstance(trial, dict):
+            return None
+        if str(trial.get("status") or "") not in _REJECTED_CANDIDATE_TRIALS:
+            return None
+        proposal = problem.get("repair_proposal") or {}
+        if str(trial.get("proposal_id") or "") != str(proposal.get("proposal_id") or ""):
+            return None
+        return trial
+
+    @staticmethod
+    def _test_counterevidence(test_result: object) -> dict[str, Any]:
+        if not isinstance(test_result, dict):
+            return {"failed_tests": [], "assertion_evidence": []}
+        failed: list[str] = []
+        evidence: list[str] = []
+        for result in test_result.get("results") or ():
+            if not isinstance(result, dict):
+                continue
+            text = str(result.get("stdout") or "") + "\n" + str(result.get("stderr") or "")
+            for raw in text.splitlines():
+                line = raw.strip()
+                if raw.startswith("FAILED "):
+                    test_id = raw[len("FAILED "):].split(" - ", 1)[0].strip()
+                    if test_id and test_id not in failed:
+                        failed.append(test_id)
+                if (
+                    raw.startswith("E   ")
+                    or raw.startswith("E       ")
+                    or (line.startswith("assert ") and len(line) < 500)
+                ):
+                    if line and line not in evidence:
+                        evidence.append(line[:500])
+                if len(failed) >= 12 and len(evidence) >= 24:
+                    break
+        return {
+            "failed_tests": failed[:12],
+            "assertion_evidence": evidence[:24],
+        }
+
+    def _restore_workspace_baseline(self, baseline_sha: str) -> dict[str, Any]:
+        if self.workspace_root is None or not baseline_sha:
+            return {"ok": False, "reason": "workspace or baseline sha unavailable"}
+        commands = (
+            ("git", "restore", "--staged", "--worktree", "."),
+            ("git", "switch", "--detach", baseline_sha),
+        )
+        for command in commands:
+            result = subprocess.run(
+                command,
+                cwd=self.workspace_root,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if result.returncode != 0:
+                return {
+                    "ok": False,
+                    "reason": (result.stderr or result.stdout or "git restore failed")[:1000],
+                }
+        return {
+            "ok": True,
+            "baseline_sha": baseline_sha,
+            "workspace_sha": self._git_sha(self.workspace_root),
+        }
+
+    def _requeue_failed_candidate(
+        self,
+        problem: dict[str, Any],
+        recipe: RepairRecipe,
+        trial: dict[str, Any],
+        *,
+        now: datetime,
+        baseline_sha: str | None = None,
+    ) -> dict[str, Any]:
+        baseline_sha = baseline_sha or self._git_sha(self.workspace_root)
+        restore = self._restore_workspace_baseline(str(baseline_sha or ""))
+        problem_id = str(problem.get("problem_id") or "unknown")
+        safe = problem_id.replace(":", "-")
+        proposal = dict(problem.get("repair_proposal") or {})
+        candidate_test = trial.get("full") or trial.get("test")
+        counterevidence = self._test_counterevidence(candidate_test)
+
+        baseline_full: dict[str, Any] = {
+            "ok": False,
+            "profile": "repair-full",
+            "results": [],
+            "reason": "workspace baseline restore failed",
+        }
+        if restore.get("ok"):
+            baseline_full = self._provider(recipe).invoke(
+                CAP_CODE_TEST, {"profile": "repair-full"}
+            )
+
+        augmented_trial = {
+            **trial,
+            "baseline": baseline_full,
+            "baseline_sha": baseline_sha,
+            "counterevidence": counterevidence,
+            "workspace_restore": restore,
+        }
+        _atomic_json(
+            self.root / "repair_trials" / f"{safe}.json",
+            augmented_trial,
+        )
+
+        path = Path(str(problem["_path"]))
+        updated = {
+            k: v for k, v in problem.items()
+            if not str(k).startswith("_")
+        }
+        trial_summary = {
+            "status": str(trial.get("status") or "REJECTED"),
+            "observed_at": str(trial.get("observed_at") or now.astimezone(timezone.utc).isoformat()),
+            "trial_ref": f"self-repair-trial:{safe}",
+            "baseline_status": "PASSED" if baseline_full.get("ok") else "FAILED",
+            "previous_proposal_id": proposal.get("proposal_id"),
+            "previous_hypothesis": proposal.get("hypothesis"),
+            "previous_edits": [
+                {
+                    "path": row.get("path"),
+                    "block_id": row.get("block_id"),
+                    "new_text": str(row.get("new_text") or "")[:1800],
+                }
+                for row in (
+                    (proposal.get("generated_recipe") or {}).get("edits") or ()
+                )
+                if isinstance(row, dict)
+            ][:3],
+            **counterevidence,
+        }
+        updated["repair_trial"] = trial_summary
+
+        if not baseline_full.get("ok"):
+            updated["status"] = "REPAIR_PAUSED_BASELINE_UNHEALTHY"
+            updated["repair_proposal"] = {
+                **proposal,
+                "status": "PAUSED_BASELINE_UNHEALTHY",
+            }
+            _atomic_json(path, updated)
+            return {
+                "status": "REPAIR_PAUSED_BASELINE_UNHEALTHY",
+                "problem_id": problem_id,
+                "baseline": baseline_full,
+                "trial_status": trial.get("status"),
+            }
+
+        updated["status"] = "DIAGNOSING"
+        updated["repair_proposal"] = None
+        updated["planner_attempt"] = {
+            "status": "COUNTEREVIDENCE_READY",
+            "planner_version": PLANNER_VERSION,
+            "observed_at": now.astimezone(timezone.utc).isoformat(),
+            "occurrences_seen": int(problem.get("occurrences") or 0),
+            "previous_proposal_id": proposal.get("proposal_id"),
+            "failed_tests": counterevidence.get("failed_tests"),
+        }
+        _atomic_json(path, updated)
+        return {
+            "status": "CANDIDATE_REJECTED_REPLAN_QUEUED",
+            "problem_id": problem_id,
+            "trial_status": trial.get("status"),
+            "baseline_status": "PASSED",
+            "counterevidence": counterevidence,
+            "retry_seconds": 60,
+        }
+
     def _build_candidate(
         self, problem: dict[str, Any], recipe: RepairRecipe, now: datetime
     ) -> dict[str, Any]:
@@ -740,6 +930,7 @@ class SelfRepairExecutor:
                 "branch": branch,
             }
 
+        baseline_sha = self._git_sha(self.workspace_root)
         provider.invoke(
             CAP_CODE_BRANCH,
             {"task_id": str(problem.get("problem_id") or "self-problem").replace(":", "-")},
@@ -756,21 +947,35 @@ class SelfRepairExecutor:
             )
         focused = provider.invoke(CAP_CODE_TEST, {"profile": "repair-focused"})
         if not bool(focused.get("ok")):
-            return self._record_trial(
+            trial = self._record_trial(
                 problem,
                 status="REJECTED_FOCUSED_TESTS_WORKSPACE_QUARANTINED",
                 now=now,
                 extra={"repair_kind": recipe.repair_kind, "test": focused},
                 update_problem=False,
             )
+            return self._requeue_failed_candidate(
+                problem,
+                recipe,
+                trial,
+                now=now,
+                baseline_sha=baseline_sha,
+            )
         full = provider.invoke(CAP_CODE_TEST, {"profile": "repair-full"})
         if not bool(full.get("ok")):
-            return self._record_trial(
+            trial = self._record_trial(
                 problem,
                 status="REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
                 now=now,
                 extra={"repair_kind": recipe.repair_kind, "focused": focused, "full": full},
                 update_problem=False,
+            )
+            return self._requeue_failed_candidate(
+                problem,
+                recipe,
+                trial,
+                now=now,
+                baseline_sha=baseline_sha,
             )
         diff = provider.invoke(CAP_CODE_DIFF, {})
         commit = provider.invoke(
