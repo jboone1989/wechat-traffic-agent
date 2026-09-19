@@ -795,6 +795,7 @@ class LiveAgentService:
             parse_owner_envelope,
         )
         from .owner_reality import build_owner_reality
+        from .operator_email import OperatorEmailNotifier, OperatorEmailSettings
 
         operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
@@ -1424,6 +1425,19 @@ class LiveAgentService:
                 return JSONResponse({"error": "not_found"}, status_code=404)
             if not operator_write_allowed(request):
                 return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 2048:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            channel = str(
+                body.get("channel") or "wecom"
+                if isinstance(body, dict)
+                else "wecom"
+            ).strip().lower()
+            if channel not in {"wecom", "email"}:
+                return JSONResponse({"error": "unsupported_login_delivery_channel"}, status_code=400)
             key = request.client.host if request.client else "unknown"
             now_mono = time.monotonic()
             if not self._operator_login_ip_limiter.allow(key, now_mono):
@@ -1431,28 +1445,77 @@ class LiveAgentService:
             if not self._operator_login_global_limiter.allow("global", now_mono):
                 return JSONResponse({"error": "login_request_rate_limited"}, status_code=429)
             token = operator_console.auth.issue_one_time_access(ttl=timedelta(minutes=10))
-            public_url = str(os.environ.get("CONTENT_OPERATOR_PUBLIC_URL") or "https://livingruntime.com/operator/").strip()
+            public_url = str(
+                os.environ.get("CONTENT_OPERATOR_PUBLIC_URL")
+                or "https://livingruntime.com/operator/"
+            ).strip()
             if not public_url.startswith("https://"):
                 operator_console.auth.revoke_one_time_access()
                 return JSONResponse({"error": "login_delivery_unavailable"}, status_code=503)
             link = public_url.rstrip("/") + "/#bootstrap=" + token
-            message = (
-                "Ferro Operator Console 登录请求\n"
-                "一次性登录链接，10 分钟内有效且仅可使用一次：\n"
-                + link
-                + "\n如果这不是你发起的请求，请忽略。"
-            )
             try:
-                from .human_assistance import operator_notifier
-                delivered = operator_notifier().send_text(message)
+                if channel == "email":
+                    delivered = await asyncio.to_thread(
+                        OperatorEmailNotifier(self.state_root).send_login_link,
+                        link=link,
+                        expires_minutes=10,
+                    )
+                else:
+                    from .human_assistance import operator_notifier
+                    message = (
+                        "Ferro Operator Console 登录请求\n"
+                        "一次性登录链接，10 分钟内有效且仅可使用一次：\n"
+                        + link
+                        + "\n如果这不是你发起的请求，请忽略。"
+                    )
+                    delivered = operator_notifier().send_text(message)
                 if str(delivered.get("status") or "") != "SENT":
                     raise RuntimeError("operator delivery unavailable")
             except Exception:
                 operator_console.auth.revoke_one_time_access()
-                return JSONResponse({"error": "login_delivery_unavailable"}, status_code=503)
+                return JSONResponse(
+                    {
+                        "error": (
+                            "email_delivery_not_configured"
+                            if channel == "email"
+                            and not OperatorEmailNotifier(self.state_root).status()["configured"]
+                            else "login_delivery_unavailable"
+                        )
+                    },
+                    status_code=503,
+                )
             return JSONResponse(
-                {"ok": True, "status": "SENT", "expires_in_seconds": 600},
+                {
+                    "ok": True,
+                    "status": "SENT",
+                    "channel": channel.upper(),
+                    "expires_in_seconds": 600,
+                },
                 status_code=202,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_email_settings(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 8192:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("invalid email settings")
+                config = OperatorEmailSettings(self.state_root).save(body)
+            except (ValueError, TypeError) as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=400)
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "email": OperatorEmailNotifier(self.state_root).status(),
+                },
                 headers={"Cache-Control": "no-store"},
             )
 
@@ -2217,6 +2280,7 @@ class LiveAgentService:
                 Route("/operator/api/chat/goal-draft", operator_chat_goal_draft, methods=["POST"]),
                 Route("/operator/api/chat/goals/{proposal_id:path}/activate", operator_chat_goal_activate, methods=["POST"]),
                 Route("/operator/api/request-login", operator_request_login, methods=["POST"]),
+                Route("/operator/api/login-delivery/email", operator_email_settings, methods=["POST"]),
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
