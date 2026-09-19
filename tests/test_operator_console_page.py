@@ -36,10 +36,22 @@ def test_operator_console_compacts_account_browser_controls_on_mobile():
     page = operator_console_document()
 
     assert ".account-actions button{flex:0 0 auto!important" in page
-    assert ".account-login-shell>.row:first-child>button{flex:0 0 auto!important" in page
+    assert ".account-login-dialog>.row:first-child>button{flex:0 0 auto!important" in page
     assert ".browser-controls>.row>button{flex:0 0 auto!important" in page
     assert ".browser-keys button{flex:0 0 auto!important" in page
-    assert ".account-login-shell{padding:10px;margin-top:8px}" in page
+    assert ".account-login-dialog{width:100%;max-height:calc(100dvh - 16px)" in page
+
+
+def test_browser_login_uses_modal_overlay_instead_of_inline_expansion():
+    page = operator_console_document()
+
+    assert 'id="accountLoginShell" class="account-login-modal hidden"' in page
+    assert 'class="account-login-dialog"' in page
+    assert 'role="dialog"' in page
+    assert 'aria-modal="true"' in page
+    assert ".account-login-modal{position:fixed;inset:0;z-index:100" in page
+    assert "document.body.classList.add('modal-open')" in page
+    assert "document.body.classList.remove('modal-open')" in page
 
 def test_x_account_ui_separates_api_connection_from_browser_automation():
     page = operator_console_document()
