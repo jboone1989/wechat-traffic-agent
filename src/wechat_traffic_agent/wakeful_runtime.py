@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
+import threading
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,15 @@ _DEFAULT_INTERVALS = {
     "CHECK_OUTCOMES": 3600,
     "CHECK_X": 1800,
 }
+
+_EXTERNAL_WAKE_TASKS = frozenset({
+    "OBSERVE_WORLD",
+    "RESOURCE_REVIEW",
+    "CHECK_OUTCOMES",
+    "CONTENT_COGNITION",
+    "REFLECT",
+    "CHECK_X",
+})
 
 
 class ContentWakefulRuntime:
@@ -54,6 +64,88 @@ class ContentWakefulRuntime:
             state_path=self.state_root / "application" / "wakeful.json",
             reflex=reflex,
         )
+        self._wake_request_root = self.state_root / "application" / "wake_requests"
+
+    def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
+        """Persist an additive wake intent that survives cross-process state races."""
+        self._wake_request_root.mkdir(parents=True, exist_ok=True)
+        nonce = hashlib.sha256(
+            (
+                wake.wake_id
+                + "\0"
+                + wake.at.astimezone(timezone.utc).isoformat()
+                + "\0"
+                + str(os.getpid())
+                + "\0"
+                + datetime.now(timezone.utc).isoformat()
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        payload = {
+            "schema_version": "content-wake-request.v1",
+            "wake_id": wake.wake_id,
+            "at": wake.at.astimezone(timezone.utc).isoformat(),
+            "reason": wake.reason,
+            "task": wake.task,
+            "relevant_refs": list(wake.relevant_refs),
+            "cancel_conditions": list(wake.cancel_conditions),
+            "preemptible": bool(wake.preemptible),
+        }
+        path = self._wake_request_root / f"{nonce}.json"
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+        return path
+
+    def _drain_external_wake_requests(self) -> int:
+        """Merge external wake intents into the live core without postponing work."""
+        if not self._wake_request_root.exists():
+            return 0
+        current = {
+            wake.wake_id: wake
+            for wake in self.core.snapshot().pending_plans
+        }
+        merged = 0
+        for path in sorted(self._wake_request_root.glob("*.json")):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                task = str(payload.get("task") or "")
+                wake_id = str(payload.get("wake_id") or "")
+                raw_at = datetime.fromisoformat(str(payload.get("at") or ""))
+                if raw_at.tzinfo is None or raw_at.utcoffset() is None:
+                    raise ValueError("external wake time must be timezone-aware")
+                if task not in _EXTERNAL_WAKE_TASKS:
+                    raise ValueError("external wake task is not allowed")
+                if wake_id != f"content:{task}":
+                    raise ValueError("external wake id does not match task")
+                wake = PlannedWake(
+                    wake_id=wake_id,
+                    at=raw_at.astimezone(timezone.utc),
+                    reason=str(payload.get("reason") or task.lower().replace("_", " "))[:300],
+                    task=task,
+                    relevant_refs=tuple(str(x) for x in payload.get("relevant_refs") or ()),
+                    cancel_conditions=tuple(str(x) for x in payload.get("cancel_conditions") or ()),
+                    preemptible=bool(payload.get("preemptible", True)),
+                )
+                existing = current.get(wake_id)
+                if existing is None or wake.at < existing.at:
+                    self.core.schedule(wake)
+                    current[wake_id] = wake
+                    merged += 1
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+            finally:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        return merged
+
+    def _watch_external_wake_requests(self, stop: threading.Event) -> None:
+        while not stop.wait(0.25):
+            self._drain_external_wake_requests()
 
     def ensure_initial_plans(self, now: datetime) -> None:
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
@@ -154,12 +246,17 @@ class ContentWakefulRuntime:
         )
         if existing is not None and existing.at <= at:
             return
-        self.core.schedule(PlannedWake(
+        wake = PlannedWake(
             wake_id=wake_id,
             at=at,
             reason="diagnose production failure and form bounded self-repair hypothesis",
             task="REFLECT",
-        ))
+        )
+        # The request spool is authoritative across processes. Direct scheduling
+        # keeps in-process callers immediate; an external caller cannot lose the
+        # wake if the live runtime persists its own state concurrently.
+        self._enqueue_external_wake(wake)
+        self.core.schedule(wake)
 
     def schedule_windfall_reflection(
         self, now: datetime, *, seconds: int = 60
@@ -329,8 +426,27 @@ class ContentWakefulRuntime:
     def mark_cognition(self, now: datetime | None = None) -> None:
         self.core.mark_cognition(now)
 
-    def wait(self, *, stopping) :
-        return self.core.wait_for_wake(watchdog_seconds=float(self.watchdog_seconds), stop_requested=stopping)
+    def wait(self, *, stopping):
+        # Merge requests persisted before entering the wait, then keep a tiny
+        # watcher alive so cross-process Operator/self-maintenance requests can
+        # notify the live core's condition variable without restarting Ferro.
+        self._drain_external_wake_requests()
+        stop = threading.Event()
+        watcher = threading.Thread(
+            target=self._watch_external_wake_requests,
+            args=(stop,),
+            name="content-wake-request-watcher",
+            daemon=True,
+        )
+        watcher.start()
+        try:
+            return self.core.wait_for_wake(
+                watchdog_seconds=float(self.watchdog_seconds),
+                stop_requested=stopping,
+            )
+        finally:
+            stop.set()
+            watcher.join(timeout=1.0)
 
     def public_snapshot(self) -> dict:
         snap = self.core.snapshot()
