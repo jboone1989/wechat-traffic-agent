@@ -786,7 +786,7 @@ class LiveAgentService:
         from .channels.operator_private_chat_page import operator_private_chat_document
         from .channels.operator_llm_audit_page import operator_llm_audit_document
         from .llm_audit import LLMRequestAuditStore
-        from .operator_memory import OperatorLongTermMemory
+        from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
         from .account_browser_login import (
@@ -1156,8 +1156,14 @@ class LiveAgentService:
                     source_message_id=source_message_id,
                 )
             memory_candidates = parsed.get("memory_candidates")
+            admitted_memory_candidates = (
+                memory_candidates
+                if isinstance(memory_candidates, list)
+                and memory_promotion_allowed_for_turn(latest_owner_text)
+                else []
+            )
             saved_memories = operator_memory.remember_many(
-                memory_candidates if isinstance(memory_candidates, list) else [],
+                admitted_memory_candidates,
                 source_message_id=source_message_id,
             )
             metadata = {"proposal_id": proposal.get("proposal_id")} if proposal else {}
