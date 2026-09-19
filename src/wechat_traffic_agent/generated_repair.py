@@ -32,7 +32,7 @@ class GeneratedRepairPlan(BaseModel):
     target_files: list[str] = Field(min_length=1, max_length=2)
     edits: list[GeneratedRepairEdit] = Field(min_length=1, max_length=3)
     focused_tests: list[str] = Field(min_length=1, max_length=4)
-    implementation_markers: list[GeneratedRepairMarker] = Field(min_length=1, max_length=4)
+    implementation_markers: list[GeneratedRepairMarker] = Field(default_factory=list, max_length=4)
 
 
 class EditableBlock(BaseModel):
@@ -45,7 +45,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v3"
+PLANNER_VERSION = "generated-repair.v4"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -318,11 +318,6 @@ class GeneratedRepairPlanner:
                 raise ValueError("repair exceeds change budget")
             prospective[edit.path] = current.replace(block.old_text, edit.new_text, 1)
 
-        for marker in plan.implementation_markers:
-            if marker.path not in plan.target_files:
-                raise ValueError("marker path not declared")
-            if marker.marker not in prospective[marker.path]:
-                raise ValueError("implementation marker absent after edits")
         return plan
 
     @staticmethod
@@ -350,6 +345,7 @@ class GeneratedRepairPlanner:
             "select focused tests ONLY from allowed_test_paths. Do NOT copy old source text. "
             "For each edit, select exactly one server-generated editable_blocks.block_id and provide replacement new_text. "
             "The block_id cryptographically binds the authoritative old_text and becomes invalid if source changes. "
+            "Do not invent adoption markers: leave implementation_markers empty; the runtime derives them from validated new_text. "
             "Do not add process execution, filesystem deletion, network access, credentials, auth, deployment, git push, "
             "self-maintenance changes, or authority changes. If evidence is insufficient, return low confidence rather "
             "than guessing. risk must be LOW for execution.\n"

@@ -263,9 +263,9 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v1",
+        "planner_version": "generated-repair.v3",
         "occurrences_seen": 1,
-        "reason": "old planner could not produce exact source text",
+        "reason": "ValueError:implementation marker absent after edits",
     }
     problem_path.write_text(json.dumps(problem))
     runtime = PlannerRuntime(_valid_plan())
@@ -283,7 +283,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v3"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v4"
 
 
 
@@ -350,7 +350,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v3"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v4"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -374,7 +374,7 @@ def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occur
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v3",
+        "planner_version": "generated-repair.v4",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "LLMProviderError:all eligible LLM resources failed without exposing provider responses",
@@ -485,7 +485,7 @@ def test_historical_rejected_validation_error_is_retryable_without_new_occurrenc
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v3",
+        "planner_version": "generated-repair.v4",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
         "reason": "ValidationError:1 validation error for GeneratedRepairPlan Invalid JSON: trailing characters",
@@ -508,3 +508,44 @@ def test_historical_rejected_validation_error_is_retryable_without_new_occurrenc
     updated = json.loads(problem_path.read_text())
     assert updated["status"] == "REPAIR_PROPOSED"
     assert updated["planner_attempt"]["status"] == "PROPOSED"
+
+
+
+def test_model_supplied_marker_is_non_authoritative_and_runtime_derives_adoption_marker(tmp_path):
+    workspace = _workspace(tmp_path)
+    state = tmp_path / "state-marker"
+    problem = json.loads(_problem(state).read_text())
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+    payload = _valid_plan()
+    payload["implementation_markers"] = [{
+        "path": SOURCE_PATH,
+        "marker": "marker-the-model-invented-but-the-edit-does-not-contain",
+    }]
+    plan = GeneratedRepairPlan.model_validate(payload)
+    blocks = planner.editable_blocks(problem, [SOURCE_PATH])
+
+    validated = planner.validate(
+        plan,
+        allowed_sources=[SOURCE_PATH],
+        allowed_tests=["tests/test_app_logic.py"],
+        editable_blocks=blocks,
+    )
+    materialized = planner.materialize_edits(validated, blocks)
+    recipe = SelfRepairExecutor._recipe_from_plan(validated, materialized)
+
+    assert recipe.implementation_markers == ((
+        SOURCE_PATH,
+        payload["edits"][0]["new_text"],
+    ),)
+
+
+def test_generated_repair_plan_does_not_require_model_marker():
+    payload = _valid_plan()
+    payload.pop("implementation_markers")
+
+    plan = GeneratedRepairPlan.model_validate(payload)
+
+    assert plan.implementation_markers == []

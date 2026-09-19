@@ -449,8 +449,8 @@ class SelfRepairExecutor:
             repair_kind=_GENERATED_REPAIR_KIND,
             target_files=tuple(plan.target_files),
             implementation_markers=tuple(
-                (marker.path, marker.marker)
-                for marker in plan.implementation_markers
+                (path, new_text)
+                for path, _old_text, new_text in materialized_edits
             ),
             edits=tuple(
                 RepairEdit(path, old_text, new_text)
