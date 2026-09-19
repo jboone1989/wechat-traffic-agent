@@ -674,6 +674,97 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             return {"task": "VERIFY_PREDICTION", "status": "DEGRADED", "prediction_verification": self._error(exc)}
 
+    def _content_recovery(
+        self,
+        *,
+        preflight: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Derive a fresh immutable cycle after a failed scheduled cycle.
+
+        The failed result remains untouched. At most three recovery cycles are
+        allowed for one base cycle, and a successful recovery suppresses
+        duplicate work for the rest of that base window.
+        """
+        if str(preflight.get("status") or "") != "ALREADY_PROCESSED":
+            return None
+        result_path_raw = str(preflight.get("result_path") or "").strip()
+        if not result_path_raw:
+            return None
+        result_path = Path(result_path_raw)
+        try:
+            prior = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        prior_status = str(prior.get("status") or "").upper()
+        if prior_status not in {"ERROR", "DEGRADED"}:
+            return None
+
+        base_cycle = str(preflight.get("cycle") or "").strip()
+        base_epoch = base_cycle.rsplit("-", 1)[-1]
+        state_root = getattr(self, "state_root", None)
+        if not base_cycle or not base_epoch.isdigit() or state_root is None:
+            return None
+
+        cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
+        prefix = f"v2-recovery-{base_epoch}-"
+        completed: list[tuple[Path, str]] = []
+        if cycles_root.exists():
+            for folder in sorted(cycles_root.glob(prefix + "*")):
+                result_file = folder / "result.json"
+                if not result_file.exists():
+                    continue
+                try:
+                    payload = json.loads(result_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                completed.append((folder, str(payload.get("status") or "").upper()))
+
+        for folder, status in reversed(completed):
+            if status not in {"ERROR", "DEGRADED"}:
+                return {
+                    "status": "ALREADY_RECOVERED",
+                    "recovery_of": base_cycle,
+                    "recovery_cycle": folder.name,
+                    "previous_status": prior_status,
+                    "attempt_count": len(completed),
+                }
+
+        if len(completed) >= 3:
+            return {
+                "status": "RECOVERY_LIMIT_REACHED",
+                "recovery_of": base_cycle,
+                "previous_status": prior_status,
+                "attempt_count": len(completed),
+            }
+
+        attempt = len(completed) + 1
+        suffix = int(now.timestamp())
+        recovery_cycle = f"v2-recovery-{base_epoch}-{attempt}-{suffix}"
+        while (cycles_root / recovery_cycle).exists():
+            suffix += 1
+            recovery_cycle = f"v2-recovery-{base_epoch}-{attempt}-{suffix}"
+        metadata = {
+            "schema_version": "content-cycle-recovery.v1",
+            "status": "READY",
+            "recovery_of": base_cycle,
+            "recovery_cycle": recovery_cycle,
+            "previous_status": prior_status,
+            "attempt": attempt,
+            "triggered_at": now.isoformat(),
+            "preserves_failed_cycle": True,
+        }
+        folder = cycles_root / recovery_cycle
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / "recovery.json.tmp"
+        tmp.write_text(
+            json.dumps(metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(folder / "recovery.json")
+        return metadata
+
     def _content(self, now: datetime, *, focus_topic: str | None) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
@@ -696,7 +787,35 @@ class WakefulContentTaskRunner:
                 rows["google_search_console"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if focus_topic else None
-        preflight = self.continuous_loop.preflight(now=now, cycle_id=focus_cycle_id)
+        directed_cycle_id = focus_cycle_id
+        preflight = self.continuous_loop.preflight(now=now, cycle_id=directed_cycle_id)
+        base_cycle_id = str(preflight["cycle"])
+        recovery = None
+        if focus_topic is None:
+            recovery = self._content_recovery(preflight=preflight, now=now)
+            if recovery is not None:
+                rows["content_cycle_recovery"] = recovery
+                if recovery["status"] in {
+                    "ALREADY_RECOVERED",
+                    "RECOVERY_LIMIT_REACHED",
+                }:
+                    rows["resource_decision"] = {
+                        "status": "SKIPPED_NOOP",
+                        "decision": "NO_RESOURCE_ACTION",
+                        "cycle": base_cycle_id,
+                    }
+                    rows["continuous_content"] = {
+                        "status": recovery["status"],
+                        "cycle": base_cycle_id,
+                        "recovery_cycle": recovery.get("recovery_cycle"),
+                        "previous_status": recovery.get("previous_status"),
+                        "attempt_count": recovery.get("attempt_count"),
+                    }
+                    return rows
+                directed_cycle_id = str(recovery["recovery_cycle"])
+                preflight = self.continuous_loop.preflight(
+                    now=now, cycle_id=directed_cycle_id
+                )
         cycle_id = str(preflight["cycle"])
         if preflight["status"] == "ALREADY_PROCESSED":
             decision = {"status": "SKIPPED_NOOP", "decision": "NO_RESOURCE_ACTION", "cycle": cycle_id}
@@ -711,9 +830,42 @@ class WakefulContentTaskRunner:
             rows["status"] = "DEFERRED"
             return rows
         continuous = asyncio.run(self.continuous_loop.run_once(
-            now=now, cycle_id=focus_cycle_id, focus_topic=focus_topic,
+            now=now, cycle_id=directed_cycle_id, focus_topic=focus_topic,
         ))
         rows["continuous_content"] = continuous
+        if recovery is not None and recovery.get("status") == "READY":
+            recovery_path = (
+                Path(self.state_root)
+                / "content"
+                / "continuous"
+                / "cycles"
+                / str(recovery["recovery_cycle"])
+                / "recovery.json"
+            )
+            finished = {
+                **recovery,
+                "status": (
+                    "FAILED"
+                    if str(continuous.get("status") or "").upper()
+                    in {"ERROR", "DEGRADED"}
+                    else "COMPLETED"
+                ),
+                "result_status": str(continuous.get("status") or "UNKNOWN"),
+                "completed_at": datetime.now(now.tzinfo).isoformat(),
+            }
+            tmp = recovery_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(
+                    finished,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            tmp.replace(recovery_path)
+            rows["content_cycle_recovery"] = finished
         action_prediction = continuous.get("action_prediction") if isinstance(continuous, dict) else None
         prediction_id = str((action_prediction or {}).get("prediction_id") or "")
         if prediction_id:
