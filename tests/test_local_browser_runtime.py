@@ -8,6 +8,7 @@ import pytest
 
 from wechat_traffic_agent.browser_runtime import BrowserRuntimeUnavailable, browser_runtime_status
 from wechat_traffic_agent.x_browser import (
+    TinyFishProfileUnavailable,
     XBrowserPublicationUnverified,
     XBrowserPublishResult,
     XBrowserTransportRouter,
@@ -116,6 +117,30 @@ class _LocalUnverified:
         raise XBrowserPublicationUnverified("write may already have reached X")
 
 
+class _LocalSuccess:
+    def __init__(self, calls: list[str]):
+        self.calls = calls
+
+    async def publish(self, *, text: str):
+        self.calls.append(text)
+        return XBrowserPublishResult(
+            post_id="2100486738342765001",
+            url="https://x.com/ferro/status/2100486738342765001",
+            handle="ferro",
+            provider="LOCAL_CDP",
+        )
+
+
+class _TinyFishUnavailable:
+    async def publish(self, *, text: str):
+        raise TinyFishProfileUnavailable("TinyFish profile unavailable before write")
+
+
+class _TinyFishUnverified:
+    async def publish(self, *, text: str):
+        raise XBrowserPublicationUnverified("TinyFish write may already have reached X")
+
+
 class _TinyFishSuccess:
     def __init__(self, calls: list[str]):
         self.calls = calls
@@ -130,44 +155,62 @@ class _TinyFishSuccess:
         )
 
 
-def test_x_write_router_falls_back_only_before_local_write_is_ambiguous(tmp_path, monkeypatch):
-    calls: list[str] = []
+def test_x_write_router_prefers_tinyfish_before_local_browser(tmp_path, monkeypatch):
+    tinyfish_calls: list[str] = []
     monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
     monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
     monkeypatch.setattr(
         LocalHarnessXTransport,
         "from_environment",
-        classmethod(lambda cls, state_root: _LocalUnavailable()),
+        classmethod(lambda cls, state_root: (_ for _ in ()).throw(AssertionError("local browser should not be touched"))),
     )
     from wechat_traffic_agent.x_browser import TinyFishXTransport
     monkeypatch.setattr(
         TinyFishXTransport,
         "from_environment",
-        classmethod(lambda cls: _TinyFishSuccess(calls)),
+        classmethod(lambda cls: _TinyFishSuccess(tinyfish_calls)),
     )
     result = asyncio.run(XBrowserTransportRouter(state_root=tmp_path).publish(text="hello"))
     assert result.provider == "TINYFISH"
-    assert calls == ["hello"]
+    assert tinyfish_calls == ["hello"]
 
 
-def test_x_write_router_never_cross_provider_retries_unverified_write(tmp_path, monkeypatch):
-    calls: list[str] = []
+def test_x_write_router_falls_back_to_local_only_when_tinyfish_cannot_start(tmp_path, monkeypatch):
+    local_calls: list[str] = []
     monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
     monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
-    monkeypatch.setattr(
-        LocalHarnessXTransport,
-        "from_environment",
-        classmethod(lambda cls, state_root: _LocalUnverified()),
-    )
     from wechat_traffic_agent.x_browser import TinyFishXTransport
     monkeypatch.setattr(
         TinyFishXTransport,
         "from_environment",
-        classmethod(lambda cls: _TinyFishSuccess(calls)),
+        classmethod(lambda cls: _TinyFishUnavailable()),
+    )
+    monkeypatch.setattr(
+        LocalHarnessXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: _LocalSuccess(local_calls)),
+    )
+    result = asyncio.run(XBrowserTransportRouter(state_root=tmp_path).publish(text="hello"))
+    assert result.provider == "LOCAL_CDP"
+    assert local_calls == ["hello"]
+
+
+def test_x_write_router_never_cross_provider_retries_unverified_tinyfish_write(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
+    from wechat_traffic_agent.x_browser import TinyFishXTransport
+    monkeypatch.setattr(
+        TinyFishXTransport,
+        "from_environment",
+        classmethod(lambda cls: _TinyFishUnverified()),
+    )
+    monkeypatch.setattr(
+        LocalHarnessXTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: (_ for _ in ()).throw(AssertionError("local retry would risk duplicate write"))),
     )
     with pytest.raises(XBrowserPublicationUnverified):
         asyncio.run(XBrowserTransportRouter(state_root=tmp_path).publish(text="hello"))
-    assert calls == []
 
 
 def test_browser_runtime_status_exposes_local_cdp_separately_from_jev(monkeypatch):
@@ -178,3 +221,65 @@ def test_browser_runtime_status_exposes_local_cdp_separately_from_jev(monkeypatc
     assert "LOCAL_CDP" in providers
     assert "JEV" in providers
     assert providers["JEV"]["status"] == "NOT_CONFIGURED"
+
+
+def test_x_mentions_router_prefers_tinyfish_over_local_browser(tmp_path, monkeypatch):
+    from wechat_traffic_agent.x_browser_mentions import (
+        TinyFishXMentionsObserver,
+        XBrowserMentionsObserverRouter,
+    )
+
+    class TinyFishMentions:
+        async def observe(self, *, now, max_results=20):
+            return [{"id": "1", "text": "ok", "username": "u", "url": "https://x.com/u/status/1"}]
+
+    monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
+    monkeypatch.setattr(
+        TinyFishXMentionsObserver,
+        "from_environment",
+        classmethod(lambda cls: TinyFishMentions()),
+    )
+    monkeypatch.setattr(
+        LocalHarnessXMentionsObserver,
+        "from_environment",
+        classmethod(lambda cls, state_root: (_ for _ in ()).throw(AssertionError("local mentions should not be touched"))),
+    )
+
+    rows = asyncio.run(
+        XBrowserMentionsObserverRouter(state_root=tmp_path).observe(now=NOW, max_results=1)
+    )
+    assert rows[0]["id"] == "1"
+
+
+def test_x_metrics_router_prefers_tinyfish_over_local_browser(tmp_path, monkeypatch):
+    from wechat_traffic_agent.x_outcomes import (
+        TinyFishXMetricsTransport,
+        XMetricsTransportRouter,
+        XPublicMetrics,
+    )
+
+    class TinyFishMetrics:
+        async def collect(self, *, url: str):
+            return XPublicMetrics(views=7, replies=1, reposts=0, likes=2)
+
+    monkeypatch.setenv("CONTENT_LOCAL_X_BROWSER_ENABLED", "true")
+    monkeypatch.setenv("CONTENT_TINYFISH_X_ENABLED", "true")
+    monkeypatch.setattr(
+        TinyFishXMetricsTransport,
+        "from_environment",
+        classmethod(lambda cls: TinyFishMetrics()),
+    )
+    monkeypatch.setattr(
+        LocalHarnessXMetricsTransport,
+        "from_environment",
+        classmethod(lambda cls, state_root: (_ for _ in ()).throw(AssertionError("local metrics should not be touched"))),
+    )
+
+    result = asyncio.run(
+        XMetricsTransportRouter(state_root=tmp_path).collect(
+            url="https://x.com/ferro/status/1"
+        )
+    )
+    assert result.views == 7
+

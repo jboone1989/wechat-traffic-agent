@@ -31,7 +31,7 @@ _PROVIDERS = {
         "x", "X", "MULTI_BINDING",
         ("READ", "PUBLISH", "MENTIONS", "METRICS"), True,
         "https://x.com/i/flow/login",
-        "OAuth/API identity is primary; the local browser session is only for web automation. TinyFish remains fallback during migration.",
+        "Official X OAuth/API is primary. TinyFish is the preferred authenticated web fallback; the local server browser is advanced recovery only.",
     ),
     "youtube": AccountProvider(
         "youtube", "YouTube", "PROVIDER_ADAPTER",

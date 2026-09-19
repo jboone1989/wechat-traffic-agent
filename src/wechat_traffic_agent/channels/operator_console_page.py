@@ -299,33 +299,34 @@ function renderAccounts(data){
   if(row.identity)c.append(node('div','@'+row.identity,'mono'));
   if(row.provider_id==='x'){
    const apiBinding=bindings.find(x=>x.binding_id==='api_oauth')||{},web=bindings.find(x=>x.binding_id==='browser_session')||{};
+   const runtimes=((data.browser_runtime||{}).providers||[]),tinyfish=runtimes.find(x=>x.provider==='TINYFISH')||{};
    const apiBox=node('div',undefined,'account-binding'),apiTitle=node('div',undefined,'account-binding-title');
    apiTitle.append(node('strong','API 连接'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
-   apiBox.append(apiTitle,node('p','用于读取、发布、提及和数据统计。','muted'));
+   apiBox.append(apiTitle,node('p','正常 X 操作优先走官方 OAuth/API：读取、发布、提及和数据统计。','muted'));
    if(apiBinding.identity)apiBox.append(node('div','@'+apiBinding.identity,'mono muted'));
    c.append(apiBox);
    const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
-   webTitle.append(node('strong','网页自动化'),badge(accountStatusLabel(web.status),accountStatusKind(web.status)));
+   const webReady=tinyfish.status==='READY';
+   webTitle.append(node('strong','网页备用'),badge(webReady?'已就绪':'需配置',webReady?'ok':'pending'));
    webBox.append(webTitle);
-   if(web.status==='CONNECTED'){
-    webBox.append(node('p','服务器浏览器已登录 X，可供 Ferro 执行网页自动化。','muted'))
-   }else if(web.status==='DEGRADED'){
-    webBox.append(node('p','服务器浏览器会话异常，不影响上面的 API 连接。','muted'))
+   if(webReady){
+    webBox.append(node('p','TinyFish 已保持 X 登录态。只有官方 API 不够用时，Ferro 才会自动使用网页备用；你无需再登录服务器浏览器。','muted'))
+   }else if(web.status==='CONNECTED'){
+    webBox.append(node('p','TinyFish 尚未就绪，但服务器浏览器已登录，可作为临时网页备用。','muted'))
    }else{
-    webBox.append(node('p','服务器浏览器尚未登录 X。这不影响上面的 API 连接。只有需要操作网页时才需要登录。','muted'))
+    webBox.append(node('p','当前没有已登录的网页备用。正常 OAuth/API 功能仍可使用。','muted'))
    }
-   if(web.last_error&&web.status==='DEGRADED')webBox.append(node('p','上次检查：'+web.last_error,'error'));
    c.append(webBox);
-   const actions=node('div',undefined,'account-actions');
-   const connect=node('button',web.status==='CONNECTED'?'打开服务器浏览器':'登录服务器浏览器','ghost');
-   connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
-   const verify=node('button','检查网页登录','ghost');
-   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(out.status==='CONNECTED'?'服务器浏览器已登录':'服务器浏览器尚未登录');await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
-   actions.append(connect,verify);c.append(actions);
-   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','技术信息'));
+   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
    const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
    for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));
-   tech.append(meta,node('div','API: '+fmt(apiBinding.auth_mode)+' · Browser: '+fmt(web.auth_mode),'mono muted'));c.append(tech)
+   tech.append(meta,node('div','Fallback: TinyFish → Local CDP · API: '+fmt(apiBinding.auth_mode),'mono muted'));
+   const actions=node('div',undefined,'account-actions');
+   const connect=node('button',web.status==='CONNECTED'?'打开本地服务器浏览器':'登录本地服务器浏览器','ghost');
+   connect.onclick=()=>beginAccountConnect(row).catch(e=>flash(e.message,true));
+   const verify=node('button','检查本地网页登录','ghost');
+   verify.onclick=async()=>{verify.disabled=true;try{const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/verify',{method:'POST',body:'{}'});flash(out.status==='CONNECTED'?'本地服务器浏览器已登录':'本地服务器浏览器尚未登录');await refresh()}catch(e){flash(e.message,true)}finally{verify.disabled=false}};
+   actions.append(connect,verify);tech.append(actions);c.append(tech)
   }else{
    const meta=node('div',undefined,'account-meta');meta.append(badge(row.auth_surface||'AUTH','info'));
    for(const cap of (row.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
