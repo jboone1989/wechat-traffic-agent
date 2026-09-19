@@ -39,12 +39,6 @@ SECRET_SPECS = {
     "VIRTUALBRAIN_LLM_API_KEY": SecretSpec(
         "VIRTUALBRAIN_LLM_API_KEY", "DeepSeek stable reserve", quota_metadata=False
     ),
-    "RESEND_API_KEY": SecretSpec(
-        "RESEND_API_KEY", "Operator Email / Resend", quota_metadata=False
-    ),
-    "CONTENT_OPERATOR_SMTP_PASSWORD": SecretSpec(
-        "CONTENT_OPERATOR_SMTP_PASSWORD", "Operator Email / SMTP Password", quota_metadata=False
-    ),
 }
 
 

@@ -80,14 +80,17 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "调用 X API 时显式使用该账号" in page
 
 
-def test_operator_login_page_offers_email_delivery_and_config():
+def test_operator_login_page_offers_simple_email_delivery_config():
     page = operator_console_document()
 
     assert 'id="emailSignin"' in page
     assert "发送到 Email" in page
-    assert 'id="operatorEmailProvider"' in page
     assert 'id="operatorEmailRecipient"' in page
-    assert 'id="operatorEmailSender"' in page
+    assert "管理员登录邮箱" in page
+    assert "login@livingruntime.com" in page
     assert "/operator/api/login-delivery/email" in page
+    assert 'id="operatorEmailProvider"' not in page
+    assert 'id="operatorEmailSender"' not in page
+    assert "SMTP 设置" not in page
     assert "RESEND_API_KEY" not in page
     assert "CONTENT_OPERATOR_SMTP_PASSWORD" not in page

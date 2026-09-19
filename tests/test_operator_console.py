@@ -602,9 +602,16 @@ def test_operator_login_request_is_rate_limited(tmp_path, monkeypatch):
         state_root=tmp_path, application=None, backend=None, mind=None,
     )._app())
     headers = {"X-Operator-Request": "1"}
-    assert client.post("/operator/api/request-login", headers=headers, json={}).status_code == 202
-    assert client.post("/operator/api/request-login", headers=headers, json={}).status_code == 429
-    assert notifier.count == 1
+    for _ in range(3):
+        assert client.post(
+            "/operator/api/request-login", headers=headers, json={}
+        ).status_code == 202
+    blocked = client.post(
+        "/operator/api/request-login", headers=headers, json={}
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"] == "30"
+    assert notifier.count == 3
 
 
 def test_failed_operator_login_delivery_revokes_one_time_token(tmp_path, monkeypatch):
@@ -1281,13 +1288,7 @@ def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_pat
     client = TestClient(LiveAgentService(
         state_root=tmp_path, application=None, backend=None, mind=None,
     )._app())
-    payload = {
-        "provider": "RESEND",
-        "recipient": "owner@example.com",
-        "sender": "login@livingruntime.com",
-        "smtp_port": 587,
-        "smtp_security": "STARTTLS",
-    }
+    payload = {"recipient": "owner@example.com"}
 
     unauthorized = client.post(
         "/operator/api/login-delivery/email",
@@ -1306,6 +1307,8 @@ def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_pat
     path = tmp_path / "operator" / "email-delivery.json"
     raw = path.read_text()
     assert "owner@example.com" in raw
+    assert "login@livingruntime.com" in raw
+    assert '"provider": "RESEND"' in raw
     assert "password" not in raw.lower()
     assert "api_key" not in raw.lower()
 
@@ -1372,34 +1375,35 @@ def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, mon
     )._app())
     headers = {"X-Operator-Request": "1"}
 
-    first_wecom = client.post(
+    for _ in range(3):
+        wecom = client.post(
+            "/operator/api/request-login",
+            headers=headers,
+            json={"channel": "wecom"},
+        )
+        assert wecom.status_code == 202
+
+        email = client.post(
+            "/operator/api/request-login",
+            headers=headers,
+            json={"channel": "email"},
+        )
+        assert email.status_code == 202
+
+    fourth_wecom = client.post(
         "/operator/api/request-login",
         headers=headers,
         json={"channel": "wecom"},
     )
-    assert first_wecom.status_code == 202
+    assert fourth_wecom.status_code == 429
+    assert fourth_wecom.json()["channel"] == "WECOM"
+    assert fourth_wecom.json()["scope"] == "GLOBAL_CHANNEL"
 
-    first_email = client.post(
+    fourth_email = client.post(
         "/operator/api/request-login",
         headers=headers,
         json={"channel": "email"},
     )
-    assert first_email.status_code == 202
-
-    second_wecom = client.post(
-        "/operator/api/request-login",
-        headers=headers,
-        json={"channel": "wecom"},
-    )
-    assert second_wecom.status_code == 429
-    assert second_wecom.json()["channel"] == "WECOM"
-    assert second_wecom.json()["scope"] == "GLOBAL_CHANNEL"
-
-    second_email = client.post(
-        "/operator/api/request-login",
-        headers=headers,
-        json={"channel": "email"},
-    )
-    assert second_email.status_code == 429
-    assert second_email.json()["channel"] == "EMAIL"
+    assert fourth_email.status_code == 429
+    assert fourth_email.json()["channel"] == "EMAIL"
 

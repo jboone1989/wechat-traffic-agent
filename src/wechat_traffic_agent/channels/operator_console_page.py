@@ -135,13 +135,11 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
    <label>HTTPS 健康检查 URL<input id="hostHealth" placeholder="https://node.example.com/health"></label><label>部署控制 URL<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
    <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>内存 GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div><button id="addHost">添加候选主机</button>
   </div></details>
-  <div class="section"><div class="section-title"><div><h3>管理员登录邮件</h3><p class="muted">电脑端可以直接从邮箱打开一次性登录链接。Resend 最简单；也支持 SMTP。</p></div></div>
+  <div class="section"><div class="section-title"><div><h3>管理员登录邮箱</h3><p class="muted">登录链接由 LivingRuntime 发送，你只需要维护收件邮箱。</p></div></div>
    <div class="card">
-    <div class="two"><label>邮件提供商<select id="operatorEmailProvider"><option value="RESEND">Resend</option><option value="SMTP">SMTP</option></select></label><label>收件邮箱<input id="operatorEmailRecipient" type="email" autocomplete="email" placeholder="you@example.com"></label></div>
-    <label>发件邮箱<input id="operatorEmailSender" type="email" autocomplete="off" placeholder="login@your-domain.com"></label>
-    <details><summary class="muted">SMTP 设置</summary><div class="two"><label>SMTP 主机<input id="operatorSmtpHost" autocomplete="off" placeholder="smtp.example.com"></label><label>端口<input id="operatorSmtpPort" type="number" min="1" max="65535" value="587"></label></div><div class="two"><label>用户名<input id="operatorSmtpUsername" autocomplete="off"></label><label>安全<select id="operatorSmtpSecurity"><option>STARTTLS</option><option>TLS</option><option>NONE</option></select></label></div></details>
-    <div class="row"><button id="saveOperatorEmail" class="primary">保存邮件设置</button><span id="operatorEmailStatus" class="muted"></span></div>
-    <p class="muted">Resend API key 或 SMTP 密码在下方“API 与密钥”中配置，只写入、不回显。</p>
+    <label>收件邮箱<input id="operatorEmailRecipient" type="email" autocomplete="email" placeholder="you@example.com"></label>
+    <div class="row"><button id="saveOperatorEmail" class="primary">保存登录邮箱</button><span id="operatorEmailStatus" class="muted"></span></div>
+    <p class="muted">系统发件地址：login@livingruntime.com</p>
    </div>
   </div>
   <div class="section"><div class="section-title"><div><h3>API 与密钥</h3><p class="muted">密钥只写入，不会在页面回显。</p></div></div><div id="secrets" class="grid"></div></div>
@@ -459,13 +457,7 @@ function field(labelText,input){const l=node('label');l.append(node('span',label
 function input(type,placeholder,value=''){const x=document.createElement('input');x.type=type;x.placeholder=placeholder;x.value=value??'';return x}
 function renderOperatorLoginDelivery(data){
  const email=((data.operator_login_delivery||{}).email)||{};
- el('operatorEmailProvider').value=email.provider||'RESEND';
  el('operatorEmailRecipient').value=email.recipient||'';
- el('operatorEmailSender').value=email.sender||'';
- el('operatorSmtpHost').value=email.smtp_host||'';
- el('operatorSmtpPort').value=email.smtp_port||587;
- el('operatorSmtpUsername').value=email.smtp_username||'';
- el('operatorSmtpSecurity').value=email.smtp_security||'STARTTLS';
  const status=el('operatorEmailStatus');
  status.textContent=email.configured?'邮件登录已可用':'邮件登录尚未配置完成';
  status.className=email.configured?'success':'muted'
@@ -490,17 +482,9 @@ el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{co
 el('saveOperatorEmail').onclick=async()=>{
  const btn=el('saveOperatorEmail');btn.disabled=true;
  try{
-  const payload={
-   provider:el('operatorEmailProvider').value,
-   recipient:el('operatorEmailRecipient').value.trim(),
-   sender:el('operatorEmailSender').value.trim(),
-   smtp_host:el('operatorSmtpHost').value.trim(),
-   smtp_port:Number(el('operatorSmtpPort').value||587),
-   smtp_username:el('operatorSmtpUsername').value.trim(),
-   smtp_security:el('operatorSmtpSecurity').value
-  };
+  const payload={recipient:el('operatorEmailRecipient').value.trim()};
   await api('/operator/api/login-delivery/email',{method:'POST',body:JSON.stringify(payload)});
-  flash('管理员登录邮件设置已保存');
+  flash('管理员登录邮箱已保存');
   await refresh()
  }catch(e){flash(e.message,true)}
  finally{btn.disabled=false}
