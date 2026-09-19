@@ -901,3 +901,67 @@ def test_static_replica_detects_non_index_drift_and_redeploys(tmp_path, monkeypa
     assert replica["status"] == "ACTIVE"
     assert replica["source_manifest_sha256"] != first_manifest
     assert len(deployments) == 2
+
+def test_recurrent_survival_need_reactivates_single_row_and_coalesces_legacy_duplicates(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    need_id = "survival-need:restore-static"
+    manager.needs_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.needs_path.write_text(json.dumps([
+        {
+            "need_id":need_id,
+            "domain":"SERVICE",
+            "action":"RESTORE_SERVICE_REPLICA",
+            "urgency":"HIGH",
+            "reason":"old failure",
+            "status":"EXECUTED",
+            "authorization":"AUTONOMOUS_SAFE_POLICY",
+            "created_at":"2026-09-18T10:00:00+00:00",
+            "last_action_at":"2026-09-18T10:05:00+00:00",
+            "last_success_at":"2026-09-18T10:05:00+00:00",
+        },
+        {
+            "need_id":need_id,
+            "domain":"SERVICE",
+            "action":"RESTORE_SERVICE_REPLICA",
+            "urgency":"HIGH",
+            "reason":"newer failure",
+            "status":"EXECUTED",
+            "authorization":"AUTONOMOUS_SAFE_POLICY",
+            "created_at":"2026-09-18T11:00:00+00:00",
+            "last_action_at":"2026-09-18T11:05:00+00:00",
+            "last_success_at":"2026-09-18T11:05:00+00:00",
+        },
+    ]))
+    rows = manager._reconcile_needs(
+        now=NOW,
+        storage_pressure=False,
+        compute_pressure=False,
+        active_remote=True,
+        usable_remote=True,
+        degraded_replica=True,
+        automatic_replica_gap=False,
+        provisionable_remote=False,
+    )
+    restore = [x for x in rows if x["action"] == "RESTORE_SERVICE_REPLICA"]
+    assert len(restore) == 1
+    row = restore[0]
+    assert row["need_id"] == need_id
+    assert row["status"] == "APPROVED"
+    assert row["occurrence_count"] == 3
+    assert row["created_at"] == "2026-09-18T10:00:00+00:00"
+    assert row["last_success_at"] == "2026-09-18T11:05:00+00:00"
+    assert row["last_occurrence_at"] == NOW.isoformat()
+
+    again = manager._reconcile_needs(
+        now=NOW,
+        storage_pressure=False,
+        compute_pressure=False,
+        active_remote=True,
+        usable_remote=True,
+        degraded_replica=True,
+        automatic_replica_gap=False,
+        provisionable_remote=False,
+    )
+    row = next(x for x in again if x["action"] == "RESTORE_SERVICE_REPLICA")
+    assert row["occurrence_count"] == 3
+    assert row["status"] == "APPROVED"

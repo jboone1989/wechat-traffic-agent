@@ -1608,13 +1608,68 @@ class SurvivalResourceManager:
             current = current.replace(tzinfo=timezone.utc)
         return current >= instant
 
+    @staticmethod
+    def _coalesce_need_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        passthrough: list[dict[str, Any]] = []
+        for row in rows:
+            domain = str(row.get("domain") or "")
+            action = str(row.get("action") or "")
+            if not domain or not action:
+                passthrough.append(row)
+                continue
+            grouped.setdefault((domain, action), []).append(row)
+
+        merged: list[dict[str, Any]] = []
+        for _, items in grouped.items():
+            if len(items) == 1:
+                row = items[0]
+                row.setdefault("occurrence_count", 1)
+                row.setdefault("last_occurrence_at", row.get("created_at"))
+                merged.append(row)
+                continue
+            ordered = sorted(
+                items,
+                key=lambda item: str(
+                    item.get("last_action_at")
+                    or item.get("last_occurrence_at")
+                    or item.get("created_at")
+                    or ""
+                ),
+            )
+            current = dict(ordered[-1])
+            current["occurrence_count"] = sum(
+                max(1, int(item.get("occurrence_count") or 1))
+                for item in ordered
+            )
+            created = [
+                str(item.get("created_at") or "")
+                for item in ordered
+                if str(item.get("created_at") or "")
+            ]
+            if created:
+                current["created_at"] = min(created)
+            current["last_occurrence_at"] = max(
+                str(item.get("last_occurrence_at") or item.get("created_at") or "")
+                for item in ordered
+            )
+            successes = [
+                str(item.get("last_success_at") or "")
+                for item in ordered
+                if str(item.get("last_success_at") or "")
+            ]
+            if successes:
+                current["last_success_at"] = max(successes)
+            merged.append(current)
+        return passthrough + merged
+
     def _reconcile_needs(
         self, *, now: datetime, storage_pressure: bool,
         compute_pressure: bool, active_remote: bool,
         usable_remote: bool, degraded_replica: bool,
         automatic_replica_gap: bool, provisionable_remote: bool,
     ) -> list[dict[str, Any]]:
-        rows = self.needs()
+        rows = self._coalesce_need_rows(self.needs())
         desired: list[tuple[str, str, str, str]] = []
         if storage_pressure:
             desired.append(("STORAGE", "RECLAIM_TRANSIENT_STORAGE", "HIGH",
@@ -1662,17 +1717,41 @@ class SurvivalResourceManager:
 
         for domain, action, urgency, reason in desired:
             existing = next(
-                (row for row in rows
-                 if row.get("domain") == domain and row.get("action") == action
-                 and row.get("status") in OPEN_NEED_STATES),
+                (
+                    row for row in rows
+                    if row.get("domain") == domain and row.get("action") == action
+                ),
                 None,
             )
+            autonomous = action in {
+                "RECLAIM_TRANSIENT_STORAGE",
+                "APPLY_CONSERVATION_POLICY",
+                "DISCOVER_REMOTE_MACHINE",
+                "PROVISION_REMOTE_RECEIVER",
+                "RESTORE_SERVICE_REPLICA",
+                "ENSURE_SERVICE_REPLICA",
+            }
             if existing is not None:
                 existing["urgency"] = urgency
                 existing["reason"] = reason
-                if (
+                status = str(existing.get("status") or "")
+                if status in {"EXECUTED", "SATISFIED"}:
+                    existing["status"] = "APPROVED" if autonomous else "PENDING"
+                    existing["authorization"] = (
+                        "AUTONOMOUS_SAFE_POLICY" if autonomous else "OPERATOR_REQUIRED"
+                    )
+                    existing["occurrence_count"] = max(
+                        1, int(existing.get("occurrence_count") or 1)
+                    ) + 1
+                    existing["last_occurrence_at"] = _iso(now)
+                    existing["reactivated_at"] = _iso(now)
+                    existing.pop("satisfied_at", None)
+                    existing.pop("next_retry_at", None)
+                    existing.pop("last_error_type", None)
+                    existing.pop("retry_rearmed_at", None)
+                elif (
                     action in AUTONOMOUS_RETRY_ACTIONS
-                    and existing.get("status") == "AWAITING_RESOURCE"
+                    and status == "AWAITING_RESOURCE"
                     and self._retry_due(existing, now)
                 ):
                     existing["status"] = "APPROVED"
@@ -1697,6 +1776,8 @@ class SurvivalResourceManager:
                     "status": "APPROVED" if autonomous else "PENDING",
                     "authorization": "AUTONOMOUS_SAFE_POLICY" if autonomous else "OPERATOR_REQUIRED",
                     "created_at": _iso(now),
+                    "last_occurrence_at": _iso(now),
+                    "occurrence_count": 1,
                     "evidence_refs": [f"survival-observation:{domain.lower()}"],
                 })
         _atomic_json(self.needs_path, rows)
