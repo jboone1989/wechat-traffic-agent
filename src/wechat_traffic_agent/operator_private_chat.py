@@ -14,6 +14,42 @@ def _utc_iso(now: datetime | None = None) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+OWNER_ENVELOPE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["reply", "goal_candidate", "memory_candidates"],
+    "properties": {
+        "reply": {"type": "string"},
+        "goal_candidate": {
+            "type": ["object", "null"],
+        },
+        "memory_candidates": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+    },
+}
+
+
+def parse_owner_envelope(raw: str) -> dict[str, Any] | None:
+    """Accept only a complete root JSON owner envelope, never embedded examples/reasoning."""
+    text = str(raw or "").strip()
+    if not text.startswith("{") or not text.endswith("}"):
+        return None
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if not isinstance(value.get("reply"), str):
+        return None
+    if value.get("goal_candidate") is not None and not isinstance(value.get("goal_candidate"), dict):
+        return None
+    if not isinstance(value.get("memory_candidates"), list):
+        return None
+    return value
+
+
 def parse_model_json(raw: str) -> dict[str, Any]:
     text = str(raw or "").strip()
     if text.startswith("```"):
@@ -34,15 +70,16 @@ def parse_model_json(raw: str) -> dict[str, Any]:
 
 
 class ReplyJSONStreamDecoder:
-    """Incrementally expose only the JSON string value of the first reply field."""
+    """Expose reply only when it is the first field of a root JSON object."""
 
-    _reply_prefix = re.compile(r'"reply"\s*:\s*"')
+    _reply_prefix = re.compile(r'^\s*\{\s*"reply"\s*:\s*"')
 
     def __init__(self) -> None:
         self._buffer = ""
         self._position = 0
         self._started = False
         self._finished = False
+        self._rejected = False
         self._escaped = False
         self._unicode_digits: str | None = None
         self._pending_high_surrogate: int | None = None
@@ -55,13 +92,23 @@ class ReplyJSONStreamDecoder:
     def finished(self) -> bool:
         return self._finished
 
+    @property
+    def rejected(self) -> bool:
+        return self._rejected
+
     def feed(self, chunk: str) -> str:
-        if self._finished or not chunk:
+        if self._finished or self._rejected or not chunk:
             return ""
         self._buffer += str(chunk)
         if not self._started:
+            stripped = self._buffer.lstrip()
+            if stripped and stripped[0] != "{":
+                self._rejected = True
+                return ""
             match = self._reply_prefix.search(self._buffer)
             if match is None:
+                if len(self._buffer) > 256:
+                    self._rejected = True
                 return ""
             self._started = True
             self._position = match.end()
@@ -281,4 +328,4 @@ class OperatorConversationStore:
         os.replace(tmp, path)
 
 
-__all__ = ["OperatorConversationStore", "ReplyJSONStreamDecoder", "parse_model_json"]
+__all__ = ["OWNER_ENVELOPE_SCHEMA", "OperatorConversationStore", "ReplyJSONStreamDecoder", "parse_model_json", "parse_owner_envelope"]
