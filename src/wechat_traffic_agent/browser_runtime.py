@@ -49,10 +49,11 @@ def _module_available(name: str) -> bool:
 def jev_readiness() -> dict[str, Any]:
     enabled = _enabled("CONTENT_JEV_BROWSER_ENABLED", default=True)
     typesafe = bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
-    text_key = bool(
-        os.environ.get("TEXT_MODEL_API_KEY", "").strip()
-        or os.environ.get("OPENROUTER_API_KEY", "").strip()
-    )
+    explicit_text_key = bool(os.environ.get("TEXT_MODEL_API_KEY", "").strip())
+    deepseek_key = bool(os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip())
+    openrouter_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+    openrouter_model = bool(os.environ.get("CONTENT_JEV_TEXT_MODEL", "").strip())
+    text_key = explicit_text_key or deepseek_key or (openrouter_key and openrouter_model)
     installed = _module_available("jev_ultrafast")
     harness = _module_available("browser_harness")
     if not enabled:
@@ -72,6 +73,15 @@ def jev_readiness() -> dict[str, Any]:
         "adaptive_default": True,
         "typesafe_configured": typesafe,
         "text_helper_configured": text_key,
+        "text_helper_source": (
+            "EXPLICIT"
+            if explicit_text_key
+            else "DEEPSEEK_STABLE"
+            if deepseek_key
+            else "OPENROUTER"
+            if openrouter_key and openrouter_model
+            else "MISSING"
+        ),
         "package_installed": installed,
         "browser_harness_installed": harness,
     }
@@ -156,10 +166,17 @@ class JevBrowserExecutor:
         if readiness["status"] != "READY":
             raise BrowserRuntimeUnavailable(str(readiness["reason"] or readiness["status"]))
         if not os.environ.get("TEXT_MODEL_API_KEY", "").strip():
-            helper = os.environ.get("OPENROUTER_API_KEY", "").strip()
-            if helper:
-                os.environ["TEXT_MODEL_API_KEY"] = helper
+            deepseek = os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip()
+            openrouter = os.environ.get("OPENROUTER_API_KEY", "").strip()
+            openrouter_model = os.environ.get("CONTENT_JEV_TEXT_MODEL", "").strip()
+            if deepseek:
+                os.environ["TEXT_MODEL_API_KEY"] = deepseek
+                os.environ.setdefault("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
+                os.environ.setdefault("TEXT_MODEL", "deepseek-chat")
+            elif openrouter and openrouter_model:
+                os.environ["TEXT_MODEL_API_KEY"] = openrouter
                 os.environ.setdefault("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1")
+                os.environ.setdefault("TEXT_MODEL", openrouter_model)
         return cls(state_root=state_root)
 
     def _factory(self) -> Callable[[str, str], Any]:
