@@ -1180,6 +1180,7 @@ class LiveAgentService:
             saved_memories = operator_memory.remember_many(
                 admitted_memory_candidates,
                 source_message_id=source_message_id,
+                source_text=latest_owner_text,
             )
             metadata = {"proposal_id": proposal.get("proposal_id")} if proposal else {}
             if saved_memories:

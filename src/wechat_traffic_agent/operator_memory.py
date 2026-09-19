@@ -5,8 +5,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any, Iterable
-from uuid import uuid4
-
+from .memory_formation import FormationContext, MemoryFormationPipeline
 from .memory_system import CanonicalMemoryStore
 
 
@@ -74,6 +73,7 @@ class OperatorLongTermMemory:
         self.path = self.root / "long_term_memory.jsonl"
         self.root.mkdir(parents=True, exist_ok=True)
         self.store = CanonicalMemoryStore(state_root)
+        self.formation = MemoryFormationPipeline(state_root, store=self.store)
         self.store.import_legacy_jsonl(self.path)
         self._repair_legacy_mirror()
 
@@ -115,39 +115,25 @@ class OperatorLongTermMemory:
         owner_rows = [row for row in learned if row.get("source_type") == "OWNER_CONVERSATION"]
         return [dict(row) for row in CORE_MEMORIES] + owner_rows
 
-    def remember_many(self, memories: Iterable[dict[str, Any]], *, source_message_id: str = "") -> list[dict[str, Any]]:
-        existing = {_normalize(str(row.get("text") or "")) for row in self.all(limit=5000)}
-        saved: list[dict[str, Any]] = []
-        for raw in memories:
-            text = str(raw.get("text") or raw.get("memory") or "").strip()
-            if len(text) < 4:
-                continue
-            key = _normalize(text)
-            if not key or key in existing:
-                continue
-            kind = str(raw.get("kind") or "OWNER_PREFERENCE").strip().upper()[:80]
-            try:
-                importance = min(1.0, max(0.0, float(raw.get("importance", 0.7))))
-            except (TypeError, ValueError):
-                importance = 0.7
-            row = {
-                "memory_id": "owner-memory:" + uuid4().hex,
-                "memory_type": "SEMANTIC",
-                "kind": kind,
-                "text": text[:4000],
-                "importance": importance,
-                "confidence": 1.0,
-                "source_type": "OWNER_CONVERSATION",
-                "source_message_id": str(source_message_id or ""),
-                "source_ref": str(source_message_id or ""),
-                "access_scope": "PRIVATE_OWNER",
-                "created_at": _utc_iso(),
-            }
-            self.store.append_memory(row)
-            existing.add(key)
-            saved.append(row)
+    def remember_many(
+        self,
+        memories: Iterable[dict[str, Any]],
+        *,
+        source_message_id: str = "",
+        source_text: str = "",
+    ) -> list[dict[str, Any]]:
+        result = self.formation.form_many(
+            memories,
+            context=FormationContext(
+                source_type="OWNER_CONVERSATION",
+                source_ref=str(source_message_id or ""),
+                source_text=str(source_text or ""),
+                authenticated_owner=True,
+                access_scope="PRIVATE_OWNER",
+            ),
+        )
         self._repair_legacy_mirror()
-        return saved
+        return list(result["saved"])
 
     def relevant(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
         rows = self.all(limit=5000)
