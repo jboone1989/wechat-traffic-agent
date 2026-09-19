@@ -554,6 +554,22 @@ def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_p
     assert len(replaces[-1]) >= len(replaces[0])
     assert provider.complete_calls == []
 
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        recall = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "刚才成功的只读能力和 receipt_id 是什么？"},
+        )
+
+    assert recall.status_code == 200
+    recall_prompt = provider.stream_calls[2][0]
+    assert '"tool_receipts"' in recall_prompt
+    assert '"capability_id": "web.search"' in recall_prompt
+    assert '"status": "INVOKED"' in recall_prompt
+    assert '"receipt_id": "capability-receipt:owner-tool:1"' in recall_prompt
+    assert '"ok": true' in recall_prompt
+
 
 def test_private_stream_refuses_side_effect_tool_request(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")

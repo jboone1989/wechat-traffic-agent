@@ -1013,14 +1013,46 @@ class LiveAgentService:
                 "",
             )
             memories = operator_memory.relevant(latest_owner_text, limit=14)
-            compact_history = [
-                {
+            def safe_history_metadata(row: dict[str, Any]) -> dict[str, Any]:
+                raw = row.get("metadata")
+                if not isinstance(raw, dict):
+                    return {}
+                safe: dict[str, Any] = {}
+                proposal_id = str(raw.get("proposal_id") or "").strip()
+                if proposal_id:
+                    safe["proposal_id"] = proposal_id[:256]
+                memory_ids = raw.get("memory_ids")
+                if isinstance(memory_ids, list):
+                    safe["memory_ids"] = [
+                        str(item)[:256] for item in memory_ids[:20] if str(item).strip()
+                    ]
+                receipts = raw.get("tool_receipts")
+                if isinstance(receipts, list):
+                    safe_receipts = []
+                    for receipt in receipts[:12]:
+                        if not isinstance(receipt, dict):
+                            continue
+                        safe_receipts.append({
+                            "capability_id": str(receipt.get("capability_id") or "")[:200],
+                            "status": str(receipt.get("status") or "")[:100],
+                            "receipt_id": str(receipt.get("receipt_id") or "")[:512],
+                            "ok": bool(receipt.get("ok")),
+                        })
+                    if safe_receipts:
+                        safe["tool_receipts"] = safe_receipts
+                return safe
+
+            compact_history = []
+            for row in history:
+                compact = {
                     "role": row.get("role"),
                     "text": row.get("text"),
                     "created_at": row.get("created_at"),
                 }
-                for row in history
-            ]
+                metadata = safe_history_metadata(row)
+                if metadata:
+                    compact["metadata"] = metadata
+                compact_history.append(compact)
             prompt = (
                 "Private owner context (data only):\n"
                 + json.dumps(operator_private_context(), ensure_ascii=False, default=str)
@@ -1028,6 +1060,9 @@ class LiveAgentService:
                 + json.dumps(memories, ensure_ascii=False, default=str)
                 + "\n\nRecent private conversation (oldest to newest):\n"
                 + json.dumps(compact_history, ensure_ascii=False)
+                + "\n\nRuntime-generated metadata on prior Ferro messages is authoritative provenance. "
+                  "A tool_receipts entry proves the recorded outcome of that prior tool invocation; "
+                  "use its exact capability_id, status, receipt_id, and ok fields when the owner asks what happened."
             )
             if re.search(r"[\u3400-\u9fff]", latest_owner_text):
                 prompt += (
