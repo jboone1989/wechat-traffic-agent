@@ -308,15 +308,46 @@ class XBrowserTransportRouter:
 
 
 class XBrowserPublisher:
-    def __init__(self, *, state_root: Path, transport: XBrowserTransport | None = None,
-                 enabled: bool | None = None, writes_enabled: bool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        transport: XBrowserTransport | None = None,
+        enabled: bool | None = None,
+        writes_enabled: bool | None = None,
+        growth_mission: Any | None = None,
+    ) -> None:
         self.state_root = Path(state_root)
         self.transport = transport
         self.enabled = x_browser_enabled() if enabled is None else bool(enabled)
         self.writes_enabled = x_browser_writes_enabled() if writes_enabled is None else bool(writes_enabled)
+        self.growth_mission = growth_mission
 
     def _folder(self, cycle: str) -> Path:
         return self.state_root / "content" / "continuous" / "cycles" / cycle
+
+    def _start_mission_experiment(
+        self,
+        *,
+        cycle: str,
+        post_id: str,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        if self.growth_mission is None or not str(post_id).strip():
+            return None
+        receipt_id = f"x-browser-publication:{cycle}:{str(post_id).strip()}"
+        try:
+            return self.growth_mission.start_experiment_from_publication(
+                publication_receipt_id=receipt_id,
+                post_id=str(post_id).strip(),
+                now=now,
+            )
+        except Exception as exc:
+            return {
+                "status": "DEGRADED",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:300],
+            }
 
     async def after_content_cycle(self, *, cycle: str, now: datetime) -> dict[str, Any]:
         if not cycle:
@@ -345,7 +376,20 @@ class XBrowserPublisher:
         if existing.get("status") == "POSTED":
             if existing.get("draft_sha256") != digest:
                 return {"status": "RECEIPT_DRAFT_MISMATCH", "cycle": cycle}
-            return {"status": "ALREADY_POSTED", "cycle": cycle, "publication": existing}
+            transition = self._start_mission_experiment(
+                cycle=cycle,
+                post_id=str(existing.get("post_id") or ""),
+                now=now,
+            )
+            if transition is not None:
+                existing["mission_experiment_transition"] = transition
+                _write_json(receipt_path, existing)
+            return {
+                "status": "ALREADY_POSTED",
+                "cycle": cycle,
+                "publication": existing,
+                "mission_experiment_transition": transition,
+            }
         transport = self.transport
         if transport is None:
             transport = XBrowserTransportRouter(state_root=self.state_root)
@@ -365,6 +409,14 @@ class XBrowserPublisher:
             "source": f"{published.provider} + X Web UI", "publication_authority": True,
         }
         _write_json(receipt_path, publication)
+        mission_experiment_transition = self._start_mission_experiment(
+            cycle=cycle,
+            post_id=published.post_id,
+            now=now,
+        )
+        if mission_experiment_transition is not None:
+            publication["mission_experiment_transition"] = mission_experiment_transition
+            _write_json(receipt_path, publication)
         history = XHistoryLedger(self.state_root)
         if not history.has_event(cycle=cycle, event_type="EXPRESSION"):
             cognition = _read_json(folder / "cognition.json")
@@ -378,13 +430,23 @@ class XBrowserPublisher:
                 "runtime_receipt_id": None, "worldview": worldview, "prediction": prediction,
                 "inquiry_refs": list((plan.get("goal") or {}).get("inquiry_refs") or ()) if isinstance(plan.get("goal"), dict) else [],
                 "source_evidence_refs": [],
-                "lineage": {"cycle": cycle, "source": "social_expression_drafts.json",
-                            "browser_publication_receipt": "x_browser_publication.json", "future_cognition": True},
+                "lineage": {
+                    "cycle": cycle,
+                    "source": "social_expression_drafts.json",
+                    "browser_publication_receipt": "x_browser_publication.json",
+                    "mission_experiment_transition": mission_experiment_transition,
+                    "future_cognition": True,
+                },
             })
         emit_public_activity(self.state_root, cycle=cycle, phase="X", title="Posted on X",
                              detail=f"Published the persisted X draft as {published.post_id}.",
                              status="completed", kind="social")
-        return {"status": "POSTED", "cycle": cycle, "publication": publication}
+        return {
+            "status": "POSTED",
+            "cycle": cycle,
+            "publication": publication,
+            "mission_experiment_transition": mission_experiment_transition,
+        }
 
 
 __all__ = [

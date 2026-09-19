@@ -152,7 +152,7 @@ def main() -> int:
         print(json.dumps({"public_persona": {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}}, ensure_ascii=False), file=sys.stderr)
     social_expression_loop = SocialExpressionDraftWorker(runtime=app.domain_runtime, state_root=state_root)
     okx_orbit_publisher = OKXOrbitPublisher(state_root=state_root)
-    x_browser_publisher = XBrowserPublisher(state_root=state_root)
+    x_growth_mission = None
     x_loop = None
     if _enabled("CONTENT_X_ENABLED"):
         from wechat_traffic_agent.x_growth_mission import XGrowthMissionCoordinator
@@ -166,6 +166,10 @@ def main() -> int:
             base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
             growth_mission=x_growth_mission,
         )
+    x_browser_publisher = XBrowserPublisher(
+        state_root=state_root,
+        growth_mission=x_growth_mission,
+    )
     live_agent_service = None
     from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
     if live_agent_enabled():
