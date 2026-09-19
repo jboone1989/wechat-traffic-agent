@@ -36,6 +36,24 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip()).casefold()
 
 
+def memory_promotion_allowed_for_turn(owner_text: str) -> bool:
+    value = _normalize(owner_text)
+    explicit = re.search(
+        r"请记住|记下来|保存.{0,8}长期记忆|存入.{0,8}记忆|remember\s+(?:this|that)|save.{0,20}memory",
+        value,
+        re.IGNORECASE,
+    )
+    if explicit:
+        return True
+    recall_only = re.search(
+        r"回忆|历史对话|原始历史|聊天记录|刚才.{0,24}(?:说|回答|调用)|之前.{0,24}(?:说|问|回答|聊)|"
+        r"what.{0,20}(?:did|have).{0,20}(?:say|ask)|earlier conversation|chat history",
+        value,
+        re.IGNORECASE,
+    )
+    return recall_only is None
+
+
 def _terms(text: str) -> set[str]:
     value = _normalize(text)
     ascii_terms = set(re.findall(r"[a-z0-9_]{2,}", value))
@@ -121,4 +139,4 @@ class OperatorLongTermMemory:
         return core + [row for _, row in scored[:remaining]]
 
 
-__all__ = ["CORE_MEMORIES", "OperatorLongTermMemory"]
+__all__ = ["CORE_MEMORIES", "OperatorLongTermMemory", "memory_promotion_allowed_for_turn"]
