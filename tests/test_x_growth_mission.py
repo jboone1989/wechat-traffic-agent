@@ -92,6 +92,66 @@ def _user(followers=2007):
             "tweet_count": 120,
         },
     }
+def _write_bound_cycle(
+    root: Path,
+    *,
+    mission_id: str,
+    cycle: str = "v2-mission-bound",
+    topic: str = "portfolio-drawdown-clustering",
+    output_fallback: bool = False,
+) -> str:
+    folder = root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "mind_plan.json").write_text(json.dumps({
+        "goal": {"origin": "EXTERNAL_MISSION"},
+        "external_mission_id": mission_id,
+        "required_topic": topic,
+    }), encoding="utf-8")
+    (folder / "mission_discovery.json").write_text(json.dumps({
+        "mission_id": mission_id,
+        "decision": {"topic": topic},
+    }), encoding="utf-8")
+    (folder / "result.json").write_text(json.dumps({
+        "status": "PUBLISHED",
+        "cycle": cycle,
+    }), encoding="utf-8")
+    (folder / "publication.json").write_text(json.dumps({
+        "outcome_attribution": {"topic": topic},
+    }), encoding="utf-8")
+    (folder / "evidence_floor_check.json").write_text(json.dumps({
+        "status": "PASS",
+    }), encoding="utf-8")
+    if output_fallback:
+        (folder / "output_fallback.json").write_text(json.dumps({
+            "reason": "GOAL_EVIDENCE_MISS",
+            "selection_authority": "OUTPUT_FALLBACK",
+        }), encoding="utf-8")
+    return cycle
+
+
+def _record_bound_baseline(
+    coordinator: XGrowthMissionCoordinator,
+    *,
+    mission_id: str,
+    followers: int,
+    now: datetime,
+    cycle: str = "v2-mission-bound",
+) -> str:
+    _write_bound_cycle(
+        coordinator.state_root,
+        mission_id=mission_id,
+        cycle=cycle,
+    )
+    baseline = coordinator.record_publication_baseline(
+        cycle=cycle,
+        user=_user(followers),
+        identity_receipt_id=f"receipt:x.identity:pre:{cycle}",
+        now=now,
+    )
+    assert baseline["status"] == "RECORDED"
+    return cycle
+
+
 def test_follower_count_requires_real_public_metric():
     assert follower_count_from_user(_user(2007)) == 2007
     assert follower_count_from_user({"public_metrics": {}}) is None
@@ -231,7 +291,15 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
         )
     )
     first_experiment = first["active_experiment"]["experiment_id"]
+    cycle = _record_bound_baseline(
+        coordinator,
+        mission_id=first["mission_id"],
+        followers=2000,
+        now=clock.now(),
+        cycle="v2-mission-mature",
+    )
     started = coordinator.start_experiment_from_publication(
+        cycle=cycle,
         publication_receipt_id="receipt:x.post:first",
         post_id="post-1",
         now=clock.now(),
@@ -325,8 +393,16 @@ def test_successful_publication_is_the_experiment_start_boundary(tmp_path):
         )
     )
     experiment_id = first["active_experiment"]["experiment_id"]
+    cycle = _record_bound_baseline(
+        coordinator,
+        mission_id=first["mission_id"],
+        followers=2000,
+        now=clock.now(),
+        cycle="v2-mission-publication-boundary",
+    )
 
     started = coordinator.start_experiment_from_publication(
+        cycle=cycle,
         publication_receipt_id="receipt:x.post:42",
         post_id="42",
         now=clock.now(),
@@ -344,6 +420,114 @@ def test_successful_publication_is_the_experiment_start_boundary(tmp_path):
     persisted = x_growth_mission_context(tmp_path)
     assert persisted["active_experiment"]["status"] == "RUNNING"
     assert persisted["active_experiment"]["x_post_id"] == "42"
+
+
+def test_output_fallback_publication_cannot_start_mission_experiment(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(coordinator.observe_identity(
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:fallback",
+        now=NOW,
+    ))
+    experiment_id = first["active_experiment"]["experiment_id"]
+    cycle = _write_bound_cycle(
+        tmp_path,
+        mission_id=first["mission_id"],
+        cycle="v2-output-fallback",
+        output_fallback=True,
+    )
+    baseline = coordinator.record_publication_baseline(
+        cycle=cycle,
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:fallback-pre",
+        now=clock.now(),
+    )
+    assert baseline["status"] == "NOT_MISSION_BOUND"
+    assert baseline["binding"]["status"] == "OUTPUT_FALLBACK"
+
+    started = coordinator.start_experiment_from_publication(
+        cycle=cycle,
+        publication_receipt_id="receipt:x.post:fallback",
+        post_id="fallback",
+        now=clock.now(),
+    )
+    assert started["status"] == "NOT_MISSION_BOUND"
+    assert started["binding"]["status"] == "OUTPUT_FALLBACK"
+    experiment = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == experiment_id
+    )
+    assert experiment.status is MissionExperimentStatus.PROPOSED
+    assert experiment.started_at is None
+
+
+def test_invalid_publication_start_can_be_repaired_to_proposed_with_audit(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(coordinator.observe_identity(
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:repair",
+        now=NOW,
+    ))
+    experiment_id = first["active_experiment"]["experiment_id"]
+    cycle = _record_bound_baseline(
+        coordinator,
+        mission_id=first["mission_id"],
+        followers=2000,
+        now=clock.now(),
+        cycle="v2-mission-repair",
+    )
+    receipt_id = "x-browser-publication:v2-mission-repair:42"
+    folder = tmp_path / "content" / "continuous" / "cycles" / cycle
+    (folder / "x_browser_publication.json").write_text(json.dumps({
+        "status": "POSTED",
+        "cycle": cycle,
+        "post_id": "42",
+        "publication_authority": True,
+    }), encoding="utf-8")
+    started = coordinator.start_experiment_from_publication(
+        cycle=cycle,
+        publication_receipt_id=receipt_id,
+        post_id="42",
+        now=clock.now(),
+    )
+    assert started["status"] == "STARTED"
+
+    repaired = coordinator.repair_invalid_experiment_start(
+        cycle=cycle,
+        publication_receipt_id=receipt_id,
+        post_id="42",
+        reason="publication was not actually mission-bound",
+        now=clock.now(),
+    )
+    assert repaired["status"] == "REPAIRED_TO_PROPOSED"
+    experiment = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == experiment_id
+    )
+    assert experiment.status is MissionExperimentStatus.PROPOSED
+    assert experiment.started_at is None
+    assert experiment.before_value is None
+    assert receipt_id not in experiment.evidence_refs
+    persisted = x_growth_mission_context(tmp_path)
+    assert persisted["active_experiment"]["status"] == "PROPOSED"
+    assert persisted["active_experiment"]["started_at"] is None
+    assert "publication_receipt_id" not in persisted["active_experiment"]
+    receipt = json.loads((folder / "x_browser_publication.json").read_text())
+    assert receipt["mission_experiment_invalidation"]["reason"] == (
+        "publication was not actually mission-bound"
+    )
 
 
 def test_legacy_roadmap_is_replanned_once_with_real_x_capability_context(tmp_path):
@@ -581,7 +765,15 @@ def test_verified_publication_starts_ready_content_step_and_records_progress(tmp
     scheduled = next(item for item in schedule.items if item.step_id == publication_step.step_id)
     assert scheduled.status.value == "READY"
 
+    cycle = _record_bound_baseline(
+        coordinator,
+        mission_id=mission_id,
+        followers=2000,
+        now=clock.now(),
+        cycle="v2-mission-progress",
+    )
     started = coordinator.start_experiment_from_publication(
+        cycle=cycle,
         publication_receipt_id="receipt:x.post:progress-1",
         post_id="progress-1",
         now=clock.now(),
@@ -600,6 +792,7 @@ def test_verified_publication_starts_ready_content_step_and_records_progress(tmp
     assert "x-post:progress-1" in current_step.evidence_refs
 
     repeated = coordinator.start_experiment_from_publication(
+        cycle=cycle,
         publication_receipt_id="receipt:x.post:progress-1",
         post_id="progress-1",
         now=clock.now(),

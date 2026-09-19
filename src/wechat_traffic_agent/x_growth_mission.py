@@ -25,6 +25,7 @@ MISSION_BASELINE_GUARDRAIL_SCHEMA = "content-agent-x-mission-baseline-guardrails
 MISSION_HARD_STOP_WINDOW = timedelta(hours=72)
 MISSION_HARD_STOP_DECLINE = 0.02
 MISSION_PROGRESS_SCHEMA = "content-agent-x-growth-roadmap-progress.v1"
+MISSION_PUBLICATION_BASELINE_SCHEMA = "content-agent-x-mission-publication-baseline.v1"
 
 MISSION_CONSTRAINTS = (
     "obey applicable law",
@@ -768,9 +769,186 @@ class XGrowthMissionCoordinator:
             "settlement_metric": experiment.settlement_metric,
         }
 
+    def publication_binding(self, *, cycle: str) -> dict[str, Any]:
+        """Return whether a content cycle is still bound to the active X mission."""
+        mission = self._mission()
+        if mission is None or _enum_value(mission.status) != "ACTIVE":
+            return {"status": "NO_ACTIVE_MISSION", "bound": False}
+        cycle = str(cycle or "").strip()
+        if not cycle:
+            return {"status": "MISSING_CYCLE", "bound": False}
+        folder = self.state_root / "content" / "continuous" / "cycles" / cycle
+        plan = _read_json(folder / "mind_plan.json")
+        goal = plan.get("goal") if isinstance(plan.get("goal"), dict) else {}
+        mission_id = str(plan.get("external_mission_id") or "").strip()
+        if (
+            str(goal.get("origin") or "") != "EXTERNAL_MISSION"
+            or mission_id != str(mission.mission_id)
+        ):
+            return {"status": "NOT_EXTERNAL_MISSION", "bound": False, "cycle": cycle}
+        if (folder / "output_fallback.json").exists():
+            return {"status": "OUTPUT_FALLBACK", "bound": False, "cycle": cycle}
+        discovery = _read_json(folder / "mission_discovery.json")
+        if str(discovery.get("mission_id") or "") != str(mission.mission_id):
+            return {"status": "MISSION_DISCOVERY_MISMATCH", "bound": False, "cycle": cycle}
+        result = _read_json(folder / "result.json")
+        if str(result.get("status") or "").upper() != "PUBLISHED":
+            return {"status": "MISSION_CONTENT_NOT_PUBLISHED", "bound": False, "cycle": cycle}
+        publication = _read_json(folder / "publication.json")
+        outcome = (
+            publication.get("outcome_attribution")
+            if isinstance(publication.get("outcome_attribution"), dict)
+            else {}
+        )
+        required_topic = str(plan.get("required_topic") or "").strip()
+        published_topic = str(outcome.get("topic") or "").strip()
+        if required_topic and published_topic != required_topic:
+            return {
+                "status": "MISSION_TOPIC_MISMATCH",
+                "bound": False,
+                "cycle": cycle,
+                "required_topic": required_topic,
+                "published_topic": published_topic,
+            }
+        evidence_floor = _read_json(folder / "evidence_floor_check.json")
+        if str(evidence_floor.get("status") or "") != "PASS":
+            return {"status": "EVIDENCE_FLOOR_NOT_PASSED", "bound": False, "cycle": cycle}
+        experiment = self._open_experiment(mission.mission_id)
+        return {
+            "status": "BOUND",
+            "bound": True,
+            "cycle": cycle,
+            "mission_id": mission.mission_id,
+            "experiment_id": None if experiment is None else experiment.experiment_id,
+            "topic": published_topic or required_topic,
+        }
+
+    def record_publication_baseline(
+        self,
+        *,
+        cycle: str,
+        user: dict[str, Any],
+        identity_receipt_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist a prospective official-X follower snapshot immediately before publication."""
+        binding = self.publication_binding(cycle=cycle)
+        if not bool(binding.get("bound")):
+            return {"status": "NOT_MISSION_BOUND", "binding": binding}
+        followers = follower_count_from_user(user)
+        if followers is None:
+            return {"status": "FOLLOWER_METRIC_UNAVAILABLE", "binding": binding}
+        mission = self._mission()
+        if mission is None:
+            return {"status": "NO_ACTIVE_MISSION", "binding": binding}
+        experiment = self._open_experiment(mission.mission_id)
+        if experiment is None or _enum_value(experiment.status) != "PROPOSED":
+            return {
+                "status": "NO_PROPOSED_EXPERIMENT",
+                "experiment_id": None if experiment is None else experiment.experiment_id,
+                "binding": binding,
+            }
+        observe = getattr(self.runtime, "observe_mission_metric", None)
+        if not callable(observe):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE", "binding": binding}
+        evidence_ref = f"x-mission-prepublication:{cycle}"
+        observation = observe(
+            mission.mission_id,
+            value=float(followers),
+            source=f"official-x-identity:pre-publication:{cycle}",
+            evidence_refs=[str(identity_receipt_id), evidence_ref],
+        )
+        self._persist_runtime()
+        payload = {
+            "schema_version": MISSION_PUBLICATION_BASELINE_SCHEMA,
+            "status": "RECORDED",
+            "cycle": str(cycle),
+            "mission_id": mission.mission_id,
+            "experiment_id": experiment.experiment_id,
+            "followers": float(followers),
+            "identity_receipt_id": str(identity_receipt_id),
+            "observation_id": observation.observation_id,
+            "observed_at": observation.observed_at.isoformat(),
+            "publication_authority": False,
+        }
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        _write_json(folder / "x_mission_publication_baseline.json", payload)
+        return payload
+
+    def _publication_baseline(self, *, cycle: str, experiment_id: str) -> dict[str, Any]:
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        payload = _read_json(folder / "x_mission_publication_baseline.json")
+        if (
+            payload.get("schema_version") != MISSION_PUBLICATION_BASELINE_SCHEMA
+            or payload.get("status") != "RECORDED"
+            or payload.get("cycle") != str(cycle)
+            or payload.get("experiment_id") != str(experiment_id)
+            or not str(payload.get("observation_id") or "").strip()
+        ):
+            return {}
+        return payload
+
+    def repair_invalid_experiment_start(
+        self,
+        *,
+        cycle: str,
+        publication_receipt_id: str,
+        post_id: str,
+        reason: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Repair a start that was created from a publication later proven unbound."""
+        mission = self._mission()
+        if mission is None:
+            return {"status": "NO_ACTIVE_MISSION"}
+        experiment = self._running_experiment(mission.mission_id)
+        if experiment is None:
+            return {"status": "NO_RUNNING_EXPERIMENT"}
+        payload = _read_json(self.path)
+        active = payload.get("active_experiment")
+        if not isinstance(active, dict):
+            return {"status": "PROJECTION_MISSING"}
+        if (
+            str(active.get("experiment_id") or "") != experiment.experiment_id
+            or str(active.get("publication_receipt_id") or "") != str(publication_receipt_id)
+            or str(active.get("x_post_id") or "") != str(post_id)
+        ):
+            return {"status": "START_EVIDENCE_MISMATCH", "experiment_id": experiment.experiment_id}
+        from agent_runtime.goals import MissionExperimentStatus
+        experiment.status = MissionExperimentStatus.PROPOSED
+        experiment.started_at = None
+        experiment.before_value = None
+        invalid_refs = {str(publication_receipt_id), f"x-post:{str(post_id)}"}
+        experiment.evidence_refs = [ref for ref in experiment.evidence_refs if ref not in invalid_refs]
+        self._persist_runtime()
+        active["status"] = "PROPOSED"
+        active["started_at"] = None
+        active.pop("publication_receipt_id", None)
+        active.pop("x_post_id", None)
+        active["start_invalidation"] = {
+            "cycle": str(cycle),
+            "publication_receipt_id": str(publication_receipt_id),
+            "post_id": str(post_id),
+            "reason": str(reason)[:500],
+            "invalidated_at": now.astimezone(timezone.utc).isoformat(),
+        }
+        payload["as_of"] = now.astimezone(timezone.utc).isoformat()
+        _write_json(self.path, payload)
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        receipt = _read_json(folder / "x_browser_publication.json")
+        if receipt.get("status") == "POSTED":
+            receipt["mission_experiment_invalidation"] = dict(active["start_invalidation"])
+            _write_json(folder / "x_browser_publication.json", receipt)
+        return {
+            "status": "REPAIRED_TO_PROPOSED",
+            "experiment_id": experiment.experiment_id,
+            **active["start_invalidation"],
+        }
+
     def start_experiment_from_publication(
         self,
         *,
+        cycle: str,
         publication_receipt_id: str,
         post_id: str,
         now: datetime,
@@ -782,13 +960,28 @@ class XGrowthMissionCoordinator:
             return {"status": "NO_ACTIVE_MISSION"}
         if not str(publication_receipt_id).strip() or not str(post_id).strip():
             raise ValueError("mission experiment publication evidence is required")
+        binding = self.publication_binding(cycle=cycle)
+        if not bool(binding.get("bound")):
+            return {"status": "NOT_MISSION_BOUND", "binding": binding}
+        experiment = self._open_experiment(mission.mission_id)
+        if experiment is None:
+            return {"status": "NO_PROPOSED_EXPERIMENT"}
+        baseline = self._publication_baseline(
+            cycle=str(cycle),
+            experiment_id=experiment.experiment_id,
+        )
+        if not baseline:
+            return {
+                "status": "PREPUBLICATION_BASELINE_REQUIRED",
+                "experiment_id": experiment.experiment_id,
+                "binding": binding,
+            }
         roadmap_step_transition = self._record_publication_for_roadmap(
             mission=mission,
             publication_receipt_id=str(publication_receipt_id).strip(),
             post_id=str(post_id).strip(),
             now=now.astimezone(timezone.utc),
         )
-        experiment = self._open_experiment(mission.mission_id)
         if experiment is None:
             return {
                 "status": "NO_PROPOSED_EXPERIMENT",
@@ -812,6 +1005,8 @@ class XGrowthMissionCoordinator:
             dict.fromkeys(
                 [
                     *experiment.evidence_refs,
+                    str(baseline.get("identity_receipt_id") or ""),
+                    str(baseline.get("observation_id") or ""),
                     str(publication_receipt_id).strip(),
                     f"x-post:{str(post_id).strip()}",
                 ]
@@ -832,6 +1027,8 @@ class XGrowthMissionCoordinator:
             )
             active["publication_receipt_id"] = str(publication_receipt_id).strip()
             active["x_post_id"] = str(post_id).strip()
+            active["baseline_observation_id"] = str(baseline.get("observation_id") or "")
+            active["baseline_followers"] = baseline.get("followers")
             payload["as_of"] = now.astimezone(timezone.utc).isoformat()
             payload["roadmap_publication_transition"] = roadmap_step_transition
             _write_json(self.path, payload)
@@ -843,6 +1040,8 @@ class XGrowthMissionCoordinator:
             ),
             "publication_receipt_id": str(publication_receipt_id).strip(),
             "x_post_id": str(post_id).strip(),
+            "baseline_observation_id": str(baseline.get("observation_id") or ""),
+            "baseline_followers": baseline.get("followers"),
             "roadmap_step_transition": roadmap_step_transition,
         }
 
