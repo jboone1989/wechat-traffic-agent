@@ -530,3 +530,76 @@ def test_self_repair_tests_do_not_inherit_production_content_environment(tmp_pat
     assert result["ok"] is True
     command = result["results"][0]["command"]
     assert command[:2] == ["env", "-i"]
+
+
+
+def test_authoritative_counterevidence_problem_is_prioritized_over_newer_diagnosis(tmp_path):
+    state = tmp_path / "state-priority"
+    problems = state / "application/self_maintenance/problems"
+    problems.mkdir(parents=True)
+    workspace = tmp_path / "workspace-priority"
+    source_root = workspace / "src/wechat_traffic_agent"
+    source_root.mkdir(parents=True)
+    (source_root / "content_service.py").write_text(
+        "def compose():\n    return None\n",
+        encoding="utf-8",
+    )
+    (source_root / "content_mind.py").write_text(
+        "def record_research_belief():\n    return None\n",
+        encoding="utf-8",
+    )
+
+    (problems / "fresh.json").write_text(json.dumps({
+        "problem_id": "self-problem:fresh",
+        "status": "DIAGNOSING",
+        "symptom": "fresh diagnosis",
+        "error_type": "ValueError",
+        "failure_site": "content_mind.py:record_research_belief",
+        "occurrences": 99,
+        "last_seen_at": "2026-09-19T23:00:00+00:00",
+        "repair_proposal": None,
+        "planner_attempt": {
+            "status": "REJECTED",
+            "planner_version": "generated-repair.v5",
+            "occurrences_seen": 99,
+            "reason": "ValueError:insufficient localization",
+        },
+    }), encoding="utf-8")
+    (problems / "counter.json").write_text(json.dumps({
+        "problem_id": "self-problem:counter",
+        "status": "DIAGNOSING",
+        "symptom": "replayed candidate regressed contracts",
+        "error_type": "ValueError",
+        "failure_site": "content_service.py:compose",
+        "occurrences": 1,
+        "last_seen_at": "2026-09-19T01:00:00+00:00",
+        "repair_proposal": None,
+        "planner_attempt": {
+            "status": "REJECTED",
+            "planner_version": "generated-repair.v5",
+            "occurrences_seen": 1,
+            "reason": "ValueError:selected an unapproved test",
+        },
+        "repair_trial": {
+            "status": "REJECTED_BY_AUTHORITATIVE_REPLAY",
+            "baseline_status": "PASSED",
+            "candidate_replay_status": "FAILED",
+            "failed_tests": [
+                "tests/test_content_explorer.py::test_preserved_contract"
+            ],
+        },
+    }), encoding="utf-8")
+
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        recipes={},
+        python_executable=sys.executable,
+        planner_runtime=object(),
+    )
+
+    selected = executor._next_diagnosing_problem(now=NOW)
+
+    assert selected is not None
+    assert selected["problem_id"] == "self-problem:counter"
