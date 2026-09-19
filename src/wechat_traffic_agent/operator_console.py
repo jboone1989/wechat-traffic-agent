@@ -667,10 +667,12 @@ class OperatorConsole:
         }
 
     def status(self) -> dict[str, Any]:
+        from .account_management import AccountManager
         from .browser_runtime import browser_runtime_status
         return {
             "ok": True,
             "secrets": self.vault.status(),
+            "accounts": AccountManager(self.state_root).status(),
             "browser_runtime": browser_runtime_status(),
             "pending_requests": self.pending_requests(),
             "resource_requests": self.resource_requests(),

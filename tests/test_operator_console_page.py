@@ -6,6 +6,7 @@ def test_operator_console_uses_admin_information_architecture():
 
     assert 'data-panel="dashboard"' in page
     assert 'data-panel="todos"' in page
+    assert 'data-panel="accounts"' in page
     assert 'data-panel="resources"' in page
     assert 'data-panel="config"' in page
     assert "仪表盘" in page
@@ -25,5 +26,8 @@ def test_operator_console_keeps_existing_admin_controls():
     assert 'id="sshPassword"' in page
     assert 'id="bootstrapHost"' in page
     assert 'id="secrets"' in page
-    assert 'id="localBrowserStart"' in page
+    assert 'id="accounts"' in page
+    assert 'id="accountLoginShell"' in page
+    assert "/operator/api/accounts/" in page
+    assert 'id="localBrowserStart"' not in page
     assert 'href="/operator/chat/"' in page

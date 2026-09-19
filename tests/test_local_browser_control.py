@@ -78,3 +78,28 @@ def test_local_browser_control_rejects_bad_coordinates_and_keys():
         control.click(x_ratio=-0.1, y_ratio=0.5)
     with pytest.raises(ValueError, match="unsupported key"):
         control.key("F12")
+
+
+def test_snapshot_retries_transient_navigation_failures():
+    class FlakyBrowser(FakeBrowser):
+        def __init__(self, url):
+            super().__init__(url)
+            self.observe_calls = 0
+
+        def observe(self, screenshot=True):
+            self.observe_calls += 1
+            if self.observe_calls < 3:
+                raise RuntimeError("document changed during navigation")
+            return super().observe(screenshot=screenshot)
+
+    made = []
+    def factory(url):
+        browser = FlakyBrowser(url)
+        made.append(browser)
+        return browser
+
+    control = LocalBrowserControl(browser_factory=factory)
+    control.start("https://x.com/i/flow/login")
+    snap = control.snapshot()
+    assert snap.screenshot_b64 == "ZmFrZS1qcGVn"
+    assert made[-1].observe_calls == 3
