@@ -116,6 +116,8 @@ class WakefulContentTaskRunner:
     def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
         try:
             self._raise_if_stopping()
+            if task == "NEURAL_INTEROCEPTION":
+                return self._neural_interoception(now)
             if task == "RESOURCE_REVIEW":
                 return self._resource(now)
             if task == "REFLECT":
@@ -137,6 +139,14 @@ class WakefulContentTaskRunner:
                 "task": task,
                 "reason": "SIGTERM_OR_SIGINT",
             }
+
+    def _neural_interoception(self, now: datetime) -> dict[str, Any]:
+        projection = self.wakeful.refresh_neural_life(now)
+        return {
+            "task": "NEURAL_INTEROCEPTION",
+            "status": "OK" if projection.get("status") != "DISABLED" else "DISABLED",
+            "neural_life": projection,
+        }
 
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}

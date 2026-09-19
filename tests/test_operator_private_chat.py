@@ -274,7 +274,9 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert [row["role"] for row in body["history"][-2:]] == ["operator", "ferro"]
         assert "Private owner context" in backend.provider.calls[0][0]
         assert "Relevant durable memory" in backend.provider.calls[0][0]
+        assert '"neural_life"' in backend.provider.calls[0][0]
         assert "生存、繁殖与进化" in backend.provider.calls[0][0]
+        assert "rational Ego layer" in backend.provider.calls[0][1]["system"]
         assert "STRICT JSON" in backend.provider.calls[0][1]["system"]
         assert backend.provider.calls[0][1]["_minimum_quality"] == 0.75
         assert backend.provider.calls[0][1]["_attempt_timeout_seconds"] == 10
