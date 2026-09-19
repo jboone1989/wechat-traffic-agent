@@ -137,11 +137,23 @@ class WakefulContentTaskRunner:
                 actions = survival.execute_approved(now=now)
                 rows["survival_resource_actions"] = actions
                 if actions.get("results"):
-                    rows["survival_resource_after_actions"] = survival.observe(now=now)
+                    after_actions = survival.observe(now=now)
+                    rows["survival_resource_after_actions"] = after_actions
                     infrastructure_pressure = str(
-                        rows["survival_resource_after_actions"].get("pressure")
-                        or infrastructure_pressure
+                        after_actions.get("pressure") or infrastructure_pressure
                     )
+                    # Some safe actions unlock another safe action immediately
+                    # (for example: provision receiver -> create first replica).
+                    # Execute one bounded follow-up phase in the same review so
+                    # onboarding does not stall until the next hourly cadence.
+                    followup_actions = survival.execute_approved(now=now)
+                    if followup_actions.get("results"):
+                        rows["survival_resource_followup_actions"] = followup_actions
+                        after_followup = survival.observe(now=now)
+                        rows["survival_resource_after_followup_actions"] = after_followup
+                        infrastructure_pressure = str(
+                            after_followup.get("pressure") or infrastructure_pressure
+                        )
             except Exception as exc:  # noqa: BLE001
                 rows["survival_resource_observation"] = self._error(exc)
                 rows["status"] = "DEGRADED"
