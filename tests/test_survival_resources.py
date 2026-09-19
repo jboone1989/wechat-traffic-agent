@@ -608,3 +608,139 @@ def test_resource_review_auto_deploys_missing_static_replica(tmp_path, monkeypat
     assert service["placement"] == "host:local"
     assert len(service["replicas"]) == 1
     assert service["replicas"][0]["host_id"] == host_id
+
+def test_resource_review_auto_provisions_ssh_managed_receiver(tmp_path, monkeypatch):
+    from wechat_traffic_agent.survival_receiver_ssh import ReceiverProvisionResult, SSHReceiverProvisioner
+
+    manager = SurvivalResourceManager(tmp_path)
+    key_dir = tmp_path / "secrets" / "survival-hosts" / "key-ref-auto"
+    key_dir.mkdir(parents=True)
+    (key_dir / "id_ed25519").write_text("fake-key")
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:auto-provision",
+        "name":"bare-vps",
+        "ssh_host":"203.0.113.10",
+        "ssh_port":22,
+        "ssh_username":"root",
+        "ssh_host_key_sha256":"SHA256:test",
+        "ssh_key_ref":"key-ref-auto",
+        "management_transport":"SSH_KEY",
+        "status":"ACTIVE",
+        "receiver_status":"NOT_PROVISIONED",
+        "deployment_capable":False,
+        "host_instance_id":"host-instance:bare-vps",
+        "capacity":{"cpu_count":1,"memory_available_gib":1.0,"disk_free_gib":10.0},
+    }]))
+    monkeypatch.setattr(
+        "wechat_traffic_agent.survival_resources.shutil.disk_usage",
+        lambda _: SimpleNamespace(total=100*1024**3, used=40*1024**3, free=60*1024**3),
+    )
+    monkeypatch.setattr(SurvivalResourceManager, "_memory", staticmethod(lambda:(8*1024**3,5*1024**3)))
+    monkeypatch.setattr(SurvivalResourceManager, "_load", staticmethod(lambda:0.2))
+
+    captured = {}
+    def fake_provision(self, **kwargs):
+        captured.update(kwargs)
+        return ReceiverProvisionResult(
+            release_sha="7"*40,
+            receiver_command="receiver-command",
+            receiver_root="/root/.ferro-survival-receiver/state/workloads",
+            agent_id="survival.bare.network.cai",
+            key_id="key-remote",
+            public_key="ed25519:remote",
+            host_instance_id="host-instance:bare-vps",
+            deployment_profiles=("content.website-static.v1",),
+            capacity={"cpu_count":1,"memory_available_gib":0.75,"disk_free_gib":9.0},
+        )
+    monkeypatch.setattr(SSHReceiverProvisioner, "provision", fake_provision)
+
+    observed = manager.observe(now=NOW)
+    need = next(row for row in observed["needs"] if row["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert need["status"] == "APPROVED"
+    assert not any(row["action"] == "RESTORE_REMOTE_RECEIVER" and row["status"] in {"PENDING","APPROVED","AWAITING_RESOURCE"} for row in observed["needs"])
+    result = manager.execute_approved(now=NOW)
+    provisioned = next(row for row in result["results"] if row["action"] == "PROVISION_REMOTE_RECEIVER")
+    assert provisioned["status"] == "VERIFIED"
+    row = manager.remote_hosts()[0]
+    assert row["receiver_status"] == "VERIFIED"
+    assert row["ssh_receiver_status"] == "VERIFIED"
+    assert row["receiver_transport"] == "SSH"
+    assert row["deployment_capable"] is True
+    assert row["ssh_receiver_release_sha"] == "7"*40
+    assert row["deployment_profiles"] == ["content.website-static.v1"]
+    assert row["capacity"]["memory_available_gib"] == 0.75
+    assert captured["controller"]["agent_id"]
+
+
+def test_signed_static_replica_can_deploy_over_ssh_receiver_without_https(tmp_path, monkeypatch):
+    from agent_network.crypto import Identity
+
+    site = tmp_path / "site"
+    site.mkdir()
+    index = b"<h1>ssh-only edge</h1>"
+    (site / "index.html").write_bytes(index)
+    monkeypatch.setenv("CONTENT_WEB_SITE_ROOT", str(site))
+    manager = SurvivalResourceManager(tmp_path)
+    remote = Identity.generate("survival.remote.network.cai")
+    host_id = "remote-host:ssh-only"
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":host_id,
+        "name":"ssh-only",
+        "ssh_host":"203.0.113.11",
+        "ssh_port":22,
+        "ssh_username":"root",
+        "ssh_host_key_sha256":"SHA256:test",
+        "ssh_key_ref":"key-ref",
+        "management_transport":"SSH_KEY",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "ssh_receiver_status":"VERIFIED",
+        "receiver_transport":"SSH",
+        "deployment_capable":True,
+        "host_instance_id":"host-instance:ssh-only",
+        "ssh_receiver_command":"receiver-command",
+        "ssh_receiver_agent_id":remote.agent_id,
+        "ssh_receiver_key_id":remote.key_id,
+        "ssh_receiver_public_key":remote.public_key,
+        "deployment_profiles":["content.website-static.v1"],
+        "capacity":{"cpu_count":1,"memory_available_gib":1.0,"disk_free_gib":5.0},
+    }]))
+
+    class Transport:
+        def deploy(self, payload):
+            receipt = {
+                "type":"survival.workload.deploy.receipt.v1",
+                "status":"DEPLOYED",
+                "action_id":payload["action_id"],
+                "request_hash":payload["object_hash"],
+                "deployment_id":"deployment:ssh-only",
+                "deployment_url":None,
+                "deployment_path":"/root/.ferro-survival-receiver/state/workloads/website-static/current",
+                "artifact_sha256":payload["artifact"]["sha256"],
+                "index_sha256":payload["artifact"]["index_sha256"],
+                "agent_id":remote.agent_id,
+                "key_id":remote.key_id,
+            }
+            receipt["signature"] = remote.sign_object(receipt)
+            return receipt
+        def static_index_sha256(self, deployment_path):
+            assert deployment_path.endswith("/website-static/current")
+            return "sha256:" + __import__('hashlib').sha256(index).hexdigest()
+        def health(self):
+            raise AssertionError("health not needed in this test")
+
+    monkeypatch.setattr(manager, "_ssh_receiver_transport", lambda host: Transport())
+    plan = manager.plan_offload("website-static", host_id, now=NOW)
+    result = manager.execute_offload(plan["action_id"], now=NOW)
+    assert result["status"] == "DEPLOYED"
+    assert result["deployment_transport"] == "SSH"
+    assert result["deployment_url"] is None
+    service = next(row for row in manager.services() if row["service_id"] == "website-static")
+    assert service["placement"] == "host:local"
+    replica = service["replicas"][0]
+    assert replica["host_id"] == host_id
+    assert replica["deployment_transport"] == "SSH"
+    assert replica["deployment_url"] is None
+    assert replica["deployment_path"].endswith("/website-static/current")
