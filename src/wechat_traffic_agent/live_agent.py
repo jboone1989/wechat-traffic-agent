@@ -1389,15 +1389,20 @@ class LiveAgentService:
                             })
                             return
                     tool_results: list[dict[str, Any]] = []
-                    if envelope.get("tool_requests"):
+                    tool_followup_streamed = False
+                    tool_round = 0
+                    while envelope.get("tool_requests") and tool_round < 2:
+                        tool_round += 1
                         yield line({
                             "type": "status",
                             "stage": "tool",
                             "text": "正在调用受限的只读 Runtime 能力并核对结果…",
                         })
                         try:
-                            envelope, turn, tool_results = await resolve_owner_tool_loop(
-                                envelope, turn
+                            round_results = await asyncio.to_thread(
+                                execute_readonly_tool_requests,
+                                self.application,
+                                list(envelope.get("tool_requests") or []),
                             )
                         except Exception as exc:
                             yield line({
@@ -1406,6 +1411,76 @@ class LiveAgentService:
                                 "error_type": type(exc).__name__,
                             })
                             return
+                        tool_results.extend(round_results)
+                        turn = extend_turn_with_tool_results(
+                            turn, round_results, round_index=tool_round
+                        )
+                        yield line({
+                            "type": "status",
+                            "stage": "tool_reply",
+                            "text": "已拿到只读证据，Ferro 正在继续回复…",
+                        })
+                        follow_decoder = ReplyJSONStreamDecoder()
+                        follow_raw: list[str] = []
+                        follow_visible = ""
+                        try:
+                            async for chunk in stream_method(
+                                str(turn["prompt"]),
+                                max_tokens=900,
+                                system=_OWNER_SYSTEM,
+                                _audit_scope="operator-private-chat",
+                                _audit_response_mode="owner_envelope",
+                                _routing_task_class="owner_dialogue",
+                            ):
+                                text_chunk = str(chunk or "")
+                                if not text_chunk:
+                                    continue
+                                follow_raw.append(text_chunk)
+                                visible = follow_decoder.feed(text_chunk)
+                                if visible:
+                                    tool_followup_streamed = True
+                                    follow_visible += visible
+                                    yield line({"type": "replace", "text": follow_visible})
+                        except Exception as exc:
+                            yield line({
+                                "type": "error",
+                                "error": "operator_chat_tool_followup_stream_failed",
+                                "error_type": type(exc).__name__,
+                            })
+                            return
+                        envelope = parse_owner_envelope("".join(follow_raw))
+                        if not owner_envelope_acceptable(envelope, turn):
+                            repaired = True
+                            yield line({
+                                "type": "status",
+                                "stage": "repair",
+                                "text": "工具结果后的回答结构未通过校验，正在修复…",
+                            })
+                            try:
+                                envelope = await repair_operator_envelope(turn)
+                            except Exception as exc:
+                                yield line({
+                                    "type": "error",
+                                    "error": "operator_chat_tool_followup_repair_failed",
+                                    "error_type": type(exc).__name__,
+                                })
+                                return
+                            yield line({"type": "replace", "text": str(envelope.get("reply") or "")})
+                    if envelope.get("tool_requests"):
+                        turn = extend_turn_with_tool_results(
+                            turn, [], round_index=3, final_only=True
+                        )
+                        try:
+                            envelope = await complete_owner_envelope(turn)
+                        except Exception as exc:
+                            yield line({
+                                "type": "error",
+                                "error": "operator_chat_tool_budget_finalize_failed",
+                                "error_type": type(exc).__name__,
+                            })
+                            return
+                        envelope["tool_requests"] = []
+                        yield line({"type": "replace", "text": str(envelope.get("reply") or "")})
                     yield line({
                         "type": "status",
                         "stage": "persist",
@@ -1423,12 +1498,15 @@ class LiveAgentService:
                         })
                         return
                     final_reply = str(result.get("reply") or "")
-                    if tool_results or (repaired and visible_parts):
+                    if tool_results:
+                        if not tool_followup_streamed:
+                            yield line({"type": "replace", "text": final_reply})
+                    elif repaired and visible_parts:
                         yield line({"type": "replace", "text": final_reply})
                     elif not visible_parts:
                         yield line({"type": "delta", "text": final_reply})
                     if tool_results:
-                        transport = "native-tools"
+                        transport = "native-tools-stream"
                     else:
                         transport = "native-repaired" if repaired else "native"
                 else:
