@@ -11,7 +11,7 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
-from .generated_repair import GeneratedRepairPlan, GeneratedRepairPlanner
+from .generated_repair import GeneratedRepairPlan, GeneratedRepairPlanner, PLANNER_VERSION
 
 from agent_runtime.coding import (
     BoundedCodingProvider,
@@ -339,8 +339,10 @@ class SelfRepairExecutor:
             if row.get("repair_proposal"):
                 continue
             attempt = row.get("planner_attempt") if isinstance(row.get("planner_attempt"), dict) else {}
-            if attempt.get("status") == "REJECTED" and (
-                int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
+            if (
+                attempt.get("status") == "REJECTED"
+                and int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
+                and str(attempt.get("planner_version") or "") == PLANNER_VERSION
             ):
                 continue
             sources = planner.candidate_source_paths(row)
@@ -372,6 +374,7 @@ class SelfRepairExecutor:
         updated = {k: v for k, v in problem.items() if not str(k).startswith("_")}
         attempt = {
             "status": status,
+            "planner_version": PLANNER_VERSION,
             "observed_at": now.astimezone(timezone.utc).isoformat(),
             "occurrences_seen": int(problem.get("occurrences") or 0),
             **details,
@@ -457,6 +460,7 @@ class SelfRepairExecutor:
         }
         updated["planner_attempt"] = {
             "status": "PROPOSED",
+            "planner_version": PLANNER_VERSION,
             "observed_at": now.astimezone(timezone.utc).isoformat(),
             "occurrences_seen": int(problem.get("occurrences") or 0),
             "source_paths": source_paths,
@@ -469,6 +473,7 @@ class SelfRepairExecutor:
             self.root / "repair_plans" / f"{safe}.json",
             {
                 "schema_version": "generated-repair-plan.v1",
+                "planner_version": PLANNER_VERSION,
                 "problem_id": problem.get("problem_id"),
                 "proposal_id": proposal_id,
                 "status": "PROPOSED",
