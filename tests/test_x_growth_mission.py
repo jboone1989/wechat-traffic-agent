@@ -95,7 +95,7 @@ def test_follower_count_requires_real_public_metric():
     assert follower_count_from_user({}) is None
 
 
-def test_first_official_observation_creates_and_starts_real_mission(tmp_path):
+def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_path):
     runtime, _clock, backend = _runtime(tmp_path)
     coordinator = XGrowthMissionCoordinator(
         runtime=runtime,
@@ -124,8 +124,9 @@ def test_first_official_observation_creates_and_starts_real_mission(tmp_path):
     assert result["roadmap_transition"]["status"] == "PLANNED"
     assert result["roadmap"]["version"] == 1
     assert len(result["roadmap"]["steps"]) == 2
-    assert result["experiment_transition"]["status"] == "STARTED"
-    assert result["active_experiment"]["status"] == "RUNNING"
+    assert result["experiment_transition"]["status"] == "PROPOSED"
+    assert result["active_experiment"]["status"] == "PROPOSED"
+    assert result["active_experiment"]["started_at"] is None
     assert result["active_experiment"]["measurement_window_hours"] == 24.0
     assert len(backend.requests) == 2
 
@@ -200,6 +201,13 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
         )
     )
     first_experiment = first["active_experiment"]["experiment_id"]
+    started = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:first",
+        post_id="post-1",
+        now=clock.now(),
+    )
+    assert started["status"] == "STARTED"
+    assert started["experiment_id"] == first_experiment
 
     clock.advance(timedelta(hours=24).total_seconds())
     second = asyncio.run(
@@ -217,7 +225,8 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
     assert second["settlement"]["actual_delta"] == 100.0
     assert second["causal_claim"] is False
     assert second["active_experiment"]["experiment_id"] != first_experiment
-    assert second["active_experiment"]["status"] == "RUNNING"
+    assert second["active_experiment"]["status"] == "PROPOSED"
+    assert second["active_experiment"]["started_at"] is None
     assert len(backend.requests) == 3
 
     settled = next(
@@ -230,3 +239,78 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
     )
     assert hypothesis.confidence > 0.55
     assert "observational feedback" in settled.notes
+
+
+def test_proposed_experiment_does_not_settle_before_real_publication(tmp_path):
+    runtime, clock, backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        duration_days=30,
+        experiment_hours=24,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:proposed",
+            now=NOW,
+        )
+    )
+    experiment_id = first["active_experiment"]["experiment_id"]
+    clock.advance(timedelta(hours=48).total_seconds())
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2010),
+            identity_receipt_id="receipt:x.identity:still-proposed",
+            now=clock.now(),
+        )
+    )
+
+    assert second["settlement"] is None
+    assert second["active_experiment"]["experiment_id"] == experiment_id
+    assert second["active_experiment"]["status"] == "PROPOSED"
+    experiment = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == experiment_id
+    )
+    assert experiment.started_at is None
+    assert len(backend.requests) == 2
+
+
+def test_successful_publication_is_the_experiment_start_boundary(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:publication-boundary",
+            now=NOW,
+        )
+    )
+    experiment_id = first["active_experiment"]["experiment_id"]
+
+    started = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:42",
+        post_id="42",
+        now=clock.now(),
+    )
+
+    assert started["status"] == "STARTED"
+    assert started["experiment_id"] == experiment_id
+    experiment = next(
+        row for row in runtime.missions.experiments
+        if row.experiment_id == experiment_id
+    )
+    assert experiment.started_at == NOW
+    assert "receipt:x.post:42" in experiment.evidence_refs
+    assert "x-post:42" in experiment.evidence_refs
+    persisted = x_growth_mission_context(tmp_path)
+    assert persisted["active_experiment"]["status"] == "RUNNING"
+    assert persisted["active_experiment"]["x_post_id"] == "42"

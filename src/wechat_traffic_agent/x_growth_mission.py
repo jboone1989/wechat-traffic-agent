@@ -279,16 +279,8 @@ class XGrowthMissionCoordinator:
     async def _ensure_experiment(self, mission: Any) -> dict[str, Any]:
         existing = self._open_experiment(mission.mission_id)
         if existing is not None:
-            if _enum_value(existing.status) == "PROPOSED":
-                started = self.runtime.start_mission_experiment(existing.experiment_id)
-                self._persist_runtime()
-                return {
-                    "status": "STARTED",
-                    "experiment_id": started.experiment_id,
-                    "strategy": started.strategy,
-                }
             return {
-                "status": "RUNNING",
+                "status": _enum_value(existing.status),
                 "experiment_id": existing.experiment_id,
                 "strategy": existing.strategy,
             }
@@ -299,14 +291,78 @@ class XGrowthMissionCoordinator:
         if not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
         experiment = await deliberate(mission.mission_id, max_tokens=900)
+        self._persist_runtime()
+        return {
+            "status": "PROPOSED",
+            "experiment_id": experiment.experiment_id,
+            "strategy": experiment.strategy,
+            "expected_effect": experiment.expected_effect,
+            "risk_notes": list(experiment.risk_notes),
+        }
+
+    def start_experiment_from_publication(
+        self,
+        *,
+        publication_receipt_id: str,
+        post_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"status": "DISABLED"}
+        mission = self._mission()
+        if mission is None or _enum_value(mission.status) != "ACTIVE":
+            return {"status": "NO_ACTIVE_MISSION"}
+        experiment = self._open_experiment(mission.mission_id)
+        if experiment is None:
+            return {"status": "NO_PROPOSED_EXPERIMENT"}
+        status = _enum_value(experiment.status)
+        if status == "RUNNING":
+            return {
+                "status": "ALREADY_RUNNING",
+                "experiment_id": experiment.experiment_id,
+            }
+        if status != "PROPOSED":
+            return {
+                "status": "NOT_STARTABLE",
+                "experiment_id": experiment.experiment_id,
+                "experiment_status": status,
+            }
+        if not str(publication_receipt_id).strip() or not str(post_id).strip():
+            raise ValueError("mission experiment publication evidence is required")
+        experiment.evidence_refs = list(
+            dict.fromkeys(
+                [
+                    *experiment.evidence_refs,
+                    str(publication_receipt_id).strip(),
+                    f"x-post:{str(post_id).strip()}",
+                ]
+            )
+        )
         started = self.runtime.start_mission_experiment(experiment.experiment_id)
         self._persist_runtime()
+        payload = _read_json(self.path)
+        active = payload.get("active_experiment")
+        if (
+            payload.get("mission_id") == mission.mission_id
+            and isinstance(active, dict)
+            and active.get("experiment_id") == started.experiment_id
+        ):
+            active["status"] = "RUNNING"
+            active["started_at"] = (
+                None if started.started_at is None else started.started_at.isoformat()
+            )
+            active["publication_receipt_id"] = str(publication_receipt_id).strip()
+            active["x_post_id"] = str(post_id).strip()
+            payload["as_of"] = now.astimezone(timezone.utc).isoformat()
+            _write_json(self.path, payload)
         return {
             "status": "STARTED",
             "experiment_id": started.experiment_id,
-            "strategy": started.strategy,
-            "expected_effect": started.expected_effect,
-            "risk_notes": list(started.risk_notes),
+            "started_at": (
+                None if started.started_at is None else started.started_at.isoformat()
+            ),
+            "publication_receipt_id": str(publication_receipt_id).strip(),
+            "x_post_id": str(post_id).strip(),
         }
 
     async def observe_identity(
