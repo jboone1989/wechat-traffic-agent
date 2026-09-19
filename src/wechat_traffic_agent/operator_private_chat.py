@@ -16,9 +16,13 @@ def _utc_iso(now: datetime | None = None) -> str:
 
 OWNER_ENVELOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["reply", "goal_candidate", "memory_candidates"],
+    "required": ["reply", "goal_candidate", "memory_candidates", "tool_requests"],
     "properties": {
         "reply": {"type": "string"},
+        "tool_requests": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
         "goal_candidate": {
             "type": ["object", "null"],
         },
@@ -47,6 +51,10 @@ def parse_owner_envelope(raw: str) -> dict[str, Any] | None:
         return None
     if not isinstance(value.get("memory_candidates"), list):
         return None
+    if "tool_requests" not in value:
+        value["tool_requests"] = []
+    if not isinstance(value.get("tool_requests"), list):
+        return None
     return value
 
 
@@ -65,8 +73,8 @@ def parse_model_json(raw: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except (TypeError, ValueError, json.JSONDecodeError):
-        return {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
-    return value if isinstance(value, dict) else {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": []}
+        return {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": [], "tool_requests": []}
+    return value if isinstance(value, dict) else {"reply": str(raw or "").strip(), "goal_candidate": None, "memory_candidates": [], "tool_requests": []}
 
 
 class ReplyJSONStreamDecoder:

@@ -153,6 +153,7 @@ def test_parse_owner_envelope_rejects_embedded_or_incomplete_json():
         "reply": "ok",
         "goal_candidate": None,
         "memory_candidates": [],
+        "tool_requests": [],
     }
     assert parse_owner_envelope(
         'analysis first {"reply":"ok","goal_candidate":null,"memory_candidates":[]}'
@@ -431,3 +432,139 @@ def test_x_follower_goal_metric_is_canonicalized(tmp_path, monkeypatch):
         )
     events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
     assert events[-1]["proposal"]["metric"] == "x.followers"
+
+
+class OwnerToolRuntime:
+    def __init__(self) -> None:
+        self.calls = []
+        self.persisted = 0
+
+    def capability_manifest(self):
+        return (
+            {
+                "capability_id": "web.search",
+                "description": "Search the public web.",
+                "input_schema": {"type": "object"},
+                "side_effect_level": "READ_ONLY",
+                "required_permissions": [],
+            },
+            {
+                "capability_id": "x.post",
+                "description": "Publish to X.",
+                "input_schema": {"type": "object"},
+                "side_effect_level": "EXTERNAL_SIDE_EFFECT",
+                "required_permissions": ["social.publish"],
+            },
+        )
+
+    def invoke(self, capability_id, payload):
+        self.calls.append((capability_id, dict(payload)))
+        return SimpleNamespace(
+            receipt_id="capability-receipt:owner-tool:1",
+            payload={"ok": True, "results": [{"title": "Ferro result"}]},
+        )
+
+    def persist(self):
+        self.persisted += 1
+
+
+class OwnerToolProvider:
+    def __init__(self, capability_id="web.search") -> None:
+        self.capability_id = capability_id
+        self.stream_calls = []
+        self.complete_calls = []
+
+    def first(self):
+        payload = {"query": "Ferro"} if self.capability_id == "web.search" else {"text": "hello"}
+        return json.dumps({
+            "reply": "我先读取当前只读证据。",
+            "tool_requests": [{
+                "capability_id": self.capability_id,
+                "payload": payload,
+                "reason": "需要当前证据",
+            }],
+            "goal_candidate": None,
+            "memory_candidates": [],
+        }, ensure_ascii=False)
+
+    async def stream(self, prompt, **kwargs):
+        self.stream_calls.append((prompt, kwargs))
+        raw = self.first()
+        for offset in range(0, len(raw), 9):
+            yield raw[offset:offset + 9]
+
+    async def complete(self, prompt, **kwargs):
+        self.complete_calls.append((prompt, kwargs))
+        if self.capability_id == "web.search":
+            reply = "我已经通过 Runtime 的只读 web.search 核对了当前证据。"
+        else:
+            reply = "这个 owner 私聊不会执行 x.post，因为它具有外部副作用。"
+        return json.dumps({
+            "reply": reply,
+            "tool_requests": [],
+            "goal_candidate": None,
+            "memory_candidates": [],
+        }, ensure_ascii=False)
+
+
+def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    application.runtime = OwnerToolRuntime()
+    provider = OwnerToolProvider()
+    service = LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=SimpleNamespace(provider=provider),
+        wakeful=FakeWakeful(),
+    )
+
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "请查一下当前证据。"},
+        )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert any(row.get("stage") == "tool" for row in events if row.get("type") == "status")
+    assert events[-1]["transport"] == "native-tools"
+    assert events[-1]["message"]["text"].startswith("我已经通过 Runtime")
+    assert events[-1]["tool_receipts"] == [{
+        "capability_id": "web.search",
+        "status": "INVOKED",
+        "receipt_id": "capability-receipt:owner-tool:1",
+        "ok": True,
+    }]
+    assert application.runtime.calls == [("web.search", {"query": "Ferro"})]
+    assert "Owner Tool Results round 1" in provider.complete_calls[0][0]
+
+
+def test_private_stream_refuses_side_effect_tool_request(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    application.runtime = OwnerToolRuntime()
+    provider = OwnerToolProvider(capability_id="x.post")
+    service = LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=SimpleNamespace(provider=provider),
+        wakeful=FakeWakeful(),
+    )
+
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat/stream",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "发一条 X 帖子。"},
+        )
+
+    events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
+    assert events[-1]["transport"] == "native-tools"
+    assert "不会执行 x.post" in events[-1]["message"]["text"]
+    assert application.runtime.calls == []
+    assert events[-1]["tool_receipts"][0]["status"] == "FORBIDDEN_SIDE_EFFECT"
