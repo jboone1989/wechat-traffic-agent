@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import asyncio
 import hashlib
 import json
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
@@ -166,6 +167,42 @@ async def collect_trading_evidence(state_root: Path, now: datetime) -> list[dict
     return [_topic_candidate(topic) for topic in topics]
 
 
+def _normalize_mission_search_query(*, query: str, goal_topic: str) -> str:
+    """Put the research subject first so weak lexical search backends do not anchor on filler."""
+    normalized = " ".join(str(query).split()).strip(" .?!")
+    topic = " ".join(str(goal_topic).replace("-", " ").replace("_", " ").split())
+    if not topic:
+        raise ValueError("mission search requires a goal topic")
+
+    # LLMs often lead with freshness/reporting boilerplate. Some search backends
+    # over-weight the first token, so remove only these generic prefixes.
+    normalized = re.sub(
+        r"^(?:(?:recent|latest|current|new)\s+)+(?:public\s+)?",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = re.sub(
+        r"^(?:public\s+)?(?:case\s+stud(?:y|ies)|examples?|evidence|research)\s+(?:on|about|for)\s+",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    normalized = normalized.strip(" .?!")
+    if not normalized:
+        normalized = topic
+
+    topic_folded = topic.casefold()
+    query_folded = normalized.casefold()
+    if not query_folded.startswith(topic_folded):
+        normalized = f"{topic} {normalized}"
+    # RuntimeWebSearch has a 180-character hard bound.
+    normalized = normalized[:180].rstrip(" ,.;:-")
+    if len(normalized) < 8:
+        raise ValueError("mission search query is too short")
+    return normalized
+
+
 class GoalEvidenceExplorer:
     """Collect candidate evidence, then filter it against an endogenous topic goal."""
 
@@ -232,8 +269,12 @@ class GoalEvidenceExplorer:
     ) -> dict[str, Any]:
         if self.web_searcher is None:
             return {"items": [], "failures": [], "query": None}
-        normalized = " ".join(str(query).split())[:400]
-        if len(normalized) < 8:
+        try:
+            normalized = _normalize_mission_search_query(
+                query=query,
+                goal_topic=goal_topic,
+            )
+        except ValueError:
             return {"items": [], "failures": [], "query": None}
         try:
             rows = await self.web_searcher(normalized, now)

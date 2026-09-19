@@ -17,7 +17,10 @@ from .content_loop import (
     Lesson, ReceiptRuntime, SelfCheck, _put, _structured, collect_news,
 )
 from .content_artifact import ContentKind
-from .content_explorer import GoalEvidenceExplorer, collect_okx_public_market, collect_trading_evidence
+from .content_explorer import (
+    GoalEvidenceExplorer, _normalize_mission_search_query,
+    collect_okx_public_market, collect_trading_evidence,
+)
 from .content_service import ContentAgent
 from .content_strategy import bind_content_strategy, collect_mature_strategy_outcomes, strategy_instruction
 from .content_action_prediction import bind_action_prediction, forecast_strategy_candidates
@@ -130,9 +133,10 @@ def _normalize_mission_discovery(value: MissionDiscoveryDecision) -> MissionDisc
     topic = value.topic.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,79}", topic):
         raise ValueError("mission discovery topic must be a lowercase kebab-case slug")
-    query = " ".join(value.search_query.split())
-    if len(query) < 8:
-        raise ValueError("mission discovery search query is too short")
+    query = _normalize_mission_search_query(
+        query=value.search_query,
+        goal_topic=topic,
+    )
     anti_goodhart_text = " ".join(
         [topic.replace("-", " "), query.casefold(), value.reader_need.casefold()]
     )
@@ -558,7 +562,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'follower growth or engagement tactics. Prefer Ferro/LivingRuntime strengths '
                     'and existing site topics when genuinely useful; a new durable topic is '
                     'allowed. The search_query must seek current public factual evidence about '
-                    'that subject. Never search for follow-for-follow, engagement manipulation, '
+                    'that subject and must be a compact keyword-style query whose first words are '
+                    'the subject/core entities; do not begin it with generic words such as recent, '
+                    'latest, current, public, research, evidence, or case studies. Never search for '
+                    'follow-for-follow, engagement manipulation, '
                     'spam, or ways to evade platform rules. Mission/roadmap text is decision '
                     'context only and is not factual evidence.\n'
                     + json.dumps({
