@@ -487,14 +487,7 @@ class OwnerToolProvider:
             "memory_candidates": [],
         }, ensure_ascii=False)
 
-    async def stream(self, prompt, **kwargs):
-        self.stream_calls.append((prompt, kwargs))
-        raw = self.first()
-        for offset in range(0, len(raw), 9):
-            yield raw[offset:offset + 9]
-
-    async def complete(self, prompt, **kwargs):
-        self.complete_calls.append((prompt, kwargs))
+    def final(self):
         if self.capability_id == "web.search":
             reply = "我已经通过 Runtime 的只读 web.search 核对了当前证据。"
         else:
@@ -505,6 +498,16 @@ class OwnerToolProvider:
             "goal_candidate": None,
             "memory_candidates": [],
         }, ensure_ascii=False)
+
+    async def stream(self, prompt, **kwargs):
+        self.stream_calls.append((prompt, kwargs))
+        raw = self.final() if "Owner Tool Results round" in prompt else self.first()
+        for offset in range(0, len(raw), 9):
+            yield raw[offset:offset + 9]
+
+    async def complete(self, prompt, **kwargs):
+        self.complete_calls.append((prompt, kwargs))
+        return self.final()
 
 
 def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_path, monkeypatch):
@@ -530,7 +533,7 @@ def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_p
 
     events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
     assert any(row.get("stage") == "tool" for row in events if row.get("type") == "status")
-    assert events[-1]["transport"] == "native-tools"
+    assert events[-1]["transport"] == "native-tools-stream"
     assert events[-1]["message"]["text"].startswith("我已经通过 Runtime")
     assert events[-1]["tool_receipts"] == [{
         "capability_id": "web.search",
@@ -539,7 +542,11 @@ def test_private_stream_executes_readonly_runtime_tool_and_returns_receipt(tmp_p
         "ok": True,
     }]
     assert application.runtime.calls == [("web.search", {"query": "Ferro", "limit": 8})]
-    assert "Owner Tool Results round 1" in provider.complete_calls[0][0]
+    assert "Owner Tool Results round 1" in provider.stream_calls[1][0]
+    replaces = [row["text"] for row in events if row.get("type") == "replace"]
+    assert len(replaces) >= 2
+    assert len(replaces[-1]) >= len(replaces[0])
+    assert provider.complete_calls == []
 
 
 def test_private_stream_refuses_side_effect_tool_request(tmp_path, monkeypatch):
@@ -564,7 +571,7 @@ def test_private_stream_refuses_side_effect_tool_request(tmp_path, monkeypatch):
         )
 
     events = [json.loads(line) for line in response.text.splitlines() if line.strip()]
-    assert events[-1]["transport"] == "native-tools"
+    assert events[-1]["transport"] == "native-tools-stream"
     assert "不会执行 x.post" in events[-1]["message"]["text"]
     assert application.runtime.calls == []
     assert events[-1]["tool_receipts"][0]["status"] == "FORBIDDEN_SIDE_EFFECT"
