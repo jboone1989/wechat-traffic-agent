@@ -129,6 +129,7 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert result["active_experiment"]["started_at"] is None
     assert result["active_experiment"]["measurement_window_hours"] == 24.0
     assert len(backend.requests) == 2
+    assert backend.requests[0].token_budget == 1800
 
     mission = runtime.external_missions[-1]
     assert mission.status is MissionStatus.ACTIVE
