@@ -770,7 +770,8 @@ class LiveAgentService:
         from starlette.applications import Starlette
         from starlette.requests import Request
         from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
-        from starlette.routing import Route
+        from starlette.routing import Route, WebSocketRoute
+        from starlette.websockets import WebSocket, WebSocketDisconnect
         from .channels.agent_live_page import live_agent_document
         from .channels.agent_talk_page import talk_agent_document
         from .account_management import AccountManager
@@ -778,11 +779,12 @@ class LiveAgentService:
         from .channels.operator_private_chat_page import operator_private_chat_document
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
+        from .browser_session_stream import BrowserSessionStream, BrowserStreamUnavailable
         from .operator_private_chat import OperatorConversationStore, parse_model_json
 
         operator_console = OperatorConsole(self.state_root) if operator_console_enabled() else None
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
-        local_browser_control = LocalBrowserControl() if operator_console is not None else None
+        local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
 
         async def live_page(_request: Request):
@@ -1232,6 +1234,53 @@ class LiveAgentService:
                 status_code=200 if verified else 502,
                 headers={"Cache-Control": "no-store"},
             )
+
+        async def operator_account_stream(websocket: WebSocket):
+            if operator_console is None:
+                await websocket.close(code=4404)
+                return
+            session_id = websocket.cookies.get("ferro_operator_session")
+            if not operator_console.auth.valid(session_id):
+                await websocket.close(code=4401)
+                return
+            origin = str(websocket.headers.get("origin") or "")
+            host = str(websocket.headers.get("host") or "")
+            if origin:
+                from urllib.parse import urlparse
+                parsed = urlparse(origin)
+                if parsed.netloc and parsed.netloc != host:
+                    await websocket.close(code=4403)
+                    return
+            provider_id = str(websocket.path_params["provider_id"]).strip().lower()
+            try:
+                spec = account_manager.provider(provider_id)
+                if not spec.implemented or provider_id != "x":
+                    raise ValueError("account adapter is not installed")
+                local_browser_control.target_id()
+            except (ValueError, LocalBrowserControlUnavailable):
+                await websocket.close(code=4409)
+                return
+            await websocket.accept()
+            try:
+                stream = BrowserSessionStream(local_browser_control)
+                await stream.run(
+                    websocket,
+                    authorize=lambda: operator_console.auth.valid(session_id),
+                )
+            except WebSocketDisconnect:
+                return
+            except BrowserStreamUnavailable as exc:
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": str(exc)[:160],
+                    })
+                except Exception:
+                    pass
+                try:
+                    await websocket.close(code=1011)
+                except Exception:
+                    pass
 
         async def operator_account_connect(request: Request):
             if not operator_authorized(request):
@@ -1710,6 +1759,7 @@ class LiveAgentService:
                 Route("/operator/api/bootstrap", operator_bootstrap, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
+                WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
                 Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),
                 Route("/operator/api/accounts/{provider_id}/login/snapshot", operator_account_snapshot, methods=["GET"]),

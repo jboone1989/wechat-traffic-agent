@@ -915,7 +915,7 @@ def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text
     calls = {"typed": []}
 
     class FakeControl:
-        def __init__(self):
+        def __init__(self, *args, **kwargs):
             pass
         def start(self, url):
             assert url.startswith("https://x.com/")
@@ -1020,7 +1020,7 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
             return {"schema_version": 1, "accounts": []}
 
     class FakeControl:
-        def __init__(self):
+        def __init__(self, *args, **kwargs):
             pass
         def start(self, url):
             return {
@@ -1103,3 +1103,57 @@ def test_operator_session_survives_authenticator_restart_without_persisting_raw_
     restarted.logout(session)
     again = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
     assert not again.valid(session, now=NOW + timedelta(minutes=1))
+
+
+def test_operator_live_browser_websocket_requires_auth_and_same_origin(tmp_path, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    import wechat_traffic_agent.browser_session_stream as stream_module
+    import wechat_traffic_agent.local_browser_control as local_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeControl:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def target_id(self):
+            return "target-1"
+
+    class FakeStream:
+        def __init__(self, control):
+            self.control = control
+
+        async def run(self, websocket, *, authorize=None):
+            assert authorize is not None and authorize()
+            await websocket.send_json({"type": "status", "url": "https://x.com/", "title": "X"})
+
+    monkeypatch.setattr(local_module, "LocalBrowserControl", FakeControl)
+    monkeypatch.setattr(stream_module, "BrowserSessionStream", FakeStream)
+
+    service = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )
+    client = TestClient(service._app())
+
+    with pytest.raises(WebSocketDisconnect) as unauth:
+        with client.websocket_connect("/operator/api/accounts/x/login/stream"):
+            pass
+    assert unauth.value.code == 4401
+
+    _login_operator(client, tmp_path)
+
+    with pytest.raises(WebSocketDisconnect) as cross_origin:
+        with client.websocket_connect(
+            "/operator/api/accounts/x/login/stream",
+            headers={"origin": "https://evil.example"},
+        ):
+            pass
+    assert cross_origin.value.code == 4403
+
+    with client.websocket_connect(
+        "/operator/api/accounts/x/login/stream",
+        headers={"origin": "http://testserver"},
+    ) as websocket:
+        message = websocket.receive_json()
+        assert message["type"] == "status"
+        assert message["url"] == "https://x.com/"

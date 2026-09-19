@@ -8,6 +8,7 @@ from wechat_traffic_agent.local_browser_control import LocalBrowserControl
 class FakeBrowser:
     def __init__(self, url: str):
         self.url = url
+        self.target = "fake-target"
         self.calls = []
         self.closed = False
 
@@ -103,3 +104,27 @@ def test_snapshot_retries_transient_navigation_failures():
     snap = control.snapshot()
     assert snap.screenshot_b64 == "ZmFrZS1qcGVn"
     assert made[-1].observe_calls == 3
+
+
+def test_local_browser_target_survives_process_object_restart(tmp_path, monkeypatch):
+    closed = []
+    monkeypatch.setattr(
+        LocalBrowserControl,
+        "_close_target",
+        staticmethod(lambda target_id: closed.append(target_id)),
+    )
+
+    first = LocalBrowserControl(browser_factory=FakeBrowser, state_root=tmp_path)
+    first.start("https://x.com/i/flow/login")
+    state_path = tmp_path / "operator" / "browser-session-target.json"
+
+    assert state_path.exists()
+    assert oct(state_path.stat().st_mode & 0o777) == "0o600"
+    assert first.target_id() == "fake-target"
+
+    restarted = LocalBrowserControl(browser_factory=FakeBrowser, state_root=tmp_path)
+    assert restarted.target_id() == "fake-target"
+
+    restarted.stop()
+    assert closed == ["fake-target"]
+    assert not state_path.exists()

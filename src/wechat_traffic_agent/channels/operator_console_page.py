@@ -31,7 +31,7 @@ label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;
 .section{margin-top:16px}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 9px}.section-title p{margin:3px 0 0}
 details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
 .resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
-.browser-shot{width:100%;height:auto;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:manipulation}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
+.browser-live{width:100%;height:auto;aspect-ratio:1120/780;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:none;cursor:crosshair}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}.live-indicator{display:inline-flex;align-items:center;gap:6px}.live-indicator:before{content:"";width:7px;height:7px;border-radius:50%;background:#5b6872}.live-indicator.live:before{background:#8ee1b2}
 .account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.account-login-shell{margin-top:12px}
 .divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
 @media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.mobile-note{display:block;font-size:12px;color:#71818d}}
@@ -84,11 +84,11 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
   <div id="accounts" class="grid"></div>
   <div id="accountLoginShell" class="card account-login-shell hidden">
    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
-   <div id="localBrowserStatus" class="mono muted">未启动。</div>
-   <img id="localBrowserShot" class="browser-shot hidden" alt="Ferro account login browser">
+   <div id="localBrowserStatus" class="mono muted live-indicator">未连接实时会话。</div>
+   <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
    <div class="browser-controls">
-    <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击截图中的输入框"></label>
-    <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="localBrowserRefresh" class="ghost">刷新画面</button></div>
+    <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
+    <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
     <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
    </div>
   </div>
@@ -309,46 +309,90 @@ function renderAccounts(data){
   c.append(actions);root.append(c)
  }
 }
+let accountStream=null,accountStreamGeneration=0,streamFramePending=null,streamFrameDrawing=false;
+function closeAccountStream(){
+ accountStreamGeneration++;
+ if(accountStream){accountStream.onclose=null;try{accountStream.close()}catch{}}
+ accountStream=null;
+ const status=el('localBrowserStatus');status.classList.remove('live')
+}
+function accountStreamSend(payload){
+ if(!accountStream||accountStream.readyState!==WebSocket.OPEN)throw new Error('实时浏览器会话未连接');
+ accountStream.send(JSON.stringify(payload))
+}
+function drawAccountFrame(data){
+ streamFramePending=data;
+ if(streamFrameDrawing)return;
+ const drawNext=()=>{
+  const frame=streamFramePending;streamFramePending=null;
+  if(!frame){streamFrameDrawing=false;return}
+  streamFrameDrawing=true;
+  const img=new Image();
+  img.onload=()=>{
+   const canvas=el('liveBrowserCanvas'),ctx=canvas.getContext('2d');
+   ctx.drawImage(img,0,0,canvas.width,canvas.height);
+   canvas.classList.remove('hidden');
+   drawNext()
+  };
+  img.onerror=()=>drawNext();
+  img.src='data:image/jpeg;base64,'+frame
+ };
+ drawNext()
+}
+function accountStreamUrl(provider){
+ const scheme=location.protocol==='https:'?'wss:':'ws:';
+ return scheme+'//'+location.host+'/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stream'
+}
+async function openAccountStream(provider,recovery=0){
+ closeAccountStream();
+ activeAccountProvider=provider;
+ const generation=accountStreamGeneration,ws=new WebSocket(accountStreamUrl(provider));
+ accountStream=ws;
+ const status=el('localBrowserStatus');
+ status.textContent='正在连接实时浏览器…';
+ return await new Promise((resolve,reject)=>{
+  let settled=false;
+  const timer=setTimeout(()=>{if(!settled){settled=true;reject(new Error('实时浏览器连接超时'))}},10000);
+  ws.onopen=()=>{if(generation!==accountStreamGeneration)return;status.textContent='实时浏览器已连接，等待画面…';status.classList.add('live')};
+  ws.onmessage=async ev=>{
+   if(generation!==accountStreamGeneration)return;
+   let msg;try{msg=JSON.parse(ev.data)}catch{return}
+   if(msg.type==='frame'){
+    drawAccountFrame(msg.data);
+    if(!settled){settled=true;clearTimeout(timer);resolve()}
+   }else if(msg.type==='status'){
+    const prefix=msg.authenticated?'已登录'+(msg.identity?' · @'+msg.identity:''):'实时';
+    status.textContent=prefix+' · '+fmt(msg.url)+' · '+fmt(msg.title);
+    status.classList.add('live');
+    if(msg.authenticated)refresh().catch(()=>{})
+   }else if(msg.type==='error'){
+    status.textContent=msg.error||'实时浏览器错误'
+   }
+  };
+  ws.onerror=()=>{if(!settled){settled=true;clearTimeout(timer);reject(new Error('实时浏览器连接失败'))}};
+  ws.onclose=async ev=>{
+   if(generation!==accountStreamGeneration)return;
+   accountStream=null;status.classList.remove('live');
+   if(ev.code===4401){showLogin();status.textContent='管理员会话已过期';return}
+   if(ev.code===4409&&recovery<1){
+    status.textContent='网页会话已重建，正在恢复实时连接…';
+    try{
+     await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/connect',{method:'POST',body:'{}'});
+     await openAccountStream(provider,recovery+1)
+    }catch(e){status.textContent=e.message;flash(e.message,true)}
+    return
+   }
+   status.textContent='实时浏览器连接已断开'
+  }
+ })
+}
 async function beginAccountConnect(row){
  activeAccountProvider=row.provider_id;selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent=row.label+' · 服务器网页会话';
- el('localBrowserStatus').textContent='正在打开 Ferro 服务器上的网页会话…';
- const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
- if(out.account&&out.account.status==='CONNECTED')flash(row.label+' 已连接');
- await new Promise(r=>setTimeout(r,250));await accountLoginSnapshot(5);await refresh()
-}
-async function accountLoginSnapshot(retries=3){
- if(!activeAccountProvider)throw new Error('没有正在进行的账户登录');
- const shot=el('localBrowserShot'),status=el('localBrowserStatus');let last;
- for(let i=0;i<retries;i++){
-  try{
-   const out=await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/snapshot');
-   shot.src='data:image/jpeg;base64,'+out.screenshot_b64;shot.classList.remove('hidden');
-   status.textContent=(out.authenticated?'已连接'+(out.identity?' · @'+out.identity:'')+' · ':'')+fmt(out.url)+' · '+fmt(out.title);
-   if(out.authenticated){flash('账户已连接');await refresh()}return out
-  }catch(e){
-   last=e;
-   if(e.status===409&&i<retries-1){
-    await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/connect',{method:'POST',body:'{}'});
-    await new Promise(r=>setTimeout(r,300));continue
-   }
-   if(e.status!==502||i===retries-1)throw e;
-   await new Promise(r=>setTimeout(r,350))
-  }
- }throw last
-}
-async function accountLoginAction(action,body={}){
- if(!activeAccountProvider)throw new Error('没有正在进行的账户登录');
- const provider=activeAccountProvider;
- try{
-  await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/'+action,{method:'POST',body:JSON.stringify(body)})
- }catch(e){
-  if(e.status!==409)throw e;
-  await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/connect',{method:'POST',body:'{}'});
-  await new Promise(r=>setTimeout(r,250));await accountLoginSnapshot(5);
-  throw new Error('服务器网页会话刚刚恢复，请再操作一次')
- }
- await new Promise(r=>setTimeout(r,250));return accountLoginSnapshot(5)
+ el('accountLoginShell').classList.remove('hidden');el('accountLoginTitle').textContent=row.label+' · 实时服务器网页会话';
+ el('localBrowserStatus').textContent='正在创建 Ferro 服务器上的网页会话…';
+ await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
+ await openAccountStream(row.provider_id);
+ await refresh()
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
@@ -387,11 +431,42 @@ for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPan
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
-el('accountLoginClose').onclick=async()=>{try{if(activeAccountProvider)await api('/operator/api/accounts/'+encodeURIComponent(activeAccountProvider)+'/login/stop',{method:'POST',body:'{}'})}catch{}activeAccountProvider='';el('accountLoginShell').classList.add('hidden');el('localBrowserShot').classList.add('hidden');el('localBrowserShot').removeAttribute('src');el('localBrowserStatus').textContent='已关闭。账户会话仍保存在对应的持久化认证存储中。'};
-el('localBrowserRefresh').onclick=()=>accountLoginSnapshot(5).catch(e=>{el('localBrowserStatus').textContent=e.message;flash(e.message,true)});
-el('localBrowserShot').onclick=async ev=>{const img=el('localBrowserShot'),r=img.getBoundingClientRect();if(!r.width||!r.height)return;const x=(ev.clientX-r.left)/r.width,y=(ev.clientY-r.top)/r.height;try{await accountLoginAction('click',{x_ratio:x,y_ratio:y})}catch(e){flash(e.message,true)}};
-el('localBrowserSend').onclick=async()=>{const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;try{await accountLoginAction('type',{text:value})}catch(e){flash(e.message,true)}};
-for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=async()=>{try{await accountLoginAction('key',{key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
+el('accountLoginClose').onclick=async()=>{
+ const provider=activeAccountProvider;closeAccountStream();activeAccountProvider='';
+ try{if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})}catch{}
+ el('accountLoginShell').classList.add('hidden');el('liveBrowserCanvas').classList.add('hidden');
+ el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。'
+};
+el('liveBrowserReconnect').onclick=async()=>{
+ if(!activeAccountProvider)return;
+ try{await openAccountStream(activeAccountProvider)}catch(e){flash(e.message,true)}
+};
+const liveCanvas=el('liveBrowserCanvas');
+let livePointer=null;
+liveCanvas.onpointerdown=ev=>{
+ const r=liveCanvas.getBoundingClientRect();livePointer={x:ev.clientX,y:ev.clientY,rx:(ev.clientX-r.left)/r.width,ry:(ev.clientY-r.top)/r.height};
+ try{liveCanvas.setPointerCapture(ev.pointerId)}catch{}
+};
+liveCanvas.onpointerup=ev=>{
+ if(!livePointer)return;
+ const r=liveCanvas.getBoundingClientRect(),dx=ev.clientX-livePointer.x,dy=ev.clientY-livePointer.y;
+ try{
+  if(Math.abs(dx)<12&&Math.abs(dy)<12)accountStreamSend({type:'click',x_ratio:livePointer.rx,y_ratio:livePointer.ry});
+  else accountStreamSend({type:'wheel',x_ratio:(ev.clientX-r.left)/r.width,y_ratio:(ev.clientY-r.top)/r.height,delta_x:-dx*3,delta_y:-dy*3})
+ }catch(e){flash(e.message,true)}
+ livePointer=null
+};
+liveCanvas.onpointercancel=()=>{livePointer=null};
+liveCanvas.onwheel=ev=>{
+ ev.preventDefault();const r=liveCanvas.getBoundingClientRect();
+ try{accountStreamSend({type:'wheel',x_ratio:(ev.clientX-r.left)/r.width,y_ratio:(ev.clientY-r.top)/r.height,delta_x:ev.deltaX,delta_y:ev.deltaY})}catch(e){flash(e.message,true)}
+};
+el('localBrowserSend').onclick=()=>{
+ const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;
+ try{accountStreamSend({type:'text',text:value})}catch(e){flash(e.message,true)}
+};
+el('localBrowserText').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('localBrowserSend').click()}};
+for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{try{accountStreamSend({type:'key',key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
 el('wecomSignin').onclick=async()=>{const btn=el('wecomSignin'),status=el('loginStatus');btn.disabled=true;status.textContent='Sending…';try{await api('/operator/api/request-login',{method:'POST',body:'{}'});status.textContent='Sent. Open the one-time link in Enterprise WeChat.'}catch(e){status.textContent=e.message}finally{setTimeout(()=>{btn.disabled=false},45000)}};
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
