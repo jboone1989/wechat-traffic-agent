@@ -670,6 +670,8 @@ class SelfRepairExecutor:
         return True
 
     def _test_command(self, *pytest_args: str) -> tuple[str, ...]:
+        test_home = self.root / "test_home"
+        test_home.mkdir(parents=True, exist_ok=True)
         command = (
             self.python_executable,
             "-B",
@@ -678,13 +680,20 @@ class SelfRepairExecutor:
             "-q",
             *pytest_args,
         )
-        if not self.test_pythonpath:
-            return command
-        return (
+        environment = (
             "env",
-            "PYTHONPATH=" + self.test_pythonpath,
-            *command,
+            "-i",
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "HOME=" + str(test_home),
+            "LANG=C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE=1",
         )
+        if self.test_pythonpath:
+            environment = (
+                *environment,
+                "PYTHONPATH=" + self.test_pythonpath,
+            )
+        return (*environment, *command)
 
     def _provider(self, recipe: RepairRecipe) -> BoundedCodingProvider:
         assert self.workspace_root is not None
