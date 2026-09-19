@@ -426,6 +426,11 @@ class SelfRepairExecutor:
             rows.append(row)
         rows.sort(
             key=lambda row: (
+                (
+                    isinstance(row.get("repair_trial"), dict)
+                    and row["repair_trial"].get("baseline_status") == "PASSED"
+                    and row["repair_trial"].get("candidate_replay_status") == "FAILED"
+                ),
                 str(row.get("failure_site") or "") not in {"", "unknown"},
                 len(row.get("_planner_sources") or ()) == 1,
                 int(row.get("occurrences") or 0),
