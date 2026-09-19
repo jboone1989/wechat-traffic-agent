@@ -53,8 +53,6 @@ class _MetricsBrowser:
         self.closed = False
 
     def evaluate(self, expression: str):
-        if ".some(" in expression and "document.querySelectorAll('article')" in expression:
-            return True
         if "counter('reply')" in expression:
             return {
                 "views": "1.2K",
@@ -62,6 +60,8 @@ class _MetricsBrowser:
                 "reposts": "3 reposts",
                 "likes": "45 Likes",
             }
+        if ".some(" in expression and "document.querySelectorAll('article')" in expression:
+            return True
         raise AssertionError(expression)
 
     def close(self):
