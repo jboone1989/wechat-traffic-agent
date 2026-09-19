@@ -77,6 +77,26 @@ def jev_readiness() -> dict[str, Any]:
     }
 
 
+def local_cdp_readiness() -> dict[str, Any]:
+    enabled = _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED")
+    installed = _module_available("jev_ultrafast")
+    harness = _module_available("browser_harness")
+    if not enabled:
+        status, reason = "DISABLED", "CONTENT_LOCAL_X_BROWSER_ENABLED is false"
+    elif not installed or not harness:
+        status, reason = "NOT_INSTALLED", "jev-ultrafast/browser-harness is not installed"
+    else:
+        status, reason = "READY", ""
+    return {
+        "provider": "LOCAL_CDP",
+        "status": status,
+        "reason": reason,
+        "deterministic_default": True,
+        "package_installed": installed,
+        "browser_harness_installed": harness,
+    }
+
+
 def browser_runtime_status() -> dict[str, Any]:
     tinyfish = bool(
         os.environ.get("TINYFISH_API_KEY", "").strip()
@@ -87,6 +107,7 @@ def browser_runtime_status() -> dict[str, Any]:
         "routing_policy": "DETERMINISTIC_SKILL_THEN_JEV_THEN_TINYFISH",
         "adaptive_default": "JEV",
         "providers": [
+            local_cdp_readiness(),
             jev_readiness(),
             {
                 "provider": "TINYFISH",
@@ -201,4 +222,5 @@ __all__ = [
     "JevBrowserExecutor",
     "browser_runtime_status",
     "jev_readiness",
+    "local_cdp_readiness",
 ]
