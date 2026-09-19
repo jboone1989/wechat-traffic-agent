@@ -49,6 +49,24 @@ class _Unverified:
         raise XBrowserPublicationUnverified("could not verify public URL")
 
 
+class _GrowthMission:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def start_experiment_from_publication(
+        self, *, publication_receipt_id: str, post_id: str, now: datetime
+    ) -> dict:
+        self.calls.append({
+            "publication_receipt_id": publication_receipt_id,
+            "post_id": post_id,
+            "now": now,
+        })
+        return {
+            "status": "STARTED" if len(self.calls) == 1 else "ALREADY_RUNNING",
+            "experiment_id": "mission-exp-browser",
+        }
+
+
 def test_tinyfish_x_publisher_is_double_gated(tmp_path: Path):
     _draft(tmp_path)
     disabled = asyncio.run(XBrowserPublisher(state_root=tmp_path, enabled=False, writes_enabled=True).after_content_cycle(cycle="v2-browser", now=NOW))
@@ -62,7 +80,14 @@ def test_premium_long_post_is_published_once_and_bound_to_draft(tmp_path: Path):
     draft = json.loads((folder / "social_expression_drafts.json").read_text())["drafts"]["x"]
     assert len(draft["text"]) > 280
     transport = _Transport()
-    publisher = XBrowserPublisher(state_root=tmp_path, transport=transport, enabled=True, writes_enabled=True)
+    growth = _GrowthMission()
+    publisher = XBrowserPublisher(
+        state_root=tmp_path,
+        transport=transport,
+        enabled=True,
+        writes_enabled=True,
+        growth_mission=growth,
+    )
     first = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
     second = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
     receipt = json.loads((folder / "x_browser_publication.json").read_text())
@@ -72,10 +97,25 @@ def test_premium_long_post_is_published_once_and_bound_to_draft(tmp_path: Path):
     assert receipt["post_id"] == "2100431447047741762"
     assert receipt["publication_authority"] is True
     assert len(receipt["draft_sha256"]) == 64
+    assert first["mission_experiment_transition"]["status"] == "STARTED"
+    assert second["mission_experiment_transition"]["status"] == "ALREADY_RUNNING"
+    assert growth.calls == [
+        {
+            "publication_receipt_id": "x-browser-publication:v2-browser:2100431447047741762",
+            "post_id": "2100431447047741762",
+            "now": NOW,
+        },
+        {
+            "publication_receipt_id": "x-browser-publication:v2-browser:2100431447047741762",
+            "post_id": "2100431447047741762",
+            "now": NOW,
+        },
+    ]
     rows = XHistoryLedger(tmp_path).recent()
     assert len(rows) == 1 and rows[0]["event_type"] == "EXPRESSION"
     assert rows[0]["text"] == draft["text"]
     assert rows[0]["inquiry_refs"] == ["inq-x"]
+    assert rows[0]["lineage"]["mission_experiment_transition"]["status"] == "STARTED"
 
 
 def test_duplicate_reconciliation_records_receipt_without_second_write(tmp_path: Path):
@@ -101,10 +141,20 @@ def test_receipt_mismatch_fails_closed(tmp_path: Path):
 
 def test_unverified_browser_write_does_not_create_fake_receipt_or_history(tmp_path: Path):
     folder = _draft(tmp_path)
-    result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=_Unverified(), enabled=True, writes_enabled=True).after_content_cycle(cycle="v2-browser", now=NOW))
+    growth = _GrowthMission()
+    result = asyncio.run(
+        XBrowserPublisher(
+            state_root=tmp_path,
+            transport=_Unverified(),
+            enabled=True,
+            writes_enabled=True,
+            growth_mission=growth,
+        ).after_content_cycle(cycle="v2-browser", now=NOW)
+    )
     assert result["status"] == "PUBLICATION_UNVERIFIED"
     assert not (folder / "x_browser_publication.json").exists()
     assert XHistoryLedger(tmp_path).recent() == []
+    assert growth.calls == []
 
 
 def test_article_is_not_silently_posted_as_feed_text(tmp_path: Path):
