@@ -386,3 +386,172 @@ def test_legacy_roadmap_is_replanned_once_with_real_x_capability_context(tmp_pat
     assert third["roadmap_transition"]["status"] == "ACTIVE"
     assert third["roadmap"]["version"] == 2
     assert len(backend.requests) == 3
+
+
+def _execution_advice(request):
+    if "roadmap" in request.task.lower():
+        return json.dumps({
+            "rationale": "Prepare measurable guardrails, then run one publication experiment.",
+            "steps": [
+                {
+                    "key": "readiness",
+                    "title": "Baseline and measurement readiness",
+                    "objective": "Verify follower baseline and prospective measurement.",
+                    "estimated_hours": 1,
+                    "depends_on": [],
+                    "resource_tags": [
+                        "x_api_oauth_read",
+                        "analytics",
+                        "legal_policy_review",
+                        "brand_review",
+                        "budget_low",
+                    ],
+                    "exit_criteria": (
+                        "Store a dated baseline and guardrail report with current followers, "
+                        "daily prospective snapshots, policy bans, and available post metrics."
+                    ),
+                },
+                {
+                    "key": "publish",
+                    "title": "Run bounded publication experiment",
+                    "objective": "Publish useful content under the approved mission constraints.",
+                    "estimated_hours": 24,
+                    "depends_on": ["readiness"],
+                    "resource_tags": [
+                        "content_creation",
+                        "x_publication_gated",
+                        "x_api_oauth_write",
+                        "analytics",
+                    ],
+                    "exit_criteria": "Store bounded publication and follower outcome evidence.",
+                },
+            ],
+        })
+    return _advice(request)
+
+
+def _execution_runtime(tmp_path):
+    clock = FrozenClock(NOW)
+    backend = FixtureAgentBackend(_execution_advice)
+    runtime = AgentRuntime.bootstrap(
+        tmp_path / "domain-runtime",
+        clock=clock,
+        agent_backend=backend,
+    )
+    return runtime, clock, backend
+
+
+def test_ready_measurement_step_is_completed_from_real_identity_evidence(tmp_path):
+    runtime, _clock, _backend = _execution_runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+
+    result = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:readiness",
+            now=NOW,
+        )
+    )
+
+    execution = result["roadmap_execution"]
+    assert execution["status"] == "COMPLETED"
+    assert execution["title"] == "Baseline and measurement readiness"
+    report_path = tmp_path / execution["report"]
+    report = json.loads(report_path.read_text())
+    assert report["baseline"]["followers"] == 2000
+    assert (
+        report["baseline"]["source"]
+        == "official X identity public_metrics.followers_count"
+    )
+    assert (
+        report["baseline"]["identity_receipt_id"]
+        == "receipt:x.identity:readiness"
+    )
+    assert (
+        report["prospective_measurement"][
+            "meets_at_least_daily_snapshot_requirement"
+        ]
+        is True
+    )
+    assert report["hard_stop"]["maximum_follower_decline_fraction"] == 0.02
+    assert set(MISSION_CONSTRAINTS) <= set(report["constraints"])
+    assert (
+        "historical_post_level_follower_attribution"
+        in report["post_metric_capture"]["explicitly_unavailable"]
+    )
+
+    mission = runtime.external_missions[-1]
+    roadmap = runtime.missions.latest_roadmap(mission.mission_id)
+    readiness = next(step for step in roadmap.steps if step.title == "Baseline and measurement readiness")
+    publication = next(step for step in roadmap.steps if step.title == "Run bounded publication experiment")
+    assert readiness.started_at == NOW
+    assert readiness.completed_at == NOW
+    assert execution["evidence_ref"] in readiness.evidence_refs
+    schedule = runtime.mission_portfolio_schedule(max_parallelism=3)
+    publication_item = next(item for item in schedule.items if item.step_id == publication.step_id)
+    assert publication_item.status.value == "READY"
+
+
+def test_verified_publication_starts_ready_roadmap_step_and_records_progress(tmp_path):
+    runtime, clock, _backend = _execution_runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:execution",
+            now=NOW,
+        )
+    )
+    experiment_id = first["active_experiment"]["experiment_id"]
+
+    started = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:execution-1",
+        post_id="execution-1",
+        now=clock.now(),
+    )
+
+    assert started["status"] == "STARTED"
+    assert started["experiment_id"] == experiment_id
+    transition = started["roadmap_step_transition"]
+    assert transition["status"] == "STARTED"
+    assert transition["title"] == "Run bounded publication experiment"
+    assert transition["publication_count"] == 1
+
+    mission = runtime.external_missions[-1]
+    roadmap = runtime.missions.latest_roadmap(mission.mission_id)
+    publication = next(step for step in roadmap.steps if step.title == "Run bounded publication experiment")
+    assert publication.started_at == NOW
+    assert publication.completed_at is None
+    assert "receipt:x.post:execution-1" in publication.evidence_refs
+    assert "x-post:execution-1" in publication.evidence_refs
+
+    repeated = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:execution-1",
+        post_id="execution-1",
+        now=clock.now(),
+    )
+    assert repeated["status"] == "ALREADY_RUNNING"
+    assert repeated["roadmap_step_transition"]["status"] == "RECORDED"
+    assert repeated["roadmap_step_transition"]["publication_count"] == 1
+
+    progress_path = (
+        tmp_path
+        / "content"
+        / "x"
+        / "missions"
+        / mission.mission_id
+        / "roadmap_progress.json"
+    )
+    progress = json.loads(progress_path.read_text())
+    assert progress["roadmap_version"] == 1
+    assert progress["steps"][publication.step_id]["publication_count"] == 1

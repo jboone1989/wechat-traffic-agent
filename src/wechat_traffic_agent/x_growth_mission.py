@@ -8,6 +8,7 @@ advisory experiment.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,8 @@ DEFAULT_DURATION_DAYS = 30
 DEFAULT_EXPERIMENT_HOURS = 24
 MIN_OBSERVATION_INTERVAL = timedelta(hours=6)
 MISSION_PLANNING_CONTEXT_REF = "x-mission-planning-context:v1"
+MISSION_WORKSPACE_SCHEMA = "content-agent-x-growth-workspace.v1"
+MISSION_PROGRESS_SCHEMA = "content-agent-x-growth-roadmap-progress.v1"
 
 MISSION_CONSTRAINTS = (
     "obey applicable law",
@@ -100,6 +103,7 @@ class XGrowthMissionCoordinator:
         self.experiment_window = timedelta(hours=max(6, int(experiment_hours)))
         self.enabled = bool(enabled)
         self.path = self.state_root / "content" / "x" / "growth_mission.json"
+        self.workspace_root = self.state_root / "content" / "x" / "missions"
 
     @classmethod
     def from_environment(cls, *, runtime: Any, state_root: Path) -> "XGrowthMissionCoordinator":
@@ -294,6 +298,250 @@ class XGrowthMissionCoordinator:
             },
         }
 
+    def _workspace(self, mission_id: str) -> Path:
+        return self.workspace_root / str(mission_id)
+
+    @staticmethod
+    def _is_measurement_readiness_step(step: Any) -> bool:
+        tags = {str(value) for value in getattr(step, "resource_tags", ())}
+        dependencies = list(getattr(step, "depends_on_step_ids", ()) or ())
+        execution_tags = {
+            "content_creation",
+            "community_outreach",
+            "x_api_oauth_write",
+            "x_publication_gated",
+        }
+        return (
+            not dependencies
+            and {"x_api_oauth_read", "analytics"} <= tags
+            and not (tags & execution_tags)
+        )
+
+    @staticmethod
+    def _is_publication_step(step: Any) -> bool:
+        tags = {str(value) for value in getattr(step, "resource_tags", ())}
+        return bool(
+            {"x_api_oauth_write", "x_publication_gated"} & tags
+            and "content_creation" in tags
+        )
+
+    def _advance_measurement_readiness(
+        self,
+        *,
+        mission: Any,
+        followers: int,
+        identity_receipt_id: str,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        start_method = getattr(self.runtime, "start_mission_step", None)
+        complete_method = getattr(self.runtime, "complete_mission_step", None)
+        if not (
+            callable(schedule_method)
+            and callable(start_method)
+            and callable(complete_method)
+        ):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return None
+        steps = {step.step_id: step for step in roadmap.steps}
+        schedule = schedule_method(max_parallelism=3)
+        candidate = None
+        candidate_status = None
+        for item in schedule.items:
+            if item.mission_id != mission.mission_id:
+                continue
+            status = _enum_value(item.status)
+            if status not in {"READY", "RUNNING"}:
+                continue
+            step = steps.get(item.step_id)
+            if step is not None and self._is_measurement_readiness_step(step):
+                candidate = step
+                candidate_status = status
+                break
+        if candidate is None:
+            return None
+
+        if candidate_status == "READY":
+            candidate = start_method(candidate.step_id)
+            self._persist_runtime()
+
+        report = {
+            "schema_version": MISSION_WORKSPACE_SCHEMA,
+            "generated_at": now.isoformat(),
+            "mission_id": mission.mission_id,
+            "roadmap_id": roadmap.roadmap_id,
+            "roadmap_version": roadmap.version,
+            "step_id": candidate.step_id,
+            "step_title": candidate.title,
+            "exit_criteria": candidate.exit_criteria,
+            "baseline": {
+                "metric": MISSION_METRIC,
+                "followers": int(followers),
+                "source": "official X identity public_metrics.followers_count",
+                "identity_receipt_id": str(identity_receipt_id),
+            },
+            "prospective_measurement": {
+                "status": "AVAILABLE",
+                "mission_observation_interval_hours": (
+                    MIN_OBSERVATION_INTERVAL.total_seconds() / 3600.0
+                ),
+                "meets_at_least_daily_snapshot_requirement": True,
+                "causal_attribution": False,
+            },
+            "hard_stop": {
+                "status": "ADOPTED_FOR_THIS_MISSION",
+                "window_hours": 72,
+                "maximum_follower_decline_fraction": 0.02,
+                "action": "stop growth-pressure escalation and re-evaluate strategy",
+            },
+            "constraints": list(mission.constraints),
+            "post_metric_capture": {
+                "source_capability": "x.user_posts",
+                "requested_post_fields": [
+                    "id",
+                    "text",
+                    "author_id",
+                    "created_at",
+                    "conversation_id",
+                    "public_metrics",
+                ],
+                "availability": "ONLY_WHEN_OFFICIAL_X_API_READS_SUCCEED",
+                "explicitly_unavailable": [
+                    "post_level_profile_visits",
+                    "post_level_follows",
+                    "historical_post_level_follower_attribution",
+                    "causal_attribution",
+                ],
+            },
+        }
+        report_path = self._workspace(mission.mission_id) / "baseline_guardrails.json"
+        _write_json(report_path, report)
+        digest = hashlib.sha256(report_path.read_bytes()).hexdigest()
+        evidence_ref = f"x-mission-baseline-report:sha256:{digest}"
+        completed = complete_method(
+            candidate.step_id,
+            evidence_refs=[
+                str(identity_receipt_id),
+                MISSION_PLANNING_CONTEXT_REF,
+                evidence_ref,
+            ],
+        )
+        self._persist_runtime()
+        return {
+            "status": "COMPLETED",
+            "step_id": completed.step_id,
+            "title": completed.title,
+            "completed_at": (
+                None
+                if completed.completed_at is None
+                else completed.completed_at.isoformat()
+            ),
+            "report": str(report_path.relative_to(self.state_root)),
+            "evidence_ref": evidence_ref,
+        }
+
+    def _record_publication_for_roadmap(
+        self,
+        *,
+        mission: Any,
+        publication_receipt_id: str,
+        post_id: str,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        start_method = getattr(self.runtime, "start_mission_step", None)
+        if not callable(schedule_method) or not callable(start_method):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return None
+        steps = {step.step_id: step for step in roadmap.steps}
+        schedule = schedule_method(max_parallelism=3)
+        selected = None
+        selected_status = None
+        for item in schedule.items:
+            if item.mission_id != mission.mission_id:
+                continue
+            status = _enum_value(item.status)
+            if status not in {"READY", "RUNNING"}:
+                continue
+            step = steps.get(item.step_id)
+            if step is not None and self._is_publication_step(step):
+                selected = step
+                selected_status = status
+                break
+        if selected is None:
+            return {"status": "NO_READY_PUBLICATION_STEP"}
+
+        if selected_status == "READY":
+            selected = start_method(selected.step_id)
+            transition_status = "STARTED"
+        else:
+            transition_status = "RECORDED"
+
+        progress_path = self._workspace(mission.mission_id) / "roadmap_progress.json"
+        progress = _read_json(progress_path)
+        if progress.get("schema_version") != MISSION_PROGRESS_SCHEMA:
+            progress = {
+                "schema_version": MISSION_PROGRESS_SCHEMA,
+                "mission_id": mission.mission_id,
+                "roadmap_id": roadmap.roadmap_id,
+                "roadmap_version": roadmap.version,
+                "steps": {},
+            }
+        step_rows = progress.setdefault("steps", {})
+        row = step_rows.setdefault(
+            selected.step_id,
+            {
+                "title": selected.title,
+                "started_at": (
+                    None
+                    if selected.started_at is None
+                    else selected.started_at.isoformat()
+                ),
+                "publications": [],
+            },
+        )
+        publications = row.setdefault("publications", [])
+        if not any(
+            item.get("publication_receipt_id") == str(publication_receipt_id)
+            for item in publications
+            if isinstance(item, dict)
+        ):
+            publications.append(
+                {
+                    "publication_receipt_id": str(publication_receipt_id),
+                    "post_id": str(post_id),
+                    "published_at": now.isoformat(),
+                }
+            )
+        row["publication_count"] = len(publications)
+        progress["updated_at"] = now.isoformat()
+        _write_json(progress_path, progress)
+        digest = hashlib.sha256(progress_path.read_bytes()).hexdigest()
+        progress_ref = f"x-mission-roadmap-progress:sha256:{digest}"
+        selected.evidence_refs = list(
+            dict.fromkeys(
+                [
+                    *selected.evidence_refs,
+                    str(publication_receipt_id),
+                    f"x-post:{str(post_id)}",
+                    progress_ref,
+                ]
+            )
+        )
+        self._persist_runtime()
+        return {
+            "status": transition_status,
+            "step_id": selected.step_id,
+            "title": selected.title,
+            "publication_count": len(publications),
+            "progress_ref": progress_ref,
+        }
+
     async def _ensure_roadmap(self, mission: Any) -> dict[str, Any]:
         needs_revision = getattr(self.runtime.missions, "roadmap_needs_revision", None)
         latest = getattr(self.runtime.missions, "latest_roadmap", None)
@@ -369,23 +617,34 @@ class XGrowthMissionCoordinator:
         mission = self._mission()
         if mission is None or _enum_value(mission.status) != "ACTIVE":
             return {"status": "NO_ACTIVE_MISSION"}
+        if not str(publication_receipt_id).strip() or not str(post_id).strip():
+            raise ValueError("mission experiment publication evidence is required")
+        roadmap_step_transition = self._record_publication_for_roadmap(
+            mission=mission,
+            publication_receipt_id=str(publication_receipt_id).strip(),
+            post_id=str(post_id).strip(),
+            now=now.astimezone(timezone.utc),
+        )
         experiment = self._open_experiment(mission.mission_id)
         if experiment is None:
-            return {"status": "NO_PROPOSED_EXPERIMENT"}
+            return {
+                "status": "NO_PROPOSED_EXPERIMENT",
+                "roadmap_step_transition": roadmap_step_transition,
+            }
         status = _enum_value(experiment.status)
         if status == "RUNNING":
             return {
                 "status": "ALREADY_RUNNING",
                 "experiment_id": experiment.experiment_id,
+                "roadmap_step_transition": roadmap_step_transition,
             }
         if status != "PROPOSED":
             return {
                 "status": "NOT_STARTABLE",
                 "experiment_id": experiment.experiment_id,
                 "experiment_status": status,
+                "roadmap_step_transition": roadmap_step_transition,
             }
-        if not str(publication_receipt_id).strip() or not str(post_id).strip():
-            raise ValueError("mission experiment publication evidence is required")
         experiment.evidence_refs = list(
             dict.fromkeys(
                 [
@@ -411,6 +670,7 @@ class XGrowthMissionCoordinator:
             active["publication_receipt_id"] = str(publication_receipt_id).strip()
             active["x_post_id"] = str(post_id).strip()
             payload["as_of"] = now.astimezone(timezone.utc).isoformat()
+            payload["roadmap_publication_transition"] = roadmap_step_transition
             _write_json(self.path, payload)
         return {
             "status": "STARTED",
@@ -420,6 +680,7 @@ class XGrowthMissionCoordinator:
             ),
             "publication_receipt_id": str(publication_receipt_id).strip(),
             "x_post_id": str(post_id).strip(),
+            "roadmap_step_transition": roadmap_step_transition,
         }
 
     async def observe_identity(
@@ -481,9 +742,16 @@ class XGrowthMissionCoordinator:
 
         mission = self.runtime.missions.get(mission.mission_id)
         roadmap_result = None
+        roadmap_execution = None
         experiment_result = None
         if _enum_value(mission.status) == "ACTIVE":
             roadmap_result = await self._ensure_roadmap(mission)
+            roadmap_execution = self._advance_measurement_readiness(
+                mission=mission,
+                followers=followers,
+                identity_receipt_id=identity_receipt_id,
+                now=now,
+            )
             experiment_result = await self._ensure_experiment(mission)
 
         progress = self.runtime.mission_progress(mission.mission_id)
@@ -537,6 +805,7 @@ class XGrowthMissionCoordinator:
             ),
             "settlement": settlement,
             "roadmap_transition": roadmap_result,
+            "roadmap_execution": roadmap_execution,
             "roadmap": (
                 None
                 if roadmap is None
