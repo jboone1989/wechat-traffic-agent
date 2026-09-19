@@ -492,3 +492,113 @@ def test_verified_follower_drop_over_two_percent_activates_publication_hard_stop
     guard = coordinator.publication_guardrail()
     assert guard["allowed"] is False
     assert guard["status"] == "HARD_STOP_ACTIVE"
+
+
+def test_verified_publication_starts_ready_content_step_and_records_progress(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:progress-start",
+            now=NOW,
+        )
+    )
+    mission_id = first["mission_id"]
+    experiment_id = first["active_experiment"]["experiment_id"]
+    roadmap = runtime.set_mission_roadmap(
+        mission_id,
+        steps=[
+            {
+                "key": "baseline",
+                "title": "Baseline, compliance guardrails, and measurement readiness",
+                "objective": "Prepare the mission measurement and guardrails.",
+                "estimated_hours": 1,
+                "depends_on": [],
+                "resource_tags": [
+                    "x_api_oauth_read",
+                    "analytics",
+                    "legal_policy_review",
+                    "brand_review",
+                    "budget_low",
+                ],
+                "exit_criteria": (
+                    "A baseline report exists with prospective follower snapshots "
+                    "and approved guardrails."
+                ),
+            },
+            {
+                "key": "publish",
+                "title": "Experiment A: authority and insight content",
+                "objective": "Run bounded content publication under mission constraints.",
+                "estimated_hours": 24,
+                "depends_on": ["baseline"],
+                "resource_tags": [
+                    "content_creation",
+                    "x_publication_gated",
+                    "x_api_oauth_write",
+                    "analytics",
+                ],
+                "exit_criteria": "Publication and prospective outcome evidence are stored.",
+            },
+        ],
+        evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+    )
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:progress-ready",
+            now=NOW,
+        )
+    )
+    assert second["roadmap_execution"]["status"] == "COMPLETED"
+    publication_step = roadmap.steps[1]
+    schedule = runtime.mission_portfolio_schedule(max_parallelism=3)
+    scheduled = next(item for item in schedule.items if item.step_id == publication_step.step_id)
+    assert scheduled.status.value == "READY"
+
+    started = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:progress-1",
+        post_id="progress-1",
+        now=clock.now(),
+    )
+    assert started["status"] == "STARTED"
+    assert started["experiment_id"] == experiment_id
+    transition = started["roadmap_step_transition"]
+    assert transition["status"] == "STARTED"
+    assert transition["step_id"] == publication_step.step_id
+    assert transition["publication_count"] == 1
+
+    current_step = runtime.missions.get_step(publication_step.step_id)
+    assert current_step.started_at == NOW
+    assert current_step.completed_at is None
+    assert "receipt:x.post:progress-1" in current_step.evidence_refs
+    assert "x-post:progress-1" in current_step.evidence_refs
+
+    repeated = coordinator.start_experiment_from_publication(
+        publication_receipt_id="receipt:x.post:progress-1",
+        post_id="progress-1",
+        now=clock.now(),
+    )
+    assert repeated["status"] == "ALREADY_RUNNING"
+    assert repeated["roadmap_step_transition"]["status"] == "RECORDED"
+    assert repeated["roadmap_step_transition"]["publication_count"] == 1
+
+    progress_path = (
+        tmp_path
+        / "content"
+        / "x"
+        / "missions"
+        / mission_id
+        / "roadmap_progress.json"
+    )
+    progress = json.loads(progress_path.read_text())
+    assert progress["roadmap_id"] == roadmap.roadmap_id
+    assert progress["steps"][publication_step.step_id]["publication_count"] == 1
