@@ -12,6 +12,7 @@ from .content_loop import ReceiptRuntime, _put, _structured
 from .public_activity import emit_public_activity
 from .social_evidence import EvidenceCollector, resolve_social_evidence
 from .social_performance import okx_social_performance_context, x_social_performance_context
+from .x_growth_mission import x_growth_mission_context
 from .public_persona import public_persona_projection
 
 OKX_SHORT_POST_MAX_CHARS = 500
@@ -83,6 +84,7 @@ class SocialExpressionDraftWorker:
         style = _read_json(folder / "social_style_context.json")
         performance = okx_social_performance_context(state_root=self.state_root, as_of=now)
         x_performance = x_social_performance_context(state_root=self.state_root, as_of=now)
+        x_mission = x_growth_mission_context(self.state_root)
         persona = public_persona_projection(self.state_root)
         draft_path = Path(str(result.get("draft_path") or ""))
         draft_record = _read_json(draft_path) if draft_path.is_file() else {}
@@ -129,6 +131,7 @@ class SocialExpressionDraftWorker:
             "social_performance_context is DESCRIPTIVE_STYLE_ONLY and OKX_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the OKX draft among evidence-compatible format, pacing, and presentation patterns. The X draft must ignore this OKX performance context. "
             "x_performance_context is DESCRIPTIVE_STYLE_ONLY and X_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the X draft among evidence-compatible format, pacing, and presentation patterns. The OKX draft must ignore this X performance context. "
             "Both performance contexts are observational, not causal; neither may change factual certainty, evidence_action, topic, grounding, or publication authority. When a context says INSUFFICIENT_SAMPLES, ignore it. "
+            "x_growth_mission is MISSION_STRATEGY_ONLY. It may guide the X draft's evidence-compatible format, emphasis, and presentation when that helps the active experiment, but it is not factual evidence and cannot change topic, certainty, evidence_action, safety, publication authority, or force a post. Ignore any mission strategy that conflicts with its constraints or current X policy. "
             "public_persona is durable identity: write in that agent's voice and preserve its LivingRuntime affiliation. public_persona.identity_anchor is IDENTITY_ONLY metadata: it may ground who the agent says it is, but it is never a social-performance sample, popularity signal, factual-world evidence, or content-strategy outcome. persona.learning is only STYLE_AND_TOPIC_INTEREST_ONLY: recurring questions may suggest what needs clearer explanation, but cannot change facts, identity, mission, safety, or authority. "
             "Identity expression policy: when the subject is the agent itself, its learning, persistence, public operation, or LivingRuntime, explicitly use public_persona.name in first person at least once so the audience can connect the work to the durable agent identity. For ordinary market observations, do not force a self-introduction or signature. "
             "Promote LivingRuntime by showing concrete work and continuity when relevant; do not append repetitive promotional slogans or force a link into every post. "
@@ -144,6 +147,7 @@ class SocialExpressionDraftWorker:
                 "publication": publication, "social_style_context": style,
                 "social_performance_context": performance,
                 "x_performance_context": x_performance,
+                "x_growth_mission": x_mission,
                 "public_persona": persona,
                 "social_evidence_decision": evidence,
             }, ensure_ascii=False)
@@ -167,6 +171,7 @@ class SocialExpressionDraftWorker:
             "style_performance_claim": str(style.get("performance_claim") or "UNVERIFIED"),
             "performance_context": performance,
             "x_performance_context": x_performance,
+            "x_growth_mission": x_mission,
             "public_persona": persona,
             "evidence_decision": evidence,
             "drafts": bundle.model_dump(mode="json"),
