@@ -19,6 +19,17 @@ def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(value)))
 
 
+def _approach(prior: float, target: float, elapsed_hours: float, tau_hours: float) -> float:
+    """Continuous-time first-order homeostasis; update frequency must not create emotion."""
+    if tau_hours <= 0:
+        raise ValueError("tau_hours must be positive")
+    dt = max(0.0, float(elapsed_hours))
+    if dt == 0.0:
+        return _clamp(prior)
+    alpha = 1.0 - math.exp(-dt / tau_hours)
+    return _clamp(float(prior) + (float(target) - float(prior)) * alpha)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -201,46 +212,51 @@ class FerroNeuralLife:
         cognition_idle_hours = min(24.0, max(0.0, (now - last_cognition).total_seconds() / 3600.0)) if last_cognition else 6.0
         boredom_input = _clamp(cognition_idle_hours / 8.0) * _clamp(1.35 - novelty_signal)
 
-        survival = _clamp(
-            float(prior_drives.get("survival") or 0.0) * 0.78
-            + resource_pressure * 0.42
-            + float(body.get("x_recent_decline") or 0.0) * 0.08
+        # Drives are slow homeostatic variables. Their trajectories depend on
+        # elapsed wall time, not how often this function happens to be called.
+        survival_target = _clamp(
+            0.08 + resource_pressure * 0.82
+            + float(body.get("x_recent_decline") or 0.0) * 0.10
         )
-        reproduction = _clamp(
-            float(prior_drives.get("reproduction") or 0.0)
-            + elapsed_hours * (0.010 + follower_gap * 0.012)
-            + max(0.0, social_signal - 0.5) * 0.035
-            - max(0.0, 0.5 - follower_gap) * elapsed_hours * 0.005
+        reproduction_target = _clamp(
+            0.10 + follower_gap * 0.52 + social_signal * 0.18
         )
-        evolution = _clamp(
-            float(prior_drives.get("evolution") or 0.0)
-            + elapsed_hours * (0.008 + boredom_input * 0.018 + error_signal * 0.010)
-            + max(0.0, novelty_signal - 0.5) * 0.028
+        evolution_target = _clamp(
+            0.16 + novelty_signal * 0.30 + boredom_input * 0.28 + error_signal * 0.12
+        )
+        survival = _approach(
+            float(prior_drives.get("survival") or 0.18), survival_target, elapsed_hours, 0.75
+        )
+        reproduction = _approach(
+            float(prior_drives.get("reproduction") or 0.22), reproduction_target, elapsed_hours, 8.0
+        )
+        evolution = _approach(
+            float(prior_drives.get("evolution") or 0.34), evolution_target, elapsed_hours, 6.0
         )
         drives = {
             "survival": round(survival, 6),
             "reproduction": round(reproduction, 6),
             "evolution": round(evolution, 6),
         }
-        confidence = _clamp(
-            float(prior_affect.get("confidence") or 0.5) * 0.94
-            + (1.0 - recent_errors) * 0.03
-            + max(0.0, features["opportunity"] - 0.5) * 0.04
-            - recent_errors * 0.05
+        confidence_target = _clamp(
+            (1.0 - recent_errors) * 0.62 + features["opportunity"] * 0.28 + 0.10
         )
-        frustration = _clamp(
-            float(prior_affect.get("frustration") or 0.0) * 0.78
-            + error_signal * 0.28
-            + max(0.0, 0.5 - confidence) * 0.10
+        confidence = _approach(
+            float(prior_affect.get("confidence") or 0.5), confidence_target, elapsed_hours, 3.0
         )
-        curiosity = _clamp(
-            float(prior_affect.get("curiosity") or 0.35) * 0.72
-            + novelty_signal * 0.18 + evolution * 0.18 + boredom_input * 0.12
+        frustration_target = _clamp(error_signal * 0.72 + (1.0 - confidence) * 0.28)
+        frustration = _approach(
+            float(prior_affect.get("frustration") or 0.0), frustration_target, elapsed_hours, 1.5
         )
-        social_need = _clamp(
-            float(prior_affect.get("social_need") or 0.2) * 0.90
-            + reproduction * 0.08 + follower_gap * 0.04
-            - max(0.0, social_signal - 0.6) * 0.08
+        curiosity_target = _clamp(
+            novelty_signal * 0.44 + evolution * 0.34 + boredom_input * 0.22
+        )
+        curiosity = _approach(
+            float(prior_affect.get("curiosity") or 0.35), curiosity_target, elapsed_hours, 3.0
+        )
+        social_target = _clamp(0.08 + reproduction * 0.54 + follower_gap * 0.28 - max(0.0, social_signal - 0.65) * 0.18)
+        social_need = _approach(
+            float(prior_affect.get("social_need") or 0.2), social_target, elapsed_hours, 7.0
         )
         arousal = _clamp(max(survival, reproduction * 0.8, evolution * 0.8, frustration, recent_errors))
         affect = {

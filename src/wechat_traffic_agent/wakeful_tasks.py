@@ -118,6 +118,10 @@ class WakefulContentTaskRunner:
             self._raise_if_stopping()
             if task == "NEURAL_INTEROCEPTION":
                 return self._neural_interoception(now)
+            if task == "NEURAL_PLAY":
+                return self._neural_play(now)
+            if task == "NEURAL_DREAM":
+                return self._neural_dream(now)
             if task == "RESOURCE_REVIEW":
                 return self._resource(now)
             if task == "REFLECT":
@@ -146,6 +150,20 @@ class WakefulContentTaskRunner:
             "task": "NEURAL_INTEROCEPTION",
             "status": "OK" if projection.get("status") != "DISABLED" else "DISABLED",
             "neural_life": projection,
+        }
+
+    def _neural_play(self, now: datetime) -> dict[str, Any]:
+        result = self.wakeful.run_brain_lab(now, steps=12)
+        return {
+            "task": "NEURAL_PLAY",
+            **result,
+        }
+
+    def _neural_dream(self, now: datetime) -> dict[str, Any]:
+        result = self.wakeful.run_neural_dream(now)
+        return {
+            "task": "NEURAL_DREAM",
+            **result,
         }
 
     def _resource(self, now: datetime) -> dict[str, Any]:

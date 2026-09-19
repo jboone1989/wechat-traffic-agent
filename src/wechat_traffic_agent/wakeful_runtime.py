@@ -21,6 +21,8 @@ _DEFAULT_INTERVALS = {
     "CHECK_OUTCOMES": 3600,
     "CHECK_X": 1800,
     "NEURAL_INTEROCEPTION": 300,
+    "NEURAL_PLAY": 1800,
+    "NEURAL_DREAM": 21600,
 }
 
 _EXTERNAL_WAKE_TASKS = frozenset({
@@ -31,6 +33,8 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "REFLECT",
     "CHECK_X",
     "NEURAL_INTEROCEPTION",
+    "NEURAL_PLAY",
+    "NEURAL_DREAM",
 })
 
 
@@ -68,6 +72,16 @@ class ContentWakefulRuntime:
         self.core = WakefulCore(
             state_path=self.state_root / "application" / "wakeful.json",
             reflex=reflex,
+        )
+        from .neural_playground import FerroBrainLab
+        self.brain_lab = FerroBrainLab(
+            self.state_root,
+            substrate=getattr(self.core.reflex, "substrate", None),
+        )
+        from .neural_dreaming import FerroDreamEngine
+        self.dream_engine = FerroDreamEngine(
+            self.state_root,
+            substrate=getattr(self.core.reflex, "substrate", None),
         )
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
@@ -154,7 +168,7 @@ class ContentWakefulRuntime:
 
     def ensure_initial_plans(self, now: datetime) -> None:
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
-        for task in ("NEURAL_INTEROCEPTION", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
+        for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
             if task not in existing:
                 self.core.schedule(PlannedWake(
                     wake_id=f"content:{task}", at=now, reason=self._reason(task), task=task,
@@ -287,6 +301,41 @@ class ContentWakefulRuntime:
                 self.neural_life.mark_authority_action(now, recommendation)
                 projection = self.neural_life.projection()
         return projection
+
+    def run_brain_lab(self, now: datetime | None = None, *, environment: str | None = None, steps: int = 12) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.brain_lab.run_session(environment=environment, steps=steps, now=now)
+        # Brain Lab deliberately trains the same persistent production connectome.
+        # Persist the reflex checkpoint immediately so game learning survives a crash.
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def brain_lab_projection(self) -> dict:
+        return self.brain_lab.projection()
+
+    def run_neural_dream(self, now: datetime | None = None, *, replay_count: int = 6) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.dream_engine.dream(now=now, replay_count=replay_count)
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        preconcept = result.get("preconcept") if isinstance(result, dict) else None
+        if isinstance(preconcept, dict) and float(preconcept.get("association_strength") or 0.0) >= 0.30:
+            wake = PlannedWake(
+                wake_id=f"dream-insight:{preconcept['preconcept_id']}",
+                at=now + timedelta(seconds=10),
+                reason="a recurrent dream association is strong enough for rational interpretation",
+                task="CONTENT_COGNITION",
+                relevant_refs=(str(preconcept["preconcept_id"]), str(preconcept.get("source_dream") or "")),
+                preemptible=True,
+            )
+            self.core.schedule(wake)
+        return result
+
+    def dream_projection(self) -> dict:
+        return self.dream_engine.projection()
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
         # Operator-authorized resource onboarding is event-driven and should not
@@ -561,6 +610,8 @@ class ContentWakefulRuntime:
             "cognition_threshold_crossed": bool(snap.cognition_triggers),
             "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-8:]],
             "neural_life": self.neural_life.projection() if self.neural_life_enabled else {"status": "DISABLED"},
+            "brain_lab": self.brain_lab.projection(),
+            "dreaming": self.dream_engine.projection(),
             "connectome": {
                 "enabled": self.connectome_enabled,
                 "status": (
@@ -581,6 +632,8 @@ class ContentWakefulRuntime:
             "CHECK_X": "check X for new social evidence",
             "REFLECT": "daily reflection",
             "NEURAL_INTEROCEPTION": "sense body state and update endogenous drives",
+            "NEURAL_PLAY": "develop the production nervous system through a sensorimotor world",
+            "NEURAL_DREAM": "replay and recombine salient experience in the production nervous system",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
