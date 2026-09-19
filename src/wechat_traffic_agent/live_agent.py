@@ -2605,9 +2605,13 @@ class LiveAgentService:
         self.stop()
         raise RuntimeError("Live Agent service did not become ready")
 
-    def stop(self) -> None:
+    def request_stop(self) -> None:
+        """Stop accepting new HTTP work without blocking the caller."""
         if self._server is not None:
             self._server.should_exit = True
+
+    def stop(self) -> None:
+        self.request_stop()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
         self._server = self._thread = None

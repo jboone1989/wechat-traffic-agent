@@ -40,4 +40,9 @@ def test_network_is_capability_not_life_dependency_and_existing_actions_remain()
     assert "x_browser_publisher" in text
     assert "continuous_loop.run_once" in tasks
     assert "web_worker.run_once" in tasks
+    assert "stop_requested=lambda: stopping" in text
+    assert "SHUTDOWN_CHECKPOINT" in tasks
+    assert "shutdown_checkpoint.json" in text
+    assert "live_agent_service.request_stop()" in text
+    assert "network_service.request_stop()" in text
     assert "app.status_observation()['publish_mode']" in text

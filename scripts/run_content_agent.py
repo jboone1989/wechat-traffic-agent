@@ -56,6 +56,17 @@ def _enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
 
 
+def _write_shutdown_checkpoint(state_root: Path, payload: dict) -> None:
+    path = Path(state_root) / "application" / "shutdown_checkpoint.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
 def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
@@ -254,11 +265,22 @@ def main() -> int:
             website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"))
 
     stopping = False
+    stop_requested_at: datetime | None = None
+
     def _stop(_signum, _frame):
-        nonlocal stopping
+        nonlocal stopping, stop_requested_at
+        if stopping:
+            return
         stopping = True
+        stop_requested_at = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.core.interrupt()
-    signal.signal(signal.SIGTERM, _stop); signal.signal(signal.SIGINT, _stop)
+        if live_agent_service is not None:
+            live_agent_service.request_stop()
+        if network_service is not None:
+            network_service.request_stop()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
 
     from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
     task_runner = WakefulContentTaskRunner(
@@ -288,8 +310,12 @@ def main() -> int:
         website_experiment_evaluator=website_experiment_evaluator,
         wakeful=wakeful_runtime,
         web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
+        stop_requested=lambda: stopping,
     )
     print(f"{APPLICATION_VERSION} publish_mode={app.status_observation()['publish_mode']}")
+    active_task: str | None = None
+    active_cycle: str | None = None
+    shutdown_task_result: dict | None = None
     try:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.ensure_initial_plans(now)
@@ -308,6 +334,8 @@ def main() -> int:
             now = datetime.now(timezone.utc).replace(microsecond=0)
             task = reason_task or ("OBSERVE_WORLD" if wake_reason and wake_reason.cognition_required else "EVENT_OBSERVE")
             runtime_event_cycle = f"wake-{int(now.timestamp())}"
+            active_task = task
+            active_cycle = runtime_event_cycle
             wakeful_runtime.core.set_state(
                 WakefulState.THINKING if task in {"CONTENT_COGNITION", "OBSERVE_WORLD"} else WakefulState.OBSERVING
             )
@@ -322,6 +350,17 @@ def main() -> int:
                 task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
+            if stopping or status == "SHUTDOWN_CHECKPOINT":
+                shutdown_task_result = dict(task_result)
+                emit_public_activity(
+                    state_root,
+                    cycle=runtime_event_cycle,
+                    phase="SHUTDOWN",
+                    title="Awake · Shutdown checkpoint",
+                    detail=f"Stopping safely during {task}; persisted work remains resumable.",
+                    status="completed",
+                )
+                break
             wakeful_runtime.sync_prediction_wakes(now)
             if task not in {"EVENT_OBSERVE"}:
                 wakeful_runtime.core.mark_action(now)
@@ -341,15 +380,40 @@ def main() -> int:
             )
             if args.once:
                 return 1 if status in {"ERROR", "DEGRADED"} else 0
+            active_task = None
+            active_cycle = None
             wake_reason = wakeful_runtime.wait(stopping=lambda: stopping)
             reason_task = wake_reason.task if wake_reason.task else None
 
         return 0
     finally:
-        if gsc_collector is not None: gsc_collector.close()
-        if live_agent_service is not None: live_agent_service.stop()
-        if network_service is not None: network_service.stop()
+        if stop_requested_at is not None:
+            _write_shutdown_checkpoint(state_root, {
+                "schema_version": "content-agent-shutdown:v1",
+                "status": "TEARDOWN_STARTED",
+                "requested_at": stop_requested_at.isoformat(),
+                "checkpointed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "active_task": active_task,
+                "active_cycle": active_cycle,
+                "task_result": shutdown_task_result,
+            })
+        if gsc_collector is not None:
+            gsc_collector.close()
+        if live_agent_service is not None:
+            live_agent_service.stop()
+        if network_service is not None:
+            network_service.stop()
         app.close()
+        if stop_requested_at is not None:
+            _write_shutdown_checkpoint(state_root, {
+                "schema_version": "content-agent-shutdown:v1",
+                "status": "STOPPED",
+                "requested_at": stop_requested_at.isoformat(),
+                "completed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+                "active_task": active_task,
+                "active_cycle": active_cycle,
+                "task_result": shutdown_task_result,
+            })
 
 
 if __name__ == "__main__":
