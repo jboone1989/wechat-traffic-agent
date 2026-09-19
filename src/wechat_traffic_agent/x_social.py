@@ -15,6 +15,7 @@ from .public_activity import emit_public_activity
 from .sources.runtime_x import first_post_id, first_user, normalize_posts
 from .x_mcp import x_writes_enabled
 from .public_persona import public_persona_projection, record_public_interaction
+from .x_growth_mission import follower_count_from_user, x_growth_mission_context
 
 
 class SocialAttentionDecision(BaseModel):
@@ -138,10 +139,12 @@ class XHistoryLedger:
 
 class XAutonomyLoop:
     def __init__(self, *, runtime: Any, model_runtime: Any, state_root: Path, base_url: str,
-                 browser_mentions_observer: Any | None = None) -> None:
+                 browser_mentions_observer: Any | None = None,
+                 growth_mission: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
+        self.growth_mission = growth_mission
         self.state_root = Path(state_root)
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
@@ -182,6 +185,7 @@ class XAutonomyLoop:
         if not user:
             raise RuntimeError("X identity response did not contain a user")
         handle = str(user.get("username") or "").strip().lstrip("@")
+        follower_count = follower_count_from_user(user)
         profile = {
             "schema_version": "content-agent-x-profile.v1",
             "synced_at": now.isoformat(),
@@ -190,6 +194,12 @@ class XAutonomyLoop:
             "name": str(user.get("name") or ""),
             "avatar_url": user.get("profile_image_url"),
             "url": f"https://x.com/{handle}" if handle else None,
+            "followers_count": follower_count,
+            "public_metrics": (
+                dict(user.get("public_metrics"))
+                if isinstance(user.get("public_metrics"), dict)
+                else None
+            ),
             "identity_receipt_id": receipt.receipt_id,
         }
         existing = _read_json(self.profile_path)
@@ -202,6 +212,20 @@ class XAutonomyLoop:
         except Exception as exc:
             self._write_status(now=now, status="X_UNAVAILABLE", detail=str(exc))
             return {"status": "X_UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
+        growth_result: dict[str, Any] | None = None
+        if self.growth_mission is not None:
+            try:
+                growth_result = await self.growth_mission.observe_identity(
+                    user=me,
+                    identity_receipt_id=identity_receipt,
+                    now=now,
+                )
+            except Exception as exc:
+                growth_result = {
+                    "status": "DEGRADED",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
         self._activity(cycle=cycle, title="Scanning X", detail="Checking new mentions for questions, rebuttals, and evidence worth investigating.", status="working")
         receipt = self.runtime.invoke("x.mentions", {"user_id": str(me.get("id") or ""), "max_results": 20})
         browser_fallback = False
@@ -232,11 +256,11 @@ class XAutonomyLoop:
                 except Exception as fallback_exc:
                     self._write_status(now=now, status=status, detail=detail)
                     self._activity(cycle=cycle, title="X observation paused", detail="X API credits are depleted and the read-only browser fallback was unavailable.", status="stopped")
-                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__}
+                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__, "x_growth_mission": growth_result}
             else:
                 self._write_status(now=now, status=status, detail=detail)
                 self._activity(cycle=cycle, title="X observation paused", detail="X returned an error while reading mentions.", status="stopped")
-                return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail}
+                return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "x_growth_mission": growth_result}
         else:
             mentions = normalize_posts(receipt.payload.get("data"), observed_at=now)
         seen_payload = _read_json(self.seen_path)
@@ -256,6 +280,7 @@ class XAutonomyLoop:
         return {
             "status": final_status, "identity_receipt_id": identity_receipt, "mentions_receipt_id": mentions_receipt_id,
             "mention_count": len(mentions), "new_mentions": handled,
+            "x_growth_mission": growth_result,
         }
 
     async def _handle_mention(self, *, row: dict[str, Any], post_id: str, me: dict[str, Any], cycle: str, now: datetime,
@@ -347,15 +372,18 @@ class XAutonomyLoop:
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
         model_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle)
         public_url = _find_url(context.get("publication"))
+        x_mission = x_growth_mission_context(self.state_root)
         prompt = (
             "X_EXPRESSION: Decide whether this already-completed cognition deserves an X post now. Do not post to satisfy a quota. "
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
             "For METHOD_NOTE, describe the method/tool only as a candidate being tested unless adoption is separately proven. "
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
+            "x_growth_mission is MISSION_STRATEGY_ONLY. It may influence whether this evidence-compatible expression is a useful instance of the active experiment, but it is not factual evidence and cannot override safety, grounding, X policy, or the rule against posting to satisfy a quota. "
             "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported certainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**context, "public_url": public_url,
-                          "public_persona": public_persona_projection(self.state_root)}, ensure_ascii=False)
+                          "public_persona": public_persona_projection(self.state_root),
+                          "x_growth_mission": x_mission}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XExpressionDecision)
         if decision.action != "POST" or not decision.post_text:
@@ -387,6 +415,12 @@ class XAutonomyLoop:
             "lineage": {
                 "cycle": cycle, "cognition_file": "cognition.json", "worldview_file": "worldview_update.json",
                 "expression_decision": decision.model_dump(mode="json"), "future_cognition": True,
+                "external_mission_id": x_mission.get("mission_id"),
+                "mission_experiment_id": (
+                    (x_mission.get("active_experiment") or {}).get("experiment_id")
+                    if isinstance(x_mission.get("active_experiment"), dict)
+                    else None
+                ),
             },
         })
         self._update_recent_public_posts(row)

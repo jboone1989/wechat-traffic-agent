@@ -523,6 +523,11 @@ def public_agent_snapshot(
         x_projection = public_x_projection(state_root)
     except Exception:
         x_projection = {"connected": False, "status": "UNAVAILABLE", "recent_activity": []}
+    try:
+        from .x_growth_mission import x_growth_mission_context
+        x_growth_mission = x_growth_mission_context(state_root)
+    except Exception:
+        x_growth_mission = {"status": "UNAVAILABLE", "publication_authority": False}
     social_drafts = _social_draft_projection(state_root, cycle_dir)
     recent_cycles = _recent_cycles(state_root)
 
@@ -695,7 +700,11 @@ def public_agent_snapshot(
         "recent_cycles": recent_cycles,
         "life": life,
         "persona": public_persona_projection(state_root),
-        "social": {"x": x_projection, "drafts": social_drafts},
+        "social": {
+            "x": x_projection,
+            "x_growth_mission": x_growth_mission,
+            "drafts": social_drafts,
+        },
         "public_reasoning": public_reasoning,
         "boundaries": {
             "chat_is_learning_evidence": True,

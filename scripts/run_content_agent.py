@@ -155,10 +155,16 @@ def main() -> int:
     x_browser_publisher = XBrowserPublisher(state_root=state_root)
     x_loop = None
     if _enabled("CONTENT_X_ENABLED"):
+        from wechat_traffic_agent.x_growth_mission import XGrowthMissionCoordinator
         from wechat_traffic_agent.x_social import XAutonomyLoop
+        x_growth_mission = XGrowthMissionCoordinator.from_environment(
+            runtime=app.domain_runtime,
+            state_root=state_root,
+        )
         x_loop = XAutonomyLoop(
             runtime=app.runtime, model_runtime=app.domain_runtime, state_root=state_root,
             base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
+            growth_mission=x_growth_mission,
         )
     live_agent_service = None
     from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
