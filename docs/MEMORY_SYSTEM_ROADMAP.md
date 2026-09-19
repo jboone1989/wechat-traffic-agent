@@ -184,3 +184,22 @@ The suite grows milestone by milestone but keeps these stable questions:
 8. Semantic paraphrase: differently worded queries still find the right memory.
 9. Current-state authority: live Goal/Runtime state wins over stale remembered state.
 10. Rebuildability: destroying a derived index does not destroy canonical memory.
+
+## Implementation status
+
+The v1 implementation now covers M0 through M11 in order. The architecture contract remains the authority; this status records implementation evidence, not a replacement roadmap.
+
+- M0: ADR-0011 and this normative roadmap.
+- M1: `memory_system.py` canonical SQLite store and append-only event ledger.
+- M2: `memory_formation.py` governed formation and audit pipeline.
+- M3: `memory_retrieval.py` Memory Router, structured/temporal lookup and FTS5.
+- M4: `memory_episode.py` evidence-linked episodic consolidation.
+- M5: `memory_semantic.py` semantic/relational claims and revision chains.
+- M6: `memory_procedural.py` evidence-backed procedures and outcome revisions.
+- M7: `memory_vector.py` rebuildable semantic vector adapter and hybrid RRF recall.
+- M8: `memory_consolidation.py` recall tiers, consolidation and lossless cold trajectory archive.
+- M9: `memory_self.py` authoritative prospective/self adapters, injected into owner private-chat context.
+- M10: `memory_continuity.py` authenticated hash-linked checkpoints, canonical bundles, replacement-node restore and derived-index rebuild.
+- M11: `memory_evolution.py` evidence-backed signals, versioned recall-policy experiments, protected benchmark categories and promotion gates.
+
+The CI contract runs the permanent Memory System regression set on changes to memory code, tests, the architecture ADR, roadmap, or the owner chat integration.
