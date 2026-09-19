@@ -44,3 +44,18 @@ def test_registry_is_non_secret_and_account_profiles_are_independent(tmp_path):
     assert "cookie" not in raw.lower()
     assert "access_token" not in raw.lower()
     assert oct((tmp_path / "accounts" / "instances.json").stat().st_mode & 0o777) == "0o600"
+
+
+def test_registry_delete_tombstones_account_and_explicit_ensure_restores_it(tmp_path):
+    registry = AccountRegistry(tmp_path)
+    account = registry.ensure(provider_id="x", identity="alice_one")
+
+    deleted = registry.remove(account.account_id)
+
+    assert deleted.identity == "alice_one"
+    assert registry.list(provider_id="x") == []
+    assert registry.is_deleted(provider_id="x", identity="alice_one") is True
+
+    restored = registry.ensure(provider_id="x", identity="alice_one")
+    assert restored.account_id == account.account_id
+    assert registry.is_deleted(provider_id="x", identity="alice_one") is False

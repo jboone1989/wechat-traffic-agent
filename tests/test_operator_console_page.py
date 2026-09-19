@@ -94,3 +94,13 @@ def test_operator_login_page_offers_simple_email_delivery_config():
     assert "SMTP 设置" not in page
     assert "RESEND_API_KEY" not in page
     assert "CONTENT_OPERATOR_SMTP_PASSWORD" not in page
+
+
+def test_account_cards_offer_confirmed_delete_action():
+    page = operator_console_document()
+
+    assert "删除账户" in page
+    assert "confirm_identity" in page
+    assert "account_delete_confirmation_mismatch" not in page
+    assert "method:'DELETE'" in page
+    assert "button.danger" in page

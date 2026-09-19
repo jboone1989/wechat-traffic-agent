@@ -164,3 +164,18 @@ def test_browser_profile_status_means_provisioned_not_authenticated(tmp_path):
 
     assert browser["status"] == "PROVISIONED"
     assert browser["status"] != "CONNECTED"
+
+
+def test_deleted_default_x_identity_is_not_auto_imported_again(tmp_path):
+    status = """▸ content-agent  [client_id: example]
+      oauth2: deleted_x
+"""
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
+    first = manager.status()
+    account = next(x for x in first["instances"] if x["identity"] == "deleted_x")
+
+    manager.registry.remove(account["account_id"])
+    second = manager.status()
+
+    assert all(x["identity"] != "deleted_x" for x in second["instances"])
+    assert manager.registry.is_deleted(provider_id="x", identity="deleted_x") is True

@@ -53,13 +53,16 @@ class AccountRegistry:
 
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
-            return {"schema_version": 1, "accounts": {}}
+            return {"schema_version": 2, "accounts": {}, "deleted": {}}
         try:
             body = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {"schema_version": 1, "accounts": {}}
+            return {"schema_version": 2, "accounts": {}, "deleted": {}}
         if not isinstance(body, dict) or not isinstance(body.get("accounts"), dict):
-            return {"schema_version": 1, "accounts": {}}
+            return {"schema_version": 2, "accounts": {}, "deleted": {}}
+        if not isinstance(body.get("deleted"), dict):
+            body["deleted"] = {}
+        body["schema_version"] = max(2, int(body.get("schema_version") or 1))
         return body
 
     def _write(self, body: dict[str, Any]) -> None:
@@ -115,6 +118,7 @@ class AccountRegistry:
             updated_at=instant.isoformat(),
         )
         body["accounts"][account_id] = asdict(record)
+        body.setdefault("deleted", {}).pop(account_id, None)
         self._write(body)
         return record
     def get(self, account_id: str) -> AccountRecord:
@@ -140,6 +144,33 @@ class AccountRegistry:
                 rows.append(record)
         rows.sort(key=lambda row: (row.provider_id, row.identity.lower()))
         return rows
+
+    def is_deleted(self, *, provider_id: str, identity: str) -> bool:
+        try:
+            account_id = account_id_for(provider_id, identity)
+        except ValueError:
+            return False
+        deleted = self._read().get("deleted") or {}
+        return account_id in deleted
+
+    def remove(
+        self,
+        account_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> AccountRecord:
+        record = self.get(account_id)
+        body = self._read()
+        body["accounts"].pop(record.account_id, None)
+        instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        body.setdefault("deleted", {})[record.account_id] = {
+            "account_id": record.account_id,
+            "provider_id": record.provider_id,
+            "identity": record.identity,
+            "deleted_at": instant.isoformat(),
+        }
+        self._write(body)
+        return record
 
     def set_browser_profile(
         self, account_id: str, profile_id: str, *, now: datetime | None = None

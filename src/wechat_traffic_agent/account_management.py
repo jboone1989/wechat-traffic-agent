@@ -93,6 +93,7 @@ class AccountManager:
         if (
             oauth.get("status") == "CONNECTED"
             and identity
+            and not self.registry.is_deleted(provider_id="x", identity=identity)
             and not any(row.identity.lower() == identity.lower() for row in existing_x)
         ):
             self.registry.ensure(

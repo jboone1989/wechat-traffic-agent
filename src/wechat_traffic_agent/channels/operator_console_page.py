@@ -15,7 +15,7 @@ def operator_console_document() -> str:
 h1{font-size:30px;line-height:1.1;margin:0}h2{font-size:22px;margin:0}h3{font-size:16px;margin:0}p{margin:8px 0}.muted{color:#91a0ad;line-height:1.5}
 .topbar{display:flex;align-items:center;gap:16px;margin-bottom:18px}.brand{flex:1}.brand p{margin:5px 0 0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}
 button,a{border:1px solid #34414c;border-radius:9px;background:#182027;color:#eef4f8;padding:9px 12px;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}
-button.primary,a.primary{background:#edf3f7;color:#111;border-color:#edf3f7}button.ghost{background:transparent}button:disabled{opacity:.5;cursor:not-allowed}
+button.primary,a.primary{background:#edf3f7;color:#111;border-color:#edf3f7}button.ghost{background:transparent}button.danger{background:transparent;color:#ffaaa7;border-color:#7a3c3b}button:disabled{opacity:.5;cursor:not-allowed}
 .card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:15px;min-width:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px}.stack{display:grid;gap:9px}
 .row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select,textarea{width:100%;min-width:0;border:1px solid #34414c;border-radius:8px;background:#090d11;color:#fff;padding:10px;font:inherit}textarea{min-height:86px;resize:vertical}
@@ -332,10 +332,11 @@ function renderAccounts(data){
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
   tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
-  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost');
+  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost'),remove=node('button','删除账户','danger');
   provision.onclick=async()=>{provision.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/provision',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · 浏览器环境 '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{provision.disabled=false}};
   test.onclick=async()=>{test.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/jev-test',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · Jev '+out.status)}catch(e){flash(e.message,true)}finally{test.disabled=false}};
-  actions.append(provision,test);tech.append(actions);c.append(tech);root.append(c)
+  remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？\n\n将删除该账号的本地浏览器 profile 和运行状态。'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
+  actions.append(provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
  }
  const instanceProviders=new Set(instances.map(x=>x.provider_id));
  for(const row of providers){

@@ -1407,3 +1407,60 @@ def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, mon
     assert fourth_email.status_code == 429
     assert fourth_email.json()["channel"] == "EMAIL"
 
+
+
+def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    from wechat_traffic_agent.account_registry import AccountRegistry
+    from wechat_traffic_agent.account_browser_profiles import AccountBrowserProfileManager
+
+    registry = AccountRegistry(tmp_path)
+    first = registry.ensure(
+        provider_id="x",
+        identity="delete_me",
+        oauth_status="NEEDS_AUTHORIZATION",
+    )
+    second = registry.ensure(
+        provider_id="x",
+        identity="keep_me",
+        oauth_status="NEEDS_AUTHORIZATION",
+    )
+    first_dir = tmp_path / "accounts" / "browser-profiles" / first.account_id / "chrome-profile"
+    second_dir = tmp_path / "accounts" / "browser-profiles" / second.account_id / "chrome-profile"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        AccountBrowserProfileManager,
+        "stop",
+        lambda self, account_id: None,
+    )
+
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    _login_operator(client, tmp_path)
+
+    mismatch = client.request(
+        "DELETE",
+        f"/operator/api/account-instances/{first.account_id}",
+        headers={"X-Operator-Request": "1"},
+        json={"confirm_identity": "wrong"},
+    )
+    assert mismatch.status_code == 409
+    assert registry.get(first.account_id).identity == "delete_me"
+
+    deleted = client.request(
+        "DELETE",
+        f"/operator/api/account-instances/{first.account_id}",
+        headers={"X-Operator-Request": "1"},
+        json={"confirm_identity": "delete_me"},
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "DELETED"
+    assert deleted.json()["identity"] == "delete_me"
+    assert deleted.json()["external_authorization_retained"] is False
+    assert first_dir.parent.exists() is False
+    assert registry.is_deleted(provider_id="x", identity="delete_me") is True
+    assert registry.get(second.account_id).identity == "keep_me"
+    assert second_dir.exists() is True

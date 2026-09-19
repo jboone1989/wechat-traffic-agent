@@ -1968,6 +1968,62 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
+        async def operator_account_instance_delete(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if not operator_write_allowed(request):
+                return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if int(request.headers.get("content-length") or 0) > 2048:
+                return JSONResponse({"error": "request_too_large"}, status_code=413)
+            account_id = str(request.path_params["account_id"]).strip()
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            confirm_identity = (
+                str(body.get("confirm_identity") or "").strip().lstrip("@")
+                if isinstance(body, dict)
+                else ""
+            )
+            try:
+                from .account_browser_profiles import AccountBrowserProfileManager
+                from .account_registry import AccountRegistry
+
+                registry = AccountRegistry(self.state_root)
+                record = registry.get(account_id)
+                if confirm_identity != record.identity:
+                    return JSONResponse(
+                        {"error": "account_delete_confirmation_mismatch"},
+                        status_code=409,
+                    )
+                profiles = AccountBrowserProfileManager(self.state_root)
+                await asyncio.to_thread(profiles.delete_profile, account_id)
+                deleted = registry.remove(account_id)
+            except (ValueError, KeyError) as exc:
+                return JSONResponse({"error": str(exc)[:240]}, status_code=404)
+            except Exception as exc:
+                return JSONResponse(
+                    {
+                        "error": "account_delete_failed",
+                        "error_type": type(exc).__name__,
+                    },
+                    status_code=502,
+                )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "account_id": deleted.account_id,
+                    "provider_id": deleted.provider_id,
+                    "identity": deleted.identity,
+                    "status": "DELETED",
+                    "external_authorization_retained": (
+                        deleted.provider_id == "x"
+                        and deleted.oauth_status == "CONNECTED"
+                    ),
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+
         async def operator_account_stream(websocket: WebSocket):
             if operator_console is None:
                 await websocket.close(code=4404)
@@ -2502,6 +2558,7 @@ class LiveAgentService:
                 Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/provision", operator_account_browser_provision, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/jev-test", operator_account_browser_jev_test, methods=["POST"]),
+                Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
                 Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),
