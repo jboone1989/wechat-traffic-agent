@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
 import re
 import sqlite3
 from typing import Any, Iterable
@@ -38,6 +40,57 @@ class RecallPlan:
     memory_types: tuple[str, ...]
     entity: str | None
     topic: str | None
+
+
+@dataclass(frozen=True)
+class RecallWeights:
+    rrf_k: float = 60.0
+    lexical_weight: float = 1.0
+    vector_weight: float = 1.0
+    structured_weight: float = 1.0
+    importance_weight: float = 0.01
+    confidence_weight: float = 0.0025
+    temporal_boost: float = 0.01
+    search_multiplier: int = 8
+    decay_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        numeric = {
+            "rrf_k": self.rrf_k,
+            "lexical_weight": self.lexical_weight,
+            "vector_weight": self.vector_weight,
+            "structured_weight": self.structured_weight,
+            "importance_weight": self.importance_weight,
+            "confidence_weight": self.confidence_weight,
+            "temporal_boost": self.temporal_boost,
+        }
+        if self.rrf_k <= 0:
+            raise ValueError("rrf_k must be positive")
+        if any(float(value) < 0 for value in numeric.values()):
+            raise ValueError("recall weights must be non-negative")
+        if not 1 <= int(self.search_multiplier) <= 64:
+            raise ValueError("search_multiplier must be between 1 and 64")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "rrf_k": float(self.rrf_k),
+            "lexical_weight": float(self.lexical_weight),
+            "vector_weight": float(self.vector_weight),
+            "structured_weight": float(self.structured_weight),
+            "importance_weight": float(self.importance_weight),
+            "confidence_weight": float(self.confidence_weight),
+            "temporal_boost": float(self.temporal_boost),
+            "search_multiplier": int(self.search_multiplier),
+            "decay_enabled": bool(self.decay_enabled),
+        }
+
+    @classmethod
+    def from_mapping(cls, value: dict[str, Any]) -> "RecallWeights":
+        allowed = set(cls().__dict__)
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError("unknown recall policy fields: " + ",".join(sorted(unknown)))
+        return cls(**value)
 
 
 class MemorySearchIndex:
@@ -115,10 +168,24 @@ class MemoryRouter:
         *,
         store: CanonicalMemoryStore | None = None,
         embedding_provider: EmbeddingProvider | None = None,
+        weights: RecallWeights | None = None,
     ) -> None:
-        self.store = store or CanonicalMemoryStore(state_root)
+        self.state_root = Path(state_root)
+        self.store = store or CanonicalMemoryStore(self.state_root)
+        self.weights = weights or self._load_active_weights()
         self.fts = MemorySearchIndex(self.store)
         self.vector = SemanticVectorIndex(self.store, provider=embedding_provider)
+
+    def _load_active_weights(self) -> RecallWeights:
+        path = self.state_root / "application" / "memory_system" / "active_recall_policy.json"
+        if not path.exists():
+            return RecallWeights()
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            value = raw.get("weights") if isinstance(raw, dict) else None
+            return RecallWeights.from_mapping(dict(value)) if isinstance(value, dict) else RecallWeights()
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return RecallWeights()
 
     def plan(
         self,
@@ -168,10 +235,10 @@ class MemoryRouter:
             created_to=plan.created_to,
             entity=plan.entity,
             topic=plan.topic,
-            limit=max(50, int(limit) * 8),
+            limit=max(50, int(limit) * int(self.weights.search_multiplier)),
         )
         allowed = {str(row["memory_id"]): row for row in structured}
-        search_limit = max(50, int(limit) * 8)
+        search_limit = max(50, int(limit) * int(self.weights.search_multiplier))
         lexical = self.fts.search(query, limit=search_limit)
         vector = self.vector.search(query, limit=search_limit)
         lexical_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(lexical)}
@@ -195,16 +262,20 @@ class MemoryRouter:
                 continue
             score = 0.0
             if memory_id in lexical_rank:
-                score += 1.0 / (60.0 + lexical_rank[memory_id])
+                score += self.weights.lexical_weight / (
+                    self.weights.rrf_k + lexical_rank[memory_id]
+                )
             if memory_id in vector_rank:
-                score += 1.0 / (60.0 + vector_rank[memory_id])
+                score += self.weights.vector_weight / (
+                    self.weights.rrf_k + vector_rank[memory_id]
+                )
             if memory_id in allowed:
-                score += 1.0 / 60.0
-            score += float(row.get("importance") or 0.0) * 0.01
-            score += float(row.get("confidence") or 0.0) * 0.0025
+                score += self.weights.structured_weight / self.weights.rrf_k
+            score += float(row.get("importance") or 0.0) * self.weights.importance_weight
+            score += float(row.get("confidence") or 0.0) * self.weights.confidence_weight
             if plan.created_from or plan.created_to:
-                score += 0.01
-            if not plan.historical:
+                score += self.weights.temporal_boost
+            if not plan.historical and self.weights.decay_enabled:
                 score *= recall_weight(row, now=now)
             candidates.append((score, row))
         candidates.sort(
@@ -236,4 +307,4 @@ class MemoryRouter:
         return None, None
 
 
-__all__ = ["MemoryRouter", "MemorySearchIndex", "RecallPlan"]
+__all__ = ["MemoryRouter", "MemorySearchIndex", "RecallPlan", "RecallWeights"]
