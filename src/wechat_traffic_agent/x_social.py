@@ -391,6 +391,15 @@ class XAutonomyLoop:
         safety = await self._safety_check(model_runtime=model_runtime, text=decision.post_text, context=context)
         if not _safety_passes(safety):
             return {"status": "HELD_BY_X_SAFETY", "cycle": cycle, "reason": safety.rationale}
+        guardrail = getattr(self.growth_mission, "publication_guardrail", None)
+        if callable(guardrail):
+            guard = guardrail()
+            if not bool(guard.get("allowed", True)):
+                return {
+                    "status": "HELD_BY_MISSION_GUARDRAIL",
+                    "cycle": cycle,
+                    "guardrail": guard,
+                }
         me, _identity_receipt = self._identity(now=now)
         post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
         if not post.payload.get("ok"):

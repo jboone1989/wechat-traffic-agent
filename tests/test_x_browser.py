@@ -53,6 +53,9 @@ class _GrowthMission:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
+    def publication_guardrail(self) -> dict:
+        return {"allowed": True, "status": "ALLOWED"}
+
     def start_experiment_from_publication(
         self, *, publication_receipt_id: str, post_id: str, now: datetime
     ) -> dict:
@@ -211,3 +214,36 @@ def test_browser_mention_post_normalizes_incoming_status_and_skips_self():
     }
     assert browser_mention_post(text="self", href="/caini56006962/status/2100486738342765000", own_handle="caini56006962") is None
     assert browser_mention_post(text="bad", href="/home", own_handle="caini56006962") is None
+
+
+class _BlockedGrowthMission(_GrowthMission):
+    def publication_guardrail(self) -> dict:
+        return {
+            "allowed": False,
+            "status": "HARD_STOP_ACTIVE",
+            "hard_stop": {"active": True, "decline_ratio": 0.025},
+        }
+
+
+def test_browser_publication_is_blocked_by_active_mission_hard_stop(tmp_path: Path):
+    _draft(tmp_path)
+    transport = _Transport()
+    growth = _BlockedGrowthMission()
+    result = asyncio.run(
+        XBrowserPublisher(
+            state_root=tmp_path,
+            transport=transport,
+            enabled=True,
+            writes_enabled=True,
+            growth_mission=growth,
+        ).after_content_cycle(cycle="v2-browser", now=NOW)
+    )
+
+    assert result["status"] == "HELD_BY_MISSION_GUARDRAIL"
+    assert result["guardrail"]["status"] == "HARD_STOP_ACTIVE"
+    assert transport.calls == []
+    assert growth.calls == []
+    assert not (
+        tmp_path
+        / "content/continuous/cycles/v2-browser/x_browser_publication.json"
+    ).exists()

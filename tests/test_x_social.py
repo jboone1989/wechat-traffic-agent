@@ -41,6 +41,9 @@ class _GrowthMission:
     def __init__(self):
         self.calls = []
 
+    def publication_guardrail(self):
+        return {"allowed": True, "status": "ALLOWED"}
+
     def start_experiment_from_publication(
         self, *, publication_receipt_id, post_id, now
     ):
@@ -200,3 +203,57 @@ def test_credits_depleted_uses_read_only_browser_mentions_for_learning(tmp_path:
     assert interaction["category"] == "QUESTION"
     assert interaction["learning_authority"] == "AUDIENCE_INTEREST_ONLY"
     assert public_x_projection(tmp_path)["status"] == "OK_BROWSER_FALLBACK"
+
+
+class _BlockedGrowthMission(_GrowthMission):
+    def publication_guardrail(self):
+        return {
+            "allowed": False,
+            "status": "HARD_STOP_ACTIVE",
+            "hard_stop": {"active": True, "decline_ratio": 0.03},
+        }
+
+
+def test_official_x_post_is_blocked_by_active_mission_hard_stop(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-hard-stop"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([
+        {
+            "action": "POST",
+            "post_text": "A grounded observation that would otherwise be published.",
+            "rationale": "The persisted cognition is worth sharing.",
+        },
+        {
+            "safe": True,
+            "no_private_data": True,
+            "no_impersonation": True,
+            "no_harassment": True,
+            "no_investment_advice": True,
+            "no_fabricated_facts": True,
+            "attribution_ok": True,
+            "rationale": "Safe grounded content.",
+        },
+    ])
+    runtime = _Runtime(post_ok=True)
+    growth = _BlockedGrowthMission()
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="",
+        growth_mission=growth,
+    )
+
+    result = asyncio.run(
+        loop.after_content_cycle(
+            result={"status": "PUBLISHED", "cycle": cycle, "publication": {}},
+            now=NOW,
+        )
+    )
+
+    assert result["status"] == "HELD_BY_MISSION_GUARDRAIL"
+    assert result["guardrail"]["status"] == "HARD_STOP_ACTIVE"
+    assert not any(capability == "x.post" for capability, _ in runtime.calls)
+    assert growth.calls == []
+    assert XHistoryLedger(tmp_path).recent() == []

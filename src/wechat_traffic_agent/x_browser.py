@@ -390,6 +390,15 @@ class XBrowserPublisher:
                 "publication": existing,
                 "mission_experiment_transition": transition,
             }
+        guardrail = getattr(self.growth_mission, "publication_guardrail", None)
+        if callable(guardrail):
+            guard = guardrail()
+            if not bool(guard.get("allowed", True)):
+                return {
+                    "status": "HELD_BY_MISSION_GUARDRAIL",
+                    "cycle": cycle,
+                    "guardrail": guard,
+                }
         transport = self.transport
         if transport is None:
             transport = XBrowserTransportRouter(state_root=self.state_root)
