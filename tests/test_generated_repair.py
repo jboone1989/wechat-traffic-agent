@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -42,6 +42,21 @@ class PlannerRuntime:
     async def cognitive_probe(self, task, max_tokens):
         self.calls.append(task)
         return json.dumps(self.payload)
+
+
+class LLMProviderError(RuntimeError):
+    pass
+
+
+class FailingPlannerRuntime:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        raise LLMProviderError("all eligible LLM resources failed without exposing provider responses")
+
+
 def _workspace(tmp_path: Path) -> Path:
     root = tmp_path / "workspace"
     (root / "src/wechat_traffic_agent").mkdir(parents=True)
@@ -310,3 +325,75 @@ def test_stale_block_id_is_rejected_after_source_changes(tmp_path):
             allowed_tests=["tests/test_app_logic.py"],
             editable_blocks=new_blocks,
         )
+
+
+
+def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
+    state = tmp_path / "state-deferred"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    runtime = FailingPlannerRuntime()
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    first = executor.run_once(now=NOW)
+
+    assert first["status"] == "GENERATED_PLAN_DEFERRED"
+    assert first["planner_status"] == "DEFERRED_RESOURCE"
+    assert first["retry_seconds"] == 900
+    stored = json.loads(problem_path.read_text())
+    assert stored["status"] == "DIAGNOSING"
+    assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v3"
+    assert stored["planner_attempt"]["retry_after"] == (
+        NOW + timedelta(seconds=900)
+    ).isoformat()
+    assert len(runtime.calls) == 1
+
+    immediate = executor.run_once(now=NOW + timedelta(seconds=1))
+
+    assert immediate["status"] == "NO_REPAIR_WORK"
+    assert len(runtime.calls) == 1
+
+    retried = executor.run_once(now=NOW + timedelta(seconds=901))
+
+    assert retried["status"] == "GENERATED_PLAN_DEFERRED"
+    assert len(runtime.calls) == 2
+
+
+def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occurrence(tmp_path):
+    state = tmp_path / "state-old-resource-reject"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v3",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "LLMProviderError:all eligible LLM resources failed without exposing provider responses",
+    }
+    problem_path.write_text(json.dumps(problem))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "REPAIR_PROPOSED"
+    assert updated["planner_attempt"]["status"] == "PROPOSED"

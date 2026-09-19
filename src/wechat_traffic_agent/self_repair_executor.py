@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -216,6 +216,26 @@ DEFAULT_RECIPES: dict[str, RepairRecipe] = {
 
 
 _GENERATED_REPAIR_KIND = "GENERATED_BOUNDED_EDIT"
+_GENERATED_REPAIR_RESOURCE_RETRY_SECONDS = 900
+
+
+def _transient_planner_failure(value: object) -> bool:
+    name = type(value).__name__
+    message = str(value)
+    return (
+        name == "LLMProviderError"
+        or "all eligible LLM resources failed" in message
+        or "no eligible LLM resources" in message
+    )
+
+
+def _transient_planner_reason(value: object) -> bool:
+    text = str(value or "")
+    return (
+        text.startswith("LLMProviderError:")
+        or "all eligible LLM resources failed" in text
+        or "no eligible LLM resources" in text
+    )
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -257,7 +277,7 @@ class SelfRepairExecutor:
         if problem is not None:
             return self._run_proposal(problem, now)
 
-        diagnosing = self._next_diagnosing_problem()
+        diagnosing = self._next_diagnosing_problem(now=now)
         if diagnosing is not None:
             return self._generate_repair_proposal(diagnosing, now)
 
@@ -323,7 +343,7 @@ class SelfRepairExecutor:
             runtime=self.planner_runtime,
         )
 
-    def _next_diagnosing_problem(self) -> dict[str, Any] | None:
+    def _next_diagnosing_problem(self, *, now: datetime) -> dict[str, Any] | None:
         planner = self._planner()
         if planner is None:
             return None
@@ -339,12 +359,27 @@ class SelfRepairExecutor:
             if row.get("repair_proposal"):
                 continue
             attempt = row.get("planner_attempt") if isinstance(row.get("planner_attempt"), dict) else {}
-            if (
-                attempt.get("status") == "REJECTED"
-                and int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
+            same_attempt = (
+                int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
                 and str(attempt.get("planner_version") or "") == PLANNER_VERSION
+            )
+            attempt_status = str(attempt.get("status") or "")
+            if (
+                attempt_status == "REJECTED"
+                and same_attempt
+                and not _transient_planner_reason(attempt.get("reason"))
             ):
                 continue
+            if attempt_status == "DEFERRED_RESOURCE" and same_attempt:
+                retry_after_raw = str(attempt.get("retry_after") or "")
+                try:
+                    retry_after = datetime.fromisoformat(retry_after_raw)
+                except ValueError:
+                    retry_after = now
+                if retry_after.tzinfo is None:
+                    retry_after = retry_after.replace(tzinfo=timezone.utc)
+                if now.astimezone(timezone.utc) < retry_after.astimezone(timezone.utc):
+                    continue
             sources = planner.candidate_source_paths(row)
             if not sources:
                 continue
@@ -420,13 +455,32 @@ class SelfRepairExecutor:
         try:
             plan, source_paths, test_paths, editable_blocks = asyncio.run(planner.plan(problem))
         except Exception as exc:
+            reason = type(exc).__name__ + ":" + str(exc)[:500]
+            if _transient_planner_failure(exc):
+                retry_after = now.astimezone(timezone.utc) + timedelta(
+                    seconds=_GENERATED_REPAIR_RESOURCE_RETRY_SECONDS
+                )
+                attempt = self._planner_attempt(
+                    problem,
+                    now=now,
+                    status="DEFERRED_RESOURCE",
+                    details={
+                        "reason": reason,
+                        "retry_after": retry_after.isoformat(),
+                    },
+                )
+                return {
+                    **attempt,
+                    "status": "GENERATED_PLAN_DEFERRED",
+                    "problem_id": problem.get("problem_id"),
+                    "planner_status": attempt.get("status"),
+                    "retry_seconds": _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS,
+                }
             attempt = self._planner_attempt(
                 problem,
                 now=now,
                 status="REJECTED",
-                details={
-                    "reason": type(exc).__name__ + ":" + str(exc)[:500],
-                },
+                details={"reason": reason},
             )
             return {
                 **attempt,
