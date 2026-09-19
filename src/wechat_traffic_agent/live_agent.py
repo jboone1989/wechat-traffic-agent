@@ -1440,17 +1440,35 @@ class LiveAgentService:
                 return JSONResponse({"error": "unsupported_login_delivery_channel"}, status_code=400)
             key = request.client.host if request.client else "unknown"
             now_mono = time.monotonic()
-            if not self._operator_login_ip_limiter.allow(key, now_mono):
-                return JSONResponse({"error": "login_request_rate_limited"}, status_code=429)
-            if not self._operator_login_global_limiter.allow("global", now_mono):
-                return JSONResponse({"error": "login_request_rate_limited"}, status_code=429)
+            ip_bucket = f"{key}:{channel}"
+            global_bucket = f"global:{channel}"
+            if not self._operator_login_ip_limiter.allow(ip_bucket, now_mono):
+                return JSONResponse(
+                    {
+                        "error": "login_request_rate_limited",
+                        "channel": channel.upper(),
+                        "scope": "IP_CHANNEL",
+                    },
+                    status_code=429,
+                    headers={"Retry-After": "600"},
+                )
+            if not self._operator_login_global_limiter.allow(global_bucket, now_mono):
+                return JSONResponse(
+                    {
+                        "error": "login_request_rate_limited",
+                        "channel": channel.upper(),
+                        "scope": "GLOBAL_CHANNEL",
+                    },
+                    status_code=429,
+                    headers={"Retry-After": "45"},
+                )
             token = operator_console.auth.issue_one_time_access(ttl=timedelta(minutes=10))
             public_url = str(
                 os.environ.get("CONTENT_OPERATOR_PUBLIC_URL")
                 or "https://livingruntime.com/operator/"
             ).strip()
             if not public_url.startswith("https://"):
-                operator_console.auth.revoke_one_time_access()
+                operator_console.auth.revoke_one_time_access(token)
                 return JSONResponse({"error": "login_delivery_unavailable"}, status_code=503)
             link = public_url.rstrip("/") + "/#bootstrap=" + token
             try:
@@ -1472,7 +1490,7 @@ class LiveAgentService:
                 if str(delivered.get("status") or "") != "SENT":
                     raise RuntimeError("operator delivery unavailable")
             except Exception:
-                operator_console.auth.revoke_one_time_access()
+                operator_console.auth.revoke_one_time_access(token)
                 return JSONResponse(
                     {
                         "error": (

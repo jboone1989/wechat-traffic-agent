@@ -328,22 +328,44 @@ class OperatorAuthenticator:
             return None
         return self._new_session(now or datetime.now(timezone.utc))
 
-    def issue_one_time_access(
-        self,
-        *,
-        now: datetime | None = None,
-        ttl: timedelta = timedelta(hours=2),
-    ) -> str:
-        """Create a one-use bootstrap secret; only its digest is persisted."""
-        instant = now or datetime.now(timezone.utc)
-        if ttl <= timedelta(0) or ttl > timedelta(hours=24):
-            raise ValueError("bootstrap ttl must be within 24 hours")
-        token = secrets.token_urlsafe(32)
+    def _read_one_time_accesses(self) -> dict[str, dict[str, str]]:
+        try:
+            payload = json.loads(self.bootstrap_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        rows = payload.get("tokens")
+        if isinstance(rows, dict):
+            return {
+                str(digest): dict(row)
+                for digest, row in rows.items()
+                if isinstance(row, dict)
+            }
+        # Backward-compatible read of the legacy single-token v1 file.
+        legacy_digest = str(payload.get("token_sha256") or "")
+        if legacy_digest:
+            return {
+                legacy_digest: {
+                    "token_sha256": legacy_digest,
+                    "created_at": str(payload.get("created_at") or ""),
+                    "expires_at": str(payload.get("expires_at") or ""),
+                }
+            }
+        return {}
+
+    def _write_one_time_accesses(
+        self, rows: dict[str, dict[str, str]]
+    ) -> None:
+        if not rows:
+            try:
+                self.bootstrap_path.unlink()
+            except FileNotFoundError:
+                pass
+            return
         payload = {
-            "schema_version": "operator-bootstrap.v1",
-            "token_sha256": sha256(token.encode()).hexdigest(),
-            "created_at": instant.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
-            "expires_at": (instant + ttl).astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "schema_version": "operator-bootstrap.v2",
+            "tokens": rows,
         }
         tmp = self.bootstrap_path.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -353,45 +375,80 @@ class OperatorAuthenticator:
         os.chmod(tmp, 0o600)
         os.replace(tmp, self.bootstrap_path)
         os.chmod(self.bootstrap_path, 0o600)
+
+    def issue_one_time_access(
+        self,
+        *,
+        now: datetime | None = None,
+        ttl: timedelta = timedelta(hours=2),
+    ) -> str:
+        """Create an independent one-use bootstrap secret; persist only its digest."""
+        instant = now or datetime.now(timezone.utc)
+        if ttl <= timedelta(0) or ttl > timedelta(hours=24):
+            raise ValueError("bootstrap ttl must be within 24 hours")
+        token = secrets.token_urlsafe(32)
+        digest = sha256(token.encode()).hexdigest()
+        rows = self._read_one_time_accesses()
+        rows[digest] = {
+            "token_sha256": digest,
+            "created_at": instant.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "expires_at": (instant + ttl).astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+        }
+        self._write_one_time_accesses(rows)
         return token
 
-    def revoke_one_time_access(self) -> None:
-        try:
-            self.bootstrap_path.unlink()
-        except FileNotFoundError:
-            pass
+    def revoke_one_time_access(self, token: str | None = None) -> None:
+        if token is None:
+            try:
+                self.bootstrap_path.unlink()
+            except FileNotFoundError:
+                pass
+            return
+        supplied = str(token or "").strip()
+        if not supplied:
+            return
+        digest = sha256(supplied.encode()).hexdigest()
+        rows = self._read_one_time_accesses()
+        rows.pop(digest, None)
+        self._write_one_time_accesses(rows)
 
     def consume_one_time_access(
         self, token: str, *, now: datetime | None = None
     ) -> str | None:
         instant = now or datetime.now(timezone.utc)
-        try:
-            payload = json.loads(self.bootstrap_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return None
-        if not isinstance(payload, dict):
-            return None
-        try:
-            expires = datetime.fromisoformat(
-                str(payload.get("expires_at") or "").replace("Z", "+00:00")
-            )
-        except ValueError:
-            return None
-        if expires.tzinfo is None or expires.astimezone(timezone.utc) <= instant.astimezone(timezone.utc):
-            try:
-                self.bootstrap_path.unlink()
-            except OSError:
-                pass
-            return None
         supplied = str(token or "").strip()
-        expected = str(payload.get("token_sha256") or "")
-        digest = sha256(supplied.encode()).hexdigest() if supplied else ""
-        if not supplied or not hmac.compare_digest(digest, expected):
+        if not supplied:
             return None
-        try:
-            self.bootstrap_path.unlink()
-        except OSError:
+        digest = sha256(supplied.encode()).hexdigest()
+        rows = self._read_one_time_accesses()
+        changed = False
+        valid_rows: dict[str, dict[str, str]] = {}
+        for row_digest, row in rows.items():
+            try:
+                expires = datetime.fromisoformat(
+                    str(row.get("expires_at") or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                changed = True
+                continue
+            if (
+                expires.tzinfo is None
+                or expires.astimezone(timezone.utc)
+                <= instant.astimezone(timezone.utc)
+            ):
+                changed = True
+                continue
+            valid_rows[row_digest] = row
+        expected = valid_rows.get(digest)
+        if expected is None:
+            if changed:
+                self._write_one_time_accesses(valid_rows)
             return None
+        stored_digest = str(expected.get("token_sha256") or digest)
+        if not hmac.compare_digest(digest, stored_digest):
+            return None
+        valid_rows.pop(digest, None)
+        self._write_one_time_accesses(valid_rows)
         return self._new_session(instant)
 
     def valid(self, session_id: str | None, *, now: datetime | None = None) -> bool:

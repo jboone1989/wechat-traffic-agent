@@ -1308,3 +1308,98 @@ def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_pat
     assert "owner@example.com" in raw
     assert "password" not in raw.lower()
     assert "api_key" not in raw.lower()
+
+
+def test_one_time_operator_links_can_coexist_and_are_independently_single_use(tmp_path):
+    from datetime import timedelta
+
+    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=30))
+    first = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
+    second = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
+
+    raw = auth.bootstrap_path.read_text()
+    assert first not in raw
+    assert second not in raw
+    assert raw.count("token_sha256") == 2
+
+    session_one = auth.consume_one_time_access(
+        first, now=NOW + timedelta(minutes=1)
+    )
+    assert session_one
+    assert auth.bootstrap_path.exists()
+    assert auth.consume_one_time_access(
+        first, now=NOW + timedelta(minutes=2)
+    ) is None
+
+    session_two = auth.consume_one_time_access(
+        second, now=NOW + timedelta(minutes=2)
+    )
+    assert session_two
+    assert not auth.bootstrap_path.exists()
+
+
+def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, monkeypatch):
+    import wechat_traffic_agent.operator_email as email_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    monkeypatch.setenv(
+        "CONTENT_OPERATOR_PUBLIC_URL",
+        "https://livingruntime.com/operator/",
+    )
+
+    class FakeNotifier:
+        def send_text(self, text):
+            return {"status": "SENT"}
+
+    class FakeEmailNotifier:
+        def __init__(self, state_root):
+            self.state_root = state_root
+
+        def status(self):
+            return {"configured": True}
+
+        def send_login_link(self, *, link, expires_minutes=10):
+            return {"status": "SENT", "provider": "TEST"}
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: FakeNotifier(),
+    )
+    monkeypatch.setattr(email_module, "OperatorEmailNotifier", FakeEmailNotifier)
+
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    headers = {"X-Operator-Request": "1"}
+
+    first_wecom = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "wecom"},
+    )
+    assert first_wecom.status_code == 202
+
+    first_email = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "email"},
+    )
+    assert first_email.status_code == 202
+
+    second_wecom = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "wecom"},
+    )
+    assert second_wecom.status_code == 429
+    assert second_wecom.json()["channel"] == "WECOM"
+    assert second_wecom.json()["scope"] == "GLOBAL_CHANNEL"
+
+    second_email = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "email"},
+    )
+    assert second_email.status_code == 429
+    assert second_email.json()["channel"] == "EMAIL"
+
