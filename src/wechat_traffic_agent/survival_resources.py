@@ -173,6 +173,14 @@ class SurvivalResourceManager:
             and row.get("deployment_capable")
             for row in self.remote_hosts()
         )
+        host_rows = self.remote_hosts()
+        provisionable_remote = any(
+            row.get("status") == "ACTIVE"
+            and row.get("management_transport") == "SSH_KEY"
+            and str(row.get("ssh_receiver_status") or row.get("receiver_status") or "")
+            in {"", "NOT_PROVISIONED", "PROVISION_FAILED"}
+            for row in host_rows
+        )
         degraded_replica = any(
             replica.get("status") != "ACTIVE"
             for service in self.services()
@@ -187,6 +195,7 @@ class SurvivalResourceManager:
             usable_remote=usable_remote,
             degraded_replica=degraded_replica,
             automatic_replica_gap=automatic_replica_gap,
+            provisionable_remote=provisionable_remote,
         )
         pressure = "CRITICAL" if storage_pressure and compute_pressure else (
             "CONSERVE" if storage_pressure or compute_pressure else "NORMAL"
@@ -201,6 +210,7 @@ class SurvivalResourceManager:
             "safe_local_actions": [
                 "RECLAIM_TRANSIENT_STORAGE",
                 "APPLY_CONSERVATION_POLICY",
+                "PROVISION_REMOTE_RECEIVER",
                 "ENSURE_SERVICE_REPLICA",
                 "RESTORE_SERVICE_REPLICA",
             ],
@@ -359,6 +369,11 @@ class SurvivalResourceManager:
             elif action == "APPLY_CONSERVATION_POLICY":
                 result = {"status": "APPLIED", "mode": "CONSERVE"}
                 row["status"] = "EXECUTED"
+            elif action == "PROVISION_REMOTE_RECEIVER":
+                result = self._provision_pending_receiver(now=now)
+                row["status"] = (
+                    "EXECUTED" if result.get("status") == "VERIFIED" else "AWAITING_RESOURCE"
+                )
             elif action == "RESTORE_SERVICE_REPLICA":
                 result = self._restore_degraded_replica(now=now)
                 row["status"] = (
@@ -455,6 +470,89 @@ class SurvivalResourceManager:
             "host_key_sha256": result.host_key_sha256,
         }, now)
         return row
+
+    def provision_ssh_receiver(
+        self, host_id: str, *, now: datetime
+    ) -> dict[str, Any]:
+        from .survival_receiver_ssh import SSHReceiverProvisioner
+
+        rows = self.remote_hosts()
+        target = next((row for row in rows if row.get("host_id") == host_id), None)
+        if target is None:
+            raise FileNotFoundError(host_id)
+        if target.get("management_transport") != "SSH_KEY":
+            raise ValueError("receiver provisioning requires an SSH-managed host")
+        key_ref = str(target.get("ssh_key_ref") or "").strip()
+        if not key_ref:
+            raise RuntimeError("SSH-managed host has no key reference")
+        key_path = (
+            self.state_root / "secrets" / "survival-hosts" / key_ref / "id_ed25519"
+        )
+        if not key_path.is_file():
+            raise RuntimeError("SSH management key is unavailable")
+        identity = self._network_identity()
+        try:
+            result = SSHReceiverProvisioner(self.state_root).provision(
+                host=str(target.get("ssh_host") or ""),
+                port=int(target.get("ssh_port") or 22),
+                username=str(target.get("ssh_username") or "root"),
+                key_path=key_path,
+                expected_host_key_sha256=str(target.get("ssh_host_key_sha256") or ""),
+                expected_host_instance_id=str(target.get("host_instance_id") or ""),
+                controller={
+                    "agent_id": str(identity.agent_id),
+                    "key_id": str(identity.key_id),
+                    "public_key": str(identity.public_key),
+                },
+            )
+            target["ssh_receiver_status"] = "VERIFIED"
+            target["ssh_receiver_release_sha"] = result.release_sha
+            target["ssh_receiver_command"] = result.receiver_command
+            target["ssh_receiver_root"] = result.receiver_root
+            target["ssh_receiver_agent_id"] = result.agent_id
+            target["ssh_receiver_key_id"] = result.key_id
+            target["ssh_receiver_public_key"] = result.public_key
+            target["ssh_receiver_last_verified_at"] = _iso(now)
+            target["receiver_status"] = "VERIFIED"
+            target["deployment_capable"] = True
+            target["deployment_profiles"] = list(result.deployment_profiles)
+            target["capacity"] = dict(result.capacity)
+            target["receiver_transport"] = (
+                "HTTPS+SSH"
+                if target.get("control_url") and target.get("health_url")
+                else "SSH"
+            )
+            target["trust_source"] = (
+                str(target.get("trust_source") or "OPERATOR_SSH_BOOTSTRAP")
+                + "+PINNED_AGENT_NETWORK_RECEIVER"
+            )
+            target.pop("ssh_receiver_last_error", None)
+        except Exception as exc:
+            target["ssh_receiver_status"] = "PROVISION_FAILED"
+            target["ssh_receiver_last_error"] = type(exc).__name__
+            target["ssh_receiver_last_verified_at"] = _iso(now)
+            if not target.get("control_url"):
+                target["receiver_status"] = "PROVISION_FAILED"
+                target["deployment_capable"] = False
+            _atomic_json(self.hosts_path, rows)
+            self._record_action({
+                "action": "PROVISION_REMOTE_RECEIVER",
+                "host_id": host_id,
+                "status": "FAILED",
+                "error_type": type(exc).__name__,
+            }, now)
+            raise
+        _atomic_json(self.hosts_path, rows)
+        self._record_action({
+            "action": "PROVISION_REMOTE_RECEIVER",
+            "host_id": host_id,
+            "status": "VERIFIED",
+            "transport": target.get("receiver_transport"),
+            "release_sha": target.get("ssh_receiver_release_sha"),
+            "agent_id": target.get("ssh_receiver_agent_id"),
+            "key_id": target.get("ssh_receiver_key_id"),
+        }, now)
+        return target
 
     def register_remote_host(
         self, *, name: str, health_url: str, capacity: dict[str, Any],
@@ -827,7 +925,9 @@ class SurvivalResourceManager:
             raise FileNotFoundError(service_id)
         if host is None or host.get("status") != "ACTIVE":
             raise ValueError("offload requires an active verified remote host")
-        if not host.get("deployment_capable") or not host.get("control_url"):
+        if not host.get("deployment_capable") or not (
+            host.get("control_url") or host.get("ssh_receiver_command")
+        ):
             raise ValueError("offload requires verified signed deployment capability")
         if service.get("migration_class") == "PRIMARY_STATEFUL":
             raise ValueError("primary stateful migration requires dedicated migration approval")
@@ -871,7 +971,9 @@ class SurvivalResourceManager:
         service = next((row for row in service_rows if row.get("service_id") == service_id), None)
         if host is None or host.get("status") != "ACTIVE":
             raise ValueError("offload execution requires an active remote host")
-        if not host.get("deployment_capable") or not host.get("control_url"):
+        if not host.get("deployment_capable") or not (
+            host.get("control_url") or host.get("ssh_receiver_command")
+        ):
             raise ValueError("remote host has no verified deployment capability")
         if service is None:
             raise FileNotFoundError(service_id)
@@ -894,12 +996,11 @@ class SurvivalResourceManager:
         }
         payload["object_hash"] = identity.object_hash(payload)
         payload["signature"] = identity.sign_object(payload)
-        receipt = self._http_json(
-            str(host["control_url"]), method="POST", payload=payload, timeout=60.0
-        )
+        receipt, deployment_transport = self._deploy_to_host(host, payload)
         self._verify_deployment_receipt(
             receipt=receipt, host=host, action_id=action_id,
             request_hash=str(payload["object_hash"]),
+            transport=deployment_transport,
         )
         deployment_id = str(receipt.get("deployment_id") or "")
         if not deployment_id:
@@ -909,7 +1010,9 @@ class SurvivalResourceManager:
             self._verify_static_deployment(
                 host=host,
                 deployment_url=deployment_url,
+                deployment_path=str(receipt.get("deployment_path") or ""),
                 artifact=dict(payload["artifact"]),
+                transport=deployment_transport,
             )
 
         placement_mode = "MOVED"
@@ -931,6 +1034,8 @@ class SurvivalResourceManager:
                     "status": "ACTIVE",
                     "deployment_id": deployment_id,
                     "deployment_url": deployment_url or None,
+                    "deployment_path": str(receipt.get("deployment_path") or "") or None,
+                    "deployment_transport": deployment_transport,
                     "artifact_sha256": str(receipt.get("artifact_sha256") or ""),
                     "index_sha256": str(payload["artifact"].get("index_sha256") or ""),
                     "last_verified_at": _iso(now),
@@ -954,6 +1059,8 @@ class SurvivalResourceManager:
             "status": "DEPLOYED",
             "deployment_id": deployment_id,
             "deployment_url": deployment_url or None,
+            "deployment_path": str(receipt.get("deployment_path") or "") or None,
+            "deployment_transport": deployment_transport,
             "artifact_sha256": receipt.get("artifact_sha256"),
             "request_hash": payload["object_hash"],
             "receipt_evidence": "remote-deployment:" + sha256(
@@ -1015,19 +1122,51 @@ class SurvivalResourceManager:
             "index_sha256": "sha256:" + sha256(index_bytes).hexdigest(),
         }
 
+    def _deploy_to_host(
+        self, host: dict[str, Any], payload: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        control_url = str(host.get("control_url") or "").strip()
+        if control_url:
+            try:
+                return (
+                    self._http_json(
+                        control_url, method="POST", payload=payload, timeout=60.0
+                    ),
+                    "HTTPS",
+                )
+            except Exception:
+                if not host.get("ssh_receiver_command"):
+                    raise
+        if host.get("ssh_receiver_command"):
+            return self._ssh_receiver_transport(host).deploy(payload), "SSH"
+        raise RuntimeError("remote host has no deployment transport")
+
     def _verify_static_deployment(
         self, *, host: dict[str, Any], deployment_url: str,
-        artifact: dict[str, Any],
+        deployment_path: str, artifact: dict[str, Any], transport: str,
     ) -> None:
-        if not deployment_url:
-            raise RuntimeError("remote static deployment omitted deployment_url")
-        control_url = str(host.get("control_url") or "")
-        if not self._same_origin(control_url, deployment_url):
-            raise RuntimeError("remote deployment URL origin mismatch")
-        body = self._http_bytes(deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024)
         expected = str(artifact.get("index_sha256") or "")
-        actual = "sha256:" + sha256(body).hexdigest()
-        if not expected or actual != expected:
+        if not expected:
+            raise RuntimeError("local static artifact omitted index digest")
+        if transport == "HTTPS":
+            if not deployment_url:
+                raise RuntimeError("remote static deployment omitted deployment_url")
+            control_url = str(host.get("control_url") or "")
+            if not self._same_origin(control_url, deployment_url):
+                raise RuntimeError("remote deployment URL origin mismatch")
+            body = self._http_bytes(
+                deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024
+            )
+            actual = "sha256:" + sha256(body).hexdigest()
+        elif transport == "SSH":
+            if not deployment_path:
+                raise RuntimeError("SSH deployment omitted deployment path")
+            actual = self._ssh_receiver_transport(host).static_index_sha256(
+                deployment_path
+            )
+        else:
+            raise RuntimeError("unknown deployment transport")
+        if actual != expected:
             raise RuntimeError("remote static index verification failed")
 
     def actions(self, *, limit: int = 30) -> list[dict[str, Any]]:
@@ -1043,15 +1182,47 @@ class SurvivalResourceManager:
                 rows.append(value)
         return rows[-max(1, int(limit)):]
 
+    def _ssh_receiver_transport(self, host: dict[str, Any]):
+        from .survival_receiver_ssh import SSHWorkloadTransport
+
+        command = str(host.get("ssh_receiver_command") or "").strip()
+        key_ref = str(host.get("ssh_key_ref") or "").strip()
+        if not command or not key_ref:
+            raise RuntimeError("SSH receiver transport is not configured")
+        key_path = (
+            self.state_root / "secrets" / "survival-hosts" / key_ref / "id_ed25519"
+        )
+        if not key_path.is_file():
+            raise RuntimeError("SSH management key is unavailable")
+        return SSHWorkloadTransport(
+            host=str(host.get("ssh_host") or ""),
+            port=int(host.get("ssh_port") or 22),
+            username=str(host.get("ssh_username") or "root"),
+            key_path=key_path,
+            expected_host_key_sha256=str(host.get("ssh_host_key_sha256") or ""),
+            receiver_command=command,
+        )
+
+    def _receiver_health(self, host: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        health_url = str(host.get("health_url") or "").strip()
+        if health_url:
+            try:
+                return self._http_json(health_url, method="GET", timeout=8.0), "HTTPS"
+            except Exception:
+                if not host.get("ssh_receiver_command"):
+                    raise
+        if host.get("ssh_receiver_command"):
+            return self._ssh_receiver_transport(host).health(), "SSH"
+        raise RuntimeError("remote host has no receiver health transport")
+
     def _refresh_remote_hosts(self, *, now: datetime) -> None:
         rows = self.remote_hosts()
         changed = False
         for row in rows:
-            health_url = str(row.get("health_url") or "").strip()
-            if not health_url:
+            if not row.get("health_url") and not row.get("ssh_receiver_command"):
                 continue
             try:
-                payload = self._http_json(health_url, method="GET", timeout=8.0)
+                payload, transport = self._receiver_health(row)
                 healthy = str(payload.get("status") or payload.get("health") or "").upper()
                 if healthy not in {"OK", "HEALTHY", "READY"}:
                     raise RuntimeError("remote receiver health is not ready")
@@ -1059,15 +1230,24 @@ class SurvivalResourceManager:
                 expected_instance = str(row.get("host_instance_id") or "").strip()
                 if expected_instance and remote_instance != expected_instance:
                     raise RuntimeError("remote receiver physical host identity changed")
-                expected_agent = str(row.get("agent_id") or row.get("expected_agent_id") or "").strip()
+                if transport == "SSH":
+                    expected_agent = str(row.get("ssh_receiver_agent_id") or "").strip()
+                    expected_key = str(row.get("ssh_receiver_key_id") or "").strip()
+                    expected_public = str(row.get("ssh_receiver_public_key") or "").strip()
+                else:
+                    expected_agent = str(
+                        row.get("agent_id") or row.get("expected_agent_id") or ""
+                    ).strip()
+                    expected_key = str(
+                        row.get("key_id") or row.get("expected_key_id") or ""
+                    ).strip()
+                    expected_public = str(
+                        row.get("public_key") or row.get("expected_public_key") or ""
+                    ).strip()
                 if expected_agent and str(payload.get("agent_id") or "") != expected_agent:
                     raise RuntimeError("remote receiver agent identity changed")
-                expected_key = str(row.get("key_id") or row.get("expected_key_id") or "").strip()
                 if expected_key and str(payload.get("key_id") or "") != expected_key:
                     raise RuntimeError("remote receiver key identity changed")
-                expected_public = str(
-                    row.get("public_key") or row.get("expected_public_key") or ""
-                ).strip()
                 if expected_public and str(payload.get("public_key") or "") != expected_public:
                     raise RuntimeError("remote receiver public key changed")
                 capabilities = [
@@ -1081,17 +1261,23 @@ class SurvivalResourceManager:
                 row["status"] = "ACTIVE"
                 row["receiver_status"] = "VERIFIED"
                 row["deployment_capable"] = (
-                    bool(row.get("control_url"))
-                    and "survival.workload.deploy.v1" in capabilities
+                    "survival.workload.deploy.v1" in capabilities
                     and bool(payload.get("agent_id"))
                     and bool(payload.get("public_key"))
+                    and (
+                        (transport == "HTTPS" and bool(row.get("control_url")))
+                        or (transport == "SSH" and bool(row.get("ssh_receiver_command")))
+                    )
                 )
+                row["active_receiver_transport"] = transport
                 row["capabilities"] = capabilities
                 row["deployment_profiles"] = profiles
                 if isinstance(payload.get("capacity"), dict):
                     row["capacity"] = dict(payload["capacity"])
                 row["last_health_at"] = _iso(now)
                 row["last_verified_at"] = _iso(now)
+                if transport == "SSH":
+                    row["ssh_receiver_last_verified_at"] = _iso(now)
                 row.pop("last_health_error", None)
                 changed = True
             except Exception as exc:
@@ -1133,18 +1319,29 @@ class SurvivalResourceManager:
                     ):
                         raise RuntimeError("replica host receiver is unavailable")
                     deployment_url = str(replica.get("deployment_url") or "").strip()
-                    if not deployment_url:
-                        raise RuntimeError("replica has no deployment URL")
+                    deployment_path = str(replica.get("deployment_path") or "").strip()
+                    transport = str(replica.get("deployment_transport") or "").upper()
                     if profile == "content.website-static.v1":
                         expected = str(replica.get("index_sha256") or "").strip()
                         if not expected:
                             expected = self._local_static_index_sha256()
                             if expected:
                                 replica["index_sha256"] = expected
-                        body = self._http_bytes(
-                            deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024
-                        )
-                        actual = "sha256:" + sha256(body).hexdigest()
+                        if transport == "SSH" or (not deployment_url and deployment_path):
+                            if not deployment_path:
+                                raise RuntimeError("SSH replica has no deployment path")
+                            actual = self._ssh_receiver_transport(host).static_index_sha256(
+                                deployment_path
+                            )
+                            replica["deployment_transport"] = "SSH"
+                        else:
+                            if not deployment_url:
+                                raise RuntimeError("replica has no deployment URL")
+                            body = self._http_bytes(
+                                deployment_url, timeout=12.0, max_bytes=4 * 1024 * 1024
+                            )
+                            actual = "sha256:" + sha256(body).hexdigest()
+                            replica["deployment_transport"] = "HTTPS"
                         if not expected or actual != expected:
                             raise RuntimeError("replica content hash mismatch")
                     replica["status"] = "ACTIVE"
@@ -1170,6 +1367,33 @@ class SurvivalResourceManager:
         except OSError:
             return ""
         return "sha256:" + sha256(body).hexdigest()
+
+    def _provision_pending_receiver(self, *, now: datetime) -> dict[str, Any]:
+        for host in self.remote_hosts():
+            if (
+                host.get("status") == "ACTIVE"
+                and host.get("management_transport") == "SSH_KEY"
+                and str(host.get("ssh_receiver_status") or host.get("receiver_status") or "")
+                in {"", "NOT_PROVISIONED", "PROVISION_FAILED"}
+            ):
+                try:
+                    row = self.provision_ssh_receiver(str(host.get("host_id") or ""), now=now)
+                    return {
+                        "status": "VERIFIED",
+                        "host_id": row.get("host_id"),
+                        "transport": row.get("receiver_transport"),
+                        "release_sha": row.get("ssh_receiver_release_sha"),
+                    }
+                except Exception as exc:
+                    return {
+                        "status": "FAILED",
+                        "host_id": host.get("host_id"),
+                        "error_type": type(exc).__name__,
+                    }
+        return {
+            "status": "AWAITING_RESOURCE",
+            "reason": "no SSH-managed host is awaiting receiver provisioning",
+        }
 
     def _has_automatic_replica_gap(self) -> bool:
         candidates = self.placement_candidates()
@@ -1286,7 +1510,7 @@ class SurvivalResourceManager:
         self, *, now: datetime, storage_pressure: bool,
         compute_pressure: bool, active_remote: bool,
         usable_remote: bool, degraded_replica: bool,
-        automatic_replica_gap: bool,
+        automatic_replica_gap: bool, provisionable_remote: bool,
     ) -> list[dict[str, Any]]:
         rows = self.needs()
         desired: list[tuple[str, str, str, str]] = []
@@ -1299,7 +1523,10 @@ class SurvivalResourceManager:
         if not active_remote:
             desired.append(("REMOTE_MACHINE", "DISCOVER_REMOTE_MACHINE", "NORMAL",
                             "No verified remote body is available for continuity or pressure relief"))
-        elif not usable_remote:
+        if provisionable_remote:
+            desired.append(("REMOTE_MACHINE", "PROVISION_REMOTE_RECEIVER", "NORMAL",
+                            "An SSH-managed remote body is ready for a pinned signed workload receiver"))
+        elif active_remote and not usable_remote:
             desired.append(("REMOTE_MACHINE", "RESTORE_REMOTE_RECEIVER", "HIGH",
                             "A remote body exists but its signed workload receiver is unavailable"))
         if degraded_replica:
@@ -1316,6 +1543,7 @@ class SurvivalResourceManager:
         managed_actions = {
             "DISCOVER_REMOTE_MACHINE",
             "RESTORE_REMOTE_RECEIVER",
+            "PROVISION_REMOTE_RECEIVER",
             "RESTORE_SERVICE_REPLICA",
             "ENSURE_SERVICE_REPLICA",
             "OFFLOAD_NON_CORE_SERVICE",
@@ -1343,6 +1571,7 @@ class SurvivalResourceManager:
                     "RECLAIM_TRANSIENT_STORAGE",
                     "APPLY_CONSERVATION_POLICY",
                     "DISCOVER_REMOTE_MACHINE",
+                    "PROVISION_REMOTE_RECEIVER",
                     "RESTORE_SERVICE_REPLICA",
                     "ENSURE_SERVICE_REPLICA",
                 }
@@ -1467,7 +1696,7 @@ class SurvivalResourceManager:
     @staticmethod
     def _verify_deployment_receipt(
         *, receipt: dict[str, Any], host: dict[str, Any],
-        action_id: str, request_hash: str,
+        action_id: str, request_hash: str, transport: str,
     ) -> None:
         from agent_network.crypto import verify_object
 
@@ -1479,13 +1708,19 @@ class SurvivalResourceManager:
             raise RuntimeError("remote deployment receipt action_id mismatch")
         if str(receipt.get("request_hash") or "") != request_hash:
             raise RuntimeError("remote deployment receipt request_hash mismatch")
-        if str(receipt.get("agent_id") or "") != str(host.get("agent_id") or ""):
+        if transport == "SSH":
+            expected_agent_id = str(host.get("ssh_receiver_agent_id") or "")
+            expected_key_id = str(host.get("ssh_receiver_key_id") or "")
+            public_key = str(host.get("ssh_receiver_public_key") or "")
+        else:
+            expected_agent_id = str(host.get("agent_id") or "")
+            expected_key_id = str(host.get("key_id") or "")
+            public_key = str(host.get("public_key") or "")
+        if str(receipt.get("agent_id") or "") != expected_agent_id:
             raise RuntimeError("remote deployment receipt agent identity mismatch")
-        expected_key_id = str(host.get("key_id") or "")
         if expected_key_id and str(receipt.get("key_id") or "") != expected_key_id:
             raise RuntimeError("remote deployment receipt key identity mismatch")
         signature = str(receipt.get("signature") or "")
-        public_key = str(host.get("public_key") or "")
         if not signature or not public_key or not verify_object(public_key, receipt, signature):
             raise RuntimeError("remote deployment receipt signature is invalid")
 
