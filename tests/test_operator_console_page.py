@@ -78,3 +78,16 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "每个账号拥有独立 Chrome profile/cookie" in page
     assert "测试该账号 Jev" in page
     assert "调用 X API 时显式使用该账号" in page
+
+
+def test_operator_login_page_offers_email_delivery_and_config():
+    page = operator_console_document()
+
+    assert 'id="emailSignin"' in page
+    assert "发送到 Email" in page
+    assert 'id="operatorEmailProvider"' in page
+    assert 'id="operatorEmailRecipient"' in page
+    assert 'id="operatorEmailSender"' in page
+    assert "/operator/api/login-delivery/email" in page
+    assert "RESEND_API_KEY" not in page
+    assert "CONTENT_OPERATOR_SMTP_PASSWORD" not in page

@@ -542,7 +542,8 @@ def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypa
 
     page = client.get("/operator/")
     assert page.status_code == 200
-    assert "发送登录链接" in page.text
+    assert "发送到企业微信" in page.text
+    assert "发送到 Email" in page.text
     assert "备用 Token 登录" in page.text
 
     missing_header = client.post("/operator/api/request-login", json={})
@@ -554,7 +555,12 @@ def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypa
         json={},
     )
     assert response.status_code == 202
-    assert response.json() == {"ok": True, "status": "SENT", "expires_in_seconds": 600}
+    assert response.json() == {
+        "ok": True,
+        "status": "SENT",
+        "channel": "WECOM",
+        "expires_in_seconds": 600,
+    }
     assert "bootstrap" not in response.text.lower()
     assert len(notifier.messages) == 1
     message = notifier.messages[0]
@@ -1222,3 +1228,83 @@ def test_operator_multi_x_oauth_endpoints_are_authenticated_and_non_secret(tmp_p
     assert completed.json()["identity"] == "second_x"
     assert callback not in completed.text
     assert calls[-1] == ("complete", "oauth-session-1", callback)
+
+
+def test_operator_login_link_can_be_delivered_by_email(tmp_path, monkeypatch):
+    import wechat_traffic_agent.operator_email as email_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    monkeypatch.setenv(
+        "CONTENT_OPERATOR_PUBLIC_URL",
+        "https://livingruntime.com/operator/",
+    )
+
+    class FakeEmailNotifier:
+        links = []
+
+        def __init__(self, state_root):
+            self.state_root = state_root
+
+        def status(self):
+            return {"configured": True, "provider": "TEST"}
+
+        def send_login_link(self, *, link, expires_minutes=10):
+            self.__class__.links.append(link)
+            return {"status": "SENT", "provider": "TEST"}
+
+    monkeypatch.setattr(email_module, "OperatorEmailNotifier", FakeEmailNotifier)
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={"channel": "email"},
+    )
+    assert response.status_code == 202
+    assert response.json()["channel"] == "EMAIL"
+    assert "bootstrap" not in response.text.lower()
+    assert len(FakeEmailNotifier.links) == 1
+
+    token = FakeEmailNotifier.links[0].split("#bootstrap=", 1)[1]
+    accepted = client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert accepted.status_code == 200
+
+
+def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    payload = {
+        "provider": "RESEND",
+        "recipient": "owner@example.com",
+        "sender": "login@livingruntime.com",
+        "smtp_port": 587,
+        "smtp_security": "STARTTLS",
+    }
+
+    unauthorized = client.post(
+        "/operator/api/login-delivery/email",
+        headers={"X-Operator-Request": "1"},
+        json=payload,
+    )
+    assert unauthorized.status_code == 401
+
+    _login_operator(client, tmp_path)
+    saved = client.post(
+        "/operator/api/login-delivery/email",
+        headers={"X-Operator-Request": "1"},
+        json=payload,
+    )
+    assert saved.status_code == 200
+    path = tmp_path / "operator" / "email-delivery.json"
+    raw = path.read_text()
+    assert "owner@example.com" in raw
+    assert "password" not in raw.lower()
+    assert "api_key" not in raw.lower()

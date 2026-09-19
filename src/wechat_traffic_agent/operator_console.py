@@ -39,6 +39,12 @@ SECRET_SPECS = {
     "VIRTUALBRAIN_LLM_API_KEY": SecretSpec(
         "VIRTUALBRAIN_LLM_API_KEY", "DeepSeek stable reserve", quota_metadata=False
     ),
+    "RESEND_API_KEY": SecretSpec(
+        "RESEND_API_KEY", "Operator Email / Resend", quota_metadata=False
+    ),
+    "CONTENT_OPERATOR_SMTP_PASSWORD": SecretSpec(
+        "CONTENT_OPERATOR_SMTP_PASSWORD", "Operator Email / SMTP Password", quota_metadata=False
+    ),
 }
 
 
@@ -745,11 +751,16 @@ class OperatorConsole:
     def status(self) -> dict[str, Any]:
         from .account_management import AccountManager
         from .browser_runtime import browser_runtime_status
+        from .operator_email import OperatorEmailNotifier
         return {
             "ok": True,
             "secrets": self.vault.status(),
             "accounts": AccountManager(self.state_root).status(),
             "browser_runtime": browser_runtime_status(),
+            "operator_login_delivery": {
+                "wecom": {"configured": True},
+                "email": OperatorEmailNotifier(self.state_root).status(),
+            },
             "pending_requests": self.pending_requests(),
             "resource_requests": self.resource_requests(),
             "llm_resources": self.resource_status(),
