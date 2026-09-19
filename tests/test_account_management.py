@@ -23,7 +23,7 @@ class FakeBrowser:
 
 
 def test_account_catalog_exposes_x_and_future_adapter_slots(tmp_path):
-    manager = AccountManager(tmp_path)
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: "")
     rows = {row["provider_id"]: row for row in manager.status()["accounts"]}
 
     assert rows["x"]["implemented"] is True
@@ -40,7 +40,9 @@ def test_x_account_verification_persists_only_non_secret_metadata(tmp_path):
         made.append(browser)
         return browser
 
-    manager = AccountManager(tmp_path, browser_factory=factory)
+    manager = AccountManager(
+        tmp_path, browser_factory=factory, xurl_status_provider=lambda: ""
+    )
     result = manager.verify("x")
 
     assert result["status"] == "CONNECTED"
@@ -59,8 +61,31 @@ def test_x_account_verification_marks_login_needed_when_session_missing(tmp_path
     manager = AccountManager(
         tmp_path,
         browser_factory=lambda url: FakeBrowser(url, authenticated=False),
+        xurl_status_provider=lambda: "",
     )
     result = manager.verify("x")
     assert result["status"] == "NEEDS_LOGIN"
     assert result["identity"] == ""
     assert "authenticated X profile was not visible" in result["last_error"]
+
+
+def test_x_account_distinguishes_api_oauth_from_browser_session(tmp_path):
+    status = """▸ content-agent  [client_id: example]
+      redirect_uri: http://localhost:8080/callback
+      oauth2: caini56006962
+      oauth1: –
+      bearer: –
+
+  default  [(no credentials)]
+      oauth2: (none)
+"""
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
+    row = next(x for x in manager.status()["accounts"] if x["provider_id"] == "x")
+
+    assert row["status"] == "CONNECTED"
+    assert row["identity"] == "caini56006962"
+    bindings = {x["binding_id"]: x for x in row["bindings"]}
+    assert bindings["api_oauth"]["status"] == "CONNECTED"
+    assert bindings["api_oauth"]["login_kind"] == "REDIRECT"
+    assert bindings["browser_session"]["status"] == "NEEDS_LOGIN"
+    assert bindings["browser_session"]["purpose"] == "WEB_AUTOMATION"
