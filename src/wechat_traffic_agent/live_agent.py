@@ -14,6 +14,7 @@ from typing import Any
 
 from .public_activity import read_public_activity
 from .public_persona import classify_public_question, public_persona_projection, record_public_interaction
+from .channels.brain_lab_page import brain_lab_document
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8104
@@ -818,6 +819,17 @@ class LiveAgentService:
 
         async def talk_page(_request: Request):
             return HTMLResponse(talk_agent_document(), headers={"Cache-Control": "no-cache"})
+
+        async def brain_lab_page(_request: Request):
+            return HTMLResponse(brain_lab_document(), headers={"Cache-Control": "no-cache"})
+
+        async def brain_lab_status(_request: Request):
+            if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
+                return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)
+            payload = dict(self.wakeful.brain_lab_projection())
+            if hasattr(self.wakeful, "dream_projection"):
+                payload["dreaming"] = self.wakeful.dream_projection()
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def status(_request: Request):
             return JSONResponse(public_agent_snapshot(
@@ -2734,6 +2746,9 @@ class LiveAgentService:
             Route("/live/", live_page, methods=["GET"]),
             Route("/talk", talk_page, methods=["GET"]),
             Route("/talk/", talk_page, methods=["GET"]),
+            Route("/brain", brain_lab_page, methods=["GET"]),
+            Route("/brain/", brain_lab_page, methods=["GET"]),
+            Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
             Route("/api/agent/chat", chat, methods=["POST"]),

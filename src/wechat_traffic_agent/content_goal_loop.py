@@ -96,6 +96,15 @@ class MissionDiscoveryDecision(Contract):
     rationale: str = Field(min_length=10, max_length=600)
 
 
+class DreamInsightDecision(Contract):
+    should_investigate: bool
+    hypothesis: str = Field(min_length=10, max_length=500)
+    topic: str = Field(min_length=2, max_length=80)
+    question: str = Field(min_length=10, max_length=400)
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=10, max_length=600)
+
+
 def _active_mission_discovery_context(value):
     if not isinstance(value, dict) or value.get("status") != "ACTIVE":
         return None
@@ -587,6 +596,92 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'required_topic': self._focus_topic,
                 }
                 _put(folder / 'bootstrap_focus.json', {'topic': self._focus_topic, 'endogenous_goal': endogenous_goal})
+
+            # N9: dreams are neural replay first; only here may the rational
+            # language layer verbalize an already-formed preconcept. A strong,
+            # unexplored association may seed the next evidence-seeking goal.
+            if mind_plan.get('goal') is None and mind_plan.get('required_topic') is None:
+                dreams_payload = {}
+                dreams_path = self.state / 'application' / 'neural_dreams.json'
+                try:
+                    dreams_payload = json.loads(dreams_path.read_text(encoding='utf-8'))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    dreams_payload = {}
+                preconcept = next((
+                    row for row in reversed(dreams_payload.get('preconcepts') or [])
+                    if isinstance(row, dict)
+                    and not bool(row.get('verbalized'))
+                    and float(row.get('association_strength') or 0.0) >= 0.12
+                ), None)
+                if preconcept is not None:
+                    insight_path = folder / 'dream_insight.json'
+                    if insight_path.exists():
+                        insight_payload = json.loads(insight_path.read_text(encoding='utf-8'))
+                        dream_insight = DreamInsightDecision.model_validate(insight_payload['decision'])
+                    else:
+                        dream_runtime = ReceiptRuntime(self.runtime, folder / 'dream_interpretation_calls')
+                        task = (
+                            'DREAM_PRECONCEPT_INTERPRETATION: You are the rational Ego layer. '
+                            'The neural system has already produced the supplied preconcept through replay; '
+                            'do not pretend the language model dreamed it. Translate the association into one '
+                            'bounded, falsifiable research hypothesis. It may become a Website research topic '
+                            'only if investigating it would produce useful evidence for this persistent agent. '
+                            'topic must be a lowercase kebab-case slug. Do not treat neural channel names as '
+                            'facts about the world and do not claim subjective consciousness.\n'
+                            + json.dumps({
+                                'preconcept': preconcept,
+                                'available_topics': sorted(snapshot['topics'])[:80],
+                                'recent_articles': [
+                                    {
+                                        'title': row['artifact']['title'],
+                                        'summary': row['artifact']['summary'][:220],
+                                    }
+                                    for row in snapshot['articles'][-10:]
+                                ],
+                            }, ensure_ascii=False)
+                        )
+                        def validate_dream_insight(value):
+                            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
+                                raise ValueError('dream insight topic must be lowercase kebab-case')
+                            return value
+                        dream_insight = await _structured(
+                            dream_runtime, task, DreamInsightDecision, validate=validate_dream_insight
+                        )
+                        _put(insight_path, {
+                            'schema_version': 'ferro-dream-insight.v1',
+                            'preconcept_id': preconcept.get('preconcept_id'),
+                            'source_dream': preconcept.get('source_dream'),
+                            'decision': dream_insight.model_dump(mode='json'),
+                            'authority': 'EGO_INTERPRETATION_OF_NEURAL_PRECONCEPT',
+                        })
+                    try:
+                        from .neural_dreaming import FerroDreamEngine
+                        FerroDreamEngine(self.state, substrate=None).mark_verbalized(
+                            str(preconcept.get('preconcept_id') or ''),
+                            hypothesis=dream_insight.hypothesis,
+                            now=now,
+                        )
+                    except (KeyError, OSError, ValueError):
+                        pass
+                    if dream_insight.should_investigate:
+                        mind_plan = {
+                            **mind_plan,
+                            'endogenous_goal': mind_plan.get('goal'),
+                            'goal': {
+                                'goal_id': 'dream-insight:' + str(preconcept.get('preconcept_id') or 'unknown'),
+                                'origin': 'DREAM_INSIGHT',
+                                'description': dream_insight.question,
+                                'confidence': dream_insight.confidence,
+                                'expected_value': max(0.25, dream_insight.confidence),
+                                'interest_refs': [dream_insight.topic],
+                                'inquiry_refs': [str(preconcept.get('preconcept_id') or '')],
+                                'value_refs': [str(preconcept.get('source_dream') or '')],
+                            },
+                            'required_topic': dream_insight.topic,
+                            'dream_preconcept': preconcept,
+                            'dream_insight': dream_insight.model_dump(mode='json'),
+                        }
+
         required_topic = mind_plan.get('required_topic')
         x_mission_context = x_growth_mission_context(self.state)
         mission_context = _active_mission_discovery_context(x_mission_context)

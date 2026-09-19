@@ -99,3 +99,53 @@ def test_strong_endogenous_drive_can_request_real_runtime_work(tmp_path):
     life.mark_authority_action(NOW, recommendation)
     assert life.authority_recommendation(NOW + timedelta(minutes=5)) is None
     assert life.authority_recommendation(NOW + timedelta(minutes=16)) is not None
+
+
+def test_homeostasis_is_nearly_frequency_invariant(tmp_path):
+    body = {
+        "observed_at": NOW.isoformat(),
+        "cpu_pressure": 0.20,
+        "memory_pressure": 0.35,
+        "disk_pressure": 0.80,
+        "x_followers": 1835.0,
+        "x_target": 5000.0,
+        "x_follower_gap": 0.633,
+        "x_recent_decline": 0.0,
+    }
+    one = FerroNeuralLife(tmp_path / "one")
+    many = FerroNeuralLife(tmp_path / "many")
+    one.update(now=NOW, wakeful=_wakeful(errors=1), body_override=body)
+    many.update(now=NOW, wakeful=_wakeful(errors=1), body_override=body)
+
+    after_one = one.update(
+        now=NOW + timedelta(hours=1),
+        wakeful=_wakeful(errors=1, last_cognition_hours=2),
+        body_override=body,
+    )
+    after_many = None
+    for minute in range(5, 61, 5):
+        after_many = many.update(
+            now=NOW + timedelta(minutes=minute),
+            wakeful=_wakeful(errors=1, last_cognition_hours=1 + minute / 60),
+            body_override=body,
+        )
+    assert after_many is not None
+    for key in ("survival", "reproduction", "evolution"):
+        assert abs(after_one["drives"][key] - after_many["drives"][key]) < 0.025
+    for key in ("confidence", "frustration", "curiosity", "social_need"):
+        assert abs(after_one["affect"][key] - after_many["affect"][key]) < 0.04
+
+
+def test_zero_elapsed_update_does_not_ratchet_drives(tmp_path):
+    life = FerroNeuralLife(tmp_path)
+    body = {
+        "observed_at": NOW.isoformat(),
+        "cpu_pressure": 0.30,
+        "memory_pressure": 0.45,
+        "disk_pressure": 0.91,
+        "x_follower_gap": 0.63,
+        "x_recent_decline": 0.0,
+    }
+    first = life.update(now=NOW, wakeful=_wakeful(errors=4), body_override=body)
+    second = life.update(now=NOW, wakeful=_wakeful(errors=4), body_override=body)
+    assert second["drives"] == first["drives"]

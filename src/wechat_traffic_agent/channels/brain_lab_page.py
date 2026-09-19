@@ -1,0 +1,44 @@
+from __future__ import annotations
+
+
+def brain_lab_document() -> str:
+    return r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ferro Brain Lab</title>
+<style>
+:root{color-scheme:dark;background:#080b10;color:#edf2f7;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#182232 0,#080b10 42%) fixed}
+main{width:min(1180px,94vw);margin:0 auto;padding:30px 0 70px}.top{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:24px}
+.k{font-size:12px;letter-spacing:.18em;color:#8ea5bf}.top h1{margin:8px 0 4px;font-size:clamp(34px,7vw,72px);line-height:.9}.muted{color:#9aabba;max-width:760px;line-height:1.6}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.card{background:rgba(15,22,31,.86);border:1px solid #27384a;border-radius:18px;padding:18px;box-shadow:0 16px 50px rgba(0,0,0,.22)}
+.card.active{border-color:#85a4c3}.head{display:flex;justify-content:space-between;align-items:center;gap:16px}.head h2{margin:0;font-size:24px}.chip{font-size:11px;letter-spacing:.1em;border:1px solid #40556b;border-radius:99px;padding:6px 9px;color:#b7c8d9}
+.stage{height:260px;margin-top:14px;background:#05080c;border-radius:14px;border:1px solid #1d2a36;position:relative;overflow:hidden}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.stat{background:#0b1118;border-radius:10px;padding:10px}.stat b{display:block;font-size:18px}.stat span{font-size:11px;color:#91a3b5}
+.ball,.paddle,.food,.agent,.goal,.rover{position:absolute;transform:translate(-50%,-50%)}.ball{width:13px;height:13px;border-radius:50%;background:#f2f5f8;box-shadow:0 0 16px #dce8f5}.paddle{width:10px;height:64px;background:#8eb0ce;border-radius:8px}.agent{width:18px;height:18px;border-radius:50%;background:#9bbad6}.food{width:16px;height:16px;border-radius:4px;background:#d7c38d;transform:translate(-50%,-50%) rotate(45deg)}.goal{width:20px;height:20px;border:2px solid #b5d2ec;border-radius:50%}.wall{position:absolute;background:#344354;border-radius:3px}.rover{width:25px;height:14px;border-radius:6px;background:#a8bfd4}.track{position:absolute;left:6%;right:6%;top:50%;height:2px;background:#31465b}.stream{margin-top:16px;display:grid;gap:7px;max-height:300px;overflow:auto}.row{display:grid;grid-template-columns:110px 95px 1fr 90px;gap:10px;padding:9px 10px;border:1px solid #1d2a36;border-radius:9px;font-size:12px;color:#9fb1c2}.row b{color:#e5eef7}
+.summary{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}.pill{background:#111923;border:1px solid #28384a;border-radius:99px;padding:8px 11px;font-size:12px;color:#b7c7d7}
+@media(max-width:760px){.grid{grid-template-columns:1fr}.stage{height:220px}.row{grid-template-columns:80px 70px 1fr}.row span:last-child{display:none}}
+</style></head><body><main>
+<div class="top"><div><div class="k">FERRO · DEVELOPMENTAL NEURAL WORLD</div><h1>Brain Lab</h1><p class="muted">Pong, maze, foraging and rover all stimulate the same persistent production connectome. Game reward changes the same recurrent synapses Ferro later carries back into ordinary life.</p></div><a href="/live" style="color:#b9d0e6">Live Ferro ↗</a></div>
+<div class="summary" id="summary"><span class="pill">loading persistent neural state…</span></div>
+<div class="grid">
+<section class="card" id="PONG-card"><div class="head"><h2>Pong</h2><span class="chip">sensorimotor</span></div><div class="stage" id="pong-stage"></div><div class="stats" id="pong-stats"></div></section>
+<section class="card" id="MAZE-card"><div class="head"><h2>Maze</h2><span class="chip">navigation</span></div><div class="stage" id="maze-stage"></div><div class="stats" id="maze-stats"></div></section>
+<section class="card" id="FORAGING-card"><div class="head"><h2>Foraging</h2><span class="chip">resource drive</span></div><div class="stage" id="forage-stage"></div><div class="stats" id="forage-stats"></div></section>
+<section class="card" id="ROVER-card"><div class="head"><h2>Rover</h2><span class="chip">control</span></div><div class="stage" id="rover-stage"></div><div class="stats" id="rover-stats"></div></section>
+</div>
+<section class="card" style="margin-top:16px"><div class="head"><h2>Tonight Ferro dreamed…</h2><span class="chip">NEURAL REPLAY · NO LLM</span></div><div id="dream-box" class="muted" style="margin-top:12px">No dream replay yet.</div></section>
+<section class="card" style="margin-top:16px"><div class="head"><h2>Recent neural development</h2><span class="chip">REAL REWARD → PLASTICITY</span></div><div class="stream" id="stream"></div></section>
+</main><script>
+const $=id=>document.getElementById(id);const pct=x=>(Math.max(0,Math.min(1,Number(x||0)))*100).toFixed(1)+'%';
+function el(cls,style=''){const x=document.createElement('div');x.className=cls;if(style)x.style.cssText=style;return x}
+function stats(id,rows){$(id).innerHTML=rows.map(([a,b])=>'<div class="stat"><b>'+b+'</b><span>'+a+'</span></div>').join('')}
+function drawPong(e){const s=$('pong-stage');s.replaceChildren();const ball=el('ball',`left:${pct(e.ball_x)};top:${pct(1-e.ball_y)}`),p=el('paddle',`left:95%;top:${pct(1-e.paddle_y)}`);s.append(ball,p);stats('pong-stats',[['hits',e.hits],['misses',e.misses],['best streak',e.best_streak]])}
+const mazeWalls=[[1,1],[1,2],[3,1],[3,2],[3,3],[5,3],[5,4],[2,5]];
+function drawMaze(e){const s=$('maze-stage');s.replaceChildren();for(const [x,y] of mazeWalls)s.append(el('wall',`left:${(x+.5)/7*100}%;top:${(6-y+.5)/7*100}%;width:${100/7-2}%;height:${100/7-2}%;transform:translate(-50%,-50%)`));s.append(el('goal',`left:${(e.goal_x+.5)/7*100}%;top:${(6-e.goal_y+.5)/7*100}%`),el('agent',`left:${(e.x+.5)/7*100}%;top:${(6-e.y+.5)/7*100}%`));stats('maze-stats',[['reaches',e.reaches],['collisions',e.collisions],['reward',Number(e.reward_sum).toFixed(2)]])}
+function drawForage(e){const s=$('forage-stage');s.replaceChildren(el('food',`left:${pct(e.food_x)};top:${pct(1-e.food_y)}`),el('agent',`left:${pct(e.x)};top:${pct(1-e.y)}`));stats('forage-stats',[['foods',e.foods],['energy',Number(e.energy).toFixed(2)],['reward',Number(e.reward_sum).toFixed(2)]])}
+function drawRover(e){const s=$('rover-stage');s.replaceChildren(el('track'),el('rover',`left:${5+Math.min(90,Number(e.progress||0)*90)}%;top:${50+Number(e.heading_error||0)*35}%`));stats('rover-stats',[['gates',e.gates],['off course',e.off_course],['progress',Number(e.progress).toFixed(2)]])}
+async function load(){try{const d=await fetch('/api/agent/brain-lab',{cache:'no-store'}).then(r=>r.json());const e=d.environments||{};for(const n of ['PONG','MAZE','FORAGING','ROVER'])$(n+'-card').classList.toggle('active',d.active_environment===n);drawPong(e.PONG||{});drawMaze(e.MAZE||{});drawForage(e.FORAGING||{});drawRover(e.ROVER||{});$('summary').innerHTML=[`same production brain: ${d.same_production_connectome?'YES':'NO'}`,`steps ${d.total_steps||0}`,`sessions ${d.total_sessions||0}`,`Pong hit rate ${d.pong_hit_rate==null?'—':(d.pong_hit_rate*100).toFixed(1)+'%'}`].map(x=>'<span class="pill">'+x+'</span>').join('');const dream=d.dreaming||{},latest=dream.latest_dream||{},pre=dream.latest_preconcept||null;if(latest.dream_id){const dom=(latest.dominant_channels||[]).slice(0,4).map(x=>x[0]+' '+Number(x[1]).toFixed(1)).join(' · ');$('dream-box').innerHTML=`<b style="color:#e8f1fa">${latest.dream_id}</b> · ${latest.replay_count||0} replays · LLM used for replay: NO<br><span style="color:#9fb2c5">dominant neural channels: ${dom||'quiet'}</span>${pre?`<br><span style="color:#d7c999">preconcept ${pre.preconcept_id} · association ${Number(pre.association_strength||0).toFixed(3)} · ${(pre.channels||[]).join(' × ')}</span>`:''}`;}const rows=(d.recent||[]).slice().reverse();$('stream').innerHTML=rows.length?rows.map(x=>`<div class="row"><b>${x.environment}</b><span>${x.action}</span><span>reward ${Number(x.reward).toFixed(3)} · ${Number(x.spikes).toLocaleString()} spikes · ${Number(x.active_neurons).toLocaleString()} active</span><span>${x.changed_synapses} Δsyn</span></div>`).join(''):'<div class="muted">No developmental steps yet.</div>'}catch(e){}}
+load();setInterval(load,3000);
+</script></body></html>"""
+
+
+__all__ = ["brain_lab_document"]
