@@ -397,3 +397,114 @@ def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occur
     updated = json.loads(problem_path.read_text())
     assert updated["status"] == "REPAIR_PROPOSED"
     assert updated["planner_attempt"]["status"] == "PROPOSED"
+
+
+
+class MalformedPlannerRuntime:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def cognitive_probe(self, task, max_tokens):
+        self.calls.append(task)
+        return "not-json"
+
+
+def test_malformed_planner_output_is_deferred_and_retried(tmp_path):
+    state = tmp_path / "state-malformed"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    runtime = MalformedPlannerRuntime()
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    first = executor.run_once(now=NOW)
+
+    assert first["status"] == "GENERATED_PLAN_DEFERRED"
+    assert first["planner_status"] == "DEFERRED_MODEL_OUTPUT"
+    assert first["retry_seconds"] == 300
+    stored = json.loads(problem_path.read_text())
+    assert stored["status"] == "DIAGNOSING"
+    assert stored["planner_attempt"]["status"] == "DEFERRED_MODEL_OUTPUT"
+    assert stored["planner_attempt"]["retry_count"] == 1
+    assert stored["planner_attempt"]["retry_after"] == (
+        NOW + timedelta(seconds=300)
+    ).isoformat()
+    assert len(runtime.calls) == 2
+
+    immediate = executor.run_once(now=NOW + timedelta(seconds=10))
+    assert immediate["status"] == "NO_REPAIR_WORK"
+    assert len(runtime.calls) == 2
+
+    second = executor.run_once(now=NOW + timedelta(seconds=301))
+    assert second["status"] == "GENERATED_PLAN_DEFERRED"
+    assert second["planner_status"] == "DEFERRED_MODEL_OUTPUT"
+    assert second["retry_count"] == 2
+    assert len(runtime.calls) == 4
+
+
+def test_transient_planner_retry_budget_exhausts_after_three_scheduled_retries(tmp_path):
+    state = tmp_path / "state-retry-budget"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    runtime = MalformedPlannerRuntime()
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    first = executor.run_once(now=NOW)
+    assert first["status"] == "GENERATED_PLAN_DEFERRED"
+    second = executor.run_once(now=NOW + timedelta(seconds=301))
+    assert second["status"] == "GENERATED_PLAN_DEFERRED"
+    third = executor.run_once(now=NOW + timedelta(seconds=602))
+    assert third["status"] == "GENERATED_PLAN_DEFERRED"
+    fourth = executor.run_once(now=NOW + timedelta(seconds=903))
+
+    assert fourth["status"] == "GENERATED_PLAN_RETRY_EXHAUSTED"
+    assert fourth["planner_status"] == "REJECTED"
+    stored = json.loads(problem_path.read_text())
+    assert stored["planner_attempt"]["retry_count"] == 4
+    assert stored["planner_attempt"]["status"] == "REJECTED"
+    assert stored["status"] == "DIAGNOSING"
+
+
+def test_historical_rejected_validation_error_is_retryable_without_new_occurrence(tmp_path):
+    state = tmp_path / "state-old-validation-reject"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v3",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "ValidationError:1 validation error for GeneratedRepairPlan Invalid JSON: trailing characters",
+    }
+    problem_path.write_text(json.dumps(problem))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "REPAIR_PROPOSED"
+    assert updated["planner_attempt"]["status"] == "PROPOSED"

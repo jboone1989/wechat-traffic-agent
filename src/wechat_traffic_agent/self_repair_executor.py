@@ -217,24 +217,37 @@ DEFAULT_RECIPES: dict[str, RepairRecipe] = {
 
 _GENERATED_REPAIR_KIND = "GENERATED_BOUNDED_EDIT"
 _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS = 900
+_GENERATED_REPAIR_OUTPUT_RETRY_SECONDS = 300
+_GENERATED_REPAIR_MAX_TRANSIENT_RETRIES = 3
 
 
-def _transient_planner_failure(value: object) -> bool:
+def _planner_retry_policy(value: object) -> tuple[str, int] | None:
     name = type(value).__name__
     message = str(value)
-    return (
+    if (
         name == "LLMProviderError"
         or "all eligible LLM resources failed" in message
         or "no eligible LLM resources" in message
-    )
+    ):
+        return "DEFERRED_RESOURCE", _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS
+    if (
+        name == "ValidationError"
+        or "repair planner did not return a JSON object" in message
+        or "Invalid JSON:" in message
+    ):
+        return "DEFERRED_MODEL_OUTPUT", _GENERATED_REPAIR_OUTPUT_RETRY_SECONDS
+    return None
 
 
 def _transient_planner_reason(value: object) -> bool:
     text = str(value or "")
     return (
         text.startswith("LLMProviderError:")
+        or text.startswith("ValidationError:")
         or "all eligible LLM resources failed" in text
         or "no eligible LLM resources" in text
+        or "repair planner did not return a JSON object" in text
+        or "Invalid JSON:" in text
     )
 
 
@@ -370,7 +383,7 @@ class SelfRepairExecutor:
                 and not _transient_planner_reason(attempt.get("reason"))
             ):
                 continue
-            if attempt_status == "DEFERRED_RESOURCE" and same_attempt:
+            if attempt_status.startswith("DEFERRED_") and same_attempt:
                 retry_after_raw = str(attempt.get("retry_after") or "")
                 try:
                     retry_after = datetime.fromisoformat(retry_after_raw)
@@ -456,17 +469,52 @@ class SelfRepairExecutor:
             plan, source_paths, test_paths, editable_blocks = asyncio.run(planner.plan(problem))
         except Exception as exc:
             reason = type(exc).__name__ + ":" + str(exc)[:500]
-            if _transient_planner_failure(exc):
+            retry_policy = _planner_retry_policy(exc)
+            if retry_policy is not None:
+                retry_status, retry_seconds = retry_policy
+                previous = (
+                    problem.get("planner_attempt")
+                    if isinstance(problem.get("planner_attempt"), dict)
+                    else {}
+                )
+                same_previous = (
+                    int(previous.get("occurrences_seen") or 0)
+                    == int(problem.get("occurrences") or 0)
+                    and str(previous.get("planner_version") or "") == PLANNER_VERSION
+                    and str(previous.get("status") or "").startswith("DEFERRED_")
+                )
+                retry_count = (
+                    int(previous.get("retry_count") or 0) + 1
+                    if same_previous
+                    else 1
+                )
+                if retry_count > _GENERATED_REPAIR_MAX_TRANSIENT_RETRIES:
+                    attempt = self._planner_attempt(
+                        problem,
+                        now=now,
+                        status="REJECTED",
+                        details={
+                            "reason": "transient planner retry budget exhausted: " + reason,
+                            "retry_count": retry_count,
+                        },
+                    )
+                    return {
+                        **attempt,
+                        "status": "GENERATED_PLAN_RETRY_EXHAUSTED",
+                        "problem_id": problem.get("problem_id"),
+                        "planner_status": attempt.get("status"),
+                    }
                 retry_after = now.astimezone(timezone.utc) + timedelta(
-                    seconds=_GENERATED_REPAIR_RESOURCE_RETRY_SECONDS
+                    seconds=retry_seconds
                 )
                 attempt = self._planner_attempt(
                     problem,
                     now=now,
-                    status="DEFERRED_RESOURCE",
+                    status=retry_status,
                     details={
                         "reason": reason,
                         "retry_after": retry_after.isoformat(),
+                        "retry_count": retry_count,
                     },
                 )
                 return {
@@ -474,7 +522,7 @@ class SelfRepairExecutor:
                     "status": "GENERATED_PLAN_DEFERRED",
                     "problem_id": problem.get("problem_id"),
                     "planner_status": attempt.get("status"),
-                    "retry_seconds": _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS,
+                    "retry_seconds": retry_seconds,
                 }
             attempt = self._planner_attempt(
                 problem,
