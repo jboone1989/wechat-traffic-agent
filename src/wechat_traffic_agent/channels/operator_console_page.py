@@ -4,140 +4,111 @@ from __future__ import annotations
 
 def operator_console_document() -> str:
     return r"""<!doctype html>
-<html lang="en"><head>
+<html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow,noarchive">
-<title>Ferro Operator Console</title>
+<title>Ferro 管理后台</title>
 <style>
-:root{color-scheme:dark;background:#080b0e;color:#edf2f6;font-family:Inter,ui-sans-serif,system-ui,sans-serif}
-*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#14202b 0,#080b0e 34%);min-height:100vh}
-main{width:min(1160px,calc(100% - 28px));margin:auto;padding:28px 0 72px}
-h1{font-size:clamp(32px,5vw,50px);line-height:1.04;margin:6px 0 8px}h2{margin:0;font-size:24px}h3{margin:0 0 8px;font-size:17px}
-p,.muted{color:#aeb9c5;line-height:1.5}.eyebrow{font-size:11px;letter-spacing:.15em;color:#89a0b7;text-transform:uppercase}
-.card{border:1px solid #293641;background:#0e141a;border-radius:16px;padding:16px;box-shadow:0 14px 44px rgba(0,0,0,.14);min-width:0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:12px}.stack{display:grid;gap:10px}
-.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}
-input,select{width:100%;min-width:0;border:1px solid #354550;border-radius:9px;background:#080d11;color:#fff;padding:10px 11px;font:inherit}
-label{display:grid;gap:6px;font-size:12px;color:#9aabb9}.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-button,a{border:0;border-radius:9px;background:#edf3f7;color:#111;padding:10px 14px;font-weight:700;text-decoration:none;cursor:pointer}
-button.ghost{background:#16212a;color:#e8eff4;border:1px solid #33434f}button:disabled{opacity:.5;cursor:not-allowed}
-.badge{display:inline-block;font-size:11px;padding:4px 8px;border:1px solid #43505d;border-radius:99px;letter-spacing:.04em}
-.ok{color:#91e5b7;border-color:#2c7654}.pending{color:#f0ce7d;border-color:#8a6d2f}.bad{color:#ffaaa7;border-color:#7f3d3b}.info{color:#9dc9ff;border-color:#315b7e}
-.hidden{display:none!important}.error{color:#ffaaa7}.success{color:#92e7b8}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
-.metric{font-size:26px;font-weight:750}.kicker{font-size:11px;color:#7f93a4;text-transform:uppercase;letter-spacing:.12em}
-.divider{height:1px;background:#26343e;margin:12px 0}.resource.free{border-color:#285d49}.resource.paid{border-color:#604f2b}
-.browser-shot{width:100%;height:auto;display:block;border-radius:10px;border:1px solid #34434f;background:#05080a;touch-action:manipulation}
-.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
-details.browser-login>summary{cursor:pointer;font-weight:750}
-@media(max-width:640px){.browser-keys button{flex:1 1 30%}}
-.page-intro{max-width:720px;margin:0 0 18px}.dash-head{margin:4px 0 12px}.toolbar{justify-content:flex-end}.toolbar button{padding:8px 11px}
-.console-nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:7px;margin:12px 0 18px;border:1px solid #293641;border-radius:14px;background:rgba(8,11,14,.94);backdrop-filter:blur(14px)}
-.console-nav button{min-width:0;padding:10px 8px;background:transparent;color:#9eafbd;border:1px solid transparent;font-size:13px}.console-nav button.active{background:#edf3f7;color:#111;border-color:#edf3f7}.tab-count{display:inline-block;min-width:18px;margin-left:4px;padding:1px 5px;border-radius:99px;background:#7f3d3b;color:#fff;font-size:10px}
-.panel{display:none}.panel.active{display:block}.section-head{display:flex;gap:12px;align-items:end;justify-content:space-between;margin:6px 0 12px}.section-head p{margin:4px 0 0}.panel-block{margin-top:18px}
-.hero{display:grid;gap:12px;margin-bottom:12px;border-color:#3a5264;background:linear-gradient(135deg,#101b24,#0d1419)}.hero-main{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}.hero h3{font-size:20px}.hero p{margin:4px 0 0}.hero-reason{padding-top:10px;border-top:1px solid #26343e}.hero-actions{display:flex;gap:8px;flex-wrap:wrap}
-.fold{margin-top:12px}.fold>summary{cursor:pointer;font-weight:750;padding:12px 2px;color:#dce6ed}.fold>summary::marker{color:#71889b}.fold>.grid,.fold>.stack,.fold>.card{margin-top:8px}
-.subsection{margin:20px 0 10px}.subsection p{margin:3px 0 0}.empty{padding:14px}.mobile-note{display:none}
-@media(max-width:640px){main{width:calc(100% - 16px);padding:18px 0 88px}h1{font-size:28px}h2{font-size:21px}.page-intro{font-size:14px;margin-bottom:12px}.card{padding:14px;border-radius:13px}.two{grid-template-columns:1fr}.dash-head{align-items:flex-start}.toolbar{width:100%;justify-content:flex-start}.toolbar button{flex:1}.console-nav{top:6px;margin:10px 0 14px;padding:5px;gap:3px;border-radius:12px}.console-nav button{padding:9px 4px;font-size:11px}.tab-count{display:block;width:max-content;margin:3px auto 0}.section-head{align-items:flex-start;flex-direction:column;gap:2px}.hero-main{display:block}.hero-main .badge{margin-top:8px}.row:not(.toolbar){align-items:stretch}.row:not(.toolbar)>button,.row:not(.toolbar)>a{flex:1 1 140px;text-align:center}.metric{font-size:24px}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.summary-grid .card{padding:11px}.summary-grid .metric{font-size:20px}.summary-grid p{font-size:11px;margin:4px 0 0}.fold>summary{padding:10px 2px}.mono{font-size:11px;overflow-x:auto}.mobile-note{display:block;font-size:12px;color:#7f93a4;margin:0 0 10px}}
+
+:root{color-scheme:dark;background:#0a0d10;color:#edf2f6;font-family:Inter,ui-sans-serif,system-ui,-apple-system,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:#0a0d10;min-height:100vh}main{width:min(1180px,calc(100% - 32px));margin:auto;padding:24px 0 64px}
+h1{font-size:30px;line-height:1.1;margin:0}h2{font-size:22px;margin:0}h3{font-size:16px;margin:0}p{margin:8px 0}.muted{color:#91a0ad;line-height:1.5}
+.topbar{display:flex;align-items:center;gap:16px;margin-bottom:18px}.brand{flex:1}.brand p{margin:5px 0 0}.toolbar{display:flex;gap:8px;flex-wrap:wrap}
+button,a{border:1px solid #34414c;border-radius:9px;background:#182027;color:#eef4f8;padding:9px 12px;font:inherit;font-weight:650;text-decoration:none;cursor:pointer}
+button.primary,a.primary{background:#edf3f7;color:#111;border-color:#edf3f7}button.ghost{background:transparent}button:disabled{opacity:.5;cursor:not-allowed}
+.card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:15px;min-width:0}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:10px}.stack{display:grid;gap:9px}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.grow{flex:1;min-width:0}.two{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select{width:100%;min-width:0;border:1px solid #34414c;border-radius:8px;background:#090d11;color:#fff;padding:10px;font:inherit}
+.badge{display:inline-block;font-size:11px;padding:3px 7px;border:1px solid #46535e;border-radius:99px}.ok{color:#8ee1b2;border-color:#2d7052}.pending{color:#e8c875;border-color:#806a32}.bad{color:#ffaaa7;border-color:#7a3c3b}.info{color:#9ac8ff;border-color:#315b7e}
+.hidden{display:none!important}.error{color:#ffaaa7}.success{color:#8ee1b2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;overflow-wrap:anywhere}
+.nav{position:sticky;top:8px;z-index:20;display:grid;grid-template-columns:repeat(4,1fr);gap:5px;padding:5px;margin-bottom:18px;border:1px solid #252f38;border-radius:11px;background:rgba(10,13,16,.95);backdrop-filter:blur(10px)}
+.nav button{background:transparent;border-color:transparent;color:#91a0ad;padding:10px 6px}.nav button.active{background:#202a32;color:#fff;border-color:#33414d}.tab-count{margin-left:4px;padding:1px 5px;border-radius:99px;background:#7a3c3b;color:white;font-size:10px}
+.panel{display:none}.panel.active{display:block}.page-head{display:flex;align-items:end;justify-content:space-between;gap:12px;margin-bottom:12px}.page-head p{margin:4px 0 0}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px}.metric-card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:14px}.metric-label{font-size:12px;color:#8e9ca8}.metric-value{font-size:26px;font-weight:760;margin-top:5px}.metric-detail{font-size:12px;color:#7f8d99;margin-top:3px}
+.dashboard-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:10px;margin-top:10px}.panel-card{border:1px solid #252f38;background:#10151a;border-radius:12px;padding:15px}.panel-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+.health-list,.activity-list{display:grid;gap:11px}.health-row{display:grid;gap:6px}.health-line{display:flex;justify-content:space-between;gap:12px;font-size:13px}.bar{height:7px;border-radius:99px;background:#202930;overflow:hidden}.bar>span{display:block;height:100%;background:#8aa3b5;border-radius:99px}
+.activity-item{display:grid;grid-template-columns:8px 1fr;gap:10px;align-items:start}.activity-dot{width:8px;height:8px;border-radius:50%;background:#6f8797;margin-top:6px}.activity-item p{margin:2px 0;font-size:13px}.activity-item small{color:#71818d}
+.section{margin-top:16px}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 9px}.section-title p{margin:3px 0 0}
+details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
+.resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
+.browser-shot{width:100%;height:auto;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:manipulation}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}
+.divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
+@media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.mobile-note{display:block;font-size:12px;color:#71818d}}
 </style></head><body><main>
-<div class="eyebrow">LivingRuntime · private operator plane</div>
-<h1>Ferro Operator Console</h1>
-<p class="page-intro">See what Ferro is doing with survival resources, handle only the decisions that need you, and keep advanced controls out of the way until you need them.</p>
 
 <section id="login" class="card">
-<h2>Operator sign in</h2>
-<p>Send a one-time login link to the configured Enterprise WeChat operator. The link expires in 10 minutes and can be used once.</p>
-<div class="row"><button id="wecomSignin">Send login link to Enterprise WeChat</button><span id="loginStatus" class="muted"></span></div>
-<div class="divider"></div>
-<details><summary class="muted">Emergency token fallback</summary>
-<p class="muted">Use the durable operator token only for recovery when Enterprise WeChat delivery is unavailable.</p>
-<div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin" class="ghost">Sign in with token</button></div>
-</details>
+ <h2>管理员登录</h2>
+ <p class="muted">通过企业微信获取一次性登录链接。</p>
+ <div class="row"><button id="wecomSignin" class="primary">发送登录链接</button><span id="loginStatus" class="muted"></span></div>
+ <div class="divider"></div>
+ <details><summary class="muted">备用 Token 登录</summary>
+  <div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin">登录</button></div>
+ </details>
 </section>
 
 <section id="dash" class="hidden">
-<div class="row dash-head">
- <div class="grow"><div class="eyebrow">Survival resource control</div><h2>Ferro resources</h2><p class="muted">Start with what needs attention. Everything else is grouped by purpose.</p></div>
- <div class="row toolbar"><a href="/operator/chat/">Talk to Ferro</a><button id="refresh" class="ghost">Refresh</button><button id="logout" class="ghost">Log out</button></div>
+<div class="topbar">
+ <div class="brand"><h1>Ferro 管理后台</h1><p class="muted">资源、配置和待办事项统一管理。</p></div>
+ <div class="toolbar"><a href="/operator/chat/">和 Ferro 对话</a><button id="refresh" class="ghost">刷新</button><button id="logout" class="ghost">退出</button></div>
 </div>
-<div id="flash"></div>
 
-<nav id="consoleNav" class="console-nav" aria-label="Operator console sections">
- <button class="nav-tab active" data-panel-target="overview">Overview</button>
- <button class="nav-tab" data-panel-target="actions">Needs you <span id="actionTabCount" class="tab-count hidden">0</span></button>
- <button class="nav-tab" data-panel-target="resources">Resources</button>
- <button class="nav-tab" data-panel-target="setup">Add / configure</button>
-</nav>
+ <nav id="consoleNav" class="nav" aria-label="后台导航">
+  <button class="nav-tab active" data-panel-target="dashboard">仪表盘</button>
+  <button class="nav-tab" data-panel-target="todos">待办 <span id="actionTabCount" class="tab-count hidden">0</span></button>
+  <button class="nav-tab" data-panel-target="resources">资源</button>
+  <button class="nav-tab" data-panel-target="config">配置</button>
+ </nav>
+ <div id="flash"></div>
 
-<section class="panel active" data-panel="overview">
- <div class="section-head"><div><div class="eyebrow">Right now</div><h2>What Ferro is doing</h2><p class="muted">The current survival pressure, resource policy and last model-routing decision.</p></div></div>
- <div id="attention" class="card hero"></div>
- <div id="summary" class="grid summary-grid"></div>
- <details class="fold" open><summary>Resource domains</summary><div id="domains" class="grid"></div></details>
- <details class="fold"><summary>VirtualBrain routing details</summary><div id="routing" class="card"></div></details>
-</section>
-
-<section class="panel" data-panel="actions">
- <div class="section-head"><div><div class="eyebrow">Operator inbox</div><h2>Needs your decision</h2><p class="muted">Only actions that Ferro cannot safely authorize for itself belong here.</p></div></div>
- <div class="subsection"><h3>Survival needs</h3><p class="muted">Low-risk local repairs can self-authorize. Remote offload and primary relocation stay operator-controlled.</p></div>
- <div id="survivalNeeds" class="stack"></div>
- <div class="subsection"><h3>Resource access requests</h3><p class="muted">Approve access first; credential handoff and provider onboarding follow separately.</p></div>
- <div id="requests" class="stack"></div>
- <details class="fold"><summary>Recent resource actions</summary><div id="survivalActions" class="stack"></div></details>
-</section>
-
-<section class="panel" data-panel="resources">
- <div class="section-head"><div><div class="eyebrow">Inventory</div><h2>Resources Ferro can use</h2><p class="muted">Machines, movable services and executable model capacity in one place.</p></div></div>
- <div class="subsection"><h3>Remote machines</h3></div>
- <div id="remoteHosts" class="stack"></div>
- <div class="subsection"><h3>Movable services</h3></div>
- <div id="servicePlacements" class="stack"></div>
- <div class="subsection"><h3>Browser runtime</h3><p class="muted">Local Chrome handles learned deterministic skills. Jev handles adaptive navigation. TinyFish remains a compatibility fallback.</p></div>
- <div id="browserRuntime" class="grid"></div>
- <div class="subsection"><h3>Executable model resources</h3></div>
- <div id="resources" class="grid"></div>
-</section>
-
-<section class="panel" data-panel="setup">
- <div class="section-head"><div><div class="eyebrow">Provisioning</div><h2>Give Ferro a resource</h2><p class="muted">Common setup first. Advanced receiver and credential controls stay collapsed.</p></div></div>
- <p class="mobile-note">On mobile, finish one setup card at a time. Advanced controls are collapsed by default.</p>
- <div class="card">
-  <h3>Hand a server to Ferro</h3>
-  <p class="muted">For a normal VPS, IP + password is enough. The password is used once to install a per-host SSH key, then discarded. Ferro keeps the key and host fingerprint, not the password.</p>
-  <div class="two"><label>IP or hostname<input id="sshHost" autocomplete="off" placeholder="207.246.99.253"></label><label>Password<input id="sshPassword" type="password" autocomplete="new-password" placeholder="One-time SSH password"></label></div>
-  <details class="fold"><summary>Advanced SSH settings</summary>
-   <div class="two"><label>Name<input id="sshName" placeholder="vultr-edge-1"></label><label>SSH user<input id="sshUser" value="root" autocomplete="off"></label></div>
-   <label>SSH port<input id="sshPort" type="number" min="1" max="65535" value="22"></label>
-  </details>
-  <button id="bootstrapHost">Connect, audit & hand over to Ferro</button>
-  <div id="bootstrapStatus" class="muted"></div>
- </div>
- <details class="fold"><summary>Advanced: register an already-running signed receiver</summary>
-  <div class="card">
-   <div class="two"><label>Name<input id="hostName" placeholder="edge-node-1"></label><label>Reliability<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
-   <label>HTTPS health URL<input id="hostHealth" placeholder="https://node.example.com/health"></label>
-   <label>Signed deployment control URL (optional)<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
-   <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>Memory GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div>
-   <button id="addHost">Add signed receiver candidate</button>
+ <section class="panel active" data-panel="dashboard">
+  <div class="page-head"><div><h2>仪表盘</h2><p class="muted">关键资源和运行状态。</p></div></div>
+  <div id="summary" class="metrics"></div>
+  <div class="dashboard-grid">
+   <div class="panel-card"><div class="panel-title"><h3>资源使用</h3><span class="muted">当前</span></div><div id="dashboardHealth" class="health-list"></div></div>
+   <div class="panel-card"><div class="panel-title"><h3>最近活动</h3><span class="muted">最新 6 条</span></div><div id="dashboardActivity" class="activity-list"></div></div>
   </div>
- </details>
- <details class="fold"><summary>Protected credentials & limits</summary>
-  <p class="muted">Secret values are write-only. Quota, reset and expiry metadata are non-secret control data used by the Survival Router.</p>
-  <div id="secrets" class="grid"></div>
- </details>
- <details class="fold browser-login"><summary>Local X login · one-time setup</summary>
-  <div class="card">
-   <p class="muted">Use this only to sign Ferro's persistent local Chrome into X. Typed text is sent directly to the browser tab, is not stored by Ferro, and is cleared from this page immediately.</p>
-   <div class="row"><button id="localBrowserStart">Open X login</button><button id="localBrowserRefresh" class="ghost">Refresh image</button><button id="localBrowserStop" class="ghost">Close login tab</button></div>
-   <div id="localBrowserStatus" class="mono muted">Not started.</div>
-   <img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
-   <div class="browser-controls">
-    <label>Text / password / verification code<input id="localBrowserText" type="password" autocomplete="off" placeholder="Tap the field in the screenshot first"></label>
-    <div class="row"><button id="localBrowserSend">Send text</button></div>
-    <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
+  <div class="section"><div class="section-title"><div><h3>服务状态</h3><p class="muted">各类资源是否可用。</p></div></div><div id="domains" class="grid"></div></div>
+ </section>
+
+ <section class="panel" data-panel="todos">
+  <div class="page-head"><div><h2>待办事项</h2><p class="muted">只显示需要管理员处理的事项。</p></div></div>
+  <div class="section"><div class="section-title"><h3>审批与操作</h3></div><div id="survivalNeeds" class="stack"></div></div>
+  <div class="section"><div class="section-title"><h3>资源申请</h3></div><div id="requests" class="stack"></div></div>
+  <details class="fold"><summary>历史操作</summary><div class="fold-body"><div id="survivalActions" class="stack"></div></div></details>
+ </section>
+
+ <section class="panel" data-panel="resources">
+  <div class="page-head"><div><h2>资源管理</h2><p class="muted">查看主机、服务、浏览器和模型资源。</p></div></div>
+  <div class="section"><div class="section-title"><h3>主机</h3></div><div id="remoteHosts" class="stack"></div></div>
+  <div class="section"><div class="section-title"><h3>服务</h3></div><div id="servicePlacements" class="stack"></div></div>
+  <div class="section"><div class="section-title"><h3>浏览器</h3></div><div id="browserRuntime" class="grid"></div></div>
+  <div class="section"><div class="section-title"><h3>模型资源</h3></div><div id="resources" class="stack"></div></div>
+  <details class="fold"><summary>路由策略</summary><div class="fold-body"><div id="routing"></div></div></details>
+ </section>
+
+ <section class="panel" data-panel="config">
+  <div class="page-head"><div><h2>配置管理</h2><p class="muted">服务器、API 密钥和账号配置。</p></div></div>
+  <div class="section"><div class="section-title"><div><h3>添加服务器</h3><p class="muted">普通 VPS 填 IP 和密码即可。</p></div></div>
+   <div class="card">
+    <div class="two"><label>IP 或主机名<input id="sshHost" autocomplete="off" placeholder="207.246.99.253"></label><label>一次性 SSH 密码<input id="sshPassword" type="password" autocomplete="new-password"></label></div>
+    <details><summary class="muted">高级 SSH 设置</summary><div class="two"><label>名称<input id="sshName" placeholder="vultr-edge-1"></label><label>SSH 用户<input id="sshUser" value="root" autocomplete="off"></label></div><label>SSH 端口<input id="sshPort" type="number" min="1" max="65535" value="22"></label></details>
+    <div class="row"><button id="bootstrapHost" class="primary">连接并添加</button><span id="bootstrapStatus" class="muted"></span></div>
    </div>
   </div>
- </details>
-</section>
+  <details class="fold"><summary>高级主机注册</summary><div class="fold-body">
+   <div class="two"><label>名称<input id="hostName" placeholder="edge-node-1"></label><label>可靠性<select id="hostReliability"><option>EXPERIMENTAL</option><option>BEST_EFFORT</option><option>RELIABLE</option></select></label></div>
+   <label>HTTPS 健康检查 URL<input id="hostHealth" placeholder="https://node.example.com/health"></label><label>部署控制 URL<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
+   <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>内存 GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div><button id="addHost">添加候选主机</button>
+  </div></details>
+  <div class="section"><div class="section-title"><div><h3>API 与密钥</h3><p class="muted">密钥只写入，不会在页面回显。</p></div></div><div id="secrets" class="grid"></div></div>
+  <details class="fold browser-login"><summary>X 账号登录</summary><div class="fold-body">
+   <p class="muted">用于登录 Ferro 的持久化本地浏览器。</p>
+   <div class="row"><button id="localBrowserStart">打开 X 登录</button><button id="localBrowserRefresh" class="ghost">刷新画面</button><button id="localBrowserStop" class="ghost">关闭登录页</button></div>
+   <div id="localBrowserStatus" class="mono muted">未启动。</div><img id="localBrowserShot" class="browser-shot hidden" alt="Ferro local browser">
+   <div class="browser-controls"><label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击截图中的输入框"></label><div class="row"><button id="localBrowserSend">发送</button></div>
+   <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div></div>
+  </div></details>
+ </section>
 </section>
 
 <script>
@@ -156,7 +127,7 @@ async function api(path,opts={}){
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
 function badge(text,kind='info'){const b=node('span',text,'badge '+kind);return b}
 function metricCard(label,value,detail){
- const c=node('div',undefined,'card');c.append(node('div',label,'kicker'),node('div',fmt(value),'metric'));if(detail)c.append(node('p',detail,'muted'));return c
+ const c=node('div',undefined,'metric-card');c.append(node('div',label,'metric-label'),node('div',fmt(value),'metric-value'));if(detail)c.append(node('div',detail,'metric-detail'));return c
 }
 function operatorItems(data){
  const ctl=data.survival_control||{},requests=data.resource_requests||[];
@@ -165,109 +136,106 @@ function operatorItems(data){
  const credentials=requests.filter(x=>['APPROVED','LEGACY_APPROVED'].includes(x.authorization_status)&&!x.credential_configured);
  return {survival,approvals,credentials,total:survival.length+approvals.length+credentials.length}
 }
-function rememberedPanel(){try{return localStorage.getItem('ferro.operator.panel')||'overview'}catch{return 'overview'}}
+function rememberedPanel(){try{return localStorage.getItem('ferro.operator.panel')||'dashboard'}catch{return 'dashboard'}}
 function selectPanel(name,remember=true){
- const allowed=['overview','actions','resources','setup'];if(!allowed.includes(name))name='overview';
+ const allowed=['dashboard','todos','resources','config'];if(!allowed.includes(name))name='dashboard';
  for(const panel of document.querySelectorAll('[data-panel]'))panel.classList.toggle('active',panel.dataset.panel===name);
  for(const tab of document.querySelectorAll('.nav-tab'))tab.classList.toggle('active',tab.dataset.panelTarget===name);
  if(remember){try{localStorage.setItem('ferro.operator.panel',name)}catch{}}
 }
-function renderAttention(data){
- const root=el('attention'),items=operatorItems(data),r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{};
- const survival=data.survival_resources||{},count=el('actionTabCount');
- count.textContent=String(items.total);count.classList.toggle('hidden',items.total===0);root.replaceChildren();
- const top=node('div',undefined,'hero-main'),copy=node('div'),title=node('h3',items.total?items.total+' item'+(items.total===1?'':'s')+' need your attention':'No operator action is blocking Ferro');
- copy.append(title,node('p',items.total?'Ferro can keep operating, but these approvals or credentials are waiting on you.':'Ferro currently has no pending operator-only decision.','muted'));
- top.append(copy,badge(items.total?'NEEDS YOU':'AUTONOMOUS',items.total?'pending':'ok'));root.append(top);
- const decision=node('div',undefined,'hero-reason');
- decision.append(node('div','Current resource policy','kicker'));
- decision.append(node('p','Survival pressure '+fmt(survival.pressure||p.pressure)+' · routing '+fmt(p.routing_mode)+' · free preferred '+(p.prefer_free?'yes':'no')));
- decision.append(node('div','Last model decision','kicker'));
- decision.append(node('p',fmt(latest.result||'NO ROUTE')+' · '+fmt(latest.selected_resource_id),'mono'));
- if(latest.reason)decision.append(node('p',latest.reason,'muted'));
- root.append(decision);
- if(items.total){const actions=node('div',undefined,'hero-actions'),b=node('button','Review what needs me');b.onclick=()=>selectPanel('actions');actions.append(b);root.append(actions)}
+function clamp01(v){v=Number(v);return Number.isFinite(v)?Math.max(0,Math.min(1,v)):0}
+function healthBar(label,value,detail){
+ const row=node('div',undefined,'health-row'),line=node('div',undefined,'health-line'),bar=node('div',undefined,'bar'),fill=node('span');
+ fill.style.width=(clamp01(value)*100).toFixed(0)+'%';bar.append(fill);line.append(node('span',label),node('span',detail||Math.round(clamp01(value)*100)+'%','muted'));row.append(line,bar);return row
 }
 function renderSummary(data){
- const r=data.llm_resources||{},p=r.policy||{},items=operatorItems(data),root=el('summary'),ctl=data.survival_control||{};
- const hosts=ctl.remote_hosts||[],activeHosts=hosts.filter(x=>x.status==='ACTIVE').length;root.replaceChildren();
- root.append(metricCard('Needs you',items.total,items.total?'Open the Needs you tab':'No pending operator-only action'));
- root.append(metricCard('Survival pressure',fmt((data.survival_resources||{}).pressure||p.pressure),'routing '+fmt(p.routing_mode)));
- root.append(metricCard('Model capacity',r.resource_count||0,(r.free_count||0)+' free · '+(r.paid_count||0)+' paid · '+(r.windfall_count||0)+' windfall'));
- root.append(metricCard('Remote bodies',activeHosts,activeHosts+' active · '+hosts.length+' known'));
+ const r=data.llm_resources||{},items=operatorItems(data),ctl=data.survival_control||{},browser=data.browser_runtime||{},count=el('actionTabCount');
+ const hosts=ctl.remote_hosts||[],activeHosts=hosts.filter(x=>x.status==='ACTIVE').length,readyBrowser=(browser.providers||[]).filter(x=>x.status==='READY').length,root=el('summary');
+ count.textContent=String(items.total);count.classList.toggle('hidden',items.total===0);root.replaceChildren();
+ root.append(metricCard('待办事项',items.total,items.total?'需要处理':'暂无待办'));
+ root.append(metricCard('模型资源',r.resource_count||0,(r.free_count||0)+' 免费 · '+(r.paid_count||0)+' 付费'));
+ root.append(metricCard('在线主机',activeHosts,hosts.length+' 台已登记'));
+ root.append(metricCard('浏览器服务',readyBrowser,(browser.providers||[]).length+' 个提供方'));
+}
+function renderDashboardHealth(data){
+ const root=el('dashboardHealth'),domains=((data.survival_resources||{}).domains||[]),llm=data.llm_resources||{},secrets=data.secrets||[];
+ root.replaceChildren();
+ const storage=domains.find(x=>x.domain==='STORAGE')||{},compute=domains.find(x=>x.domain==='COMPUTE')||{};
+ const storageUsed=Number(storage.used_ratio||0),memoryUsed=Number(compute.memory_used_ratio||0);
+ const freeRatio=llm.resource_count?Number(llm.free_count||0)/Number(llm.resource_count):0;
+ const configured=secrets.length?secrets.filter(x=>x.configured).length/secrets.length:0;
+ root.append(healthBar('磁盘使用',storageUsed,Math.round(storageUsed*100)+'%'));
+ root.append(healthBar('内存使用',memoryUsed,Math.round(memoryUsed*100)+'%'));
+ root.append(healthBar('免费模型占比',freeRatio,(llm.free_count||0)+' / '+(llm.resource_count||0)));
+ root.append(healthBar('密钥配置完成',configured,secrets.filter(x=>x.configured).length+' / '+secrets.length));
+}
+function renderDashboardActivity(data){
+ const root=el('dashboardActivity'),actions=((data.survival_control||{}).actions||[]).slice(-5).reverse(),latest=(data.llm_resources||{}).latest_route||{};
+ root.replaceChildren();
+ const rows=[];
+ if(latest.result||latest.selected_resource_id)rows.push({title:'模型路由 · '+fmt(latest.result||'完成'),detail:fmt(latest.selected_resource_id),at:latest.observed_at});
+ for(const x of actions)rows.push({title:fmt(x.action||'资源操作')+' · '+fmt(x.status),detail:fmt(x.need_id||x.host_id||x.service_id||''),at:x.observed_at});
+ if(!rows.length){root.append(node('div','暂无活动记录','muted'));return}
+ for(const x of rows.slice(0,6)){const item=node('div',undefined,'activity-item'),body=node('div');body.append(node('p',x.title),node('small',x.detail+(x.at?' · '+x.at:'')));item.append(node('span',undefined,'activity-dot'),body);root.append(item)}
 }
 function renderDomains(data){
- const rows=((data.survival_resources||{}).domains||[]),root=el('domains');root.replaceChildren();
- if(!rows.length){root.append(node('div','No survival resource observations.','card muted'));return}
- for(const row of rows){const c=node('div',undefined,'card');const head=node('div',undefined,'row');head.append(node('h3',row.domain,'grow'));
-  const kind=(row.status==='HEALTHY'||row.status==='ACTIVE'||row.status==='LOCAL_PRIMARY')?'ok':row.status==='PRESSURE'?'bad':'pending';head.append(badge(row.status||'UNKNOWN',kind));c.append(head);
-  if(row.domain==='LLM')c.append(node('p',fmt(row.resource_count)+' resources · '+fmt(row.free_count)+' free · pressure '+fmt(row.pressure),'muted'));
-  if(row.domain==='STORAGE')c.append(node('p','free '+fmt(row.free_gib)+' GiB / '+fmt(row.total_gib)+' GiB · used '+fmt(row.used_ratio),'muted'));
-  if(row.domain==='COMPUTE')c.append(node('p','CPU '+fmt(row.cpu_count)+' · load '+fmt(row.load_1m)+' · memory free '+fmt(row.memory_available_gib)+' GiB · used '+fmt(row.memory_used_ratio),'muted'));
-  if(row.domain==='HOSTING')c.append(node('p','Current body: '+fmt(row.location||row.status)+' · reliability '+fmt(row.reliability),'muted'));
-  if(row.domain==='REMOTE_MACHINE')c.append(node('p',fmt(row.active_count)+' active / '+fmt(row.resource_count)+' known remote bodies','muted'));
-  if(row.domain==='SERVICE')c.append(node('p',fmt(row.movable_count)+' movable / '+fmt(row.resource_count)+' managed workloads','muted'));
+ const rows=((data.survival_resources||{}).domains||[]),root=el('domains'),names={LLM:'模型',STORAGE:'磁盘',COMPUTE:'计算',HOSTING:'当前主机',REMOTE_MACHINE:'远程主机',SERVICE:'服务'};
+ root.replaceChildren();
+ if(!rows.length){root.append(node('div','暂无状态数据','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row'),kind=(row.status==='HEALTHY'||row.status==='ACTIVE'||row.status==='LOCAL_PRIMARY')?'ok':row.status==='PRESSURE'?'bad':'pending';
+  head.append(node('h3',names[row.domain]||row.domain,'grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
+  if(row.domain==='LLM')c.append(node('p',fmt(row.resource_count)+' 个模型资源 · '+fmt(row.free_count)+' 个免费','muted'));
+  if(row.domain==='STORAGE')c.append(node('p','剩余 '+fmt(row.free_gib)+' GiB / '+fmt(row.total_gib)+' GiB','muted'));
+  if(row.domain==='COMPUTE')c.append(node('p','CPU '+fmt(row.cpu_count)+' · 可用内存 '+fmt(row.memory_available_gib)+' GiB','muted'));
+  if(row.domain==='HOSTING')c.append(node('p',fmt(row.location||row.status)+' · '+fmt(row.reliability),'muted'));
+  if(row.domain==='REMOTE_MACHINE')c.append(node('p',fmt(row.active_count)+' 在线 / '+fmt(row.resource_count)+' 已登记','muted'));
+  if(row.domain==='SERVICE')c.append(node('p',fmt(row.movable_count)+' 可迁移 / '+fmt(row.resource_count)+' 个服务','muted'));
   root.append(c)}
 }
 function renderSurvivalControl(data){
- const ctl=data.survival_control||{},needs=ctl.needs||[],actions=ctl.actions||[];
- const root=el('survivalNeeds');root.replaceChildren();
- if(!needs.length)root.append(node('div','No survival-resource needs.','card muted'));
- for(const row of needs){
-  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
-  head.append(node('h3',fmt(row.domain)+' · '+fmt(row.action),'grow'));
-  head.append(badge(row.status||'UNKNOWN',row.status==='EXECUTED'||row.status==='SATISFIED'?'ok':row.status==='REJECTED'||row.status==='FAILED'?'bad':'pending'));
-  c.append(head,node('p',row.reason||'','muted'));
-  c.append(node('div','authorization '+fmt(row.authorization)+' · urgency '+fmt(row.urgency),'mono muted'));
-  if(row.status==='PENDING'){
-   const controls=node('div',undefined,'row');
-   for(const decision of ['APPROVE','REJECT']){const b=node('button',decision,decision==='REJECT'?'ghost':'');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision})});flash('Survival need '+decision.toLowerCase()+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};controls.append(b)}
-   c.append(controls)
-  }
-  root.append(c)
- }
- const log=el('survivalActions');log.replaceChildren();
- if(actions.length){for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card');c.append(node('div',fmt(row.action)+' · '+fmt(row.status),'mono'),node('p',fmt(row.observed_at)+' · '+fmt(row.need_id||row.host_id||row.service_id),'muted'));if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','Execute signed offload');b.onclick=async()=>{b.disabled=true;try{const out=await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});flash('Remote deployment '+fmt(out.status)+'.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}}
+ const ctl=data.survival_control||{},needs=(ctl.needs||[]).filter(x=>x.status==='PENDING'),actions=ctl.actions||[],root=el('survivalNeeds'),log=el('survivalActions');
+ root.replaceChildren();log.replaceChildren();
+ if(!needs.length)root.append(node('div','暂无需要处理的操作','card muted'));
+ for(const row of needs){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',fmt(row.action),'grow'),badge(fmt(row.urgency||'NORMAL'),'pending'));c.append(head,node('p',row.reason||'','muted'));
+  const controls=node('div',undefined,'row');
+  const approve=node('button','批准','primary'),reject=node('button','拒绝','ghost');
+  approve.onclick=async()=>{approve.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash('已批准');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};
+  reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/survival/needs/'+encodeURIComponent(row.need_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});flash('已拒绝');await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};
+  controls.append(approve,reject);c.append(controls);root.append(c)}
+ if(!actions.length)log.append(node('div','暂无历史操作','muted'));
+ for(const row of actions.slice(-8).reverse()){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('strong',fmt(row.action),'grow'),badge(fmt(row.status),row.status==='FAILED'?'bad':'info'));c.append(head,node('p',fmt(row.observed_at),'muted'));
+  if(row.action==='OFFLOAD_NON_CORE_SERVICE'&&row.status==='PLANNED'&&row.action_id){const b=node('button','执行迁移');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload/'+encodeURIComponent(row.action_id)+'/execute',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}log.append(c)}
 }
 function renderRemoteHosts(data){
- const ctl=data.survival_control||{},rows=ctl.remote_hosts||[],root=el('remoteHosts');root.replaceChildren();
- if(!rows.length){root.append(node('div','No remote machines registered. Ferro will prefer local restructuring first.','card muted'));return}
- for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'CANDIDATE',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));if(row.management_transport==='SSH_KEY')head.append(badge('SSH KEY MANAGED','ok'));if(row.deployment_capable)head.append(badge('SIGNED DEPLOY','ok'));c.append(head);if(row.ssh_host)c.append(node('p',fmt(row.ssh_username)+'@'+fmt(row.ssh_host)+':'+fmt(row.ssh_port)+' · '+fmt(row.reliability),'muted'));else c.append(node('p',fmt(row.health_url)+' · '+fmt(row.reliability),'muted'));c.append(node('div',JSON.stringify(row.capacity||{}),'mono muted'));if(row.ssh_host_key_sha256)c.append(node('div','host key '+fmt(row.ssh_host_key_sha256),'mono muted'));if(row.receiver_status)c.append(node('div','receiver '+fmt(row.receiver_status),'mono muted'));if(row.control_url)c.append(node('div','control '+fmt(row.control_url),'mono muted'));if(row.agent_id)c.append(node('div','agent '+fmt(row.agent_id)+' · key '+fmt(row.key_id),'mono muted'));if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','Verify & activate');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
+ const rows=((data.survival_control||{}).remote_hosts||[]),root=el('remoteHosts');root.replaceChildren();
+ if(!rows.length){root.append(node('div','暂无远程主机','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.name||row.host_id,'grow'),badge(row.status||'UNKNOWN',row.status==='ACTIVE'?'ok':row.status==='FAILED'?'bad':'pending'));c.append(head);
+  c.append(node('p',row.ssh_host?fmt(row.ssh_username)+'@'+fmt(row.ssh_host)+':'+fmt(row.ssh_port):fmt(row.health_url),'muted'));
+  const detail=document.createElement('details'),summary=node('summary','查看详情','muted'),body=node('div',undefined,'mono muted');body.textContent='可靠性 '+fmt(row.reliability)+' · '+JSON.stringify(row.capacity||{});detail.append(summary,body);c.append(detail);
+  if(!row.ssh_host&&(row.status!=='ACTIVE'||(row.control_url&&!row.deployment_capable))){const b=node('button','验证并启用');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/hosts/'+encodeURIComponent(row.host_id)+'/verify',{method:'POST',body:'{}'});await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(b)}root.append(c)}
 }
 function renderServicePlacements(data){
  const ctl=data.survival_control||{},services=ctl.services||[],hosts=(ctl.remote_hosts||[]).filter(x=>x.status==='ACTIVE'&&x.deployment_capable),root=el('servicePlacements');root.replaceChildren();
- for(const row of services){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.service_id,'grow'),badge(row.migration_class||'UNKNOWN',row.migration_class==='PRIMARY_STATEFUL'?'pending':'info'));c.append(head,node('p','placement '+fmt(row.placement)+' · role '+fmt(row.role),'muted'));if(row.migration_class!=='PRIMARY_STATEFUL'&&hosts.length){const select=document.createElement('select');for(const host of hosts){const o=node('option',host.name||host.host_id);o.value=host.host_id;select.append(o)}const b=node('button','Plan offload');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash('Offload plan created.');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};c.append(select,b)}root.append(c)}
+ if(!services.length){root.append(node('div','暂无服务','card muted'));return}
+ for(const row of services){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.service_id,'grow'),badge(fmt(row.placement||'LOCAL'),'info'));c.append(head,node('p',fmt(row.role)+' · '+fmt(row.migration_class),'muted'));
+  if(row.migration_class!=='PRIMARY_STATEFUL'&&hosts.length){const controls=node('div',undefined,'row'),select=document.createElement('select');for(const host of hosts){const o=node('option',host.name||host.host_id);o.value=host.host_id;select.append(o)}
+   const b=node('button','迁移到主机');b.onclick=async()=>{b.disabled=true;try{await api('/operator/api/survival/offload',{method:'POST',body:JSON.stringify({service_id:row.service_id,host_id:select.value})});flash('迁移计划已创建');await refresh()}catch(e){flash(e.message,true)}finally{b.disabled=false}};controls.append(select,b);c.append(controls)}root.append(c)}
 }
 function renderRouting(data){
  const r=data.llm_resources||{},p=r.policy||{},latest=r.latest_route||{},root=el('routing');root.replaceChildren();
  const top=node('div',undefined,'row');top.append(badge(p.pressure||'UNKNOWN',(p.pressure==='NORMAL'?'ok':p.pressure==='WATCH'?'info':'pending')),badge(p.routing_mode||'NO POLICY','info'));
- if(p.prefer_free)top.append(badge('FREE PREFERRED','ok'));
- if(p.windfall_active)top.append(badge('WINDFALL ACTIVE','success'));
- root.append(top);
- const body=node('p');body.textContent='Mind tick '+fmt(p.mind_tick)+' · minimum quality '+fmt(p.minimum_quality)+' · max failovers '+fmt(p.max_failovers)+' · available paid funds '+fmt(p.paid_available_funds)+' · reserve floor '+fmt(p.paid_reserve_floor)+' · windfall '+fmt(p.windfall_mode);root.append(body);
- const d=node('div',undefined,'divider');root.append(d);
- const route=node('p');route.textContent='Latest: '+fmt(latest.result)+' · selected '+fmt(latest.selected_resource_id)+' · attempted '+fmt((latest.attempted_resource_ids||[]).join(' → '));root.append(route);
+ if(p.prefer_free)top.append(badge('优先免费','ok'));if(p.windfall_active)top.append(badge('临时免费资源','ok'));root.append(top);
+ root.append(node('p','最低质量 '+fmt(p.minimum_quality)+' · 最大故障切换 '+fmt(p.max_failovers)+' · 可用付费额度 '+fmt(p.paid_available_funds)+' · 保留额度 '+fmt(p.paid_reserve_floor),'muted'));
+ root.append(node('p','最近路由：'+fmt(latest.result)+' · '+fmt(latest.selected_resource_id),'mono'));
 }
 function renderBrowserRuntime(data){
- const runtime=data.browser_runtime||{},rows=runtime.providers||[],root=el('browserRuntime');root.replaceChildren();
- if(!rows.length){root.append(node('div','Browser runtime status unavailable.','card muted'));return}
- for(const row of rows){
-  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
-  head.append(node('h3',row.provider||'UNKNOWN','grow'));
-  const kind=row.status==='READY'?'ok':row.status==='NOT_CONFIGURED'||row.status==='DISABLED'?'pending':'bad';
-  head.append(badge(row.status||'UNKNOWN',kind));c.append(head);
-  if(row.reason)c.append(node('p',row.reason,'muted'));
-  if(row.provider==='LOCAL_CDP')c.append(node('p','Owned persistent Chrome/CDP · deterministic browser skills','muted'));
-  if(row.provider==='JEV'){
-   c.append(node('p','Adaptive controller · TypeSafe action selection · bounded telemetry','muted'));
-   const result=node('div','Save the Jev / TypeSafe key below, then run a real smoke test.','mono muted');
-   const test=node('button','Test Jev');
-   test.onclick=async()=>{test.disabled=true;result.textContent='Running Jev against an isolated read-only smoke page…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' action(s) · '+fmt(out.final_url);flash('Jev browser test passed.')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};
-   c.append(test,result);
-  }
-  if(row.provider==='TINYFISH')c.append(node('p','Fallback only while the owned browser runtime proves equivalent coverage.','muted'));
-  root.append(c)
- }
+ const rows=((data.browser_runtime||{}).providers||[]),root=el('browserRuntime');root.replaceChildren();
+ if(!rows.length){root.append(node('div','暂无浏览器状态','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row'),kind=row.status==='READY'?'ok':row.status==='NOT_CONFIGURED'||row.status==='DISABLED'?'pending':'bad';
+  head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
+  if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
+  if(row.provider==='JEV'){c.append(node('p','用于自适应网页操作','muted'));const result=node('div','可在配置页保存 Jev 密钥后测试','mono muted'),test=node('button','测试 Jev');test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};c.append(test,result)}
+  if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
 async function localBrowserSnapshot(){
  const shot=el('localBrowserShot'),status=el('localBrowserStatus');
@@ -283,63 +251,37 @@ async function localBrowserAction(path,body={}){
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
- if(!rows.length){root.append(node('div','No executable LLM resources yet.','card muted'));return}
- for(const row of rows){
-  const c=node('div',undefined,'card resource '+(row.pricing_class==='FREE'?'free':'paid'));
-  const head=node('div',undefined,'row'),h=node('h3',row.provider_label+' · '+row.model,'grow');head.append(h);
-  head.append(badge(row.pricing_class||'UNKNOWN',row.pricing_class==='FREE'?'ok':'pending'));
-  if(row.reserve)head.append(badge('RESERVE','pending'));
-  if(row.windfall_eligible)head.append(badge('WINDFALL','success'));
-  if(row.capability_tier)head.append(badge(row.capability_tier,row.capability_tier==='FRONTIER'?'success':'info'));
-  c.append(head);
-  c.append(node('div',row.lifecycle+' · '+fmt(row.metrics_source)+' · capability '+fmt(num(row.capability_score)),'muted'));
-  const stats=node('p');stats.textContent='quality '+fmt(num(row.quality_score))+' · empirical success '+fmt(num(row.success_rate))+' · latency '+fmt(num(row.mean_latency_ms))+' ms';c.append(stats);
-  const tags=node('p');tags.textContent='capabilities '+fmt((row.capability_tags||[]).join(', '));c.append(tags);
-  const health=node('p');health.textContent='runtime success '+row.successes+' · failures '+row.failures+' · consecutive '+row.consecutive_failures+' · last error '+fmt(row.last_error_code);c.append(health);
-  if(row.cooldown_until)c.append(badge('COOLDOWN until '+row.cooldown_until,'bad'));
-  const quota=node('p');quota.textContent='quota '+fmt(row.quota_remaining)+' / '+fmt(row.quota_limit)+' '+fmt(row.quota_unit)+' · consumed '+fmt(row.consumed_quota)+' · reset '+fmt(row.quota_reset_at)+' · expires '+fmt(row.expires_at);c.append(quota);
-  c.append(node('div',row.resource_id,'mono muted'));root.append(c);
- }
+ if(!rows.length){root.append(node('div','暂无模型资源','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),line=node('div',undefined,'resource-row'),name=node('div'),status=node('div'),actions=node('div');
+  name.append(node('h3',row.provider_label+' · '+row.model),node('div','质量 '+fmt(num(row.quality_score))+' · 成功率 '+fmt(num(row.success_rate)),'muted'));
+  status.append(badge(row.pricing_class||'UNKNOWN',row.pricing_class==='FREE'?'ok':'pending'));
+  const detail=document.createElement('details');detail.append(node('summary','详情','muted'));const p=node('p','延迟 '+fmt(num(row.mean_latency_ms))+' ms · 成功 '+row.successes+' · 失败 '+row.failures+' · 配额 '+fmt(row.quota_remaining)+' / '+fmt(row.quota_limit),'mono muted');detail.append(p);actions.append(detail);
+  line.append(name,status,actions);c.append(line);root.append(c)}
 }
 function renderRequests(rows){
- const root=el('requests');root.replaceChildren();
- if(!rows.length){root.append(node('div','No resource requests yet.','card muted'));return}
- for(const row of rows){
-  const c=node('div',undefined,'card'),head=node('div',undefined,'row');
-  head.append(node('h3',row.provider_label+' · '+row.credential_env,'grow'));
-  const auth=row.authorization_status||'PENDING';head.append(badge(auth,auth==='APPROVED'||auth==='LEGACY_APPROVED'?'ok':auth==='REJECTED'?'bad':'pending'));c.append(head,node('p',row.summary));
-  const flow=node('div',undefined,'row');for(const stage of (row.stages||[])){const complete=stage.status==='COMPLETE'||stage.status==='APPROVED'||stage.status==='LEGACY_APPROVED';const bad=stage.status==='REJECTED';const b=badge(stage.stage+' · '+stage.status,bad?'bad':complete?'ok':'pending');if(stage.at)b.title=stage.at;flow.append(b)}c.append(flow);
-  const detail=node('p');detail.textContent='trials '+fmt(row.completed_trial_count)+' · active models '+fmt((row.active_models||[]).join(', '))+' · used '+(row.used?'yes':'no');c.append(detail);
-  const actions=node('div',undefined,'row');
-  if(auth==='PENDING'){const approve=node('button','Approve');approve.onclick=async()=>{approve.disabled=true;try{const out=await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});flash(out.credential_configured?'Approved; onboarding scheduled.':'Approved. Configure the credential below; onboarding will start immediately after save.');await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};
-   const reject=node('button','Reject','ghost');reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});flash('Resource request rejected.');await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};actions.append(approve,reject)}
-  if(row.signup_url&&row.signup_url.startsWith('https://')){const a=node('a','Open official signup');a.href=row.signup_url;a.target='_blank';a.rel='noopener';actions.append(a)}
-  c.append(actions);root.append(c)
- }
+ const root=el('requests'),actionable=rows.filter(row=>{const a=row.authorization_status||'PENDING';return a==='PENDING'||(['APPROVED','LEGACY_APPROVED'].includes(a)&&!row.credential_configured)});root.replaceChildren();
+ if(!actionable.length){root.append(node('div','暂无资源申请','card muted'));return}
+ for(const row of actionable){const c=node('div',undefined,'card'),head=node('div',undefined,'row'),auth=row.authorization_status||'PENDING';head.append(node('h3',row.provider_label||row.credential_env,'grow'),badge(auth,auth==='PENDING'?'pending':'info'));c.append(head,node('p',row.summary||'','muted'));
+  const controls=node('div',undefined,'row');
+  if(auth==='PENDING'){const approve=node('button','批准','primary'),reject=node('button','拒绝','ghost');approve.onclick=async()=>{approve.disabled=true;try{await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'APPROVE'})});await refresh()}catch(e){flash(e.message,true)}finally{approve.disabled=false}};reject.onclick=async()=>{reject.disabled=true;try{await api('/operator/api/requests/'+encodeURIComponent(row.request_id)+'/decision',{method:'POST',body:JSON.stringify({decision:'REJECT'})});await refresh()}catch(e){flash(e.message,true)}finally{reject.disabled=false}};controls.append(approve,reject)}
+  else{const config=node('button','去配置密钥');config.onclick=()=>selectPanel('config');controls.append(config)}
+  if(row.signup_url&&row.signup_url.startsWith('https://')){const a=node('a','打开官网');a.href=row.signup_url;a.target='_blank';a.rel='noopener';controls.append(a)}c.append(controls);root.append(c)}
 }
 function field(labelText,input){const l=node('label');l.append(node('span',labelText),input);return l}
 function input(type,placeholder,value=''){const x=document.createElement('input');x.type=type;x.placeholder=placeholder;x.value=value??'';return x}
 function renderSecrets(rows){
  const root=el('secrets');root.replaceChildren();
- for(const row of rows){const c=node('div',undefined,'card');
-  const head=node('div',undefined,'row'),h=node('h3',row.label,'grow');head.append(h,badge(row.configured?'CONFIGURED':'MISSING',row.configured?'ok':'pending'));c.append(head,node('div',row.env_name,'mono muted'));
-  const secret=input('password','Paste new secret');secret.autocomplete='new-password';
-  const save=node('button',row.configured?'Rotate secret':'Save secret');save.onclick=async()=>{const value=secret.value.trim();if(!value)return;save.disabled=true;try{const out=await api('/operator/api/secrets/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({value})});secret.value='';flash(out.label+' stored securely.');await refresh()}catch(e){flash(e.message,true)}finally{save.disabled=false}};
-  c.append(field('Secret value (write-only)',secret),save);
-  if(row.quota_supported){
-   c.append(node('div',undefined,'divider'));
-   const rem=input('number','unknown',row.quota_remaining??'');rem.min='0';rem.step='any';
-   const lim=input('number','unknown',row.quota_limit??'');lim.min='0';lim.step='any';
+ if(!rows.length){root.append(node('div','暂无可配置密钥','card muted'));return}
+ for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row');head.append(node('h3',row.label,'grow'),badge(row.configured?'已配置':'未配置',row.configured?'ok':'pending'));c.append(head,node('div',row.env_name,'mono muted'));
+  const secret=input('password','粘贴新的密钥');secret.autocomplete='new-password';const save=node('button',row.configured?'更新密钥':'保存密钥');
+  save.onclick=async()=>{const value=secret.value.trim();if(!value)return;save.disabled=true;try{await api('/operator/api/secrets/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({value})});secret.value='';flash(row.label+' 已保存');await refresh()}catch(e){flash(e.message,true)}finally{save.disabled=false}};c.append(field('密钥（只写）',secret),save);
+  if(row.quota_supported){const details=document.createElement('details');details.append(node('summary','额度设置','muted'));const box=node('div',undefined,'stack'),rem=input('number','未知',row.quota_remaining??''),lim=input('number','未知',row.quota_limit??'');rem.min='0';lim.min='0';rem.step='any';lim.step='any';
    const unit=document.createElement('select');for(const u of ['REQUESTS','TOKENS','CREDITS']){const o=node('option',u);o.value=u;if(u===row.quota_unit)o.selected=true;unit.append(o)}
-   const reset=input('text','2026-09-19T00:00:00+00:00',row.quota_reset_at??'');
-   const expires=input('text','2026-10-01T00:00:00+00:00',row.expires_at??'');
-   const pair=node('div',undefined,'two');pair.append(field('Remaining',rem),field('Limit',lim));c.append(pair,field('Quota unit',unit),field('Reset at (ISO + timezone)',reset),field('Expires at (ISO + timezone)',expires));
-   const meta=node('button','Save limits','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' resource metadata updated.');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};c.append(meta);
-  }
-  root.append(c);
- }
+   const reset=input('text','ISO 时间',row.quota_reset_at??''),expires=input('text','ISO 时间',row.expires_at??''),pair=node('div',undefined,'two');pair.append(field('剩余额度',rem),field('额度上限',lim));box.append(pair,field('额度单位',unit),field('重置时间',reset),field('过期时间',expires));
+   const meta=node('button','保存额度','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' 额度已更新');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};box.append(meta);details.append(box);c.append(details)}
+  root.append(c)}
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderAttention(data);renderSummary(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
