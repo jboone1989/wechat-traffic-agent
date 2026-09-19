@@ -17,6 +17,9 @@ from .browser_runtime import (
     BrowserTelemetryLedger,
 )
 from .x_browser import (
+    TINYFISH_BASE_URL,
+    TinyFishProfileClient,
+    TinyFishProfileUnavailable,
     XBrowserPublicationUnverified,
     XBrowserPublishResult,
     X_COMPOSE_URL,
@@ -480,4 +483,346 @@ class AccountJevXTransport:
         )
 
 
-__all__ = ["AccountJevXTransport", "LocalHarnessXTransport"]
+
+class ExistingProfileJevXTransport:
+    """Run JEV inside the already-authenticated TinyFish X browser context."""
+
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        client=None,
+        registry=None,
+        runner: Callable[..., Any] | None = None,
+        timeout_seconds: float = 150.0,
+    ) -> None:
+        self.state_root = Path(state_root)
+        self.client = client or TinyFishProfileClient(
+            api_key=os.environ.get("TINYFISH_API_KEY", ""),
+            profile_id=os.environ.get("TINYFISH_X_PROFILE_ID", ""),
+            base_url=os.environ.get("TINYFISH_BASE_URL", TINYFISH_BASE_URL),
+        )
+        if registry is None:
+            from .account_registry import AccountRegistry
+            registry = AccountRegistry(self.state_root)
+        self.registry = registry
+        self.runner = runner or subprocess.run
+        self.timeout_seconds = float(timeout_seconds)
+        self.telemetry = BrowserTelemetryLedger(self.state_root)
+
+    @classmethod
+    def from_environment(cls, *, state_root: Path) -> "ExistingProfileJevXTransport":
+        if not _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED"):
+            raise BrowserRuntimeUnavailable("CONTENT_LOCAL_X_BROWSER_ENABLED is false")
+        if importlib.util.find_spec("jev_ultrafast") is None:
+            raise BrowserRuntimeUnavailable("jev-ultrafast is not installed")
+        if importlib.util.find_spec("browser_harness") is None:
+            raise BrowserRuntimeUnavailable("browser-harness is not installed")
+        try:
+            return cls(
+                state_root=state_root,
+                timeout_seconds=float(
+                    os.environ.get(
+                        "CONTENT_EXISTING_PROFILE_JEV_TIMEOUT_SECONDS",
+                        "150",
+                    )
+                ),
+            )
+        except TinyFishProfileUnavailable as exc:
+            raise BrowserRuntimeUnavailable(str(exc)) from exc
+
+    def _account(self):
+        explicit = os.environ.get("CONTENT_X_ACCOUNT_ID", "").strip()
+        if explicit:
+            try:
+                record = self.registry.get(explicit)
+            except (KeyError, ValueError) as exc:
+                raise BrowserRuntimeUnavailable(
+                    "configured X account instance does not exist"
+                ) from exc
+            if record.provider_id != "x":
+                raise BrowserRuntimeUnavailable(
+                    "configured account instance is not an X account"
+                )
+            return record
+        rows = self.registry.list(provider_id="x")
+        if not rows:
+            raise BrowserRuntimeUnavailable(
+                "no X account instance is registered for existing-session JEV"
+            )
+        if len(rows) != 1:
+            raise BrowserRuntimeUnavailable(
+                "multiple X accounts are registered; CONTENT_X_ACCOUNT_ID is required"
+            )
+        return rows[0]
+
+    @staticmethod
+    def _worker_env(*, account_id: str, cdp_ws: str) -> dict[str, str]:
+        env = dict(os.environ)
+        env.pop("BU_CDP_URL", None)
+        env["BU_CDP_WS"] = cdp_ws
+        env["BU_NAME"] = ("x_existing_" + account_id[-20:])[:64]
+        src_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = (
+            src_root
+            if not env.get("PYTHONPATH")
+            else src_root + os.pathsep + env["PYTHONPATH"]
+        )
+        return env
+
+    def _run_worker(
+        self,
+        *,
+        account_id: str,
+        expected_handle: str,
+        cdp_ws: str,
+        text: str,
+        mode: str,
+    ) -> dict[str, Any]:
+        completed = self.runner(
+            [
+                sys.executable,
+                "-m",
+                "wechat_traffic_agent.existing_session_x_publish_worker",
+            ],
+            input=json.dumps(
+                {
+                    "text": text,
+                    "expected_handle": expected_handle,
+                    "mode": mode,
+                }
+            ),
+            capture_output=True,
+            text=True,
+            timeout=self.timeout_seconds,
+            env=self._worker_env(
+                account_id=account_id,
+                cdp_ws=cdp_ws,
+            ),
+            check=False,
+        )
+        rows = [
+            line for line in completed.stdout.splitlines()
+            if line.strip().startswith("{")
+        ]
+        if not rows:
+            return {
+                "status": "SESSION_UNAVAILABLE",
+                "attempted": False,
+                "error_type": "WORKER_OUTPUT_MISSING",
+            }
+        try:
+            body = json.loads(rows[-1])
+        except json.JSONDecodeError:
+            return {
+                "status": "SESSION_UNAVAILABLE",
+                "attempted": False,
+                "error_type": "WORKER_OUTPUT_INVALID",
+            }
+        return body if isinstance(body, dict) else {}
+
+    def _start_session(self) -> tuple[str, str]:
+        try:
+            setup = self.client.start_setup(
+                url=X_HOME_URL,
+                timeout_seconds=180,
+            )
+        except TinyFishProfileUnavailable as exc:
+            raise BrowserRuntimeUnavailable(str(exc)) from exc
+        session_id = str(setup.get("session_id") or "")
+        cdp_ws = str(setup.get("cdp_url") or "")
+        if not session_id or not cdp_ws:
+            raise BrowserRuntimeUnavailable(
+                "existing X profile session did not return session_id/cdp_url"
+            )
+        return session_id, cdp_ws
+
+    def _cancel(self, session_id: str) -> None:
+        try:
+            self.client.cancel(session_id=session_id)
+        except Exception:
+            pass
+
+    def _save(self, session_id: str) -> None:
+        try:
+            self.client.save(session_id=session_id)
+        except Exception:
+            pass
+    def _record(
+        self,
+        *,
+        record,
+        body: dict[str, Any],
+        started: float,
+        status: str,
+    ) -> None:
+        self.telemetry.append(
+            task_type="X_PUBLISH",
+            site="x.com",
+            result=BrowserTaskResult(
+                provider="JEV_EXISTING_PROFILE",
+                status=status,
+                elapsed_ms=int(
+                    body.get("elapsed_ms")
+                    or round((time.perf_counter() - started) * 1000)
+                ),
+                action_count=int(body.get("action_count") or 0),
+                final_url=str(body.get("url") or "") or None,
+                failure_reason=(
+                    None
+                    if status == "COMPLETED"
+                    else str(body.get("error_type") or body.get("status") or "")
+                ),
+            ),
+            account_id=record.account_id,
+        )
+
+    @staticmethod
+    def _result(body: dict[str, Any]) -> XBrowserPublishResult:
+        return XBrowserPublishResult(
+            post_id=str(body.get("post_id") or ""),
+            url=str(body.get("url") or ""),
+            handle=str(body.get("handle") or ""),
+            duplicate_found=bool(body.get("duplicate_found")),
+            provider="JEV_EXISTING_PROFILE",
+        )
+
+    def _fresh_reconcile(
+        self,
+        *,
+        record,
+        text: str,
+    ) -> dict[str, Any]:
+        session_id, cdp_ws = self._start_session()
+        try:
+            try:
+                return self._run_worker(
+                    account_id=record.account_id,
+                    expected_handle=record.identity,
+                    cdp_ws=cdp_ws,
+                    text=text,
+                    mode="reconcile",
+                )
+            except subprocess.TimeoutExpired:
+                return {
+                    "status": "NOT_FOUND",
+                    "attempted": False,
+                    "action_count": 0,
+                    "error_type": "RECONCILE_TIMEOUT",
+                }
+        finally:
+            self._cancel(session_id)
+    async def publish(self, *, text: str) -> XBrowserPublishResult:
+        return await asyncio.to_thread(self._publish_sync, text)
+
+    def _publish_sync(self, text: str) -> XBrowserPublishResult:
+        if not text.strip() or len(text) > 25_000:
+            raise ValueError("X post must contain 1-25000 characters")
+        record = self._account()
+        started = time.perf_counter()
+        session_id, cdp_ws = self._start_session()
+        body: dict[str, Any]
+        try:
+            try:
+                body = self._run_worker(
+                    account_id=record.account_id,
+                    expected_handle=record.identity,
+                    cdp_ws=cdp_ws,
+                    text=text,
+                    mode="publish",
+                )
+            except subprocess.TimeoutExpired:
+                body = {
+                    "status": "PUBLICATION_UNVERIFIED",
+                    "attempted": True,
+                    "action_count": 1,
+                    "error_type": "WORKER_TIMEOUT",
+                }
+            except OSError as exc:
+                self._cancel(session_id)
+                raise BrowserRuntimeUnavailable(
+                    f"existing-session JEV worker could not start: {type(exc).__name__}"
+                ) from exc
+
+            status = str(body.get("status") or "")
+            attempted = bool(body.get("attempted")) or int(
+                body.get("action_count") or 0
+            ) > 0
+
+            if status == "POSTED":
+                self._save(session_id)
+                self._record(
+                    record=record,
+                    body=body,
+                    started=started,
+                    status="COMPLETED",
+                )
+                return self._result(body)
+
+            if attempted:
+                self._save(session_id)
+            else:
+                self._cancel(session_id)
+
+            if attempted:
+                try:
+                    reconciled = self._fresh_reconcile(
+                        record=record,
+                        text=text,
+                    )
+                except Exception as exc:
+                    self._record(
+                        record=record,
+                        body=body,
+                        started=started,
+                        status="FAILED",
+                    )
+                    raise XBrowserPublicationUnverified(
+                        "JEV write may have reached X and fresh-session "
+                        f"reconciliation failed: {type(exc).__name__}"
+                    ) from exc
+                if str(reconciled.get("status") or "") == "POSTED":
+                    reconciled["action_count"] = 1
+                    self._record(
+                        record=record,
+                        body=reconciled,
+                        started=started,
+                        status="COMPLETED",
+                    )
+                    return self._result(reconciled)
+                self._record(
+                    record=record,
+                    body=body,
+                    started=started,
+                    status="FAILED",
+                )
+                raise XBrowserPublicationUnverified(
+                    str(
+                        body.get("message")
+                        or "JEV write may have reached X but fresh-session "
+                           "reconciliation found no public status URL"
+                    )[:400]
+                )
+
+            self._record(
+                record=record,
+                body=body,
+                started=started,
+                status="FAILED",
+            )
+            detail = str(
+                body.get("message")
+                or body.get("error_type")
+                or status
+                or "existing-session JEV unavailable"
+            )[:400]
+            if status == "INVALID_DRAFT":
+                raise ValueError(detail)
+            raise BrowserRuntimeUnavailable(detail)
+        finally:
+            # Successful/ambiguous writes save above; pre-write failures cancel above.
+            # This finalizer only cleans up if an exception happened before classification.
+            pass
+
+
+__all__ = ["AccountJevXTransport", "ExistingProfileJevXTransport", "LocalHarnessXTransport"]

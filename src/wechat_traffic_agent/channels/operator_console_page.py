@@ -328,7 +328,7 @@ function renderAccounts(data){
   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
   const profileReady=profile.status==='PROVISIONED';
   webTitle.append(node('strong','网页自动化'),badge(profileReady?'独立环境已创建':'按需创建',profileReady?'ok':'info'));
-  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie，不与其他 X 账号混用。','muted'));
+  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie；若已有兼容浏览器会话处于登录状态，JEV 可直接复用该登录会话，无需重复登录。网页登录仅用于新增账号或会话失效。','muted'));
   if(automation.compatibility_fallback)webBox.append(node('p','当前兼容 fallback：'+automation.compatibility_fallback+'（临时，不是长期依赖）。','muted'));
   c.append(webBox);
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);

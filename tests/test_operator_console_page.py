@@ -66,6 +66,7 @@ def test_x_account_ui_uses_account_scoped_oauth_and_jev():
     assert "OAuth 身份独立绑定到这个账号" in page
     assert "长期执行器：" in page
     assert "每个账号拥有独立 Chrome profile/cookie" in page
+    assert "JEV 可直接复用该登录会话，无需重复登录" in page
     assert "当前兼容 fallback：" in page
     assert "创建独立浏览器环境" in page
     assert "测试该账号 Jev" in page
