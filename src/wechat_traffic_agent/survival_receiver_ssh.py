@@ -20,8 +20,15 @@ from typing import Any
 from .survival_ssh import SSHHostBootstrapper
 
 
-DEFAULT_RECEIVER_SHA = "77707ba622ea5db79ff25d62c9f4ebabe6b1e55d"
+DEFAULT_RECEIVER_SHA = "a56d2c9bbe0569d1c83695c71833e7a7193f6f17"
 DEFAULT_AGENT_NETWORK_MIRROR = Path("/home/ubuntu/deploy/agent-network-bare.git")
+
+
+def desired_receiver_sha() -> str:
+    return str(
+        os.environ.get("CONTENT_SURVIVAL_AGENT_NETWORK_RECEIVER_SHA")
+        or DEFAULT_RECEIVER_SHA
+    ).strip().lower()
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,7 @@ class ReceiverProvisionResult:
     host_instance_id: str
     deployment_profiles: tuple[str, ...]
     capacity: dict[str, Any]
+    capabilities: tuple[str, ...] = ()
 
 
 class SSHWorkloadTransport:
@@ -56,6 +64,10 @@ class SSHWorkloadTransport:
         body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
         return self._json_operation("deploy", stdin=body, timeout=90)
 
+    def task(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        return self._json_operation("task", stdin=body, timeout=45)
+
     def static_index_sha256(self, deployment_path: str) -> str:
         path = str(deployment_path or "").strip()
         if not path.startswith("/") or "\n" in path or "\r" in path:
@@ -76,7 +88,7 @@ class SSHWorkloadTransport:
     def _json_operation(
         self, operation: str, *, stdin: str = "", timeout: int = 25,
     ) -> dict[str, Any]:
-        if operation not in {"health", "deploy"}:
+        if operation not in {"health", "deploy", "task"}:
             raise ValueError("unsupported SSH workload operation")
         raw = self._command(
             self.receiver_command + " " + operation,
@@ -156,10 +168,7 @@ class SSHReceiverProvisioner:
         expected_host_key_sha256: str, expected_host_instance_id: str,
         controller: dict[str, str],
     ) -> ReceiverProvisionResult:
-        release_sha = str(
-            os.environ.get("CONTENT_SURVIVAL_AGENT_NETWORK_RECEIVER_SHA")
-            or DEFAULT_RECEIVER_SHA
-        ).strip().lower()
+        release_sha = desired_receiver_sha()
         if not re.fullmatch(r"[0-9a-f]{40}", release_sha):
             raise ValueError("receiver release SHA must be a full git SHA")
         mirror = Path(
@@ -211,7 +220,7 @@ class SSHReceiverProvisioner:
                         "NETWORK_SURVIVAL_WORKLOAD_ROOT=" + str(state / "workloads"),
                         "NETWORK_SURVIVAL_WORKLOAD_TRUSTED_KEYS_FILE=" + str(trusted),
                         "NETWORK_SURVIVAL_WORKLOAD_AGENT_ID=" + agent_id,
-                        "NETWORK_SURVIVAL_WORKLOAD_PROFILES=content.website-static.v1",
+                        "NETWORK_SURVIVAL_WORKLOAD_PROFILES=content.website-static.v1,content.resource-research.v1",
                         "",
                     ]
                 )
@@ -246,13 +255,22 @@ class SSHReceiverProvisioner:
             raise RuntimeError("provisioned SSH receiver did not report healthy")
         if str(health.get("host_instance_id") or "") != expected_host_instance_id:
             raise RuntimeError("provisioned SSH receiver host identity mismatch")
+        capabilities = tuple(
+            str(item)
+            for item in health.get("capabilities") or ()
+            if str(item).strip()
+        )
         profiles = tuple(
             str(item)
             for item in health.get("deployment_profiles") or ()
             if str(item).strip()
         )
-        if "content.website-static.v1" not in profiles:
-            raise RuntimeError("provisioned SSH receiver omitted required profile")
+        required_profiles = {
+            "content.website-static.v1",
+            "content.resource-research.v1",
+        }
+        if not required_profiles.issubset(set(profiles)):
+            raise RuntimeError("provisioned SSH receiver omitted required profiles")
         return ReceiverProvisionResult(
             release_sha=release_sha,
             receiver_command=receiver_command,
@@ -261,6 +279,7 @@ class SSHReceiverProvisioner:
             key_id=str(health.get("key_id") or ""),
             public_key=str(health.get("public_key") or ""),
             host_instance_id=str(health.get("host_instance_id") or ""),
+            capabilities=capabilities,
             deployment_profiles=profiles,
             capacity=dict(health.get("capacity") or {}),
         )
@@ -502,6 +521,7 @@ class SSHReceiverProvisioner:
 
 __all__ = [
     "DEFAULT_RECEIVER_SHA",
+    "desired_receiver_sha",
     "ReceiverProvisionResult",
     "SSHReceiverProvisioner",
     "SSHWorkloadTransport",

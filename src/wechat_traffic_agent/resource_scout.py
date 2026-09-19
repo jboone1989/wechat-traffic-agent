@@ -193,14 +193,43 @@ class ContentResourceScout:
         }
 
     def _fetch(self, url: str, max_chars: int):
-        receipt = self.capability_runtime.invoke(
-            "web.fetch", {"url": url, "max_chars": int(max_chars)}
+        try:
+            from types import SimpleNamespace
+            from .survival_resources import SurvivalResourceManager
 
-        )
-        persist = getattr(self.capability_runtime, "persist", None)
-        if callable(persist):
-            persist()
-        return receipt
+            remote = SurvivalResourceManager(
+                self.state_root
+            ).fetch_remote_resource_research(
+                url,
+                max_chars=int(max_chars),
+                now=datetime.now(timezone.utc).replace(microsecond=0),
+            )
+            result = dict(remote.get("result") or {})
+            return SimpleNamespace(
+                receipt_id=str(remote.get("receipt_id") or ""),
+                payload={
+                    "ok": True,
+                    "page": {
+                        "success": True,
+                        "url": str(result.get("url") or url),
+                        "markdown": str(result.get("text") or ""),
+                        "content_type": result.get("content_type"),
+                        "status_code": result.get("status_code"),
+                        "remote_host_id": remote.get("host_id"),
+                        "remote_transport": remote.get("transport"),
+                    },
+                },
+            )
+        except Exception:
+            # Remote research is disposable compute. A failed/unavailable body
+            # must never make public evidence collection unavailable.
+            receipt = self.capability_runtime.invoke(
+                "web.fetch", {"url": url, "max_chars": int(max_chars)}
+            )
+            persist = getattr(self.capability_runtime, "persist", None)
+            if callable(persist):
+                persist()
+            return receipt
 
     def expand_provider_leads(self, *, now: datetime, limit: int = 12) -> dict[str, Any]:
         created = self.scout.expand_provider_leads(now=now, fetch=self._fetch, limit=limit)
