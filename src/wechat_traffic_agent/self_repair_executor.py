@@ -222,6 +222,8 @@ _GENERATED_REPAIR_MAX_TRANSIENT_RETRIES = 3
 _REJECTED_CANDIDATE_TRIALS = frozenset({
     "REJECTED_FOCUSED_TESTS_WORKSPACE_QUARANTINED",
     "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+    "REPAIR_PAUSED_BASELINE_UNHEALTHY",
+    "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
 })
 
 
@@ -277,6 +279,7 @@ class SelfRepairExecutor:
         recipes: dict[str, RepairRecipe] | None = None,
         python_executable: str | None = None,
         planner_runtime: Any | None = None,
+        test_pythonpath: str | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
@@ -284,13 +287,22 @@ class SelfRepairExecutor:
         self.recipes = dict(recipes or DEFAULT_RECIPES)
         self.python_executable = str(python_executable or sys.executable)
         self.planner_runtime = planner_runtime
+        self.test_pythonpath = str(test_pythonpath or "").strip()
+        if "\n" in self.test_pythonpath or "\0" in self.test_pythonpath:
+            raise ValueError("self repair test_pythonpath must be a single-line path list")
         self.root = self.state_root / "application" / "self_maintenance"
 
     def run_once(self, *, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
 
-        problem = self._next_problem(statuses={"REPAIR_PROPOSED"})
+        problem = self._next_problem(
+            statuses={
+                "REPAIR_PROPOSED",
+                "REPAIR_PAUSED_BASELINE_UNHEALTHY",
+                "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
+            }
+        )
         if problem is not None:
             return self._run_proposal(problem, now)
 
@@ -657,19 +669,27 @@ class SelfRepairExecutor:
                 return False
         return True
 
+    def _test_command(self, *pytest_args: str) -> tuple[str, ...]:
+        command = (
+            self.python_executable,
+            "-B",
+            "-m",
+            "pytest",
+            "-q",
+            *pytest_args,
+        )
+        if not self.test_pythonpath:
+            return command
+        return (
+            "env",
+            "PYTHONPATH=" + self.test_pythonpath,
+            *command,
+        )
+
     def _provider(self, recipe: RepairRecipe) -> BoundedCodingProvider:
         assert self.workspace_root is not None
-        focused = (
-            (
-                self.python_executable,
-                "-B",
-                "-m",
-                "pytest",
-                "-q",
-                *recipe.focused_tests,
-            ),
-        )
-        full = ((self.python_executable, "-B", "-m", "pytest", "-q"),)
+        focused = (self._test_command(*recipe.focused_tests),)
+        full = (self._test_command(),)
         return BoundedCodingProvider(
             CodingPolicy(
                 repo_root=self.workspace_root,
@@ -814,35 +834,75 @@ class SelfRepairExecutor:
         baseline_sha: str | None = None,
     ) -> dict[str, Any]:
         baseline_sha = baseline_sha or self._git_sha(self.workspace_root)
-        restore = self._restore_workspace_baseline(str(baseline_sha or ""))
         problem_id = str(problem.get("problem_id") or "unknown")
         safe = problem_id.replace(":", "-")
         proposal = dict(problem.get("repair_proposal") or {})
-        candidate_test = trial.get("full") or trial.get("test")
-        counterevidence = self._test_counterevidence(candidate_test)
 
+        restore_before = self._restore_workspace_baseline(str(baseline_sha or ""))
         baseline_full: dict[str, Any] = {
             "ok": False,
             "profile": "repair-full",
             "results": [],
             "reason": "workspace baseline restore failed",
         }
-        if restore.get("ok"):
+        candidate_replay: dict[str, Any] = {
+            "ok": False,
+            "profile": "repair-full",
+            "results": [],
+            "reason": "candidate replay not attempted",
+        }
+        replay_error: str | None = None
+
+        if restore_before.get("ok"):
             baseline_full = self._provider(recipe).invoke(
                 CAP_CODE_TEST, {"profile": "repair-full"}
             )
 
+        if baseline_full.get("ok"):
+            replay_provider = self._provider(recipe)
+            try:
+                for edit in recipe.edits:
+                    replay_provider.invoke(
+                        CAP_CODE_EDIT,
+                        {
+                            "path": edit.path,
+                            "old_text": edit.old_text,
+                            "new_text": edit.new_text,
+                            "expected_replacements": 1,
+                        },
+                    )
+                candidate_replay = replay_provider.invoke(
+                    CAP_CODE_TEST, {"profile": "repair-full"}
+                )
+            except Exception as exc:  # bounded replay failure is evidence, not authority
+                replay_error = type(exc).__name__ + ":" + str(exc)[:1000]
+                candidate_replay = {
+                    "ok": False,
+                    "profile": "repair-full",
+                    "results": [],
+                    "reason": "candidate replay could not be reproduced",
+                    "replay_error": replay_error,
+                }
+
+        restore_after = self._restore_workspace_baseline(str(baseline_sha or ""))
+        counterevidence = self._test_counterevidence(candidate_replay)
+        if replay_error and not counterevidence.get("assertion_evidence"):
+            counterevidence["assertion_evidence"] = [replay_error]
+
+        test_environment = {
+            "python_executable": self.python_executable,
+            "pythonpath": self.test_pythonpath or None,
+        }
         augmented_trial = {
             **trial,
             "baseline": baseline_full,
             "baseline_sha": baseline_sha,
+            "candidate_replay": candidate_replay,
             "counterevidence": counterevidence,
-            "workspace_restore": restore,
+            "test_environment": test_environment,
+            "workspace_restore_before": restore_before,
+            "workspace_restore_after": restore_after,
         }
-        _atomic_json(
-            self.root / "repair_trials" / f"{safe}.json",
-            augmented_trial,
-        )
 
         path = Path(str(problem["_path"]))
         updated = {
@@ -851,9 +911,15 @@ class SelfRepairExecutor:
         }
         trial_summary = {
             "status": str(trial.get("status") or "REJECTED"),
-            "observed_at": str(trial.get("observed_at") or now.astimezone(timezone.utc).isoformat()),
+            "observed_at": str(
+                trial.get("observed_at")
+                or now.astimezone(timezone.utc).isoformat()
+            ),
             "trial_ref": f"self-repair-trial:{safe}",
             "baseline_status": "PASSED" if baseline_full.get("ok") else "FAILED",
+            "candidate_replay_status": (
+                "PASSED" if candidate_replay.get("ok") else "FAILED"
+            ),
             "previous_proposal_id": proposal.get("proposal_id"),
             "previous_hypothesis": proposal.get("hypothesis"),
             "previous_edits": [
@@ -867,11 +933,35 @@ class SelfRepairExecutor:
                 )
                 if isinstance(row, dict)
             ][:3],
+            "test_environment": test_environment,
             **counterevidence,
         }
         updated["repair_trial"] = trial_summary
 
+        if not restore_after.get("ok"):
+            augmented_trial["status"] = "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED"
+            _atomic_json(
+                self.root / "repair_trials" / f"{safe}.json",
+                augmented_trial,
+            )
+            updated["status"] = "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED"
+            updated["repair_proposal"] = {
+                **proposal,
+                "status": "PAUSED_WORKSPACE_RESTORE_FAILED",
+            }
+            _atomic_json(path, updated)
+            return {
+                "status": "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
+                "problem_id": problem_id,
+                "workspace_restore": restore_after,
+            }
+
         if not baseline_full.get("ok"):
+            augmented_trial["status"] = "REPAIR_PAUSED_BASELINE_UNHEALTHY"
+            _atomic_json(
+                self.root / "repair_trials" / f"{safe}.json",
+                augmented_trial,
+            )
             updated["status"] = "REPAIR_PAUSED_BASELINE_UNHEALTHY"
             updated["repair_proposal"] = {
                 **proposal,
@@ -885,6 +975,37 @@ class SelfRepairExecutor:
                 "trial_status": trial.get("status"),
             }
 
+        if candidate_replay.get("ok"):
+            augmented_trial["status"] = "REPLAY_PASSED_ENVIRONMENT_CORRECTED"
+            _atomic_json(
+                self.root / "repair_trials" / f"{safe}.json",
+                augmented_trial,
+            )
+            updated["status"] = "REPAIR_PROPOSED"
+            updated["repair_proposal"] = {
+                **proposal,
+                "status": "PROPOSED",
+            }
+            updated["repair_trial"] = {
+                **trial_summary,
+                "status": "REPLAY_PASSED_ENVIRONMENT_CORRECTED",
+                "failed_tests": [],
+                "assertion_evidence": [],
+            }
+            _atomic_json(path, updated)
+            return {
+                "status": "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
+                "problem_id": problem_id,
+                "baseline_status": "PASSED",
+                "candidate_replay_status": "PASSED",
+                "retry_seconds": 60,
+            }
+
+        augmented_trial["status"] = "REJECTED_BY_AUTHORITATIVE_REPLAY"
+        _atomic_json(
+            self.root / "repair_trials" / f"{safe}.json",
+            augmented_trial,
+        )
         updated["status"] = "DIAGNOSING"
         updated["repair_proposal"] = None
         updated["planner_attempt"] = {
@@ -901,6 +1022,7 @@ class SelfRepairExecutor:
             "problem_id": problem_id,
             "trial_status": trial.get("status"),
             "baseline_status": "PASSED",
+            "candidate_replay_status": "FAILED",
             "counterevidence": counterevidence,
             "retry_seconds": 60,
         }

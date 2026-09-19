@@ -86,3 +86,14 @@ def test_other_self_repair_states_do_not_create_busy_loop():
 
     assert result["status"] == "OK"
     assert wakeful.calls == []
+
+
+
+def test_replayed_candidate_schedules_fresh_execution_cycle():
+    runner, wakeful = _runner("CANDIDATE_REPLAY_PASSED_RETRY_QUEUED")
+
+    result = runner._reflect(NOW)
+
+    assert result["status"] == "OK"
+    assert result["self_repair"]["status"] == "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED"
+    assert wakeful.calls == [(NOW, 60)]
