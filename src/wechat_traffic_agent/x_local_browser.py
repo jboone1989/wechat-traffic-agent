@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .browser_runtime import (
     BrowserRuntimeUnavailable,
@@ -31,11 +34,17 @@ class LocalHarnessXTransport:
     """Exact X publishing through the persistent local Chrome profile."""
 
     def __init__(
-        self, *, state_root: Path, timeout_ms: int = 30_000, browser_factory=None
+        self,
+        *,
+        state_root: Path,
+        timeout_ms: int = 30_000,
+        browser_factory=None,
+        expected_handle: str = "",
     ) -> None:
         self.state_root = Path(state_root)
         self.timeout_ms = int(timeout_ms)
         self.browser_factory = browser_factory
+        self.expected_handle = str(expected_handle).strip().lstrip("@")
         self.telemetry = BrowserTelemetryLedger(self.state_root)
 
     @classmethod
@@ -92,13 +101,24 @@ class LocalHarnessXTransport:
         )
         return result
 
-    def _publish_sync(self, text: str) -> XBrowserPublishResult:
+    def _publish_sync(
+        self,
+        text: str,
+        *,
+        action_state: dict[str, bool] | None = None,
+    ) -> XBrowserPublishResult:
         if not text.strip() or len(text) > 25_000:
             raise ValueError("X post must contain 1-25000 characters")
+        state = action_state if action_state is not None else {"attempted": False}
+        state.setdefault("attempted", False)
         browser = self._factory()(X_HOME_URL)
         try:
             self._wait_ready(browser)
             handle = self._authenticated_handle(browser)
+            if self.expected_handle and handle.lower() != self.expected_handle.lower():
+                raise BrowserRuntimeUnavailable(
+                    f"account JEV profile authenticated as @{handle}, expected @{self.expected_handle}"
+                )
             existing = self._find_existing(
                 browser, handle=handle, text=text, duplicate_found=True
             )
@@ -131,20 +151,30 @@ class LocalHarnessXTransport:
             )
             if not isinstance(target, dict):
                 raise XBrowserPublicationUnverified("X publish button is unavailable")
+            # Mark ambiguous before sending the click sequence: a transport failure
+            # between mousePressed and mouseReleased must never trigger a provider retry.
+            state["attempted"] = True
             self._click(browser, float(target["x"]), float(target["y"]))
             time.sleep(1.0)
 
-            for _ in range(8):
-                existing = self._find_existing(
-                    browser,
-                    handle=handle,
-                    text=text,
-                    duplicate_found=False,
-                    require_timeline=False,
-                )
-                if existing is not None:
-                    return existing
-                time.sleep(0.7)
+            try:
+                for _ in range(8):
+                    existing = self._find_existing(
+                        browser,
+                        handle=handle,
+                        text=text,
+                        duplicate_found=False,
+                        require_timeline=False,
+                    )
+                    if existing is not None:
+                        return existing
+                    time.sleep(0.7)
+            except XBrowserPublicationUnverified:
+                raise
+            except Exception as exc:
+                raise XBrowserPublicationUnverified(
+                    "X write may have reached the platform but verification failed"
+                ) from exc
             raise XBrowserPublicationUnverified(
                 "X submit could not be tied to a public post URL"
             )
@@ -267,4 +297,187 @@ class LocalHarnessXTransport:
             )
 
 
-__all__ = ["LocalHarnessXTransport"]
+
+class AccountJevXTransport:
+    """Deterministic X publishing on one account-scoped JEV/Browser Harness profile."""
+
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        registry=None,
+        profile_manager=None,
+        runner: Callable[..., Any] | None = None,
+        timeout_seconds: float = 75.0,
+    ) -> None:
+        self.state_root = Path(state_root)
+        if registry is None:
+            from .account_registry import AccountRegistry
+            registry = AccountRegistry(self.state_root)
+        if profile_manager is None:
+            from .account_browser_profiles import AccountBrowserProfileManager
+            profile_manager = AccountBrowserProfileManager(self.state_root)
+        self.registry = registry
+        self.profile_manager = profile_manager
+        self.runner = runner or subprocess.run
+        self.timeout_seconds = float(timeout_seconds)
+        self.telemetry = BrowserTelemetryLedger(self.state_root)
+
+    @classmethod
+    def from_environment(cls, *, state_root: Path) -> "AccountJevXTransport":
+        if not _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED"):
+            raise BrowserRuntimeUnavailable("CONTENT_LOCAL_X_BROWSER_ENABLED is false")
+        installed = importlib.util.find_spec("jev_ultrafast") is not None
+        harness = importlib.util.find_spec("browser_harness") is not None
+        if not installed or not harness:
+            raise BrowserRuntimeUnavailable("jev-ultrafast/browser-harness is not installed")
+        return cls(
+            state_root=state_root,
+            timeout_seconds=float(
+                os.environ.get("CONTENT_LOCAL_X_BROWSER_TIMEOUT_SECONDS", "75")
+            ),
+        )
+
+    def _account(self):
+        explicit = os.environ.get("CONTENT_X_ACCOUNT_ID", "").strip()
+        if explicit:
+            try:
+                record = self.registry.get(explicit)
+            except (KeyError, ValueError) as exc:
+                raise BrowserRuntimeUnavailable(
+                    "configured X account instance does not exist"
+                ) from exc
+
+            if record.provider_id != "x":
+                raise BrowserRuntimeUnavailable(
+                    "configured account instance is not an X account"
+                )
+            return record
+        rows = self.registry.list(provider_id="x")
+        if not rows:
+            raise BrowserRuntimeUnavailable(
+                "no X account instance is registered for account-scoped JEV"
+            )
+        if len(rows) != 1:
+            raise BrowserRuntimeUnavailable(
+                "multiple X account instances are registered; "
+                "CONTENT_X_ACCOUNT_ID is required"
+            )
+        return rows[0]
+
+    @staticmethod
+    def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
+        env = dict(os.environ)
+        env["BU_CDP_URL"] = cdp_url
+        env["BU_NAME"] = ("x_" + account_id[-24:])[:64]
+        src_root = str(Path(__file__).resolve().parents[1])
+        env["PYTHONPATH"] = (
+
+            src_root
+            if not env.get("PYTHONPATH")
+            else src_root + os.pathsep + env["PYTHONPATH"]
+        )
+        return env
+
+    async def publish(self, *, text: str) -> XBrowserPublishResult:
+        return await asyncio.to_thread(self._publish_sync, text)
+
+    def _publish_sync(self, text: str) -> XBrowserPublishResult:
+        record = self._account()
+        try:
+            runtime = self.profile_manager.ensure(record.account_id)
+        except Exception as exc:
+            raise BrowserRuntimeUnavailable(
+                f"account JEV browser could not start: {type(exc).__name__}"
+            ) from exc
+        started = time.perf_counter()
+        try:
+            completed = self.runner(
+                [sys.executable, "-m", "wechat_traffic_agent.account_x_publish_worker"],
+                input=json.dumps(
+                    {
+                        "state_root": str(self.state_root),
+                        "text": text,
+
+                        "expected_handle": record.identity,
+                    }
+                ),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_seconds,
+                env=self._worker_env(
+                    account_id=record.account_id,
+                    cdp_url=runtime.cdp_url,
+                ),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            result = BrowserTaskResult(
+                provider="JEV_ACCOUNT",
+                status="FAILED",
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+                action_count=0,
+                failure_reason="WORKER_TIMEOUT",
+            )
+            self.telemetry.append(
+                task_type="X_PUBLISH",
+                site="x.com",
+                result=result,
+                account_id=record.account_id,
+            )
+
+            raise XBrowserPublicationUnverified(
+                "account JEV publish worker timed out; refusing cross-provider retry"
+            ) from exc
+
+        output = completed.stdout.strip().splitlines()
+        try:
+            body = json.loads(output[-1]) if output else {}
+        except json.JSONDecodeError:
+            body = {}
+        status = str(body.get("status") or "FAILED")
+        elapsed_ms = int(
+            body.get("elapsed_ms")
+            or round((time.perf_counter() - started) * 1000)
+        )
+        result = BrowserTaskResult(
+            provider="JEV_ACCOUNT",
+            status="COMPLETED" if status == "POSTED" else "FAILED",
+            elapsed_ms=elapsed_ms,
+            action_count=int(body.get("action_count") or 0),
+            final_url=str(body.get("url") or "") or None,
+            failure_reason=(
+                None
+
+                if status == "POSTED"
+                else str(body.get("error_type") or status)
+            ),
+        )
+        self.telemetry.append(
+            task_type="X_PUBLISH",
+            site="x.com",
+            result=result,
+            account_id=record.account_id,
+        )
+        if status == "POSTED":
+            return XBrowserPublishResult(
+                post_id=str(body.get("post_id") or ""),
+                url=str(body.get("url") or ""),
+                handle=str(body.get("handle") or ""),
+                duplicate_found=bool(body.get("duplicate_found")),
+                provider="JEV_ACCOUNT",
+            )
+        detail = str(
+            body.get("message") or body.get("error_type") or status
+        )[:300]
+        if status == "SESSION_UNAVAILABLE":
+            raise BrowserRuntimeUnavailable(detail)
+        if status == "INVALID_DRAFT":
+            raise ValueError(detail)
+
+        raise XBrowserPublicationUnverified(
+            detail or "account JEV publication was not verified"
+        )
+
+
+__all__ = ["AccountJevXTransport", "LocalHarnessXTransport"]

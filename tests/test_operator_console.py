@@ -1464,3 +1464,81 @@ def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_pat
     assert registry.is_deleted(provider_id="x", identity="delete_me") is True
     assert registry.get(second.account_id).identity == "keep_me"
     assert second_dir.exists() is True
+
+
+def test_account_instance_has_independent_browser_login_endpoints(tmp_path, monkeypatch):
+    import wechat_traffic_agent.account_browser_login as login_module
+    from wechat_traffic_agent.account_registry import AccountRegistry
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    record = AccountRegistry(tmp_path).ensure(
+        provider_id="x",
+        identity="ferro",
+        oauth_status="CONNECTED",
+    )
+    calls = []
+
+    class FakeControl:
+        def __init__(self, *, state_root, account_id):
+            assert state_root == tmp_path
+            assert account_id == record.account_id
+
+        def start(self):
+            calls.append("start")
+            return {
+                "running": True,
+                "url": "https://x.com/i/flow/login",
+                "title": "X",
+                "x_authenticated": False,
+                "account_identity": "",
+            }
+
+        def stop(self):
+            calls.append("stop")
+            return {
+                "ok": True,
+                "running": False,
+                "authenticated": True,
+                "identity": "ferro",
+            }
+
+    monkeypatch.setattr(
+        login_module,
+        "AccountBrowserLoginControl",
+        FakeControl,
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path,
+        application=None,
+        backend=None,
+        mind=None,
+    )._app())
+    _login_operator(client, tmp_path)
+    headers = {"X-Operator-Request": "1"}
+
+    started = client.post(
+        f"/operator/api/account-instances/{record.account_id}/browser/login/connect",
+        headers=headers,
+        json={},
+    )
+
+    assert started.status_code == 200
+    assert started.json()["account_id"] == record.account_id
+    assert started.json()["expected_identity"] == "ferro"
+
+    stopped = client.post(
+        f"/operator/api/account-instances/{record.account_id}/browser/login/stop",
+        headers=headers,
+        json={},
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["authenticated"] is True
+    assert stopped.json()["identity_match"] is True
+    assert calls == ["start", "stop"]
+
+    unknown = client.post(
+        "/operator/api/account-instances/acct_x_aaaaaaaaaaaa/browser/login/connect",
+        headers=headers,
+        json={},
+    )
+    assert unknown.status_code == 404

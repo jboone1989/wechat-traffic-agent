@@ -104,3 +104,13 @@ def test_account_cards_offer_confirmed_delete_action():
     assert "account_delete_confirmation_mismatch" not in page
     assert "method:'DELETE'" in page
     assert "button.danger" in page
+
+
+def test_x_account_card_offers_account_scoped_web_login():
+    page = operator_console_document()
+
+    assert "网页登录" in page
+    assert "/operator/api/account-instances/" in page
+    assert "/browser/login/connect" in page
+    assert "/browser/login/stream" in page
+    assert "/browser/login/stop" in page

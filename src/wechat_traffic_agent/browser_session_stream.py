@@ -10,6 +10,7 @@ import asyncio
 import json
 import time
 from typing import Any, Callable
+from urllib.parse import urlparse
 import urllib.request
 
 from websockets.asyncio.client import connect as ws_connect
@@ -31,22 +32,36 @@ class BrowserStreamUnavailable(RuntimeError):
     pass
 
 
-def _cdp_target_websocket(target_id: str) -> str:
+def _cdp_target_websocket(
+    target_id: str,
+    cdp_url: str = "http://127.0.0.1:9333",
+) -> str:
+    base = urlparse(str(cdp_url))
+    if (
+        base.scheme != "http"
+        or base.hostname not in {"127.0.0.1", "localhost"}
+        or base.port is None
+        or base.port not in {9333, *range(9400, 9500)}
+    ):
+        raise BrowserStreamUnavailable("unsafe CDP endpoint")
+    root = f"http://127.0.0.1:{base.port}"
     try:
-        with urllib.request.urlopen(
-            "http://127.0.0.1:9333/json/list", timeout=2
-        ) as response:
+        with urllib.request.urlopen(root + "/json/list", timeout=2) as response:
             pages = json.load(response)
     except Exception as exc:
         raise BrowserStreamUnavailable("local CDP endpoint unavailable") from exc
     for page in pages if isinstance(pages, list) else []:
-        if str(page.get("id") or "") == str(target_id):
-            ws_url = str(page.get("webSocketDebuggerUrl") or "")
-            if ws_url.startswith("ws://127.0.0.1:9333/"):
-                return ws_url
-            if ws_url.startswith("ws://localhost:9333/"):
-                return ws_url
-            raise BrowserStreamUnavailable("unsafe CDP websocket endpoint")
+        if str(page.get("id") or "") != str(target_id):
+            continue
+        ws_url = str(page.get("webSocketDebuggerUrl") or "")
+        parsed = urlparse(ws_url)
+        if (
+            parsed.scheme == "ws"
+            and parsed.hostname in {"127.0.0.1", "localhost"}
+            and parsed.port == base.port
+        ):
+            return ws_url
+        raise BrowserStreamUnavailable("unsafe CDP websocket endpoint")
     raise BrowserStreamUnavailable("browser target no longer exists")
 class BrowserSessionStream:
     def __init__(self, control) -> None:
@@ -59,6 +74,14 @@ class BrowserSessionStream:
         if not value:
             raise BrowserStreamUnavailable("browser target unavailable")
         return value
+
+    def cdp_url(self) -> str:
+        getter = getattr(self.control, "cdp_url", None)
+        if callable(getter):
+            value = str(getter() or "")
+            if value:
+                return value
+        return "http://127.0.0.1:9333"
 
     async def _send(self, cdp, method: str, **params: Any) -> int:
         async with self._send_lock:
@@ -192,7 +215,9 @@ class BrowserSessionStream:
         self, client, *, authorize: Callable[[], bool] | None = None
     ) -> None:
         ws_url = await asyncio.to_thread(
-            _cdp_target_websocket, self.target_id()
+            _cdp_target_websocket,
+            self.target_id(),
+            self.cdp_url(),
         )
         try:
             async with ws_connect(
