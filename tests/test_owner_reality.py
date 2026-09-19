@@ -65,4 +65,9 @@ def test_owner_reality_contains_capabilities_accounts_and_exact_disk(tmp_path):
     assert reality["accounts"]["instances"][0]["oauth_status"] == "CONNECTED"
     assert reality["local_resources"]["filesystem"]["free_bytes"] > 0
     assert reality["execution_boundary"]["owner_chat_side_effect_execution"] is False
+    assert reality["execution_boundary"]["owner_chat_readonly_capability_invocation"] is True
     assert "read_only_reality_snapshot" in reality["owner_chat_direct_capabilities"]
+    assert "runtime_readonly_capability_invoke" in reality["owner_chat_direct_capabilities"]
+    assert [
+        row["capability_id"] for row in reality["owner_chat_readonly_runtime_capabilities"]
+    ] == ["web.search"]
