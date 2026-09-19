@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agent_runtime.backends import FixtureAgentBackend
 from agent_runtime.clock import FrozenClock
-from agent_runtime.goals import MissionStatus
+from agent_runtime.goals import MissionExperimentStatus, MissionStatus
 from agent_runtime.runtime import AgentRuntime
 
 from wechat_traffic_agent.x_growth_mission import (
@@ -139,6 +139,13 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
         ]
         == "UNAVAILABLE"
     )
+    assert backend.requests[1].context["revision_requested"] is False
+    experiment_measurement = backend.requests[1].context["application_context"][
+        "measurement"
+    ]
+    assert experiment_measurement["post_level_profile_visits"] == "UNAVAILABLE"
+    assert experiment_measurement["post_level_follows"] == "UNAVAILABLE"
+    assert experiment_measurement["causal_attribution"].startswith("UNAVAILABLE")
 
     mission = runtime.external_missions[-1]
     assert mission.status is MissionStatus.ACTIVE
@@ -602,3 +609,110 @@ def test_verified_publication_starts_ready_content_step_and_records_progress(tmp
     progress = json.loads(progress_path.read_text())
     assert progress["roadmap_id"] == roadmap.roadmap_id
     assert progress["steps"][publication_step.step_id]["publication_count"] == 1
+
+
+def test_legacy_proposed_experiment_is_replanned_with_measurement_context(tmp_path):
+    runtime, _clock, backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        duration_days=30,
+        experiment_hours=24,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:legacy-experiment-1",
+            now=NOW,
+        )
+    )
+    original_id = first["active_experiment"]["experiment_id"]
+    original = next(
+        row
+        for row in runtime.missions.experiments
+        if row.experiment_id == original_id
+    )
+    original.evidence_refs = [
+        ref
+        for ref in original.evidence_refs
+        if ref != MISSION_PLANNING_CONTEXT_REF
+    ]
+    original.strategy = (
+        "Compare profile visits, post-level follows, and attributed follower "
+        "conversion after each post."
+    )
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:legacy-experiment-2",
+            now=NOW,
+        )
+    )
+
+    assert second["experiment_transition"]["status"] == "REPLANNED"
+    assert second["active_experiment"]["experiment_id"] != original_id
+    assert second["active_experiment"]["status"] == "PROPOSED"
+    assert original.status is MissionExperimentStatus.CANCELLED
+    replacement = next(
+        row
+        for row in runtime.missions.experiments
+        if row.experiment_id == second["active_experiment"]["experiment_id"]
+    )
+    assert MISSION_PLANNING_CONTEXT_REF in replacement.evidence_refs
+    assert len(backend.requests) == 3
+    request = backend.requests[-1]
+    assert request.context["revision_requested"] is True
+    measurement = request.context["application_context"]["measurement"]
+    assert measurement["post_level_profile_visits"] == "UNAVAILABLE"
+    assert measurement["post_level_follows"] == "UNAVAILABLE"
+    assert measurement["causal_attribution"].startswith("UNAVAILABLE")
+
+
+def test_running_experiment_is_not_replanned_when_context_marker_is_missing(tmp_path):
+    runtime, _clock, backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        duration_days=30,
+        experiment_hours=24,
+        enabled=True,
+    )
+    first = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:running-experiment-1",
+            now=NOW,
+        )
+    )
+    experiment_id = first["active_experiment"]["experiment_id"]
+    experiment = next(
+        row
+        for row in runtime.missions.experiments
+        if row.experiment_id == experiment_id
+    )
+    experiment.evidence_refs = [
+        ref
+        for ref in experiment.evidence_refs
+        if ref != MISSION_PLANNING_CONTEXT_REF
+    ]
+    runtime.start_mission_experiment(experiment_id)
+    runtime.persist()
+
+    second = asyncio.run(
+        coordinator.observe_identity(
+            user=_user(2000),
+            identity_receipt_id="receipt:x.identity:running-experiment-2",
+            now=NOW,
+        )
+    )
+
+    assert second["active_experiment"]["experiment_id"] == experiment_id
+    assert second["active_experiment"]["status"] == "RUNNING"
+    assert second["experiment_transition"]["status"] == "RUNNING"
+    assert experiment.status is MissionExperimentStatus.RUNNING
+    assert len(backend.requests) == 2

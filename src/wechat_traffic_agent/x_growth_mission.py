@@ -684,26 +684,53 @@ class XGrowthMissionCoordinator:
 
     async def _ensure_experiment(self, mission: Any) -> dict[str, Any]:
         existing = self._open_experiment(mission.mission_id)
-        if existing is not None:
+        existing_status = None if existing is None else _enum_value(existing.status)
+        context_applied = (
+            existing is not None
+            and MISSION_PLANNING_CONTEXT_REF in set(existing.evidence_refs)
+        )
+        if existing is not None and (
+            existing_status == "RUNNING" or context_applied
+        ):
             return {
-                "status": _enum_value(existing.status),
+                "status": existing_status,
                 "experiment_id": existing.experiment_id,
                 "strategy": existing.strategy,
+                "planning_context_ref": (
+                    MISSION_PLANNING_CONTEXT_REF if context_applied else None
+                ),
             }
 
+        force_revision = (
+            existing is not None
+            and existing_status == "PROPOSED"
+            and not context_applied
+        )
         if not bool(getattr(self.runtime, "has_advisory_backend", False)):
+            if force_revision:
+                return {
+                    "status": "REPLAN_BACKEND_UNAVAILABLE",
+                    "experiment_id": existing.experiment_id,
+                }
             return {"status": "BACKEND_UNAVAILABLE"}
         deliberate = getattr(self.runtime, "deliberate_external_mission", None)
         if not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
-        experiment = await deliberate(mission.mission_id, max_tokens=900)
+        experiment = await deliberate(
+            mission.mission_id,
+            max_tokens=900,
+            force_revision=force_revision,
+            planning_context=self._planning_context(),
+            evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+        )
         self._persist_runtime()
         return {
-            "status": "PROPOSED",
+            "status": "REPLANNED" if force_revision else "PROPOSED",
             "experiment_id": experiment.experiment_id,
             "strategy": experiment.strategy,
             "expected_effect": experiment.expected_effect,
             "risk_notes": list(experiment.risk_notes),
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
         }
 
     def start_experiment_from_publication(
