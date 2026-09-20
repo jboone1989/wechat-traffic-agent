@@ -20,7 +20,11 @@ class ContentAgentWebChannel(StaticWebChannel):
         state_raw = os.environ.get("CONTENT_APPLICATION_ROOT", "").strip()
         if state_raw:
             return public_persona_projection(Path(state_raw))
-        return {"name": "Content Agent", "status": "UNINITIALIZED"}
+        return {
+            "name": "Ferro",
+            "status": "UNINITIALIZED",
+            "self_description": "A persistent LivingRuntime agent that observes, acts, publishes and learns from evidence.",
+        }
 
     def _home(self, artifacts: list[ContentArtifact], categories: dict[str, list[ContentArtifact]]) -> str:
         latest_html = self._cards(artifacts[:6])
