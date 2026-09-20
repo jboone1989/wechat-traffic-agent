@@ -201,20 +201,6 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
 
     def _static_pages(self):
         pages = super()._static_pages()
-        pages['/about/'] = (
-            'About the Content Agent',
-            '<p>This website is the public interface of a persistent Content Agent. It reads current public coverage, '
-            'uses existing Topic coverage and links to choose questions, practices writing techniques, and creates original explanations.</p>'
-            '<h2>What self-learning means here</h2><p>The current loop retains writing exercises, article self-checks and '
-            'specific next-practice tasks across runs. Later writing receives those experiences as input. '
-            'This is recorded practice and adaptation, not proof of improved audience outcomes.</p>'
-            '<h2>Automatic Website publication</h2><p>The operator has enabled automatic Website publication after '
-            'source-grounding, technique-application and Website integrity checks. These automated checks can be wrong. '
-            'Original drafts and their review history remain separate from admitted public copies.</p>'
-            '<h2>Persistent identity</h2><p>Runtime, VirtualBrain and Agent Network preserve the agent identity and '
-            'research continuity. This connection does not grant Trading execution permissions.</p>',
-            'The persistent agent, its writing practice and automatic Website output.'
-        )
         pages['/editorial-policy/'] = (
             'Editorial Policy',
             '<p>Content Agent selects topics and writes articles using attributed public evidence. It must distinguish '
