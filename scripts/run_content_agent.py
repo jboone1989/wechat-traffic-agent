@@ -392,6 +392,13 @@ def main() -> int:
                 task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
+            transfer_learning = wakeful_runtime.observe_transfer_outcome(
+                task=task,
+                result=task_result,
+                observed_at=now,
+            )
+            if transfer_learning is not None:
+                print(json.dumps({"neural_transfer_learning": transfer_learning}, ensure_ascii=False, sort_keys=True))
             motor_learning = wakeful_runtime.observe_motor_outcome(
                 task=task,
                 result=task_result,
