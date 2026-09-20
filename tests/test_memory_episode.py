@@ -73,3 +73,20 @@ def test_episode_requires_real_trajectory_identifiers(tmp_path):
         assert "at least one trajectory event" in str(exc)
     else:
         raise AssertionError("episode without trajectory provenance must fail")
+
+
+def test_identical_episode_text_with_distinct_trajectory_is_not_deduplicated(tmp_path):
+    service = EpisodeMemoryService(tmp_path)
+    first = service.consolidate(
+        [{"event_id": "event:repeat:1", "actor": "ferro", "text": "same observation", "created_at": "2026-09-20T01:00:00Z"}],
+        goal="repeatable check", outcome="same result", lesson="same verified lesson",
+        topics=["repeat"],
+    )
+    second = service.consolidate(
+        [{"event_id": "event:repeat:2", "actor": "ferro", "text": "same observation", "created_at": "2026-09-20T01:01:00Z"}],
+        goal="repeatable check", outcome="same result", lesson="same verified lesson",
+        topics=["repeat"],
+    )
+    assert first.memory_id != second.memory_id
+    rows = service.store.query_memories(memory_types=["EPISODIC"], statuses=["ACTIVE"], topic="repeat", limit=10)
+    assert {row["memory_id"] for row in rows} == {first.memory_id, second.memory_id}

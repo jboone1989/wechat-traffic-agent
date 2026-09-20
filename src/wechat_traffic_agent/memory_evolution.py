@@ -53,6 +53,7 @@ class MemoryBenchmarkCase:
     limit: int = 5
     memory_types: tuple[str, ...] = ()
     source_type: str | None = None
+    access_scope: str | None = None
     entity: str | None = None
     topic: str | None = None
     now: datetime | None = None
@@ -67,6 +68,7 @@ class MemoryBenchmarkCase:
             "limit": int(self.limit),
             "memory_types": list(self.memory_types),
             "source_type": self.source_type,
+            "access_scope": self.access_scope,
             "entity": self.entity,
             "topic": self.topic,
             "now": self.now.isoformat() if self.now else None,
@@ -95,6 +97,7 @@ class MemoryBenchmark:
                 now=case.now,
                 memory_types=case.memory_types,
                 source_type=case.source_type,
+                access_scope=case.access_scope,
                 entity=case.entity,
                 topic=case.topic,
             )
@@ -159,6 +162,7 @@ class MemoryEvolutionEngine:
         self.experiments_root = self.root / "experiments"
         self.experiments_root.mkdir(parents=True, exist_ok=True)
         self.signal_path = self.root / "signals.jsonl"
+        self.cycle_state_path = self.root / "cycle_state.json"
         self.policy_path = self.store.root / "active_recall_policy.json"
         self.baseline_weights = baseline_weights
         self.benchmark = MemoryBenchmark(self.state_root, store=self.store)
@@ -199,19 +203,29 @@ class MemoryEvolutionEngine:
             handle.write(_json(row) + "\n")
         return row
 
-    def recent_signals(self, *, limit: int = 100) -> list[dict[str, Any]]:
+    def _signal_rows(self) -> list[dict[str, Any]]:
         if not self.signal_path.exists():
             return []
-        rows = [
-            json.loads(line) for line in self.signal_path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        rows: list[dict[str, Any]] = []
+        for line in self.signal_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict):
+                rows.append(value)
+        return rows
+
+    def recent_signals(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self._signal_rows()
         return rows[-max(1, min(int(limit), 1000)):]
 
-    def propose_from_signals(self, *, limit: int = 100) -> RecallWeights:
+    def _propose_from_rows(self, rows: Sequence[Mapping[str, Any]]) -> RecallWeights:
         current = self.active_weights()
         values = current.as_dict()
-        kinds = [str(row.get("kind") or "") for row in self.recent_signals(limit=limit)]
+        kinds = [str(row.get("kind") or "") for row in rows]
         recall_failures = kinds.count("RECALL_FAILURE")
         contradictions = kinds.count("CONTRADICTION")
         context_waste = kinds.count("CONTEXT_WASTE") + kinds.count("INDEX_COST")
@@ -227,6 +241,144 @@ class MemoryEvolutionEngine:
         if "STALE_MEMORY" in kinds:
             values["decay_enabled"] = True
         return RecallWeights.from_mapping(values)
+
+    def propose_from_signals(self, *, limit: int = 100) -> RecallWeights:
+        return self._propose_from_rows(self.recent_signals(limit=limit))
+
+    @staticmethod
+    def _semantic_probe(row: Mapping[str, Any]) -> str:
+        payload = dict(row.get("payload") or {})
+        if str(row.get("memory_type") or "") == "PROCEDURAL":
+            parts = [
+                str(payload.get("name") or ""),
+                " ".join(str(item) for item in payload.get("capabilities") or []),
+                " ".join(str(item) for item in payload.get("verification") or []),
+            ]
+            value = " ".join(part for part in parts if part.strip())
+            if value.strip():
+                return value[:280]
+        if str(row.get("memory_type") or "") == "EPISODIC":
+            parts = [
+                str(payload.get("goal") or ""),
+                str(payload.get("lesson") or ""),
+                str(payload.get("outcome") or ""),
+            ]
+            value = " ".join(part for part in parts if part.strip())
+            if value.strip():
+                return value[:280]
+        text = str(row.get("text") or "")
+        ascii_terms = [
+            term for term in __import__("re").findall(r"[a-zA-Z0-9_]{4,}", text)
+            if term.casefold() not in {"this", "that", "with", "from", "when", "then", "into", "only"}
+        ]
+        cjk = "".join(__import__("re").findall(r"[\u3400-\u9fff]", text))
+        cjk_terms = [cjk[i:i + 2] for i in range(0, max(0, len(cjk) - 1), 2)]
+        return " ".join([*ascii_terms[:10], *cjk_terms[:8]])[:280]
+
+    def build_self_supervised_benchmark(self, *, max_cases: int = 24) -> list[MemoryBenchmarkCase]:
+        rows = self.store.query_memories(
+            memory_types=["SEMANTIC", "EPISODIC", "PROCEDURAL"],
+            statuses=["ACTIVE"],
+            access_scope="PRIVATE_OWNER",
+            limit=5000,
+        )
+        rows.sort(
+            key=lambda row: (
+                float(row.get("importance") or 0.0),
+                str(row.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        cases: list[MemoryBenchmarkCase] = []
+        for row in rows:
+            if len(cases) >= max(2, int(max_cases)):
+                break
+            memory_id = str(row.get("memory_id") or "")
+            text = str(row.get("text") or "").strip()
+            if not memory_id or len(text) < 8:
+                continue
+            cases.append(MemoryBenchmarkCase(
+                case_id="self-exact:" + memory_id,
+                query=text[:320],
+                expected_ids=(memory_id,),
+                category="exact",
+                limit=5,
+                memory_types=(str(row.get("memory_type") or "SEMANTIC"),),
+                access_scope="PRIVATE_OWNER",
+            ))
+            if len(cases) >= max_cases:
+                break
+            probe = self._semantic_probe(row)
+            if probe and probe.casefold() != text[: len(probe)].casefold():
+                cases.append(MemoryBenchmarkCase(
+                    case_id="self-semantic:" + memory_id,
+                    query=probe,
+                    expected_ids=(memory_id,),
+                    category="semantic",
+                    limit=5,
+                    memory_types=(str(row.get("memory_type") or "SEMANTIC"),),
+                    access_scope="PRIVATE_OWNER",
+                ))
+        return cases[:max_cases]
+
+    def _read_cycle_state(self) -> dict[str, Any]:
+        if not self.cycle_state_path.exists():
+            return {"processed_signal_count": 0}
+        try:
+            value = json.loads(self.cycle_state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {"processed_signal_count": 0}
+        return value if isinstance(value, dict) else {"processed_signal_count": 0}
+
+    def _write_cycle_state(self, row: Mapping[str, Any]) -> None:
+        tmp = self.cycle_state_path.with_suffix(".json.tmp")
+        tmp.write_text(_json(dict(row)) + "\n", encoding="utf-8")
+        tmp.replace(self.cycle_state_path)
+
+    def run_cycle(self, *, minimum_cases: int = 4) -> dict[str, Any]:
+        rows = self._signal_rows()
+        state = self._read_cycle_state()
+        processed = max(0, min(int(state.get("processed_signal_count") or 0), len(rows)))
+        pending = rows[processed:]
+        if not pending:
+            return {"status": "NO_NEW_SIGNALS", "processed_signal_count": processed}
+        cases = self.build_self_supervised_benchmark()
+        if len(cases) < max(1, int(minimum_cases)):
+            return {
+                "status": "INSUFFICIENT_BENCHMARK",
+                "pending_signal_count": len(pending),
+                "benchmark_case_count": len(cases),
+            }
+        baseline = self.active_weights()
+        challenger = self._propose_from_rows(pending)
+        if challenger.as_dict() == baseline.as_dict():
+            out = {
+                "status": "NO_POLICY_CHANGE",
+                "processed_signal_count": len(rows),
+                "processed_signal_ids": [str(row.get("signal_id") or "") for row in pending],
+                "completed_at": _utc_iso(),
+            }
+            self._write_cycle_state(out)
+            return out
+        experiment = self.evaluate_candidate(
+            challenger,
+            cases,
+            evidence_refs=[str(row.get("signal_id") or row.get("evidence_ref") or "") for row in pending],
+            rationale="automatic memory recall-policy experiment from observed memory failures",
+        )
+        decision = self.decide(str(experiment["experiment_id"]))
+        out = {
+            "status": str(decision.get("status") or ""),
+            "experiment_id": str(experiment["experiment_id"]),
+            "processed_signal_count": len(rows),
+            "processed_signal_ids": [str(row.get("signal_id") or "") for row in pending],
+            "baseline_score": float((experiment.get("baseline_result") or {}).get("score") or 0.0),
+            "challenger_score": float((experiment.get("challenger_result") or {}).get("score") or 0.0),
+            "protected_regressions": list(decision.get("protected_regressions") or []),
+            "completed_at": _utc_iso(),
+        }
+        self._write_cycle_state(out)
+        return out
 
     def evaluate_candidate(
         self,

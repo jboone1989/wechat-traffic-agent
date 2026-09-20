@@ -161,3 +161,23 @@ def test_protected_category_regression_blocks_promotion(tmp_path):
     decision = engine.decide(experiment["experiment_id"])
     assert decision["status"] == "REJECTED"
     assert "exact" in decision["protected_regressions"] or decision["improved"] is False
+
+
+def test_recall_failure_can_run_automatic_benchmark_and_policy_decision(tmp_path):
+    store = _seed(tmp_path)
+    engine = MemoryEvolutionEngine(tmp_path, store=store, baseline_weights=_poor_weights())
+    cases = engine.build_self_supervised_benchmark(max_cases=8)
+    assert len(cases) >= 4
+    assert all(case.access_scope == "PRIVATE_OWNER" for case in cases)
+
+    signal = engine.observe_signal(
+        "RECALL_FAILURE",
+        evidence_ref="operator-chat:forgot-1",
+        detail="I forgot a durable resource preference during paraphrased recall.",
+    )
+    result = engine.run_cycle(minimum_cases=4)
+    assert result["status"] in {"PROMOTED", "REJECTED"}
+    assert result["experiment_id"].startswith("memory-experiment:")
+    assert signal["signal_id"] in result["processed_signal_ids"]
+    assert result["challenger_score"] >= result["baseline_score"]
+    assert engine.run_cycle(minimum_cases=4)["status"] == "NO_NEW_SIGNALS"

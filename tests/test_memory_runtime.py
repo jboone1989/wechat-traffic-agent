@@ -96,3 +96,59 @@ def test_owner_recall_scope_excludes_non_private_records(tmp_path):
     })
     recalled = memory.relevant("pineapple launch code", limit=12)
     assert all(row.get("memory_id") != "memory:public-only" for row in recalled)
+
+
+def test_failed_tool_without_receipt_still_updates_procedure_from_persisted_turn(tmp_path):
+    runtime = OwnerMemoryRuntime(tmp_path)
+    result = runtime.record_turn(
+        owner_message=_message("operator-chat:10", "operator", "Read the page.", "2026-09-20T00:10:00Z"),
+        ferro_message=_message("operator-chat:11", "ferro", "The invocation failed before a receipt was issued.", "2026-09-20T00:10:02Z"),
+        tool_results=[{
+            "capability_id": "web.fetch",
+            "receipt_id": "",
+            "status": "INVOCATION_FAILED",
+            "ok": False,
+        }],
+    )
+    procedure = runtime.store.query_memories(memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=10)[0]
+    assert procedure["payload"]["failure_count"] == 1
+    assert "INVOCATION_FAILED" in procedure["payload"]["failure_modes"]
+    assert any("inspect required invocation parameters" in row for row in procedure["payload"]["recovery"])
+    episode = runtime.store.get_memory(result["episode_id"])
+    tool = episode["payload"]["tool_outcomes"][0]
+    assert tool["receipt_id"] == ""
+    assert tool["evidence_ref"] == "operator-chat:11#tool-1"
+    assert tool["evidence_ref"] in episode["evidence_refs"]
+    assert result["memory_evolution"]["status"] in {"INSUFFICIENT_BENCHMARK", "REJECTED", "PROMOTED", "NO_POLICY_CHANGE"}
+
+
+def test_repeated_experience_consolidates_into_semantic_knowledge(tmp_path):
+    runtime = OwnerMemoryRuntime(tmp_path)
+    knowledge_ids = []
+    for index in range(3):
+        result = runtime.record_turn(
+            owner_message=_message(
+                f"operator-chat:k{index * 2 + 1}", "operator", "Check the same live source safely.",
+                f"2026-09-20T00:2{index}:00Z",
+            ),
+            ferro_message=_message(
+                f"operator-chat:k{index * 2 + 2}", "ferro", "The bounded read-only check succeeded.",
+                f"2026-09-20T00:2{index}:02Z",
+            ),
+            tool_results=[{
+                "capability_id": "web.fetch",
+                "receipt_id": f"receipt:web:k{index}",
+                "status": "SUCCESS",
+                "ok": True,
+            }],
+        )
+        knowledge_ids.extend(result["knowledge_memory_ids"])
+    active = runtime.store.query_memories(
+        memory_types=["SEMANTIC"], statuses=["ACTIVE"], topic="experience-knowledge", limit=50,
+    )
+    assert active
+    assert any(row["kind"] == "EXPERIENCE_KNOWLEDGE" for row in active)
+    knowledge = next(row for row in active if row["kind"] == "EXPERIENCE_KNOWLEDGE")
+    assert len(knowledge["evidence_refs"]) >= 2
+    assert "Repeated experience supports:" in knowledge["text"]
+    assert knowledge["memory_id"] in knowledge_ids
