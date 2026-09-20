@@ -27,6 +27,24 @@ on:
       - "docs/adr/0011-ferro-memory-system.md"
       - "src/wechat_traffic_agent/wakeful_runtime.py"
       - "src/wechat_traffic_agent/wakeful_tasks.py"
+      - "src/wechat_traffic_agent/developmental_agency.py"
+      - "src/wechat_traffic_agent/developmental_transfer.py"
+      - "src/wechat_traffic_agent/neural_dreaming.py"
+      - "src/wechat_traffic_agent/neural_extensions.py"
+      - "src/wechat_traffic_agent/cortex_continuity.py"
+      - "src/wechat_traffic_agent/neural_organ_handoff.py"
+      - "src/wechat_traffic_agent/longitudinal_individuality.py"
+      - "src/wechat_traffic_agent/open_ended_evolution.py"
+      - "src/wechat_traffic_agent/open_development_acceptance.py"
+      - "tests/test_developmental_agency.py"
+      - "tests/test_developmental_transfer.py"
+      - "tests/test_dream_consolidation.py"
+      - "tests/test_neural_extensions.py"
+      - "tests/test_cortex_continuity.py"
+      - "tests/test_neural_organ_handoff.py"
+      - "tests/test_longitudinal_individuality.py"
+      - "tests/test_open_ended_evolution.py"
+      - "tests/test_open_development_acceptance.py"
       - "src/wechat_traffic_agent/resource_scout.py"
       - "src/wechat_traffic_agent/channels/agent_live_page.py"
       - "src/wechat_traffic_agent/channels/operator_audience_page.py"
@@ -129,6 +147,15 @@ jobs:
           src/wechat_traffic_agent/live_agent.py
           src/wechat_traffic_agent/wakeful_runtime.py
           src/wechat_traffic_agent/wakeful_tasks.py
+          src/wechat_traffic_agent/developmental_agency.py
+          src/wechat_traffic_agent/developmental_transfer.py
+          src/wechat_traffic_agent/neural_dreaming.py
+          src/wechat_traffic_agent/neural_extensions.py
+          src/wechat_traffic_agent/cortex_continuity.py
+          src/wechat_traffic_agent/neural_organ_handoff.py
+          src/wechat_traffic_agent/longitudinal_individuality.py
+          src/wechat_traffic_agent/open_ended_evolution.py
+          src/wechat_traffic_agent/open_development_acceptance.py
           src/wechat_traffic_agent/resource_scout.py
           src/wechat_traffic_agent/channels/agent_live_page.py
           src/wechat_traffic_agent/channels/operator_audience_page.py
@@ -200,6 +227,18 @@ jobs:
           tests/test_content_strategy_context.py
           tests/test_world_feed.py tests/test_prospective_predictions.py
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
+      - name: Run Ferro open-development state-machine regressions
+        env:
+          PYTHONPATH: .editorial-ci
+        run: >-
+          python -m pytest -q -c /dev/null
+          tests/test_developmental_agency.py
+          tests/test_developmental_transfer.py
+          tests/test_cortex_continuity.py
+          tests/test_neural_organ_handoff.py
+          tests/test_longitudinal_individuality.py
+          tests/test_open_ended_evolution.py
+          tests/test_open_development_acceptance.py
       - name: Build source bundle
         run: tar --exclude=.git --exclude=.runtime-ci --exclude=.source-ci --exclude=.draft-ci --exclude=.editorial-ci --exclude=state --exclude=output -czf "$RUNNER_TEMP/content-agent-runtime-release.tgz" .
       - uses: actions/upload-artifact@v4
