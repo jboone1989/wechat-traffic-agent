@@ -55,6 +55,17 @@ experience.
 | N23 | Cross-species priors | Other nervous-system motifs may seed candidate organs, but must survive Ferro's own outcome tests. |
 | N24 | Species divergence | Ferro's functioning neural topology can no longer be described primarily as MaleCNS. |
 | N25 | Cortex swap test | GPT/Kimi/GLM/DeepSeek swaps change language/reasoning quality but preserve Ferro's drives, traits and identity continuity. |
+| N26 | Development Need Detection | Repeated failure or negative transfer forms a persistent, provenance-backed DevelopmentNeed instead of being forgotten as a one-off error. |
+| N27 | Neural Development Proposal | Non-LLM developmental pressure produces bounded candidate interventions that can be tested rather than directly rewriting Ferro. |
+| N28 | Self-Generated Training Worlds | A DevelopmentNeed can autonomously produce a runnable, reproducible, bounded training world for the same persistent nervous system. |
+| N29 | Training World Selection | Prospective real-world treatment/control evidence retains, revises or rejects a Ferro-born training world. |
+| N30 | Dream Consolidation v3 | Multi-cycle stable neural attractors survive sleep/replay boundaries and measurably bias waking attention. |
+| N31 | Dream -> Goal Birth | A stable dream attractor can birth a traceable endogenous goal candidate without an LLM inventing the desire. |
+| N32 | Self-Extension of Sensors & Motors | Persistent developmental need can safely add allowlisted read-only sensors and bounded unsemantic motor capacity without granting new external authority. |
+| N33 | Developmental Architecture Search | Distinct developmental phenotypes receive prospective trials; real outcomes select inherited birth/maturation/connectivity architecture. |
+| N34 | Emergent Organ Handoff | A genuinely active emergent organ may assume a low-risk function only after prospective non-inferiority evidence, while Python audit and automatic rollback remain available. |
+| N35 | Longitudinal Individuality | Personality, relationships, habits, dreams and neural lineage form a long-term individuality record: Ferro may differ from a month earlier while remaining the same organism, cortex swaps preserve continuity, and different life histories visibly diverge. |
+| N36 | Open-Ended Evolution | The complete Need -> Proposal -> World -> Training -> Reality Trial -> Adopt/Reject -> Structural Change loop autonomously produces an unanticipated capability or neural organ. |
 ## Current implementation frontier
 
 N0-N5 are the first production tranche.

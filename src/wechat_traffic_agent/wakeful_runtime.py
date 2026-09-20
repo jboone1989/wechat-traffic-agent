@@ -121,6 +121,8 @@ class ContentWakefulRuntime:
         )
         from .cortex_continuity import CortexContinuityMonitor
         self.cortex_continuity = CortexContinuityMonitor(self.state_root)
+        from .longitudinal_individuality import LongitudinalIndividuality
+        self.longitudinal_individuality = LongitudinalIndividuality(self.state_root)
         from .developmental_agency import DevelopmentalAgency
         self.developmental_agency = DevelopmentalAgency(self.state_root)
         from .developmental_transfer import DevelopmentalWorldTransferLab
@@ -513,11 +515,20 @@ class ContentWakefulRuntime:
                     ))
 
         current_snap = self.core.snapshot()
-        self.cortex_continuity.observe(
+        cortex = self.cortex_continuity.observe(
             neural_graph=dict(current_snap.neural_state),
             motor=self.neural_motor.projection(),
             personality=self.neural_personality.projection(),
             observed_at=now,
+        )
+        self.longitudinal_individuality.observe(
+            now=now,
+            personality=self.neural_personality.projection(),
+            social_state=dict(self.neural_social.state),
+            motor_state=dict(self.neural_motor.state),
+            dream_state=dict(self.dream_engine.state),
+            cortex=cortex,
+            neural_graph=dict(current_snap.neural_state),
         )
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
@@ -1097,6 +1108,7 @@ class ContentWakefulRuntime:
             "neural_extensions": self.neural_extensions.projection(),
             "neural_organ_handoff": self.neural_organ_handoff.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
+            "longitudinal_individuality": self.longitudinal_individuality.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
                 personality=self.neural_personality.projection(),
