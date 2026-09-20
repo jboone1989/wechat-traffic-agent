@@ -51,6 +51,22 @@ class DevelopmentalWorldTransferLab:
             "seq": 0,
             "trials": [],
         }
+        migrated = False
+        for row in self.state.get("trials") or ():
+            outcome = row.get("target_outcome") if isinstance(row.get("target_outcome"), Mapping) else {}
+            if (
+                row.get("status") == "SETTLED"
+                and str(outcome.get("status") or "").upper() == "SHUTDOWN_CHECKPOINT"
+            ):
+                row["status"] = "INCONCLUSIVE"
+                row["target_outcome"] = {
+                    **dict(outcome),
+                    "utility": None,
+                    "inconclusive_reason": "SERVICE_SHUTDOWN_DURING_TARGET",
+                }
+                migrated = True
+        if migrated:
+            _write(self.path, self.state)
 
     @staticmethod
     def _assignment(world_id: str, seq: int) -> str:
@@ -66,7 +82,7 @@ class DevelopmentalWorldTransferLab:
     @staticmethod
     def _utility(task: str, result: Mapping[str, Any]) -> float:
         status = str(result.get("status") or "UNKNOWN").upper()
-        if status in {"ERROR", "DEGRADED", "SHUTDOWN_CHECKPOINT"}:
+        if status in {"ERROR", "DEGRADED"}:
             return -0.85
         if status in {"DISABLED", "NOOP"}:
             return -0.25
@@ -242,22 +258,33 @@ class DevelopmentalWorldTransferLab:
         if index is None:
             return None
         row = dict(trials[index])
-        row["target_outcome"] = {
-            "observed_at": observed_at.isoformat(),
-            "status": str(result.get("status") or "UNKNOWN"),
-            "utility": self._utility(task, result),
-        }
-        row["status"] = "SETTLED"
+        result_status = str(result.get("status") or "UNKNOWN").upper()
+        if result_status == "SHUTDOWN_CHECKPOINT":
+            row["target_outcome"] = {
+                "observed_at": observed_at.isoformat(),
+                "status": result_status,
+                "utility": None,
+                "inconclusive_reason": "SERVICE_SHUTDOWN_DURING_TARGET",
+            }
+            row["status"] = "INCONCLUSIVE"
+        else:
+            row["target_outcome"] = {
+                "observed_at": observed_at.isoformat(),
+                "status": str(result.get("status") or "UNKNOWN"),
+                "utility": self._utility(task, result),
+            }
+            row["status"] = "SETTLED"
         trials[index] = row
         self.state.update({"updated_at": observed_at.isoformat(), "trials": trials[-MAX_TRIALS:]})
         _write(self.path, self.state)
 
         evaluation = self._world_projection(str(row["world_id"]))
-        self.agency.apply_world_transfer_evaluation(
-            world_id=str(row["world_id"]),
-            evaluation=evaluation,
-            observed_at=observed_at,
-        )
+        if row["status"] == "SETTLED":
+            self.agency.apply_world_transfer_evaluation(
+                world_id=str(row["world_id"]),
+                evaluation=evaluation,
+                observed_at=observed_at,
+            )
         return {**row, "world_evaluation": evaluation}
 
     def projection(self) -> dict[str, Any]:
