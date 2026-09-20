@@ -332,7 +332,6 @@ class ContentEvolutionBridge:
                         known_at=outcome.observed_at,
                         metric_values={
                             "pageviews_24h": float(outcome.actual_pageviews),
-                            "prediction_error": float(outcome.prediction_error),
                         },
                     )
                     evaluation = self.runtime.evaluate_evolution_experiment(experiment_id)
@@ -362,8 +361,12 @@ class ContentEvolutionBridge:
                     })
 
             active = self._active_capability()
+            decision_capability_version = str(
+                decision.get("capability_version_id") or ""
+            )
             if (
                 active is not None
+                and decision_capability_version == str(active.version_id)
                 and str(active.implementation_ref).startswith(PROFILE_IMPL_PREFIX)
                 and outcome.profile_name
                 == str(active.implementation_ref)[len(PROFILE_IMPL_PREFIX):]
@@ -663,7 +666,6 @@ class ContentEvolutionBridge:
             evidence_refs=evidence_refs[:64],
             expected_fitness={
                 "pageviews_24h": candidate_mean,
-                "prediction_error": 0.0,
             },
             protected_invariants=[
                 "publication-admission",
@@ -687,12 +689,6 @@ class ContentEvolutionBridge:
                     MetricDirection.HIGHER_BETTER,
                     tolerance=max(0.25, baseline_mean * 0.05),
                     primary=True,
-                ),
-                ExperimentMetric(
-                    "prediction_error",
-                    MetricDirection.LOWER_BETTER,
-                    tolerance=0.05,
-                    primary=False,
                 ),
             ],
             regression_evidence_refs=evidence_refs[:64],
