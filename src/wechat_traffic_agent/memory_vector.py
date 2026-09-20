@@ -23,7 +23,7 @@ class SemanticHashEmbeddingProvider:
     recall before an external embedding model is configured; canonical memory never depends on it.
     """
 
-    model_id = "semantic-hash-v3-payload-aliases"
+    model_id = "semantic-hash-v4-payload-procedure"
     dimensions = 192
     _ALIASES = {
         "hardware": "resource", "machine": "resource", "server": "resource", "capacity": "resource",
@@ -86,7 +86,10 @@ def memory_document(row: dict) -> str:
         value = payload.get(key)
         if value not in (None, ""):
             parts.append(str(value))
-    for key in ("observations", "actions", "tool_outcomes"):
+    for key in (
+        "observations", "actions", "tool_outcomes", "preconditions", "steps", "recovery",
+        "verification", "failure_modes", "capabilities",
+    ):
         values = payload.get(key) if isinstance(payload.get(key), list) else []
         for value in values[:64]:
             if isinstance(value, dict):
