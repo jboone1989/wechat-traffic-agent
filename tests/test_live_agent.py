@@ -206,6 +206,10 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Recent neural-authority actions" in neural.text
     assert "N12 · Internal conflict → latest action" in neural.text
     assert "N13 · Recent Brain vs Cortex contests" in neural.text
+    assert "N0 · END-TO-END EVENT PROVENANCE" in neural.text
+    assert "Stimulus → physical brain → readout → feedback → plasticity" in neural.text
+    assert "N20 / N24 · EVOLUTION TREE" in neural.text
+    assert "NOT YET CHECKPOINTED" in neural.text
     assert "AWAITING OUTCOME" in neural.text
     assert "/api/agent/status" in neural.text
     assert "/api/agent/brain-lab" in neural.text
