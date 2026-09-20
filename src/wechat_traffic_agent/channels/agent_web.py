@@ -32,7 +32,13 @@ class ContentAgentWebChannel(StaticWebChannel):
         )
         persona = self._public_persona()
         body = render_agent_home(self.config, latest_html, category_html, persona=persona)
-        return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
+        return self._layout(
+            "LivingRuntime",
+            "Persistent AI agents that live, learn, and work together.",
+            "/",
+            body,
+            structured_data=self._website_schema(),
+        )
 
     def _header(self) -> str:
         return (
@@ -128,6 +134,11 @@ class ContentAgentWebChannel(StaticWebChannel):
     def _layout(self, *args, **kwargs) -> str:
         route = args[2] if len(args) > 2 else kwargs.get("route")
         page = super()._layout(*args, **kwargs)
+        escaped_site = html.escape(self.config.site_name)
+        page = page.replace(f" · {escaped_site}", " · LivingRuntime")
+        page = page.replace(f"<title>{escaped_site}</title>", "<title>LivingRuntime</title>")
+        page = page.replace(f'content="{escaped_site}"', 'content="LivingRuntime"')
+        page = page.replace(f'title="{escaped_site}"', 'title="LivingRuntime"')
         scripts = ""
         if (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}:
             scripts += first_party_engagement_script()
@@ -138,6 +149,16 @@ class ContentAgentWebChannel(StaticWebChannel):
             page = page.replace("<body>", '<body class="work-page">', 1)
             scripts += work_library_script()
         return page.replace("</body>", scripts + "</body>", 1)
+
+    def _website_schema(self) -> dict[str, object]:
+        return {
+            "@context": "https://schema.org",
+            "@type": "WebSite",
+            "name": "LivingRuntime",
+            "url": f"{self.config.base_url}/",
+            "description": "Persistent AI agents that live, learn, and work together.",
+            "publisher": {"@type": "Organization", "name": "LivingRuntime"},
+        }
 
     def _css(self) -> str:
         return super()._css() + agent_home_css() + work_library_css()
