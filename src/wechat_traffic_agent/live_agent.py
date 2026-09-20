@@ -1982,14 +1982,24 @@ class LiveAgentService:
         def operator_session_response(request: Request, session_id: str):
             response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
             forwarded_https = request.headers.get("x-forwarded-proto") == "https"
+            secure_cookie = request.url.scheme == "https" or forwarded_https
             response.set_cookie(
                 "ferro_operator_session",
                 session_id,
                 max_age=1800,
                 httponly=True,
-                secure=(request.url.scheme == "https" or forwarded_https),
+                secure=secure_cookie,
                 samesite="strict",
                 path="/operator",
+            )
+            response.set_cookie(
+                "ferro_operator_audience",
+                audience_analytics.store.operator_audience_marker(),
+                max_age=1800,
+                httponly=True,
+                secure=secure_cookie,
+                samesite="strict",
+                path="/",
             )
             return response
 
@@ -3040,6 +3050,7 @@ class LiveAgentService:
             operator_console.auth.logout(request.cookies.get("ferro_operator_session"))
             response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
             response.delete_cookie("ferro_operator_session", path="/operator")
+            response.delete_cookie("ferro_operator_audience", path="/")
             return response
 
         routes = [
