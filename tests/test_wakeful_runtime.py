@@ -458,3 +458,30 @@ def test_public_snapshot_exposes_reversible_neural_organ_handoff(tmp_path):
     assert handoff["automatic_rollback"] is True
     assert handoff["external_action_authority"] is False
     assert handoff["llm_used_for_handoff"] is False
+
+
+
+def test_neural_refresh_records_longitudinal_individuality_without_llm_dependency(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.refresh_neural_life(NOW)
+    snapshot = runtime.public_snapshot()
+    individuality = snapshot["longitudinal_individuality"]
+
+    assert individuality["snapshot_count"] == 1
+    assert individuality["organism_id"] == snapshot["cortex_continuity"]["organism_id"]
+    assert individuality["month_comparison"]["status"] == "ACCUMULATING_HISTORY"
+    assert individuality["cortex_in_individuality_fingerprint"] is False
+    assert individuality["raw_relationship_ids_public"] is False
+    assert (tmp_path / "application" / "longitudinal_individuality.json").exists()
+
+
+def test_frequent_neural_refresh_does_not_manufacture_longitudinal_age(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.refresh_neural_life(NOW)
+    runtime.refresh_neural_life(NOW + timedelta(hours=2))
+
+    individuality = runtime.public_snapshot()["longitudinal_individuality"]
+    assert individuality["snapshot_count"] == 1
+    assert individuality["month_comparison"]["history_days"] == 0.0
