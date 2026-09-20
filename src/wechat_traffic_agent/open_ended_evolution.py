@@ -253,10 +253,32 @@ class OpenEndedEvolution:
         cycle["reality_decision"] = decision
         cycle["real_world_effect"] = evaluation.get("estimated_real_world_effect")
         cycle["causal_claim_ready"] = bool(evaluation.get("causal_claim_ready"))
+        cycle["provenance_chain"] = {
+            "need_id": world.get("need_id"),
+            "proposal_id": world.get("proposal_id"),
+            "world_id": world_id,
+            "world_seed": world.get("seed"),
+            "training_trial_count": int(world.get("trial_count") or 0),
+            "training_steps": int(world.get("training_steps") or 0),
+            "changed_synapses": int(world.get("changed_synapses") or 0),
+            "reality_decision": decision,
+            "real_world_effect": evaluation.get("estimated_real_world_effect"),
+            "causal_claim_ready": bool(evaluation.get("causal_claim_ready")),
+        }
         cycle["updated_at"] = now.isoformat()
 
         evidence = self._structural_evidence(world_id)
         cycle["structural_evidence"] = evidence
+        cycle["provenance_chain"]["structural_completion_kind"] = evidence.get("completion_kind")
+        cycle["provenance_chain"]["world_linked_neuron_count"] = int(
+            evidence.get("world_linked_neuron_count") or 0
+        )
+        cycle["provenance_chain"]["stable_world_linked_circuit_count"] = int(
+            evidence.get("stable_world_linked_circuit_count") or 0
+        )
+        cycle["provenance_chain"]["world_linked_organ_count"] = int(
+            evidence.get("world_linked_organ_count") or 0
+        )
         completion_kind = evidence.get("completion_kind")
         if (
             decision == "ADOPT"
