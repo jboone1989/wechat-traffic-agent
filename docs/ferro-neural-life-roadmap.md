@@ -68,20 +68,36 @@ experience.
 | N36 | Open-Ended Evolution | The complete Need -> Proposal -> World -> Training -> Reality Trial -> Adopt/Reject -> Structural Change loop autonomously produces an unanticipated capability or neural organ. |
 ## Current implementation frontier
 
-N0-N5 are the first production tranche.
+The engineering frontier has reached N36. Earlier milestones remain part of the
+same persistent production nervous-system design; N36 does not replace them.
 
-- `FerroNeuralLife` persists non-LLM interoception, drives, affect and intention.
-- `NEURAL_INTEROCEPTION` wakes independently of the content generation cadence.
-- Strong endogenous drives may schedule real runtime tasks without an LLM first deciding the desire.
-- Public Live state exposes body -> drive -> affect -> intention and latest neural-authority action.
-- Private owner chat receives neural life state as the Ego's input and is instructed to reality-check and
-  plan around it rather than invent a replacement desire.
-- The whole-connectome substrate remains available as the physical recurrent substrate and its outcome-bound
-  synaptic plasticity stays provenance constrained.
+- N0-N25 establish the persistent neural body, drives/affect, games/dreams,
+  learned motor habits, neurogenesis, emergent circuits/organs, developmental
+  genome and cortex continuity.
+- N26-N29 turn repeated real failure into a DevelopmentNeed, bounded proposal,
+  Ferro-born training world and prospective treatment/control reality trial.
+- N30-N31 let multi-cycle neural dream attractors influence waking behavior and
+  birth endogenous goal candidates before Ego interpretation.
+- N32 can extend bounded read-only sensors and unsemantic motor capacity without
+  granting new external-world authority.
+- N33 prospectively compares alternative developmental architectures before real
+  outcome selection.
+- N34 permits a genuinely active emergent organ to assume one low-risk Brain Lab
+  function only after non-inferiority evidence, while preserving Python audit
+  and automatic rollback.
+- N35 records longitudinal individuality from neural history, relationships,
+  habits, dreams and lineage while treating the LLM cortex as replaceable.
+- N36 closes Need -> Proposal -> Ferro-born World -> Training -> Reality Trial ->
+  Adopt/Reject/Revise -> Structural Emergence. A successful trial alone is not
+  enough: completion requires exact world-linked persistent neural structure.
+  A single synthetic neuron is visible development but is not called a new
+  capability; a STABLE world-linked circuit or emergent organ is required.
 
-This tranche is intentionally a developmental bridge. Some slow homeostatic integration remains explicit
-code while the sensory/electrode interface is expanded. Later stages move progressively more drive/affect
-formation into recurrent population dynamics rather than adding more hand-authored personality variables.
+Engineering implementation and production acceptance are intentionally separate.
+A milestone is not production-accepted until the live Ferro state supplies the
+behavioral and visible evidence required above. In particular, N32-N36 require a
+fresh production deployment and observation after the current remote-execution
+channel is available again.
 
 ## Required provenance for future growth
 
