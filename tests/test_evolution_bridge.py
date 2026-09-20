@@ -434,3 +434,157 @@ def test_broader_mature_strategy_history_refreshes_uncommitted_narrow_trial(
     assert second["candidate"]["supersedes_experiment_id"] == first_exp
     assert len(rt.evolution_experiments) == 2
     assert all(len(item.samples) == 0 for item in rt.evolution_experiments)
+
+
+def _broader_strategy_rows(observed: datetime):
+    rows = []
+    values = [
+        ("follow-up-update", 8.0),
+        ("follow-up-update", 9.0),
+        ("follow-up-update", 8.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 19.0),
+        ("comparison-guide", 18.0),
+    ]
+    for i, (profile, pageviews) in enumerate(values):
+        rows.append({
+            "outcome_id": f"strategy-outcome:boundary-{i}",
+            "publication_id": f"publication-boundary-{i}",
+            "topic": "broad-history",
+            "profile_name": profile,
+            "pageviews_24h": pageviews,
+            "observed_at": (observed + timedelta(minutes=i)).isoformat(),
+            "evidence_refs": [f"nginx:boundary-{i}", f"strategy:boundary-{i}"],
+        })
+    return rows
+
+
+def test_internal_trial_decision_without_publication_can_be_superseded(
+    tmp_path, monkeypatch
+):
+    import wechat_traffic_agent.evolution_bridge as bridge_module
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=5)
+    for i, views in enumerate((13.0, 12.0, 11.0)):
+        _write_history(
+            state_root,
+            cycle=f"internal-follow-{i}",
+            profile="follow-up-update",
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+    for i, views in enumerate((5.0, 5.0, 5.0)):
+        _write_history(
+            state_root,
+            cycle=f"internal-evidence-{i}",
+            profile="evidence-brief",
+            pageviews=views,
+            created_at=base + timedelta(minutes=10 + i),
+        )
+    monkeypatch.setattr(bridge_module, "collect_mature_strategy_outcomes", lambda **_: [])
+    first = bridge.bootstrap_historical_learning(as_of=NOW)
+    first_exp = first["candidate"]["experiment_id"]
+
+    clock.advance(61)
+    context, prediction, _ = _live_decision(
+        bridge,
+        state_root,
+        cycle=f"v2-internal-only-{int(clock.now().timestamp())}",
+        created_at=clock.now(),
+    )
+    assert context["experiment_id"] == first_exp
+    prediction_path = (
+        state_root / "content" / "continuous" / "cycles"
+        / prediction.cycle / "action_prediction.json"
+    )
+    assert prediction_path.exists()
+    assert not (prediction_path.parent / "publication.json").exists()
+
+    broad = _broader_strategy_rows(NOW - timedelta(days=2))
+    monkeypatch.setattr(
+        bridge_module,
+        "collect_mature_strategy_outcomes",
+        lambda **_: list(broad),
+    )
+    refreshed = bridge.bootstrap_historical_learning(
+        as_of=NOW + timedelta(minutes=30)
+    )
+    assert (
+        refreshed["candidate"]["status"]
+        == "PROSPECTIVE_TRIAL_REFRESHED_FROM_BROADER_EVIDENCE"
+    )
+    assert refreshed["candidate"]["candidate_profile"] == "comparison-guide"
+    assert refreshed["candidate"]["supersedes_experiment_id"] == first_exp
+
+
+def test_publication_is_external_commitment_boundary_for_trial_refresh(
+    tmp_path, monkeypatch
+):
+    import wechat_traffic_agent.evolution_bridge as bridge_module
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=5)
+    for i, views in enumerate((13.0, 12.0, 11.0)):
+        _write_history(
+            state_root,
+            cycle=f"published-follow-{i}",
+            profile="follow-up-update",
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+    for i, views in enumerate((5.0, 5.0, 5.0)):
+        _write_history(
+            state_root,
+            cycle=f"published-evidence-{i}",
+            profile="evidence-brief",
+            pageviews=views,
+            created_at=base + timedelta(minutes=10 + i),
+        )
+    monkeypatch.setattr(bridge_module, "collect_mature_strategy_outcomes", lambda **_: [])
+    first = bridge.bootstrap_historical_learning(as_of=NOW)
+
+    clock.advance(61)
+    context, prediction, _ = _live_decision(
+        bridge,
+        state_root,
+        cycle=f"v2-published-{int(clock.now().timestamp())}",
+        created_at=clock.now(),
+    )
+    assert context["experiment_id"] == first["candidate"]["experiment_id"]
+    publication_path = (
+        state_root / "content" / "continuous" / "cycles"
+        / prediction.cycle / "publication.json"
+    )
+    publication_path.write_text("{}\n", encoding="utf-8")
+
+    broad = _broader_strategy_rows(NOW - timedelta(days=2))
+    monkeypatch.setattr(
+        bridge_module,
+        "collect_mature_strategy_outcomes",
+        lambda **_: list(broad),
+    )
+    blocked = bridge.bootstrap_historical_learning(
+        as_of=NOW + timedelta(minutes=30)
+    )
+    assert blocked["candidate"]["status"] == "EXISTING_BROADER_EVIDENCE_CONFLICT"
+    assert (
+        blocked["candidate"]["broader_evidence_candidate_profile"]
+        == "comparison-guide"
+    )
