@@ -212,3 +212,56 @@ def test_pool_metrics_feed_route_outcomes_back_to_vb_observation(tmp_path):
     assert metrics["llm_pool_recent_free_selections"] == 1.0
     assert metrics["llm_pool_recent_paid_selections"] == 1.0
     assert metrics["llm_pool_recent_failovers"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_content_backend_adds_bounded_default_duration_without_overriding_explicit_budget():
+    from agent_runtime.backends import AgentRequest, AgentResult, AgentRunMode
+    from wechat_traffic_agent.runtime_backend import ContentBoundedLegacyProviderBackend
+
+    class Inner:
+        backend_id = "inner"
+        capabilities = object()
+        provider = object()
+
+        def __init__(self):
+            self.requests = []
+
+        async def run(self, request):
+            self.requests.append(request)
+            return AgentResult(final_response="ok")
+
+    inner = Inner()
+    backend = ContentBoundedLegacyProviderBackend(
+        inner, default_duration_seconds=45
+    )
+    await backend.run(
+        AgentRequest(
+            mode=AgentRunMode.ADVISORY,
+            task="bounded content cognition",
+            context={},
+        )
+    )
+    await backend.run(
+        AgentRequest(
+            mode=AgentRunMode.ADVISORY,
+            task="explicit owner/live budget",
+            context={},
+            max_duration_seconds=20,
+        )
+    )
+
+    assert inner.requests[0].max_duration_seconds == 45
+    assert inner.requests[1].max_duration_seconds == 20
+
+
+def test_content_advisory_timeout_env_is_bounded(monkeypatch):
+    from wechat_traffic_agent.runtime_backend import _content_advisory_timeout_seconds
+
+    monkeypatch.delenv("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS", raising=False)
+    assert _content_advisory_timeout_seconds() == 45.0
+    monkeypatch.setenv("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS", "30")
+    assert _content_advisory_timeout_seconds() == 30.0
+    monkeypatch.setenv("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS", "5")
+    with pytest.raises(ValueError, match="10..180"):
+        _content_advisory_timeout_seconds()
