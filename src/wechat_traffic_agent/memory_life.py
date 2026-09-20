@@ -165,6 +165,29 @@ class MemoryLifeRuntime:
             "errors": errors[:20],
         }
 
+    def select_process_variant(
+        self,
+        *,
+        action: str,
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        name = "process:" + str(action).strip()
+        existing = self._active_procedure(name)
+        if existing is None:
+            return None
+        selected = self.procedures.select_variant(
+            str(existing["memory_id"]),
+            context=context or {
+                "satisfied_preconditions": ["required capabilities and resources are available"],
+            },
+        )
+        if selected is None:
+            return None
+        return {
+            "procedure_id": str(existing["memory_id"]),
+            **selected,
+        }
+
     def observe_process_outcome(
         self,
         *,

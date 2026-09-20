@@ -1311,3 +1311,102 @@ def test_unknown_model_evidence_id_falls_back_without_weakening_evidence_boundar
     assert fallback["selected_evidence_id"] != "invented-evidence-id"
     assert fallback["topic"] == "evidence"
     assert sum(1 for call in runtime.calls if call.startswith("SELECT_EVIDENCE:")) == 2
+
+
+def test_goal_loop_executes_mature_content_retry_skill_variant(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = V2Runtime()
+    worker = v2(legacy, runtime, publisher, explorer=Explorer())
+    service = worker.memory_life.procedures
+    preconditions = ["required capabilities and resources are available"]
+    capabilities = ["content.generate", "content.verify", "content.publish"]
+    direct_steps = [
+        "select evidence",
+        "draft content",
+        "run evidence and safety checks",
+        "publish only after checks pass",
+    ]
+    retry_steps = [
+        *direct_steps,
+        "retry once with the frozen artifact when the failure is checker-only",
+    ]
+    direct = service._initial_variant(
+        preconditions=preconditions,
+        capabilities=capabilities,
+        steps=direct_steps,
+        success_count=1,
+        failure_count=2,
+        evidence_refs=["cycle:direct"],
+        policy_action="DIRECT",
+    )
+    retry = service._initial_variant(
+        preconditions=preconditions,
+        capabilities=capabilities,
+        steps=retry_steps,
+        success_count=3,
+        failure_count=0,
+        evidence_refs=["cycle:retry"],
+        policy_action="RETRY_ONCE_SAFE",
+    )
+    procedure = service.learn_procedure(
+        name="process:content-create-verify-publish",
+        description="Create, verify, and publish content with evidence-backed variants.",
+        preconditions=preconditions,
+        capabilities=capabilities,
+        steps=direct_steps,
+        verification=[
+            "automated_checks_passed=true",
+            "evidence floor PASS",
+            "persist cycle evidence refs",
+        ],
+        source_type="VERIFIED_EXECUTION_OUTCOME",
+        source_ref="cycle:seed",
+        evidence_refs=["cycle:seed"],
+        success_count=4,
+        failure_count=2,
+        variants=[direct, retry],
+        default_variant_id=direct["variant_id"],
+    )
+
+    original = runtime.cognitive_probe
+    checks = []
+    async def fail_first_verifier_only(task, max_tokens):
+        raw = await original(task, max_tokens)
+        if task.startswith("CHECK_ARTICLE:"):
+            checks.append(task)
+            row = json.loads(raw)
+            if len(checks) == 1:
+                row["grounded"] = False
+            return json.dumps(row)
+        return raw
+    runtime.cognitive_probe = fail_first_verifier_only
+
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    assert len(checks) == 2
+    assert checks[0] == checks[1]
+    skill = result["memory_process_variant"]
+    assert skill["procedure_id"] == procedure["memory_id"]
+    assert skill["variant_id"] == retry["variant_id"]
+    assert skill["policy_action"] == "RETRY_ONCE_SAFE"
+    assert skill["verification_attempts"] == 2
+    retry_receipt = json.loads(
+        (worker.state / "content" / "continuous" / "cycles" / result["cycle"] / "memory_process_retry.json").read_text()
+    )
+    assert retry_receipt["frozen_artifact"] is True
+    assert retry_receipt["frozen_evidence"] is True
+    assert retry_receipt["retry_passed"] is True
+
+    active = service.store.query_memories(
+        memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=20,
+    )
+    current = next(
+        row for row in active
+        if (row.get("payload") or {}).get("name") == "process:content-create-verify-publish"
+    )
+    selected = service.select_variant(
+        current["memory_id"],
+        context={"satisfied_preconditions": preconditions},
+    )
+    assert selected["variant_id"] == retry["variant_id"]
+    assert selected["success_count"] == 4
