@@ -119,7 +119,7 @@ def test_failed_tool_without_receipt_still_updates_procedure_from_persisted_turn
     assert tool["receipt_id"] == ""
     assert tool["evidence_ref"] == "operator-chat:11#tool-1"
     assert tool["evidence_ref"] in episode["evidence_refs"]
-    assert result["memory_evolution"]["status"] in {"INSUFFICIENT_BENCHMARK", "REJECTED", "PROMOTED", "NO_POLICY_CHANGE"}
+    assert result["memory_evolution"]["status"] == "ROUTED_TO_RUNTIME_EVOLUTION"
 
 
 def test_repeated_experience_consolidates_into_semantic_knowledge(tmp_path):
@@ -152,3 +152,24 @@ def test_repeated_experience_consolidates_into_semantic_knowledge(tmp_path):
     assert len(knowledge["evidence_refs"]) >= 2
     assert "Repeated experience supports:" in knowledge["text"]
     assert knowledge["memory_id"] in knowledge_ids
+
+
+def test_explicit_owner_wrong_recall_feedback_settles_latest_retrieval(tmp_path):
+    runtime = OwnerMemoryRuntime(tmp_path)
+    retrieval = runtime.observatory.record_retrieval(
+        query="what did I say about migration",
+        retrieved_memory_ids=["memory:test"],
+        recall_latency_ms=3.2,
+        source="operator-long-term-memory",
+    )
+    result = runtime.record_turn(
+        owner_message=_message("operator-chat:wrong-1", "operator", "你记错了，我说的是先优化现有资源。", "2026-09-20T01:00:00Z"),
+        ferro_message=_message("operator-chat:wrong-2", "ferro", "收到纠正。", "2026-09-20T01:00:01Z"),
+    )
+    assert result["memory_evolution"]["status"] == "ROUTED_TO_RUNTIME_EVOLUTION"
+    rows = runtime.observatory.rows(limit=20)
+    failure = next(row for row in rows if row.get("event_type") == "FAILURE")
+    assert failure["failure_kind"] == "WRONG_RECALL"
+    settlement = next(row for row in rows if row.get("event_type") == "SETTLEMENT")
+    assert settlement["parent_use_id"] == retrieval["memory_use_id"]
+    assert settlement["metadata"]["memory_helped"] is False

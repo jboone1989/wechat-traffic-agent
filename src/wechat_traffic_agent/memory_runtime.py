@@ -71,6 +71,12 @@ class OwnerMemoryRuntime:
                 "status": status,
                 "ok": ok,
                 "evidence_ref": evidence_ref,
+                "procedure_id": str(row.get("procedure_id") or ""),
+                "procedure_variant_id": str(row.get("procedure_variant_id") or ""),
+                "procedure_variant_steps": list(row.get("procedure_variant_steps") or []),
+                "procedure_policy_action": str(row.get("procedure_policy_action") or ""),
+                "attempt_count": int(row.get("attempt_count") or 1),
+                "latency_ms": max(0.0, float(row.get("latency_ms") or 0.0)),
             }
             normalized_tools.append(normalized)
             verified.append(f"{capability}={status or ('OK' if ok else 'FAILED')} ok={ok}")
@@ -79,6 +85,8 @@ class OwnerMemoryRuntime:
                 evidence_ref=evidence_ref,
                 ok=ok,
                 status=status,
+                variant_steps=normalized["procedure_variant_steps"],
+                latency_ms=normalized["latency_ms"],
             )
             if procedure is not None:
                 memory_refs.append(str(procedure.get("memory_id") or ""))
@@ -115,7 +123,10 @@ class OwnerMemoryRuntime:
         )
         evolution_signals.extend(self._observe_recall_feedback(owner_message, episode.memory_id))
         consolidation = self._consolidate_recent(episode.memory_id)
-        evolution_cycle = self.evolution.run_cycle() if evolution_signals else {"status": "NO_NEW_SIGNALS"}
+        evolution_cycle = (
+            {"status": "ROUTED_TO_RUNTIME_EVOLUTION", "signal_count": len(evolution_signals)}
+            if evolution_signals else {"status": "NO_NEW_SIGNALS"}
+        )
         checkpoint = self._checkpoint_if_due()
         return {
             "episode_id": episode.memory_id,
@@ -133,6 +144,8 @@ class OwnerMemoryRuntime:
         evidence_ref: str,
         ok: bool,
         status: str,
+        variant_steps: Iterable[str] = (),
+        latency_ms: float = 0.0,
     ) -> dict[str, Any] | None:
         active = self.store.query_memories(
             memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=500,
@@ -180,6 +193,8 @@ class OwnerMemoryRuntime:
             evidence_ref=evidence_ref,
             failure_mode="" if ok else (status or "runtime_tool_failure"),
             recovery_step=recovery_step,
+            variant_steps=list(variant_steps),
+            latency_ms=latency_ms,
         )
 
     def _observe_recall_feedback(
@@ -188,18 +203,43 @@ class OwnerMemoryRuntime:
         text = str(owner_message.get("text") or "")
         observed: list[dict[str, Any]] = []
         evidence_ref = str(owner_message.get("message_id") or episode_id)
-        if re.search(r"不记得|没记住|忘了|记忆.{0,8}(?:错|差|有问题)|don't remember|forgot|memory.{0,12}(?:wrong|bad)", text, re.IGNORECASE):
+
+        failure_kind = ""
+        signal_kind = ""
+        if re.search(r"记错|记忆.{0,8}错|wrong memory|remembered.{0,8}wrong", text, re.IGNORECASE):
+            failure_kind, signal_kind = "WRONG_RECALL", "RECALL_FAILURE"
+        elif re.search(r"过时|陈旧|旧信息|stale|outdated", text, re.IGNORECASE):
+            failure_kind, signal_kind = "STALE_RECALL", "STALE_MEMORY"
+        elif re.search(r"没用|无关|不相关|irrelevant|not useful", text, re.IGNORECASE):
+            failure_kind, signal_kind = "NO_USEFUL_MEMORY", "RECALL_FAILURE"
+        elif re.search(r"不记得|没记住|忘了|记忆.{0,8}(?:差|有问题)|don't remember|forgot|memory.{0,12}bad", text, re.IGNORECASE):
+            failure_kind, signal_kind = "MISSED_RECALL", "RECALL_FAILURE"
+
+        if failure_kind:
             observed.append(self.evolution.observe_signal(
-                "RECALL_FAILURE",
+                signal_kind,
                 evidence_ref=evidence_ref,
                 detail=text[:800],
             ))
+            recent = self.observatory.latest_unsettled_retrieval()
+            retrieved = list((recent or {}).get("retrieved_memory_ids") or [])
             self.observatory.record_failure(
-                "MISSED_RECALL",
-                query=text,
+                failure_kind,
+                query=str((recent or {}).get("query") or text),
+                retrieved_memory_ids=retrieved,
                 detail=text[:800],
                 evidence_refs=[evidence_ref],
             )
+            if recent is not None:
+                self.observatory.settle(
+                    str(recent["memory_use_id"]),
+                    outcome_ref=evidence_ref,
+                    outcome_success=False,
+                    memory_helped=False,
+                    evidence_ref=evidence_ref,
+                    detail=f"explicit owner feedback classified as {failure_kind}",
+                )
+
         if re.search(r"冲突|前后矛盾|contradict", text, re.IGNORECASE):
             observed.append(self.evolution.observe_signal(
                 "CONTRADICTION",
@@ -212,6 +252,18 @@ class OwnerMemoryRuntime:
                 detail=text[:800],
                 evidence_refs=[evidence_ref],
             )
+
+        if re.search(r"你记得对|记忆正确|这次记对了|you remembered correctly|that's correct", text, re.IGNORECASE):
+            recent = self.observatory.latest_unsettled_retrieval()
+            if recent is not None:
+                self.observatory.settle(
+                    str(recent["memory_use_id"]),
+                    outcome_ref=evidence_ref,
+                    outcome_success=True,
+                    memory_helped=True,
+                    evidence_ref=evidence_ref,
+                    detail="explicit owner confirmation of successful recall",
+                )
         return observed
 
     def _consolidate_recent(self, source_ref: str) -> dict[str, Any]:

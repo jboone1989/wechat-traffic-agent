@@ -68,6 +68,7 @@ class ProcedurePolicy:
             selected = next((row for row in eligible if row.get("variant_id") == default_id), eligible[0])
             reason = "BASELINE_UNTIL_MATURE"
         result = dict(selected)
+        result.setdefault("policy_action", "DIRECT")
         result["policy_reason"] = reason
         result["policy_score"] = _variant_score(selected)
         return result
@@ -109,6 +110,7 @@ class ProceduralMemoryService:
         success_count: int,
         failure_count: int,
         evidence_refs: Iterable[str],
+        policy_action: str = "DIRECT",
     ) -> dict[str, Any]:
         pre = [str(item) for item in preconditions if str(item).strip()]
         caps = [str(item) for item in capabilities if str(item).strip()]
@@ -127,6 +129,7 @@ class ProceduralMemoryService:
             "mean_cost": 0.0,
             "mean_latency_ms": 0.0,
             "last_outcome": "",
+            "policy_action": str(policy_action or "DIRECT"),
             "evidence_refs": list(dict.fromkeys(str(item) for item in evidence_refs if str(item))),
         }
 
@@ -285,6 +288,24 @@ class ProceduralMemoryService:
         variant["evidence_refs"] = list(dict.fromkeys([
             *(variant.get("evidence_refs") or []), evidence_ref,
         ]))
+
+        # A verified failure may create one bounded challenger for the *next* execution.
+        # We never credit the failed outcome to the challenger because it was not executed.
+        if not success and recovery_step and "retry once" in recovery_step.casefold():
+            challenger_steps = list(chosen_steps)
+            if recovery_step not in challenger_steps:
+                challenger_steps.append(recovery_step)
+            challenger_id = _variant_id(challenger_steps, payload.get("capabilities") or [])
+            if not any(row.get("variant_id") == challenger_id for row in variants):
+                variants.append(self._initial_variant(
+                    preconditions=payload.get("preconditions") or [],
+                    capabilities=payload.get("capabilities") or [],
+                    steps=challenger_steps,
+                    success_count=0,
+                    failure_count=0,
+                    evidence_refs=[evidence_ref],
+                    policy_action="RETRY_ONCE_SAFE",
+                ))
 
         old_default = str(payload.get("default_variant_id") or variants[0].get("variant_id") or "")
         new_default, policy_status = ProcedurePolicy.promote_best(variants, old_default)
