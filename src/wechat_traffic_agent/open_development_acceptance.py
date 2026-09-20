@@ -322,8 +322,11 @@ class OpenDevelopmentAcceptance:
             if isinstance(longitudinal.get("month_comparison"), Mapping)
             else {}
         )
+        raw_longitudinal = _read(
+            self.application / "longitudinal_individuality.json"
+        )
         preserved_swaps = [
-            row for row in longitudinal.get("recent_cortex_transitions") or ()
+            row for row in raw_longitudinal.get("cortex_transitions") or ()
             if isinstance(row, Mapping) and row.get("status") == "PRESERVED"
         ]
         accepted = bool(
