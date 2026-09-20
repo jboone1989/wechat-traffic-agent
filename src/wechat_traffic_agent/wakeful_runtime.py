@@ -129,6 +129,8 @@ class ContentWakefulRuntime:
             brain_lab=self.brain_lab,
             agency=self.developmental_agency,
         )
+        from .neural_extensions import NeuralSelfExtension
+        self.neural_extensions = NeuralSelfExtension(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -431,6 +433,35 @@ class ContentWakefulRuntime:
                 payload_ref=str(need.get("need_id") or ""),
                 attention_channel=channels[0],
             ), enqueue=False)
+
+        extension_projection = self.neural_extensions.refresh(
+            now=now,
+            agency=agency,
+            motor_cortex=self.neural_motor,
+        )
+        for sample in self.neural_extensions.sample_active_sensors(now=now):
+            currents = sample.get("currents") if isinstance(sample.get("currents"), dict) else {}
+            for index, (channel, current) in enumerate(
+                sorted(currents.items(), key=lambda item: (-float(item[1]), item[0]))
+            ):
+                if index >= 3 or float(current) <= 0.0:
+                    continue
+                magnitude = max(0.05, min(0.9, float(current)))
+                self.core.emit(StimulusEvent(
+                    event_id=(
+                        f"self-sensor:{sample.get('sensor_id')}:"
+                        f"{int(now.timestamp() // 300)}:{index}"
+                    ),
+                    source="ferro-neural-self-extension",
+                    kind="SELF_EXTENDED_SENSOR",
+                    observed_at=now,
+                    salience=magnitude,
+                    novelty=0.62,
+                    urgency=max(0.18, magnitude * 0.55),
+                    persistence=0.88,
+                    payload_ref=str(sample.get("extension_id") or ""),
+                    attention_channel=str(channel),
+                ), enqueue=False)
 
         candidate_world = self.developmental_agency.next_candidate_world()
         if candidate_world is not None and int(candidate_world.get("trial_count") or 0) == 0:
@@ -1011,6 +1042,7 @@ class ContentWakefulRuntime:
             "neural_transfer": self.neural_transfer.projection(),
             "developmental_agency": self.developmental_agency.projection(),
             "developmental_world_transfer": self.developmental_world_transfer.projection(),
+            "neural_extensions": self.neural_extensions.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
