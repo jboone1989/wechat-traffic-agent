@@ -107,7 +107,7 @@ class RecallWeights:
 class MemorySearchIndex:
     """Rebuildable FTS5 index over canonical memory records."""
 
-    INDEX_VERSION = "2-payload"
+    INDEX_VERSION = "3-payload-procedure"
 
     def __init__(self, store: CanonicalMemoryStore) -> None:
         self.store = store

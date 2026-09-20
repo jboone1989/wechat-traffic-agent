@@ -153,3 +153,25 @@ def test_search_index_requests_unbounded_canonical_rows(tmp_path):
     index = MemorySearchIndex(store)
     assert None in calls
     assert index.search("ancient-zircon-needle", limit=3)[0][0] == "m:needle"
+
+
+def test_router_indexes_procedural_steps_and_recovery_payload(tmp_path):
+    store = CanonicalMemoryStore(tmp_path)
+    store.append_memory({
+        "memory_id": "m:procedure",
+        "memory_type": "PROCEDURAL",
+        "kind": "PROCEDURE",
+        "text": "Procedure process:content-create-verify-publish",
+        "created_at": "2026-09-20T00:00:00Z",
+        "status": "ACTIVE",
+        "source_type": "RUNTIME_EXPERIENCE",
+        "source_ref": "cycle:test",
+        "payload": {
+            "steps": ["select evidence", "draft content", "run evidence and safety checks", "publish only after checks pass"],
+            "recovery": ["repair missing evidence or failed checks before publishing"],
+            "verification": ["automated_checks_passed=true", "evidence floor PASS"],
+        },
+    })
+    router = MemoryRouter(tmp_path, store=store)
+    rows = router.recall("repair missing evidence after failed checks", limit=1)
+    assert [row["memory_id"] for row in rows] == ["m:procedure"]
