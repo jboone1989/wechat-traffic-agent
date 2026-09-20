@@ -846,9 +846,30 @@ class ContentWakefulRuntime:
             now=now,
             steps=steps,
         )
+        # DevelopmentalConnectome persists its dynamic topology through the
+        # WakefulCore checkpoint. Persist before the final N36 emergence check,
+        # otherwise a just-born neuron/circuit would be invisible to the
+        # provenance reader until the following wake.
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()
+        refreshed = self.open_ended_evolution.refresh(now=now)
+        cycle_id = str(result.get("cycle_id") or "")
+        cycle = next(
+            (
+                dict(row)
+                for row in refreshed.get("recent_cycles") or ()
+                if str(row.get("cycle_id") or "") == cycle_id
+            ),
+            None,
+        )
+        if cycle is not None:
+            result = {
+                **dict(result),
+                "status": str(cycle.get("status") or result.get("status") or "UNKNOWN"),
+                "cycle": cycle,
+                "projection": refreshed,
+            }
         return result
 
     def brain_lab_projection(self) -> dict:
