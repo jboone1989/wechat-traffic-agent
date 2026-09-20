@@ -90,12 +90,14 @@ class ContentWakefulRuntime:
             NeuralTasteEngine,
             PsychodynamicState,
         )
+        from .neural_motor import NeuralMotorCortex
         substrate = getattr(self.core.reflex, "substrate", None)
         self.neural_taste = NeuralTasteEngine(self.state_root, substrate=substrate)
         self.neural_social = NeuralSocialSelf(self.state_root, substrate=substrate)
         self.neural_personality = NeuralPersonality(self.state_root)
         self.brain_cortex = BrainCortexLedger(self.state_root)
         self.psychodynamics = PsychodynamicState(self.state_root)
+        self.neural_motor = NeuralMotorCortex(self.state_root, substrate=substrate)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -324,6 +326,32 @@ class ContentWakefulRuntime:
             social=self.neural_social.projection(),
             neural_authority_fraction=authority_fraction,
         )
+        motor = self.neural_motor.select(neural_life=projection, now=now)
+        motor_task = str(motor.get("task") or "")
+        if motor_task:
+            target_at = now + timedelta(seconds=5)
+            existing = next(
+                (
+                    wake for wake in self.core.snapshot().pending_plans
+                    if wake.task == motor_task and wake.at <= target_at
+                ),
+                None,
+            )
+            if existing is None:
+                self.core.schedule(PlannedWake(
+                    wake_id=f"content:{motor_task}",
+                    at=target_at,
+                    reason=f"{motor.get('authority') or 'NEURAL_MOTOR'} selected {motor_task} via {motor.get('motor_id') or 'motor unit'}",
+                    task=motor_task,
+                    relevant_refs=(
+                        str(motor.get("decision_id") or ""),
+                        str(motor.get("motor_id") or ""),
+                    ),
+                    preemptible=True,
+                ))
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
         return projection
 
     def rank_neural_taste(self, topics, now: datetime | None = None) -> dict:
@@ -387,6 +415,19 @@ class ContentWakefulRuntime:
             cycle=cycle,
             utility=utility,
             evidence_refs=evidence_refs,
+            observed_at=observed_at,
+        )
+
+    def observe_motor_outcome(
+        self,
+        *,
+        task: str,
+        result,
+        observed_at: datetime | None = None,
+    ) -> dict | None:
+        return self.neural_motor.observe_outcome(
+            task=task,
+            result=result,
             observed_at=observed_at,
         )
 
@@ -704,6 +745,7 @@ class ContentWakefulRuntime:
             "neural_social": self.neural_social.projection(),
             "personality": self.neural_personality.projection(),
             "brain_vs_cortex": self.brain_cortex.projection(),
+            "neural_motor": self.neural_motor.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
                 personality=self.neural_personality.projection(),
