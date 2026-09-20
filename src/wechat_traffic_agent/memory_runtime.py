@@ -10,6 +10,7 @@ from .memory_continuity import MemoryContinuityService
 from .memory_episode import EpisodeMemoryService
 from .memory_evolution import MemoryEvolutionEngine
 from .memory_knowledge import ExperienceKnowledgeConsolidator
+from .memory_observation import MemoryLifeObservatory
 from .memory_procedural import ProceduralMemoryService
 from .memory_system import CanonicalMemoryStore
 
@@ -25,6 +26,7 @@ class OwnerMemoryRuntime:
         self.consolidation = MemoryConsolidationService(self.state_root, store=self.store)
         self.knowledge = ExperienceKnowledgeConsolidator(self.state_root, store=self.store)
         self.evolution = MemoryEvolutionEngine(self.state_root, store=self.store)
+        self.observatory = MemoryLifeObservatory(self.state_root)
         self.continuity = MemoryContinuityService(self.state_root, store=self.store)
 
     def record_turn(
@@ -192,12 +194,24 @@ class OwnerMemoryRuntime:
                 evidence_ref=evidence_ref,
                 detail=text[:800],
             ))
+            self.observatory.record_failure(
+                "MISSED_RECALL",
+                query=text,
+                detail=text[:800],
+                evidence_refs=[evidence_ref],
+            )
         if re.search(r"冲突|前后矛盾|contradict", text, re.IGNORECASE):
             observed.append(self.evolution.observe_signal(
                 "CONTRADICTION",
                 evidence_ref=evidence_ref,
                 detail=text[:800],
             ))
+            self.observatory.record_failure(
+                "CONFLICT",
+                query=text,
+                detail=text[:800],
+                evidence_refs=[evidence_ref],
+            )
         return observed
 
     def _consolidate_recent(self, source_ref: str) -> dict[str, Any]:

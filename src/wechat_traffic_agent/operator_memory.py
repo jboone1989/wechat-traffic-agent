@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 from .memory_formation import FormationContext, MemoryFormationPipeline
+from .memory_observation import MemoryLifeObservatory, MemoryRecallTimer
 from .memory_retrieval import MemoryRouter
 from .memory_system import CanonicalMemoryStore
 
@@ -77,6 +78,7 @@ class OperatorLongTermMemory:
         self.formation = MemoryFormationPipeline(state_root, store=self.store)
         self.store.import_legacy_jsonl(self.path)
         self.router = MemoryRouter(state_root, store=self.store)
+        self.observatory = MemoryLifeObservatory(state_root)
         self._repair_legacy_mirror()
 
     def _repair_legacy_mirror(self) -> None:
@@ -143,11 +145,18 @@ class OperatorLongTermMemory:
     def relevant(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
         core = [dict(row) for row in CORE_MEMORIES]
         remaining = max(0, int(limit) - len(core))
-        learned = self.router.recall(
-            query,
-            limit=max(1, remaining),
-            access_scope="PRIVATE_OWNER",
-        ) if remaining else []
+        with MemoryRecallTimer() as timer:
+            learned = self.router.recall(
+                query,
+                limit=max(1, remaining),
+                access_scope="PRIVATE_OWNER",
+            ) if remaining else []
+        self.observatory.record_retrieval(
+            query=query,
+            retrieved_memory_ids=[str(row.get("memory_id") or "") for row in learned],
+            recall_latency_ms=float(getattr(timer, "elapsed_ms", 0.0)),
+            source="operator-long-term-memory",
+        )
         return core + learned
 
 

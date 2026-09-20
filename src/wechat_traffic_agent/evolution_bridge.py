@@ -30,6 +30,7 @@ from agent_runtime.evolution import (
 )
 
 from .content_action_prediction import ActionPredictionOutcome, ContentActionPrediction
+from .memory_evolution_bridge import MemoryRuntimeEvolutionBridge
 from .content_strategy import (
     ContentStrategyBinding,
     PROFILE_BY_NAME,
@@ -90,6 +91,12 @@ class ContentEvolutionBridge:
         self.trial_path = self.root / "content_strategy_trial.json"
         self.superseded_trials_root = self.root / "superseded_trials"
         self.bootstrap_path = self.root / "historical_bootstrap.json"
+        self.memory_evolution_bridge = MemoryRuntimeEvolutionBridge(
+            runtime=self.runtime, state_root=self.state_root
+        )
+
+    def sync_memory_evolution(self) -> dict[str, Any]:
+        return self.memory_evolution_bridge.sync()
 
     def _decision_path(self, prediction_id: str) -> Path:
         digest = sha256(str(prediction_id).encode("utf-8")).hexdigest()[:24]

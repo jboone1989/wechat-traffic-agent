@@ -10,6 +10,7 @@ from .memory_episode import EpisodeMemoryService
 from .memory_evolution import MemoryEvolutionEngine
 from .memory_knowledge import ExperienceKnowledgeConsolidator
 from .memory_procedural import ProceduralMemoryService
+from .memory_salience import MemorySaliencePolicy
 from .memory_semantic import SemanticRelationalMemoryService
 from .memory_system import CanonicalMemoryStore
 
@@ -30,6 +31,7 @@ class MemoryLifeRuntime:
         self.consolidation = MemoryConsolidationService(self.state_root, store=self.store)
         self.knowledge = ExperienceKnowledgeConsolidator(self.state_root, store=self.store)
         self.evolution = MemoryEvolutionEngine(self.state_root, store=self.store)
+        self.salience = MemorySaliencePolicy(self.state_root)
         self.continuity = MemoryContinuityService(self.state_root, store=self.store)
         self._life_event_episode_ids: dict[str, str] = {}
         for row in self.store.query_memories(
@@ -86,6 +88,7 @@ class MemoryLifeRuntime:
             or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         )
         significance = min(1.0, max(0.0, float(event.get("significance") or 0.5)))
+        salience = self.salience.score(event)
         episode = self.episodes.consolidate(
             [{"event_id": event_id, "actor": "ferro", "text": summary[:1600], "created_at": at}],
             goal=f"preserve lived experience in {domain}",
@@ -108,10 +111,15 @@ class MemoryLifeRuntime:
                 "prediction_error": event.get("prediction_error"),
                 "identity_relevance": event.get("identity_relevance"),
                 "emotional_intensity": event.get("emotional_intensity"),
+                "memory_salience": salience["salience"],
+                "consolidation_priority": salience["consolidation_priority"],
+                "decay_rate": salience["decay_rate"],
+                "recall_boost": salience["recall_boost"],
+                "neural_activation": salience["neural_activation"],
                 "causal_claim": False,
             },
             topics=[memory_topic, "virtualbrain-life"],
-            importance=min(0.94, max(0.5, significance)),
+            importance=min(0.98, max(0.5, significance, 0.45 + 0.5 * salience["consolidation_priority"])),
         )
         self._life_event_episode_ids[event_id] = episode.memory_id
         knowledge = self.knowledge.consolidate(
@@ -284,6 +292,7 @@ class MemoryLifeRuntime:
                 evidence_ref=evidence_ref,
                 failure_mode="" if success else (failure_mode or "verified_process_failure"),
                 recovery_step="" if success else recovery_step,
+                variant_steps=list(steps),
             )
         step_rows = [str(item).strip() for item in steps if str(item).strip()] or [action]
         verify_rows = [str(item).strip() for item in verification if str(item).strip()] or ["require verified outcome evidence"]

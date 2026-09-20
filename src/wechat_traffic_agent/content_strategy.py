@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .channel_evidence import ChannelEvidenceStore
 from .content_admission import _write_once
+from .memory_observation import MemoryLifeObservatory
 from .traffic_learning import TopicTrafficSignal
 
 SCHEMA = "website-content-strategy.v1"
@@ -66,12 +67,17 @@ class ContentStrategyBinding(BaseModel):
     decided_at: datetime
     profile: StrategyProfile
     opening_mode: Literal["reader_question_first", "evidence_first"] | None = None
-    selection_mode: Literal["TRAFFIC_HEURISTIC", "CONTEXT_HEURISTIC", "EXPLORE", "EXPLOIT", "VIRTUALBRAIN_BELIEF", "PREDICTIVE_EXPLORE", "PREDICTIVE_EXPLOIT"]
+    selection_mode: Literal["TRAFFIC_HEURISTIC", "CONTEXT_HEURISTIC", "EXPLORE", "EXPLOIT", "VIRTUALBRAIN_BELIEF", "MEMORY_PRIOR", "PREDICTIVE_EXPLORE", "PREDICTIVE_EXPLOIT"]
     decision_reason: str = Field(min_length=1, max_length=500)
     samples_by_profile: dict[str, int]
     mean_pageviews_24h_by_profile: dict[str, float | None]
     mind_mean_relative_reward_by_profile: dict[str, float | None] = Field(default_factory=dict)
     mind_strategy_evidence_refs: tuple[str, ...] = ()
+    memory_prior_score_by_profile: dict[str, float] = Field(default_factory=dict)
+    memory_prior_sample_count_by_profile: dict[str, int] = Field(default_factory=dict)
+    memory_prior_memory_ids: tuple[str, ...] = ()
+    memory_prior_use_id: str = ""
+    memory_prior_applied: bool = False
     prediction_expected_pageviews_24h_by_profile: dict[str, float] = Field(default_factory=dict)
     prediction_information_gain_by_profile: dict[str, float] = Field(default_factory=dict)
     prediction_evidence_refs: tuple[str, ...] = ()
@@ -135,6 +141,7 @@ def collect_mature_strategy_outcomes(
                 "topic": strategy["topic"],
                 "profile_name": profile["name"],
                 "strategy_id": strategy["strategy_id"],
+                "cycle": path.parent.name,
             }
     store = ChannelEvidenceStore(Path(state_root) / "content" / "channel_evidence")
     outcomes: list[dict[str, Any]] = []
@@ -164,6 +171,7 @@ def collect_mature_strategy_outcomes(
             "publication_id": row.publication_id,
             "topic": binding["topic"],
             "profile_name": binding["profile_name"],
+            "cycle": binding["cycle"],
             "pageviews_24h": float(row.value),
             "observed_at": row.observed_at.astimezone(timezone.utc).isoformat(),
             "evidence_refs": list(dict.fromkeys([*row.evidence_refs, binding["strategy_id"]])),
@@ -231,6 +239,12 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
     mind_counts = {profile.name: 0 for profile in PROFILES}
     mind_rewards = {profile.name: None for profile in PROFILES}
     mind_refs: tuple[str, ...] = ()
+    memory_prior_scores: dict[str, float] = {}
+    memory_prior_counts: dict[str, int] = {}
+    memory_prior_ids_by_profile: dict[str, tuple[str, ...]] = {}
+    memory_prior_ids: tuple[str, ...] = ()
+    memory_prior_use_id = ""
+    memory_prior_applied = False
     if mind_strategy_context is not None:
         if str(mind_strategy_context.get("topic") or "") != topic:
             raise ValueError("VirtualBrain strategy context topic mismatch")
@@ -245,6 +259,26 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
             str(ref).strip() for ref in (mind_strategy_context.get("evidence_refs") or ())
             if str(ref).strip()
         ))
+        raw_prior = mind_strategy_context.get("memory_prior")
+        if isinstance(raw_prior, Mapping):
+            raw_profiles = raw_prior.get("profiles") if isinstance(raw_prior.get("profiles"), Mapping) else {}
+            for candidate in PROFILES:
+                item = raw_profiles.get(candidate.name) if isinstance(raw_profiles, Mapping) else None
+                if not isinstance(item, Mapping):
+                    continue
+                memory_prior_scores[candidate.name] = max(0.0, min(1.0, float(item.get("score") or 0.0)))
+                memory_prior_counts[candidate.name] = max(0, int(item.get("sample_count") or 0))
+                memory_prior_ids_by_profile[candidate.name] = tuple(dict.fromkeys(
+                    str(mid).strip() for mid in (item.get("memory_ids") or ()) if str(mid).strip()
+                ))
+            memory_prior_ids = tuple(dict.fromkeys(
+                str(item).strip() for item in (raw_prior.get("memory_ids") or ()) if str(item).strip()
+            ))
+            memory_prior_use_id = str(raw_prior.get("memory_use_id") or "")
+    def prior_score(name: str) -> float | None:
+        if memory_prior_counts.get(name, 0) < MIN_SAMPLES:
+            return None
+        return memory_prior_scores.get(name)
     forecast_expected: dict[str, float] = {}
     forecast_information: dict[str, float] = {}
     forecast_utility: dict[str, float] = {}
@@ -297,9 +331,17 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
                     "through highest expected information gain"
                 )
             else:
-                profile = max(PROFILES, key=lambda item: (forecast_utility[item.name], tie(item)))
+                def predictive_value(item):
+                    score = float(forecast_utility[item.name])
+                    prior = prior_score(item.name)
+                    return score + (0.12 * (prior - 0.5) if prior is not None else 0.0)
+                profile = max(PROFILES, key=lambda item: (predictive_value(item), tie(item)))
+                memory_prior_applied = prior_score(profile.name) is not None
                 mode = "PREDICTIVE_EXPLOIT"
-                reason = "candidate forecasts were formed before action; choosing highest expected utility"
+                reason = (
+                    "candidate forecasts were formed before action; choosing highest expected utility"
+                    + (" with bounded lived-memory prior" if memory_prior_applied else "")
+                )
         else:
             mind_has_outcomes = any(mind_counts.values())
             mind_under = [candidate for candidate in PROFILES if mind_counts[candidate.name] < MIN_SAMPLES]
@@ -309,43 +351,65 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
                 and all(mind_rewards[candidate.name] is not None for candidate in PROFILES)
             )
             if mind_ready and seed % 100 >= EXPLORATION_PERCENT:
+                def belief_value(item):
+                    base = float(mind_rewards[item.name])
+                    prior = prior_score(item.name)
+                    return (0.8 * base + 0.2 * prior) if prior is not None else base
                 profile = max(
                     PROFILES,
-                    key=lambda item: (float(mind_rewards[item.name]), -PROFILES.index(item)),
+                    key=lambda item: (belief_value(item), -PROFILES.index(item)),
                 )
+                memory_prior_applied = prior_score(profile.name) is not None
                 mode = "VIRTUALBRAIN_BELIEF"
                 reason = (
                     "VirtualBrain audience-outcome belief has mature samples for every profile; "
                     "exploiting highest relative reward"
+                    + (" with bounded lived-memory prior" if memory_prior_applied else "")
                 )
             elif mind_ready:
                 profile = PROFILES[seed % len(PROFILES)]
                 mode = "EXPLORE"
                 reason = f"VirtualBrain belief is mature; retaining deterministic {EXPLORATION_PERCENT}% exploration"
-            elif heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
-                profile = heuristic
-                mode = "TRAFFIC_HEURISTIC"
-                reason = f"traffic signal {traffic_signal.exposure_status}; profile still under-sampled"
             else:
-                under = [candidate for candidate in PROFILES if counts[candidate.name] < MIN_SAMPLES]
-                if under:
-                    profile = under[seed % len(under)]
-                    mode = "EXPLORE"
-                    reason = f"{counts[profile.name]} mature 24h samples < {MIN_SAMPLES}"
+                prior_eligible = [
+                    candidate for candidate in PROFILES if prior_score(candidate.name) is not None
+                ]
+                if len(prior_eligible) >= 2 and seed % 100 >= EXPLORATION_PERCENT:
+                    profile = max(
+                        prior_eligible,
+                        key=lambda item: (float(prior_score(item.name)), -PROFILES.index(item)),
+                    )
+                    memory_prior_applied = True
+                    mode = "MEMORY_PRIOR"
+                    reason = (
+                        "repeated lived-memory outcomes provide a bounded strategy prior; "
+                        "using the highest prior score while VirtualBrain belief is still sparse"
+                    )
+                elif heuristic is not None and counts[heuristic.name] < MIN_SAMPLES:
+                    profile = heuristic
+                    mode = "TRAFFIC_HEURISTIC"
+                    reason = f"traffic signal {traffic_signal.exposure_status}; profile still under-sampled"
                 else:
-                    explore = seed % 100 < EXPLORATION_PERCENT
-                    if explore:
-                        profile = PROFILES[seed % len(PROFILES)]
+                    under = [candidate for candidate in PROFILES if counts[candidate.name] < MIN_SAMPLES]
+                    if under:
+                        profile = under[seed % len(under)]
                         mode = "EXPLORE"
-                        reason = f"deterministic {EXPLORATION_PERCENT}% exploration"
+                        reason = f"{counts[profile.name]} mature 24h samples < {MIN_SAMPLES}"
                     else:
-                        profile = max(PROFILES, key=lambda item: (means[item.name] or 0.0, -PROFILES.index(item)))
-                        mode = "EXPLOIT"
-                        reason = (
-                            "highest associated mean 24h pageviews; observational fallback because "
-                            "no mature VirtualBrain strategy belief is available"
-                        )
-    return ContentStrategyBinding(
+                        explore = seed % 100 < EXPLORATION_PERCENT
+                        if explore:
+                            profile = PROFILES[seed % len(PROFILES)]
+                            mode = "EXPLORE"
+                            reason = f"deterministic {EXPLORATION_PERCENT}% exploration"
+                        else:
+                            profile = max(PROFILES, key=lambda item: (means[item.name] or 0.0, -PROFILES.index(item)))
+                            mode = "EXPLOIT"
+                            reason = (
+                                "highest associated mean 24h pageviews; observational fallback because "
+                                "no mature VirtualBrain strategy belief is available"
+                            )
+    selected_memory_ids = memory_prior_ids_by_profile.get(profile.name, ()) if memory_prior_applied else ()
+    binding = ContentStrategyBinding(
         strategy_id=_strategy_id(topic=topic, profile=profile, opening_mode=opening_mode),
         cycle=cycle,
         topic=topic,
@@ -358,10 +422,31 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
         mean_pageviews_24h_by_profile=means,
         mind_mean_relative_reward_by_profile=mind_rewards if any(mind_counts.values()) else {},
         mind_strategy_evidence_refs=mind_refs,
+        memory_prior_score_by_profile=memory_prior_scores,
+        memory_prior_sample_count_by_profile=memory_prior_counts,
+        memory_prior_memory_ids=selected_memory_ids,
+        memory_prior_use_id=memory_prior_use_id,
+        memory_prior_applied=memory_prior_applied,
         prediction_expected_pageviews_24h_by_profile=forecast_expected,
         prediction_information_gain_by_profile=forecast_information,
         prediction_evidence_refs=tuple(dict.fromkeys(forecast_refs)),
     )
+    if memory_prior_applied and selected_memory_ids:
+        MemoryLifeObservatory(Path(state_root)).record_decision_use(
+            query=f"select content strategy for {topic}",
+            retrieved_memory_ids=memory_prior_ids,
+            used_memory_ids=selected_memory_ids,
+            decision_ref=binding.strategy_id,
+            evidence_refs=binding.mind_strategy_evidence_refs,
+            metadata={
+                "cycle": cycle,
+                "topic": topic,
+                "profile_name": binding.profile.name,
+                "selection_mode": binding.selection_mode,
+                "memory_prior_use_id": memory_prior_use_id,
+            },
+        )
+    return binding
 
 
 def bind_content_strategy(path: Path, *, state_root: Path, account: str, cycle: str,

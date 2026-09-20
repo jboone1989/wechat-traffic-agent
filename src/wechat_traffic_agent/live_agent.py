@@ -1262,6 +1262,7 @@ class LiveAgentService:
                 "proposal": proposal,
                 "memory_saved": saved_memories,
                 "memory_runtime": memory_runtime,
+                "memory_life_metrics": operator_memory.observatory.metrics(),
                 "tool_receipts": tool_receipts,
                 "memories": operator_memory.all(limit=80),
                 "history": operator_chat.history(limit=400),
@@ -1385,6 +1386,7 @@ class LiveAgentService:
                 "history": operator_chat.history(limit=400),
                 "proposals": operator_chat.proposals(limit=40),
                 "memories": operator_memory.all(limit=80),
+                "memory_life_metrics": operator_memory.observatory.metrics(),
             }, headers={"Cache-Control": "no-store"})
 
         async def operator_chat_post(request: Request):

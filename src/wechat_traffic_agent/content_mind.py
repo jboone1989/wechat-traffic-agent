@@ -10,6 +10,7 @@ from statistics import median
 from typing import Any, Iterable, Mapping
 
 from .memory_life import MemoryLifeRuntime
+from .memory_prior import MemoryDecisionPrior
 
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
@@ -35,6 +36,7 @@ class ContentMind:
         self.subject_id = subject_id
         self.root.mkdir(parents=True, exist_ok=True)
         self.memory_life = MemoryLifeRuntime(self.state_root)
+        self.memory_prior = MemoryDecisionPrior(self.state_root, store=self.memory_life.store)
         self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
@@ -589,6 +591,23 @@ class ContentMind:
                 "publication_id": str(row.get("publication_id") or ""),
                 "evidence_refs": refs,
             }
+            cycle = str(row.get("cycle") or "")
+            stored["cycle"] = cycle
+            strategy_ref = next((ref for ref in refs if str(ref).startswith("strategy:")), "")
+            memory_use = self.memory_prior.observatory.decision_use(strategy_ref, cycle=cycle)
+            if memory_use is not None:
+                helped = None if reward == 0.5 else bool(reward > 0.5)
+                settlement = self.memory_prior.observatory.settle(
+                    str(memory_use["memory_use_id"]),
+                    outcome_ref=outcome_id,
+                    outcome_success=bool(reward >= 0.5),
+                    memory_helped=helped,
+                    evidence_ref=refs[0],
+                    detail=(
+                        f"mature audience relative_reward={reward:.6f}; observational association only"
+                    ),
+                )
+                stored["memory_use_settlement_id"] = str(settlement["memory_use_id"])
             self._strategy_outcomes[outcome_id] = stored
             applied.append(deepcopy(stored))
         if len(self._strategy_outcomes) > MAX_STRATEGY_OUTCOMES:
@@ -645,13 +664,18 @@ class ContentMind:
                 "mean_signed_error": float(row["mean_signed_error"]),
                 "mean_reliability": float(row["mean_reliability"]),
             }
+        memory_prior = self.memory_prior.strategy_prior(topic=topic)
         return {
             "topic": topic, "outcome_count": sum(counts.values()),
             "samples_by_profile": counts,
             "mean_relative_reward_by_profile": mean_rewards,
             "mean_pageviews_24h_by_profile": mean_pageviews,
             "prediction_calibration_by_profile": prediction_calibration_by_profile,
-            "evidence_refs": list(dict.fromkeys(str(ref) for ref in refs if str(ref).strip())),
+            "memory_prior": memory_prior,
+            "evidence_refs": list(dict.fromkeys([
+                *(str(ref) for ref in refs if str(ref).strip()),
+                *(str(ref) for ref in memory_prior.get("evidence_refs") or [] if str(ref).strip()),
+            ])),
             "minimum_profile_samples": MIN_STRATEGY_PROFILE_SAMPLES,
             "causal_claim": False,
         }
