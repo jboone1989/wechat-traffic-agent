@@ -476,8 +476,16 @@ class LongitudinalIndividuality:
         snapshots = list(self.state.get("snapshots") or ())
         last = snapshots[-1] if snapshots else None
         last_at = _parse_time(last.get("observed_at")) if isinstance(last, Mapping) else None
+        current_cortex_key = _cortex_key(cortex)
+        cortex_changed = bool(
+            isinstance(last, Mapping)
+            and last.get("cortex_key")
+            and current_cortex_key
+            and last.get("cortex_key") != current_cortex_key
+        )
         if (
             not force
+            and not cortex_changed
             and last_at is not None
             and (now - last_at).total_seconds() < SNAPSHOT_INTERVAL_HOURS * 3600.0
         ):
