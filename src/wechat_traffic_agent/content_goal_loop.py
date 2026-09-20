@@ -26,6 +26,7 @@ from .content_strategy import bind_content_strategy, collect_mature_strategy_out
 from .content_action_prediction import bind_action_prediction, forecast_strategy_candidates
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
+from .memory_life import MemoryLifeRuntime
 from .models import TopicSignal
 from .public_activity import emit_public_activity
 from .prospective_predictions import (
@@ -394,6 +395,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.world_feed = world_feed
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
         self.predictions = ProspectivePredictionLedger(self.state)
+        self.memory_life = MemoryLifeRuntime(self.state)
         if explorer is None:
             web_searcher = None
             x_searcher = None
@@ -1805,4 +1807,26 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             result['status'] = 'PUBLISHED'
             self._activity(cycle, 'LEARN', 'Published — and I recorded the result',
                            f"{artifact.title} is public; the cycle is complete.", status='completed')
+        memory_refs = list(dict.fromkeys([
+            f'cycle:{cycle}', 'evidence:' + selected['evidence_id'], *selected['evidence_refs'],
+            'draft-sha256:' + experience['draft_sha256'],
+        ]))
+        try:
+            result['memory_life'] = self.memory_life.observe_process_outcome(
+                process_id='content-cycle:' + cycle,
+                topic=selection.topic,
+                action='content-create-verify-publish',
+                success=bool(passes),
+                outcome=str(result.get('status') or 'UNKNOWN'),
+                evidence_refs=memory_refs,
+                capabilities=['content.generate', 'content.verify', *(['content.publish'] if self.publisher else [])],
+                steps=['select evidence', 'draft content', 'run evidence and safety checks', 'publish only after checks pass'],
+                verification=['automated_checks_passed=true', 'evidence floor PASS', 'persist cycle evidence refs'],
+                failure_mode='' if passes else str(floor_check.status or 'content_checks_failed'),
+                recovery_step='' if passes else 'repair missing evidence or failed checks before publishing',
+                expected_cost={'model_calls': runtime.index + len(list((folder / 'explorer_calls').glob('*.json')))},
+                observed_at=now.isoformat(),
+            )
+        except Exception as exc:
+            result['memory_life'] = {'status': 'ERROR', 'error_type': type(exc).__name__}
         return result

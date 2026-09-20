@@ -105,9 +105,11 @@ jobs:
           tests/test_memory_consolidation.py
           tests/test_memory_consolidation_revision.py
           tests/test_memory_runtime.py
+          tests/test_memory_life.py
           tests/test_memory_self.py
           tests/test_memory_continuity.py
           tests/test_memory_evolution.py
+          tests/test_memory_evolution_auto.py
           tests/test_operator_memory.py
           tests/test_operator_memory_admission.py
       - name: Compile goal/mind boundary
