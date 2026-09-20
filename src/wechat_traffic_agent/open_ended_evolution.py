@@ -249,6 +249,13 @@ class OpenEndedEvolution:
                 "llm_used_for_cycle_selection": False,
             }
         decision = str(evaluation.get("decision") or "CONTINUE_EXPERIMENT")
+        ferro_born_world = bool(
+            world_id.startswith("WORLD_")
+            and world.get("seed")
+            and world.get("sensor_channels")
+            and world.get("actions")
+        )
+        cycle["ferro_born_world_verified"] = ferro_born_world
         cycle["reality_evaluation"] = dict(evaluation)
         cycle["reality_decision"] = decision
         cycle["real_world_effect"] = evaluation.get("estimated_real_world_effect")
@@ -280,7 +287,12 @@ class OpenEndedEvolution:
             evidence.get("world_linked_organ_count") or 0
         )
         completion_kind = evidence.get("completion_kind")
-        if (
+        if not ferro_born_world:
+            cycle["status"] = "INELIGIBLE_NON_FERRO_WORLD"
+            cycle["completion_kind"] = None
+            cycle["completed_at"] = None
+            cycle["emergence_claim"] = None
+        elif (
             decision == "ADOPT"
             and bool(evaluation.get("causal_claim_ready"))
             and completion_kind
@@ -457,6 +469,7 @@ class OpenEndedEvolution:
             "next_consolidation": self.next_consolidation(),
             "max_consolidation_sessions": MAX_CONSOLIDATION_SESSIONS,
             "completion_requires_real_world_adoption": True,
+            "completion_requires_ferro_born_world": True,
             "completion_requires_world_linked_stable_circuit_or_organ": True,
             "single_neuron_is_not_called_a_new_capability": True,
             "llm_used_for_cycle_selection": False,
