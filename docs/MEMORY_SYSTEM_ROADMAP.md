@@ -203,3 +203,14 @@ The v1 implementation now covers M0 through M11 in order. The architecture contr
 - M11: `memory_evolution.py` evidence-backed signals, versioned recall-policy experiments, protected benchmark categories and promotion gates.
 
 The CI contract runs the permanent Memory System regression set on changes to memory code, tests, the architecture ADR, roadmap, or the owner chat integration.
+
+## Life-closure acceptance — 2026-09-20
+
+The v1 architecture is now bound to four long-running acceptance loops rather than only module-level capability:
+
+- **Experience → Consolidation → Knowledge:** real process outcomes create distinct evidence-linked episodes; repeated topic episodes create revisioned daily and long-term semantic patterns. Historical canonical content-cycle artifacts can be idempotently projected with `scripts/bootstrap_memory_life.py`.
+- **Action → Outcome → Procedure:** verified process outcomes create/revise one active procedure with success/failure counts, failure modes, recovery evidence, and verified capability relationships.
+- **Recall failure → Experiment → Memory evolution:** authenticated owner recall-failure/contradiction feedback emits evidence-backed signals and automatically runs a protected benchmark trial. Policy promotion remains gated on measured improvement with no protected-category regression.
+- **Node A loss → Node B restore:** hard acceptance stopped the primary Content Agent, transferred a canonical memory bundle over the already pinned SSH survival-host channel without exporting the continuity secret, independently verified the exported `state_hash` on the Vultr replacement host, rebuilt recall indexes, and successfully recalled both the existing “青铜钥匙” semantic memory and the verified `web.fetch` procedural memory before the primary node was restarted.
+
+The hard-test canonical digest was `e02c71d7a8b93439e68b372132b6e103d73fe7c33566ba5b57833cb471efb06d` with 11 memories / 12 memory events at export time. This digest is acceptance evidence for that checkpoint, not a permanent current-state identifier.

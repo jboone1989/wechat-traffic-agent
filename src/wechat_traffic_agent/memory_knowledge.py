@@ -82,10 +82,11 @@ class ExperienceKnowledgeConsolidator:
             if len(cluster) < max(2, int(minimum_support)):
                 continue
             evidence = [item["episode_id"] for item in cluster]
-            common = set(cluster[0]["terms"])
-            for item in cluster[1:]:
-                common &= item["terms"]
-            signature_terms = sorted(common or set().union(*(item["terms"] for item in cluster)))[:12]
+            # Cluster identity must remain stable as later evidence arrives. Using the
+            # evolving intersection/union changes claim_key over time and can turn a
+            # legitimate revision into an unrelated duplicate. The first observation
+            # anchors the cluster; later evidence revises the same claim with provenance.
+            signature_terms = sorted(cluster[0]["terms"])[:12]
             signature = hashlib.sha256("|".join(signature_terms).encode("utf-8")).hexdigest()[:20]
             claim_key = f"experience-knowledge:{topic}:{signature}"
             representative = max((item["lesson"] for item in cluster), key=len)
