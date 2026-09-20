@@ -129,15 +129,24 @@ def seed_n26_to_n34_and_n36(root: Path):
         "developmental_architecture_search": {
             "selected_variant": "ADAPTIVE_FAST",
             "trials": architecture_trials,
+            "selection_history": [{
+                "selected_variant": "ADAPTIVE_FAST",
+                "selected_at_trial_seq": 8,
+                "effect_adaptive_minus_conservative": 0.12,
+            }],
         },
     })
     handoff_trials = []
     for index in range(8):
+        arm = "NEURAL_ORGAN" if index % 2 == 0 else "PYTHON_BASELINE"
         handoff_trials.append({
             "decision_id": f"organ-handoff:{index}",
             "phase": "EVALUATING",
             "status": "SETTLED",
-            "arm": "NEURAL_ORGAN" if index % 2 == 0 else "PYTHON_BASELINE",
+            "arm": arm,
+            "outcome": {
+                "utility": 0.58 if arm == "NEURAL_ORGAN" else 0.55,
+            },
         })
     write(root, "neural_organ_handoff.json", {
         "schema_version": "ferro-neural-organ-handoff.v1",
