@@ -308,9 +308,16 @@ class NeuralOrganHandoff:
             None,
         )
         if organ is None and not locked_organ_id and organs:
-            organ = organs[0]
-            self.state["candidate_organ_id"] = str(organ["organ_id"])
-            locked_organ_id = str(organ["organ_id"])
+            organ = next(
+                (
+                    row for row in organs
+                    if float(row.get("activation") or 0.0) > 0.0
+                ),
+                None,
+            )
+            if organ is not None:
+                self.state["candidate_organ_id"] = str(organ["organ_id"])
+                locked_organ_id = str(organ["organ_id"])
         if organ is None or float(organ.get("activation") or 0.0) <= 0.0:
             if phase == "NEURAL_AUTHORITY":
                 silent = int(self.state.get("silent_fallbacks") or 0) + 1
