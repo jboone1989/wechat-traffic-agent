@@ -157,6 +157,23 @@ class FerroDreamEngine:
             "origin": "MULTI_DREAM_NEURAL_CONSOLIDATION",
             "llm_used_for_consolidation": False,
         })
+        if status == "STABLE" and not isinstance(row.get("goal_candidate"), Mapping):
+            row["goal_candidate"] = {
+                "candidate_id": (
+                    "dream-goal-candidate:"
+                    + sha256(attractor_id.encode()).hexdigest()[:20]
+                ),
+                "born_at": formed_at,
+                "attractor_id": attractor_id,
+                "channels": list(row["channels"]),
+                "recurrence_count_at_birth": recurrence,
+                "consolidation_epoch_count_at_birth": epoch_count,
+                "stability_score_at_birth": round(stability, 6),
+                "source_dreams": source_dreams[-8:],
+                "status": "UNINTERPRETED",
+                "origin": "STABLE_DREAM_ATTRACTOR",
+                "llm_used_for_birth": False,
+            }
         attractors[attractor_id] = row
         if len(attractors) > self.MAX_ATTRACTORS:
             ordered = sorted(
@@ -222,6 +239,77 @@ class FerroDreamEngine:
             "authority": "NEURAL_DREAM_CONSOLIDATION",
             "llm_used": False,
         }
+
+    def latest_goal_candidate(self) -> dict[str, Any] | None:
+        self.state = self._load()
+        candidates: list[dict[str, Any]] = []
+        for row in (self.state.get("attractors") or {}).values():
+            if not isinstance(row, Mapping) or row.get("status") != "STABLE":
+                continue
+            candidate = row.get("goal_candidate")
+            if not isinstance(candidate, Mapping) or candidate.get("status") != "UNINTERPRETED":
+                continue
+            candidates.append({
+                **dict(candidate),
+                "attractor": {
+                    "attractor_id": row.get("attractor_id"),
+                    "channels": list(row.get("channels") or ()),
+                    "recurrence_count": int(row.get("recurrence_count") or 0),
+                    "consolidation_epoch_count": int(row.get("consolidation_epoch_count") or 0),
+                    "stability_score": float(row.get("stability_score") or 0.0),
+                    "source_dreams": list(row.get("source_dreams") or ())[-8:],
+                },
+            })
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda row: (
+                float((row.get("attractor") or {}).get("stability_score") or 0.0),
+                int((row.get("attractor") or {}).get("consolidation_epoch_count") or 0),
+                str(row.get("born_at") or ""),
+            ),
+            reverse=True,
+        )
+        return candidates[0]
+
+    def mark_goal_candidate(
+        self,
+        candidate_id: str,
+        *,
+        status: str,
+        now: datetime | None = None,
+        goal_id: str | None = None,
+        hypothesis: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        self.state = self._load()
+        for attractor_id, raw in (self.state.get("attractors") or {}).items():
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            candidate = row.get("goal_candidate")
+            if not isinstance(candidate, Mapping) or str(candidate.get("candidate_id")) != str(candidate_id):
+                continue
+            updated = dict(candidate)
+            updated["status"] = str(status)
+            updated["evaluated_at"] = now.isoformat()
+            if goal_id:
+                updated["goal_id"] = str(goal_id)
+            if hypothesis:
+                updated["hypothesis"] = str(hypothesis)[:1000]
+            if description:
+                updated["description"] = str(description)[:1000]
+            updated["evaluated_recurrence_count"] = int(row.get("recurrence_count") or 0)
+            updated["evaluated_consolidation_epoch_count"] = int(
+                row.get("consolidation_epoch_count") or 0
+            )
+            row["goal_candidate"] = updated
+            self.state.setdefault("attractors", {})[str(attractor_id)] = row
+            self.state["updated_at"] = now.isoformat()
+            self._write()
+            return dict(updated)
+        raise KeyError(candidate_id)
 
     @staticmethod
     def _trace_currents(trace: Mapping[str, Any], index: int) -> dict[str, float]:
@@ -495,6 +583,15 @@ class FerroDreamEngine:
             reverse=True,
         )
         stable = [row for row in attractors if row.get("status") == "STABLE"]
+        goal_candidates = [
+            dict(row["goal_candidate"])
+            for row in stable
+            if isinstance(row.get("goal_candidate"), Mapping)
+        ]
+        uninterpreted = [
+            row for row in goal_candidates
+            if row.get("status") == "UNINTERPRETED"
+        ]
         return {
             "schema_version": self.SCHEMA_VERSION,
             "updated_at": self.state.get("updated_at"),
@@ -506,6 +603,9 @@ class FerroDreamEngine:
             "stable_attractor_count": len(stable),
             "stable_attractors": stable[:8],
             "top_attractors": attractors[:12],
+            "goal_candidate_count": len(goal_candidates),
+            "uninterpreted_goal_candidate_count": len(uninterpreted),
+            "latest_goal_candidate": self.latest_goal_candidate(),
             "last_waking_influence_at": self.state.get("last_waking_influence_at"),
             "llm_used_for_replay": False,
             "llm_used_for_consolidation": False,

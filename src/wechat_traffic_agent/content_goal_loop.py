@@ -612,7 +612,145 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     dreams_payload = json.loads(dreams_path.read_text(encoding='utf-8'))
                 except (OSError, ValueError, json.JSONDecodeError):
                     dreams_payload = {}
-                preconcept = next((
+                # N31: a single dream may seed an N9 inquiry, but only a
+                # multi-epoch STABLE attractor may birth a stronger endogenous
+                # goal candidate. The neural system births the candidate; the
+                # language layer only performs reality-checking and wording.
+                stable_candidate = None
+                stable_attractor = None
+                for attractor in (dreams_payload.get('attractors') or {}).values():
+                    if not isinstance(attractor, dict) or attractor.get('status') != 'STABLE':
+                        continue
+                    candidate = attractor.get('goal_candidate')
+                    if not isinstance(candidate, dict) or candidate.get('status') != 'UNINTERPRETED':
+                        continue
+                    if int(attractor.get('consolidation_epoch_count') or 0) < 3:
+                        continue
+                    pair = (candidate, attractor)
+                    if stable_candidate is None or (
+                        float(attractor.get('stability_score') or 0.0),
+                        int(attractor.get('recurrence_count') or 0),
+                    ) > (
+                        float(stable_attractor.get('stability_score') or 0.0),
+                        int(stable_attractor.get('recurrence_count') or 0),
+                    ):
+                        stable_candidate, stable_attractor = pair
+
+                stable_candidate_handled = stable_candidate is not None
+                if stable_candidate is not None and stable_attractor is not None:
+                    candidate_id = str(stable_candidate.get('candidate_id') or '')
+                    attractor_id = str(stable_attractor.get('attractor_id') or '')
+                    source_dreams = [
+                        str(value) for value in stable_attractor.get('source_dreams') or ()
+                        if value
+                    ][-8:]
+                    supporting_preconcepts = [
+                        row for row in (dreams_payload.get('preconcepts') or [])
+                        if isinstance(row, dict)
+                        and (
+                            str(row.get('attractor_id') or '') == attractor_id
+                            or str(row.get('source_dream') or '') in set(source_dreams)
+                        )
+                    ][-8:]
+                    birth_path = folder / 'dream_goal_birth.json'
+                    if birth_path.exists():
+                        birth_payload = json.loads(birth_path.read_text(encoding='utf-8'))
+                        dream_goal = DreamInsightDecision.model_validate(birth_payload['decision'])
+                    else:
+                        birth_runtime = ReceiptRuntime(self.runtime, folder / 'dream_goal_birth_calls')
+                        task = (
+                            'STABLE_DREAM_ATTRACTOR_INTERPRETATION: You are the rational Ego layer. '
+                            'The neural system has already birthed this goal candidate after recurrent '
+                            'dream consolidation across multiple sleep epochs. You did NOT originate the '
+                            'desire. Reality-check it and, only if useful, translate it into one bounded, '
+                            'falsifiable evidence-seeking research goal. topic must be a lowercase '
+                            'kebab-case slug. Neural channel names are internal signals, not facts about '
+                            'the external world. Do not claim subjective consciousness.\n'
+                            + json.dumps({
+                                'goal_candidate': stable_candidate,
+                                'attractor': {
+                                    'attractor_id': attractor_id,
+                                    'channels': stable_attractor.get('channels'),
+                                    'recurrence_count': stable_attractor.get('recurrence_count'),
+                                    'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
+                                    'stability_score': stable_attractor.get('stability_score'),
+                                    'source_dreams': source_dreams,
+                                },
+                                'supporting_preconcepts': supporting_preconcepts,
+                                'available_topics': sorted(snapshot['topics'])[:80],
+                                'recent_articles': [
+                                    {
+                                        'title': row['artifact']['title'],
+                                        'summary': row['artifact']['summary'][:220],
+                                    }
+                                    for row in snapshot['articles'][-10:]
+                                ],
+                            }, ensure_ascii=False)
+                        )
+                        def validate_dream_goal(value):
+                            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
+                                raise ValueError('dream-born goal topic must be lowercase kebab-case')
+                            return value
+                        dream_goal = await _structured(
+                            birth_runtime, task, DreamInsightDecision, validate=validate_dream_goal
+                        )
+                        _put(birth_path, {
+                            'schema_version': 'ferro-dream-goal-birth.v1',
+                            'candidate_id': candidate_id,
+                            'attractor_id': attractor_id,
+                            'source_dreams': source_dreams,
+                            'decision': dream_goal.model_dump(mode='json'),
+                            'authority': 'EGO_INTERPRETATION_OF_STABLE_NEURAL_ATTRACTOR',
+                            'origin': 'STABLE_DREAM_ATTRACTOR',
+                        })
+                    goal_id = 'dream-attractor:' + (attractor_id or candidate_id or 'unknown')
+                    try:
+                        from .neural_dreaming import FerroDreamEngine
+                        FerroDreamEngine(self.state, substrate=None).mark_goal_candidate(
+                            candidate_id,
+                            status=(
+                                'ACTIVATED'
+                                if dream_goal.should_investigate
+                                else 'DECLINED_BY_EGO_REALITY_CHECK'
+                            ),
+                            goal_id=goal_id if dream_goal.should_investigate else None,
+                            hypothesis=dream_goal.hypothesis,
+                            description=dream_goal.question,
+                            now=now,
+                        )
+                    except (KeyError, OSError, ValueError):
+                        pass
+                    if dream_goal.should_investigate:
+                        mind_plan = {
+                            **mind_plan,
+                            'endogenous_goal': mind_plan.get('goal'),
+                            'goal': {
+                                'goal_id': goal_id,
+                                'origin': 'DREAM_CONSOLIDATION',
+                                'description': dream_goal.question,
+                                'confidence': dream_goal.confidence,
+                                'expected_value': max(
+                                    0.35,
+                                    dream_goal.confidence
+                                    * float(stable_attractor.get('stability_score') or 0.0),
+                                ),
+                                'interest_refs': [dream_goal.topic],
+                                'inquiry_refs': [candidate_id, attractor_id],
+                                'value_refs': source_dreams,
+                            },
+                            'required_topic': dream_goal.topic,
+                            'dream_goal_candidate': stable_candidate,
+                            'dream_attractor': {
+                                'attractor_id': attractor_id,
+                                'channels': stable_attractor.get('channels'),
+                                'recurrence_count': stable_attractor.get('recurrence_count'),
+                                'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
+                                'stability_score': stable_attractor.get('stability_score'),
+                            },
+                            'dream_goal_birth': dream_goal.model_dump(mode='json'),
+                        }
+
+                preconcept = None if stable_candidate_handled else next((
                     row for row in reversed(dreams_payload.get('preconcepts') or [])
                     if isinstance(row, dict)
                     and not bool(row.get('verbalized'))
