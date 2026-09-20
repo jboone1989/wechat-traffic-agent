@@ -140,7 +140,7 @@ class FerroDreamEngine:
         motor = _read_json(self.state_root / "application" / "neural_motor.json")
         world_rows = [
             self._world_trace(row)
-            for row in (motor.get("recent_decisions") or [])
+            for row in (motor.get("decisions") or motor.get("recent_decisions") or [])
             if isinstance(row, Mapping)
             and isinstance(row.get("outcome"), Mapping)
             and str(row.get("status") or "") == "SETTLED"
