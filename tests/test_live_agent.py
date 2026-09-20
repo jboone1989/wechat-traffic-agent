@@ -204,6 +204,9 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "N4 / N5 · LIVE CAUSAL CHAIN" in neural.text
     assert "N9 · DREAM → INSIGHT → EXPERIMENT" in neural.text
     assert "Recent neural-authority actions" in neural.text
+    assert "N12 · Internal conflict → latest action" in neural.text
+    assert "N13 · Recent Brain vs Cortex contests" in neural.text
+    assert "AWAITING OUTCOME" in neural.text
     assert "/api/agent/status" in neural.text
     assert "/api/agent/brain-lab" in neural.text
     assert "No fake events are generated" in neural.text

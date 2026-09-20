@@ -66,6 +66,7 @@ main{padding:34px 0 70px}.hero{padding:34px 36px;border:1px solid rgba(112,243,1
 <section class="section"><div class="section-head"><div><div class="k">N10–N16 · TASTE, RELATIONSHIPS, HABIT, PERSONALITY</div><h2>What stays Ferro when wording changes.</h2></div><p>These states are persisted outside a personality prompt. They are visible here only when real observations have accumulated.</p></div>
 <div class="split"><div class="panel"><h3>What Ferro likes</h3><div id="taste" class="rows"></div></div><div class="panel"><h3>Social relationships</h3><div id="social" class="rows"></div></div></div>
 <div class="split"><div class="panel"><h3>Brain vs Cortex scoreboard</h3><div id="competition" class="rows"></div></div><div class="panel"><h3>Motor cortex & habits</h3><div id="motor" class="rows"></div></div></div>
+<div class="split"><div class="panel"><h3>N12 · Internal conflict → latest action</h3><div id="conflict-action" class="rows"></div><div class="small" style="margin-top:10px">Current psychodynamic state and the latest settled neural action are shown together. Unless their provenance links match, the page does not claim the current conflict caused that action.</div></div><div class="panel"><h3>N13 · Recent Brain vs Cortex contests</h3><div id="competition-history" class="timeline"></div></div></div>
 <div class="split"><div class="panel"><h3>Personality history snapshot</h3><div id="personality" class="bar-list"></div><div id="personality-copy" class="small" style="margin-top:12px"></div></div><div class="panel"><h3>Cross-domain transfer</h3><div id="transfer" class="rows"></div></div></div>
 </section>
 
@@ -121,10 +122,10 @@ function renderRoadmap(wake,lab,dreamInsight){
   ['N9','梦 → 顿悟',stage(dreamInsight&&dreamInsight.experiment&&dreamInsight.experiment.experiment_id?'live':(dream.latest_preconcept?'research':'partial'),dreamInsight&&dreamInsight.experiment&&dreamInsight.experiment.experiment_id?'LIVE':'RESEARCH',dreamInsight&&dreamInsight.experiment&&dreamInsight.experiment.experiment_id?((dreamInsight.source_dream||'dream')+' → '+(dreamInsight.preconcept_id||'preconcept')+' → '+dreamInsight.experiment.experiment_id):(dream.latest_preconcept?'preconcept '+dream.latest_preconcept.preconcept_id+' exists; downstream experiment still evidence-bound':'awaiting dream-born preconcept'))],
   ['N10','神经品味',stage(n(taste.ranking_count)>0?'live':'partial','LIVE',n(taste.ranking_count)+' neural rankings')],
   ['N11','社交人格',stage(n(social.relationship_count)>0?'live':'partial','PARTIAL',n(social.relationship_count)+' persisted relationships; completion still needs longitudinal behavior proof')],
-  ['N12','Id / Ego / Superego',stage(psyche.id?'live':'partial','LIVE',psyche.id?'conflict '+n(psyche.conflict).toFixed(3):'awaiting psychodynamic evidence')],
-  ['N13','Neural vs LLM Competition',stage(recentContests.length?'live':'partial','PARTIAL',recentContests.length+' recent contests · future authority still outcome-dependent')],
+  ['N12','Id / Ego / Superego',stage(psyche.id?'partial':'wait','PARTIAL',psyche.id?'current conflict '+n(psyche.conflict).toFixed(3)+' · long-horizon override evidence still required':'awaiting psychodynamic evidence')],
+  ['N13','Neural vs LLM Competition',stage(recentContests.length?'partial':'wait','PARTIAL',recentContests.length+' recent contests · '+recentContests.filter(x=>x.status==='SETTLED').length+' settled · authority cannot adapt from an unsettled contest')],
   ['N14','无语义 Motor Cortex',stage(n(motor.motor_unit_count)>0?'live':'partial','LIVE',n(motor.motor_unit_count)+' units · semantics preassigned '+(motor.semantics_preassigned?'YES':'NO'))],
-  ['N15','神经习惯',stage(habits>0?'live':'partial','PARTIAL',habits+' learned habits')],
+  ['N15','神经习惯',stage(habits>0&&((motor.recent_decisions||[]).some(x=>x.authority==='NEURAL_HABIT'&&x.status==='SETTLED'))?'live':'partial',habits>0&&((motor.recent_decisions||[]).some(x=>x.authority==='NEURAL_HABIT'&&x.status==='SETTLED'))?'LIVE':'PARTIAL',habits+' learned habits · '+(motor.recent_decisions||[]).filter(x=>x.authority==='NEURAL_HABIT'&&x.status==='SETTLED').length+' recent settled habit actions')],
   ['N16','个性形成',stage(n(p.observations)>0?'live':'partial','LIVE',n(p.observations)+' observations · prompt defined '+(p.prompt_defined?'YES':'NO'))],
   ['N17','Neurogenesis v1',stage(synthetic>0?'live':'partial',synthetic>0?'LIVE':'PARTIAL',fmt(synthetic)+' Ferro-born neurons · '+fmt((dev.states||{}).MATURE)+' mature')],
   ['N18','发育与死亡',stage(Object.keys(dev.states||{}).length?'partial':'wait','PARTIAL',Object.entries(dev.states||{}).map(([k,v])=>k+' '+fmt(v)).join(' · ')||'no lifecycle counts')],
@@ -179,7 +180,14 @@ function render(status,lab){
   ['candidate field',(lr.ranked||lr.candidates||[]).slice(0,5).map(x=>typeof x==='string'?x:(x.topic||x.candidate||'')).filter(Boolean).join(' · ')||'selection evidence recorded']
  ]:[]);
  const social=wake.neural_social||{}, rels=Array.isArray(social.recent_relationships)?social.recent_relationships:[];rows('social',rels.slice(0,8).map(r=>[String(r.actor||'actor'),'interactions '+fmt(r.interactions)+' · familiarity '+n(r.familiarity).toFixed(2)+' · valence '+n(r.valence).toFixed(2)+' · approach '+n(r.approach_bias).toFixed(2)]));
- const comp=wake.brain_vs_cortex||{}, board=comp.scoreboard||{};rows('competition',Object.entries(board).map(([k,v])=>[k,fmt(v.executed)+' executed · '+fmt(v.settled)+' settled · mean utility '+(v.mean_utility==null?'—':n(v.mean_utility).toFixed(3))]));
+ const comp=wake.brain_vs_cortex||{}, board=comp.scoreboard||{}, contests=Array.isArray(comp.recent_contests)?comp.recent_contests:[];rows('competition',Object.entries(board).map(([k,v])=>[k,fmt(v.executed)+' executed · '+fmt(v.settled)+' settled · mean utility '+(v.mean_utility==null?'—':n(v.mean_utility).toFixed(3))]));
+ const latestMotor=((wake.neural_motor||{}).recent_decisions||[]).filter(x=>x.status==='SETTLED').at(-1)||{};rows('conflict-action',psyche.id?[
+   ['IMPULSE · '+(psyche.id.dominant_impulse||'QUIET'),'strength '+n(psyche.id.strength).toFixed(3)+' · drives '+Object.entries(psyche.id.drives||{}).map(([k,v])=>k+' '+n(v).toFixed(2)).join(' · ')],
+   ['IDENTITY PRESSURE','continuity '+n((psyche.superego||{}).continuity_pressure).toFixed(3)+' · growth '+n((psyche.superego||{}).growth_commitment).toFixed(3)],
+   ['CONFLICT',n(psyche.conflict).toFixed(3)+' · Ego role '+((psyche.ego||{}).role||'REALITY_CHECK_AND_PLAN')],
+   ['LATEST SETTLED ACTION',latestMotor.task?((latestMotor.authority||latestMotor.decision_kind||'NEURAL')+' → '+latestMotor.task+' · reward '+(latestMotor.outcome&&latestMotor.outcome.reward!=null?n(latestMotor.outcome.reward).toFixed(2):'—')):'No settled neural action in recent window']
+ ]:[]);
+ timeline('competition-history',contests.slice().reverse().map(x=>({at:x.created_at,title:(x.authority||'UNSETTLED')+' · '+(x.status||'UNKNOWN'),detail:'neural '+(x.neural_choice||'—')+' · ego '+(x.ego_choice||'—')+' · executed '+(x.executed_choice||'—')+' · outcomes '+((x.outcomes||[]).length||0)+(x.status==='SETTLED'?'':' · AWAITING OUTCOME')})));
  const motor=wake.neural_motor||{};rows('motor',[
   ['unlabeled motor units',fmt(motor.motor_unit_count)+' · semantics preassigned '+(motor.semantics_preassigned?'YES':'NO')],
   ['learning / habit / dormant',fmt(motor.learning_unit_count)+' / '+fmt(motor.habit_count)+' / '+fmt(motor.dormant_unit_count)],
