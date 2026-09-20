@@ -414,7 +414,7 @@ class DevelopmentalAgency:
                 dict(row) for row in worlds.values()
                 if isinstance(row, Mapping)
                 and row.get("proposal_id") == proposal.get("proposal_id")
-                and row.get("status") != "REJECTED"
+                and row.get("status") not in {"REJECTED", "REVISE_REQUIRED", "RETIRED"}
             ),
             None,
         )
@@ -520,6 +520,49 @@ class DevelopmentalAgency:
         }
         worlds[str(world_id).upper()] = row
         self.state["worlds"] = worlds
+        self.state["updated_at"] = observed_at.isoformat()
+        _write(self.path, self.state)
+        return dict(row)
+
+    def apply_world_transfer_evaluation(
+        self,
+        *,
+        world_id: str,
+        evaluation: Mapping[str, Any],
+        observed_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        worlds = dict(self.state.get("worlds") or {})
+        key = str(world_id).upper()
+        row = dict(worlds.get(key) or {})
+        if not row:
+            raise KeyError(f"unknown generated world: {world_id}")
+        decision = str(evaluation.get("decision") or "CONTINUE_EXPERIMENT")
+        status = {
+            "ADOPT": "ADOPTED",
+            "REJECT": "REJECTED",
+            "REVISE": "REVISE_REQUIRED",
+        }.get(decision, "EXPERIMENTING")
+        row["status"] = status
+        row["transfer_evaluation"] = dict(evaluation)
+        row["last_transfer_evaluation_at"] = observed_at.isoformat()
+        worlds[key] = row
+        self.state["worlds"] = worlds
+
+        proposals = dict(self.state.get("proposals") or {})
+        proposal_id = str(row.get("proposal_id") or "")
+        proposal = dict(proposals.get(proposal_id) or {})
+        if proposal:
+            proposal["status"] = {
+                "ADOPT": "ADOPTED",
+                "REJECT": "REJECTED",
+                "REVISE": "REVISION_REQUIRED",
+            }.get(decision, "EXPERIMENTING")
+            proposal["latest_world_evaluation"] = dict(evaluation)
+            proposal["updated_at"] = observed_at.isoformat()
+            proposals[proposal_id] = proposal
+            self.state["proposals"] = proposals
+
         self.state["updated_at"] = observed_at.isoformat()
         _write(self.path, self.state)
         return dict(row)

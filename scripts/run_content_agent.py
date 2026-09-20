@@ -399,6 +399,17 @@ def main() -> int:
             )
             if transfer_learning is not None:
                 print(json.dumps({"neural_transfer_learning": transfer_learning}, ensure_ascii=False, sort_keys=True))
+            development_transfer = wakeful_runtime.observe_development_transfer_outcome(
+                task=task,
+                result=task_result,
+                observed_at=now,
+            )
+            if development_transfer is not None:
+                print(json.dumps(
+                    {"developmental_world_transfer_learning": development_transfer},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ))
             motor_learning = wakeful_runtime.observe_motor_outcome(
                 task=task,
                 result=task_result,
