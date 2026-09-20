@@ -42,7 +42,7 @@ STRATEGY_BASELINE_IMPL = "content.strategy.adaptive:v1"
 PROFILE_IMPL_PREFIX = "content.strategy.profile:"
 BRIDGE_SCHEMA = "content-evolution-bridge.v1"
 TRIAL_SCHEMA = "content-evolution-strategy-trial.v1"
-BOOTSTRAP_VERSION = 2
+BOOTSTRAP_VERSION = 3
 EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES = 3
 
 
@@ -586,12 +586,15 @@ class ContentEvolutionBridge:
         return float(row["actual_pageviews"])
 
     def _trial_has_committed_action(self, state: Mapping[str, Any]) -> bool:
+        """Return true only after a trial arm has reached the external world.
+
+        A persisted strategy or prediction is still an internal, reversible decision.
+        If generation fails before publication, broader evidence may safely supersede
+        that unexposed challenger. Publication is the external commitment boundary.
+        """
         for cycle in (state.get("assignments") or {}):
             folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
-            if (
-                (folder / "action_prediction.json").exists()
-                or (folder / "publication.json").exists()
-            ):
+            if (folder / "publication.json").exists():
                 return True
         return False
 
