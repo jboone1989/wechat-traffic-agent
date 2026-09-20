@@ -37,6 +37,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "NEURAL_PLAY",
     "NEURAL_DREAM",
     "NEURAL_TRANSFER",
+    "NEURAL_DEVELOPMENT",
 })
 
 
@@ -119,6 +120,8 @@ class ContentWakefulRuntime:
         )
         from .cortex_continuity import CortexContinuityMonitor
         self.cortex_continuity = CortexContinuityMonitor(self.state_root)
+        from .developmental_agency import DevelopmentalAgency
+        self.developmental_agency = DevelopmentalAgency(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -370,6 +373,52 @@ class ContentWakefulRuntime:
                     ),
                     preemptible=True,
                 ))
+        agency = self.developmental_agency.refresh(
+            now=now,
+            neural_life=projection,
+            neural_transfer=self.neural_transfer.projection(),
+            neural_motor=self.neural_motor.projection(),
+        )
+        for need in agency.get("needs") or ():
+            if need.get("status") != "ACTIVE":
+                continue
+            pressure = max(0.0, min(1.0, float(need.get("neural_pressure") or 0.0)))
+            channels = [str(value) for value in need.get("pressure_channels") or () if value]
+            if pressure < 0.25 or not channels:
+                continue
+            self.core.emit(StimulusEvent(
+                event_id=f"development-need:{need.get('need_id')}:{int(now.timestamp() // 1800)}",
+                source="ferro-developmental-agency",
+                kind="DEVELOPMENT_NEED",
+                observed_at=now,
+                salience=pressure,
+                novelty=0.55,
+                urgency=max(pressure, float(need.get("severity") or 0.0)),
+                persistence=0.95,
+                payload_ref=str(need.get("need_id") or ""),
+                attention_channel=channels[0],
+            ), enqueue=False)
+
+        candidate_world = self.developmental_agency.next_candidate_world()
+        if candidate_world is not None and int(candidate_world.get("trial_count") or 0) == 0:
+            target_at = now + timedelta(seconds=10)
+            if not any(
+                wake.task == "NEURAL_DEVELOPMENT" and wake.at <= target_at
+                for wake in self.core.snapshot().pending_plans
+            ):
+                self.core.schedule(PlannedWake(
+                    wake_id="content:NEURAL_DEVELOPMENT",
+                    at=target_at,
+                    reason=f"test Ferro-born world {candidate_world.get('world_id')} for {candidate_world.get('need_id')}",
+                    task="NEURAL_DEVELOPMENT",
+                    relevant_refs=(
+                        str(candidate_world.get("need_id") or ""),
+                        str(candidate_world.get("proposal_id") or ""),
+                        str(candidate_world.get("world_id") or ""),
+                    ),
+                    preemptible=True,
+                ))
+
         current_snap = self.core.snapshot()
         self.cortex_continuity.observe(
             neural_graph=dict(current_snap.neural_state),
@@ -513,6 +562,33 @@ class ContentWakefulRuntime:
         if callable(persist):
             persist()
         return result
+
+    def run_development_trial(self, now: datetime | None = None, *, steps: int = 12) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        world = self.developmental_agency.next_candidate_world()
+        if world is None:
+            return {"status": "NO_DEVELOPMENT_WORLD"}
+        result = self.brain_lab.run_session(
+            environment=str(world["world_id"]),
+            steps=max(1, min(32, int(steps))),
+            now=now,
+        )
+        updated = self.developmental_agency.record_world_trial(
+            world_id=str(world["world_id"]),
+            result=result,
+            observed_at=now,
+        )
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return {
+            "status": "TRAINED_SELF_GENERATED_WORLD",
+            "world_id": world["world_id"],
+            "need_id": world["need_id"],
+            "proposal_id": world["proposal_id"],
+            "training": result,
+            "world": updated,
+        }
 
     def brain_lab_projection(self) -> dict:
         return self.brain_lab.projection()
@@ -820,6 +896,7 @@ class ContentWakefulRuntime:
             "brain_vs_cortex": self.brain_cortex.projection(),
             "neural_motor": self.neural_motor.projection(),
             "neural_transfer": self.neural_transfer.projection(),
+            "developmental_agency": self.developmental_agency.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
@@ -849,6 +926,7 @@ class ContentWakefulRuntime:
             "NEURAL_PLAY": "develop the production nervous system through a sensorimotor world",
             "NEURAL_DREAM": "replay and recombine salient experience in the production nervous system",
             "NEURAL_TRANSFER": "run one prospective cross-domain neural transfer trial",
+            "NEURAL_DEVELOPMENT": "test a Ferro-born bounded developmental world",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
