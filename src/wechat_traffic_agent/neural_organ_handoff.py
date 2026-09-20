@@ -21,6 +21,7 @@ MIN_PER_ARM = 4
 NONINFERIOR_MARGIN = 0.03
 ROLLBACK_MARGIN = 0.10
 AUDIT_EVERY = 5
+MAX_SILENT_FALLBACKS = 4
 MAX_TRIALS = 256
 DEFAULT_ENVIRONMENTS = ("PONG", "MAZE", "FORAGING", "ROVER")
 
@@ -67,6 +68,7 @@ class NeuralOrganHandoff:
             "rollback_at": None,
             "rollback_reason": None,
             "authority_decisions": 0,
+            "silent_fallbacks": 0,
             "trials": [],
             "associations": {},
         }
@@ -309,15 +311,37 @@ class NeuralOrganHandoff:
             organ = organs[0]
             self.state["candidate_organ_id"] = str(organ["organ_id"])
             locked_organ_id = str(organ["organ_id"])
-        if organ is None:
+        if organ is None or float(organ.get("activation") or 0.0) <= 0.0:
+            if phase == "NEURAL_AUTHORITY":
+                silent = int(self.state.get("silent_fallbacks") or 0) + 1
+                self.state["silent_fallbacks"] = silent
+                status = "ORGAN_SILENT_PYTHON_FALLBACK"
+                if silent >= MAX_SILENT_FALLBACKS:
+                    self.state["phase"] = "PYTHON_ROLLBACK"
+                    self.state["rollback_at"] = now.isoformat()
+                    self.state["rollback_reason"] = "EMERGENT_ORGAN_NO_LONGER_ACTIVE"
+                    status = "ROLLED_BACK_SILENT_ORGAN"
+                self.state["updated_at"] = now.isoformat()
+                _write(self.path, self.state)
+                return {
+                    "status": status,
+                    "function_id": FUNCTION_ID,
+                    "environment": baseline,
+                    "authority": "PYTHON_BASELINE",
+                    "trial": None,
+                    "external_action_authority": False,
+                }
             return {
-                "status": "NO_ELIGIBLE_EMERGENT_ORGAN",
+                "status": "NO_ACTIVE_EMERGENT_ORGAN",
                 "function_id": FUNCTION_ID,
                 "environment": baseline,
                 "authority": "PYTHON_BASELINE",
                 "trial": None,
                 "external_action_authority": False,
             }
+
+        if phase == "NEURAL_AUTHORITY" and int(self.state.get("silent_fallbacks") or 0):
+            self.state["silent_fallbacks"] = 0
 
         seq = int(self.state.get("seq") or 0) + 1
         if phase == "NEURAL_AUTHORITY":
@@ -508,6 +532,8 @@ class NeuralOrganHandoff:
             "handoff_at": self.state.get("handoff_at"),
             "rollback_at": self.state.get("rollback_at"),
             "rollback_reason": self.state.get("rollback_reason"),
+            "silent_fallbacks": int(self.state.get("silent_fallbacks") or 0),
+            "max_silent_fallbacks": MAX_SILENT_FALLBACKS,
             "trial_count": len(self.state.get("trials") or ()),
             "initial_evaluation": initial,
             "longitudinal_audit": audit,
@@ -526,6 +552,7 @@ __all__ = [
     "AUDIT_EVERY",
     "FUNCTION_ID",
     "MIN_PER_ARM",
+    "MAX_SILENT_FALLBACKS",
     "NONINFERIOR_MARGIN",
     "NeuralOrganHandoff",
     "ROLLBACK_MARGIN",
