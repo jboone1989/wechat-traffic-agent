@@ -379,7 +379,8 @@ def _fallback_evidence_selection(evidence, *, required_topic, effective_topic, e
 class ContinuousContentLoop(_BaseContinuousContentLoop):
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
                  feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None,
-                 capability_runtime=None, website_experiments=False, world_feed=None, neural_runtime=None):
+                 capability_runtime=None, website_experiments=False, world_feed=None, neural_runtime=None,
+                 evolution_bridge=None):
         if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
             raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
         self.runtime, self.state = runtime, Path(state_root)
@@ -388,6 +389,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.interval_hours, self.fetcher, self.publisher = interval_hours, fetcher, publisher
         self.mind = mind
         self.neural_runtime = neural_runtime
+        self.evolution_bridge = evolution_bridge
         self.website_experiments = bool(website_experiments)
         self.world_feed = world_feed
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
@@ -1466,11 +1468,28 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             'Each candidate now has explicit 1h, 4h, and 24h pageview expectations, uncertainty, expected utility, and information gain.',
             status='completed',
         )
+        evolution_strategy_context: dict[str, Any] = {}
+        evolution_context_path = folder / 'evolution_strategy_context.json'
+        if evolution_context_path.exists():
+            stored_context = json.loads(evolution_context_path.read_text(encoding='utf-8'))
+            if isinstance(stored_context, dict):
+                evolution_strategy_context = stored_context
+        elif self.evolution_bridge is not None:
+            evolution_strategy_context = self.evolution_bridge.preferred_profile(
+                cycle=cycle, now=cycle_now
+            )
+            _put(evolution_context_path, evolution_strategy_context)
+        evolution_preferred_profile = str(
+            evolution_strategy_context.get('profile_name') or ''
+        ).strip() or None
+        preferred_profile = evolution_preferred_profile or (
+            'follow-up-update' if market_pulse else None
+        )
         content_strategy = bind_content_strategy(
             strategy_path, state_root=self.state, account=self.base_url, cycle=cycle,
             topic=selection.topic, traffic_signal=traffic_signal, decided_at=cycle_now,
             opening_mode=(experiment.treatment_value if experiment is not None else None),
-            preferred_profile_name=('follow-up-update' if market_pulse else None),
+            preferred_profile_name=preferred_profile,
             mind_strategy_context=mind_strategy_context, action_forecasts=action_forecasts,
         )
         strategy_payload = content_strategy.model_dump(mode='json')
@@ -1482,6 +1501,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         action_prediction_payload = action_prediction.model_dump(mode='json')
         if self.mind is not None and hasattr(self.mind, 'register_action_prediction'):
             self.mind.register_action_prediction(action_prediction)
+        if self.evolution_bridge is not None:
+            self.evolution_bridge.record_strategy_decision(
+                cycle=cycle, strategy=content_strategy, prediction=action_prediction,
+                trial_context=evolution_strategy_context,
+            )
         self._activity(cycle, 'DECIDE', 'I chose the content strategy from prospective forecasts',
                        f"Using {content_strategy.profile.name} with {content_strategy.profile.structure_pattern}; authority={content_strategy.selection_mode}.", status='completed')
 

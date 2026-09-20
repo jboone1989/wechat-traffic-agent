@@ -263,6 +263,27 @@ def main() -> int:
         from wechat_traffic_agent.gsc_search_console import GoogleSearchConsoleCollector
         gsc_collector = GoogleSearchConsoleCollector.from_environment(state_root=state_root, account=os.environ["CONTENT_WEB_BASE_URL"])
 
+    content_evolution_bridge = None
+    web_base_url = os.environ.get("CONTENT_WEB_BASE_URL", "").strip()
+    if web_base_url and _enabled("CONTENT_CONTINUOUS_ENABLED"):
+        from wechat_traffic_agent.evolution_bridge import ContentEvolutionBridge
+        content_evolution_bridge = ContentEvolutionBridge(
+            runtime=app.domain_runtime, state_root=state_root, account=web_base_url
+        )
+        try:
+            evolution_bootstrap = content_evolution_bridge.maybe_bootstrap_historical_learning(
+                as_of=datetime.now(timezone.utc).replace(microsecond=0)
+            )
+            print(json.dumps({"evolution_engine_bootstrap": evolution_bootstrap}, ensure_ascii=False, sort_keys=True))
+        except Exception as exc:
+            print(json.dumps({
+                "evolution_engine_bootstrap": {
+                    "status": "DEGRADED",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
+            }, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+
     continuous_loop = None
     if _enabled("CONTENT_CONTINUOUS_ENABLED"):
         from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
@@ -281,7 +302,7 @@ def main() -> int:
             feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
             publisher=publisher, mind=content_mind, capability_runtime=app.runtime,
             website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"),
-            neural_runtime=wakeful_runtime)
+            neural_runtime=wakeful_runtime, evolution_bridge=content_evolution_bridge)
 
     stopping = False
     stop_requested_at: datetime | None = None
@@ -327,6 +348,7 @@ def main() -> int:
         web_outcome_collector=web_outcome_collector,
         engagement_outcome_collector=engagement_outcome_collector,
         website_experiment_evaluator=website_experiment_evaluator,
+        evolution_bridge=content_evolution_bridge,
         wakeful=wakeful_runtime,
         web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
         stop_requested=lambda: stopping,

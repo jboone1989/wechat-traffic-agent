@@ -766,6 +766,11 @@ class WakefulContentTaskRunner:
                     "count": len(competition_rows),
                     "results": competition_rows,
                 }
+                evolution_bridge = getattr(self, "evolution_bridge", None)
+                if evolution_bridge is not None:
+                    rows["evolution_learning"] = evolution_bridge.record_action_outcomes(
+                        learning.get("recorded") or ()
+                    )
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
                 rows["status"] = "DEGRADED"
