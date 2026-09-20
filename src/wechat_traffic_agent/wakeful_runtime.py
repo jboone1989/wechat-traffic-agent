@@ -117,6 +117,8 @@ class ContentWakefulRuntime:
             substrate=substrate,
             brain_lab=self.brain_lab,
         )
+        from .cortex_continuity import CortexContinuityMonitor
+        self.cortex_continuity = CortexContinuityMonitor(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -368,6 +370,13 @@ class ContentWakefulRuntime:
                     ),
                     preemptible=True,
                 ))
+        current_snap = self.core.snapshot()
+        self.cortex_continuity.observe(
+            neural_graph=dict(current_snap.neural_state),
+            motor=self.neural_motor.projection(),
+            personality=self.neural_personality.projection(),
+            observed_at=now,
+        )
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()
@@ -811,6 +820,7 @@ class ContentWakefulRuntime:
             "brain_vs_cortex": self.brain_cortex.projection(),
             "neural_motor": self.neural_motor.projection(),
             "neural_transfer": self.neural_transfer.projection(),
+            "cortex_continuity": self.cortex_continuity.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
                 personality=self.neural_personality.projection(),

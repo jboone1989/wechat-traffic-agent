@@ -384,6 +384,7 @@ class NeuralMotorCortex:
         return {
             "schema_version": MOTOR_SCHEMA,
             "updated_at": self.state.get("updated_at"),
+            "decision_seq": int(self.state.get("decision_seq") or 0),
             "motor_unit_count": MOTOR_UNIT_COUNT,
             "semantics_preassigned": False,
             "habit_count": len(habits),
