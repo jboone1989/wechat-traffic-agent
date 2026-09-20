@@ -80,35 +80,38 @@ def test_without_emergent_organ_python_baseline_remains_authoritative(tmp_path: 
 
 
 def test_neural_choice_is_driven_by_real_member_firing_pattern(tmp_path: Path):
-    first = NeuralOrganHandoff(tmp_path / "a")
-    second = NeuralOrganHandoff(tmp_path / "b")
+    controller = NeuralOrganHandoff(tmp_path)
 
-    a = first.choose(
+    first = controller.choose(
         now=NOW,
         brain_lab=brain_lab(),
         substrate_projection=substrate(
             active_members=("ferro-neuron:166701", "ferro-neuron:166702"),
         ),
     )
-    b = second.choose(
+    second = controller.choose(
         now=NOW,
-        brain_lab=brain_lab(),
+        brain_lab=brain_lab(1),
         substrate_projection=substrate(
             active_members=("ferro-neuron:166703", "ferro-neuron:166704"),
         ),
     )
 
-    # The A/B arm itself is prospective and may be Python on either first trial.
-    # When an arm is neural, its decoder stores the actual firing pattern and
-    # an unsemantic score over existing environments rather than a hand-written
-    # organ function label.
-    neural = next(
-        row for row in (a, b)
-        if row["authority"] == "NEURAL_ORGAN"
+    # Each prospective two-trial block contains one Python and one neural arm.
+    # The neural decoder stores the actual firing pattern and an unsemantic score
+    # over existing environments rather than a hand-written organ function label.
+    assert {first["authority"], second["authority"]} == {
+        "PYTHON_BASELINE", "NEURAL_ORGAN",
+    }
+    neural = first if first["authority"] == "NEURAL_ORGAN" else second
+    expected_members = (
+        ["ferro-neuron:166701", "ferro-neuron:166702"]
+        if neural is first
+        else ["ferro-neuron:166703", "ferro-neuron:166704"]
     )
     trial = neural["trial"]
     assert trial["active_member_count"] == 2
-    assert trial["active_members"]
+    assert trial["active_members"] == expected_members
     assert trial["neural_environment_scores"]
     assert set(trial["neural_environment_scores"]) == {
         "PONG", "MAZE", "FORAGING", "ROVER",
