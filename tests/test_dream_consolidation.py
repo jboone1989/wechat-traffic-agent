@@ -110,3 +110,47 @@ def test_runtime_injects_stable_dream_attractor_as_real_neural_stimulus(tmp_path
     projection = snapshot["dreaming"]
     assert projection["stable_attractor_count"] == 1
     assert projection["stable_attractors"][0]["waking_influence_count"] == 1
+
+
+def test_stable_attractor_births_non_llm_goal_candidate(tmp_path: Path):
+    _seed_three_recurrent_preconcepts(tmp_path)
+    engine = FerroDreamEngine(tmp_path, substrate=None)
+
+    candidate = engine.latest_goal_candidate()
+    projection = engine.projection()
+
+    assert candidate is not None
+    assert candidate["origin"] == "STABLE_DREAM_ATTRACTOR"
+    assert candidate["status"] == "UNINTERPRETED"
+    assert candidate["llm_used_for_birth"] is False
+    assert candidate["recurrence_count_at_birth"] == 3
+    assert candidate["consolidation_epoch_count_at_birth"] == 3
+    assert candidate["attractor"]["status"] if "status" in candidate["attractor"] else True
+    assert projection["goal_candidate_count"] == 1
+    assert projection["uninterpreted_goal_candidate_count"] == 1
+    assert projection["latest_goal_candidate"]["candidate_id"] == candidate["candidate_id"]
+
+
+def test_ego_can_reality_check_goal_candidate_without_rewriting_its_birth(tmp_path: Path):
+    _seed_three_recurrent_preconcepts(tmp_path)
+    engine = FerroDreamEngine(tmp_path, substrate=None)
+    candidate = engine.latest_goal_candidate()
+    assert candidate is not None
+
+    updated = engine.mark_goal_candidate(
+        candidate["candidate_id"],
+        status="ACTIVATED",
+        goal_id="dream-attractor:test",
+        hypothesis="A bounded hypothesis grounded in later external evidence.",
+        description="Investigate whether the recurring association predicts a useful external pattern.",
+        now=NOW + timedelta(hours=24),
+    )
+    projection = engine.projection()
+
+    assert updated["status"] == "ACTIVATED"
+    assert updated["goal_id"] == "dream-attractor:test"
+    assert updated["origin"] == "STABLE_DREAM_ATTRACTOR"
+    assert updated["llm_used_for_birth"] is False
+    assert engine.latest_goal_candidate() is None
+    assert projection["goal_candidate_count"] == 1
+    assert projection["uninterpreted_goal_candidate_count"] == 0
