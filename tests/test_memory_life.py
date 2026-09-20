@@ -49,3 +49,23 @@ def test_repeated_real_process_outcomes_become_episode_procedure_relation_and_kn
     assert len(long_term["evidence_refs"]) == 10
     assert results[-1]["continuity_checkpoint"] is not None
     assert results[-1]["continuity_checkpoint"]["sequence"] >= 1
+
+
+def test_process_outcome_replay_is_idempotent(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    kwargs = dict(
+        process_id="cycle:stable",
+        topic="content-learning",
+        action="content-create-verify-publish",
+        success=True,
+        outcome="PUBLISHED",
+        evidence_refs=["cycle:stable", "draft:abc"],
+        capabilities=["content.generate"],
+    )
+    first = life.observe_process_outcome(**kwargs)
+    second = life.observe_process_outcome(**kwargs)
+    assert second["status"] == "ALREADY_RECORDED"
+    assert second["episode_id"] == first["episode_id"]
+    procedures = life.store.query_memories(memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=10)
+    assert len(procedures) == 1
+    assert procedures[0]["payload"]["execution_count"] == 1

@@ -53,6 +53,18 @@ class MemoryLifeRuntime:
         refs = list(dict.fromkeys(str(item).strip() for item in evidence_refs if str(item).strip()))
         if not process_id or not action or not refs:
             raise ValueError("process outcome requires process_id, action, and evidence_refs")
+        existing_episode = self._existing_process_episode(process_id)
+        if existing_episode is not None:
+            active_procedure = self._active_procedure("process:" + action)
+            return {
+                "status": "ALREADY_RECORDED",
+                "episode_id": str(existing_episode["memory_id"]),
+                "procedure_id": str((active_procedure or {}).get("memory_id") or ""),
+                "relation_id": "",
+                "daily_knowledge_id": "",
+                "long_term_knowledge_id": "",
+                "continuity_checkpoint": None,
+            }
         at = str(observed_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
         lesson = (
             f"Verified success for {action}: {outcome}"
@@ -92,6 +104,24 @@ class MemoryLifeRuntime:
             "long_term_knowledge_id": str((knowledge.get("long_term") or {}).get("memory_id") or ""),
             "continuity_checkpoint": checkpoint,
         }
+    def _existing_process_episode(self, process_id: str) -> dict[str, Any] | None:
+        marker = process_id + ":action"
+        rows = self.store.query_memories(memory_types=["EPISODIC"], limit=5000)
+        for row in reversed(rows):
+            derived = list((row.get("payload") or {}).get("derived_from") or [])
+            if marker in derived:
+                return row
+        return None
+
+    def _active_procedure(self, name: str) -> dict[str, Any] | None:
+        active = self.store.query_memories(
+            memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=1000,
+        )
+        return next(
+            (row for row in reversed(active) if str((row.get("payload") or {}).get("name") or "") == name),
+            None,
+        )
+
     def _update_procedure(
         self,
         *,
@@ -106,11 +136,7 @@ class MemoryLifeRuntime:
         expected_cost: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         name = "process:" + action
-        active = self.store.query_memories(memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=1000)
-        existing = next(
-            (row for row in reversed(active) if str((row.get("payload") or {}).get("name") or "") == name),
-            None,
-        )
+        existing = self._active_procedure(name)
         if existing is not None:
             return self.procedures.record_outcome(
                 str(existing["memory_id"]),
