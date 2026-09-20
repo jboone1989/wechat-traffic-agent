@@ -17,7 +17,7 @@ main{width:min(1180px,94vw);margin:0 auto;padding:30px 0 70px}.top{display:flex;
 .summary{display:flex;gap:10px;flex-wrap:wrap;margin:18px 0}.pill{background:#111923;border:1px solid #28384a;border-radius:99px;padding:8px 11px;font-size:12px;color:#b7c7d7}
 @media(max-width:760px){.grid{grid-template-columns:1fr}.stage{height:220px}.row{grid-template-columns:80px 70px 1fr}.row span:last-child{display:none}}
 </style></head><body><main>
-<div class="top"><div><div class="k">FERRO · DEVELOPMENTAL NEURAL WORLD</div><h1>Brain Lab</h1><p class="muted">Pong, maze, foraging and rover all stimulate the same persistent production connectome. Game reward changes the same recurrent synapses Ferro later carries back into ordinary life.</p></div><a href="/live" style="color:#b9d0e6">Live Ferro ↗</a></div>
+<div class="top"><div><div class="k">FERRO · DEVELOPMENTAL NEURAL WORLD</div><h1>Brain Lab</h1><p class="muted">Pong, maze, foraging and rover all stimulate the same persistent production connectome. Game reward changes the same recurrent synapses Ferro later carries back into ordinary life.</p></div><div style="display:flex;gap:14px;flex-wrap:wrap"><a href="/neural/" style="color:#b9d0e6">Neural Life ↗</a><a href="/live/" style="color:#b9d0e6">Live Ferro ↗</a></div></div>
 <div class="summary" id="summary"><span class="pill">loading persistent neural state…</span></div>
 <div class="grid">
 <section class="card" id="PONG-card"><div class="head"><h2>Pong</h2><span class="chip">sensorimotor</span></div><div class="stage" id="pong-stage"></div><div class="stats" id="pong-stats"></div></section>
