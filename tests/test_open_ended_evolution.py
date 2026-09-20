@@ -332,3 +332,22 @@ def test_cycle_state_survives_restart(tmp_path: Path):
     assert projection["recent_cycles"][0]["consolidation_session_count"] == 1
     assert projection["completion_requires_real_world_adoption"] is True
     assert projection["single_neuron_is_not_called_a_new_capability"] is True
+
+
+
+def test_non_ferro_world_cannot_satisfy_n36_even_with_structure(tmp_path: Path):
+    raw_world = world(world_id="LEGACY_WORLD")
+    write_stable_circuit(tmp_path, "LEGACY_WORLD")
+    evolution = OpenEndedEvolution(
+        tmp_path,
+        brain_lab=FakeBrainLab(tmp_path),
+        agency=FakeAgency(raw_world),
+    )
+
+    cycle = evolution.refresh(now=NOW)["recent_cycles"][0]
+
+    assert cycle["ferro_born_world_verified"] is False
+    assert cycle["status"] == "INELIGIBLE_NON_FERRO_WORLD"
+    assert cycle["completion_kind"] is None
+    assert evolution.projection()["evolved_cycle_count"] == 0
+    assert evolution.projection()["completion_requires_ferro_born_world"] is True
