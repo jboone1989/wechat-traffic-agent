@@ -30,7 +30,11 @@ from agent_runtime.evolution import (
 )
 
 from .content_action_prediction import ActionPredictionOutcome, ContentActionPrediction
-from .content_strategy import ContentStrategyBinding, PROFILE_BY_NAME
+from .content_strategy import (
+    ContentStrategyBinding,
+    PROFILE_BY_NAME,
+    collect_mature_strategy_outcomes,
+)
 
 
 STRATEGY_CAPABILITY_ID = "content.strategy.preference"
@@ -38,6 +42,8 @@ STRATEGY_BASELINE_IMPL = "content.strategy.adaptive:v1"
 PROFILE_IMPL_PREFIX = "content.strategy.profile:"
 BRIDGE_SCHEMA = "content-evolution-bridge.v1"
 TRIAL_SCHEMA = "content-evolution-strategy-trial.v1"
+BOOTSTRAP_VERSION = 2
+EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES = 3
 
 
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -447,16 +453,96 @@ class ContentEvolutionBridge:
                 outcomes.append(row)
         return outcomes
 
-    def _historical_mature_outcomes(self) -> list[dict[str, Any]]:
+    def _historical_mature_prediction_outcomes(self) -> list[dict[str, Any]]:
         return [
             row for row in self._historical_outcomes()
             if str(row.get("maturity") or "") == "MATURE"
             and str(row.get("profile_name") or "") in PROFILE_BY_NAME
         ]
 
+    def _historical_mature_strategy_outcomes(
+        self, *, as_of: datetime
+    ) -> list[dict[str, Any]]:
+        return collect_mature_strategy_outcomes(
+            state_root=self.state_root,
+            account=self.account,
+            as_of=_aware(as_of),
+        )
+
+    def _record_mature_strategy_outcomes(
+        self, rows: Iterable[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        recorded: list[dict[str, Any]] = []
+        for raw in rows:
+            profile = str(raw.get("profile_name") or "")
+            outcome_id = str(raw.get("outcome_id") or "")
+            publication_id = str(raw.get("publication_id") or "")
+            topic = str(raw.get("topic") or "")
+            if profile not in PROFILE_BY_NAME or not outcome_id or not publication_id:
+                continue
+            observed_at = _aware(raw.get("observed_at"))
+            refs = list(dict.fromkeys(
+                str(x) for x in (raw.get("evidence_refs") or ()) if str(x)
+            ))
+            strategy_ref = next(
+                (ref for ref in refs if ref.startswith("strategy:")), None
+            )
+            experience = self.runtime.record_domain_evolution_experience(
+                domain_event_ref=outcome_id,
+                observed_at=observed_at,
+                effective_at=observed_at,
+                goal_refs=self._mission_refs(),
+                decision_ref=strategy_ref,
+                context_refs=[
+                    f"topic:{topic}",
+                    f"content-profile:{profile}",
+                    f"website-publication:{publication_id}",
+                    "historical-mature-strategy-outcome",
+                ],
+                version_bindings=[
+                    VersionBinding("strategy-profile", "content.profile", profile)
+                ],
+                confidence=1.0,
+            )
+            evidence = self.runtime.record_evolution_evidence(
+                experience.experience_id,
+                evidence_class=EvidenceClass.WORLD_OBSERVED,
+                settled_at=observed_at,
+                outcome_id=outcome_id,
+                process_score=1.0,
+                metrics=[
+                    EvidenceMetric(
+                        "actual_pageviews",
+                        float(raw.get("pageviews_24h") or 0.0),
+                        "views",
+                    )
+                ],
+                confidence=1.0,
+                evidence_refs=[
+                    *refs,
+                    f"website-publication:{publication_id}",
+                    f"content-profile:{profile}",
+                ],
+            )
+            recorded.append({
+                "outcome_id": outcome_id,
+                "experience_id": experience.experience_id,
+                "evidence_id": evidence.evidence_id,
+                "profile_name": profile,
+                "pageviews_24h": float(raw.get("pageviews_24h") or 0.0),
+            })
+        return {
+            "status": "RECORDED" if recorded else "NO_MATURE_STRATEGY_OUTCOMES",
+            "recorded_count": len(recorded),
+            "recorded": recorded,
+        }
+
     def maybe_bootstrap_historical_learning(self, *, as_of: datetime) -> dict[str, Any]:
         previous = _read_json(self.bootstrap_path)
-        if previous.get("status") == "OK":
+        if (
+            previous.get("status") == "OK"
+            and int(previous.get("bootstrap_version") or 0) >= BOOTSTRAP_VERSION
+        ):
             return {"status": "ALREADY_BOOTSTRAPPED", **previous}
         result = self.bootstrap_historical_learning(as_of=as_of)
         if result.get("status") == "OK":
@@ -465,44 +551,56 @@ class ContentEvolutionBridge:
 
     def bootstrap_historical_learning(self, *, as_of: datetime) -> dict[str, Any]:
         as_of = _aware(as_of)
-        outcomes = self._historical_outcomes()
-        bound = self.record_action_outcomes(outcomes)
+        prediction_outcomes = self._historical_outcomes()
+        prediction_binding = self.record_action_outcomes(prediction_outcomes)
+        strategy_mature = self._historical_mature_strategy_outcomes(as_of=as_of)
+        strategy_binding = self._record_mature_strategy_outcomes(strategy_mature)
         report = self.runtime.consolidate_evolution()
 
-        mature = self._historical_mature_outcomes()
+        mature: list[Mapping[str, Any]] = (
+            strategy_mature
+            if strategy_mature
+            else self._historical_mature_prediction_outcomes()
+        )
         candidate = self._ensure_strategy_candidate(mature=mature, as_of=as_of)
         return {
             "status": "OK",
-            "historical_outcomes_scanned": len(outcomes),
-            "mature_outcomes": len(mature),
+            "bootstrap_version": BOOTSTRAP_VERSION,
+            "historical_prediction_outcomes_scanned": len(prediction_outcomes),
+            "mature_prediction_outcomes": len(self._historical_mature_prediction_outcomes()),
+            "mature_strategy_outcomes": len(strategy_mature),
+            "candidate_source": "MATURE_STRATEGY_OUTCOMES" if strategy_mature else "ACTION_PREDICTION_OUTCOMES",
             "evolution_evidence_count": len(getattr(self.runtime, "evolution_evidence", ()) or ()),
             "consolidation_report_id": report.report_id,
             "recurring_clusters": sum(1 for item in report.clusters if item.recurring),
             "conflicts": len(report.conflicts),
             "candidate": candidate,
-            "outcome_binding": bound,
+            "prediction_outcome_binding": prediction_binding,
+            "strategy_outcome_binding": strategy_binding,
         }
+
+    @staticmethod
+    def _mature_pageviews(row: Mapping[str, Any]) -> float:
+        if row.get("pageviews_24h") is not None:
+            return float(row["pageviews_24h"])
+        return float(row["actual_pageviews"])
+
+    def _trial_has_committed_action(self, state: Mapping[str, Any]) -> bool:
+        for cycle in (state.get("assignments") or {}):
+            folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+            if (
+                (folder / "action_prediction.json").exists()
+                or (folder / "publication.json").exists()
+            ):
+                return True
+        return False
+
     def _ensure_strategy_candidate(
         self,
         *,
         mature: list[Mapping[str, Any]],
         as_of: datetime,
     ) -> dict[str, Any]:
-        state = _read_json(self.trial_path)
-        experiment_id = str(state.get("experiment_id") or "")
-        if experiment_id:
-            try:
-                experiment = self.runtime.evolution_experiment_manager.get(experiment_id)
-                return {
-                    "status": "EXISTING",
-                    "experiment_id": experiment_id,
-                    "stage": _enum_value(experiment.stage),
-                    "candidate_profile": state.get("candidate_profile"),
-                    "candidate_id": state.get("candidate_id"),
-                }
-            except (AttributeError, KeyError):
-                pass
-
         active = self._active_capability()
         if active is not None and str(active.implementation_ref).startswith(PROFILE_IMPL_PREFIX):
             return {
@@ -513,16 +611,22 @@ class ContentEvolutionBridge:
 
         grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
         for row in mature:
-            grouped[str(row.get("profile_name"))].append(row)
+            profile = str(row.get("profile_name") or "")
+            if profile in PROFILE_BY_NAME:
+                grouped[profile].append(row)
         eligible = {
             profile: rows for profile, rows in grouped.items()
-            if len(rows) >= 2
+            if len(rows) >= EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES
         }
         if not eligible:
-            return {"status": "INSUFFICIENT_HISTORICAL_EVIDENCE"}
+            return {
+                "status": "INSUFFICIENT_HISTORICAL_EVIDENCE",
+                "minimum_samples_per_profile": EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES,
+                "samples_by_profile": {k: len(v) for k, v in sorted(grouped.items())},
+            }
 
         means = {
-            profile: mean(float(row["actual_pageviews"]) for row in rows)
+            profile: mean(self._mature_pageviews(row) for row in rows)
             for profile, rows in eligible.items()
         }
         candidate_profile = max(
@@ -530,7 +634,7 @@ class ContentEvolutionBridge:
             key=lambda name: (means[name], len(eligible[name])),
         )
         all_values = [
-            float(row["actual_pageviews"])
+            self._mature_pageviews(row)
             for rows in grouped.values()
             for row in rows
         ]
@@ -544,6 +648,43 @@ class ContentEvolutionBridge:
                 "baseline_mean": baseline_mean,
             }
 
+        state = _read_json(self.trial_path)
+        experiment_id = str(state.get("experiment_id") or "")
+        supersedes_experiment_id = None
+        supersedes_candidate_id = None
+        if experiment_id:
+            try:
+                existing_experiment = self.runtime.evolution_experiment_manager.get(experiment_id)
+            except (AttributeError, KeyError):
+                existing_experiment = None
+            if existing_experiment is not None:
+                existing_profile = str(state.get("candidate_profile") or "")
+                if existing_profile == candidate_profile:
+                    return {
+                        "status": "EXISTING",
+                        "experiment_id": experiment_id,
+                        "stage": _enum_value(existing_experiment.stage),
+                        "candidate_profile": existing_profile,
+                        "candidate_id": state.get("candidate_id"),
+                        "historical_samples": len(mature),
+                    }
+                if existing_experiment.samples or self._trial_has_committed_action(state):
+                    return {
+                        "status": "EXISTING_BROADER_EVIDENCE_CONFLICT",
+                        "experiment_id": experiment_id,
+                        "stage": _enum_value(existing_experiment.stage),
+                        "candidate_profile": existing_profile,
+                        "broader_evidence_candidate_profile": candidate_profile,
+                        "reason": "existing prospective trial already has committed action or outcome evidence",
+                    }
+                supersedes_experiment_id = experiment_id
+                supersedes_candidate_id = str(state.get("candidate_id") or "") or None
+
+        mature_outcome_ids = {
+            str(row.get("outcome_id") or "")
+            for row in mature
+            if str(row.get("outcome_id") or "")
+        }
         mature_prediction_ids = {
             str(row.get("prediction_id") or "")
             for row in mature
@@ -551,19 +692,19 @@ class ContentEvolutionBridge:
         }
         evidence_rows = []
         for item in getattr(self.runtime, "evolution_evidence", ()) or ():
+            if not item.learning_eligible:
+                continue
             refs = set(str(x) for x in getattr(item, "evidence_refs", ()) or ())
             outcome_id = str(getattr(item, "outcome_id", "") or "")
-            if (
+            from_strategy_outcome = outcome_id in mature_outcome_ids
+            from_prediction_outcome = (
                 outcome_id.endswith(":24h")
                 and any(prediction_id in refs for prediction_id in mature_prediction_ids)
-            ):
+            )
+            if from_strategy_outcome or from_prediction_outcome:
                 evidence_rows.append(item)
-        evidence_refs = list(dict.fromkeys(
-            item.evidence_id for item in evidence_rows if item.learning_eligible
-        ))
-        experience_refs = list(dict.fromkeys(
-            item.experience_id for item in evidence_rows if item.learning_eligible
-        ))
+        evidence_refs = list(dict.fromkeys(item.evidence_id for item in evidence_rows))
+        experience_refs = list(dict.fromkeys(item.experience_id for item in evidence_rows))
         if not evidence_refs or not experience_refs:
             return {"status": "NO_CANONICAL_EVIDENCE_AFTER_BACKFILL"}
 
@@ -622,6 +763,7 @@ class ContentEvolutionBridge:
                 "candidate_profile": candidate_profile,
                 "candidate_mean_pageviews_24h": candidate_mean,
                 "baseline_mean_pageviews_24h": baseline_mean,
+                "historical_sample_count": len(mature),
                 "causal_claim": False,
             },
         )
@@ -637,8 +779,7 @@ class ContentEvolutionBridge:
         hypothesis = self.runtime.propose_evolution_insight(
             statement=(
                 f"If {candidate_profile} is genuinely better than the adaptive baseline, "
-                "a prospective randomized trial should reproduce the 24h pageview lift "
-                "without increasing prediction error."
+                "a prospective randomized trial should reproduce the 24h pageview lift."
             ),
             proposed_change=(
                 f"Use {candidate_profile} only on candidate-arm cycles; keep existing adaptive "
@@ -648,7 +789,6 @@ class ContentEvolutionBridge:
             need_id=None if need is None else need.need_id,
             expected_fitness={
                 "pageviews_24h": max(0.0, candidate_mean - baseline_mean),
-                "prediction_accuracy": 0.0,
             },
             confidence=0.45,
         )
@@ -664,9 +804,7 @@ class ContentEvolutionBridge:
                 "restore the registered adaptive content-strategy baseline capability version"
             ),
             evidence_refs=evidence_refs[:64],
-            expected_fitness={
-                "pageviews_24h": candidate_mean,
-            },
+            expected_fitness={"pageviews_24h": candidate_mean},
             protected_invariants=[
                 "publication-admission",
                 "evidence-grounding",
@@ -722,6 +860,8 @@ class ContentEvolutionBridge:
             "baseline_version_id": None if baseline is None else baseline.version_id,
             "baseline_historical_mean_pageviews_24h": baseline_mean,
             "candidate_historical_mean_pageviews_24h": candidate_mean,
+            "historical_sample_count": len(mature),
+            "minimum_samples_per_profile": EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES,
             "experiment_id": experiment.spec.experiment_id,
             "prospective_start_at": experiment.spec.prospective_start_at.isoformat(),
             "prospective_end_at": experiment.spec.prospective_end_at.isoformat(),
@@ -730,14 +870,22 @@ class ContentEvolutionBridge:
             "created_at": as_of.isoformat(),
             "assignments": {},
             "post_promotion_regression_streak": 0,
+            "supersedes_experiment_id": supersedes_experiment_id,
+            "supersedes_candidate_id": supersedes_candidate_id,
         }
         _atomic_json(self.trial_path, payload)
         return {
-            "status": "PROSPECTIVE_TRIAL_CREATED",
+            "status": (
+                "PROSPECTIVE_TRIAL_REFRESHED_FROM_BROADER_EVIDENCE"
+                if supersedes_experiment_id
+                else "PROSPECTIVE_TRIAL_CREATED"
+            ),
             **{k: payload[k] for k in (
                 "candidate_id", "candidate_profile", "experiment_id",
                 "baseline_historical_mean_pageviews_24h",
                 "candidate_historical_mean_pageviews_24h",
+                "historical_sample_count",
+                "supersedes_experiment_id",
             )},
         }
 
