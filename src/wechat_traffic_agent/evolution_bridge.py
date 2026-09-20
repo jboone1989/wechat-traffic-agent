@@ -88,6 +88,7 @@ class ContentEvolutionBridge:
         self.root = self.state_root / "application" / "evolution_bridge"
         self.decisions_root = self.root / "strategy_decisions"
         self.trial_path = self.root / "content_strategy_trial.json"
+        self.superseded_trials_root = self.root / "superseded_trials"
         self.bootstrap_path = self.root / "historical_bootstrap.json"
 
     def _decision_path(self, prediction_id: str) -> Path:
@@ -537,14 +538,64 @@ class ContentEvolutionBridge:
             "recorded": recorded,
         }
 
+    @staticmethod
+    def _strategy_trial_contract_current(experiment: Any) -> bool:
+        return tuple(metric.name for metric in experiment.spec.metrics) == (
+            "pageviews_24h",
+        )
+
+    def _migrate_stale_trial_contract(self, *, as_of: datetime) -> dict[str, Any] | None:
+        state = _read_json(self.trial_path)
+        experiment_id = str(state.get("experiment_id") or "")
+        if not experiment_id:
+            return None
+        try:
+            experiment = self.runtime.evolution_experiment_manager.get(experiment_id)
+        except (AttributeError, KeyError):
+            return None
+        if self._strategy_trial_contract_current(experiment):
+            return None
+        if experiment.samples or self._trial_has_committed_action(state):
+            return {
+                "status": "LEGACY_TRIAL_PRESERVED",
+                "experiment_id": experiment_id,
+                "reason": "legacy frozen contract already has committed action or outcome evidence",
+            }
+        archived = {
+            **state,
+            "status": "SUPERSEDED_CONTRACT",
+            "superseded_at": _aware(as_of).isoformat(),
+            "superseded_reason": (
+                "prediction_error remains evidence but is not a content-strategy fitness constraint"
+            ),
+            "frozen_metrics": [metric.name for metric in experiment.spec.metrics],
+        }
+        _atomic_json(
+            self.superseded_trials_root / f"{experiment_id}.json",
+            archived,
+        )
+        self.trial_path.unlink(missing_ok=True)
+        return {
+            "status": "SUPERSEDED_CONTRACT",
+            "experiment_id": experiment_id,
+            "archived_metrics": archived["frozen_metrics"],
+        }
+
     def maybe_bootstrap_historical_learning(self, *, as_of: datetime) -> dict[str, Any]:
+        as_of = _aware(as_of)
+        migration = self._migrate_stale_trial_contract(as_of=as_of)
+        if migration and migration.get("status") == "LEGACY_TRIAL_PRESERVED":
+            return migration
         previous = _read_json(self.bootstrap_path)
         if (
             previous.get("status") == "OK"
             and int(previous.get("bootstrap_version") or 0) >= BOOTSTRAP_VERSION
+            and migration is None
         ):
             return {"status": "ALREADY_BOOTSTRAPPED", **previous}
         result = self.bootstrap_historical_learning(as_of=as_of)
+        if migration is not None:
+            result["trial_migration"] = migration
         if result.get("status") == "OK":
             _atomic_json(self.bootstrap_path, result)
         return result
@@ -782,7 +833,8 @@ class ContentEvolutionBridge:
         hypothesis = self.runtime.propose_evolution_insight(
             statement=(
                 f"If {candidate_profile} is genuinely better than the adaptive baseline, "
-                "a prospective randomized trial should reproduce the 24h pageview lift."
+                "a prospective randomized trial should reproduce the 24h pageview lift "
+                "without violating publication or evidence-safety constraints."
             ),
             proposed_change=(
                 f"Use {candidate_profile} only on candidate-arm cycles; keep existing adaptive "
@@ -819,7 +871,8 @@ class ContentEvolutionBridge:
             risk_budget=0.15,
             cost_budget=0.0,
         )
-        start = as_of + timedelta(minutes=1)
+        trial_now = max(_aware(as_of), _aware(self.runtime.clock.now()))
+        start = trial_now + timedelta(minutes=1)
         experiment = self.runtime.create_evolution_experiment(
             candidate.candidate_id,
             prospective_start_at=start,
@@ -870,7 +923,7 @@ class ContentEvolutionBridge:
             "prospective_end_at": experiment.spec.prospective_end_at.isoformat(),
             "diagnosis_id": diagnosis.diagnosis_id,
             "hypothesis_id": hypothesis.hypothesis_id,
-            "created_at": as_of.isoformat(),
+            "created_at": trial_now.isoformat(),
             "assignments": {},
             "post_promotion_regression_streak": 0,
             "supersedes_experiment_id": supersedes_experiment_id,

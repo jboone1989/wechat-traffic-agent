@@ -588,3 +588,192 @@ def test_publication_is_external_commitment_boundary_for_trial_refresh(
         blocked["candidate"]["broader_evidence_candidate_profile"]
         == "comparison-guide"
     )
+
+
+def test_stale_unsampled_trial_contract_is_archived_and_replaced(tmp_path):
+    from dataclasses import replace
+    import json
+
+    from agent_runtime.evolution import ExperimentMetric, MetricDirection
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=3)
+    for i, (profile, views) in enumerate([
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("follow-up-update", 7.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+        ("comparison-guide", 17.0),
+    ]):
+        _write_history(
+            state_root,
+            cycle=f"migration-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+
+    first = bridge.maybe_bootstrap_historical_learning(as_of=NOW)
+    old_id = first["candidate"]["experiment_id"]
+    old = rt.evolution_experiment_manager.get(old_id)
+    old.spec = replace(
+        old.spec,
+        metrics=(
+            ExperimentMetric(
+                "pageviews_24h",
+                MetricDirection.HIGHER_BETTER,
+                tolerance=0.25,
+                primary=True,
+            ),
+            ExperimentMetric(
+                "prediction_error",
+                MetricDirection.LOWER_BETTER,
+                tolerance=0.05,
+                primary=False,
+            ),
+        ),
+    )
+
+    second = bridge.maybe_bootstrap_historical_learning(
+        as_of=NOW + timedelta(minutes=2)
+    )
+
+    assert second["status"] == "OK"
+    assert second["trial_migration"]["status"] == "SUPERSEDED_CONTRACT"
+    assert second["trial_migration"]["experiment_id"] == old_id
+    archived = bridge.superseded_trials_root / f"{old_id}.json"
+    assert archived.exists()
+    archived_payload = json.loads(archived.read_text(encoding="utf-8"))
+    assert archived_payload["status"] == "SUPERSEDED_CONTRACT"
+    assert archived_payload["frozen_metrics"] == [
+        "pageviews_24h",
+        "prediction_error",
+    ]
+    new_id = second["candidate"]["experiment_id"]
+    assert new_id != old_id
+    new = rt.evolution_experiment_manager.get(new_id)
+    assert [metric.name for metric in new.spec.metrics] == ["pageviews_24h"]
+    assert rt.evolution_experiment_manager.get(old_id) is old
+
+
+def test_stale_trial_with_external_publication_is_preserved(tmp_path):
+    from dataclasses import replace
+    import json
+
+    from agent_runtime.evolution import ExperimentMetric, MetricDirection
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=3)
+    for i, (profile, views) in enumerate([
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("follow-up-update", 7.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+        ("comparison-guide", 17.0),
+    ]):
+        _write_history(
+            state_root,
+            cycle=f"preserve-contract-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+
+    first = bridge.maybe_bootstrap_historical_learning(as_of=NOW)
+    old_id = first["candidate"]["experiment_id"]
+    old = rt.evolution_experiment_manager.get(old_id)
+    old.spec = replace(
+        old.spec,
+        metrics=(
+            ExperimentMetric(
+                "pageviews_24h",
+                MetricDirection.HIGHER_BETTER,
+                tolerance=0.25,
+                primary=True,
+            ),
+            ExperimentMetric(
+                "prediction_error",
+                MetricDirection.LOWER_BETTER,
+                tolerance=0.05,
+                primary=False,
+            ),
+        ),
+    )
+    state = json.loads(bridge.trial_path.read_text(encoding="utf-8"))
+    cycle = "v2-legacy-published"
+    state["assignments"] = {
+        cycle: {
+            "arm": "BASELINE",
+            "profile_name": None,
+            "assigned_at": NOW.isoformat(),
+        }
+    }
+    bridge.trial_path.write_text(json.dumps(state) + "\n", encoding="utf-8")
+    committed = state_root / "content" / "continuous" / "cycles" / cycle
+    committed.mkdir(parents=True, exist_ok=True)
+    (committed / "publication.json").write_text("{}\n", encoding="utf-8")
+
+    second = bridge.maybe_bootstrap_historical_learning(
+        as_of=NOW + timedelta(minutes=2)
+    )
+
+    assert second["status"] == "LEGACY_TRIAL_PRESERVED"
+    assert second["experiment_id"] == old_id
+    assert bridge.trial_path.exists()
+    assert not (bridge.superseded_trials_root / f"{old_id}.json").exists()
+
+
+def test_historical_bootstrap_never_backdates_new_prospective_window(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=10)
+    for i, (profile, views) in enumerate([
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("follow-up-update", 7.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+        ("comparison-guide", 17.0),
+    ]):
+        _write_history(
+            state_root,
+            cycle=f"old-history-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+
+    result = bridge.bootstrap_historical_learning(
+        as_of=NOW - timedelta(days=5)
+    )
+
+    experiment = rt.evolution_experiment_manager.get(
+        result["candidate"]["experiment_id"]
+    )
+    assert experiment.spec.frozen_at == NOW
+    assert experiment.spec.prospective_start_at > NOW
