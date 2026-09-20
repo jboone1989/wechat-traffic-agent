@@ -878,7 +878,10 @@ class LiveAgentService:
             store=operator_memory.store,
         ) if operator_memory is not None else None
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
-        audience_analytics = AudienceAnalytics(self.state_root) if operator_console is not None else None
+        audience_analytics = AudienceAnalytics(
+            self.state_root,
+            access_log=Path(os.environ.get("CONTENT_NGINX_ACCESS_LOG", "/var/log/nginx/access.log")),
+        ) if operator_console is not None else None
 
         engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
