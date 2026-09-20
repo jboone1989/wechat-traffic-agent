@@ -172,3 +172,66 @@ def test_dream_replays_real_world_motor_experience_alongside_games(tmp_path: Pat
         "CHECK_X" in row["source_actions"] or "RESOURCE_REVIEW" in row["source_actions"]
         for row in result["dream"]["replays"]
     )
+
+
+def test_ferro_born_world_runs_on_same_substrate_with_unsemantic_actions(tmp_path: Path):
+    import json
+    from wechat_traffic_agent.developmental_agency import DevelopmentalAgency
+
+    transfer_path = tmp_path / "application" / "neural_transfer.json"
+    transfer_path.parent.mkdir(parents=True, exist_ok=True)
+    transfer_path.write_text(json.dumps({
+        "experiments": [
+            {
+                "experiment_id": f"transfer:{index:06d}",
+                "seq": index,
+                "assignment": arm,
+                "source_environment": "ROVER",
+                "target_task": "CHECK_X",
+                "status": "SETTLED",
+            }
+            for index, arm in enumerate(("TREATMENT", "TREATMENT", "TREATMENT", "CONTROL"), 1)
+        ]
+    }), encoding="utf-8")
+
+    agency = DevelopmentalAgency(tmp_path)
+    agency.refresh(
+        now=NOW,
+        neural_life={
+            "drives": {"evolution": 0.6},
+            "affect": {"frustration": 0.55, "confidence": 0.6},
+            "history": [],
+        },
+        neural_transfer={
+            "causal_design": "STRATIFIED_BY_SOURCE_TARGET_PAIR_V2",
+            "strata": {
+                "ROVER->CHECK_X": {
+                    "source_environment": "ROVER",
+                    "target_task": "CHECK_X",
+                    "complete": True,
+                    "estimated_target_utility_effect": -0.533333,
+                    "arms": {
+                        "TREATMENT": {"count": 3},
+                        "CONTROL": {"count": 1},
+                    },
+                }
+            },
+        },
+        neural_motor={"recent_decisions": []},
+    )
+
+    substrate = FakeSubstrate()
+    lab = FerroBrainLab(tmp_path, substrate=substrate)
+    result = lab.run_session(environment="WORLD_0001", steps=8, now=NOW)
+
+    assert result["status"] == "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM"
+    assert result["environment"] == "WORLD_0001"
+    assert len(substrate.stimuli) == 8
+    assert len(substrate.feedback) == 8
+    projection = lab.projection()
+    world = projection["generated_worlds"]["WORLD_0001"]
+    assert world["target_task"] == "CHECK_X"
+    assert world["avoids_environment"] == "ROVER"
+    assert world["steps"] == 8
+    assert set(projection["environments"]["WORLD_0001"]["last_action"]).issubset(set("A0123"))
+    assert projection["available_environments"][-1] == "WORLD_0001"
