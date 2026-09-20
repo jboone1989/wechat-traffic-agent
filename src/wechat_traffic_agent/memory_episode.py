@@ -39,6 +39,9 @@ class EpisodeMemoryService:
         prediction: str = "",
         prediction_error: str = "",
         related_episode_ids: Iterable[str] = (),
+        memory_refs: Iterable[str] = (),
+        tool_outcomes: Iterable[Mapping[str, Any]] = (),
+        evidence_refs: Iterable[str] = (),
         topics: Iterable[str] = (),
         importance: float = 0.8,
     ) -> EpisodeResult:
@@ -53,8 +56,21 @@ class EpisodeMemoryService:
         started_at = str(normalized[0].get("created_at") or "")
         ended_at = str(normalized[-1].get("created_at") or started_at)
         summary = self._summary(normalized, goal=goal, outcome=outcome, lesson=lesson)
+        extra_evidence = [str(item).strip() for item in evidence_refs if str(item).strip()]
+        durable_refs = [str(item).strip() for item in memory_refs if str(item).strip()]
+        normalized_tools = [
+            {
+                "capability_id": str(row.get("capability_id") or ""),
+                "receipt_id": str(row.get("receipt_id") or ""),
+                "status": str(row.get("status") or ""),
+                "ok": bool(row.get("ok")),
+                "evidence_ref": str(row.get("evidence_ref") or row.get("receipt_id") or ""),
+            }
+            for row in tool_outcomes
+            if isinstance(row, Mapping)
+        ]
         payload = {
-            "episode_schema": 1,
+            "episode_schema": 2,
             "started_at": started_at,
             "ended_at": ended_at,
             "actors": list(actors),
@@ -72,6 +88,8 @@ class EpisodeMemoryService:
             "related_episode_ids": [
                 str(item) for item in related_episode_ids if str(item).strip()
             ],
+            "memory_refs": list(dict.fromkeys(durable_refs)),
+            "tool_outcomes": normalized_tools,
             "derived_from": list(event_ids),
         }
         result = self.formation.form_many(
@@ -82,7 +100,7 @@ class EpisodeMemoryService:
                 "importance": importance,
                 "confidence": 1.0,
                 "source_refs": list(event_ids),
-                "evidence_refs": list(event_ids),
+                "evidence_refs": list(dict.fromkeys([*event_ids, *extra_evidence])),
                 "entities": list(actors),
                 "topics": [str(item) for item in topics if str(item).strip()],
                 "payload": payload,

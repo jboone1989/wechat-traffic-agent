@@ -107,7 +107,18 @@ class MemoryFormationPipeline:
         normalized = _normalize(text)
         duplicate = normalized_texts.get(normalized)
         supersedes = str(raw.get("supersedes") or "").strip()
-        if duplicate is not None and supersedes != str(duplicate.get("memory_id") or ""):
+        duplicate_is_distinct_episode = False
+        if duplicate is not None and memory_type == "EPISODIC":
+            incoming_payload = raw.get("payload") if isinstance(raw.get("payload"), Mapping) else {}
+            existing_payload = duplicate.get("payload") if isinstance(duplicate.get("payload"), Mapping) else {}
+            incoming_events = tuple(str(item) for item in incoming_payload.get("derived_from") or [])
+            existing_events = tuple(str(item) for item in existing_payload.get("derived_from") or [])
+            duplicate_is_distinct_episode = bool(incoming_events and existing_events and incoming_events != existing_events)
+        if (
+            duplicate is not None
+            and supersedes != str(duplicate.get("memory_id") or "")
+            and not duplicate_is_distinct_episode
+        ):
             return {
                 "status": "REJECTED",
                 "reason": "duplicate_memory",
