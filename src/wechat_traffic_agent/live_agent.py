@@ -835,11 +835,14 @@ class LiveAgentService:
         from .channels.agent_live_page import live_agent_document
         from .channels.neural_life_page import neural_life_document
         from .channels.agent_talk_page import talk_agent_document
+        from .website_engagement_client import first_party_engagement_script
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
         from .channels.operator_console_page import operator_console_document
         from .channels.operator_private_chat_page import operator_private_chat_document
         from .channels.operator_llm_audit_page import operator_llm_audit_document
+        from .channels.operator_audience_page import operator_audience_document
+        from .audience_analytics import AudienceAnalytics
         from .llm_audit import LLMRequestAuditStore
         from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
         from .memory_runtime import OwnerMemoryRuntime
@@ -872,18 +875,26 @@ class LiveAgentService:
             store=operator_memory.store,
         ) if operator_memory is not None else None
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
+        audience_analytics = AudienceAnalytics(self.state_root) if operator_console is not None else None
+
+        engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        def public_document(document: str) -> str:
+            if not engagement_enabled:
+                return document
+            return document.replace("</body>", first_party_engagement_script() + "</body>", 1)
 
         async def live_page(_request: Request):
-            return HTMLResponse(live_agent_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(live_agent_document()), headers={"Cache-Control": "no-cache"})
 
         async def talk_page(_request: Request):
-            return HTMLResponse(talk_agent_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(talk_agent_document()), headers={"Cache-Control": "no-cache"})
 
         async def neural_life_page(_request: Request):
-            return HTMLResponse(neural_life_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(neural_life_document()), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_page(_request: Request):
-            return HTMLResponse(brain_lab_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_status(_request: Request):
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
@@ -1034,6 +1045,27 @@ class LiveAgentService:
                     "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
                 ),
             })
+
+        async def operator_audience_page(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            return HTMLResponse(operator_audience_document(), headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+                    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+                ),
+            })
+
+        async def operator_audience_api(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            window = str(request.query_params.get("window") or "24h")
+            try:
+                payload = audience_analytics.snapshot(window=window)
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def operator_llm_requests(request: Request):
             if not operator_authorized(request):
@@ -2870,6 +2902,14 @@ class LiveAgentService:
             Route("/neural/", neural_life_page, methods=["GET"]),
             Route("/brain", brain_lab_page, methods=["GET"]),
             Route("/brain/", brain_lab_page, methods=["GET"]),
+            Route("/agents/ferro/live", live_page, methods=["GET"]),
+            Route("/agents/ferro/live/", live_page, methods=["GET"]),
+            Route("/agents/ferro/talk", talk_page, methods=["GET"]),
+            Route("/agents/ferro/talk/", talk_page, methods=["GET"]),
+            Route("/agents/ferro/neural", neural_life_page, methods=["GET"]),
+            Route("/agents/ferro/neural/", neural_life_page, methods=["GET"]),
+            Route("/agents/ferro/brain", brain_lab_page, methods=["GET"]),
+            Route("/agents/ferro/brain/", brain_lab_page, methods=["GET"]),
             Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
@@ -2883,6 +2923,9 @@ class LiveAgentService:
                 Route("/operator/chat/", operator_private_chat_page, methods=["GET"]),
                 Route("/operator/llm", operator_llm_audit_page, methods=["GET"]),
                 Route("/operator/llm/", operator_llm_audit_page, methods=["GET"]),
+                Route("/operator/audience", operator_audience_page, methods=["GET"]),
+                Route("/operator/audience/", operator_audience_page, methods=["GET"]),
+                Route("/operator/api/audience", operator_audience_api, methods=["GET"]),
                 Route("/operator/api/llm-requests", operator_llm_requests, methods=["GET"]),
                 Route("/operator/api/chat", operator_chat_get, methods=["GET"]),
                 Route("/operator/api/chat", operator_chat_post, methods=["POST"]),
