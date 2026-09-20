@@ -116,6 +116,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         status = client.get("/api/agent/status")
         reply = client.post("/api/agent/chat", json={"message": "What are you doing now?"})
         talk = client.get("/talk/")
+        neural = client.get("/neural/")
+        brain = client.get("/brain/")
 
     assert live.status_code == 200
     assert "LIVE · WAKEFUL CORE" in live.text
@@ -149,6 +151,14 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "agent-core" not in live.text
     assert talk.status_code == 200
     assert "What I’m thinking about" in talk.text
+    assert neural.status_code == 200
+    assert "FERRO NEURAL LIFE ROADMAP v1" in neural.text
+    assert "ROADMAP EVIDENCE MATRIX" in neural.text
+    assert "/api/agent/status" in neural.text
+    assert "/api/agent/brain-lab" in neural.text
+    assert "No fake events are generated" in neural.text
+    assert brain.status_code == 200
+    assert "Neural Life ↗" in brain.text
     assert "PUBLIC_REASONING_SUMMARY" in talk.text
     assert 'id="send" type="button"' in talk.text
     assert "addEventListener('click',sendMessage)" in talk.text
