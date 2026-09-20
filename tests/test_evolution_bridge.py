@@ -184,3 +184,154 @@ def test_trial_assignment_is_restart_stable_and_does_not_mutate_baseline_before_
     assert rt.evolution_experiment_manager.get(exp_id).stage.value == "PROSPECTIVE_TRIAL"
     active = rt.evolution_capability_registry.active(STRATEGY_CAPABILITY_ID)
     assert active.implementation_ref == STRATEGY_BASELINE_IMPL
+
+
+def _live_decision(
+    bridge: ContentEvolutionBridge,
+    root: Path,
+    *,
+    cycle: str,
+    created_at: datetime,
+):
+    context = bridge.preferred_profile(cycle=cycle, now=created_at)
+    preferred = context.get("profile_name")
+    forecasts = forecast_strategy_candidates(
+        state_root=root,
+        account="https://example.test",
+        topic="prospective-test",
+        as_of=created_at,
+        mind_strategy_context=None,
+    )
+    folder = root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    strategy = bind_content_strategy(
+        folder / "content_strategy.json",
+        state_root=root,
+        account="https://example.test",
+        cycle=cycle,
+        topic="prospective-test",
+        traffic_signal=_traffic("prospective-test"),
+        decided_at=created_at,
+        preferred_profile_name=preferred,
+        action_forecasts=forecasts,
+    )
+    prediction = bind_action_prediction(
+        folder / "action_prediction.json",
+        cycle=cycle,
+        topic="prospective-test",
+        strategy_id=strategy.strategy_id,
+        selected_profile_name=strategy.profile.name,
+        created_at=created_at,
+        candidate_forecasts=forecasts,
+    )
+    bridge.record_strategy_decision(
+        cycle=cycle,
+        strategy=strategy,
+        prediction=prediction,
+        trial_context=context,
+    )
+    return context, prediction, strategy
+
+
+def test_real_prospective_samples_can_promote_and_later_use_is_tracked(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=3)
+    for i, (profile, views) in enumerate([
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+    ]):
+        _write_history(
+            state_root,
+            cycle=f"hist-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+    bootstrap = bridge.bootstrap_historical_learning(as_of=NOW)
+    candidate_profile = bootstrap["candidate"]["candidate_profile"]
+    clock.advance(61)
+
+    arm_counts = {"BASELINE": 0, "CANDIDATE": 0}
+    created = []
+    index = 0
+    while min(arm_counts.values()) < 3 and index < 100:
+        created_at = clock.now() + timedelta(minutes=index)
+        cycle = f"v2-prospective-{int(created_at.timestamp())}"
+        context, prediction, strategy = _live_decision(
+            bridge, state_root, cycle=cycle, created_at=created_at
+        )
+        arm = context["arm"]
+        if arm_counts[arm] >= 3:
+            index += 1
+            continue
+        arm_counts[arm] += 1
+        created.append((context, prediction, strategy, created_at))
+        index += 1
+
+    assert arm_counts == {"BASELINE": 3, "CANDIDATE": 3}
+    for context, prediction, strategy, created_at in created:
+        is_candidate = context["arm"] == "CANDIDATE"
+        expected = float(prediction.selected.mature.expected_pageviews)
+        actual = (
+            max(12.0, expected * 1.2)
+            if is_candidate
+            else max(0.0, expected * 0.2)
+        )
+        outcome = ActionPredictionOutcome(
+            prediction_id=prediction.prediction_id,
+            publication_id=f"pub-{prediction.cycle}",
+            topic=prediction.topic,
+            profile_name=strategy.profile.name,
+            window="24h",
+            maturity="MATURE",
+            expected_pageviews=expected,
+            actual_pageviews=actual,
+            prediction_error=abs(actual - expected) / (actual + expected + 1.0),
+            reliability=1.0,
+            observed_at=created_at + timedelta(hours=24),
+            evidence_refs=(f"world:{prediction.cycle}",),
+        )
+        bridge.record_action_outcomes([outcome.model_dump(mode="json")])
+
+    active = rt.evolution_capability_registry.active(STRATEGY_CAPABILITY_ID)
+    assert active.implementation_ref == PROFILE_IMPL_PREFIX + candidate_profile
+    assert active.rollback_target is not None
+    assert len(rt.evolution_capability_activations) == 1
+
+    clock.advance(24 * 3600)
+    context, prediction, strategy = _live_decision(
+        bridge,
+        state_root,
+        cycle=f"v2-post-promotion-{int(clock.now().timestamp())}",
+        created_at=clock.now(),
+    )
+    assert context["mode"] == "PROMOTED"
+    assert context["profile_name"] == candidate_profile
+    outcome = ActionPredictionOutcome(
+        prediction_id=prediction.prediction_id,
+        publication_id="pub-post-promotion",
+        topic=prediction.topic,
+        profile_name=strategy.profile.name,
+        window="24h",
+        maturity="MATURE",
+        expected_pageviews=8.0,
+        actual_pageviews=12.0,
+        prediction_error=4.0 / 21.0,
+        reliability=1.0,
+        observed_at=clock.now() + timedelta(hours=24),
+        evidence_refs=("world:post-promotion",),
+    )
+    bridge.record_action_outcomes([outcome.model_dump(mode="json")])
+    active = rt.evolution_capability_registry.active(STRATEGY_CAPABILITY_ID)
+    assert active.usage_count == 1
+    assert active.success_count == 1
