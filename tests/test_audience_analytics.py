@@ -65,6 +65,9 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
     assert data["status"] == "OK"
     assert data["summary"]["visitors"] == 2
     assert data["summary"]["pageviews"] == 6
+    assert data["summary"]["pageview_source"] == "FIRST_PARTY"
+    assert data["summary"]["http_pageviews"] is None
+    assert data["summary"]["first_party_pageviews"] == 6
     assert data["summary"]["sessions"] == 3
     assert data["summary"]["returning_visitors"] == 1
     assert data["summary"]["engaged_readers_30s"] == 1
@@ -92,6 +95,39 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
     assert data["privacy"]["visitor_level_rows_exposed"] is False
     assert data["privacy"]["known_operator_browser_events_excluded"] is True
     assert data["privacy"]["historical_unclassified_events_may_include_operator"] is True
+
+
+def test_audience_snapshot_uses_existing_nginx_history_before_first_party_coverage(tmp_path):
+    root = tmp_path / "state"
+    log = tmp_path / "access.log"
+    log.write_text(
+        '\n'.join([
+            '203.0.113.10 - - [20/Sep/2026:10:00:00 +0000] "GET / HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+            '203.0.113.11 - - [20/Sep/2026:10:05:00 +0000] "GET / HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+            '203.0.113.12 - - [20/Sep/2026:10:10:00 +0000] "GET /agents/ferro/ HTTP/1.1" 200 100 "-" "Mozilla/5.0"',
+            '203.0.113.13 - - [20/Sep/2026:10:15:00 +0000] "GET / HTTP/1.1" 200 100 "-" "Googlebot/2.1"',
+            '203.0.113.14 - - [20/Sep/2026:10:20:00 +0000] "GET /missing HTTP/1.1" 404 10 "-" "Mozilla/5.0"',
+        ]) + '\n',
+        encoding="utf-8",
+    )
+
+    data = AudienceAnalytics(root, access_log=log).snapshot(window="24h", now=T)
+    assert data["status"] == "HTTP_ONLY"
+    assert data["summary"]["pageviews"] == 3
+    assert data["summary"]["pageview_source"] == "NGINX_HTTP"
+    assert data["summary"]["http_pageviews"] == 3
+    assert data["summary"]["first_party_pageviews"] == 0
+    assert data["summary"]["visitors"] == 0
+    assert data["top_pages"][:2] == [
+        {"route": "/", "pageviews": 2},
+        {"route": "/agents/ferro/", "pageviews": 1},
+    ]
+    assert data["http"]["status"] == "OK"
+    assert data["first_party"]["status"] == "NO_COVERAGE"
+    serialized = json.dumps(data)
+    assert "203.0.113." not in serialized
+    assert "Mozilla/5.0" not in serialized
+    assert "Googlebot" not in serialized
 
 
 def test_audience_snapshot_reports_missing_coverage_truthfully(tmp_path):
