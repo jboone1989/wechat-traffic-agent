@@ -6,6 +6,7 @@ from pathlib import Path
 from wechat_traffic_agent.neural_organ_handoff import (
     AUDIT_EVERY,
     MIN_PER_ARM,
+    MAX_SILENT_FALLBACKS,
     NeuralOrganHandoff,
 )
 
@@ -72,7 +73,7 @@ def test_without_emergent_organ_python_baseline_remains_authoritative(tmp_path: 
         substrate_projection={"developmental_neurogenesis": {}},
     )
 
-    assert decision["status"] == "NO_ELIGIBLE_EMERGENT_ORGAN"
+    assert decision["status"] == "NO_ACTIVE_EMERGENT_ORGAN"
     assert decision["authority"] == "PYTHON_BASELINE"
     assert decision["environment"] == "PONG"
     assert decision["trial"] is None
@@ -239,3 +240,45 @@ def test_handoff_state_round_trip_preserves_authority_and_associations(tmp_path:
     assert projection["selected_organ_id"] == "organ_001"
     assert projection["trial_count"] == MIN_PER_ARM * 2
     assert "organ_001" in projection["associations"]
+
+
+
+def test_handoff_rolls_back_when_selected_organ_stays_silent(tmp_path: Path):
+    controller = NeuralOrganHandoff(tmp_path)
+
+    for index in range(MIN_PER_ARM * 2):
+        decision = controller.choose(
+            now=NOW,
+            brain_lab=brain_lab(index),
+            substrate_projection=substrate(),
+        )
+        settle_decision(
+            controller,
+            decision,
+            utility=0.60 if decision["authority"] == "NEURAL_ORGAN" else 0.55,
+        )
+    assert controller.projection()["phase"] == "NEURAL_AUTHORITY"
+
+    silent_projection = substrate(active_members=())
+    silent_projection["developmental_neurogenesis"]["last_organ_activity"]["organs"][0][
+        "activation"
+    ] = 0.0
+    silent_projection["developmental_neurogenesis"]["last_organ_activity"]["organs"][0][
+        "active_member_count"
+    ] = 0
+
+    statuses = []
+    for index in range(MAX_SILENT_FALLBACKS):
+        decision = controller.choose(
+            now=NOW,
+            brain_lab=brain_lab(200 + index),
+            substrate_projection=silent_projection,
+        )
+        statuses.append(decision["status"])
+        assert decision["authority"] == "PYTHON_BASELINE"
+        assert decision["trial"] is None
+
+    assert statuses[-1] == "ROLLED_BACK_SILENT_ORGAN"
+    projection = controller.projection()
+    assert projection["phase"] == "PYTHON_ROLLBACK"
+    assert projection["rollback_reason"] == "EMERGENT_ORGAN_NO_LONGER_ACTIVE"
