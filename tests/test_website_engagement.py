@@ -11,7 +11,7 @@ from wechat_traffic_agent.website_engagement_client import first_party_engagemen
 T = datetime(2026, 9, 15, tzinfo=timezone.utc)
 
 
-def _payload(event_id, visitor, session, event_type="page_view", route="/articles/a/", *, acquisition="unknown", device_class="unknown"):
+def _payload(event_id, visitor, session, event_type="page_view", route="/articles/a/", *, acquisition="unknown", device_class="unknown", audience_class="public"):
     return {
         "schema_version": "website-engagement-event.v1",
         "event_id": event_id,
@@ -21,6 +21,7 @@ def _payload(event_id, visitor, session, event_type="page_view", route="/article
         "route": route,
         "acquisition": acquisition,
         "device_class": device_class,
+        "audience_class": audience_class,
     }
 
 
@@ -57,6 +58,7 @@ def test_legacy_payload_defaults_to_unknown_dimensions(tmp_path):
     row = store.events(start=T - timedelta(seconds=1), end=T + timedelta(seconds=1))[0]
     assert row.acquisition == "unknown"
     assert row.device_class == "unknown"
+    assert row.audience_class == "public"
 
 
 def test_duplicate_event_is_idempotent_and_conflict_fails(tmp_path):
@@ -110,6 +112,8 @@ def test_browser_beacon_is_same_origin_cookie_free_and_only_sends_coarse_dimensi
     assert "engaged_30s" in script and "internal_link_click" in script
     assert "document.referrer" in script
     assert "navigator.userAgent" in script
-    assert "acquisition,device_class" in script
+    assert "acquisition,device_class,audience_class" in script
+    assert "lr_audience_role" in script
+    assert "lr_acq" in script
     assert "referrer:" not in script
     assert "user_agent:" not in script
