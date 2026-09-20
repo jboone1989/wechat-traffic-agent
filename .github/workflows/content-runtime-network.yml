@@ -29,6 +29,9 @@ on:
       - "src/wechat_traffic_agent/wakeful_tasks.py"
       - "src/wechat_traffic_agent/resource_scout.py"
       - "src/wechat_traffic_agent/channels/agent_live_page.py"
+      - "src/wechat_traffic_agent/channels/operator_audience_page.py"
+      - "src/wechat_traffic_agent/audience_analytics.py"
+      - "tests/test_audience_analytics.py"
       - "src/wechat_traffic_agent/automatic_website.py"
       - "src/wechat_traffic_agent/website_experiment.py"
       - "src/wechat_traffic_agent/website_experiment_evaluation.py"
@@ -128,6 +131,8 @@ jobs:
           src/wechat_traffic_agent/wakeful_tasks.py
           src/wechat_traffic_agent/resource_scout.py
           src/wechat_traffic_agent/channels/agent_live_page.py
+          src/wechat_traffic_agent/channels/operator_audience_page.py
+          src/wechat_traffic_agent/audience_analytics.py
           src/wechat_traffic_agent/website_experiment.py
           src/wechat_traffic_agent/website_experiment_evaluation.py
           src/wechat_traffic_agent/sources/runtime_web.py
