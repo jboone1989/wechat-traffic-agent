@@ -452,12 +452,53 @@ class NeuralOrganHandoff:
 
     def projection(self) -> dict[str, Any]:
         phase = str(self.state.get("phase") or "EVALUATING")
-        initial = self._evaluate_initial_handoff(
-            datetime.now(timezone.utc)
-        ) if phase == "EVALUATING" else None
-        audit = self._evaluate_authority_audit(
-            datetime.now(timezone.utc)
-        ) if phase == "NEURAL_AUTHORITY" else None
+        initial_rows = self._evaluation_rows(phase="EVALUATING")
+        neural_count, neural_mean = self._arm_mean(initial_rows, {"NEURAL_ORGAN"})
+        python_count, python_mean = self._arm_mean(initial_rows, {"PYTHON_BASELINE"})
+        initial_effect = (
+            None if neural_mean is None or python_mean is None
+            else round(neural_mean - python_mean, 6)
+        )
+        initial = {
+            "status": (
+                "COLLECTING_EVIDENCE"
+                if neural_count < MIN_PER_ARM or python_count < MIN_PER_ARM
+                else "EVIDENCE_COMPLETE"
+            ),
+            "ready": neural_count >= MIN_PER_ARM and python_count >= MIN_PER_ARM,
+            "neural_count": neural_count,
+            "python_count": python_count,
+            "mean_neural_utility": neural_mean,
+            "mean_python_utility": python_mean,
+            "effect_neural_minus_python": initial_effect,
+            "noninferior_margin": NONINFERIOR_MARGIN,
+            "rollback_margin": ROLLBACK_MARGIN,
+        } if phase == "EVALUATING" else None
+
+        audit_rows = self._evaluation_rows(phase="NEURAL_AUTHORITY")
+        audit_neural_count, audit_neural_mean = self._arm_mean(audit_rows, {"NEURAL_ORGAN"})
+        python_audit_count, python_audit_mean = self._arm_mean(audit_rows, {"PYTHON_AUDIT"})
+        audit_effect = (
+            None if audit_neural_mean is None or python_audit_mean is None
+            else round(audit_neural_mean - python_audit_mean, 6)
+        )
+        audit = {
+            "status": (
+                "AUDITING"
+                if audit_neural_count < MIN_PER_ARM or python_audit_count < MIN_PER_ARM
+                else "EVIDENCE_COMPLETE"
+            ),
+            "ready": (
+                audit_neural_count >= MIN_PER_ARM
+                and python_audit_count >= MIN_PER_ARM
+            ),
+            "neural_count": audit_neural_count,
+            "python_audit_count": python_audit_count,
+            "mean_neural_utility": audit_neural_mean,
+            "mean_python_audit_utility": python_audit_mean,
+            "effect_neural_minus_python": audit_effect,
+            "rollback_margin": ROLLBACK_MARGIN,
+        } if phase == "NEURAL_AUTHORITY" else None
         return {
             "schema_version": SCHEMA,
             "function_id": FUNCTION_ID,
