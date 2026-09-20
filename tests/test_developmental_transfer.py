@@ -151,3 +151,56 @@ def test_pending_trial_blocks_second_intervention(tmp_path: Path):
 
     assert second["status"] == "PENDING_EXISTS"
     assert second["trial"]["trial_id"] == first["trial"]["trial_id"]
+
+
+def test_shutdown_checkpoint_is_inconclusive_and_excluded_from_effect(tmp_path: Path):
+    agency = AgencyStub()
+    brain = BrainLabStub(tmp_path)
+    lab = DevelopmentalWorldTransferLab(tmp_path, brain_lab=brain, agency=agency)
+
+    started = lab.begin(now=NOW)
+    row = lab.settle_target(
+        task="CHECK_X",
+        result={"task": "CHECK_X", "status": "SHUTDOWN_CHECKPOINT"},
+        observed_at=NOW,
+    )
+
+    assert row is not None
+    assert row["status"] == "INCONCLUSIVE"
+    assert row["target_outcome"]["utility"] is None
+    projection = lab.projection()
+    assert projection["settled_count"] == 0
+    assert projection["worlds"]["WORLD_0001"]["arms"]["TREATMENT"]["count"] == 0
+    assert projection["worlds"]["WORLD_0001"]["arms"]["CONTROL"]["count"] == 0
+
+
+def test_restart_migrates_old_shutdown_trial_out_of_causal_sample(tmp_path: Path):
+    agency = AgencyStub()
+    brain = BrainLabStub(tmp_path)
+    path = tmp_path / "application" / "developmental_transfer.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": "ferro-developmental-transfer.v1",
+        "updated_at": NOW.isoformat(),
+        "seq": 1,
+        "trials": [{
+            "trial_id": "development-transfer:world_0001:000001",
+            "seq": 1,
+            "world_id": "WORLD_0001",
+            "target_task": "CHECK_X",
+            "assignment": "CONTROL",
+            "status": "SETTLED",
+            "target_outcome": {
+                "observed_at": NOW.isoformat(),
+                "status": "SHUTDOWN_CHECKPOINT",
+                "utility": -0.85,
+            },
+        }],
+    }), encoding="utf-8")
+
+    lab = DevelopmentalWorldTransferLab(tmp_path, brain_lab=brain, agency=agency)
+    projection = lab.projection()
+
+    assert projection["settled_count"] == 0
+    assert projection["recent"][0]["status"] == "INCONCLUSIVE"
+    assert projection["recent"][0]["target_outcome"]["utility"] is None
