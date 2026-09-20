@@ -129,6 +129,8 @@ class WakefulContentTaskRunner:
                 return self._neural_development(now)
             if task == "NEURAL_DEVELOPMENT_TRANSFER":
                 return self._neural_development_transfer(now)
+            if task == "NEURAL_EVOLUTION_CONSOLIDATION":
+                return self._neural_evolution_consolidation(now)
             if task == "RESOURCE_REVIEW":
                 return self._resource(now)
             if task == "REFLECT":
@@ -191,6 +193,13 @@ class WakefulContentTaskRunner:
         result = self.wakeful.run_development_transfer(now, training_steps=12)
         return {
             "task": "NEURAL_DEVELOPMENT_TRANSFER",
+            **result,
+        }
+
+    def _neural_evolution_consolidation(self, now: datetime) -> dict[str, Any]:
+        result = self.wakeful.run_evolution_consolidation(now, steps=24)
+        return {
+            "task": "NEURAL_EVOLUTION_CONSOLIDATION",
             **result,
         }
 
