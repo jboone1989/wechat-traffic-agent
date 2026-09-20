@@ -97,16 +97,17 @@ def test_real_target_outcome_settles_prospective_trial(tmp_path: Path):
     assert lab.pending() is None
 
 
-def test_projection_never_claims_causality_without_both_arms_and_minimum_trials(tmp_path: Path):
+def test_projection_requires_source_target_stratification_before_causal_claim(tmp_path: Path):
     substrate = FakeSubstrate()
     lab = CrossDomainTransferLab(tmp_path, substrate=substrate, brain_lab=FakeBrainLab(substrate))
 
-    # Force eight deterministic prospective rows with four in each arm.
-    experiments = []
+    # Total arm counts alone are insufficient when all observations come from
+    # one task pair: task difficulty would be confounded with assignment.
+    single_pair = []
     for i in range(8):
         assignment = "TREATMENT" if i % 2 else "CONTROL"
-        experiments.append({
-            "experiment_id": f"transfer:{i}",
+        single_pair.append({
+            "experiment_id": f"transfer:single:{i}",
             "seq": i,
             "assignment": assignment,
             "source_environment": "MAZE",
@@ -119,14 +120,41 @@ def test_projection_never_claims_causality_without_both_arms_and_minimum_trials(
                 "utility": 0.8 if assignment == "TREATMENT" else 0.3,
             },
         })
-    lab.state["experiments"] = experiments[:7]
+    lab.state["experiments"] = single_pair
     projection = lab.projection()
     assert projection["causal_claim_ready"] is False
+    assert projection["complete_strata_count"] == 1
+    assert projection["estimated_target_utility_effect"] is None
+    assert projection["pooled_unadjusted_target_utility_effect"] == 0.5
 
-    lab.state["experiments"] = experiments
+    # Minimal stratified gate: every predefined source->target pair must have
+    # prospective treatment and control evidence, in addition to total counts.
+    balanced = []
+    seq = 1
+    for source_environment, target_task in PAIRS:
+        for assignment in ("TREATMENT", "CONTROL"):
+            balanced.append({
+                "experiment_id": f"transfer:balanced:{seq}",
+                "seq": seq,
+                "assignment": assignment,
+                "source_environment": source_environment,
+                "target_task": target_task,
+                "status": "SETTLED",
+                "probe_delta": 1.0 if assignment == "TREATMENT" else 0.2,
+                "target_outcome": {
+                    "observed_at": NOW.isoformat(),
+                    "status": "OK",
+                    "utility": 0.8 if assignment == "TREATMENT" else 0.3,
+                },
+            })
+            seq += 1
+    lab.state["experiments"] = balanced
     projection = lab.projection()
     assert projection["causal_claim_ready"] is True
+    assert projection["complete_strata_count"] == len(PAIRS)
     assert projection["estimated_target_utility_effect"] == 0.5
+    assert projection["pooled_unadjusted_target_utility_effect"] == 0.5
+    assert all(row["complete"] for row in projection["strata"].values())
     assert projection["arms"]["TREATMENT"]["mean_probe_delta"] == 1.0
     assert projection["arms"]["CONTROL"]["mean_probe_delta"] == 0.2
 
