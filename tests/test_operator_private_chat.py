@@ -259,6 +259,7 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert "和 Ferro 私下交流" in page.text
         assert "Goal Drafts" in page.text
         assert "长期记忆" in page.text
+        assert "本轮行为输入证据" in page.text
         assert "/operator/api/chat/stream" in page.text
 
         forbidden = client.post("/operator/api/chat", json={"message": "hello"})
@@ -273,6 +274,11 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         body = sent.json()
         assert body["proposal"]["status"] == "DRAFT"
         assert body["memory_runtime"]["episode_id"]
+        trace = body["behavioral_inputs"]
+        assert trace["schema_version"] == "ferro-owner-behavioral-inputs.v1"
+        assert trace["context_memory_count"] == len(trace["context_memory_ids"])
+        assert trace["meaning"].startswith("runtime inputs supplied")
+        assert body["message"]["metadata"]["behavioral_inputs"] == trace
         episode = CanonicalMemoryStore(root).get_memory(body["memory_runtime"]["episode_id"])
         assert episode is not None and episode["memory_type"] == "EPISODIC"
         assert episode["access_scope"] == "PRIVATE_OWNER"
@@ -316,6 +322,15 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert visible_reply == "这个目标已经足够具体，我先把它整理成目标草案，正式激活前不会执行。"
         assert events[-1]["type"] == "done"
         assert events[-1]["transport"] == "native"
+        streamed_ferro = next(
+            row for row in reversed(events[-1]["history"])
+            if row["role"] == "ferro"
+        )
+        streamed_trace = streamed_ferro["metadata"]["behavioral_inputs"]
+        assert streamed_trace["schema_version"] == "ferro-owner-behavioral-inputs.v1"
+        assert "development_acceptance" in streamed_trace
+        assert "personality_traits" in streamed_trace
+        assert '"context_memory_count"' in backend.provider.stream_calls[0][0]
 
         activated = client.post(
             "/operator/api/chat/goals/" + proposal_id.replace(":", "%3A") + "/activate",
