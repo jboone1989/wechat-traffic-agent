@@ -131,6 +131,8 @@ class ContentWakefulRuntime:
         )
         from .neural_extensions import NeuralSelfExtension
         self.neural_extensions = NeuralSelfExtension(self.state_root)
+        from .neural_organ_handoff import NeuralOrganHandoff
+        self.neural_organ_handoff = NeuralOrganHandoff(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -646,7 +648,57 @@ class ContentWakefulRuntime:
 
     def run_brain_lab(self, now: datetime | None = None, *, environment: str | None = None, steps: int = 12) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        result = self.brain_lab.run_session(environment=environment, steps=steps, now=now)
+        handoff = None
+        chosen_environment = environment
+        if environment is None:
+            substrate = getattr(self.core.reflex, "substrate", None)
+            substrate_projection = {}
+            if substrate is not None and hasattr(substrate, "projection"):
+                value = substrate.projection()
+                substrate_projection = dict(value) if isinstance(value, dict) else {}
+            handoff = self.neural_organ_handoff.choose(
+                now=now,
+                brain_lab=self.brain_lab.projection(),
+                substrate_projection=substrate_projection,
+            )
+            chosen_environment = str(handoff.get("environment") or "") or None
+
+        result = self.brain_lab.run_session(
+            environment=chosen_environment,
+            steps=steps,
+            now=now,
+        )
+        settled = None
+        if isinstance(handoff, dict):
+            trial = handoff.get("trial")
+            if isinstance(trial, dict) and trial.get("decision_id"):
+                settled = self.neural_organ_handoff.settle(
+                    decision_id=str(trial["decision_id"]),
+                    result=result,
+                    observed_at=now,
+                )
+            result = {
+                **dict(result),
+                "organ_handoff": {
+                    "decision": handoff,
+                    "settled": settled,
+                },
+            }
+        elif environment is not None:
+            result = {
+                **dict(result),
+                "organ_handoff": {
+                    "decision": {
+                        "status": "EXPLICIT_ENVIRONMENT_OVERRIDE",
+                        "environment": str(environment).upper(),
+                        "authority": "CALLER_EXPLICIT",
+                        "trial": None,
+                        "external_action_authority": False,
+                    },
+                    "settled": None,
+                },
+            }
+
         # Brain Lab deliberately trains the same persistent production connectome.
         # Persist the reflex checkpoint immediately so game learning survives a crash.
         persist = getattr(self.core, "_persist", None)
@@ -1043,6 +1095,7 @@ class ContentWakefulRuntime:
             "developmental_agency": self.developmental_agency.projection(),
             "developmental_world_transfer": self.developmental_world_transfer.projection(),
             "neural_extensions": self.neural_extensions.projection(),
+            "neural_organ_handoff": self.neural_organ_handoff.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
