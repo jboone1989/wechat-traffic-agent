@@ -6,6 +6,7 @@ explicit publication-attribution contract are intentionally ignored.
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import gzip
@@ -210,6 +211,61 @@ class WebsiteOutcomeCollector:
                     raise ValueError("Website experiment strategy attribution does not match binding")
             rows.append(raw)
         return rows, legacy
+
+
+def aggregate_http_pageviews(
+    access_log: Path,
+    *,
+    start: datetime,
+    end: datetime,
+) -> dict:
+    """Aggregate non-bot HTTP pageviews without retaining client identifiers."""
+    start, end = _aware_utc(start), _aware_utc(end)
+    if not start < end:
+        raise ValueError("HTTP audience window must be non-empty")
+    logs = _read_logs(Path(access_log))
+    eligible = [
+        event for event in logs.events
+        if event.eligible and start <= event.observed_at < end
+    ]
+    route_counts = Counter(event.route for event in eligible)
+    hourly = (end - start) <= timedelta(days=2)
+    buckets: dict[str, int] = {}
+    for event in eligible:
+        observed = event.observed_at.astimezone(timezone.utc)
+        if hourly:
+            bucket = observed.replace(minute=0, second=0, microsecond=0).isoformat()
+        else:
+            bucket = observed.date().isoformat()
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+    return {
+        "pageviews": len(eligible),
+        "top_pages": [
+            {"route": route, "pageviews": int(count)}
+            for route, count in route_counts.most_common(20)
+        ],
+        "trend": [
+            {"bucket": bucket, "pageviews": int(buckets[bucket])}
+            for bucket in sorted(buckets)
+        ],
+        "coverage": {
+            "first_seen": logs.first_seen.isoformat() if logs.first_seen else None,
+            "last_seen": logs.last_seen.isoformat() if logs.last_seen else None,
+            "parsed_lines": logs.parsed_lines,
+            "files": list(logs.files),
+            "partial": (
+                logs.first_seen is None
+                or logs.last_seen is None
+                or logs.first_seen > start
+                or logs.last_seen < end
+            ),
+        },
+        "metric_definition": METRIC_DEFINITION,
+        "privacy": (
+            "Aggregated from parsed requests in memory; client IP, raw user-agent, "
+            "referrer and request lines are not returned or persisted by this helper."
+        ),
+    }
 
 
 def _report(status: str, **extra) -> dict:
