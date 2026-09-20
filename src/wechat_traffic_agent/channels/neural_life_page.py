@@ -195,10 +195,10 @@ function render(status,lab){
   ['Function label',organ.function_label||'NONE · still observational'],
   ['Dominant channels',(organ.dominant_parent_channels||[]).join(' · ')||'—']
  ]:[]);
- const genome=dev.developmental_genome||{}, nearest=genome.nearest_computational_anchor||{}, selections=Array.isArray(genome.recent_selection)?genome.recent_selection:[];rows('genome-detail',genome.schema_version?[
-  ['selected mutations',fmt(genome.mutation_count)+' · divergence '+n(genome.divergence_from_ancestral).toFixed(4)],
+ const devGenome=dev.developmental_genome||{}, nearest=devGenome.nearest_computational_anchor||{}, selections=Array.isArray(devGenome.recent_selection)?devGenome.recent_selection:[];rows('genome-detail',devGenome.schema_version?[
+  ['selected mutations',fmt(devGenome.mutation_count)+' · divergence '+n(devGenome.divergence_from_ancestral).toFixed(4)],
   ['nearest computational anchor',(nearest.name||'ancestral').replaceAll('_',' ')+' · distance '+n(nearest.distance).toFixed(4)],
-  ['biological claim',genome.biological_claim?'YES':'NO · computational prior only'],
+  ['biological claim',devGenome.biological_claim?'YES':'NO · computational prior only'],
   ['latest selection',selections.length?'utility '+n(selections.at(-1).utility).toFixed(4)+' · '+fmt(selections.at(-1).fired_synthetic_count)+' synthetic neurons fired':'no selection event']
  ]:[]);
  const swaps=Array.isArray((wake.cortex_continuity||{}).recent_swaps)?wake.cortex_continuity.recent_swaps:[];timeline('cortex-swaps',swaps.slice(-8).reverse().map(s=>({at:s.observed_at,title:((s.from||{}).selected_resource_id||'cortex').split(':').slice(0,3).join(':')+' → '+((s.to||{}).selected_resource_id||'cortex').split(':').slice(0,3).join(':'),detail:'continuity '+((s.continuity||{}).status||'UNKNOWN')+' · habits '+fmt(((s.lineage_after_swap||{}).motor_habits||[]).length)+' · births '+fmt((s.lineage_after_swap||{}).birth_seq)})));
