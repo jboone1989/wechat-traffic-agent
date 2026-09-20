@@ -96,3 +96,33 @@ def test_schema1_procedure_can_be_selected_as_baseline_variant_before_next_revis
     assert selected["steps"] == ["fetch", "verify"]
     assert selected["execution_count"] == 2
     assert selected["policy_reason"] == "BASELINE_UNTIL_MATURE"
+
+
+def test_verified_failure_creates_uncredited_bounded_recovery_challenger(tmp_path):
+    service = ProceduralMemoryService(tmp_path)
+    current = service.learn_procedure(
+        name="owner-readonly:web.fetch",
+        description="Fetch safely.",
+        preconditions=["ready"],
+        capabilities=["web.fetch"],
+        steps=["invoke web.fetch"],
+        verification=["receipt"],
+        source_type="VERIFIED_EXECUTION_OUTCOME",
+        source_ref="receipt:start",
+        evidence_refs=["receipt:start"],
+        success_count=1,
+    )
+    revised = service.record_outcome(
+        current["memory_id"],
+        success=False,
+        evidence_ref="receipt:failure",
+        failure_mode="INVOCATION_FAILED",
+        recovery_step="inspect required invocation parameters and retry once when the retry is bounded and safe",
+        variant_steps=["invoke web.fetch"],
+    )
+    variants = revised["payload"]["variants"]
+    retry = next(row for row in variants if row.get("policy_action") == "RETRY_ONCE_SAFE")
+    assert retry["execution_count"] == 0
+    assert retry["success_count"] == 0
+    assert retry["failure_count"] == 0
+    assert revised["payload"]["failure_count"] == 1

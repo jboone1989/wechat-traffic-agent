@@ -114,14 +114,14 @@ def test_candidate_promotion_requires_benchmark_improvement_without_protected_re
     )
     assert experiment["challenger_result"]["score"] > experiment["baseline_result"]["score"]
     decision = engine.decide(experiment["experiment_id"])
-    assert decision["status"] == "PROMOTED"
+    assert decision["status"] == "ELIGIBLE_FOR_RUNTIME_PROMOTION"
     assert decision["protected_regressions"] == []
+    assert not (tmp_path / "application" / "memory_system" / "active_recall_policy.json").exists()
 
-    # A new router consumes only the promoted, benchmark-backed policy.
+    # Evaluating a challenger must not activate it outside Runtime Evolution.
     engine.baseline_weights = None
     router = MemoryRouter(tmp_path, store=store)
-    assert router.weights.vector_weight == 3.0
-    assert router.recall("hardware overloaded machine capacity", limit=1)[0]["memory_id"] == "m:resource"
+    assert router.weights.vector_weight != 3.0
 
 
 def test_protected_category_regression_blocks_promotion(tmp_path):
@@ -176,7 +176,7 @@ def test_recall_failure_can_run_automatic_benchmark_and_policy_decision(tmp_path
         detail="I forgot a durable resource preference during paraphrased recall.",
     )
     result = engine.run_cycle(minimum_cases=4)
-    assert result["status"] in {"PROMOTED", "REJECTED"}
+    assert result["status"] == "EVALUATED_AWAITING_RUNTIME_EVOLUTION"
     assert result["experiment_id"].startswith("memory-experiment:")
     assert signal["signal_id"] in result["processed_signal_ids"]
     assert result["challenger_score"] >= result["baseline_score"]

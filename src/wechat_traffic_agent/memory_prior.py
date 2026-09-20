@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ class MemoryDecisionPrior:
 
     def strategy_prior(self, *, topic: str) -> dict[str, Any]:
         topic = str(topic).strip()
+        started = time.perf_counter()
         episodes = self.store.query_memories(
             memory_types=["EPISODIC"],
             statuses=["ACTIVE"],
@@ -120,7 +122,7 @@ class MemoryDecisionPrior:
         self.observatory.record_retrieval(
             query=f"content strategy memory prior for topic {topic}",
             retrieved_memory_ids=retrieved,
-            recall_latency_ms=0.0,
+            recall_latency_ms=(time.perf_counter() - started) * 1000.0,
             source="memory-decision-prior",
         )
         return {

@@ -9,12 +9,20 @@ from typing import Any, Mapping
 from agent_runtime.evolution import (
     EvidenceClass,
     EvidenceMetric,
+    ExperimentArm,
     ExperimentMetric,
+    ExperimentResult,
+    ExperimentStage,
     MetricDirection,
     MutationRequirement,
 )
 
-from .memory_evolution import MemoryEvolutionEngine, architecture_fingerprint
+from .memory_evolution import (
+    MemoryBenchmarkCase,
+    MemoryEvolutionEngine,
+    architecture_fingerprint,
+)
+from .memory_retrieval import RecallWeights
 from .memory_observation import MemoryLifeObservatory
 
 
@@ -38,6 +46,10 @@ ALLOWED_CANDIDATE_TYPES = frozenset({
     "SKILL_VARIANT_PROMOTION",
     "INDEX_CONFIGURATION_CHANGE",
 })
+
+RECALL_CAPABILITY_ID = "memory.recall.policy"
+RECALL_MIN_PROSPECTIVE_SAMPLES = 2
+RECALL_ROLLBACK_FAILURE_THRESHOLD = 2
 
 
 def _aware(value: Any) -> datetime:
@@ -109,10 +121,275 @@ class MemoryRuntimeEvolutionBridge:
                 dedup[row["source_ref"]] = row
         return list(dedup.values())
 
+    @staticmethod
+    def _policy_ref(weights: Mapping[str, Any]) -> str:
+        payload = json.dumps(dict(weights), sort_keys=True, separators=(",", ":"))
+        import hashlib
+        return "memory.recall.policy:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+    def _write_active_policy(
+        self,
+        *,
+        weights: Mapping[str, Any],
+        capability_version_id: str,
+        candidate_id: str,
+        experiment_id: str,
+        status: str,
+    ) -> None:
+        path = self.state_root / "application" / "memory_system" / "active_recall_policy.json"
+        row = {
+            "policy_schema": 2,
+            "authority": "agent-runtime-evolution",
+            "status": status,
+            "capability_version_id": capability_version_id,
+            "candidate_id": candidate_id,
+            "experiment_id": experiment_id,
+            "architecture_fingerprint": architecture_fingerprint(),
+            "weights": dict(weights),
+            "activated_at": _aware(self.runtime.clock.now()).isoformat(),
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+
+    def _prospective_memories(self, start_at: datetime, end_at: datetime) -> list[dict[str, Any]]:
+        rows = self.memory_evolution.store.query_memories(
+            memory_types=["SEMANTIC", "EPISODIC", "PROCEDURAL"],
+            statuses=["ACTIVE"],
+            access_scope="PRIVATE_OWNER",
+            limit=5000,
+        )
+        selected = []
+        for row in rows:
+            raw = str(row.get("created_at") or "")
+            if not raw:
+                continue
+            try:
+                created = _aware(raw)
+            except Exception:
+                continue
+            if start_at <= created < end_at:
+                selected.append(row)
+        selected.sort(key=lambda row: str(row.get("created_at") or ""))
+        return selected[:24]
+
+    def _memory_trial_metrics(
+        self,
+        row: Mapping[str, Any],
+        *,
+        weights: RecallWeights,
+        now: datetime,
+    ) -> dict[str, float]:
+        memory_id = str(row.get("memory_id") or "")
+        memory_type = str(row.get("memory_type") or "SEMANTIC")
+        text = str(row.get("text") or "").strip()
+        probe = self.memory_evolution._semantic_probe(row)
+        if not memory_id or len(text) < 8:
+            return {"memory_recall_quality": 0.0, "memory_exact_recall": 0.0}
+        exact = MemoryBenchmarkCase(
+            case_id="prospective-exact:" + memory_id,
+            query=text[:320],
+            expected_ids=(memory_id,),
+            category="exact",
+            limit=5,
+            memory_types=(memory_type,),
+            access_scope="PRIVATE_OWNER",
+            now=now,
+        )
+        semantic = MemoryBenchmarkCase(
+            case_id="prospective-semantic:" + memory_id,
+            query=(probe or text[:320]),
+            expected_ids=(memory_id,),
+            category="semantic",
+            limit=5,
+            memory_types=(memory_type,),
+            access_scope="PRIVATE_OWNER",
+            now=now,
+        )
+        exact_result = self.memory_evolution.benchmark.run([exact], weights=weights)
+        semantic_result = self.memory_evolution.benchmark.run([semantic], weights=weights)
+        exact_case = exact_result["cases"][0]
+        semantic_case = semantic_result["cases"][0]
+        return {
+            "memory_recall_quality": float(semantic_case.get("reciprocal_rank") or 0.0),
+            "memory_exact_recall": float(exact_case.get("reciprocal_rank") or 0.0),
+        }
+
+    def _advance_recall_trial(
+        self,
+        proposal: dict[str, Any],
+    ) -> dict[str, Any]:
+        if str(proposal.get("status") or "") in {
+            "PROMOTED", "ROLLED_BACK", "REJECTED_REGRESSION", "REJECTED_NO_IMPROVEMENT",
+        }:
+            return proposal
+        experiment_id = str(proposal.get("experiment_id") or "")
+        candidate_id = str(proposal.get("candidate_id") or "")
+        if not experiment_id or not candidate_id:
+            return proposal
+        experiment = self.runtime.evolution_experiment_manager.get(experiment_id)
+        now = _aware(self.runtime.clock.now())
+        if experiment.stage is ExperimentStage.SHADOW:
+            if now < experiment.spec.prospective_start_at:
+                proposal["stage"] = "SHADOW"
+                proposal["status"] = "WAITING_PROSPECTIVE_START"
+                return proposal
+            experiment = self.runtime.begin_evolution_prospective_trial(experiment_id)
+        proposal["stage"] = str(getattr(experiment.stage, "value", experiment.stage))
+        if experiment.stage is not ExperimentStage.PROSPECTIVE_TRIAL:
+            return proposal
+
+        baseline = RecallWeights.from_mapping(dict(proposal.get("baseline_weights") or {}))
+        challenger = RecallWeights.from_mapping(dict(proposal.get("challenger_weights") or {}))
+        existing = {
+            (str(sample.arm.value), str(sample.experience_id))
+            for sample in experiment.samples
+        }
+        added = []
+        memories = self._prospective_memories(
+            experiment.spec.prospective_start_at,
+            min(now, experiment.spec.prospective_end_at),
+        )
+        for row in memories:
+            memory_id = str(row.get("memory_id") or "")
+            event_at = _aware(str(row.get("created_at") or ""))
+            if event_at >= now:
+                continue
+            for arm, weights in (
+                (ExperimentArm.BASELINE, baseline),
+                (ExperimentArm.CANDIDATE, challenger),
+            ):
+                domain_ref = f"memory-recall-prospective:{experiment_id}:{arm.value}:{memory_id}"
+                experience = self.runtime.record_domain_evolution_experience(
+                    domain_event_ref=domain_ref,
+                    observed_at=event_at,
+                    effective_at=event_at,
+                    context_refs=["memory-system", "prospective-recall", arm.value],
+                    confidence=1.0,
+                )
+                if (arm.value, experience.experience_id) in existing:
+                    continue
+                metrics = self._memory_trial_metrics(row, weights=weights, now=now)
+                evidence = self.runtime.record_evolution_evidence(
+                    experience.experience_id,
+                    evidence_class=EvidenceClass.SYSTEM_MEASURED,
+                    settled_at=now,
+                    outcome_id=domain_ref + ":outcome",
+                    outcome_success=metrics["memory_recall_quality"] > 0.0,
+                    process_score=1.0,
+                    quality_score=max(0.0, min(1.0, metrics["memory_recall_quality"])),
+                    metrics=[
+                        EvidenceMetric("memory_recall_quality", metrics["memory_recall_quality"], "score"),
+                        EvidenceMetric("memory_exact_recall", metrics["memory_exact_recall"], "score"),
+                    ],
+                    confidence=1.0,
+                    evidence_refs=[memory_id, domain_ref],
+                )
+                sample = self.runtime.add_evolution_trial_sample(
+                    experiment_id,
+                    arm=arm,
+                    experience_id=experience.experience_id,
+                    evidence_refs=[evidence.evidence_id],
+                    known_at=now,
+                    metric_values=metrics,
+                )
+                added.append(sample.sample_id)
+                existing.add((arm.value, experience.experience_id))
+
+        evaluation = self.runtime.evaluate_evolution_experiment(experiment_id)
+        proposal["prospective"] = {
+            "added_sample_ids": added,
+            "baseline_samples": evaluation.baseline_samples,
+            "candidate_samples": evaluation.candidate_samples,
+            "result": str(getattr(evaluation.result, "value", evaluation.result)),
+            "evaluation_id": evaluation.evaluation_id,
+        }
+        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+            active = None
+            try:
+                active = self.runtime.evolution_capability_registry.active(RECALL_CAPABILITY_ID)
+            except KeyError:
+                active = None
+            if active is None or str(active.candidate_id) != candidate_id:
+                capability = self.runtime.promote_evolution_candidate(
+                    capability_id=RECALL_CAPABILITY_ID,
+                    candidate_id=candidate_id,
+                    experiment_id=experiment_id,
+                    evaluation_id=evaluation.evaluation_id,
+                    applicability_context=["canonical-memory-recall", "private-owner-memory"],
+                    confidence=0.9,
+                )
+            else:
+                capability = active
+            self._write_active_policy(
+                weights=proposal["challenger_weights"],
+                capability_version_id=capability.version_id,
+                candidate_id=candidate_id,
+                experiment_id=experiment_id,
+                status="PROMOTED",
+            )
+            proposal["status"] = "PROMOTED"
+            proposal["capability_version_id"] = capability.version_id
+            proposal["promoted_at"] = now.isoformat()
+        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
+            proposal["status"] = "REJECTED_REGRESSION"
+        elif evaluation.result is ExperimentResult.NO_IMPROVEMENT:
+            proposal["status"] = (
+                "REJECTED_NO_IMPROVEMENT"
+                if now >= experiment.spec.prospective_end_at
+                else "PROSPECTIVE_TRIAL_NO_IMPROVEMENT_YET"
+            )
+        else:
+            proposal["status"] = "PROSPECTIVE_TRIAL"
+        return proposal
+
+    def _maybe_rollback_recall_policy(self, proposal: dict[str, Any]) -> dict[str, Any]:
+        if proposal.get("status") != "PROMOTED":
+            return proposal
+        promoted_at = _aware(proposal.get("promoted_at"))
+        failures = []
+        for row in self._sources():
+            if CANDIDATE_SPECS[row["kind"]][0] != "RECALL_WEIGHT_CHANGE":
+                continue
+            try:
+                observed = _aware(row.get("observed_at"))
+            except Exception:
+                continue
+            if observed > promoted_at:
+                failures.append(row)
+        if len(failures) < RECALL_ROLLBACK_FAILURE_THRESHOLD:
+            return proposal
+        capability = self.runtime.rollback_evolution_capability(
+            RECALL_CAPABILITY_ID,
+            reason="repeated measured recall failures after promoted memory recall policy",
+            evidence_refs=[row["source_ref"] for row in failures[-RECALL_ROLLBACK_FAILURE_THRESHOLD:]],
+        )
+        self._write_active_policy(
+            weights=proposal["baseline_weights"],
+            capability_version_id=capability.version_id,
+            candidate_id=str(capability.candidate_id),
+            experiment_id=str(capability.experiment_id),
+            status="ROLLED_BACK",
+        )
+        proposal["status"] = "ROLLED_BACK"
+        proposal["rolled_back_at"] = _aware(self.runtime.clock.now()).isoformat()
+        proposal["rollback_failure_refs"] = [
+            row["source_ref"] for row in failures[-RECALL_ROLLBACK_FAILURE_THRESHOLD:]
+        ]
+        return proposal
+
     def sync(self) -> dict[str, Any]:
         state = self._state()
         processed = set(str(item) for item in state.get("processed_refs") or [])
         candidate_state = dict(state.get("candidates") or {})
+        existing_recall = candidate_state.get("RECALL_WEIGHT_CHANGE")
+        if isinstance(existing_recall, dict):
+            existing_recall = self._advance_recall_trial(dict(existing_recall))
+            existing_recall = self._maybe_rollback_recall_policy(existing_recall)
+            candidate_state["RECALL_WEIGHT_CHANGE"] = existing_recall
         new = [row for row in self._sources() if row["source_ref"] not in processed]
         evidence_by_type: dict[str, list[str]] = defaultdict(list)
         projected = []
@@ -230,14 +507,25 @@ class MemoryRuntimeEvolutionBridge:
             if challenger_score <= baseline_score + 1e-12:
                 continue
 
+            baseline_weights = self.memory_evolution.active_weights().as_dict()
+            challenger_weights = challenger.as_dict()
+            baseline_ref = self._policy_ref(baseline_weights)
+            challenger_ref = self._policy_ref(challenger_weights)
+            self.runtime.register_evolution_capability_baseline(
+                capability_id=RECALL_CAPABILITY_ID,
+                implementation_ref=baseline_ref,
+                evidence_refs=known_evidence[-32:],
+                applicability_context=["canonical-memory-recall", "private-owner-memory"],
+                confidence=1.0,
+            )
             candidate = self.runtime.propose_evolution_candidate(
                 requirement=requirement,
-                target=target + ":" + candidate_type.lower(),
+                target=challenger_ref,
                 description=(
                     f"Evaluate {candidate_type} because measured memory-use failures recur; "
                     "keep canonical memory, provenance, authority and rollback invariants frozen."
                 ),
-                baseline_ref="memory-architecture:" + architecture_fingerprint(),
+                baseline_ref=baseline_ref,
                 rollback_plan="restore prior persisted memory policy/configuration",
                 evidence_refs=known_evidence[-32:],
                 expected_fitness={"memory_recall_quality": 1.0},
@@ -261,7 +549,13 @@ class MemoryRuntimeEvolutionBridge:
                         MetricDirection.HIGHER_BETTER,
                         tolerance=0.0,
                         primary=True,
-                    )
+                    ),
+                    ExperimentMetric(
+                        "memory_exact_recall",
+                        MetricDirection.NON_REGRESSION,
+                        tolerance=0.0,
+                        primary=False,
+                    ),
                 ],
                 min_samples_per_arm=2,
                 regression_evidence_refs=known_evidence[-32:],
@@ -286,6 +580,11 @@ class MemoryRuntimeEvolutionBridge:
                 "stage": str(getattr(shadow.stage, "value", shadow.stage)),
                 "evidence_refs": known_evidence[-32:],
                 "replay": replay,
+                "baseline_weights": baseline_weights,
+                "challenger_weights": challenger_weights,
+                "baseline_policy_ref": baseline_ref,
+                "challenger_policy_ref": challenger_ref,
+                "status": "WAITING_PROSPECTIVE_START",
             }
             candidate_state[candidate_type] = proposal
             proposals.append(proposal)
