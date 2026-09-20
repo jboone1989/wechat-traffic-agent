@@ -17,9 +17,20 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip()).casefold()
 
 
+_ENGLISH_STOPWORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "before", "but", "by", "did",
+    "do", "does", "for", "from", "had", "has", "have", "how", "if", "in", "is",
+    "it", "of", "on", "or", "that", "the", "then", "this", "to", "was", "were",
+    "what", "when", "where", "which", "who", "why", "with", "would", "you", "your",
+})
+
+
 def _terms(text: str) -> list[str]:
     value = _normalize(text)
-    ascii_terms = re.findall(r"[a-z0-9_]{2,}", value)
+    ascii_terms = [
+        term for term in re.findall(r"[a-z0-9_]{2,}", value)
+        if term not in _ENGLISH_STOPWORDS
+    ]
     cjk = "".join(re.findall(r"[\u3400-\u9fff]", value))
     cjk_terms = [cjk[i:i + 2] for i in range(max(0, len(cjk) - 1))]
     if len(cjk) == 1:
@@ -237,7 +248,7 @@ class MemoryRouter:
             created_to=plan.created_to,
             entity=plan.entity,
             topic=plan.topic,
-            limit=max(50, int(limit) * int(self.weights.search_multiplier)),
+            limit=5000,
         )
         allowed = {str(row["memory_id"]): row for row in structured}
         search_limit = max(50, int(limit) * int(self.weights.search_multiplier))
@@ -245,22 +256,25 @@ class MemoryRouter:
         vector = self.vector.search(query, limit=search_limit)
         lexical_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(lexical)}
         vector_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(vector)}
-        constrained = bool(
-            plan.created_from or plan.created_to or plan.entity or plan.topic
-            or plan.memory_types or source_type or access_scope
+        structured_relevance = bool(
+            plan.created_from or plan.created_to or plan.entity or plan.topic or plan.memory_types
         )
-        if constrained:
+        search_ids = (set(lexical_rank) | set(vector_rank)) & set(allowed)
+        if structured_relevance:
             candidate_ids = set(allowed)
         else:
-            candidate_ids = set(allowed) | set(lexical_rank) | set(vector_rank)
+            candidate_ids = search_ids
+            if not candidate_ids:
+                candidate_ids = {
+                    memory_id for memory_id, row in allowed.items()
+                    if float(row.get("importance") or 0.0) >= 0.9
+                }
         candidates: list[tuple[float, dict[str, Any]]] = []
         for memory_id in candidate_ids:
             row = allowed.get(memory_id) or self.store.get_memory(memory_id)
             if row is None:
                 continue
             if not plan.historical and str(row.get("status") or "ACTIVE") != "ACTIVE":
-                continue
-            if constrained and memory_id not in allowed:
                 continue
             score = 0.0
             if memory_id in lexical_rank:
@@ -271,7 +285,7 @@ class MemoryRouter:
                 score += self.weights.vector_weight / (
                     self.weights.rrf_k + vector_rank[memory_id]
                 )
-            if memory_id in allowed:
+            if structured_relevance:
                 score += self.weights.structured_weight / self.weights.rrf_k
             score += float(row.get("importance") or 0.0) * self.weights.importance_weight
             score += float(row.get("confidence") or 0.0) * self.weights.confidence_weight

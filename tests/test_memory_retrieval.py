@@ -74,3 +74,26 @@ def test_fts_index_is_rebuildable_and_finds_chinese_bigrams(tmp_path):
         connection.execute("DELETE FROM memory_fts")
     assert index.rebuild() == 1
     assert index.search("磁盘不足")[0][0] == "m:resource"
+
+
+def test_access_scope_filters_without_making_every_private_memory_relevant(tmp_path):
+    store = CanonicalMemoryStore(tmp_path)
+    _add(
+        store,
+        "m:resource",
+        "资源压力出现时，先优化现有容量；不足再迁移可重建工作到低信任机器。",
+        created_at="2026-09-18T08:00:00Z",
+    )
+    _add(
+        store,
+        "m:recent-unrelated",
+        "Operator console should show a simple dashboard.",
+        created_at="2026-09-20T09:00:00Z",
+    )
+    router = MemoryRouter(tmp_path, store=store)
+    rows = router.recall(
+        "If hardware is overloaded and capacity is tight, what comes before moving disposable work to an unreliable machine?",
+        limit=1,
+        access_scope="PRIVATE_OWNER",
+    )
+    assert [row["memory_id"] for row in rows] == ["m:resource"]
