@@ -234,12 +234,15 @@ class MemoryLifeRuntime:
         relation = self._record_capability_relation(action, capabilities, refs[0]) if success else None
         evolution = {"status": "NO_NEW_SIGNALS"}
         if not success:
-            self.evolution.observe_signal(
+            signal = self.evolution.observe_signal(
                 "PROCEDURE_FAILURE",
                 evidence_ref=refs[0],
                 detail=f"{action} failed: {failure_mode or outcome}"[:1000],
             )
-            evolution = self.evolution.run_cycle()
+            evolution = {
+                "status": "ROUTED_TO_RUNTIME_EVOLUTION",
+                "signal_id": str(signal.get("signal_id") or ""),
+            }
         knowledge = self._consolidate_topic(topic=topic, source_ref=episode.memory_id)
         checkpoint = self._checkpoint_process_memory()
         return {

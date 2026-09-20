@@ -366,15 +366,16 @@ class MemoryEvolutionEngine:
             evidence_refs=[str(row.get("signal_id") or row.get("evidence_ref") or "") for row in pending],
             rationale="automatic memory recall-policy experiment from observed memory failures",
         )
-        decision = self.decide(str(experiment["experiment_id"]))
+        baseline_score = float((experiment.get("baseline_result") or {}).get("score") or 0.0)
+        challenger_score = float((experiment.get("challenger_result") or {}).get("score") or 0.0)
         out = {
-            "status": str(decision.get("status") or ""),
+            "status": "EVALUATED_AWAITING_RUNTIME_EVOLUTION",
             "experiment_id": str(experiment["experiment_id"]),
             "processed_signal_count": len(rows),
             "processed_signal_ids": [str(row.get("signal_id") or "") for row in pending],
-            "baseline_score": float((experiment.get("baseline_result") or {}).get("score") or 0.0),
-            "challenger_score": float((experiment.get("challenger_result") or {}).get("score") or 0.0),
-            "protected_regressions": list(decision.get("protected_regressions") or []),
+            "baseline_score": baseline_score,
+            "challenger_score": challenger_score,
+            "improved": challenger_score > baseline_score + 1e-12,
             "completed_at": _utc_iso(),
         }
         self._write_cycle_state(out)
@@ -415,9 +416,9 @@ class MemoryEvolutionEngine:
 
     def decide(self, experiment_id: str) -> dict[str, Any]:
         row = self._read_experiment(experiment_id)
-        if row.get("status") not in {"EVALUATED", "PROMOTED", "REJECTED"}:
+        if row.get("status") not in {"EVALUATED", "ELIGIBLE_FOR_RUNTIME_PROMOTION", "REJECTED"}:
             raise ValueError("experiment is not evaluable")
-        if row.get("status") in {"PROMOTED", "REJECTED"}:
+        if row.get("status") in {"ELIGIBLE_FOR_RUNTIME_PROMOTION", "REJECTED"}:
             return row
         if str(row.get("architecture_fingerprint") or "") != architecture_fingerprint():
             raise ValueError("memory architecture invariants changed during experiment")
@@ -433,18 +434,9 @@ class MemoryEvolutionEngine:
                 regressions.append(category)
         improved = float(challenger.get("score") or 0.0) > float(baseline.get("score") or 0.0) + 1e-12
         if improved and not regressions:
-            decision = "PROMOTED"
-            policy = {
-                "policy_schema": 1,
-                "promoted_at": _utc_iso(),
-                "experiment_id": experiment_id,
-                "architecture_fingerprint": architecture_fingerprint(),
-                "benchmark_fingerprint": row["benchmark_fingerprint"],
-                "weights": dict(row["challenger_weights"]),
-            }
-            tmp = self.policy_path.with_suffix(".json.tmp")
-            tmp.write_text(_json(policy) + "\n", encoding="utf-8")
-            tmp.replace(self.policy_path)
+            # MemoryEvolutionEngine is an evaluator, never an activation authority.
+            # Only Agent Runtime Evolution may promote and materialize active policy.
+            decision = "ELIGIBLE_FOR_RUNTIME_PROMOTION"
         else:
             decision = "REJECTED"
         row["status"] = decision

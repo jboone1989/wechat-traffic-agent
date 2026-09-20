@@ -176,6 +176,21 @@ class MemoryLifeObservatory:
                 rows.append(value)
         return rows[-max(1, min(int(limit), 100000)):]
 
+    def latest_unsettled_retrieval(self) -> dict[str, Any] | None:
+        rows = self.rows(limit=10000)
+        settled = {
+            str(row.get("parent_use_id") or "")
+            for row in rows
+            if row.get("event_type") == "SETTLEMENT" and str(row.get("parent_use_id") or "")
+        }
+        for row in reversed(rows):
+            if row.get("event_type") != "RETRIEVAL":
+                continue
+            use_id = str(row.get("memory_use_id") or "")
+            if use_id and use_id not in settled:
+                return row
+        return None
+
     def decision_use(self, decision_ref: str, *, cycle: str = "") -> dict[str, Any] | None:
         decision_ref = str(decision_ref).strip()
         cycle = str(cycle).strip()

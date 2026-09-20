@@ -229,7 +229,8 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
                             opening_mode: str | None = None,
                             preferred_profile_name: str | None = None,
                             mind_strategy_context: Mapping[str, Any] | None = None,
-                            action_forecasts: Mapping[str, Any] | None = None) -> ContentStrategyBinding:
+                            action_forecasts: Mapping[str, Any] | None = None,
+                            record_memory_use: bool = True) -> ContentStrategyBinding:
     if as_of.utcoffset() is None:
         raise ValueError("strategy cutoff must be timezone-aware")
     as_of = as_of.astimezone(timezone.utc)
@@ -431,7 +432,7 @@ def choose_content_strategy(*, state_root: Path, account: str, cycle: str, topic
         prediction_information_gain_by_profile=forecast_information,
         prediction_evidence_refs=tuple(dict.fromkeys(forecast_refs)),
     )
-    if memory_prior_applied and selected_memory_ids:
+    if record_memory_use and memory_prior_applied and selected_memory_ids:
         MemoryLifeObservatory(Path(state_root)).record_decision_use(
             query=f"select content strategy for {topic}",
             retrieved_memory_ids=memory_prior_ids,

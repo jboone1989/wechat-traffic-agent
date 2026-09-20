@@ -127,6 +127,7 @@ def test_memory_prior_is_derived_from_lived_outcomes_and_changes_same_input_deci
     assert with_memory.memory_prior_memory_ids
     assert "bounded strategy prior" in with_memory.decision_reason
     assert baseline.profile.name != with_memory.profile.name or baseline.memory_prior_applied is False
+    events_before_replay = MemoryLifeObservatory(tmp_path).metrics()["event_count"]
     replay = replay_memory_prior_ab(
         state_root=tmp_path,
         account="https://example.test",
@@ -136,6 +137,7 @@ def test_memory_prior_is_derived_from_lived_outcomes_and_changes_same_input_deci
         as_of=NOW,
         mind_strategy_context={**empty_context, "memory_prior": prior},
     )
+    assert MemoryLifeObservatory(tmp_path).metrics()["event_count"] == events_before_replay
     assert replay["baseline_profile"] == baseline.profile.name
     assert replay["memory_assisted_profile"] == with_memory.profile.name
     assert replay["causal_claim"] is False
@@ -283,8 +285,126 @@ def test_memory_failures_enter_total_evolution_engine_only_after_replay_improves
     assert recall["stage"] == "SHADOW"
     assert recall["replay"]["challenger_score"] > recall["replay"]["baseline_score"]
     candidate = next(row for row in rt.evolution_candidates if row.candidate_id == recall["candidate_id"])
-    assert candidate.target.endswith(":recall_weight_change")
+    assert candidate.target.startswith("memory.recall.policy:")
     assert candidate.mutation_layer.value == "RETRIEVAL"
     assert "RECALL_WEIGHT_CHANGE" in ALLOWED_CANDIDATE_TYPES
     projected_refs = {row["source_ref"] for row in result["projected_failures"]}
     assert {first["signal_id"], second["signal_id"]}.issubset(projected_refs)
+
+    # New memories formed after the frozen prospective start become genuine future trial data.
+    rt.clock.advance(120)
+    store = CanonicalMemoryStore(state_root)
+    for index, seconds in enumerate((90, 100, 110)):
+        created = (NOW + __import__("datetime").timedelta(seconds=seconds)).isoformat()
+        store.append_memory({
+            "memory_id": f"m:prospective:{index}",
+            "memory_type": "SEMANTIC",
+            "kind": "OWNER_PREFERENCE",
+            "text": f"prospective unique memory quartz-signal-{index} says prefer bounded verification {index}",
+            "created_at": created,
+            "status": "ACTIVE",
+            "source_type": "OWNER_CONVERSATION",
+            "source_ref": f"owner:prospective:{index}",
+            "access_scope": "PRIVATE_OWNER",
+            "importance": 0.7,
+            "confidence": 1.0,
+        })
+    second_sync = bridge.sync()
+    advanced = next(
+        row for row in second_sync["candidates"]
+        if row.get("candidate_type") == "RECALL_WEIGHT_CHANGE"
+    )
+    assert advanced["stage"] == "PROSPECTIVE_TRIAL"
+    assert advanced["prospective"]["baseline_samples"] >= 2
+    assert advanced["prospective"]["candidate_samples"] >= 2
+    assert advanced["prospective"]["result"] in {
+        "IMPROVEMENT_OBSERVED", "NO_IMPROVEMENT", "REGRESSION_OBSERVED"
+    }
+    if advanced["prospective"]["result"] == "IMPROVEMENT_OBSERVED":
+        assert advanced["status"] == "PROMOTED"
+        policy = json.loads(
+            (state_root / "application" / "memory_system" / "active_recall_policy.json").read_text()
+        )
+        assert policy["authority"] == "agent-runtime-evolution"
+        assert policy["capability_version_id"] == advanced["capability_version_id"]
+
+
+def test_runtime_evolution_is_only_recall_policy_promotion_authority_and_can_rollback(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "runtime-promotion"
+    state_root = tmp_path / "state-promotion"
+    rt = AgentRuntime.bootstrap(runtime_root, clock=FrozenClock(NOW))
+    _seed_benchmark_memories(state_root)
+    engine = MemoryEvolutionEngine(state_root)
+    engine.observe_signal("RECALL_FAILURE", evidence_ref="owner:promotion:1", detail="miss one")
+    engine.observe_signal("RECALL_FAILURE", evidence_ref="owner:promotion:2", detail="miss two")
+    bridge = MemoryRuntimeEvolutionBridge(runtime=rt, state_root=state_root)
+    first = bridge.sync()
+    recall = next(row for row in first["candidates"] if row["candidate_type"] == "RECALL_WEIGHT_CHANGE")
+    assert recall["stage"] == "SHADOW"
+
+    # Force a deterministic prospective quality difference while still using real Runtime
+    # experiment/evidence/sample/promotion machinery.
+    def trial_metrics(row, *, weights, now):
+        better = float(weights.vector_weight) > 0.0 or float(weights.lexical_weight) > 0.0
+        return {
+            "memory_recall_quality": 1.0 if better else 0.2,
+            "memory_exact_recall": 1.0,
+        }
+    monkeypatch.setattr(bridge, "_memory_trial_metrics", trial_metrics)
+
+    rt.clock.advance(120)
+    store = CanonicalMemoryStore(state_root)
+    for index, seconds in enumerate((90, 100, 110)):
+        store.append_memory({
+            "memory_id": f"m:promotion:{index}",
+            "memory_type": "SEMANTIC",
+            "kind": "OWNER_PREFERENCE",
+            "text": f"prospective promotion memory {index} with unique evidence token",
+            "created_at": (NOW + __import__("datetime").timedelta(seconds=seconds)).isoformat(),
+            "status": "ACTIVE",
+            "source_type": "OWNER_CONVERSATION",
+            "source_ref": f"owner:promotion:new:{index}",
+            "access_scope": "PRIVATE_OWNER",
+            "importance": 0.7,
+            "confidence": 1.0,
+        })
+    second = bridge.sync()
+    promoted = next(row for row in second["candidates"] if row["candidate_type"] == "RECALL_WEIGHT_CHANGE")
+    assert promoted["status"] == "PROMOTED"
+    assert promoted["prospective"]["result"] == "IMPROVEMENT_OBSERVED"
+    policy_path = state_root / "application" / "memory_system" / "active_recall_policy.json"
+    policy = json.loads(policy_path.read_text())
+    assert policy["authority"] == "agent-runtime-evolution"
+    assert policy["status"] == "PROMOTED"
+    active = rt.evolution_capability_registry.active("memory.recall.policy")
+    assert active.version_id == promoted["capability_version_id"]
+    assert active.rollback_target is not None
+
+    # Two measured post-promotion recall failures trigger Runtime rollback first,
+    # then materialize the restored baseline policy.
+    promoted_at = __import__("datetime").datetime.fromisoformat(promoted["promoted_at"])
+    later1 = (promoted_at + __import__("datetime").timedelta(seconds=10)).isoformat()
+    later2 = (promoted_at + __import__("datetime").timedelta(seconds=20)).isoformat()
+    monkeypatch.setattr(bridge, "_sources", lambda: [
+        {
+            "source_ref": "memory-use:post-promotion-failure-1",
+            "kind": "MISSED_RECALL",
+            "detail": "miss after promotion one",
+            "observed_at": later1,
+            "evidence_refs": ["owner:post:1"],
+        },
+        {
+            "source_ref": "memory-use:post-promotion-failure-2",
+            "kind": "MISSED_RECALL",
+            "detail": "miss after promotion two",
+            "observed_at": later2,
+            "evidence_refs": ["owner:post:2"],
+        },
+    ])
+    rolled = bridge._maybe_rollback_recall_policy(dict(promoted))
+    assert rolled["status"] == "ROLLED_BACK"
+    restored = json.loads(policy_path.read_text())
+    assert restored["status"] == "ROLLED_BACK"
+    assert restored["weights"] == promoted["baseline_weights"]
+    active_after = rt.evolution_capability_registry.active("memory.recall.policy")
+    assert active_after.version_id != promoted["capability_version_id"]

@@ -1408,6 +1408,7 @@ class LiveAgentService:
                     execute_readonly_tool_requests,
                     self.application,
                     list(requests),
+                    state_root=self.state_root,
                 )
                 all_results.extend(results)
                 current_turn = extend_turn_with_tool_results(
@@ -1597,6 +1598,7 @@ class LiveAgentService:
                                 execute_readonly_tool_requests,
                                 self.application,
                                 list(envelope.get("tool_requests") or []),
+                                state_root=self.state_root,
                             )
                         except Exception as exc:
                             yield line({

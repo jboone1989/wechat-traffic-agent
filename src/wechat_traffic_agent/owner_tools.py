@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from pathlib import Path
 from typing import Any, Mapping
 
 
@@ -84,8 +86,38 @@ def _normalized_payload(capability_id: str, payload: Mapping[str, Any]) -> dict[
     return normalized
 
 
+
+
+def _active_owner_procedure(state_root: Path, capability_id: str):
+    from .memory_procedural import ProceduralMemoryService
+    service = ProceduralMemoryService(state_root)
+    active = service.store.query_memories(
+        memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=1000,
+    )
+    row = next(
+        (
+            item for item in reversed(active)
+            if str((item.get("payload") or {}).get("name") or "") == "owner-readonly:" + capability_id
+        ),
+        None,
+    )
+    if row is None:
+        return service, None, None
+    selected = service.select_variant(
+        str(row["memory_id"]),
+        context={
+            "satisfied_preconditions": [
+                "authenticated owner conversation",
+                "capability present in owner_chat_readonly_runtime_capabilities",
+            ],
+            "capability_id": capability_id,
+        },
+    )
+    return service, row, selected
+
+
 def execute_readonly_tool_requests(
-    application: Any, requests: list[Any]
+    application: Any, requests: list[Any], *, state_root: Path | None = None
 ) -> list[dict[str, Any]]:
     """Execute only manifest-declared READ_ONLY capabilities with bounded payloads."""
     runtime = getattr(application, "runtime", None)
@@ -125,8 +157,31 @@ def execute_readonly_tool_requests(
                 f"payload exceeds {MAX_TOOL_PAYLOAD_BYTES} bytes",
             ))
             continue
+        procedure = None
+        selected_variant = None
+        if state_root is not None:
+            try:
+                _, procedure, selected_variant = _active_owner_procedure(
+                    Path(state_root), capability_id
+                )
+            except Exception:
+                procedure = None
+                selected_variant = None
+        policy_action = str((selected_variant or {}).get("policy_action") or "DIRECT")
+        variant_steps = list((selected_variant or {}).get("steps") or [])
+        variant_id = str((selected_variant or {}).get("variant_id") or "")
+        started = time.perf_counter()
+        attempts = 0
         try:
-            receipt = runtime.invoke(capability_id, payload)
+            while True:
+                attempts += 1
+                try:
+                    receipt = runtime.invoke(capability_id, payload)
+                    break
+                except Exception:
+                    if policy_action != "RETRY_ONCE_SAFE" or attempts >= 2:
+                        raise
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
             result_payload = dict(getattr(receipt, "payload", {}) or {})
             result_text = json.dumps(
                 result_payload, ensure_ascii=False, default=str, separators=(",", ":")
@@ -139,12 +194,30 @@ def execute_readonly_tool_requests(
                 "receipt_id": str(getattr(receipt, "receipt_id", "") or ""),
                 "result": result_text[:MAX_TOOL_RESULT_CHARS],
                 "result_truncated": truncated,
+                "procedure_id": str((procedure or {}).get("memory_id") or ""),
+                "procedure_variant_id": variant_id,
+                "procedure_variant_steps": variant_steps,
+                "procedure_policy_action": policy_action,
+                "procedure_policy_reason": str((selected_variant or {}).get("policy_reason") or ""),
+                "attempt_count": attempts,
+                "latency_ms": elapsed_ms,
             })
         except Exception as exc:
-            results.append(_request_error(
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            row = _request_error(
                 capability_id, "INVOCATION_FAILED",
                 f"{type(exc).__name__}: {str(exc)[:500]}",
-            ))
+            )
+            row.update({
+                "procedure_id": str((procedure or {}).get("memory_id") or ""),
+                "procedure_variant_id": variant_id,
+                "procedure_variant_steps": variant_steps,
+                "procedure_policy_action": policy_action,
+                "procedure_policy_reason": str((selected_variant or {}).get("policy_reason") or ""),
+                "attempt_count": attempts,
+                "latency_ms": elapsed_ms,
+            })
+            results.append(row)
     try:
         runtime.persist()
     except Exception:

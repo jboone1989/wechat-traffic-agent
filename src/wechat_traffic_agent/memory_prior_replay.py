@@ -37,6 +37,7 @@ def replay_memory_prior_ab(
         as_of=as_of,
         mind_strategy_context=baseline_context,
         action_forecasts=action_forecasts,
+        record_memory_use=False,
     )
     assisted = choose_content_strategy(
         state_root=Path(state_root),
@@ -47,6 +48,7 @@ def replay_memory_prior_ab(
         as_of=as_of,
         mind_strategy_context=enriched,
         action_forecasts=action_forecasts,
+        record_memory_use=False,
     )
     return {
         "status": "DIFFERENT_DECISION" if baseline.profile.name != assisted.profile.name else "SAME_DECISION",
