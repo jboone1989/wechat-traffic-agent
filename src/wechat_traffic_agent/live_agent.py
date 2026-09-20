@@ -782,6 +782,7 @@ class LiveAgentService:
         from starlette.routing import Route, WebSocketRoute
         from starlette.websockets import WebSocket, WebSocketDisconnect
         from .channels.agent_live_page import live_agent_document
+        from .channels.neural_life_page import neural_life_document
         from .channels.agent_talk_page import talk_agent_document
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
@@ -826,6 +827,9 @@ class LiveAgentService:
 
         async def talk_page(_request: Request):
             return HTMLResponse(talk_agent_document(), headers={"Cache-Control": "no-cache"})
+
+        async def neural_life_page(_request: Request):
+            return HTMLResponse(neural_life_document(), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_page(_request: Request):
             return HTMLResponse(brain_lab_document(), headers={"Cache-Control": "no-cache"})
@@ -2809,6 +2813,8 @@ class LiveAgentService:
             Route("/live/", live_page, methods=["GET"]),
             Route("/talk", talk_page, methods=["GET"]),
             Route("/talk/", talk_page, methods=["GET"]),
+            Route("/neural", neural_life_page, methods=["GET"]),
+            Route("/neural/", neural_life_page, methods=["GET"]),
             Route("/brain", brain_lab_page, methods=["GET"]),
             Route("/brain/", brain_lab_page, methods=["GET"]),
             Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
