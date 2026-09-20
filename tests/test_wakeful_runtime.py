@@ -381,3 +381,80 @@ def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
     assert payload["wake_id"] == "content:REFLECT"
     assert payload["task"] == "REFLECT"
     assert payload["at"] == (now + timedelta(seconds=30)).isoformat()
+
+
+
+def test_brain_lab_uses_handoff_environment_and_settles_trial(tmp_path, monkeypatch):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    captured = {}
+
+    def choose(**kwargs):
+        captured["choose"] = kwargs
+        return {
+            "status": "ASSIGNED",
+            "function_id": "BRAIN_LAB_ENVIRONMENT_SELECTION",
+            "environment": "MAZE",
+            "authority": "NEURAL_ORGAN",
+            "organ_id": "organ_001",
+            "trial": {
+                "decision_id": "organ-handoff:test",
+                "organ_id": "organ_001",
+                "arm": "NEURAL_ORGAN",
+                "environment": "MAZE",
+            },
+            "external_action_authority": False,
+        }
+
+    def settle(**kwargs):
+        captured["settle"] = kwargs
+        return {
+            "decision_id": kwargs["decision_id"],
+            "status": "SETTLED",
+            "evaluation": {"status": "COLLECTING_EVIDENCE"},
+        }
+
+    monkeypatch.setattr(runtime.neural_organ_handoff, "choose", choose)
+    monkeypatch.setattr(runtime.neural_organ_handoff, "settle", settle)
+
+    result = runtime.run_brain_lab(now=NOW, steps=3)
+
+    assert result["environment"] == "MAZE"
+    assert result["organ_handoff"]["decision"]["authority"] == "NEURAL_ORGAN"
+    assert result["organ_handoff"]["settled"]["status"] == "SETTLED"
+    assert captured["settle"]["decision_id"] == "organ-handoff:test"
+    assert captured["settle"]["result"]["environment"] == "MAZE"
+    assert "brain_lab" in captured["choose"]
+    assert "substrate_projection" in captured["choose"]
+
+
+def test_explicit_brain_lab_environment_bypasses_organ_handoff(tmp_path, monkeypatch):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    def forbidden_choose(**kwargs):
+        raise AssertionError("explicit environment must bypass organ handoff")
+
+    monkeypatch.setattr(runtime.neural_organ_handoff, "choose", forbidden_choose)
+
+    result = runtime.run_brain_lab(
+        now=NOW,
+        environment="FORAGING",
+        steps=2,
+    )
+
+    assert result["environment"] == "FORAGING"
+    decision = result["organ_handoff"]["decision"]
+    assert decision["status"] == "EXPLICIT_ENVIRONMENT_OVERRIDE"
+    assert decision["authority"] == "CALLER_EXPLICIT"
+    assert decision["trial"] is None
+
+
+def test_public_snapshot_exposes_reversible_neural_organ_handoff(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    handoff = runtime.public_snapshot()["neural_organ_handoff"]
+
+    assert handoff["function_id"] == "BRAIN_LAB_ENVIRONMENT_SELECTION"
+    assert handoff["phase"] == "EVALUATING"
+    assert handoff["python_baseline_preserved"] is True
+    assert handoff["automatic_rollback"] is True
+    assert handoff["external_action_authority"] is False
+    assert handoff["llm_used_for_handoff"] is False
