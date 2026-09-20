@@ -57,6 +57,13 @@ class FerroDreamEngine:
 
     @staticmethod
     def _trace_currents(trace: Mapping[str, Any], index: int) -> dict[str, float]:
+        explicit = trace.get("currents")
+        if isinstance(explicit, Mapping) and explicit:
+            return {
+                str(key): min(1.5, max(0.0, float(value)))
+                for key, value in explicit.items()
+                if isinstance(value, (int, float))
+            }
         env = str(trace.get("environment") or "")
         reward = float(trace.get("reward") or 0.0)
         action = str(trace.get("action") or "")
@@ -82,9 +89,63 @@ class FerroDreamEngine:
             currents[action_channel] = max(currents.get(action_channel, 0.0), 0.30 + (index % 4) * 0.08)
         return currents
 
+    @staticmethod
+    def _world_trace(row: Mapping[str, Any]) -> dict[str, Any]:
+        outcome = row.get("outcome") if isinstance(row.get("outcome"), Mapping) else {}
+        reward = float(outcome.get("reward") or 0.0)
+        activation = max(0.0, min(1.0, float(row.get("activation") or 0.0)))
+        channels = [str(value) for value in (row.get("stimulus_channels") or ()) if value]
+        currents = {
+            channel: round(0.18 + (0.42 * activation), 6)
+            for channel in channels
+        }
+        currents["curiosity"] = max(currents.get("curiosity", 0.0), 0.18 + 0.25 * abs(reward))
+        if reward > 0:
+            currents["opportunity"] = max(currents.get("opportunity", 0.0), min(1.2, 0.25 + reward * 0.6))
+        elif reward < 0:
+            currents["error_recovery"] = max(currents.get("error_recovery", 0.0), min(1.2, 0.25 + abs(reward) * 0.6))
+        task = str(row.get("task") or "")
+        task_channel = {
+            "RESOURCE_REVIEW": "resource_pressure",
+            "CHECK_X": "social_attention",
+            "CONTENT_COGNITION": "prediction_due",
+            "REFLECT": "curiosity",
+            "NEURAL_PLAY": "curiosity",
+            "NEURAL_DREAM": "prediction_due",
+            "OBSERVE_WORLD": "opportunity",
+        }.get(task)
+        if task_channel:
+            currents[task_channel] = max(currents.get(task_channel, 0.0), 0.35 + activation * 0.35)
+        return {
+            "event_id": str(row.get("decision_id") or row.get("source_event_id") or ""),
+            "source_kind": "WORLD_MOTOR",
+            "environment": None,
+            "action": task or str(row.get("motor_id") or ""),
+            "reward": reward,
+            "spikes": int((row.get("burst") or {}).get("spikes") or 0),
+            "currents": currents,
+            "observed_at": outcome.get("observed_at") or row.get("created_at"),
+        }
+
     def _salient_traces(self) -> list[dict[str, Any]]:
         lab = _read_json(self.state_root / "application" / "brain_lab.json")
-        rows = [dict(row) for row in (lab.get("recent") or []) if isinstance(row, Mapping)]
+        game_rows = []
+        for raw in (lab.get("recent") or []):
+            if not isinstance(raw, Mapping):
+                continue
+            row = dict(raw)
+            row["source_kind"] = "BRAIN_LAB"
+            game_rows.append(row)
+
+        motor = _read_json(self.state_root / "application" / "neural_motor.json")
+        world_rows = [
+            self._world_trace(row)
+            for row in (motor.get("recent_decisions") or [])
+            if isinstance(row, Mapping)
+            and isinstance(row.get("outcome"), Mapping)
+            and str(row.get("status") or "") == "SETTLED"
+        ]
+        rows = game_rows + world_rows
         rows.sort(
             key=lambda row: (
                 -abs(float(row.get("reward") or 0.0)),
@@ -92,7 +153,19 @@ class FerroDreamEngine:
                 str(row.get("event_id") or ""),
             )
         )
-        return rows[:12]
+        # Keep both life/world experience and Brain Lab experience represented
+        # when both exist, instead of allowing one high-volume source to crowd
+        # the other out of every dream.
+        selected: list[dict[str, Any]] = []
+        for kind in ("WORLD_MOTOR", "BRAIN_LAB"):
+            selected.extend([row for row in rows if row.get("source_kind") == kind][:6])
+        if len(selected) < 12:
+            seen = {str(row.get("event_id") or "") for row in selected}
+            selected.extend(
+                row for row in rows
+                if str(row.get("event_id") or "") not in seen
+            )
+        return selected[:12]
 
     @staticmethod
     def _merge_currents(a: Mapping[str, float], b: Mapping[str, float]) -> dict[str, float]:
@@ -139,7 +212,9 @@ class FerroDreamEngine:
             replay_rows.append({
                 "event_id": event_id,
                 "source_events": [left.get("event_id"), right.get("event_id")],
+                "source_kinds": [left.get("source_kind"), right.get("source_kind")],
                 "source_environments": [left.get("environment"), right.get("environment")],
+                "source_actions": [left.get("action"), right.get("action")],
                 "currents": {k: round(v, 5) for k, v in sorted(currents.items())},
                 "strongest_channels": [[k, round(v, 5)] for k, v in strongest],
                 "spikes": int(burst.get("spikes") or 0),
@@ -173,11 +248,16 @@ class FerroDreamEngine:
             concepts.append(preconcept)
             self.state["preconcepts"] = concepts[-self.MAX_PRECONCEPTS:]
 
+        source_kind_counts: dict[str, int] = {}
+        for trace in traces:
+            kind = str(trace.get("source_kind") or "UNKNOWN")
+            source_kind_counts[kind] = source_kind_counts.get(kind, 0) + 1
         dream = {
             "dream_id": f"dream:{dream_seq}",
             "dreamed_at": now.isoformat(),
             "replay_count": len(replay_rows),
             "source_trace_count": len(traces),
+            "source_kind_counts": source_kind_counts,
             "replays": replay_rows,
             "dominant_channels": [[k, round(v, 5)] for k, v in ranking[:6]],
             "preconcept_id": preconcept.get("preconcept_id") if preconcept else None,
