@@ -103,6 +103,7 @@ class AudienceAnalytics:
                     "returning_rate": 0.0,
                     "engaged_readers_30s": 0,
                     "internal_link_clicks": 0,
+                    "excluded_operator_events": 0,
                 },
                 "top_pages": [],
                 "acquisition": [],
@@ -119,7 +120,13 @@ class AudienceAnalytics:
 
         coverage_start = _utc(coverage_start)
         start = max(requested_start, coverage_start)
-        events = self.store.events(start=start, end=end + timedelta(seconds=1))
+        all_events = self.store.events(start=start, end=end + timedelta(seconds=1))
+        excluded_operator_events = [
+            row for row in all_events if getattr(row, "audience_class", "public") == "operator"
+        ]
+        events = [
+            row for row in all_events if getattr(row, "audience_class", "public") != "operator"
+        ]
         pageviews = [row for row in events if row.event_type == "page_view"]
         visitors = {row.visitor_hash for row in pageviews}
         sessions = {row.session_hash for row in pageviews}
@@ -180,6 +187,7 @@ class AudienceAnalytics:
                 "returning_rate": round(returning / visitor_count, 4) if visitor_count else 0.0,
                 "engaged_readers_30s": len(engaged),
                 "internal_link_clicks": internal_clicks,
+                "excluded_operator_events": len(excluded_operator_events),
             },
             "top_pages": [
                 {"route": route, "pageviews": int(count)}
@@ -201,6 +209,8 @@ class AudienceAnalytics:
                 "visitor_level_rows_exposed": False,
                 "coarse_acquisition_only": True,
                 "coarse_device_class_only": True,
+                "known_operator_browser_events_excluded": True,
+                "historical_unclassified_events_may_include_operator": True,
             },
         }
 
