@@ -114,8 +114,11 @@ class OperatorLongTermMemory:
 
     def all(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         learned = self.store.list_memories(limit=max(1, min(int(limit), 5000)))
-        owner_rows = [row for row in learned if row.get("source_type") == "OWNER_CONVERSATION"]
-        return [dict(row) for row in CORE_MEMORIES] + owner_rows
+        private_rows = [
+            row for row in learned
+            if str(row.get("access_scope") or "").upper() == "PRIVATE_OWNER"
+        ]
+        return [dict(row) for row in CORE_MEMORIES] + private_rows
 
     def remember_many(
         self,
@@ -143,7 +146,7 @@ class OperatorLongTermMemory:
         learned = self.router.recall(
             query,
             limit=max(1, remaining),
-            source_type="OWNER_CONVERSATION",
+            access_scope="PRIVATE_OWNER",
         ) if remaining else []
         return core + learned
 

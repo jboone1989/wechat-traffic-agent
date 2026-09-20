@@ -220,6 +220,7 @@ class MemoryRouter:
         now: datetime | None = None,
         memory_types: Iterable[str] = (),
         source_type: str | None = None,
+        access_scope: str | None = None,
         entity: str | None = None,
         topic: str | None = None,
     ) -> list[dict[str, Any]]:
@@ -231,6 +232,7 @@ class MemoryRouter:
             memory_types=list(plan.memory_types) or None,
             statuses=statuses,
             source_type=source_type,
+            access_scope=access_scope,
             created_from=plan.created_from,
             created_to=plan.created_to,
             entity=plan.entity,
@@ -245,7 +247,7 @@ class MemoryRouter:
         vector_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(vector)}
         constrained = bool(
             plan.created_from or plan.created_to or plan.entity or plan.topic
-            or plan.memory_types or source_type
+            or plan.memory_types or source_type or access_scope
         )
         if constrained:
             candidate_ids = set(allowed)

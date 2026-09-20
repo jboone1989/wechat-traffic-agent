@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from starlette.testclient import TestClient
 
 from wechat_traffic_agent.live_agent import LiveAgentService
+from wechat_traffic_agent.memory_system import CanonicalMemoryStore
 from wechat_traffic_agent.operator_private_chat import (
     OperatorConversationStore,
     ReplyJSONStreamDecoder,
@@ -271,6 +272,10 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert sent.status_code == 200
         body = sent.json()
         assert body["proposal"]["status"] == "DRAFT"
+        assert body["memory_runtime"]["episode_id"]
+        episode = CanonicalMemoryStore(root).get_memory(body["memory_runtime"]["episode_id"])
+        assert episode is not None and episode["memory_type"] == "EPISODIC"
+        assert episode["access_scope"] == "PRIVATE_OWNER"
         assert [row["role"] for row in body["history"][-2:]] == ["operator", "ferro"]
         assert "Private owner context" in backend.provider.calls[0][0]
         assert "Relevant durable memory" in backend.provider.calls[0][0]

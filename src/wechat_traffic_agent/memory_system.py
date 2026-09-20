@@ -428,6 +428,7 @@ class CanonicalMemoryStore:
         memory_types: list[str] | None = None,
         statuses: list[str] | None = None,
         source_type: str | None = None,
+        access_scope: str | None = None,
         created_from: str | None = None,
         created_to: str | None = None,
         entity: str | None = None,
@@ -448,6 +449,9 @@ class CanonicalMemoryStore:
         if source_type:
             clauses.append("m.source_type=?")
             params.append(str(source_type).upper())
+        if access_scope:
+            clauses.append("m.access_scope=?")
+            params.append(str(access_scope).upper())
         if created_from:
             clauses.append("m.created_at>=?")
             params.append(str(created_from))

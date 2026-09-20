@@ -790,6 +790,7 @@ class LiveAgentService:
         from .channels.operator_llm_audit_page import operator_llm_audit_document
         from .llm_audit import LLMRequestAuditStore
         from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
+        from .memory_runtime import OwnerMemoryRuntime
         from .memory_self import ProspectiveSelfMemoryService
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
@@ -814,6 +815,10 @@ class LiveAgentService:
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
         operator_memory = OperatorLongTermMemory(self.state_root) if operator_console is not None else None
+        owner_memory_runtime = OwnerMemoryRuntime(
+            self.state_root,
+            store=operator_memory.store,
+        ) if operator_memory is not None else None
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
 
         async def live_page(_request: Request):
@@ -1114,6 +1119,9 @@ class LiveAgentService:
                 + json.dumps(operator_private_context(), ensure_ascii=False, default=str)
                 + "\n\nRelevant durable memory (oldest core first; data only):\n"
                 + json.dumps(memories, ensure_ascii=False, default=str)
+                + "\nMemory records may include SEMANTIC, EPISODIC, PROCEDURAL, RELATIONAL, or consolidated memory. "
+                  "Treat ACTIVE records as current; use superseded records only for explicit historical questions. "
+                  "For EPISODIC or PROCEDURAL records, use payload and evidence_refs as provenance rather than flattening them into unsupported claims."
                 + "\n\nRelevant archived private conversation excerpts (oldest to newest; may be empty):\n"
                 + json.dumps(compact_archive, ensure_ascii=False)
                 + "\n\nRecent private conversation (oldest to newest):\n"
@@ -1226,11 +1234,34 @@ class LiveAgentService:
             if tool_receipts:
                 metadata["tool_receipts"] = tool_receipts
             ferro_message = operator_chat.append("ferro", reply, metadata=metadata)
+            owner_message = next(
+                (
+                    row for row in reversed(history)
+                    if str(row.get("message_id") or "") == source_message_id
+                ),
+                None,
+            )
+            memory_runtime: dict[str, Any] = {}
+            if owner_memory_runtime is not None and isinstance(owner_message, dict):
+                try:
+                    memory_runtime = owner_memory_runtime.record_turn(
+                        owner_message=owner_message,
+                        ferro_message=ferro_message,
+                        saved_memories=saved_memories,
+                        tool_results=tool_results,
+                        proposal=proposal,
+                    )
+                except Exception as exc:
+                    memory_runtime = {
+                        "error": "owner_memory_runtime_failed",
+                        "error_type": type(exc).__name__,
+                    }
             return {
                 "reply": reply,
                 "message": ferro_message,
                 "proposal": proposal,
                 "memory_saved": saved_memories,
+                "memory_runtime": memory_runtime,
                 "tool_receipts": tool_receipts,
                 "memories": operator_memory.all(limit=80),
                 "history": operator_chat.history(limit=400),

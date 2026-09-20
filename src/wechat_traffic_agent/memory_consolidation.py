@@ -50,6 +50,14 @@ class MemoryConsolidationService:
         self.store = store or CanonicalMemoryStore(state_root)
         self.formation = MemoryFormationPipeline(state_root, store=self.store)
 
+    def _active_claim(self, claim_key: str) -> dict[str, Any] | None:
+        for row in reversed(self.store.list_memories(limit=5000)):
+            if str(row.get("status") or "") != "ACTIVE":
+                continue
+            if str((row.get("payload") or {}).get("claim_key") or "") == claim_key:
+                return row
+        return None
+
     def consolidate_daily_episodes(
         self,
         episode_ids: Iterable[str],
@@ -68,16 +76,20 @@ class MemoryConsolidationService:
             return None
         evidence = [str(row["memory_id"]) for row in episodes]
         text = "Daily consolidation: " + " | ".join(lessons[:8])
+        claim_key = "daily-consolidation:" + str(topic)
+        prior = self._active_claim(claim_key)
         result = self.formation.form_many(
             [{
                 "memory_type": "SEMANTIC",
                 "kind": "CONSOLIDATED_LESSON",
                 "text": text,
+                "claim_key": claim_key,
                 "importance": min(0.95, 0.65 + 0.05 * len(lessons)),
                 "confidence": 1.0,
                 "evidence_refs": evidence,
                 "topics": [topic],
                 "payload": {"derived_from": evidence, "lessons": lessons},
+                "supersedes": str(prior.get("memory_id") or "") if prior else "",
             }],
             context=FormationContext(
                 source_type="MEMORY_CONSOLIDATION",
@@ -108,16 +120,20 @@ class MemoryConsolidationService:
             return None
         evidence = [str(row["memory_id"]) for row in episodes]
         text = f"Long-term pattern for {topic}: " + " | ".join(lessons[:12])
+        claim_key = "long-term-pattern:" + str(topic)
+        prior = self._active_claim(claim_key)
         result = self.formation.form_many(
             [{
                 "memory_type": "SEMANTIC",
                 "kind": "LONG_TERM_PATTERN",
                 "text": text,
+                "claim_key": claim_key,
                 "importance": 0.9,
                 "confidence": min(1.0, 0.55 + 0.08 * len(episodes)),
                 "evidence_refs": evidence,
                 "topics": [topic],
                 "payload": {"derived_from": evidence, "lessons": lessons, "episode_count": len(episodes)},
+                "supersedes": str(prior.get("memory_id") or "") if prior else "",
             }],
             context=FormationContext(
                 source_type="MEMORY_CONSOLIDATION",

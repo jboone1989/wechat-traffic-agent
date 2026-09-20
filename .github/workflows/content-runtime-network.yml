@@ -103,6 +103,8 @@ jobs:
           tests/test_memory_procedural.py
           tests/test_memory_vector.py
           tests/test_memory_consolidation.py
+          tests/test_memory_consolidation_revision.py
+          tests/test_memory_runtime.py
           tests/test_memory_self.py
           tests/test_memory_continuity.py
           tests/test_memory_evolution.py
