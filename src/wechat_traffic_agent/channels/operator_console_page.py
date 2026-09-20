@@ -50,7 +50,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
 <section id="dash" class="hidden">
 <div class="topbar">
  <div class="brand"><h1>Ferro 管理后台</h1><p class="muted">资源、配置和待办事项统一管理。</p></div>
- <div class="toolbar"><a href="/operator/chat/">和 Ferro 对话</a><a href="/operator/llm/">LLM 请求</a><button id="refresh" class="ghost">刷新</button><button id="logout" class="ghost">退出</button></div>
+ <div class="toolbar"><a href="/operator/chat/">和 Ferro 对话</a><a href="/operator/audience/">访问分析</a><a href="/operator/llm/">LLM 请求</a><button id="refresh" class="ghost">刷新</button><button id="logout" class="ghost">退出</button></div>
 </div>
 
  <nav id="consoleNav" class="nav" aria-label="后台导航">
@@ -491,7 +491,7 @@ function renderSecrets(rows){
    const meta=node('button','保存额度','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' 额度已更新');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};box.append(meta);details.append(box);c.append(details)}
   root.append(c)}
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderOperatorLoginDelivery(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');try{localStorage.setItem('lr_audience_role','operator')}catch{}showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderOperatorLoginDelivery(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};

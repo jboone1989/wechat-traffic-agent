@@ -44,6 +44,9 @@ class WebsiteEngagementInput(BaseModel):
     event_type: Literal["page_view", "engaged_30s", "internal_link_click"]
     route: str = Field(min_length=1, max_length=500)
     target_route: str | None = Field(default=None, max_length=500)
+    acquisition: Literal["direct", "google", "x", "social", "search", "referral", "other", "unknown"] = "unknown"
+    device_class: Literal["desktop", "mobile", "tablet", "other", "unknown"] = "unknown"
+    audience_class: Literal["public", "operator"] = "public"
 
     @field_validator("route", "target_route")
     @classmethod
@@ -77,6 +80,9 @@ class WebsiteEngagementEvent(BaseModel):
     event_type: Literal["page_view", "engaged_30s", "internal_link_click"]
     route: str
     target_route: str | None = None
+    acquisition: Literal["direct", "google", "x", "social", "search", "referral", "other", "unknown"] = "unknown"
+    device_class: Literal["desktop", "mobile", "tablet", "other", "unknown"] = "unknown"
+    audience_class: Literal["public", "operator"] = "public"
     observed_at: datetime
     source: Literal["first-party-engagement:v1"] = SOURCE
     publication_authority: Literal[False] = False
@@ -134,7 +140,7 @@ class WebsiteEngagementStore:
         raw = WebsiteEngagementInput.model_validate(payload)
         observed_at = _utc(observed_at).replace(microsecond=0)
         key = self._key()
-        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, observed_at=observed_at)
+        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, acquisition=raw.acquisition, device_class=raw.device_class, audience_class=raw.audience_class, observed_at=observed_at)
         path = self.events_root / observed_at.strftime("%Y-%m-%d") / f"{event.event_id}.json"
         stable = _stable_event(event)
         if path.exists():
@@ -231,7 +237,7 @@ def _metrics_for_route(events:list[WebsiteEngagementEvent],*,route:str,window_en
         if o.observed_at+RETURN_GAP<=e.observed_at<window_end: returned.add(e.visitor_hash)
     return {"tracked_pageviews":len(views),"engaged_readers_30s":len(engaged),"internal_link_clicks":len(clicks),"return_visitors":len(returned)}
 
-def _stable_event(event): return (event.event_id,event.visitor_hash,event.session_hash,event.event_type,event.route,event.target_route,event.source)
+def _stable_event(event): return (event.event_id,event.visitor_hash,event.session_hash,event.event_type,event.route,event.target_route,event.acquisition,event.device_class,event.audience_class,event.source)
 def _hmac_token(key:bytes,token:str)->str: return hmac.new(key,token.encode("ascii"),hashlib.sha256).hexdigest()
 def _utc(value:datetime)->datetime:
     if value.utcoffset() is None: raise ValueError("engagement timestamp timezone is required")

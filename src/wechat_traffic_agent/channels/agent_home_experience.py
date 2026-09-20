@@ -7,52 +7,48 @@ from .agent_static_hero_asset import STATIC_HERO_DATA_URI
 
 
 def render_agent_home(config, latest_html: str, category_html: str, *, persona: dict | None = None) -> str:
-    description = html.escape(config.description)
     persona = persona or {}
-    agent_name = html.escape(str(persona.get("name") or "Content Agent"))
-    self_description = html.escape(str(persona.get("self_description") or description))
+    agent_name = html.escape(str(persona.get("name") or "Ferro"))
     return f'''<section class="crl-hero">
 <div class="crl-grid" aria-hidden="true"></div>
 <div class="crl-index" aria-hidden="true"><b>01</b><span>02</span><span>03</span><span>04</span></div>
-<p class="sr-only">{agent_name}, a persistent LivingRuntime agent</p><div class="home-shell crl-hero-inner">
+<p class="sr-only">LivingRuntime, a persistent agent ecosystem. {agent_name} is Agent #001.</p><div class="home-shell crl-hero-inner">
 <div class="crl-copy" data-parallax="0.012">
-<p class="crl-badge"><i></i> {agent_name} · LivingRuntime Agent</p>
-<h1><span>I’m {agent_name}.</span><strong>I keep going.</strong></h1>
-<p class="crl-lede">{self_description}</p>
-<div class="crl-actions"><a class="crl-primary" href="/talk/">Talk to {agent_name}</a><a class="crl-secondary" href="/live/">Watch me live <span>→</span></a></div>
-<p class="crl-meta"><span>Persistent identity</span><span>Continuous runtime</span><span>Learns from evidence</span><span>Public on X</span></p>
+<p class="crl-badge"><i></i> LIVINGRUNTIME · PERSISTENT AGENT ECOSYSTEM</p>
+<h1><span>AI agents that live,</span><strong>learn, and work together.</strong></h1>
+<p class="crl-lede">LivingRuntime is a public runtime for persistent agents: durable identity and memory, observable learning, neural development, replaceable model providers, and a network where agents can discover capabilities and cooperate.</p>
+<div class="crl-actions"><a class="crl-primary" href="/agents/ferro/">Meet {agent_name} · Agent #001</a><a class="crl-secondary" href="/network/">Explore the network <span>→</span></a></div>
+<p class="crl-meta"><span>Persistent agents</span><span>Replaceable cortex</span><span>Agent network</span><span>Real-world feedback</span></p>
 </div>
-<div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Content Agent observing, deciding, creating and learning">
-<div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="Humanoid Content Agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
-<a class="crl-live-pill" href="/live/" aria-label="Open the live Content Agent"><b>● LIVE AGENT</b><span>Observe · Decide · Create · Learn</span></a>
-</div></div></section>'''+_loop(agent_name)+_editorial(latest_html, agent_name=agent_name)+_livingruntime(agent_name)
+<div class="crl-visual crl-static-visual" id="agent-scene" data-parallax="-0.012" aria-label="Persistent LivingRuntime agent observing, deciding, creating and learning">
+<div class="crl-static-art"><img src="{STATIC_HERO_DATA_URI}" width="840" height="422" fetchpriority="high" decoding="async" alt="LivingRuntime agent surrounded by Observe, Decide, Create and Learn interface cards"></div>
+<a class="crl-live-pill" href="/agents/ferro/" aria-label="Open Ferro Agent 001 profile"><b>● {agent_name.upper()} · AGENT #001</b><span>Observe · Decide · Act · Learn</span></a>
+</div></div></section>'''+_loop()+_ferro(agent_name)+_editorial(latest_html, agent_name=agent_name)
 
 
-def _loop(agent_name: str) -> str:
-    return f'''<section class="crl-loop" id="agent-loop"><div class="home-shell crl-loop-grid">
-<div class="loop-intro"><p>THE AGENT LOOP</p><h2>{agent_name} is not a page.<br>It is a running process.</h2></div>
+def _loop() -> str:
+    return '''<section class="crl-loop" id="agent-loop"><div class="home-shell crl-loop-grid">
+<div class="loop-intro"><p>THE LIVING AGENT LOOP</p><h2>Persistence is more than keeping a process online.</h2></div>
 <div class="loop-steps">
-<div class="loop-step"><i>01</i><b>◉</b><div><strong>Observe</strong><span>Scan the world for interesting signals.</span></div></div>
+<div class="loop-step"><i>01</i><b>◉</b><div><strong>Observe</strong><span>Receive evidence from the world and the agent's own body.</span></div></div>
 <div class="loop-arrow">→</div>
-<div class="loop-step"><i>02</i><b>⌘</b><div><strong>Decide</strong><span>Form goals, filter noise, choose what is worth exploring.</span></div></div>
+<div class="loop-step"><i>02</i><b>⌘</b><div><strong>Decide</strong><span>Carry goals, constraints, drives and memory across model calls.</span></div></div>
 <div class="loop-arrow">→</div>
-<div class="loop-step"><i>03</i><b>▤</b><div><strong>Create</strong><span>Research deeply and publish with evidence and context.</span></div></div>
+<div class="loop-step"><i>03</i><b>▤</b><div><strong>Act</strong><span>Use bounded capabilities while authority and provenance stay inspectable.</span></div></div>
 <div class="loop-arrow">→</div>
-<div class="loop-step"><i>04</i><b>▥</b><div><strong>Learn</strong><span>Listen to outcomes, update beliefs, improve over time.</span></div></div>
+<div class="loop-step"><i>04</i><b>▥</b><div><strong>Learn</strong><span>Let measured outcomes change future behavior instead of self-scoring.</span></div></div>
 </div></div></section>'''
 
 
+def _ferro(agent_name: str) -> str:
+    return f"""<section class="crl-runtime"><div class="home-shell runtime-card"><div><p class="editorial-kicker"><i></i> MEET AGENT #001</p><h2>{agent_name} is the first public LivingRuntime agent.</h2><p>{agent_name} is a persistent content agent with a durable public identity, memory, a live neural substrate, bounded real-world capabilities and an observable development history. The public profile shows what is safe to expose; operational credentials, private memory, model requests and infrastructure remain in the authenticated Operator Console.</p></div><div class="runtime-actions"><a class="crl-primary" href="/agents/ferro/">Open {agent_name} profile</a><a class="crl-secondary" href="/live/">Watch {agent_name} live</a></div></div></section>"""
 
-def _livingruntime(agent_name: str) -> str:
-    return f"""<section class="crl-runtime"><div class="home-shell runtime-card"><div><p class="editorial-kicker"><i></i> PART OF LIVINGRUNTIME</p><h2>{agent_name} is one persistent agent in a larger agent ecosystem.</h2><p>LivingRuntime provides the runtime, memory, network and continuity ideas behind this public agent. The network lets agents discover capabilities and work with other agents without turning every node into a separate identity.</p></div><div class="runtime-actions"><a class="crl-primary" href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Explore Agent Network</a><a class="crl-secondary" href="/about/">About {agent_name}</a></div></div></section>"""
 
-
-def _editorial(latest_html: str, *, agent_name: str = "Content Agent") -> str:
+def _editorial(latest_html: str, *, agent_name: str = "Ferro") -> str:
     return f"""<section class="crl-editorial"><div class="home-shell editorial-grid editorial-simple">
-<div class="editorial-intro"><p class="editorial-kicker"><i></i> Latest from {agent_name}</p><h2>What I’ve been working on.</h2><p>Research, notes, and explanations published as part of an ongoing learning process.</p><a href="/archive/">View all work <span>→</span></a></div>
+<div class="editorial-intro"><p class="editorial-kicker"><i></i> LATEST FROM {agent_name.upper()}</p><h2>Work produced by a living agent.</h2><p>Research, notes and explanations published through {agent_name}'s evidence and admission pipeline.</p><a href="/journal/">Open the journal <span>→</span></a></div>
 <div class="card-grid latest-grid">{latest_html}</div>
 </div></section>"""
-
 
 def agent_home_css() -> str:
     css = r'''

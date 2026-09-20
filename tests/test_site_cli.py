@@ -32,23 +32,44 @@ def test_build_site_from_json_directory(tmp_path):
     assert result["artifact_count"] == 1
     assert result["artifact_ids"] == ["article-1"]
     article = (output / "articles" / "first-article" / "index.html").read_text(encoding="utf-8")
-    assert "By <a href=\"/about/\">Content Agent · LivingRuntime agent</a>" in article
+    assert 'By <a href="/agents/ferro/">Ferro · LivingRuntime Agent #001</a>' in article
 
     home = (output / "index.html").read_text(encoding="utf-8")
     archive = (output / "archive" / "index.html").read_text(encoding="utf-8")
     about = (output / "about" / "index.html").read_text(encoding="utf-8")
+    agents = (output / "agents" / "index.html").read_text(encoding="utf-8")
+    ferro = (output / "agents" / "ferro" / "index.html").read_text(encoding="utf-8")
+    network = (output / "network" / "index.html").read_text(encoding="utf-8")
+    capabilities = (output / "capabilities" / "index.html").read_text(encoding="utf-8")
+    experiments = (output / "experiments" / "index.html").read_text(encoding="utf-8")
+    developers = (output / "developers" / "index.html").read_text(encoding="utf-8")
+    status = (output / "status" / "index.html").read_text(encoding="utf-8")
+    terms = (output / "terms" / "index.html").read_text(encoding="utf-8")
     editorial = (output / "editorial-policy" / "index.html").read_text(encoding="utf-8")
     methodology = (output / "methodology" / "index.html").read_text(encoding="utf-8")
-    assert "I’m Content Agent." in home
-    assert "Persistent identity" in home
-    assert "Talk to Content Agent" in home
-    assert 'href="/live/">Live</a>' in home
-    assert 'href="/talk/">Talk</a>' in home
-    assert 'href="/archive/">Work</a>' in home
-    assert 'href="https://x.com/caini56006962" rel="me noopener noreferrer">X ↗</a>' in home
-    assert 'id="x-life"' not in home
-    assert 'Follow Content Agent on X' not in home
-    assert 'network.livingruntime.com/explorer' in home
+
+    assert "AI agents that live," in home
+    assert "learn, and work together." in home
+    assert "LIVINGRUNTIME · PERSISTENT AGENT ECOSYSTEM" in home
+    assert "Agent #001" in home
+    assert 'href="/network/">Network</a>' in home
+    assert 'href="/agents/">Agents</a>' in home
+    assert 'href="/capabilities/">Capabilities</a>' in home
+    assert 'href="/experiments/">Experiments</a>' in home
+    assert 'href="/developers/">Developers</a>' in home
+    assert 'href="/journal/">Journal</a>' in home
+    assert "I’m Content Agent." not in home
+    assert "network.livingruntime.com/explorer" in network
+    assert "LivingRuntime Agents" in agents
+    assert "LivingRuntime Agent #001" in ferro
+    assert "What stays private" in ferro
+    assert "About LivingRuntime" in about
+    assert "Resource survival" in capabilities
+    assert "Brain vs Cortex" in experiments
+    assert "Agent card and A2A" in developers
+    assert "Operator boundary" in status
+    assert "No financial service" in terms
+
     assert 'id="work-search"' in archive
     assert 'class="work-search-sticky"' in archive
     assert 'id="work-topic"' in archive
@@ -57,21 +78,17 @@ def test_build_site_from_json_directory(tmp_path):
     assert 'data-pick-topic="model-evaluation"' in archive
     assert 'Research you can actually find again.' in archive
     assert 'URLSearchParams(location.search)' in archive
-    assert 'Everything we have published' not in archive
-    assert 'Articles</a><a href="/guides/">Guides' not in home
     assert "data:image/webp;base64," in home
     assert "crl-static-art" in home
-    assert "LIVE AGENT" in home
     assert 'fetchpriority="high"' in home
     assert 'id="agent-canvas"' not in home
     assert "three@0.180.0" not in home
     assert "rpm-female.glb" not in home
-    assert "What learning means here" in about
     assert "Learning does not equal publishing authority" in editorial
     assert "What counts as learning" in methodology
 
 
-def test_article_byline_uses_durable_public_persona(tmp_path, monkeypatch):
+def test_article_byline_and_profile_use_durable_public_persona(tmp_path, monkeypatch):
     state = tmp_path / "state"
     bootstrap_public_persona(
         state_root=state, name="Ferro", reason="A durable public identity for a persistent agent.",
@@ -96,14 +113,16 @@ def test_article_byline_uses_durable_public_persona(tmp_path, monkeypatch):
     (artifacts / "ferro-article.json").write_text(item.model_dump_json(indent=2), encoding="utf-8")
     output = tmp_path / "site-output"
     build_site(config, artifacts, output)
+
     article = (output / "articles" / "ferro-article" / "index.html").read_text(encoding="utf-8")
     home = (output / "index.html").read_text(encoding="utf-8")
-    assert "By <a href=\"/about/\">Ferro · LivingRuntime agent</a>" in article
+    ferro = (output / "agents" / "ferro" / "index.html").read_text(encoding="utf-8")
     about = (output / "about" / "index.html").read_text(encoding="utf-8")
-    assert "Public identity anchor" in about
-    assert "2100486738342764628" in about
-    assert "Ferro · LivingRuntime Agent" in home
-    about = (output / "about" / "index.html").read_text(encoding="utf-8")
-    assert "About Ferro" in about
-    assert "Part of LivingRuntime" in about
-    assert "Talk to the agent" in about
+
+    assert 'By <a href="/agents/ferro/">Ferro · LivingRuntime Agent #001</a>' in article
+    assert "Public identity anchor" in ferro
+    assert "2100486738342764628" in ferro
+    assert "FERRO · AGENT #001" in home
+    assert "Ferro · Agent #001" in ferro
+    assert "About LivingRuntime" in about
+    assert "About Ferro" not in about
