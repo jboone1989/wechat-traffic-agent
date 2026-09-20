@@ -379,7 +379,7 @@ def _fallback_evidence_selection(evidence, *, required_topic, effective_topic, e
 class ContinuousContentLoop(_BaseContinuousContentLoop):
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
                  feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None, explorer=None,
-                 capability_runtime=None, website_experiments=False, world_feed=None):
+                 capability_runtime=None, website_experiments=False, world_feed=None, neural_runtime=None):
         if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
             raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
         self.runtime, self.state = runtime, Path(state_root)
@@ -387,6 +387,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.curriculum_path, self.feeds = Path(curriculum_path), tuple(feeds)
         self.interval_hours, self.fetcher, self.publisher = interval_hours, fetcher, publisher
         self.mind = mind
+        self.neural_runtime = neural_runtime
         self.website_experiments = bool(website_experiments)
         self.world_feed = world_feed
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
@@ -680,6 +681,59 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                             'required_topic': dream_insight.topic,
                             'dream_preconcept': preconcept,
                             'dream_insight': dream_insight.model_dump(mode='json'),
+                        }
+
+            # N10/N13: when no owner/bootstrap/dream/mission authority already
+            # owns the cycle, Ferro's neural taste may either seed a topic or
+            # prospectively compete with the rational cortex's endogenous choice.
+            if (
+                self.neural_runtime is not None
+                and not getattr(self, '_focus_topic', None)
+                and snapshot['topics']
+            ):
+                goal = mind_plan.get('goal')
+                origin = str(goal.get('origin') or '') if isinstance(goal, dict) else ''
+                contestable = goal is None or origin in {'INTEREST', 'INQUIRY'}
+                if contestable:
+                    taste = self.neural_runtime.rank_neural_taste(snapshot['topics'], now)
+                    neural_topic = str(taste.get('selected_topic') or '').strip() or None
+                    ego_topic = str(mind_plan.get('required_topic') or '').strip() or None
+                    contest = self.neural_runtime.choose_brain_or_cortex(
+                        cycle=cycle,
+                        neural_choice=neural_topic,
+                        ego_choice=ego_topic,
+                        now=now,
+                    )
+                    executed_topic = str(contest.get('executed_choice') or '').strip() or None
+                    _put(folder / 'neural_taste.json', {
+                        'schema_version': 'ferro-neural-taste-cycle.v1',
+                        'taste': taste,
+                        'competition': contest,
+                    })
+                    if executed_topic and contest.get('authority') == 'NEURAL':
+                        prior_goal = mind_plan.get('goal')
+                        mind_plan = {
+                            **mind_plan,
+                            'endogenous_goal': prior_goal,
+                            'goal': {
+                                'goal_id': 'neural-taste:' + str(contest.get('contest_id') or cycle),
+                                'origin': 'NEURAL_TASTE',
+                                'description': 'Investigate the topic selected by Ferro neural taste: ' + executed_topic,
+                                'confidence': min(1.0, max(0.25, float(taste.get('margin') or 0.0) / 10.0 + 0.35)),
+                                'expected_value': 0.55,
+                                'interest_refs': [executed_topic],
+                                'inquiry_refs': [],
+                                'value_refs': [str(contest.get('contest_id') or '')],
+                            },
+                            'required_topic': executed_topic,
+                            'neural_taste': taste,
+                            'brain_cortex_competition': contest,
+                        }
+                    else:
+                        mind_plan = {
+                            **mind_plan,
+                            'neural_taste': taste,
+                            'brain_cortex_competition': contest,
                         }
 
         required_topic = mind_plan.get('required_topic')
