@@ -485,3 +485,93 @@ def test_frequent_neural_refresh_does_not_manufacture_longitudinal_age(tmp_path)
     individuality = runtime.public_snapshot()["longitudinal_individuality"]
     assert individuality["snapshot_count"] == 1
     assert individuality["month_comparison"]["history_days"] == 0.0
+
+
+
+def test_neural_refresh_schedules_bounded_open_ended_evolution_consolidation(tmp_path, monkeypatch):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    pending_cycle = {
+        "cycle_id": "evolution-cycle:test",
+        "need_id": "development-need:test",
+        "proposal_id": "development-proposal:test",
+        "world_id": "WORLD_0001",
+        "status": "ADOPTED_AWAITING_EMERGENCE",
+    }
+
+    monkeypatch.setattr(
+        runtime.open_ended_evolution,
+        "refresh",
+        lambda **kwargs: {"recent_cycles": [pending_cycle]},
+    )
+    monkeypatch.setattr(
+        runtime.open_ended_evolution,
+        "next_consolidation",
+        lambda: dict(pending_cycle),
+    )
+
+    runtime.refresh_neural_life(NOW)
+
+    wake = next(
+        row
+        for row in runtime.core.snapshot().pending_plans
+        if row.task == "NEURAL_EVOLUTION_CONSOLIDATION"
+    )
+    assert wake.wake_id == "content:NEURAL_EVOLUTION_CONSOLIDATION"
+    assert "WORLD_0001" in wake.reason
+    assert "evolution-cycle:test" in wake.relevant_refs
+
+
+def test_evolution_consolidation_persists_topology_before_final_verdict(tmp_path, monkeypatch):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    calls = []
+
+    monkeypatch.setattr(
+        runtime.open_ended_evolution,
+        "run_consolidation",
+        lambda **kwargs: {
+            "status": "ADOPTED_AWAITING_EMERGENCE",
+            "cycle_id": "evolution-cycle:test",
+            "world_id": "WORLD_0001",
+        },
+    )
+
+    def refresh(**kwargs):
+        calls.append("refresh")
+        return {
+            "recent_cycles": [{
+                "cycle_id": "evolution-cycle:test",
+                "world_id": "WORLD_0001",
+                "status": "EVOLVED",
+                "completion_kind": "ADOPTED_TRANSFER_STABLE_WORLD_CIRCUIT",
+            }]
+        }
+
+    monkeypatch.setattr(runtime.open_ended_evolution, "refresh", refresh)
+    original_persist = runtime.core._persist
+
+    def persist():
+        calls.append("persist")
+        return original_persist()
+
+    monkeypatch.setattr(runtime.core, "_persist", persist)
+
+    result = runtime.run_evolution_consolidation(NOW, steps=24)
+
+    assert calls[:2] == ["persist", "refresh"]
+    assert result["status"] == "EVOLVED"
+    assert result["cycle"]["completion_kind"] == (
+        "ADOPTED_TRANSFER_STABLE_WORLD_CIRCUIT"
+    )
+
+
+def test_public_snapshot_exposes_n36_without_claiming_semantic_capability(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    projection = runtime.public_snapshot()["open_ended_evolution"]
+
+    assert projection["completion_requires_real_world_adoption"] is True
+    assert projection[
+        "completion_requires_world_linked_stable_circuit_or_organ"
+    ] is True
+    assert projection["single_neuron_is_not_called_a_new_capability"] is True
+    assert projection["semantic_capability_claim"] is False
+    assert projection["llm_used_for_cycle_selection"] is False
