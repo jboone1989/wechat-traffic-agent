@@ -67,6 +67,12 @@ def test_learn_publish_restart_and_next_cycle_reuses_experience(tmp_path):
     assert result['status']=='PUBLISHED' and len(runtime.calls)==4
     assert result['publication']['reviewer_kind']=='AUTOMATED'
     assert result['publication']['audit']['passed']
+    current = publisher.public / 'current'
+    about = (current / 'about' / 'index.html').read_text(encoding='utf-8')
+    ferro = (current / 'agents' / 'ferro' / 'index.html').read_text(encoding='utf-8')
+    assert 'About LivingRuntime' in about
+    assert 'About the Content Agent' not in about
+    assert 'LivingRuntime Agent #001' in ferro
     draft=json.loads(Path(result['draft_path']).read_text())
     assert draft['artifact']['public_safe'] is False
     assert len(json.loads(publisher.inventory_path().read_text()))==4
