@@ -62,3 +62,37 @@ def test_procedure_requires_verified_evidence(tmp_path):
         assert "verified evidence" in str(exc)
     else:
         raise AssertionError("procedure without evidence must fail")
+
+
+def test_schema1_procedure_can_be_selected_as_baseline_variant_before_next_revision(tmp_path):
+    service = ProceduralMemoryService(tmp_path)
+    service.store.append_memory({
+        "memory_id": "legacy-proc",
+        "memory_type": "PROCEDURAL",
+        "kind": "PROCEDURE",
+        "text": "Procedure legacy: old but valid path",
+        "created_at": "2026-09-20T00:00:00Z",
+        "status": "ACTIVE",
+        "source_type": "VERIFIED_EXECUTION_OUTCOME",
+        "source_ref": "receipt:legacy",
+        "access_scope": "PRIVATE_OWNER",
+        "evidence_refs": ["receipt:legacy"],
+        "payload": {
+            "procedure_schema": 1,
+            "name": "legacy",
+            "preconditions": ["ready"],
+            "capabilities": ["web.fetch"],
+            "steps": ["fetch", "verify"],
+            "verification": ["receipt"],
+            "success_count": 1,
+            "failure_count": 1,
+            "execution_count": 2,
+        },
+    })
+    selected = service.select_variant(
+        "legacy-proc", context={"satisfied_preconditions": ["ready"]}
+    )
+    assert selected is not None
+    assert selected["steps"] == ["fetch", "verify"]
+    assert selected["execution_count"] == 2
+    assert selected["policy_reason"] == "BASELINE_UNTIL_MATURE"

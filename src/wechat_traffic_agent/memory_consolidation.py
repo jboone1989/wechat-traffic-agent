@@ -30,6 +30,10 @@ def recall_tier(memory: dict[str, Any], *, now: datetime | None = None) -> str:
         return "HOT"
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     age_days = max(0.0, (current - _parse_time(str(memory.get("created_at") or ""))).total_seconds() / 86400.0)
+    attrs = (memory.get("payload") or {}).get("attributes") if isinstance(memory.get("payload"), dict) else {}
+    attrs = attrs if isinstance(attrs, dict) else {}
+    decay_rate = max(0.2, min(1.5, float(attrs.get("decay_rate") or 1.0)))
+    age_days *= decay_rate
     if age_days <= 7:
         return "HOT"
     if age_days <= 30:
@@ -40,7 +44,11 @@ def recall_tier(memory: dict[str, Any], *, now: datetime | None = None) -> str:
 
 
 def recall_weight(memory: dict[str, Any], *, now: datetime | None = None) -> float:
-    return {"HOT": 1.0, "WARM": 0.72, "COLD": 0.38, "ARCHIVED": 0.12}[recall_tier(memory, now=now)]
+    base = {"HOT": 1.0, "WARM": 0.72, "COLD": 0.38, "ARCHIVED": 0.12}[recall_tier(memory, now=now)]
+    attrs = (memory.get("payload") or {}).get("attributes") if isinstance(memory.get("payload"), dict) else {}
+    attrs = attrs if isinstance(attrs, dict) else {}
+    boost = max(0.75, min(1.5, float(attrs.get("recall_boost") or 1.0)))
+    return max(0.05, min(1.5, base * boost))
 
 
 class MemoryConsolidationService:

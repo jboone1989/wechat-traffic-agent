@@ -780,6 +780,7 @@ class WakefulContentTaskRunner:
                     rows["evolution_learning"] = evolution_bridge.record_action_outcomes(
                         learning.get("recorded") or ()
                     )
+                    rows["memory_evolution_learning"] = evolution_bridge.sync_memory_evolution()
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
                 rows["status"] = "DEGRADED"

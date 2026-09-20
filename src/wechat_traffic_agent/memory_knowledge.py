@@ -46,10 +46,18 @@ class ExperienceKnowledgeConsolidator:
             statuses=["ACTIVE"],
             topic=topic,
             access_scope="PRIVATE_OWNER",
-            limit=episode_limit,
+            limit=max(int(episode_limit), min(2000, int(episode_limit) * 4)),
         )
+        episodes.sort(
+            key=lambda row: (
+                float(((row.get("payload") or {}).get("attributes") or {}).get("consolidation_priority") or 0.5),
+                str(row.get("created_at") or ""),
+            ),
+            reverse=True,
+        )
+        episodes = episodes[: max(1, int(episode_limit))]
         observations: list[dict[str, Any]] = []
-        for row in reversed(episodes):
+        for row in episodes:
             payload = dict(row.get("payload") or {})
             lesson = str(payload.get("lesson") or "").strip()
             if not lesson:
@@ -61,6 +69,8 @@ class ExperienceKnowledgeConsolidator:
                 "episode_id": str(row["memory_id"]),
                 "lesson": lesson,
                 "terms": terms,
+                "created_at": str(row.get("created_at") or ""),
+                "priority": float(((row.get("payload") or {}).get("attributes") or {}).get("consolidation_priority") or 0.5),
             })
         clusters: list[list[dict[str, Any]]] = []
         for observation in observations:
@@ -86,12 +96,24 @@ class ExperienceKnowledgeConsolidator:
             # evolving intersection/union changes claim_key over time and can turn a
             # legitimate revision into an unrelated duplicate. The first observation
             # anchors the cluster; later evidence revises the same claim with provenance.
-            signature_terms = sorted(cluster[0]["terms"])[:12]
+            anchor = min(
+                cluster,
+                key=lambda item: (str(item.get("created_at") or ""), str(item["episode_id"])),
+            )
+            signature_terms = sorted(anchor["terms"])[:12]
             signature = hashlib.sha256("|".join(signature_terms).encode("utf-8")).hexdigest()[:20]
             claim_key = f"experience-knowledge:{topic}:{signature}"
             representative = max((item["lesson"] for item in cluster), key=len)
             text = "Repeated experience supports: " + representative[:1600]
             current = self.semantic.current_claim(claim_key)
+            if current is None:
+                normalized_text = re.sub(r"\s+", " ", text).strip().casefold()
+                current = next((
+                    row for row in reversed(self.store.query_memories(
+                        memory_types=["SEMANTIC"], statuses=["ACTIVE"], topic="experience-knowledge", limit=1000,
+                    ))
+                    if re.sub(r"\s+", " ", str(row.get("text") or "")).strip().casefold() == normalized_text
+                ), None)
             if current is not None:
                 current_refs = set(str(item) for item in (current.get("evidence_refs") or []))
                 if set(evidence).issubset(current_refs):

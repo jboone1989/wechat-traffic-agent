@@ -106,10 +106,12 @@ jobs:
           tests/test_memory_consolidation_revision.py
           tests/test_memory_runtime.py
           tests/test_memory_life.py
+          tests/test_memory_observation.py
+          tests/test_memory_prior.py
+          tests/test_memory_salience.py
           tests/test_memory_self.py
           tests/test_memory_continuity.py
           tests/test_memory_evolution.py
-          tests/test_memory_evolution_auto.py
           tests/test_operator_memory.py
           tests/test_operator_memory_admission.py
       - name: Compile goal/mind boundary
@@ -190,6 +192,7 @@ jobs:
           python -m pytest -q -c /dev/null
           tests/test_web_editorial.py tests/test_channel_evidence.py tests/test_website_experiment.py
           tests/test_content_loop.py tests/test_content_explorer.py tests/test_content_explorer_loop.py tests/test_goal_web_search.py
+          tests/test_content_strategy_context.py
           tests/test_world_feed.py tests/test_prospective_predictions.py
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
       - name: Build source bundle
