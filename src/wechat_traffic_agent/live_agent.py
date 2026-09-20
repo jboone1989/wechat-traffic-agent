@@ -835,6 +835,7 @@ class LiveAgentService:
         from .channels.agent_live_page import live_agent_document
         from .channels.neural_life_page import neural_life_document
         from .channels.agent_talk_page import talk_agent_document
+        from .website_engagement_client import first_party_engagement_script
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
         from .channels.operator_console_page import operator_console_document
@@ -876,17 +877,24 @@ class LiveAgentService:
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
         audience_analytics = AudienceAnalytics(self.state_root) if operator_console is not None else None
 
+        engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+        def public_document(document: str) -> str:
+            if not engagement_enabled:
+                return document
+            return document.replace("</body>", first_party_engagement_script() + "</body>", 1)
+
         async def live_page(_request: Request):
-            return HTMLResponse(live_agent_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(live_agent_document()), headers={"Cache-Control": "no-cache"})
 
         async def talk_page(_request: Request):
-            return HTMLResponse(talk_agent_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(talk_agent_document()), headers={"Cache-Control": "no-cache"})
 
         async def neural_life_page(_request: Request):
-            return HTMLResponse(neural_life_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(neural_life_document()), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_page(_request: Request):
-            return HTMLResponse(brain_lab_document(), headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_status(_request: Request):
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
