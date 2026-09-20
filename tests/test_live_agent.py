@@ -154,11 +154,17 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert neural.status_code == 200
     assert "FERRO NEURAL LIFE ROADMAP v1" in neural.text
     assert "ROADMAP EVIDENCE MATRIX" in neural.text
+    assert "OPEN-ENDED DEVELOPMENT · SELF-GENERATED WORLD" in neural.text
+    assert "Self-organized circuit" in neural.text
+    assert "Emergent neural organ" in neural.text
+    assert "Recent cortex swaps" in neural.text
     assert "/api/agent/status" in neural.text
     assert "/api/agent/brain-lab" in neural.text
     assert "No fake events are generated" in neural.text
     assert brain.status_code == 200
     assert "Neural Life ↗" in brain.text
+    assert "Worlds Ferro generated for itself" in brain.text
+    assert "DEVELOPMENTAL AGENCY · NO LLM MOTOR LOOP" in brain.text
     assert "PUBLIC_REASONING_SUMMARY" in talk.text
     assert 'id="send" type="button"' in talk.text
     assert "addEventListener('click',sendMessage)" in talk.text
