@@ -280,7 +280,8 @@ def main() -> int:
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
             feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
             publisher=publisher, mind=content_mind, capability_runtime=app.runtime,
-            website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"))
+            website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"),
+            neural_runtime=wakeful_runtime)
 
     stopping = False
     stop_requested_at: datetime | None = None

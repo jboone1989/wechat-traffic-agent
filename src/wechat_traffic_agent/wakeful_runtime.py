@@ -83,6 +83,19 @@ class ContentWakefulRuntime:
             self.state_root,
             substrate=getattr(self.core.reflex, "substrate", None),
         )
+        from .neural_identity import (
+            BrainCortexLedger,
+            NeuralPersonality,
+            NeuralSocialSelf,
+            NeuralTasteEngine,
+            PsychodynamicState,
+        )
+        substrate = getattr(self.core.reflex, "substrate", None)
+        self.neural_taste = NeuralTasteEngine(self.state_root, substrate=substrate)
+        self.neural_social = NeuralSocialSelf(self.state_root, substrate=substrate)
+        self.neural_personality = NeuralPersonality(self.state_root)
+        self.brain_cortex = BrainCortexLedger(self.state_root)
+        self.psychodynamics = PsychodynamicState(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -300,7 +313,82 @@ class ContentWakefulRuntime:
                 ))
                 self.neural_life.mark_authority_action(now, recommendation)
                 projection = self.neural_life.projection()
+        scoreboard = self.brain_cortex.projection().get("scoreboard") or {}
+        executed = sum(int((row or {}).get("executed") or 0) for row in scoreboard.values())
+        neural_executed = int((scoreboard.get("NEURAL") or {}).get("executed") or 0)
+        authority_fraction = (neural_executed / executed) if executed else 0.5
+        self.neural_personality.refresh(
+            now=now,
+            neural_life=projection,
+            brain_lab=self.brain_lab.projection(),
+            social=self.neural_social.projection(),
+            neural_authority_fraction=authority_fraction,
+        )
         return projection
+
+    def rank_neural_taste(self, topics, now: datetime | None = None) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.neural_taste.rank_topics(topics, now=now)
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def observe_social_interaction(
+        self,
+        *,
+        actor: str,
+        category: str,
+        signal: str,
+        now: datetime | None = None,
+    ) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        relation = self.neural_social.observe(
+            actor=actor,
+            category=category,
+            signal=signal,
+            now=now,
+        )
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        self.neural_personality.refresh(
+            now=now,
+            neural_life=self.neural_life.projection(),
+            brain_lab=self.brain_lab.projection(),
+            social=self.neural_social.projection(),
+        )
+        return relation
+
+    def choose_brain_or_cortex(
+        self,
+        *,
+        cycle: str,
+        neural_choice: str | None,
+        ego_choice: str | None,
+        now: datetime | None = None,
+    ) -> dict:
+        return self.brain_cortex.choose(
+            cycle=cycle,
+            neural_choice=neural_choice,
+            ego_choice=ego_choice,
+            now=now,
+        )
+
+    def settle_brain_cortex(
+        self,
+        *,
+        cycle: str,
+        utility: float,
+        evidence_refs=(),
+        observed_at: datetime | None = None,
+    ) -> dict:
+        return self.brain_cortex.settle(
+            cycle=cycle,
+            utility=utility,
+            evidence_refs=evidence_refs,
+            observed_at=observed_at,
+        )
 
     def run_brain_lab(self, now: datetime | None = None, *, environment: str | None = None, steps: int = 12) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -612,6 +700,15 @@ class ContentWakefulRuntime:
             "neural_life": self.neural_life.projection() if self.neural_life_enabled else {"status": "DISABLED"},
             "brain_lab": self.brain_lab.projection(),
             "dreaming": self.dream_engine.projection(),
+            "neural_taste": self.neural_taste.projection(),
+            "neural_social": self.neural_social.projection(),
+            "personality": self.neural_personality.projection(),
+            "brain_vs_cortex": self.brain_cortex.projection(),
+            "psychodynamics": self.psychodynamics.projection(
+                neural_life=self.neural_life.projection(),
+                personality=self.neural_personality.projection(),
+                active_goal_count=len(snap.active_goal_refs),
+            ),
             "connectome": {
                 "enabled": self.connectome_enabled,
                 "status": (

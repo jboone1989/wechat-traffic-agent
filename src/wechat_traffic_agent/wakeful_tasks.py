@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from datetime import datetime
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -723,6 +724,47 @@ class WakefulContentTaskRunner:
                     "count": len(feedback_rows),
                     "feedback": feedback_rows,
                     "publication_authority": False,
+                }
+                competition_rows = []
+                if hasattr(self.wakeful, "settle_brain_cortex"):
+                    prediction_cycles: dict[str, str] = {}
+                    cycles_root = Path(self.state_root) / "content" / "continuous" / "cycles"
+                    for prediction_path in cycles_root.glob("*/action_prediction.json"):
+                        try:
+                            prediction_payload = json.loads(prediction_path.read_text(encoding="utf-8"))
+                        except (OSError, ValueError, json.JSONDecodeError):
+                            continue
+                        prediction_id = str(prediction_payload.get("prediction_id") or "")
+                        prediction_cycle = str(prediction_payload.get("cycle") or "")
+                        if prediction_id and prediction_cycle:
+                            prediction_cycles[prediction_id] = prediction_cycle
+                    for outcome in learning.get("recorded") or ():
+                        prediction_id = str(outcome.get("prediction_id") or "")
+                        cycle_id = prediction_cycles.get(prediction_id)
+                        if not cycle_id:
+                            continue
+                        expected = float(outcome.get("expected_pageviews") or 0.0)
+                        actual = float(outcome.get("actual_pageviews") or 0.0)
+                        reliability = float(outcome.get("reliability") or 0.0)
+                        utility = math.tanh((actual - expected) / max(1.0, expected + 1.0)) * reliability
+                        raw_observed_at = outcome.get("observed_at")
+                        if isinstance(raw_observed_at, datetime):
+                            observed_at = raw_observed_at
+                        else:
+                            try:
+                                observed_at = datetime.fromisoformat(str(raw_observed_at))
+                            except ValueError:
+                                observed_at = now
+                        competition_rows.append(self.wakeful.settle_brain_cortex(
+                            cycle=cycle_id,
+                            utility=utility,
+                            evidence_refs=outcome.get("evidence_refs") or (),
+                            observed_at=observed_at,
+                        ))
+                rows["brain_vs_cortex_learning"] = {
+                    "status": "SETTLED" if competition_rows else "NO_NEW_OUTCOMES",
+                    "count": len(competition_rows),
+                    "results": competition_rows,
                 }
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
