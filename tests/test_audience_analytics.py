@@ -8,7 +8,7 @@ from wechat_traffic_agent.website_engagement import WebsiteEngagementStore, inge
 T = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
 
 
-def payload(event_id, visitor, session, route, *, acquisition="direct", device_class="desktop", event_type="page_view", target_route=None):
+def payload(event_id, visitor, session, route, *, acquisition="direct", device_class="desktop", audience_class="public", event_type="page_view", target_route=None):
     row = {
         "schema_version": "website-engagement-event.v1",
         "event_id": event_id,
@@ -18,6 +18,7 @@ def payload(event_id, visitor, session, route, *, acquisition="direct", device_c
         "route": route,
         "acquisition": acquisition,
         "device_class": device_class,
+        "audience_class": audience_class,
     }
     if target_route is not None:
         row["target_route"] = target_route
@@ -49,6 +50,8 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
         T - timedelta(minutes=20),
     )
 
+    record(store, payload("8" * 32, "3" * 32, "d" * 32, "/", acquisition="direct", device_class="desktop", audience_class="operator"), T - timedelta(minutes=10))
+
     data = AudienceAnalytics(root).snapshot(window="24h", now=T)
     assert data["status"] == "OK"
     assert data["summary"]["visitors"] == 2
@@ -57,6 +60,7 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
     assert data["summary"]["returning_visitors"] == 1
     assert data["summary"]["engaged_readers_30s"] == 1
     assert data["summary"]["internal_link_clicks"] == 1
+    assert data["summary"]["excluded_operator_events"] == 1
 
     pages = {row["route"]: row["pageviews"] for row in data["top_pages"]}
     assert pages["/"] == 3
@@ -77,6 +81,8 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
     assert data["privacy"]["raw_user_agent_persisted"] is False
     assert data["privacy"]["raw_referrer_persisted"] is False
     assert data["privacy"]["visitor_level_rows_exposed"] is False
+    assert data["privacy"]["known_operator_browser_events_excluded"] is True
+    assert data["privacy"]["historical_unclassified_events_may_include_operator"] is True
 
 
 def test_audience_snapshot_reports_missing_coverage_truthfully(tmp_path):
