@@ -325,6 +325,32 @@ class ContentWakefulRuntime:
                 ), enqueue=False)
             self.neural_life.mark_stimulated(now)
 
+        dream_influence = self.dream_engine.claim_waking_influence(now=now)
+        if dream_influence is not None:
+            base_magnitude = max(
+                0.0,
+                min(1.0, float(dream_influence.get("magnitude") or 0.0)),
+            )
+            for index, channel in enumerate(dream_influence.get("channels") or ()):
+                if index >= 3:
+                    break
+                magnitude = max(0.05, base_magnitude * (1.0 - 0.15 * index))
+                self.core.emit(StimulusEvent(
+                    event_id=(
+                        f"dream-consolidation:{dream_influence.get('attractor_id')}:"
+                        f"{int(now.timestamp() // 21600)}:{index}"
+                    ),
+                    source="ferro-dream-engine",
+                    kind="DREAM_CONSOLIDATION",
+                    observed_at=now,
+                    salience=magnitude,
+                    novelty=0.35,
+                    urgency=max(0.20, magnitude * 0.65),
+                    persistence=0.92,
+                    payload_ref=str(dream_influence.get("attractor_id") or ""),
+                    attention_channel=str(channel),
+                ), enqueue=False)
+
         recommendation = self.neural_life.authority_recommendation(now)
         if recommendation is not None:
             task = str(recommendation["task"])

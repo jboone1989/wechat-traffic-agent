@@ -26,12 +26,22 @@ class FerroDreamEngine:
     SCHEMA_VERSION = "ferro-dreams.v1"
     MAX_DREAMS = 64
     MAX_PRECONCEPTS = 64
+    MAX_ATTRACTORS = 32
+    STABLE_RECURRENCE = 3
+    WAKING_INFLUENCE_COOLDOWN_HOURS = 6.0
 
     def __init__(self, state_root: Path, *, substrate: Any | None) -> None:
         self.state_root = Path(state_root)
         self.substrate = substrate
         self.path = self.state_root / "application" / "neural_dreams.json"
         self.state = self._load()
+        if "attractors" not in self.state:
+            self.state["attractors"] = {}
+            self.state["last_waking_influence_at"] = None
+            for row in self.state.get("preconcepts") or ():
+                if isinstance(row, Mapping):
+                    self._consolidate_preconcept(row, persist=False)
+            self._write()
 
     def _load(self) -> dict[str, Any]:
         payload = _read_json(self.path)
@@ -44,6 +54,8 @@ class FerroDreamEngine:
             "dreams": [],
             "preconcepts": [],
             "coactivations": {},
+            "attractors": {},
+            "last_waking_influence_at": None,
         }
 
     def _write(self) -> None:
@@ -54,6 +66,162 @@ class FerroDreamEngine:
             encoding="utf-8",
         )
         os.replace(tmp, self.path)
+
+    @staticmethod
+    def _attractor_key(channels: list[str] | tuple[str, ...]) -> str:
+        normalized = sorted({str(channel) for channel in channels if channel})[:3]
+        return "|".join(normalized) or "quiet"
+
+    @staticmethod
+    def _parse_time(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _consolidate_preconcept(
+        self,
+        preconcept: Mapping[str, Any],
+        *,
+        persist: bool = True,
+    ) -> dict[str, Any] | None:
+        channels = [str(value) for value in preconcept.get("channels") or () if value]
+        if len(channels) < 2:
+            return None
+        key = self._attractor_key(channels)
+        attractor_id = f"attractor:{sha256(key.encode()).hexdigest()[:20]}"
+        attractors = dict(self.state.get("attractors") or {})
+        row = dict(attractors.get(attractor_id) or {})
+        source_dream = str(preconcept.get("source_dream") or "")
+        source_dreams = [str(value) for value in row.get("source_dreams") or () if value]
+        new_source = bool(source_dream and source_dream not in source_dreams)
+        if new_source:
+            source_dreams.append(source_dream)
+        strengths = [
+            float(value)
+            for value in row.get("association_strengths") or ()
+            if isinstance(value, (int, float))
+        ]
+        if new_source:
+            strengths.append(float(preconcept.get("association_strength") or 0.0))
+        if not row and not strengths:
+            strengths = [float(preconcept.get("association_strength") or 0.0)]
+        formed_at = str(preconcept.get("formed_at") or datetime.now(timezone.utc).isoformat())
+        formed_time = self._parse_time(formed_at)
+        epoch = (
+            str(int(formed_time.timestamp() // 21600))
+            if formed_time is not None
+            else formed_at[:13]
+        )
+        epochs = [str(value) for value in row.get("consolidation_epochs") or () if value]
+        if epoch not in epochs:
+            epochs.append(epoch)
+        recurrence = len(source_dreams)
+        epoch_count = len(epochs)
+        mean_strength = (sum(strengths) / len(strengths)) if strengths else 0.0
+        stability = min(
+            1.0,
+            (0.12 * recurrence)
+            + (0.18 * epoch_count)
+            + (0.50 * mean_strength),
+        )
+        if (
+            recurrence >= self.STABLE_RECURRENCE
+            and epoch_count >= self.STABLE_RECURRENCE
+            and stability >= 0.45
+        ):
+            status = "STABLE"
+        elif recurrence >= 2:
+            status = "CONSOLIDATING"
+        else:
+            status = "EMERGING"
+        row.update({
+            "attractor_id": attractor_id,
+            "signature": key,
+            "channels": sorted({str(value) for value in channels}),
+            "status": status,
+            "first_seen_at": row.get("first_seen_at") or formed_at,
+            "last_seen_at": formed_at,
+            "recurrence_count": recurrence,
+            "source_dreams": source_dreams[-32:],
+            "consolidation_epochs": epochs[-32:],
+            "consolidation_epoch_count": epoch_count,
+            "association_strengths": [round(value, 6) for value in strengths[-32:]],
+            "mean_association_strength": round(mean_strength, 6),
+            "stability_score": round(stability, 6),
+            "waking_influence_count": int(row.get("waking_influence_count") or 0),
+            "last_waking_influence_at": row.get("last_waking_influence_at"),
+            "origin": "MULTI_DREAM_NEURAL_CONSOLIDATION",
+            "llm_used_for_consolidation": False,
+        })
+        attractors[attractor_id] = row
+        if len(attractors) > self.MAX_ATTRACTORS:
+            ordered = sorted(
+                attractors.values(),
+                key=lambda value: (
+                    value.get("status") == "STABLE",
+                    float(value.get("stability_score") or 0.0),
+                    str(value.get("last_seen_at") or ""),
+                ),
+                reverse=True,
+            )[: self.MAX_ATTRACTORS]
+            attractors = {str(value["attractor_id"]): value for value in ordered}
+        self.state["attractors"] = attractors
+        if persist:
+            self._write()
+        return dict(row)
+
+    def claim_waking_influence(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        self.state = self._load()
+        attractors = [
+            dict(row) for row in (self.state.get("attractors") or {}).values()
+            if isinstance(row, Mapping) and row.get("status") == "STABLE"
+        ]
+        if not attractors:
+            return None
+        eligible = []
+        for row in attractors:
+            last = self._parse_time(row.get("last_waking_influence_at"))
+            if last is None or (now - last).total_seconds() >= self.WAKING_INFLUENCE_COOLDOWN_HOURS * 3600.0:
+                eligible.append(row)
+        if not eligible:
+            return None
+        eligible.sort(
+            key=lambda row: (
+                float(row.get("stability_score") or 0.0),
+                int(row.get("recurrence_count") or 0),
+                str(row.get("last_seen_at") or ""),
+            ),
+            reverse=True,
+        )
+        selected = eligible[0]
+        attractor_id = str(selected["attractor_id"])
+        stored = dict((self.state.get("attractors") or {}).get(attractor_id) or selected)
+        stored["waking_influence_count"] = int(stored.get("waking_influence_count") or 0) + 1
+        stored["last_waking_influence_at"] = now.isoformat()
+        self.state.setdefault("attractors", {})[attractor_id] = stored
+        self.state["last_waking_influence_at"] = now.isoformat()
+        self.state["updated_at"] = now.isoformat()
+        self._write()
+        magnitude = min(0.9, 0.30 + 0.55 * float(stored.get("stability_score") or 0.0))
+        return {
+            "attractor_id": attractor_id,
+            "channels": list(stored.get("channels") or ()),
+            "magnitude": round(magnitude, 6),
+            "stability_score": float(stored.get("stability_score") or 0.0),
+            "recurrence_count": int(stored.get("recurrence_count") or 0),
+            "source_dreams": list(stored.get("source_dreams") or ())[-8:],
+            "authority": "NEURAL_DREAM_CONSOLIDATION",
+            "llm_used": False,
+        }
 
     @staticmethod
     def _trace_currents(trace: Mapping[str, Any], index: int) -> dict[str, float]:
@@ -177,6 +345,11 @@ class FerroDreamEngine:
 
     def dream(self, *, now: datetime | None = None, replay_count: int = 6) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        # Another component may have verbalized a preconcept since this long-lived
+        # engine instance was created. Reload before mutating to preserve it.
+        self.state = self._load()
+        self.state.setdefault("attractors", {})
+        self.state.setdefault("last_waking_influence_at", None)
         traces = self._salient_traces()
         if self.substrate is None:
             return {"status": "CONNECTOME_UNAVAILABLE", "replays": 0, "preconcept": None}
@@ -247,6 +420,12 @@ class FerroDreamEngine:
             concepts = list(self.state.get("preconcepts") or ())
             concepts.append(preconcept)
             self.state["preconcepts"] = concepts[-self.MAX_PRECONCEPTS:]
+            attractor = self._consolidate_preconcept(preconcept, persist=False)
+            if attractor is not None:
+                preconcept["attractor_id"] = attractor["attractor_id"]
+                preconcept["consolidation_status"] = attractor["status"]
+                preconcept["attractor_recurrence_count"] = attractor["recurrence_count"]
+                preconcept["attractor_stability_score"] = attractor["stability_score"]
 
         source_kind_counts: dict[str, int] = {}
         for trace in traces:
@@ -261,6 +440,8 @@ class FerroDreamEngine:
             "replays": replay_rows,
             "dominant_channels": [[k, round(v, 5)] for k, v in ranking[:6]],
             "preconcept_id": preconcept.get("preconcept_id") if preconcept else None,
+            "attractor_id": preconcept.get("attractor_id") if preconcept else None,
+            "consolidation_status": preconcept.get("consolidation_status") if preconcept else None,
             "llm_used_for_replay": False,
         }
         dreams = list(self.state.get("dreams") or ())
@@ -274,6 +455,7 @@ class FerroDreamEngine:
         return {"status": "DREAMED", "dream": dream, "preconcept": preconcept}
 
     def latest_unverbalized_preconcept(self) -> dict[str, Any] | None:
+        self.state = self._load()
         for row in reversed(self.state.get("preconcepts") or []):
             if not bool(row.get("verbalized")):
                 return dict(row)
@@ -281,6 +463,7 @@ class FerroDreamEngine:
 
     def mark_verbalized(self, preconcept_id: str, *, hypothesis: str, now: datetime | None = None) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        self.state = self._load()
         for row in reversed(self.state.get("preconcepts") or []):
             if str(row.get("preconcept_id")) == str(preconcept_id):
                 row["verbalized"] = True
@@ -292,15 +475,40 @@ class FerroDreamEngine:
         raise KeyError(preconcept_id)
 
     def projection(self) -> dict[str, Any]:
+        self.state = self._load()
         latest = (self.state.get("dreams") or [])[-1] if self.state.get("dreams") else None
+        latest_preconcept = None
+        for row in reversed(self.state.get("preconcepts") or []):
+            if not bool(row.get("verbalized")):
+                latest_preconcept = dict(row)
+                break
+        attractors = [
+            dict(row) for row in (self.state.get("attractors") or {}).values()
+            if isinstance(row, Mapping)
+        ]
+        attractors.sort(
+            key=lambda row: (
+                row.get("status") == "STABLE",
+                float(row.get("stability_score") or 0.0),
+                int(row.get("recurrence_count") or 0),
+            ),
+            reverse=True,
+        )
+        stable = [row for row in attractors if row.get("status") == "STABLE"]
         return {
             "schema_version": self.SCHEMA_VERSION,
             "updated_at": self.state.get("updated_at"),
             "dream_count": int(self.state.get("dream_count") or 0),
             "latest_dream": dict(latest) if isinstance(latest, Mapping) else None,
-            "latest_preconcept": self.latest_unverbalized_preconcept(),
+            "latest_preconcept": latest_preconcept,
             "preconcept_count": len(self.state.get("preconcepts") or []),
+            "attractor_count": len(attractors),
+            "stable_attractor_count": len(stable),
+            "stable_attractors": stable[:8],
+            "top_attractors": attractors[:12],
+            "last_waking_influence_at": self.state.get("last_waking_influence_at"),
             "llm_used_for_replay": False,
+            "llm_used_for_consolidation": False,
         }
 
 
