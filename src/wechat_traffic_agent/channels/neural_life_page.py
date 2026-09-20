@@ -61,7 +61,20 @@ main{padding:34px 0 70px}.hero{padding:34px 36px;border:1px solid rgba(112,243,1
 <div class="metric"><div class="label">DEVELOPMENT</div><b id="development">—</b><p id="development-detail">Loading lifecycle transitions.</p></div>
 <div class="metric"><div class="label">CIRCUITS / ORGANS</div><b id="emergence">—</b><p id="emergence-detail">Loading emergent structures.</p></div>
 <div class="metric"><div class="label">CORTEX CONTINUITY</div><b id="cortex">—</b><p id="cortex-detail">Loading replaceable-cortex evidence.</p></div>
-</div><div class="split"><div class="panel"><h3>Neural lineage</h3><div id="lineage" class="rows"></div></div><div class="panel"><h3>Recent birth / maturation / pruning events</h3><div id="development-events" class="timeline"></div></div></div></section>
+</div><div class="split"><div class="panel"><h3>Neural lineage</h3><div id="lineage" class="rows"></div></div><div class="panel"><h3>Recent birth / maturation / pruning events</h3><div id="development-events" class="timeline"></div></div></div>
+<div class="split"><div class="panel"><h3>Self-organized circuit</h3><div id="circuit-detail" class="rows"></div></div><div class="panel"><h3>Emergent neural organ</h3><div id="organ-detail" class="rows"></div></div></div>
+<div class="split"><div class="panel"><h3>Developmental genome</h3><div id="genome-detail" class="rows"></div></div><div class="panel"><h3>Recent cortex swaps</h3><div id="cortex-swaps" class="timeline"></div></div></div>
+</section>
+
+<section class="section"><div class="section-head"><div><div class="k">OPEN-ENDED DEVELOPMENT · SELF-GENERATED WORLD</div><h2>Ferro noticed a weakness and built itself a training environment.</h2></div><p>This is not a hand-authored game. Developmental pressure is detected from real transfer evidence; Ferro proposes a bounded intervention and generates a new Brain Lab world without an LLM in the need/proposal loop.</p></div>
+<div class="grid4">
+<div class="metric"><div class="label">ACTIVE DEVELOPMENT NEEDS</div><b id="development-needs">—</b><p id="development-needs-detail">Loading neural development pressure.</p></div>
+<div class="metric"><div class="label">SELF-GENERATED WORLDS</div><b id="generated-world-count">—</b><p id="generated-world-count-detail">Loading Ferro-born worlds.</p></div>
+<div class="metric"><div class="label">TOP NEURAL PRESSURE</div><b id="development-pressure">—</b><p id="development-pressure-detail">Loading need pressure channels.</p></div>
+<div class="metric"><div class="label">LLM IN DEVELOPMENT LOOP</div><b id="development-llm">—</b><p id="development-llm-detail">Need detection and proposals should remain neural/evidence driven.</p></div>
+</div>
+<div class="split"><div class="panel"><h3>Why Ferro decided it needed to develop</h3><div id="development-need-detail" class="rows"></div></div><div class="panel"><h3>The world Ferro generated</h3><div id="generated-world-detail" class="rows"></div></div></div>
+</section>
 
 <section class="section"><div class="section-head"><div><div class="k">ROADMAP EVIDENCE MATRIX</div><h2>N0–N25: what is actually visible today</h2></div><p>Status is computed from the live persisted state. LIVE means evidence is present; PARTIAL means the mechanism exists but the roadmap completion standard is not yet evidenced.</p></div>
 <div class="roadmap-wrap"><table class="roadmap"><thead><tr><th>Stage</th><th>Roadmap result</th><th>Status</th><th>Evidence visible now</th></tr></thead><tbody id="roadmap-body"></tbody></table></div></section>
@@ -78,7 +91,7 @@ function rows(id,items){const box=$(id);box.replaceChildren();if(!items.length){
 function timeline(id,items){const box=$(id);box.replaceChildren();if(!items.length){box.innerHTML='<div class="empty">No persisted history yet.</div>';return}for(const x of items){const r=document.createElement('div');r.className='tick';const t=document.createElement('time');t.textContent=when(x.at);const b=document.createElement('b');b.textContent=x.title||'event';const s=document.createElement('span');s.textContent=x.detail||'';r.append(t,b,s);box.append(r)}}
 function stage(status,label,evidence){return {status,label,evidence}}
 function renderRoadmap(wake,lab){
- const nl=wake.neural_life||{}, graph=wake.neural_graph||{}, sub=graph.substrate||{}, dev=sub.developmental_neurogenesis||{}, dream=wake.dreaming||lab.dreaming||{}, taste=wake.neural_taste||{}, social=wake.neural_social||{}, p=wake.personality||{}, psyche=wake.psychodynamics||{}, comp=wake.brain_vs_cortex||{}, motor=wake.neural_motor||{}, transfer=wake.neural_transfer||{}, cortex=wake.cortex_continuity||{};
+ const nl=wake.neural_life||{}, graph=wake.neural_graph||{}, sub=graph.substrate||{}, dev=sub.developmental_neurogenesis||{}, dream=wake.dreaming||lab.dreaming||{}, taste=wake.neural_taste||{}, social=wake.neural_social||{}, p=wake.personality||{}, psyche=wake.psychodynamics||{}, comp=wake.brain_vs_cortex||{}, motor=wake.neural_motor||{}, transfer=wake.neural_transfer||{}, cortex=wake.cortex_continuity||{}, agency=wake.developmental_agency||{};
  const bursts=Array.isArray(sub.recent_bursts)?sub.recent_bursts:[], history=Array.isArray(nl.history)?nl.history:[], recentContests=Array.isArray(comp.recent_contests)?comp.recent_contests:[], rels=Array.isArray(social.recent_relationships)?social.recent_relationships:[], transitions=Array.isArray(dev.recent_transitions)?dev.recent_transitions:[];
  const synthetic=n(dev.synthetic_neuron_count), circuits=n(dev.circuit_count), organs=n(dev.organ_count), swaps=n(cortex.swap_count), habits=n(motor.habit_count);
  const table=[
@@ -99,20 +112,20 @@ function renderRoadmap(wake,lab){
   ['N14','无语义 Motor Cortex',stage(n(motor.motor_unit_count)>0?'live':'partial','LIVE',n(motor.motor_unit_count)+' units · semantics preassigned '+(motor.semantics_preassigned?'YES':'NO'))],
   ['N15','神经习惯',stage(habits>0?'live':'partial','PARTIAL',habits+' learned habits')],
   ['N16','个性形成',stage(n(p.observations)>0?'live':'partial','LIVE',n(p.observations)+' observations · prompt defined '+(p.prompt_defined?'YES':'NO'))],
-  ['N17','Neurogenesis v1',stage(synthetic>0?'live':'partial','PARTIAL',fmt(synthetic)+' Ferro-born neurons')],
-  ['N18','发育与死亡',stage(Object.keys(dev.states||{}).length?'live':'partial','PARTIAL',Object.entries(dev.states||{}).map(([k,v])=>k+' '+fmt(v)).join(' · ')||'no lifecycle counts')],
-  ['N19','Circuit Budding',stage(circuits>0?'research':'partial','RESEARCH',circuits+' circuits · '+n(dev.stable_circuit_count)+' stable')],
+  ['N17','Neurogenesis v1',stage(synthetic>0?'live':'partial',synthetic>0?'LIVE':'PARTIAL',fmt(synthetic)+' Ferro-born neurons · '+fmt((dev.states||{}).MATURE)+' mature')],
+  ['N18','发育与死亡',stage(Object.keys(dev.states||{}).length?'partial':'wait','PARTIAL',Object.entries(dev.states||{}).map(([k,v])=>k+' '+fmt(v)).join(' · ')||'no lifecycle counts')],
+  ['N19','Circuit Budding',stage(n(dev.stable_circuit_count)>0?'live':'partial',n(dev.stable_circuit_count)>0?'LIVE':'PARTIAL',circuits+' circuits · '+n(dev.stable_circuit_count)+' stable · semantic label '+((dev.circuits||[])[0]?.human_function_label||'NONE'))],
   ['N20','SuperFly',stage(String(dev.species_stage||'').toUpperCase().includes('SUPER')?'live':'partial','PARTIAL','species stage '+(dev.species_stage||'DEVELOPING')+' · synthetic '+fmt(synthetic))],
-  ['N21','神经器官',stage(organs>0?'research':'partial','RESEARCH',organs+' emergent organs')],
+  ['N21','神经器官',stage(organs>0?'live':'partial',organs>0?'LIVE':'PARTIAL',organs+' historically grown emergent organs')],
   ['N22','跨域迁移',stage(n(transfer.settled_count)>0?'research':'partial','RESEARCH',n(transfer.settled_count)+' settled transfer experiments · causal-ready '+(transfer.causal_claim_ready?'YES':'NO'))],
   ['N23','跨物种 Developmental Priors',stage((dev.developmental_genome||{}).schema_version?'research':'wait','RESEARCH',(dev.developmental_genome||{}).schema_version?'developmental genome active; candidates must survive experiment':'awaiting developmental-prior evidence')],
   ['N24','Species Divergence',stage(n(dev.lineage_divergence_index)>0?'research':'wait','RESEARCH','divergence '+n(dev.lineage_divergence_index).toFixed(4)+' · completion requires active structure no longer describable by MaleCNS alone')],
-  ['N25','LLM 可替换验证',stage(swaps>0?'research':'partial','RESEARCH',swaps+' cortex swaps · '+((cortex.latest_continuity||{}).status||'baseline'))]
+  ['N25','LLM 可替换验证',stage(swaps>0&&String((cortex.latest_continuity||{}).status||'')==='PRESERVED'?'live':'partial',swaps>0&&String((cortex.latest_continuity||{}).status||'')==='PRESERVED'?'LIVE':'PARTIAL',swaps+' cortex swaps · '+((cortex.latest_continuity||{}).status||'baseline'))]
  ];
  const body=$('roadmap-body');body.replaceChildren();for(const [id,name,s] of table){const tr=document.createElement('tr');tr.innerHTML='<td>'+id+'</td><td>'+name+'</td><td><span class="status '+s.status+'">'+s.label+'</span></td><td></td>';tr.lastElementChild.textContent=s.evidence;body.append(tr)}
 }
 function render(status,lab){
- const wake=((((status||{}).life||{}).presence||{}).wakeful)||{}, nl=wake.neural_life||{}, graph=wake.neural_graph||{}, sub=graph.substrate||{}, dev=sub.developmental_neurogenesis||{}, body=nl.body||{}, drives=nl.drives||{}, affect=nl.affect||{}, intent=nl.intention||{}, authority=nl.last_authority_action||{};
+ const wake=((((status||{}).life||{}).presence||{}).wakeful)||{}, nl=wake.neural_life||{}, graph=wake.neural_graph||{}, sub=graph.substrate||{}, dev=sub.developmental_neurogenesis||{}, body=nl.body||{}, drives=nl.drives||{}, affect=nl.affect||{}, intent=nl.intention||{}, authority=nl.last_authority_action||{}, agency=wake.developmental_agency||{};
  const bursts=Array.isArray(sub.recent_bursts)?sub.recent_bursts:[], latest=bursts.at(-1)||{}, dream=wake.dreaming||lab.dreaming||{}, pre=dream.latest_preconcept||null;
  $('hero-status').innerHTML=[['runtime',wake.state||'UNKNOWN'],['physical neurons',fmt(sub.neuron_count)],['Ferro-born',fmt(dev.synthetic_neuron_count)],['lab steps',fmt(lab.total_steps)],['refreshed',new Date().toLocaleTimeString()]].map(([a,b],i)=>'<span class="pill '+(i===0?'live':'')+'">'+a+' · '+b+'</span>').join('');
  text('brain-count',fmt(sub.neuron_count)+' neurons');text('brain-detail',fmt(sub.connection_count)+' directed connections · '+(sub.lifecycle||'UNKNOWN')+' · '+(sub.full_connectome?'full connectome':'development substrate'));
@@ -169,7 +182,44 @@ function render(status,lab){
   ['developmental genome',genome.schema_version?fmt(genome.mutation_count)+' selected mutations · nearest '+(anchor.name||'ancestral'):'not active'],
   ['replaceable cortex',cortex.organism_id?String(cortex.organism_id)+' · identity owner '+(cortex.identity_owner||'PERSISTENT_NEURAL_MEMORY_RUNTIME'):'no cortex continuity identity yet']
  ]);
- const trans=Array.isArray(dev.recent_transitions)?dev.recent_transitions:[];timeline('development-events',trans.slice(-12).reverse().map(t=>({at:t.at||t.observed_at,title:(t.kind||'DEVELOPMENT')+' · '+(t.neuron_id||t.circuit_id||t.organ_id||''),detail:t.reason||t.trigger_signature||('generation '+(t.generation||'—'))})));
+ const trans=Array.isArray(dev.recent_transitions)?dev.recent_transitions:[];timeline('development-events',trans.slice(-14).reverse().map(t=>({at:t.at||t.observed_at,title:(t.kind||'DEVELOPMENT')+' · '+(t.neuron_id||t.circuit_id||t.organ_id||''),detail:(t.reason||t.trigger_signature||'')+(t.generation?' · generation '+t.generation:'')+((t.parent_channels||[]).length?' · parents '+t.parent_channels.join(' × '):'')+((t.synthetic_parents||[]).length?' · synthetic parents '+t.synthetic_parents.slice(0,3).join(', '):'')})));
+ const circuits=Array.isArray(dev.circuits)?dev.circuits:[], circuit=circuits[0]||{};rows('circuit-detail',circuit.circuit_id?[
+  [circuit.circuit_id+' · '+(circuit.state||'UNKNOWN'),fmt(circuit.member_count)+' members · '+fmt(circuit.mature_member_count)+' mature · internal edge ratio '+n(circuit.internal_edge_ratio).toFixed(3)],
+  ['No preset semantic label',circuit.human_function_label==null?'YES · function must be inferred after behavior stabilizes':'label '+circuit.human_function_label],
+  ['Dominant channels',(circuit.dominant_parent_channels||[]).join(' · ')||'—'],
+  ['Experienced contexts',Object.entries(circuit.context_counts||{}).sort((a,b)=>n(b[1])-n(a[1])).slice(0,6).map(([k,v])=>k+' '+fmt(v)).join(' · ')]
+ ]:[]);
+ const organs=Array.isArray(dev.organs)?dev.organs:[], organ=organs[0]||{};rows('organ-detail',organ.organ_id?[
+  [organ.organ_id+' · '+(organ.state||'UNKNOWN'),'grew from '+(organ.origin_circuit_id||'unknown circuit')+' · '+fmt(organ.member_count)+' neurons'],
+  ['Function assignment',organ.function_assignment||'—'],
+  ['Function label',organ.function_label||'NONE · still observational'],
+  ['Dominant channels',(organ.dominant_parent_channels||[]).join(' · ')||'—']
+ ]:[]);
+ const genome=dev.developmental_genome||{}, nearest=genome.nearest_computational_anchor||{}, selections=Array.isArray(genome.recent_selection)?genome.recent_selection:[];rows('genome-detail',genome.schema_version?[
+  ['selected mutations',fmt(genome.mutation_count)+' · divergence '+n(genome.divergence_from_ancestral).toFixed(4)],
+  ['nearest computational anchor',(nearest.name||'ancestral').replaceAll('_',' ')+' · distance '+n(nearest.distance).toFixed(4)],
+  ['biological claim',genome.biological_claim?'YES':'NO · computational prior only'],
+  ['latest selection',selections.length?'utility '+n(selections.at(-1).utility).toFixed(4)+' · '+fmt(selections.at(-1).fired_synthetic_count)+' synthetic neurons fired':'no selection event']
+ ]:[]);
+ const swaps=Array.isArray((wake.cortex_continuity||{}).recent_swaps)?wake.cortex_continuity.recent_swaps:[];timeline('cortex-swaps',swaps.slice(-8).reverse().map(s=>({at:s.observed_at,title:((s.from||{}).selected_resource_id||'cortex').split(':').slice(0,3).join(':')+' → '+((s.to||{}).selected_resource_id||'cortex').split(':').slice(0,3).join(':'),detail:'continuity '+((s.continuity||{}).status||'UNKNOWN')+' · habits '+fmt(((s.lineage_after_swap||{}).motor_habits||[]).length)+' · births '+fmt((s.lineage_after_swap||{}).birth_seq)})));
+ const needs=Array.isArray(agency.needs)?agency.needs:[], activeNeeds=needs.filter(x=>x.status==='ACTIVE'), proposals=Array.isArray(agency.proposals)?agency.proposals:[], worlds=Array.isArray(agency.worlds)?agency.worlds:[], activeNeed=activeNeeds[0]||needs[0]||{}, proposal=proposals[0]||{}, world=worlds[0]||{};
+ text('development-needs',fmt(agency.active_need_count)+' active / '+fmt(agency.need_count)+' total');text('development-needs-detail',activeNeed.kind?(activeNeed.kind.replaceAll('_',' ')+' · '+(activeNeed.source_environment||'')+' → '+(activeNeed.target_task||activeNeed.capability||'')):'No unresolved development need.');
+ text('generated-world-count',fmt(agency.ferro_born_world_count));text('generated-world-count-detail',world.world_id?(world.world_id+' · '+(world.status||'UNKNOWN')+' · target '+(world.target_task||'—')):'No Ferro-born world yet.');
+ text('development-pressure',n(agency.top_neural_pressure).toFixed(3));text('development-pressure-detail',(activeNeed.pressure_channels||[]).join(' · ')||'No active pressure channels.');
+ const llmUsed=!!agency.llm_used_for_need_detection||!!agency.llm_used_for_proposals;text('development-llm',llmUsed?'USED':'NO');text('development-llm-detail','need detection '+(agency.llm_used_for_need_detection?'LLM':'neural/evidence')+' · proposals '+(agency.llm_used_for_proposals?'LLM':'neural/evidence'));
+ rows('development-need-detail',activeNeed.need_id?[
+  [activeNeed.kind.replaceAll('_',' '),(activeNeed.source_environment||'')+' → '+(activeNeed.target_task||activeNeed.capability||'')+' · severity '+n(activeNeed.severity).toFixed(3)],
+  ['Evidence',fmt(activeNeed.evidence_count)+' items · strength '+n(activeNeed.evidence_strength).toFixed(3)],
+  ['Neural pressure',n(activeNeed.neural_pressure).toFixed(3)+' · '+(activeNeed.pressure_channels||[]).join(' · ')],
+  ['Development proposal',proposal.strategy?(proposal.strategy.replaceAll('_',' ')+' · '+proposal.intervention.replaceAll('_',' ')):'not proposed']
+ ]:[]);
+ rows('generated-world-detail',world.world_id?[
+  [world.world_id+' · '+(world.generation||'FERRO_BORN'),(world.status||'UNKNOWN')+' · target '+(world.target_task||'—')+' · avoids '+(world.avoids_environment||'—')],
+  ['Sensors',(world.sensor_channels||[]).join(' · ')],
+  ['Actions',(world.actions||[]).join(' · ')+' · unsemantic at creation'],
+  ['Training',fmt(world.training_steps)+' steps · '+fmt(world.trial_count)+' trials · reward '+n(world.reward_sum).toFixed(3)],
+  ['Safety','Brain Lab only · no external actions · no LLM motor loop']
+ ]:[]);
  renderRoadmap(wake,lab);
 }
 async function refresh(){try{const [sr,lr]=await Promise.all([fetch('/api/agent/status',{cache:'no-store'}),fetch('/api/agent/brain-lab',{cache:'no-store'})]);if(!sr.ok)throw new Error('status '+sr.status);const status=await sr.json();const lab=lr.ok?await lr.json():{};render(status,lab)}catch(e){$('hero-status').innerHTML='<span class="pill">NEURAL OBSERVATORY UNAVAILABLE · '+String(e.message||e)+'</span>'}}
