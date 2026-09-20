@@ -230,7 +230,67 @@ class CrossDomainTransferLab:
             }
         treatment = arms["TREATMENT"]["mean_target_utility"]
         control = arms["CONTROL"]["mean_target_utility"]
-        effect = None if treatment is None or control is None else round(float(treatment) - float(control), 6)
+        pooled_effect = None if treatment is None or control is None else round(float(treatment) - float(control), 6)
+
+        strata: dict[str, dict[str, Any]] = {}
+        stratum_effects: list[float] = []
+        for source_environment, target_task in PAIRS:
+            key = f"{source_environment}->{target_task}"
+            pair_rows = [
+                row for row in settled
+                if row.get("source_environment") == source_environment
+                and row.get("target_task") == target_task
+            ]
+            pair_arms: dict[str, dict[str, Any]] = {}
+            for assignment in ("TREATMENT", "CONTROL"):
+                subset = [row for row in pair_rows if row.get("assignment") == assignment]
+                utilities = [
+                    float((row.get("target_outcome") or {}).get("utility") or 0.0)
+                    for row in subset
+                ]
+                deltas = [
+                    float(row["probe_delta"])
+                    for row in subset
+                    if row.get("probe_delta") is not None
+                ]
+                pair_arms[assignment] = {
+                    "count": len(subset),
+                    "mean_target_utility": (
+                        None if not utilities else round(sum(utilities) / len(utilities), 6)
+                    ),
+                    "mean_probe_delta": (
+                        None if not deltas else round(sum(deltas) / len(deltas), 6)
+                    ),
+                }
+            pair_treatment = pair_arms["TREATMENT"]["mean_target_utility"]
+            pair_control = pair_arms["CONTROL"]["mean_target_utility"]
+            complete = pair_treatment is not None and pair_control is not None
+            pair_effect = (
+                None
+                if not complete
+                else round(float(pair_treatment) - float(pair_control), 6)
+            )
+            if pair_effect is not None:
+                stratum_effects.append(pair_effect)
+            strata[key] = {
+                "source_environment": source_environment,
+                "target_task": target_task,
+                "arms": pair_arms,
+                "complete": complete,
+                "estimated_target_utility_effect": pair_effect,
+            }
+
+        complete_strata = sum(1 for row in strata.values() if row["complete"])
+        causal_ready = bool(
+            arms["TREATMENT"]["count"] >= 4
+            and arms["CONTROL"]["count"] >= 4
+            and complete_strata == len(PAIRS)
+        )
+        stratified_effect = (
+            round(sum(stratum_effects) / len(stratum_effects), 6)
+            if causal_ready and stratum_effects
+            else None
+        )
         return {
             "schema_version": SCHEMA,
             "updated_at": self.state.get("updated_at"),
@@ -238,8 +298,12 @@ class CrossDomainTransferLab:
             "settled_count": len(settled),
             "pending": self.pending(),
             "arms": arms,
-            "estimated_target_utility_effect": effect,
-            "causal_claim_ready": bool(arms["TREATMENT"]["count"] >= 4 and arms["CONTROL"]["count"] >= 4),
+            "causal_design": "STRATIFIED_BY_SOURCE_TARGET_PAIR_V2",
+            "strata": strata,
+            "complete_strata_count": complete_strata,
+            "pooled_unadjusted_target_utility_effect": pooled_effect,
+            "estimated_target_utility_effect": stratified_effect,
+            "causal_claim_ready": causal_ready,
             "recent": rows[-12:],
         }
 
