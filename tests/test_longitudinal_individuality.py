@@ -404,3 +404,34 @@ def test_restart_preserves_longitudinal_history(tmp_path: Path):
     assert projection["snapshot_count"] == 2
     assert projection["organism_id"] == ORGANISM
     assert projection["latest"]["personality_traits"]["persistence"] == 0.66
+
+
+
+def test_cortex_swap_forces_snapshot_even_inside_daily_cadence(tmp_path: Path):
+    ledger = LongitudinalIndividuality(tmp_path)
+
+    first = ledger.observe(
+        now=NOW,
+        personality=personality(persistence=0.61),
+        social_state=social(interactions=4, familiarity=0.30),
+        motor_state=motor(habit=True),
+        dream_state=dreams(dream_count=2, stable=True),
+        cortex=cortex("model-a"),
+        neural_graph=neural_graph(synthetic=1, birth_seq=1, event_seq=20),
+    )
+    second = ledger.observe(
+        now=NOW + timedelta(hours=2),
+        personality=personality(persistence=0.61),
+        social_state=social(interactions=4, familiarity=0.30),
+        motor_state=motor(habit=True),
+        dream_state=dreams(dream_count=2, stable=True),
+        cortex=cortex("model-b"),
+        neural_graph=neural_graph(synthetic=1, birth_seq=1, event_seq=20),
+    )
+
+    assert first["status"] == "SNAPSHOT_RECORDED"
+    assert second["status"] == "SNAPSHOT_RECORDED"
+    projection = ledger.projection()
+    assert projection["snapshot_count"] == 2
+    assert projection["cortex_transition_count"] == 1
+    assert projection["recent_cortex_transitions"][0]["status"] == "PRESERVED"
