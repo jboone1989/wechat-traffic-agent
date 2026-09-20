@@ -96,6 +96,49 @@ def test_public_snapshot_is_bounded_and_truthful(tmp_path):
 
 
 
+
+def test_public_snapshot_exposes_dream_to_experiment_chain(tmp_path):
+    root = _state(tmp_path)
+    cycle = root / "content/continuous/cycles/v2-123"
+    _write(cycle / "dream_insight.json", {
+        "schema_version": "ferro-dream-insight.v1",
+        "source_dream": "dream:68",
+        "preconcept_id": "preconcept:abc",
+        "authority": "EGO_INTERPRETATION_OF_NEURAL_PRECONCEPT",
+        "decision": {
+            "hypothesis": "Urgency-linked content may change engagement.",
+            "question": "Does urgency-linked content change engagement?",
+            "topic": "trading-bots",
+            "confidence": 0.6,
+            "should_investigate": True,
+        },
+    })
+    _write(cycle / "mind_plan.json", {
+        "required_topic": "trading-bots",
+        "goal": {
+            "goal_id": "dream-insight:preconcept:abc",
+            "origin": "DREAM_INSIGHT",
+            "description": "Does urgency-linked content change engagement?",
+        },
+    })
+    _write(cycle / "website_experiment.json", {
+        "experiment_id": "webexp-dream-1",
+        "variable_under_test": "content_profile",
+        "treatment_value": "comparison-guide",
+        "assignment_method": "prospective",
+        "learning_authority": True,
+    })
+
+    snapshot = public_agent_snapshot(root, _Application())
+    chain = snapshot["life"]["dream_insight"]
+
+    assert chain["source_dream"] == "dream:68"
+    assert chain["preconcept_id"] == "preconcept:abc"
+    assert chain["goal"]["origin"] == "DREAM_INSIGHT"
+    assert chain["experiment"]["experiment_id"] == "webexp-dream-1"
+    assert chain["result"]["status"] == "PUBLISHED"
+    assert chain["result"]["published"] is True
+
 def test_error_phase_describes_preserved_failure_not_per_tick_retry(tmp_path):
     cycle = tmp_path / "cycle"
     cycle.mkdir()
@@ -158,6 +201,9 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Self-organized circuit" in neural.text
     assert "Emergent neural organ" in neural.text
     assert "Recent cortex swaps" in neural.text
+    assert "N4 / N5 · LIVE CAUSAL CHAIN" in neural.text
+    assert "N9 · DREAM → INSIGHT → EXPERIMENT" in neural.text
+    assert "Recent neural-authority actions" in neural.text
     assert "/api/agent/status" in neural.text
     assert "/api/agent/brain-lab" in neural.text
     assert "No fake events are generated" in neural.text
