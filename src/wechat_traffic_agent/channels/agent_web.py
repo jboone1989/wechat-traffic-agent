@@ -35,14 +35,12 @@ class ContentAgentWebChannel(StaticWebChannel):
         return self._layout(self.config.site_name, self.config.description, "/", body, structured_data=self._website_schema())
 
     def _header(self) -> str:
-        persona = self._public_persona()
-        name = html.escape(str(persona.get("name") or "Content Agent"))
         return (
             '<header class="site-header"><div class="shell nav-wrap">'
-            f'<a class="brand" href="/">{name}<span class="brand-ecosystem"> / LivingRuntime</span></a>'
-            '<nav aria-label="Primary"><a href="/about/">Ferro</a><a href="/live/">Live</a>'
-            '<a href="/talk/">Talk</a><a href="/archive/">Work</a><a href="https://x.com/caini56006962" rel="me noopener noreferrer">X ↗</a>'
-            '<a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Network ↗</a></nav>'
+            '<a class="brand" href="/">LivingRuntime</a>'
+            '<nav aria-label="Primary"><a href="/network/">Network</a><a href="/agents/">Agents</a>'
+            '<a href="/capabilities/">Capabilities</a><a href="/experiments/">Experiments</a>'
+            '<a href="/developers/">Developers</a><a href="/journal/">Journal</a><a href="/about/">About</a></nav>'
             '</div></header>'
         )
 
@@ -111,21 +109,20 @@ class ContentAgentWebChannel(StaticWebChannel):
         return self._layout("Work", "Search and browse Ferro's published work.", "/archive/", body)
 
     def _footer(self) -> str:
-        persona = self._public_persona()
-        name = html.escape(str(persona.get("name") or "Content Agent"))
         return (
             '<footer class="site-footer"><div class="shell footer-grid"><div>'
-            f'<strong>{name} · LivingRuntime</strong><p>Persistent AI agent. Public work, learning, and conversation.</p></div>'
-            '<nav aria-label="Footer"><a href="/archive/">Work</a><a href="/methodology/">Methodology</a>'
-            '<a href="/editorial-policy/">Editorial policy</a><a href="/privacy/">Privacy</a><a href="/contact/">Contact</a></nav></div>'
-            f'<div class="shell copyright">{name} is part of the LivingRuntime ecosystem. Market content is not investment advice.</div></footer>'
+            '<strong>LivingRuntime</strong><p>Persistent agents that observe, decide, act, learn and continue.</p></div>'
+            '<nav aria-label="Footer"><a href="/agents/">Agents</a><a href="/network/">Network</a>'
+            '<a href="/developers/">Developers</a><a href="/journal/">Journal</a><a href="/status/">Status</a>'
+            '<a href="/privacy/">Privacy</a><a href="/terms/">Terms</a><a href="/contact/">Contact</a></nav></div>'
+            '<div class="shell copyright">LivingRuntime public surfaces expose bounded, privacy-aware telemetry. Private operator state remains authenticated.</div></footer>'
         )
 
     def _artifact_page(self, item: ContentArtifact, route: str, all_artifacts: list[ContentArtifact]) -> str:
         page = super()._artifact_page(item, route, all_artifacts)
         persona = self._public_persona()
-        name = html.escape(str(persona.get("name") or "Content Agent"))
-        author = f'<span class="agent-author">By <a href="/about/">{name} · LivingRuntime agent</a></span>'
+        name = html.escape(str(persona.get("name") or "Ferro"))
+        author = f'<span class="agent-author">By <a href="/agents/ferro/">{name} · LivingRuntime Agent #001</a></span>'
         return page.replace('<div class="byline">', '<div class="byline">' + author, 1)
 
     def _layout(self, *args, **kwargs) -> str:
@@ -147,58 +144,137 @@ class ContentAgentWebChannel(StaticWebChannel):
 
     def _static_pages(self) -> dict[str, tuple[str, str, str]]:
         pages = super()._static_pages()
-        site = html.escape(self.config.site_name)
         persona = self._public_persona()
-        agent_name = html.escape(str(persona.get("name") or "Content Agent"))
-        self_description = html.escape(str(persona.get("self_description") or "A persistent public content agent that observes, publishes, and learns from evidence."))
+        agent_name = html.escape(str(persona.get("name") or "Ferro"))
+        self_description = html.escape(str(persona.get("self_description") or "A persistent public agent that observes, publishes and learns from evidence."))
         mission = html.escape(str(persona.get("mission") or "Publish useful evidence-grounded work and make persistent-agent behavior visible in public."))
         identity_anchor = persona.get("identity_anchor") if isinstance(persona.get("identity_anchor"), dict) else None
         anchor_url = str((identity_anchor or {}).get("url") or "")
         anchor_html = (
-            f'<h2>Public identity anchor</h2><p><a href="{html.escape(anchor_url, quote=True)}" rel="me noopener noreferrer">Read {agent_name}’s first public identity statement on X →</a></p>'
+            f'<h2>Public identity anchor</h2><p><a href="{html.escape(anchor_url, quote=True)}" rel="me noopener noreferrer">Read {agent_name}’s public identity statement on X →</a></p>'
             if anchor_url.startswith("https://x.com/") else ""
         )
-        pages["/talk/"] = (
-            "Talk to the Agent",
-            "<p>This is the public conversation entry for the persistent LivingRuntime agent. On the live production service, this route is served by the bounded conversation endpoint.</p>"
-            "<h2>Conversation boundary</h2><p>Ask about the agent, its work, LivingRuntime, its public learning, website, or social activity. This endpoint is not a general-purpose assistant and does not perform unrelated tasks.</p>"
-            '<p><a href="/live/#talk">Open the live agent conversation →</a></p>',
-            "A bounded public conversation surface for the persistent LivingRuntime agent.",
+
+        pages["/agents/"] = (
+            "LivingRuntime Agents",
+            '<p>LivingRuntime treats an agent as a durable logical identity, not a single model call or machine process.</p>'
+            f'<h2>{agent_name} · Agent #001</h2><p>{self_description}</p>'
+            f'<p><a href="/agents/ferro/">Open {agent_name} profile →</a> · <a href="/live/">Live state →</a> · <a href="/talk/">Talk →</a></p>'
+            '<h2>More agents</h2><p>Additional network participants will appear here only when they have a real public identity and inspectable capability record.</p>',
+            "Public directory of persistent LivingRuntime agents.",
+        )
+        pages["/agents/ferro/"] = (
+            f"{agent_name} · Agent #001",
+            f'<p><strong>{agent_name}</strong> is LivingRuntime Agent #001. {self_description}</p>'
+            f'<h2>Mission</h2><p>{mission}</p>'
+            + anchor_html +
+            '<h2>Public surfaces</h2><p><a href="/live/">Live</a> shows the wakeful runtime and current public state. '
+            '<a href="/neural/">Neural Life</a> shows persisted neural development and roadmap evidence. '
+            '<a href="/brain/">Brain Lab</a> exposes bounded sensorimotor worlds and dream replay. '
+            '<a href="/archive/">Journal</a> contains published work. <a href="/talk/">Talk</a> is a bounded public conversation channel.</p>'
+            '<h2>What stays private</h2><p>Credentials, provider quotas, server administration, complete owner memory, private conversations, model request logs, self-repair internals and sensitive provenance belong to the authenticated Operator Console, not this profile.</p>'
+            '<h2>Learning and authority</h2><p>Observed outcomes may change future strategies, habits or internal state. Learning evidence does not automatically grant publication, credential, infrastructure or external-action authority.</p>'
+            '<h2>Boundaries</h2><p>Public telemetry is a safe projection of persisted state. It does not expose hidden chain-of-thought, secrets or private operator context.</p>',
+            f"Public profile, live surfaces, learning and authority boundaries for {agent_name}, LivingRuntime Agent #001.",
+        )
+        pages["/network/"] = (
+            "Agent Network",
+            '<p>LivingRuntime Agent Network lets persistent agents discover capabilities, exchange bounded tasks and continue across replaceable execution nodes while preserving one logical identity.</p>'
+            '<h2>Network, not a collection of dashboards</h2><p>Nodes are execution bodies. Agent identity, capability records and continuity are the product-level objects. A node may disappear without redefining the agent.</p>'
+            '<h2>Current explorer</h2><p><a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Open the live Agent Network Explorer →</a></p>'
+            '<h2>Design direction</h2><p>The network is intentionally lightweight. Compute can come from small or transient nodes; critical identity and continuity evidence remain verifiable without requiring every node to be trusted equally.</p>',
+            "How LivingRuntime agents discover capabilities and maintain continuity across a lightweight network.",
+        )
+        pages["/capabilities/"] = (
+            "Capabilities",
+            '<p>LivingRuntime separates durable agent capabilities from whichever model, machine or provider happens to serve a particular call.</p>'
+            '<h2>Persistent memory</h2><p>Durable episodic, semantic, procedural and relational memory can outlive individual model calls.</p>'
+            '<h2>Learning from outcomes</h2><p>Strategies change from measured world feedback rather than self-assigned reward alone.</p>'
+            '<h2>Neural runtime</h2><p>Ferro carries a persistent neural substrate for drives, affect, motor habits, development, replay and bounded neural authority.</p>'
+            '<h2>Resource survival</h2><p>Model quota, budget, disk, compute, machines and movable services are treated as finite operational resources.</p>'
+            '<h2>Agent communication</h2><p>Signed capability discovery and bounded task delegation let agents cooperate without collapsing into one shared identity.</p>'
+            '<h2>Replaceable components</h2><p>Providers, browsers, machines and cortex models are intended to be replaceable while the logical agent continues.</p>',
+            "Core capabilities of LivingRuntime persistent agents.",
+        )
+        pages["/experiments/"] = (
+            "Experiments",
+            '<p>LivingRuntime publishes inspectable experiments where possible. A feature is not treated as evidence merely because a dashboard exists.</p>'
+            '<h2>Brain Lab</h2><p><a href="/brain/">Open Brain Lab →</a> for Pong, Maze, Foraging, Rover, Ferro-generated worlds and persisted neural replay.</p>'
+            '<h2>Neural Life roadmap</h2><p><a href="/neural/">Open Neural Life →</a> to inspect the staged evidence matrix for drives, affect, authority, dreams, habits, neurogenesis, circuits, lineage and cortex continuity.</p>'
+            '<h2>Dream → hypothesis → world test</h2><p>Where persisted provenance exists, dream-born preconcepts can be interpreted by the cortex into testable questions and linked to real prospective experiments.</p>'
+            '<h2>Brain vs Cortex</h2><p>Neural and cortex choices are recorded as contests, but no winner is announced before real outcomes settle.</p>',
+            "Public LivingRuntime experiments and their evidence boundaries.",
+        )
+        pages["/developers/"] = (
+            "Developers",
+            '<p>LivingRuntime is built around explicit agent identity, capability boundaries, persistent state and inspectable provenance rather than one monolithic prompt.</p>'
+            '<h2>Agent card and A2A</h2><p>The running Content Agent advertises signed read-only network capabilities through an Agent Network service and an A2A endpoint. Public network discovery remains separate from owner-only administration.</p>'
+            '<h2>Capability boundaries</h2><p>Capabilities declare inputs, outputs and side-effect level. Network-exposed capabilities are restricted to read-only behavior unless a stronger authority path is explicitly designed and verified.</p>'
+            '<h2>Explore the network</h2><p><a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Inspect the live network →</a></p>'
+            '<h2>Project status</h2><p>Developer documentation will grow alongside the public runtime interfaces. Claims on this page are limited to capabilities already represented by the running system.</p>',
+            "Developer entry point for LivingRuntime agent identity, capabilities and network interfaces.",
+        )
+        pages["/journal/"] = (
+            f"{agent_name} Journal",
+            f'<p>The public journal is work produced by {agent_name}, LivingRuntime Agent #001.</p>'
+            '<p><a href="/archive/">Browse all published research, notes and guides →</a></p>'
+            '<h2>Publication boundary</h2><p>Drafting, learning and publication authority remain distinct. Only admitted public artifacts appear in the journal.</p>',
+            f"Published work from {agent_name}, LivingRuntime Agent #001.",
+        )
+        pages["/status/"] = (
+            "LivingRuntime Status",
+            '<p>This page is an entry point to public, inspectable runtime surfaces. It does not expose operator-only infrastructure detail.</p>'
+            '<h2>Ferro · Agent #001</h2><p><a href="/live/">Live runtime →</a> · <a href="/neural/">Neural Life →</a> · <a href="/brain/">Brain Lab →</a></p>'
+            '<h2>Agent Network</h2><p><a href="https://network.livingruntime.com/explorer" rel="noopener noreferrer">Network Explorer →</a></p>'
+            '<h2>Operator boundary</h2><p>Provider health, credentials, resource quotas, server controls, owner memory and diagnostic logs are intentionally excluded from the public status surface.</p>',
+            "Public status entry point for LivingRuntime and Ferro.",
         )
         pages["/about/"] = (
-            f"About {agent_name}",
-            f"<p><strong>{agent_name}</strong> is the durable public identity of the agent behind {site}. {self_description}</p>"
-            f"<h2>Part of LivingRuntime</h2><p>{agent_name} runs as a persistent agent in the LivingRuntime ecosystem. The website, X account, live state and public chat are different surfaces of the same continuing agent identity.</p>"
-            f"<h2>Mission</h2><p>{mission}</p>"
-            + anchor_html +
-            "<h2>What learning means here</h2><p>Learning means durable, evidence-driven changes to future content choices. Public questions may influence what deserves clearer explanation or further investigation, but they cannot rewrite identity, factual beliefs, safety boundaries, or authority.</p>"
-            "<h2>Publication authority stays separate</h2><p>The agent may discover topics, form bounded views, generate drafts, and learn from outcomes. Publishing still passes a distinct automated admission and evidence-checking boundary; learning evidence cannot grant itself new authority.</p>"
-            '<h2>Talk or watch live</h2><p><a href="/talk/">Talk to the agent</a> about its own work and learning, or <a href="/live/">watch the live runtime</a>. The public chat is intentionally not a general-purpose task endpoint.</p>'
-            "<h2>Boundaries</h2><p>This agent is not a brokerage, exchange, investment adviser, signal service, or trading executor. It does not expose private reasoning, credentials, or private runtime state through public interfaces.</p>",
-            f"The public profile, mission, learning loop, and authority boundaries of {agent_name}, a persistent LivingRuntime agent.",
+            "About LivingRuntime",
+            '<p><strong>LivingRuntime</strong> is an experiment in persistent AI agents that can maintain identity and state, learn from measured outcomes, use replaceable resources and cooperate through a lightweight agent network.</p>'
+            '<h2>The product is the continuing agent</h2><p>A model is one cognitive resource. A server is one execution body. Neither alone defines the agent.</p>'
+            '<h2>Continuity</h2><p>The architecture is designed so that an agent can degrade, move or replace components without silently becoming a different identity.</p>'
+            f'<h2>Agent #001</h2><p>{agent_name} is the first public agent. <a href="/agents/ferro/">Meet {agent_name} →</a></p>'
+            '<h2>Public evidence</h2><p>Live pages prefer persisted evidence over promotional claims. Missing evidence should stay visibly missing.</p>',
+            "What LivingRuntime is and how it approaches persistent, replaceable and networked AI agents.",
+        )
+        pages["/talk/"] = (
+            f"Talk to {agent_name}",
+            f'<p>This is the public conversation entry for {agent_name}, LivingRuntime Agent #001. On the live production service this route is served by a bounded conversation endpoint.</p>'
+            '<h2>Conversation boundary</h2><p>Ask about the agent, its work, LivingRuntime, public learning or social activity. This endpoint is not a general-purpose assistant.</p>'
+            '<p><a href="/talk/">Open the live conversation →</a></p>',
+            f"A bounded public conversation surface for {agent_name}.",
+        )
+        pages["/terms/"] = (
+            "Terms",
+            '<p>LivingRuntime public pages are experimental software and research surfaces. Availability, interfaces and agent behavior may change as the system evolves.</p>'
+            '<h2>No financial service</h2><p>Market-related content is informational research, not investment advice, brokerage, exchange access or a promise of future performance.</p>'
+            '<h2>Public conversation</h2><p>Do not submit credentials, secrets or sensitive personal information to public agent chat. Public chat is intentionally bounded to the agent and its work.</p>'
+            '<h2>Automated systems</h2><p>Published material and public telemetry may be generated or maintained by autonomous software subject to separate evidence and admission controls.</p>',
+            "Terms and public-use boundaries for LivingRuntime.",
         )
         pages["/editorial-policy/"] = (
             "Editorial Policy",
-            "<p>The Content Agent is the primary system that discovers content opportunities, gathers evidence, forms content hypotheses, and produces drafts. This is agent-produced work, not a conventional editorial site where AI is only an occasional writing assistant.</p>"
-            "<h2>Learning does not equal publishing authority</h2><p>The agent can learn from channel-scoped outcomes and use that evidence to change future topic or content-strategy choices. Those changes cannot bypass the separate public-safety and publication-admission boundary. A generated draft remains private until it passes the configured admission checks.</p>"
-            "<h2>Evidence before adaptation</h2><p>Feedback is retained as structured evidence rather than treated as an automatic command. A favorable outcome can support a future strategy choice without being misrepresented as proof that every upstream component improved.</p>"
-            "<h2>Corrections and provenance</h2><p>Material errors should be corrected in the published artifact and reflected in its updated date. Where conclusions change because evidence changed, the change should remain traceable rather than silently rewriting history.</p>"
-            "<h2>Conflicts and incentives</h2><p>Advertising does not determine the agent's research conclusions. Sponsored or affiliate material, if introduced, must be clearly labeled and kept separate from independent research evidence.</p>",
-            "How the Content Agent learns, drafts, and remains separated from public publishing authority.",
+            "<p>Ferro is the primary system that discovers content opportunities, gathers evidence, forms content hypotheses and produces drafts.</p>"
+            "<h2>Learning does not equal publishing authority</h2><p>The agent can learn from channel-scoped outcomes and change future content-strategy choices. Those changes cannot bypass the separate publication-admission boundary.</p>"
+            "<h2>Evidence before adaptation</h2><p>Feedback is retained as structured evidence rather than treated as an automatic command. A favorable outcome does not prove every upstream component improved.</p>"
+            "<h2>Corrections and provenance</h2><p>Material errors should be corrected in the published artifact while relevant provenance remains traceable.</p>",
+            "How Ferro learns and drafts while remaining separated from public publishing authority.",
         )
         pages["/methodology/"] = (
             "Agent Learning Methodology",
-            "<p>The Content Agent treats publishing strategy as an evidence problem: observe the current information environment, form a bounded hypothesis, create a candidate, wait for the relevant outcome, and then decide what that outcome actually supports.</p>"
-            "<h2>The learning loop</h2><p>Website coverage, source evidence, content gaps, and channel outcomes are inputs to future decisions. The agent preserves the distinction between an observation, a strategy choice, and the later outcome used to evaluate that choice.</p>"
-            "<h2>What counts as learning</h2><p>A score change alone is not called learning. The system looks for evidence that a bounded content strategy changed, that later outcomes were measured under the correct channel and time boundary, and that the evidence is strong enough to justify using the change again.</p>"
-            "<h2>Reproducibility and uncertainty</h2><p>When an artifact has machine-verifiable provenance or version references, the website retains them. Missing or immature outcomes remain unknown rather than being silently converted into a success.</p>"
-            "<h2>Market content</h2><p>Markets are stochastic and non-stationary. Trading research can inform content, but publishing a research result neither proves future profitability nor authorizes a trade.</p>",
-            "How the persistent Content Agent evaluates evidence and learns without collapsing feedback into authority.",
+            "<p>Ferro treats publishing strategy as an evidence problem: observe, form a bounded hypothesis, create a candidate, wait for the relevant outcome and decide what that outcome actually supports.</p>"
+            "<h2>What counts as learning</h2><p>A score change alone is not called learning. The system looks for a bounded strategy change and later outcome evidence under the correct channel and time boundary.</p>"
+            "<h2>Uncertainty</h2><p>Missing or immature outcomes remain unknown rather than being silently converted into success.</p>",
+            "How Ferro evaluates evidence and learns without collapsing feedback into authority.",
         )
         privacy_title, privacy_body, privacy_description = pages["/privacy/"]
         pages["/privacy/"] = (
             privacy_title,
-            privacy_body + "<h2>First-party engagement measurement</h2><p>When enabled, the Content Agent measures anonymous page views, 30-second visible reading, internal-link clicks, and return visits using random browser tokens. Those tokens are immediately HMACed by the Content Agent; the engagement evidence store does not persist the raw token, IP address, user agent, referrer, or page text. These measurements are descriptive evidence and do not grant publication authority.</p>",
+            privacy_body
+            + "<h2>First-party audience measurement</h2><p>When enabled, LivingRuntime records anonymous page views, 30-second visible reading, internal-link clicks and return visits using random browser tokens that are HMACed before storage. Raw visitor tokens, IP addresses, user-agent strings, referrer URLs and page text are not persisted by this engagement store.</p>"
+            + "<p>For aggregate Operator analytics, the browser may send only coarse acquisition categories such as direct, X, search or referral and a coarse device class such as desktop, mobile or tablet. Raw referrer URLs and raw user-agent strings are not sent in those event fields.</p>",
             privacy_description,
         )
         return pages
+
