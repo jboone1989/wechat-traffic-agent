@@ -124,6 +124,8 @@ class ContentWakefulRuntime:
         self.cortex_continuity = CortexContinuityMonitor(self.state_root)
         from .longitudinal_individuality import LongitudinalIndividuality
         self.longitudinal_individuality = LongitudinalIndividuality(self.state_root)
+        from .open_development_acceptance import OpenDevelopmentAcceptance
+        self.open_development_acceptance = OpenDevelopmentAcceptance(self.state_root)
         from .developmental_agency import DevelopmentalAgency
         self.developmental_agency = DevelopmentalAgency(self.state_root)
         from .developmental_transfer import DevelopmentalWorldTransferLab
@@ -1185,6 +1187,7 @@ class ContentWakefulRuntime:
             "neural_organ_handoff": self.neural_organ_handoff.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "longitudinal_individuality": self.longitudinal_individuality.projection(),
+            "open_development_acceptance": self.open_development_acceptance.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
                 personality=self.neural_personality.projection(),
