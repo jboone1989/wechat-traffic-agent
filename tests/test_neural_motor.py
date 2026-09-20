@@ -124,3 +124,28 @@ def test_repeated_failure_can_make_a_motor_association_dormant(tmp_path: Path):
     projection = cortex.projection()
     assert projection["dormant_unit_count"] == 1
     assert projection["habit_count"] == 0
+
+
+def test_motor_cortex_can_grow_new_unsemantic_units_without_granting_actions(tmp_path: Path):
+    substrate = FakeSubstrate()
+    cortex = NeuralMotorCortex(
+        tmp_path,
+        substrate=substrate,
+        allowed_actions=("OBSERVE_WORLD",),
+    )
+
+    born = cortex.extend_units(
+        count=4,
+        origin_ref="motor_ext_0001",
+        now=NOW,
+    )
+    projection = cortex.projection()
+
+    assert born == ("motor_032", "motor_033", "motor_034", "motor_035")
+    assert projection["motor_unit_count"] == MOTOR_UNIT_COUNT + 4
+    assert projection["ferro_born_motor_unit_count"] == 4
+    assert projection["allowed_actions"] == ["OBSERVE_WORLD"]
+
+    decision = cortex.select(neural_life=life(), now=NOW)
+    assert decision["motor_id"].startswith("motor_")
+    assert decision["task"] == "OBSERVE_WORLD"

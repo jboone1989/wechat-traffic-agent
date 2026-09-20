@@ -18,6 +18,7 @@ from typing import Any, Iterable, Mapping
 
 MOTOR_SCHEMA = "ferro-neural-motor.v1"
 MOTOR_UNIT_COUNT = 32
+MAX_MOTOR_UNIT_COUNT = 96
 DEFAULT_ACTIONS = (
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
@@ -126,7 +127,10 @@ class NeuralMotorCortex:
         return currents
 
     @staticmethod
-    def _motor_activations(burst: Mapping[str, Any]) -> dict[str, float]:
+    def _motor_activations(
+        burst: Mapping[str, Any],
+        motor_ids: Iterable[str] | None = None,
+    ) -> dict[str, float]:
         signature = str(
             burst.get("response_spike_pattern_digest")
             or burst.get("state_digest")
@@ -143,10 +147,19 @@ class NeuralMotorCortex:
             + str(burst.get("synaptic_events") or 0)
         )
         digest = sha256(seed.encode("utf-8")).digest()
-        return {
-            f"motor_{index:03d}": round(digest[index] / 255.0, 6)
-            for index in range(MOTOR_UNIT_COUNT)
-        }
+        ids = tuple(motor_ids or (f"motor_{index:03d}" for index in range(MOTOR_UNIT_COUNT)))
+        activations: dict[str, float] = {}
+        for motor_id in ids:
+            try:
+                index = int(str(motor_id).split("_")[-1])
+            except ValueError:
+                index = MOTOR_UNIT_COUNT
+            if 0 <= index < MOTOR_UNIT_COUNT:
+                value = digest[index] / 255.0
+            else:
+                value = sha256(f"{seed}|{motor_id}".encode("utf-8")).digest()[0] / 255.0
+            activations[str(motor_id)] = round(value, 6)
+        return activations
 
     @staticmethod
     def _association_mean(raw: Mapping[str, Any]) -> float:
@@ -198,8 +211,8 @@ class NeuralMotorCortex:
             source_event_id=event_id,
             feedback_eligible=True,
         ) or {})
-        activations = self._motor_activations(burst)
         units = dict(self.state.get("units") or {})
+        activations = self._motor_activations(burst, units.keys())
         effective: dict[str, float] = {}
         for motor_id, neural_activation in activations.items():
             unit = units.get(motor_id) if isinstance(units.get(motor_id), Mapping) else {}
@@ -367,6 +380,52 @@ class NeuralMotorCortex:
             "physical_feedback": physical_feedback,
         }
 
+    def extend_units(
+        self,
+        *,
+        count: int,
+        origin_ref: str,
+        now: datetime | None = None,
+    ) -> tuple[str, ...]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        units = dict(self.state.get("units") or {})
+        requested = max(0, int(count))
+        capacity = max(0, MAX_MOTOR_UNIT_COUNT - len(units))
+        born: list[str] = []
+        next_index = 0
+        existing_indices = []
+        for motor_id in units:
+            try:
+                existing_indices.append(int(str(motor_id).split("_")[-1]))
+            except ValueError:
+                continue
+        if existing_indices:
+            next_index = max(existing_indices) + 1
+        for _ in range(min(requested, capacity)):
+            while f"motor_{next_index:03d}" in units:
+                next_index += 1
+            motor_id = f"motor_{next_index:03d}"
+            units[motor_id] = {
+                "motor_id": motor_id,
+                "meaning": None,
+                "state": "UNBOUND",
+                "associations": {},
+                "selected_count": 0,
+                "last_selected_at": None,
+                "generation": "FERRO_BORN",
+                "origin_ref": str(origin_ref),
+                "born_at": now.isoformat(),
+            }
+            born.append(motor_id)
+            next_index += 1
+        if born:
+            self.state.update({
+                "updated_at": now.isoformat(),
+                "units": units,
+            })
+            _write_json(self.path, self.state)
+        return tuple(born)
+
     def projection(self) -> dict[str, Any]:
         units = list((self.state.get("units") or {}).values())
         habits = [
@@ -385,7 +444,13 @@ class NeuralMotorCortex:
             "schema_version": MOTOR_SCHEMA,
             "updated_at": self.state.get("updated_at"),
             "decision_seq": int(self.state.get("decision_seq") or 0),
-            "motor_unit_count": MOTOR_UNIT_COUNT,
+            "motor_unit_count": len(units),
+            "ancestral_motor_unit_count": MOTOR_UNIT_COUNT,
+            "ferro_born_motor_unit_count": sum(
+                str(row.get("generation") or "") == "FERRO_BORN" for row in units
+            ),
+            "max_motor_unit_count": MAX_MOTOR_UNIT_COUNT,
+            "allowed_actions": list(self.allowed_actions),
             "semantics_preassigned": False,
             "habit_count": len(habits),
             "learning_unit_count": learning,
@@ -395,4 +460,9 @@ class NeuralMotorCortex:
         }
 
 
-__all__ = ["DEFAULT_ACTIONS", "MOTOR_UNIT_COUNT", "NeuralMotorCortex"]
+__all__ = [
+    "DEFAULT_ACTIONS",
+    "MOTOR_UNIT_COUNT",
+    "MAX_MOTOR_UNIT_COUNT",
+    "NeuralMotorCortex",
+]
