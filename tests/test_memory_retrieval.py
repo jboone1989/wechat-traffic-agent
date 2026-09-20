@@ -97,3 +97,59 @@ def test_access_scope_filters_without_making_every_private_memory_relevant(tmp_p
         access_scope="PRIVATE_OWNER",
     )
     assert [row["memory_id"] for row in rows] == ["m:resource"]
+
+
+def test_router_indexes_episode_observation_payload_not_only_generic_summary(tmp_path):
+    store = CanonicalMemoryStore(tmp_path)
+    store.append_memory({
+        "memory_id": "m:episode-prediction",
+        "memory_type": "EPISODIC",
+        "kind": "EPISODE",
+        "text": "Goal: preserve lived experience in content-prediction | Outcome: 0.875",
+        "created_at": "2026-09-19T17:05:58Z",
+        "status": "ACTIVE",
+        "source_type": "RUNTIME_EXPERIENCE",
+        "source_ref": "content-action-outcome:p1:4h",
+        "topics": ["virtualbrain-life", "content-prediction"],
+        "payload": {
+            "goal": "preserve lived experience in content-prediction",
+            "lesson": "Content forecasts should be calibrated against mature observed outcomes.",
+            "observations": [{
+                "actor": "ferro",
+                "event_id": "content-action-outcome:p1:4h",
+                "text": "Content action prediction for evidence-brief on portfolio-drawdown-clustering at 4h: forecast 3.00 pageviews, observed 4.00; prediction error 0.125.",
+            }],
+            "attributes": {"source": "content-action-prediction-outcome", "domain": "content-prediction"},
+        },
+    })
+    store.append_memory({
+        "memory_id": "m:unrelated",
+        "memory_type": "EPISODIC",
+        "kind": "EPISODE",
+        "text": "Goal: preserve lived experience in content-prediction | Outcome: 0.5",
+        "created_at": "2026-09-20T00:00:00Z",
+        "status": "ACTIVE",
+        "source_type": "RUNTIME_EXPERIENCE",
+        "source_ref": "other",
+        "topics": ["virtualbrain-life", "content-prediction"],
+        "payload": {"observations": [{"text": "A different content experiment about liquidity."}]},
+    })
+    router = MemoryRouter(tmp_path, store=store)
+    rows = router.recall("portfolio-drawdown-clustering 4小时预测结果", limit=1)
+    assert [row["memory_id"] for row in rows] == ["m:episode-prediction"]
+    assert "portfolio-drawdown-clustering" in rows[0]["payload"]["observations"][0]["text"]
+
+
+def test_search_index_requests_unbounded_canonical_rows(tmp_path):
+    store = CanonicalMemoryStore(tmp_path)
+    _add(store, "m:needle", "ancient-zircon-needle durable fact", created_at="2020-01-01T00:00:00Z")
+    assert [row["memory_id"] for row in store.list_memories(limit=None)] == ["m:needle"]
+    original = store.list_memories
+    calls = []
+    def tracked(*, limit=1000):
+        calls.append(limit)
+        return original(limit=limit)
+    store.list_memories = tracked
+    index = MemorySearchIndex(store)
+    assert None in calls
+    assert index.search("ancient-zircon-needle", limit=3)[0][0] == "m:needle"

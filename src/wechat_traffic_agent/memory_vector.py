@@ -23,7 +23,7 @@ class SemanticHashEmbeddingProvider:
     recall before an external embedding model is configured; canonical memory never depends on it.
     """
 
-    model_id = "semantic-hash-v1"
+    model_id = "semantic-hash-v3-payload-aliases"
     dimensions = 192
     _ALIASES = {
         "hardware": "resource", "machine": "resource", "server": "resource", "capacity": "resource",
@@ -35,6 +35,10 @@ class SemanticHashEmbeddingProvider:
         "不足": "pressure", "撑不住": "pressure", "压力": "pressure", "紧张": "pressure",
         "迁移": "offload", "搬家": "offload", "拆分": "offload",
         "不可靠": "lowtrust", "低信任": "lowtrust",
+        "内容": "content", "流程": "process", "检查": "check", "通过": "pass",
+        "预测": "prediction", "结果": "outcome", "浏览量": "pageview", "误差": "error",
+        "checks": "check", "passed": "pass", "forecast": "prediction", "observed": "outcome",
+        "pageviews": "pageview",
     }
 
     def embed(self, text: str) -> list[float]:
@@ -63,6 +67,39 @@ class SemanticHashEmbeddingProvider:
             if phrase in value:
                 features.append(("concept:" + canonical, 1.5))
         return features
+
+
+def memory_document(row: dict) -> str:
+    """Build bounded derived recall text from a canonical memory row.
+
+    Canonical payload remains authoritative. This only exposes semantically useful payload fields
+    to rebuildable lexical/vector indexes so episodic observations are actually recallable.
+    """
+    parts = [
+        str(row.get("text") or ""),
+        str(row.get("kind") or ""),
+        " ".join(str(item) for item in row.get("topics") or []),
+        " ".join(str(item) for item in row.get("entities") or []),
+    ]
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+    for key in ("goal", "decision", "prediction", "outcome", "lesson"):
+        value = payload.get(key)
+        if value not in (None, ""):
+            parts.append(str(value))
+    for key in ("observations", "actions", "tool_outcomes"):
+        values = payload.get(key) if isinstance(payload.get(key), list) else []
+        for value in values[:64]:
+            if isinstance(value, dict):
+                for field in ("text", "summary", "action", "result", "status"):
+                    if value.get(field) not in (None, ""):
+                        parts.append(str(value[field]))
+            elif value not in (None, ""):
+                parts.append(str(value))
+    attributes = payload.get("attributes") if isinstance(payload.get("attributes"), dict) else {}
+    for key in ("experience_kind", "source", "domain", "topic", "provenance_kind"):
+        if attributes.get(key) not in (None, ""):
+            parts.append(str(attributes[key]))
+    return " ".join(parts)[:12000]
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -97,7 +134,7 @@ class SemanticVectorIndex:
             )
 
     def rebuild_if_stale(self) -> None:
-        rows = self.store.list_memories(limit=5000)
+        rows = self.store.list_memories(limit=None)
         canonical = {str(row["memory_id"]): str(row["content_hash"]) for row in rows}
         with self.store._connect() as connection:
             indexed = {
@@ -115,7 +152,7 @@ class SemanticVectorIndex:
             self.rebuild()
 
     def rebuild(self) -> int:
-        rows = self.store.list_memories(limit=5000)
+        rows = self.store.list_memories(limit=None)
         with self.store._connect() as connection:
             connection.execute("DELETE FROM memory_vector_index")
             for row in rows:
@@ -146,14 +183,9 @@ class SemanticVectorIndex:
 
     @staticmethod
     def _document(row: dict) -> str:
-        return " ".join([
-            str(row.get("text") or ""),
-            str(row.get("kind") or ""),
-            " ".join(row.get("topics") or []),
-            " ".join(row.get("entities") or []),
-        ])
+        return memory_document(row)
 
 
 __all__ = [
-    "EmbeddingProvider", "SemanticHashEmbeddingProvider", "SemanticVectorIndex", "cosine",
+    "EmbeddingProvider", "SemanticHashEmbeddingProvider", "SemanticVectorIndex", "cosine", "memory_document",
 ]

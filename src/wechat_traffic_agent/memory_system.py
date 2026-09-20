@@ -319,13 +319,18 @@ class CanonicalMemoryStore:
                     imported += 1
         return imported
 
-    def list_memories(self, *, limit: int = 1000) -> list[dict[str, Any]]:
-        bounded = max(1, min(int(limit), 5000))
+    def list_memories(self, *, limit: int | None = 1000) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT rowid, * FROM memories ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                (bounded,),
-            ).fetchall()
+            if limit is None:
+                rows = connection.execute(
+                    "SELECT rowid, * FROM memories ORDER BY created_at DESC, rowid DESC"
+                ).fetchall()
+            else:
+                bounded = max(1, min(int(limit), 5000))
+                rows = connection.execute(
+                    "SELECT rowid, * FROM memories ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                    (bounded,),
+                ).fetchall()
             result = [self._decode_row(connection, row) for row in rows]
         result.reverse()
         return result
