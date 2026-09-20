@@ -54,7 +54,7 @@ class ContentWakefulRuntime:
             try:
                 from virtualbrain.research.fly_connectome import FlyDronesBurstEngine, HybridConnectomeNervousSystem
                 source = os.environ.get("CONTENT_FLY_CONNECTOME_SOURCE", "minifly")
-                substrate = FlyDronesBurstEngine(
+                base_substrate = FlyDronesBurstEngine(
                     source=source,
                     state_path=self.state_root / "application" / "fly_connectome_state.npz",
                     channels=semantic.neuron_names,
@@ -65,6 +65,17 @@ class ContentWakefulRuntime:
                     settle_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_SETTLE_MS", "40")),
                     baseline_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_BASELINE_MS", "20")),
                 )
+                neurogenesis_enabled = os.environ.get(
+                    "CONTENT_NEUROGENESIS_ENABLED", "1"
+                ).lower() in {"1", "true", "yes", "on"}
+                if neurogenesis_enabled:
+                    from virtualbrain.research.developmental_connectome import DevelopmentalConnectomeSubstrate
+                    substrate = DevelopmentalConnectomeSubstrate(
+                        base=base_substrate,
+                        state_path=self.state_root / "application" / "synthetic_neural_development.json",
+                    )
+                else:
+                    substrate = base_substrate
                 reflex = HybridConnectomeNervousSystem(semantic=semantic, substrate=substrate)
             except Exception as exc:
                 # The connectome is initially SHADOW and must never become a life dependency.
