@@ -359,7 +359,19 @@ class ContentNetworkService:
                 if len(body) > MAX_BODY_BYTES:
                     return Response(status_code=413)
                 try:
-                    result = ingest_engagement_body(engagement_store, body, observed_at=datetime.now(timezone.utc))
+                    audience_class = (
+                        "operator"
+                        if engagement_store.valid_operator_audience_marker(
+                            request.cookies.get("ferro_operator_audience")
+                        )
+                        else "public"
+                    )
+                    result = ingest_engagement_body(
+                        engagement_store,
+                        body,
+                        observed_at=datetime.now(timezone.utc),
+                        audience_class=audience_class,
+                    )
                 except ValueError as exc:
                     return JSONResponse({"status": "INVALID", "error_type": type(exc).__name__}, status_code=400)
                 return JSONResponse(result, status_code=202)

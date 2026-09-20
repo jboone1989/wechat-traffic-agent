@@ -46,7 +46,6 @@ class WebsiteEngagementInput(BaseModel):
     target_route: str | None = Field(default=None, max_length=500)
     acquisition: Literal["direct", "google", "x", "social", "search", "referral", "other", "unknown"] = "unknown"
     device_class: Literal["desktop", "mobile", "tablet", "other", "unknown"] = "unknown"
-    audience_class: Literal["public", "operator"] = "public"
 
     @field_validator("route", "target_route")
     @classmethod
@@ -117,6 +116,18 @@ class WebsiteEngagementStore:
             raise ValueError("engagement HMAC key must be exactly 32 bytes")
         return key
 
+    def operator_audience_marker(self) -> str:
+        return hmac.new(self._key(), b"operator-audience:v1", hashlib.sha256).hexdigest()
+
+    def valid_operator_audience_marker(self, marker: str | None) -> bool:
+        if not marker:
+            return False
+        expected = self.operator_audience_marker()
+        try:
+            return hmac.compare_digest(marker, expected)
+        except TypeError:
+            return False
+
     def mark_started(self, *, observed_at: datetime) -> dict:
         observed_at = _utc(observed_at)
         payload = {"schema_version": COVERAGE_SCHEMA, "started_at": observed_at.isoformat(), "source": SOURCE, "publication_authority": False}
@@ -136,11 +147,11 @@ class WebsiteEngagementStore:
             raise ValueError("engagement coverage schema mismatch")
         return _utc(datetime.fromisoformat(str(payload["started_at"])))
 
-    def record_payload(self, payload: dict, *, observed_at: datetime) -> dict:
+    def record_payload(self, payload: dict, *, observed_at: datetime, audience_class: Literal["public", "operator"] = "public") -> dict:
         raw = WebsiteEngagementInput.model_validate(payload)
         observed_at = _utc(observed_at).replace(microsecond=0)
         key = self._key()
-        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, acquisition=raw.acquisition, device_class=raw.device_class, audience_class=raw.audience_class, observed_at=observed_at)
+        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, acquisition=raw.acquisition, device_class=raw.device_class, audience_class=audience_class, observed_at=observed_at)
         path = self.events_root / observed_at.strftime("%Y-%m-%d") / f"{event.event_id}.json"
         stable = _stable_event(event)
         if path.exists():
@@ -214,12 +225,12 @@ class WebsiteEngagementOutcomeCollector:
             if required <= set(attr): rows.append(raw)
         return rows
 
-def ingest_engagement_body(store: WebsiteEngagementStore, body: bytes, *, observed_at: datetime) -> dict:
+def ingest_engagement_body(store: WebsiteEngagementStore, body: bytes, *, observed_at: datetime, audience_class: Literal["public", "operator"] = "public") -> dict:
     if len(body) > MAX_BODY_BYTES: raise ValueError("engagement request body exceeds 2048-byte budget")
     try: payload=json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError,json.JSONDecodeError) as exc: raise ValueError("engagement request body must be valid UTF-8 JSON") from exc
     if not isinstance(payload,dict): raise ValueError("engagement request body must be a JSON object")
-    result=store.record_payload(payload,observed_at=observed_at); store.mark_started(observed_at=observed_at); return result
+    result=store.record_payload(payload,observed_at=observed_at,audience_class=audience_class); store.mark_started(observed_at=observed_at); return result
 
 def _metrics_for_route(events:list[WebsiteEngagementEvent],*,route:str,window_end:datetime)->dict[str,int]:
     views=[e for e in events if e.event_type=="page_view" and e.route==route]

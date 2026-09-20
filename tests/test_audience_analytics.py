@@ -8,7 +8,7 @@ from wechat_traffic_agent.website_engagement import WebsiteEngagementStore, inge
 T = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
 
 
-def payload(event_id, visitor, session, route, *, acquisition="direct", device_class="desktop", audience_class="public", event_type="page_view", target_route=None):
+def payload(event_id, visitor, session, route, *, acquisition="direct", device_class="desktop", event_type="page_view", target_route=None):
     row = {
         "schema_version": "website-engagement-event.v1",
         "event_id": event_id,
@@ -18,15 +18,19 @@ def payload(event_id, visitor, session, route, *, acquisition="direct", device_c
         "route": route,
         "acquisition": acquisition,
         "device_class": device_class,
-        "audience_class": audience_class,
     }
     if target_route is not None:
         row["target_route"] = target_route
     return row
 
 
-def record(store, row, at):
-    return ingest_engagement_body(store, json.dumps(row).encode(), observed_at=at)
+def record(store, row, at, *, audience_class="public"):
+    return ingest_engagement_body(
+        store,
+        json.dumps(row).encode(),
+        observed_at=at,
+        audience_class=audience_class,
+    )
 
 
 def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
@@ -50,7 +54,12 @@ def test_audience_snapshot_is_aggregate_and_tracks_real_funnel(tmp_path):
         T - timedelta(minutes=20),
     )
 
-    record(store, payload("8" * 32, "3" * 32, "d" * 32, "/", acquisition="direct", device_class="desktop", audience_class="operator"), T - timedelta(minutes=10))
+    record(
+        store,
+        payload("8" * 32, "3" * 32, "d" * 32, "/", acquisition="direct", device_class="desktop"),
+        T - timedelta(minutes=10),
+        audience_class="operator",
+    )
 
     data = AudienceAnalytics(root).snapshot(window="24h", now=T)
     assert data["status"] == "OK"
