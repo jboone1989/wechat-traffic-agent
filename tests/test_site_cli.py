@@ -32,7 +32,7 @@ def test_build_site_from_json_directory(tmp_path):
     assert result["artifact_count"] == 1
     assert result["artifact_ids"] == ["article-1"]
     article = (output / "articles" / "first-article" / "index.html").read_text(encoding="utf-8")
-    assert 'By <a href="/agents/ferro/">Content Agent · LivingRuntime Agent #001</a>' in article
+    assert 'By <a href="/agents/ferro/">Ferro · LivingRuntime Agent #001</a>' in article
 
     home = (output / "index.html").read_text(encoding="utf-8")
     archive = (output / "archive" / "index.html").read_text(encoding="utf-8")
