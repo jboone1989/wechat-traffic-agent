@@ -9,6 +9,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any, Iterable, Mapping
 
+from .memory_life import MemoryLifeRuntime
+
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
 # AutobiographicalSelf.TRUSTED_EXPERIENCE_SOURCES. "session" is the canonical
@@ -28,9 +30,11 @@ class ContentMind:
         from virtualbrain.adapter.service import ContractV1AgencySession
         from virtualbrain.research.provenance import TrustedIngestionAuthority
 
-        self.root = Path(root) / "application" / "content_mind"
+        self.state_root = Path(root)
+        self.root = self.state_root / "application" / "content_mind"
         self.subject_id = subject_id
         self.root.mkdir(parents=True, exist_ok=True)
+        self.memory_life = MemoryLifeRuntime(self.state_root)
         self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
@@ -42,6 +46,7 @@ class ContentMind:
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
         self._inquiry_topics: dict[str, str] = {}
         self._restore()
+        self._life_memory_last_sync = self._sync_life_memory(limit=256)
 
     @property
     def checkpoint_path(self) -> Path:
@@ -84,6 +89,15 @@ class ContentMind:
         self._strategy_outcomes = deepcopy(row.get("strategy_outcomes") or {})
         self._inquiry_topics = {str(key): str(value) for key, value in (row.get("inquiry_topics") or {}).items()}
 
+    def _sync_life_memory(self, *, limit: int = 64) -> dict[str, Any]:
+        try:
+            snapshot = self.session.snapshot()
+            autobiography = snapshot.get("autobiography") if isinstance(snapshot, Mapping) else {}
+            events = list((autobiography or {}).get("events") or [])
+            return self.memory_life.backfill_life_history(events, limit=limit)
+        except Exception as exc:
+            return {"status": "ERROR", "error_type": type(exc).__name__, "recorded": 0, "already_recorded": 0}
+
     def _persist(self) -> None:
         payload = {
             "schema_version": MIND_SCHEMA,
@@ -100,6 +114,7 @@ class ContentMind:
             encoding="utf-8",
         )
         os.replace(tmp, self.checkpoint_path)
+        self._life_memory_last_sync = self._sync_life_memory(limit=64)
 
     def persist_resource_awareness(self) -> None:
         """Persist provider-neutral resource state after a governed external observation."""
@@ -775,6 +790,10 @@ class ContentMind:
                 "topics": sorted({
                     str(row.get("topic")) for row in self._strategy_outcomes.values() if row.get("topic")
                 }),
+            },
+            "memory_system": {
+                "life_sync": deepcopy(self._life_memory_last_sync),
+                "authority_boundary": "VirtualBrain owns worldview/prediction state; Memory stores evidence-backed lived experience",
             },
             "learning_boundary": (
                 "world attention, world prediction error, prospective content-action prediction error, process experience, "

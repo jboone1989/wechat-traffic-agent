@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from wechat_traffic_agent.content_mind import ContentMind
+from wechat_traffic_agent.memory_system import CanonicalMemoryStore
 
 
 def test_process_experience_causes_persistent_endogenous_topic_goal(tmp_path: Path):
@@ -352,3 +353,37 @@ def test_external_mission_inquiry_is_created_and_restart_stable(tmp_path: Path):
     assert restored["origin"] == "experience"
     assert restored["status"] == "OPEN"
     assert restarted._prior_inquiry_topic(inquiry_id) == "model-evaluation"
+
+
+def test_content_mind_persist_projects_virtualbrain_autobiography_into_memory(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+    observed = mind.observe_process_experience(
+        cycle="v2-life-sync",
+        topic="model-evaluation",
+        passed=True,
+        model_calls=3,
+        evidence_refs=("cycle:v2-life-sync", "draft:life-sync"),
+    )
+    assert observed["status"] == "OBSERVED"
+    projection = mind.public_projection()
+    assert projection["memory_system"]["life_sync"]["status"] == "OK"
+    store = CanonicalMemoryStore(root)
+    episodes = store.query_memories(
+        memory_types=["EPISODIC"], statuses=["ACTIVE"], topic="virtualbrain-life", limit=50,
+    )
+    matched = [row for row in episodes if "content-process:v2-life-sync" in (row.get("payload") or {}).get("derived_from", [])]
+    assert len(matched) == 1
+    attrs = matched[0]["payload"]["attributes"]
+    assert attrs["experience_kind"] == "VIRTUALBRAIN_AUTOBIOGRAPHICAL_EVENT"
+    assert attrs["causal_claim"] is False
+    assert "cycle:v2-life-sync" in matched[0]["evidence_refs"]
+
+    before_count = len(episodes)
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    after = store.query_memories(
+        memory_types=["EPISODIC"], statuses=["ACTIVE"], topic="virtualbrain-life", limit=50,
+    )
+    assert len(after) == before_count
+    assert restarted.public_projection()["memory_system"]["life_sync"]["recorded"] == 0
+    assert restarted.public_projection()["memory_system"]["life_sync"]["already_recorded"] >= 1
