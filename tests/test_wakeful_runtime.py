@@ -575,3 +575,16 @@ def test_public_snapshot_exposes_n36_without_claiming_semantic_capability(tmp_pa
     assert projection["single_neuron_is_not_called_a_new_capability"] is True
     assert projection["semantic_capability_claim"] is False
     assert projection["llm_used_for_cycle_selection"] is False
+
+
+
+def test_public_snapshot_separates_engineering_frontier_from_production_evidence(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    audit = runtime.public_snapshot()["open_development_acceptance"]
+
+    assert audit["scope"] == "N26-N36"
+    assert audit["engineering_frontier"] == "N36"
+    assert audit["production_behavior_accepted_count"] == 0
+    assert audit["production_behavior_missing_count"] == 11
+    assert audit["production_accepted_contiguously_through"] is None
