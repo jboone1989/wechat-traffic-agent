@@ -38,6 +38,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "NEURAL_DREAM",
     "NEURAL_TRANSFER",
     "NEURAL_DEVELOPMENT",
+    "NEURAL_DEVELOPMENT_TRANSFER",
 })
 
 
@@ -122,6 +123,12 @@ class ContentWakefulRuntime:
         self.cortex_continuity = CortexContinuityMonitor(self.state_root)
         from .developmental_agency import DevelopmentalAgency
         self.developmental_agency = DevelopmentalAgency(self.state_root)
+        from .developmental_transfer import DevelopmentalWorldTransferLab
+        self.developmental_world_transfer = DevelopmentalWorldTransferLab(
+            self.state_root,
+            brain_lab=self.brain_lab,
+            agency=self.developmental_agency,
+        )
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -418,6 +425,33 @@ class ContentWakefulRuntime:
                     ),
                     preemptible=True,
                 ))
+        elif candidate_world is not None and self.developmental_world_transfer.pending() is None:
+            evaluation = (
+                self.developmental_world_transfer.projection()
+                .get("worlds", {})
+                .get(str(candidate_world.get("world_id") or ""), {})
+            )
+            if not bool(evaluation.get("causal_claim_ready")):
+                target_at = now + timedelta(seconds=10)
+                if not any(
+                    wake.task == "NEURAL_DEVELOPMENT_TRANSFER" and wake.at <= target_at
+                    for wake in self.core.snapshot().pending_plans
+                ):
+                    self.core.schedule(PlannedWake(
+                        wake_id="content:NEURAL_DEVELOPMENT_TRANSFER",
+                        at=target_at,
+                        reason=(
+                            f"prospectively test real-world transfer of "
+                            f"{candidate_world.get('world_id')}"
+                        ),
+                        task="NEURAL_DEVELOPMENT_TRANSFER",
+                        relevant_refs=(
+                            str(candidate_world.get("need_id") or ""),
+                            str(candidate_world.get("proposal_id") or ""),
+                            str(candidate_world.get("world_id") or ""),
+                        ),
+                        preemptible=False,
+                    ))
 
         current_snap = self.core.snapshot()
         self.cortex_continuity.observe(
@@ -589,6 +623,59 @@ class ContentWakefulRuntime:
             "training": result,
             "world": updated,
         }
+
+    def run_development_transfer(
+        self,
+        now: datetime | None = None,
+        *,
+        training_steps: int = 12,
+    ) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.developmental_world_transfer.begin(
+            now=now,
+            training_steps=training_steps,
+        )
+        trial = result.get("trial") if isinstance(result, dict) else None
+        if isinstance(trial, dict) and trial.get("status") == "AWAITING_TARGET_OUTCOME":
+            target_task = str(trial.get("target_task") or "")
+            if target_task:
+                target_at = now + timedelta(seconds=5)
+                if not any(
+                    wake.task == target_task and wake.at <= target_at
+                    for wake in self.core.snapshot().pending_plans
+                ):
+                    self.core.schedule(PlannedWake(
+                        wake_id=f"development-target:{trial.get('trial_id')}",
+                        at=target_at,
+                        reason=(
+                            f"real target outcome for {trial.get('trial_id')} after "
+                            f"{trial.get('assignment')} {trial.get('world_id')}"
+                        ),
+                        task=target_task,
+                        relevant_refs=(
+                            str(trial.get("trial_id") or ""),
+                            str(trial.get("world_id") or ""),
+                            str(trial.get("need_id") or ""),
+                        ),
+                        preemptible=False,
+                    ))
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def observe_development_transfer_outcome(
+        self,
+        *,
+        task: str,
+        result,
+        observed_at: datetime | None = None,
+    ) -> dict | None:
+        return self.developmental_world_transfer.settle_target(
+            task=task,
+            result=result,
+            observed_at=observed_at,
+        )
 
     def brain_lab_projection(self) -> dict:
         return self.brain_lab.projection()
@@ -897,6 +984,7 @@ class ContentWakefulRuntime:
             "neural_motor": self.neural_motor.projection(),
             "neural_transfer": self.neural_transfer.projection(),
             "developmental_agency": self.developmental_agency.projection(),
+            "developmental_world_transfer": self.developmental_world_transfer.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
@@ -927,6 +1015,7 @@ class ContentWakefulRuntime:
             "NEURAL_DREAM": "replay and recombine salient experience in the production nervous system",
             "NEURAL_TRANSFER": "run one prospective cross-domain neural transfer trial",
             "NEURAL_DEVELOPMENT": "test a Ferro-born bounded developmental world",
+            "NEURAL_DEVELOPMENT_TRANSFER": "prospectively test a Ferro-born world against a real task",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
