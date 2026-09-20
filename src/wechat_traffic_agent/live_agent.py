@@ -270,6 +270,56 @@ def _recent_cycles(state_root: Path) -> list[dict[str, Any]]:
     return history
 
 
+
+def _latest_dream_insight_projection(state_root: Path) -> dict[str, Any]:
+    """Expose the latest inspectable dream→hypothesis→experiment chain."""
+    rows = sorted(_cycle_dirs(state_root), key=_cycle_epoch, reverse=True)
+    for cycle_dir in rows[:128]:
+        insight = _read_json(cycle_dir / "dream_insight.json")
+        if not insight:
+            continue
+        decision = insight.get("decision") if isinstance(insight.get("decision"), dict) else {}
+        plan = _read_json(cycle_dir / "mind_plan.json")
+        goal = plan.get("goal") if isinstance(plan.get("goal"), dict) else {}
+        experiment = _read_json(cycle_dir / "website_experiment.json")
+        result = _read_json(cycle_dir / "result.json")
+        publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+        return {
+            "cycle": cycle_dir.name,
+            "source_dream": str(insight.get("source_dream") or "")[:120],
+            "preconcept_id": str(insight.get("preconcept_id") or "")[:160],
+            "authority": str(insight.get("authority") or "")[:100],
+            "hypothesis": str(decision.get("hypothesis") or "")[:700],
+            "question": str(decision.get("question") or "")[:700],
+            "topic": str(decision.get("topic") or plan.get("required_topic") or "")[:160],
+            "confidence": (
+                float(decision.get("confidence"))
+                if isinstance(decision.get("confidence"), (int, float))
+                else None
+            ),
+            "should_investigate": bool(decision.get("should_investigate")),
+            "goal": {
+                "goal_id": str(goal.get("goal_id") or "")[:180],
+                "origin": str(goal.get("origin") or "")[:100],
+                "description": str(goal.get("description") or "")[:700],
+            } if goal else None,
+            "experiment": {
+                "experiment_id": str(experiment.get("experiment_id") or "")[:180],
+                "variable_under_test": str(experiment.get("variable_under_test") or "")[:220],
+                "treatment_value": str(experiment.get("treatment_value") or "")[:220],
+                "assignment_method": str(experiment.get("assignment_method") or "")[:160],
+                "learning_authority": bool(experiment.get("learning_authority")),
+            } if experiment else None,
+            "result": {
+                "status": str(result.get("status") or "IN_PROGRESS")[:80],
+                "published": bool(publication),
+                "artifact_id": str(publication.get("artifact_id") or "")[:180] if publication else "",
+                "title": _draft_title(state_root, result) or "",
+            },
+        }
+    return {}
+
+
 def _world_learning_candidates(state_root: Path, *, limit: int = 8) -> list[dict[str, Any]]:
     path = state_root / "content" / "world" / "learning_opportunities.json"
     raw = _read_json(path)
@@ -587,6 +637,7 @@ def public_agent_snapshot(
     if isinstance(service_started_at, datetime) and service_started_at.utcoffset() is not None:
         service_uptime_seconds = max(0, int((now - service_started_at.astimezone(timezone.utc)).total_seconds()))
     life = {
+        "dream_insight": _latest_dream_insight_projection(state_root),
         "presence": {
             "service_started_at": service_started_at.astimezone(timezone.utc).isoformat() if isinstance(service_started_at, datetime) and service_started_at.utcoffset() is not None else None,
             "service_uptime_seconds": service_uptime_seconds,
