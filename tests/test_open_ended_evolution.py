@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
+from wechat_traffic_agent.developmental_agency import DevelopmentalAgency
 from wechat_traffic_agent.open_ended_evolution import (
     MAX_CONSOLIDATION_SESSIONS,
     OpenEndedEvolution,
@@ -351,3 +352,49 @@ def test_non_ferro_world_cannot_satisfy_n36_even_with_structure(tmp_path: Path):
     assert cycle["completion_kind"] is None
     assert evolution.projection()["evolved_cycle_count"] == 0
     assert evolution.projection()["completion_requires_ferro_born_world"] is True
+
+
+
+def test_real_developmental_agency_adoption_flows_into_n36_structural_closure(tmp_path: Path):
+    agency = DevelopmentalAgency(tmp_path)
+    candidate = world()
+    evaluation = dict(candidate.pop("transfer_evaluation"))
+    candidate["status"] = "EXPERIMENTING"
+    agency.state["worlds"] = {"WORLD_0001": candidate}
+    agency.state["proposals"] = {
+        "development-proposal:test": {
+            "proposal_id": "development-proposal:test",
+            "need_id": "development-need:test",
+            "status": "EXPERIMENTING",
+        }
+    }
+    agency.state["needs"] = {
+        "development-need:test": {
+            "need_id": "development-need:test",
+            "status": "ACTIVE",
+        }
+    }
+
+    adopted = agency.apply_world_transfer_evaluation(
+        world_id="WORLD_0001",
+        evaluation=evaluation,
+        observed_at=NOW,
+    )
+    assert adopted["status"] == "ADOPTED"
+    assert agency.state["proposals"]["development-proposal:test"]["status"] == "ADOPTED"
+
+    write_stable_circuit(tmp_path, "WORLD_0001")
+    evolution = OpenEndedEvolution(
+        tmp_path,
+        brain_lab=FakeBrainLab(tmp_path),
+        agency=agency,
+    )
+
+    cycle = evolution.refresh(now=NOW)["recent_cycles"][0]
+
+    assert cycle["status"] == "EVOLVED"
+    assert cycle["provenance_chain"]["need_id"] == "development-need:test"
+    assert cycle["provenance_chain"]["proposal_id"] == "development-proposal:test"
+    assert cycle["provenance_chain"]["world_id"] == "WORLD_0001"
+    assert cycle["provenance_chain"]["reality_decision"] == "ADOPT"
+    assert cycle["provenance_chain"]["stable_world_linked_circuit_count"] == 1
