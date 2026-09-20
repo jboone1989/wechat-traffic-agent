@@ -10,7 +10,7 @@ from typing import Any, Iterable
 
 from .memory_consolidation import recall_weight
 from .memory_system import CanonicalMemoryStore
-from .memory_vector import EmbeddingProvider, SemanticVectorIndex
+from .memory_vector import EmbeddingProvider, SemanticVectorIndex, memory_document
 
 
 def _normalize(text: str) -> str:
@@ -107,6 +107,8 @@ class RecallWeights:
 class MemorySearchIndex:
     """Rebuildable FTS5 index over canonical memory records."""
 
+    INDEX_VERSION = "2-payload"
+
     def __init__(self, store: CanonicalMemoryStore) -> None:
         self.store = store
         self._ensure()
@@ -125,22 +127,30 @@ class MemorySearchIndex:
                 )
                 """
             )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS memory_fts_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
         self.rebuild_if_stale()
 
     def rebuild_if_stale(self) -> None:
         with self.store._connect() as connection:
             memory_count = int(connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
             index_count = int(connection.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0])
-        if memory_count != index_count:
+            row = connection.execute(
+                "SELECT value FROM memory_fts_meta WHERE key='index_version'"
+            ).fetchone()
+            version = str(row["value"]) if row is not None else ""
+        if memory_count != index_count or version != self.INDEX_VERSION:
             self.rebuild()
 
     def rebuild(self) -> int:
-        rows = self.store.list_memories(limit=5000)
+        rows = self.store.list_memories(limit=None)
         with self.store._connect() as connection:
             connection.execute("DELETE FROM memory_fts")
             for row in rows:
-                terms = _terms(str(row.get("text") or ""))
-                lexical = " ".join(terms + [str(row.get("text") or "")])
+                document = memory_document(row)
+                terms = _terms(document)
+                lexical = " ".join(terms + [document])
                 connection.execute(
                     "INSERT INTO memory_fts(memory_id, lexical_text, kind, topics, entities) VALUES(?,?,?,?,?)",
                     (
@@ -148,6 +158,11 @@ class MemorySearchIndex:
                         " ".join(row.get("topics") or []), " ".join(row.get("entities") or []),
                     ),
                 )
+            connection.execute(
+                "INSERT INTO memory_fts_meta(key,value) VALUES('index_version',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self.INDEX_VERSION,),
+            )
         return len(rows)
 
     def search(self, query: str, *, limit: int = 50) -> list[tuple[str, float]]:
