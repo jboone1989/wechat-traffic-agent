@@ -23,6 +23,7 @@ _DEFAULT_INTERVALS = {
     "NEURAL_INTEROCEPTION": 300,
     "NEURAL_PLAY": 1800,
     "NEURAL_DREAM": 21600,
+    "NEURAL_TRANSFER": 14400,
 }
 
 _EXTERNAL_WAKE_TASKS = frozenset({
@@ -35,6 +36,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "NEURAL_INTEROCEPTION",
     "NEURAL_PLAY",
     "NEURAL_DREAM",
+    "NEURAL_TRANSFER",
 })
 
 
@@ -109,6 +111,12 @@ class ContentWakefulRuntime:
         self.brain_cortex = BrainCortexLedger(self.state_root)
         self.psychodynamics = PsychodynamicState(self.state_root)
         self.neural_motor = NeuralMotorCortex(self.state_root, substrate=substrate)
+        from .neural_transfer import CrossDomainTransferLab
+        self.neural_transfer = CrossDomainTransferLab(
+            self.state_root,
+            substrate=substrate,
+            brain_lab=self.brain_lab,
+        )
         self._wake_request_root = self.state_root / "application" / "wake_requests"
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
@@ -194,7 +202,7 @@ class ContentWakefulRuntime:
 
     def ensure_initial_plans(self, now: datetime) -> None:
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
-        for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
+        for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "NEURAL_TRANSFER", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
             if task not in existing:
                 self.core.schedule(PlannedWake(
                     wake_id=f"content:{task}", at=now, reason=self._reason(task), task=task,
@@ -437,6 +445,51 @@ class ContentWakefulRuntime:
         observed_at: datetime | None = None,
     ) -> dict | None:
         return self.neural_motor.observe_outcome(
+            task=task,
+            result=result,
+            observed_at=observed_at,
+        )
+
+    def run_neural_transfer(self, now: datetime | None = None, *, training_steps: int = 12) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.neural_transfer.begin(now=now, training_steps=training_steps)
+        experiment = result.get("experiment") if isinstance(result, dict) else None
+        if isinstance(experiment, dict):
+            target_task = str(experiment.get("target_task") or "")
+            if target_task:
+                target_at = now + timedelta(seconds=5)
+                existing = next(
+                    (
+                        wake for wake in self.core.snapshot().pending_plans
+                        if wake.task == target_task and wake.at <= target_at
+                    ),
+                    None,
+                )
+                if existing is None:
+                    self.core.schedule(PlannedWake(
+                        wake_id=f"transfer-target:{experiment.get('experiment_id')}",
+                        at=target_at,
+                        reason=(
+                            f"prospective neural transfer target for {experiment.get('experiment_id')} "
+                            f"after {experiment.get('assignment')} source intervention"
+                        ),
+                        task=target_task,
+                        relevant_refs=(str(experiment.get("experiment_id") or ""),),
+                        preemptible=False,
+                    ))
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def observe_transfer_outcome(
+        self,
+        *,
+        task: str,
+        result,
+        observed_at: datetime | None = None,
+    ) -> dict | None:
+        return self.neural_transfer.settle_target(
             task=task,
             result=result,
             observed_at=observed_at,
@@ -757,6 +810,7 @@ class ContentWakefulRuntime:
             "personality": self.neural_personality.projection(),
             "brain_vs_cortex": self.brain_cortex.projection(),
             "neural_motor": self.neural_motor.projection(),
+            "neural_transfer": self.neural_transfer.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),
                 personality=self.neural_personality.projection(),
@@ -784,6 +838,7 @@ class ContentWakefulRuntime:
             "NEURAL_INTEROCEPTION": "sense body state and update endogenous drives",
             "NEURAL_PLAY": "develop the production nervous system through a sensorimotor world",
             "NEURAL_DREAM": "replay and recombine salient experience in the production nervous system",
+            "NEURAL_TRANSFER": "run one prospective cross-domain neural transfer trial",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
