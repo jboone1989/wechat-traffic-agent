@@ -370,6 +370,13 @@ def main() -> int:
                 task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
+            motor_learning = wakeful_runtime.observe_motor_outcome(
+                task=task,
+                result=task_result,
+                observed_at=now,
+            )
+            if motor_learning is not None:
+                print(json.dumps({"neural_motor_learning": motor_learning}, ensure_ascii=False, sort_keys=True))
             if stopping or status == "SHUTDOWN_CHECKPOINT":
                 shutdown_task_result = _shutdown_task_summary(task, task_result)
                 emit_public_activity(
