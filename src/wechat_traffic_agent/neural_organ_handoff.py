@@ -135,10 +135,21 @@ class NeuralOrganHandoff:
         organ: Mapping[str, Any],
         environments: tuple[str, ...],
         decision_seq: int,
-    ) -> str:
+    ) -> tuple[str, dict[str, float]]:
         organ_id = str(organ["organ_id"])
         learned = self._association_rows(organ_id)
+        active_members = tuple(
+            sorted(str(value) for value in organ.get("active_members") or ())
+        )
+        # No semantic meaning is assigned to an organ or member neuron. Each
+        # currently firing member contributes a deterministic random projection
+        # into the existing Brain Lab action space. World reward then shapes the
+        # downstream organ->environment association. If an organ is momentarily
+        # silent, its identity supplies a weak fallback projection but cannot
+        # manufacture an active firing pattern.
+        projection_members = active_members or (f"silent:{organ_id}",)
         rows = []
+        neural_scores: dict[str, float] = {}
         for environment in environments:
             raw = learned.get(environment) or {}
             trials = int(raw.get("trials") or 0)
@@ -147,20 +158,29 @@ class NeuralOrganHandoff:
                 if trials <= 0
                 else float(raw.get("reward_sum") or 0.0) / trials
             )
-            exploration = int.from_bytes(
+            votes = [
+                int.from_bytes(
+                    sha256(f"{member}|{environment}".encode()).digest()[:4],
+                    "big",
+                ) / 0xFFFFFFFF
+                for member in projection_members
+            ]
+            pattern_score = sum(votes) / max(1, len(votes))
+            activation = max(0.0, min(1.0, float(organ.get("activation") or 0.0)))
+            expressed_score = pattern_score * (0.25 + 0.75 * activation)
+            learned_bonus = 0.35 * mean_reward
+            novelty_bonus = 0.18 if trials == 0 else 0.0
+            tie_break = int.from_bytes(
                 sha256(
-                    (
-                        f"{organ_id}|{environment}|{decision_seq}|"
-                        f"{round(float(organ.get('activation') or 0.0), 2)}"
-                    ).encode()
-                ).digest()[:4],
+                    f"{organ_id}|{environment}|{decision_seq}".encode()
+                ).digest()[:2],
                 "big",
-            ) / 0xFFFFFFFF
-            # Untried environments are explored before learned exploitation.
-            score = (1.5 if trials == 0 else mean_reward) + 0.08 * exploration
+            ) / 0xFFFF
+            score = expressed_score + learned_bonus + novelty_bonus + 0.01 * tie_break
+            neural_scores[environment] = round(score, 6)
             rows.append((score, -trials, environment))
         rows.sort(key=lambda row: (-row[0], row[1], row[2]))
-        return rows[0][2]
+        return rows[0][2], neural_scores
 
     def _evaluation_rows(self, *, phase: str = "EVALUATING") -> list[dict[str, Any]]:
         return [
@@ -311,12 +331,15 @@ class NeuralOrganHandoff:
             environment = baseline
             authority = arm
         else:
-            environment = self._neural_environment(
+            environment, neural_scores = self._neural_environment(
                 organ=organ,
                 environments=environments,
                 decision_seq=seq,
             )
             authority = "NEURAL_ORGAN"
+
+        if arm in {"PYTHON_BASELINE", "PYTHON_AUDIT"}:
+            neural_scores = {}
 
         decision_id = f"organ-handoff:{seq:06d}"
         trial = {
@@ -326,6 +349,9 @@ class NeuralOrganHandoff:
             "function_id": FUNCTION_ID,
             "organ_id": str(organ["organ_id"]),
             "organ_activation": float(organ.get("activation") or 0.0),
+            "active_member_count": int(organ.get("active_member_count") or 0),
+            "active_members": list(organ.get("active_members") or ())[:32],
+            "neural_environment_scores": neural_scores,
             "organ_source_event_id": (
                 self._development(substrate_projection)
                 .get("last_organ_activity", {})
