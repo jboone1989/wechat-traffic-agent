@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from wechat_traffic_agent.neural_extensions import NeuralSelfExtension
+from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
 
 
 NOW = datetime(2026, 9, 20, 6, 0, tzinfo=timezone.utc)
@@ -135,3 +136,18 @@ def test_need_must_survive_real_world_revision_before_body_growth(tmp_path: Path
 
     assert projection["extension_count"] == 0
     assert motor.units == 32
+
+
+def test_runtime_feeds_self_extended_sensor_into_real_neural_event_path(tmp_path: Path):
+    _write_x_state(tmp_path, pressure=0.71)
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    current_agency = agency()
+    runtime.developmental_agency.refresh = lambda **kwargs: current_agency
+
+    runtime.refresh_neural_life(NOW)
+    snapshot = runtime.public_snapshot()
+
+    assert snapshot["neural_extensions"]["active_sensor_count"] == 1
+    assert snapshot["neural_extensions"]["ferro_born_motor_unit_count"] == 4
+    assert snapshot["neural_motor"]["ferro_born_motor_unit_count"] == 4
+    assert "SELF_EXTENDED_SENSOR" in snapshot["recent_stimulus_kinds"]
