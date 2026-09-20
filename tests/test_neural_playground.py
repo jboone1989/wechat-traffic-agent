@@ -108,3 +108,67 @@ def test_dream_preconcept_can_be_marked_as_ego_interpreted(tmp_path: Path):
     )
     assert interpreted["status"] == "EGO_INTERPRETED"
     assert interpreted["verbalized"] is True
+
+
+def test_dream_replays_real_world_motor_experience_alongside_games(tmp_path: Path):
+    substrate = FakeSubstrate()
+    lab = FerroBrainLab(tmp_path, substrate=substrate)
+    lab.run_session(environment="MAZE", steps=6, now=NOW)
+
+    motor_path = tmp_path / "application" / "neural_motor.json"
+    motor_path.parent.mkdir(parents=True, exist_ok=True)
+    motor_path.write_text(
+        __import__("json").dumps({
+            "recent_decisions": [
+                {
+                    "decision_id": "motor-decision:world-1",
+                    "source_event_id": "motor-probe:world-1",
+                    "created_at": NOW.isoformat(),
+                    "motor_id": "motor_003",
+                    "activation": 0.9,
+                    "stimulus_channels": ["social_attention", "curiosity", "opportunity"],
+                    "task": "CHECK_X",
+                    "status": "SETTLED",
+                    "outcome": {
+                        "observed_at": NOW.isoformat(),
+                        "status": "OK",
+                        "reward": 0.75,
+                    },
+                    "burst": {"spikes": 321, "active_neurons": 123},
+                },
+                {
+                    "decision_id": "motor-decision:world-2",
+                    "source_event_id": "motor-probe:world-2",
+                    "created_at": NOW.isoformat(),
+                    "motor_id": "motor_019",
+                    "activation": 0.8,
+                    "stimulus_channels": ["resource_pressure", "error_recovery"],
+                    "task": "RESOURCE_REVIEW",
+                    "status": "SETTLED",
+                    "outcome": {
+                        "observed_at": NOW.isoformat(),
+                        "status": "DEGRADED",
+                        "reward": -0.85,
+                    },
+                    "burst": {"spikes": 456, "active_neurons": 140},
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+
+    dreams = FerroDreamEngine(tmp_path, substrate=substrate)
+    result = dreams.dream(now=NOW, replay_count=6)
+
+    assert result["status"] == "DREAMED"
+    counts = result["dream"]["source_kind_counts"]
+    assert counts["BRAIN_LAB"] > 0
+    assert counts["WORLD_MOTOR"] == 2
+    assert any(
+        "WORLD_MOTOR" in row["source_kinds"]
+        for row in result["dream"]["replays"]
+    )
+    assert any(
+        "CHECK_X" in row["source_actions"] or "RESOURCE_REVIEW" in row["source_actions"]
+        for row in result["dream"]["replays"]
+    )
