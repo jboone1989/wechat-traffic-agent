@@ -1279,3 +1279,35 @@ def test_mission_discovery_error_persists_external_mission_identity(tmp_path):
     assert error["experiment_id"] == "mission-exp-growth"
     assert error["retryable"] is True
     assert error["publication_authority"] is False
+
+
+class UnknownEvidenceIdSelectionRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SELECT_EVIDENCE:"):
+            self.calls.append(task)
+            return json.dumps({
+                "title": "A model-selected title that cites unknown evidence",
+                "evidence_id": "invented-evidence-id",
+                "topic": "evidence",
+                "related_ids": [],
+                "reader_question": "What does the supplied evidence actually support?",
+                "gap": "Keep the explanation bounded to supplied evidence.",
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_unknown_model_evidence_id_falls_back_without_weakening_evidence_boundary(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = UnknownEvidenceIdSelectionRuntime()
+    worker = v2(legacy, runtime, publisher, explorer=Explorer())
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result.get("message") != "evidence_id must exactly match supplied evidence"
+    cycle_dir = next((legacy.state / "content/continuous/cycles").glob("v2-*"))
+    fallback = json.loads((cycle_dir / "selection_fallback.json").read_text())
+    assert fallback["reason"] == "MODEL_OUTPUT_INVALID_AFTER_REPAIR"
+    assert fallback["selected_evidence_id"] == "news-1"
+    assert fallback["selected_evidence_id"] != "invented-evidence-id"
+    assert fallback["topic"] == "evidence"
+    assert sum(1 for call in runtime.calls if call.startswith("SELECT_EVIDENCE:")) == 2

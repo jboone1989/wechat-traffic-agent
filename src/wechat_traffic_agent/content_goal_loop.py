@@ -1104,7 +1104,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                'x_growth_mission': x_mission_context}, ensure_ascii=False), EvidenceSelection, validate=validate_selection)
             selection_mode = 'MODEL'
         except ValueError as exc:
-            if 'backend did not return a JSON object' not in str(exc):
+            message = str(exc)
+            recoverable_selection_errors = (
+                'backend did not return a JSON object',
+                'evidence_id must exactly match supplied evidence',
+                'topic must be a lowercase kebab-case slug',
+                'VirtualBrain endogenous goal requires topic:',
+                'Traffic opportunity requires topic:',
+                'selection duplicates an existing title',
+            )
+            if not any(marker in message for marker in recoverable_selection_errors):
                 raise
             selection = _fallback_evidence_selection(
                 evidence,
