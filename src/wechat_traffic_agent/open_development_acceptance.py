@@ -262,10 +262,16 @@ class OpenDevelopmentAcceptance:
             for name in ("ADAPTIVE_FAST", "CONSERVATIVE_STABLE")
         }
         selected = search.get("selected_variant")
+        history = [
+            row for row in search.get("selection_history") or ()
+            if isinstance(row, Mapping)
+            and row.get("selected_variant") == selected
+        ]
         accepted = bool(
             selected in {"ADAPTIVE_FAST", "CONSERVATIVE_STABLE"}
             and arms["ADAPTIVE_FAST"] >= 4
             and arms["CONSERVATIVE_STABLE"] >= 4
+            and history
         )
         return _stage(
             accepted=accepted,
@@ -274,6 +280,7 @@ class OpenDevelopmentAcceptance:
                 "selected_variant": selected,
                 "settled_counts": arms,
                 "trial_count": len(search.get("trials") or ()),
+                "selection_history_count": len(history),
             },
             missing=("4/4 real outcome trials -> selected developmental architecture",),
         )
@@ -286,13 +293,35 @@ class OpenDevelopmentAcceptance:
             and row.get("phase") == "EVALUATING"
             and row.get("status") == "SETTLED"
         ]
-        neural = sum(row.get("arm") == "NEURAL_ORGAN" for row in trials)
-        python = sum(row.get("arm") == "PYTHON_BASELINE" for row in trials)
+        neural_rows = [row for row in trials if row.get("arm") == "NEURAL_ORGAN"]
+        python_rows = [row for row in trials if row.get("arm") == "PYTHON_BASELINE"]
+        neural = len(neural_rows)
+        python = len(python_rows)
+        neural_values = [
+            float((row.get("outcome") or {}).get("utility") or 0.0)
+            for row in neural_rows
+        ]
+        python_values = [
+            float((row.get("outcome") or {}).get("utility") or 0.0)
+            for row in python_rows
+        ]
+        neural_mean = (
+            None if not neural_values else sum(neural_values) / len(neural_values)
+        )
+        python_mean = (
+            None if not python_values else sum(python_values) / len(python_values)
+        )
+        effect = (
+            None if neural_mean is None or python_mean is None
+            else neural_mean - python_mean
+        )
         demonstrated = bool(
             handoff.get("handoff_at")
             and handoff.get("selected_organ_id")
             and neural >= 4
             and python >= 4
+            and effect is not None
+            and effect >= -0.08
         )
         return _stage(
             accepted=demonstrated,
@@ -307,6 +336,10 @@ class OpenDevelopmentAcceptance:
                 "handoff_at": handoff.get("handoff_at"),
                 "initial_neural_settled": neural,
                 "initial_python_settled": python,
+                "initial_mean_neural_utility": neural_mean,
+                "initial_mean_python_utility": python_mean,
+                "initial_effect_neural_minus_python": effect,
+                "noninferior_margin": 0.08,
                 "rollback_at": handoff.get("rollback_at"),
                 "rollback_reason": handoff.get("rollback_reason"),
             },
