@@ -119,7 +119,7 @@ def test_dream_replays_real_world_motor_experience_alongside_games(tmp_path: Pat
     motor_path.parent.mkdir(parents=True, exist_ok=True)
     motor_path.write_text(
         __import__("json").dumps({
-            "recent_decisions": [
+            "decisions": [
                 {
                     "decision_id": "motor-decision:world-1",
                     "source_event_id": "motor-probe:world-1",
