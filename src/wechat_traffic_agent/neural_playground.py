@@ -274,11 +274,121 @@ class FerroBrainLab:
         env["last_action"] = action
         return env, reward, burst, currents
 
+    def _generated_specs(self) -> dict[str, dict[str, Any]]:
+        raw = {}
+        try:
+            raw = json.loads(
+                (self.state_root / "application" / "developmental_agency.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        worlds = raw.get("worlds") if isinstance(raw.get("worlds"), Mapping) else {}
+        return {
+            str(world_id).upper(): dict(spec)
+            for world_id, spec in worlds.items()
+            if isinstance(spec, Mapping)
+            and str(spec.get("status") or "") not in {"REJECTED", "RETIRED"}
+        }
+
+    @staticmethod
+    def _generated_default(spec: Mapping[str, Any]) -> dict[str, Any]:
+        actions = [str(value) for value in spec.get("actions") or ("A0", "A1", "A2")]
+        return {
+            "episode": 0,
+            "step": 0,
+            "episode_step": 0,
+            "reward_sum": 0.0,
+            "correct": 0,
+            "incorrect": 0,
+            "last_action": actions[0],
+            "last_target_action": actions[0],
+            "last_reward": 0.0,
+        }
+
+    def _generated_step(
+        self,
+        *,
+        name: str,
+        spec: Mapping[str, Any],
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+        seed = str(spec.get("seed") or name)
+        sensors = [str(value) for value in spec.get("sensor_channels") or ()]
+        actions = [str(value) for value in spec.get("actions") or ()]
+        action_channels = {
+            str(key): str(value)
+            for key, value in (spec.get("action_channels") or {}).items()
+        }
+        if not sensors or not actions:
+            raise ValueError(f"generated world {name} has no sensors/actions")
+        period = max(1, int(spec.get("context_switch_period") or 6))
+        episode_step = int(env.get("episode_step") or 0)
+        context_slot = episode_step // period
+        noise = _clip(float(spec.get("noise") or 0.0), 0.0, 0.25)
+        currents: dict[str, float] = {}
+        for channel in sensors:
+            base = self._phase(
+                f"{seed}:episode:{int(env.get('episode') or 0)}:context:{context_slot}:{channel}"
+            )
+            jitter = (
+                self._phase(
+                    f"{seed}:episode:{int(env.get('episode') or 0)}:step:{episode_step}:{channel}:noise"
+                )
+                - 0.5
+            ) * 2.0 * noise
+            currents[channel] = _clip(base + jitter)
+
+        latent_weights = spec.get("latent_weights") if isinstance(spec.get("latent_weights"), Mapping) else {}
+        ranked_targets: list[tuple[float, str]] = []
+        for action in actions:
+            weights = latent_weights.get(action) if isinstance(latent_weights.get(action), Mapping) else {}
+            score = sum(
+                float(weights.get(channel) or 0.0) * (float(currents[channel]) - 0.5)
+                for channel in sensors
+            )
+            ranked_targets.append((score, action))
+        ranked_targets.sort(key=lambda row: (-row[0], row[1]))
+        target_action = ranked_targets[0][1]
+
+        burst = self._stimulate(currents, now, event_id)
+        options = tuple(
+            (action, action_channels.get(action) or sensors[index % len(sensors)])
+            for index, action in enumerate(actions)
+        )
+        action = self._choose(burst.get("delta_readout_hz") or {}, options)
+        reward_spec = spec.get("reward") if isinstance(spec.get("reward"), Mapping) else {}
+        reward = float(
+            reward_spec.get("correct") if action == target_action else reward_spec.get("incorrect")
+        )
+        reward += float(reward_spec.get("step_cost") or 0.0)
+
+        env["episode_step"] = episode_step + 1
+        env["last_action"] = action
+        env["last_target_action"] = target_action
+        if action == target_action:
+            env["correct"] = int(env.get("correct") or 0) + 1
+        else:
+            env["incorrect"] = int(env.get("incorrect") or 0) + 1
+        horizon = max(8, int(spec.get("episode_horizon") or 48))
+        if int(env["episode_step"]) >= horizon:
+            env["episode"] = int(env.get("episode") or 0) + 1
+            env["episode_step"] = 0
+        return env, reward, burst, currents
+
     def step(self, environment: str, *, now: datetime | None = None) -> dict[str, Any]:
         name = str(environment).upper()
-        if name not in self.ENVIRONMENTS:
+        generated = self._generated_specs()
+        if name not in self.ENVIRONMENTS and name not in generated:
             raise ValueError(f"unknown brain-lab environment: {environment}")
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if name in generated:
+            self.state.setdefault("environments", {}).setdefault(
+                name, self._generated_default(generated[name])
+            )
         env = dict(self.state["environments"][name])
         env["step"] = int(env.get("step") or 0) + 1
         event_id = f"brain-lab:{name.lower()}:{int(env.get('episode') or 0)}:{int(env['step'])}"
@@ -288,8 +398,16 @@ class FerroBrainLab:
             env, reward, burst, currents = self._maze_step(env, now, event_id)
         elif name == "FORAGING":
             env, reward, burst, currents = self._foraging_step(env, now, event_id)
-        else:
+        elif name == "ROVER":
             env, reward, burst, currents = self._rover_step(env, now, event_id)
+        else:
+            env, reward, burst, currents = self._generated_step(
+                name=name,
+                spec=generated[name],
+                env=env,
+                now=now,
+                event_id=event_id,
+            )
         feedback = self._reward(event_id=event_id, currents=currents, reward=reward, now=now)
         env["last_reward"] = round(float(reward), 6)
         env["reward_sum"] = round(float(env.get("reward_sum") or 0.0) + float(reward), 6)
@@ -299,7 +417,9 @@ class FerroBrainLab:
         self.state["total_steps"] = int(self.state.get("total_steps") or 0) + 1
         row = {
             "at": now.isoformat(), "environment": name, "event_id": event_id,
-            "action": env.get("last_action"), "reward": round(float(reward), 6),
+            "action": env.get("last_action"),
+            "target_action": env.get("last_target_action") if name in generated else None,
+            "reward": round(float(reward), 6),
             "spikes": int(burst.get("spikes") or 0),
             "active_neurons": int(burst.get("active_neurons") or 0),
             "changed_synapses": int(feedback.get("changed_synapse_count") or 0),
@@ -331,7 +451,32 @@ class FerroBrainLab:
         }
 
     def projection(self) -> dict[str, Any]:
-        environments = {name: dict(self.state["environments"][name]) for name in self.ENVIRONMENTS}
+        generated = self._generated_specs()
+        names = list(self.ENVIRONMENTS) + sorted(generated)
+        environments = {
+            name: dict(
+                self.state.get("environments", {}).get(
+                    name,
+                    self._generated_default(generated[name]) if name in generated else self._default_env(name),
+                )
+            )
+            for name in names
+        }
+        generated_meta = {}
+        for name, spec in generated.items():
+            env = environments[name]
+            attempts = int(env.get("correct") or 0) + int(env.get("incorrect") or 0)
+            generated_meta[name] = {
+                "status": spec.get("status"),
+                "target_task": spec.get("target_task"),
+                "avoids_environment": spec.get("avoids_environment"),
+                "sensor_channels": list(spec.get("sensor_channels") or ()),
+                "actions": list(spec.get("actions") or ()),
+                "correct_rate": None if attempts == 0 else round(int(env.get("correct") or 0) / attempts, 6),
+                "episodes": int(env.get("episode") or 0),
+                "steps": int(env.get("step") or 0),
+                "reward_sum": float(env.get("reward_sum") or 0.0),
+            }
         pong = environments["PONG"]
         attempts = int(pong.get("hits") or 0) + int(pong.get("misses") or 0)
         return {
@@ -342,6 +487,9 @@ class FerroBrainLab:
             "total_steps": int(self.state.get("total_steps") or 0),
             "total_sessions": int(self.state.get("total_sessions") or 0),
             "environments": environments,
+            "ancestral_environments": list(self.ENVIRONMENTS),
+            "generated_worlds": generated_meta,
+            "available_environments": names,
             "pong_hit_rate": None if attempts == 0 else round(int(pong.get("hits") or 0) / attempts, 6),
             "recent": [dict(row) for row in (self.state.get("recent") or [])[-24:]],
             "learning_rule": "provenance-linked recurrent eligibility reward on the same persistent connectome",
