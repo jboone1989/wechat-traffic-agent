@@ -39,6 +39,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "NEURAL_TRANSFER",
     "NEURAL_DEVELOPMENT",
     "NEURAL_DEVELOPMENT_TRANSFER",
+    "NEURAL_EVOLUTION_CONSOLIDATION",
 })
 
 
@@ -127,6 +128,12 @@ class ContentWakefulRuntime:
         self.developmental_agency = DevelopmentalAgency(self.state_root)
         from .developmental_transfer import DevelopmentalWorldTransferLab
         self.developmental_world_transfer = DevelopmentalWorldTransferLab(
+            self.state_root,
+            brain_lab=self.brain_lab,
+            agency=self.developmental_agency,
+        )
+        from .open_ended_evolution import OpenEndedEvolution
+        self.open_ended_evolution = OpenEndedEvolution(
             self.state_root,
             brain_lab=self.brain_lab,
             agency=self.developmental_agency,
@@ -514,6 +521,33 @@ class ContentWakefulRuntime:
                         preemptible=False,
                     ))
 
+        evolution = self.open_ended_evolution.refresh(now=now)
+        consolidation = self.open_ended_evolution.next_consolidation()
+        if consolidation is not None:
+            target_at = now + timedelta(seconds=10)
+            if not any(
+                wake.task == "NEURAL_EVOLUTION_CONSOLIDATION"
+                and wake.at <= target_at
+                for wake in self.core.snapshot().pending_plans
+            ):
+                self.core.schedule(PlannedWake(
+                    wake_id="content:NEURAL_EVOLUTION_CONSOLIDATION",
+                    at=target_at,
+                    reason=(
+                        f"consolidate adopted Ferro-born world "
+                        f"{consolidation.get('world_id')} until real neural emergence "
+                        "or bounded budget exhaustion"
+                    ),
+                    task="NEURAL_EVOLUTION_CONSOLIDATION",
+                    relevant_refs=(
+                        str(consolidation.get("cycle_id") or ""),
+                        str(consolidation.get("need_id") or ""),
+                        str(consolidation.get("proposal_id") or ""),
+                        str(consolidation.get("world_id") or ""),
+                    ),
+                    preemptible=True,
+                ))
+
         current_snap = self.core.snapshot()
         cortex = self.cortex_continuity.observe(
             neural_graph=dict(current_snap.neural_state),
@@ -791,11 +825,31 @@ class ContentWakefulRuntime:
         result,
         observed_at: datetime | None = None,
     ) -> dict | None:
-        return self.developmental_world_transfer.settle_target(
+        observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        settled = self.developmental_world_transfer.settle_target(
             task=task,
             result=result,
             observed_at=observed_at,
         )
+        if settled is not None:
+            self.open_ended_evolution.refresh(now=observed_at)
+        return settled
+
+    def run_evolution_consolidation(
+        self,
+        now: datetime | None = None,
+        *,
+        steps: int = 24,
+    ) -> dict:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        result = self.open_ended_evolution.run_consolidation(
+            now=now,
+            steps=steps,
+        )
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
 
     def brain_lab_projection(self) -> dict:
         return self.brain_lab.projection()
@@ -1105,6 +1159,7 @@ class ContentWakefulRuntime:
             "neural_transfer": self.neural_transfer.projection(),
             "developmental_agency": self.developmental_agency.projection(),
             "developmental_world_transfer": self.developmental_world_transfer.projection(),
+            "open_ended_evolution": self.open_ended_evolution.projection(),
             "neural_extensions": self.neural_extensions.projection(),
             "neural_organ_handoff": self.neural_organ_handoff.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
@@ -1139,6 +1194,7 @@ class ContentWakefulRuntime:
             "NEURAL_TRANSFER": "run one prospective cross-domain neural transfer trial",
             "NEURAL_DEVELOPMENT": "test a Ferro-born bounded developmental world",
             "NEURAL_DEVELOPMENT_TRANSFER": "prospectively test a Ferro-born world against a real task",
+            "NEURAL_EVOLUTION_CONSOLIDATION": "consolidate an adopted Ferro-born world until real neural emergence or bounded exhaustion",
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
