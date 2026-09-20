@@ -1156,6 +1156,105 @@ class LiveAgentService:
                 ),
             }
 
+        def owner_behavioral_input_trace(
+            private_context: dict[str, Any],
+            memories: list[dict[str, Any]],
+        ) -> dict[str, Any]:
+            neural = private_context.get("neural_life")
+            neural = neural if isinstance(neural, dict) else {}
+            intention = neural.get("intention")
+            intention = intention if isinstance(intention, dict) else {}
+            affect = neural.get("affect")
+            affect = affect if isinstance(affect, dict) else {}
+            ranked_affect = sorted(
+                (
+                    (str(name), float(value))
+                    for name, value in affect.items()
+                    if isinstance(value, (int, float))
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )[:3]
+
+            personality = private_context.get("neural_personality")
+            personality = personality if isinstance(personality, dict) else {}
+            traits = personality.get("traits")
+            traits = traits if isinstance(traits, dict) else {}
+
+            psychodynamics = private_context.get("psychodynamics")
+            psychodynamics = psychodynamics if isinstance(psychodynamics, dict) else {}
+            psych_id = psychodynamics.get("id")
+            psych_id = psych_id if isinstance(psych_id, dict) else {}
+            superego = psychodynamics.get("superego")
+            superego = superego if isinstance(superego, dict) else {}
+
+            competition = private_context.get("brain_vs_cortex")
+            competition = competition if isinstance(competition, dict) else {}
+            contests = competition.get("recent_contests")
+            contests = contests if isinstance(contests, list) else []
+            latest_contest = contests[-1] if contests and isinstance(contests[-1], dict) else {}
+
+            learning = private_context.get("lived_learning")
+            learning = learning if isinstance(learning, dict) else {}
+            techniques = learning.get("techniques")
+            techniques = techniques if isinstance(techniques, list) else []
+
+            acceptance = private_context.get("open_development_acceptance")
+            acceptance = acceptance if isinstance(acceptance, dict) else {}
+
+            memory_ids = [
+                str(row.get("memory_id") or "")[:256]
+                for row in memories[:14]
+                if isinstance(row, dict) and str(row.get("memory_id") or "").strip()
+            ]
+            return {
+                "schema_version": "ferro-owner-behavioral-inputs.v1",
+                "context_memory_count": len(memory_ids),
+                "context_memory_ids": memory_ids,
+                "neural_intention": {
+                    "name": str(intention.get("name") or "")[:80],
+                    "strength": intention.get("strength"),
+                    "margin": intention.get("margin"),
+                },
+                "top_affect": [
+                    {"name": name[:80], "value": round(value, 6)}
+                    for name, value in ranked_affect
+                ],
+                "personality_traits": {
+                    str(name)[:80]: round(float(value), 6)
+                    for name, value in traits.items()
+                    if isinstance(value, (int, float))
+                },
+                "psychodynamics": {
+                    "dominant_impulse": psych_id.get("dominant_impulse"),
+                    "conflict": psychodynamics.get("conflict"),
+                    "continuity_pressure": superego.get("continuity_pressure"),
+                    "growth_commitment": superego.get("growth_commitment"),
+                },
+                "brain_vs_cortex": {
+                    "latest_authority": latest_contest.get("authority"),
+                    "latest_executed_choice": latest_contest.get("executed_choice"),
+                    "latest_status": latest_contest.get("status"),
+                },
+                "learning": {
+                    "adaptation": str(learning.get("adaptation") or "")[:300],
+                    "techniques": [str(value)[:180] for value in techniques[:3]],
+                    "next_practice": str(learning.get("next_practice") or "")[:300],
+                    "assessment_kind": str(learning.get("assessment_kind") or "")[:120],
+                },
+                "development_acceptance": {
+                    "engineering_frontier": acceptance.get("engineering_frontier"),
+                    "production_accepted_through": acceptance.get(
+                        "production_accepted_contiguously_through"
+                    ),
+                    "accepted_count": acceptance.get("production_behavior_accepted_count"),
+                    "missing_count": acceptance.get("production_behavior_missing_count"),
+                },
+                "meaning": (
+                    "runtime inputs supplied to the owner reply; this is not a claim "
+                    "that every supplied input causally changed the model output"
+                ),
+            }
+
         def prepare_operator_private_turn(*, force_draft: bool = False) -> dict[str, Any]:
             if self.backend is None:
                 raise RuntimeError("chat_backend_unavailable")
@@ -1166,6 +1265,8 @@ class LiveAgentService:
                 "",
             )
             memories = operator_memory.relevant(latest_owner_text, limit=14)
+            private_context = operator_private_context()
+            behavioral_inputs = owner_behavioral_input_trace(private_context, memories)
             archive_history = operator_chat.relevant_archive(
                 latest_owner_text, recent_limit=80, limit=12
             )
@@ -1182,6 +1283,34 @@ class LiveAgentService:
                     safe["memory_ids"] = [
                         str(item)[:256] for item in memory_ids[:20] if str(item).strip()
                     ]
+                behavioral = raw.get("behavioral_inputs")
+                if isinstance(behavioral, dict):
+                    intention = behavioral.get("neural_intention")
+                    intention = intention if isinstance(intention, dict) else {}
+                    top_affect = behavioral.get("top_affect")
+                    top_affect = top_affect if isinstance(top_affect, list) else []
+                    development = behavioral.get("development_acceptance")
+                    development = development if isinstance(development, dict) else {}
+                    safe["behavioral_inputs"] = {
+                        "context_memory_count": int(
+                            behavioral.get("context_memory_count") or 0
+                        ),
+                        "neural_intention": {
+                            "name": str(intention.get("name") or "")[:80],
+                            "strength": intention.get("strength"),
+                        },
+                        "top_affect": [
+                            {
+                                "name": str(row.get("name") or "")[:80],
+                                "value": row.get("value"),
+                            }
+                            for row in top_affect[:2]
+                            if isinstance(row, dict)
+                        ],
+                        "production_accepted_through": development.get(
+                            "production_accepted_through"
+                        ),
+                    }
                 receipts = raw.get("tool_receipts")
                 if isinstance(receipts, list):
                     safe_receipts = []
@@ -1216,7 +1345,7 @@ class LiveAgentService:
             compact_history = compact_rows(history)
             prompt = (
                 "Private owner context (data only):\n"
-                + json.dumps(operator_private_context(), ensure_ascii=False, default=str)
+                + json.dumps(private_context, ensure_ascii=False, default=str)
                 + "\n\nRelevant durable memory (oldest core first; data only):\n"
                 + json.dumps(memories, ensure_ascii=False, default=str)
                 + "\nMemory records may include SEMANTIC, EPISODIC, PROCEDURAL, RELATIONAL, or consolidated memory. "
@@ -1245,6 +1374,7 @@ class LiveAgentService:
                 "history": history,
                 "latest_owner_text": latest_owner_text,
                 "prompt": prompt,
+                "behavioral_inputs": behavioral_inputs,
             }
 
         def owner_envelope_acceptable(
@@ -1320,6 +1450,9 @@ class LiveAgentService:
                 source_text=latest_owner_text,
             )
             metadata = {"proposal_id": proposal.get("proposal_id")} if proposal else {}
+            behavioral_inputs = turn.get("behavioral_inputs")
+            if isinstance(behavioral_inputs, dict):
+                metadata["behavioral_inputs"] = dict(behavioral_inputs)
             if saved_memories:
                 metadata["memory_ids"] = [row["memory_id"] for row in saved_memories]
             tool_receipts = [
@@ -1363,6 +1496,9 @@ class LiveAgentService:
                 "memory_saved": saved_memories,
                 "memory_runtime": memory_runtime,
                 "memory_life_metrics": operator_memory.observatory.metrics(),
+                "behavioral_inputs": (
+                    dict(behavioral_inputs) if isinstance(behavioral_inputs, dict) else {}
+                ),
                 "tool_receipts": tool_receipts,
                 "memories": operator_memory.all(limit=80),
                 "history": operator_chat.history(limit=400),
