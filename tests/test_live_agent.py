@@ -183,6 +183,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Plasticity boundary" in live.text
     assert "Outcome-bound learning" in live.text
     assert "neural-feedback-list" in live.text
+    assert "OPEN DEVELOPMENT" in live.text
+    assert "NEXT REAL EVIDENCE" in live.text
     assert "Open diagnostics & history" in live.text
     assert "<details class=\"details\">" in live.text
     assert "/api/agent/stream" in live.text
