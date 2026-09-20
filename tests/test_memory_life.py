@@ -42,6 +42,7 @@ def test_repeated_real_process_outcomes_become_episode_procedure_relation_and_kn
     assert any((row.get("payload") or {}).get("object") == "web.fetch" for row in relations)
 
     assert results[2]["daily_knowledge_id"]
+    assert any(result["knowledge_memory_ids"] for result in results[1:])
     assert results[-1]["long_term_knowledge_id"]
     long_term = life.store.get_memory(results[-1]["long_term_knowledge_id"])
     assert long_term is not None

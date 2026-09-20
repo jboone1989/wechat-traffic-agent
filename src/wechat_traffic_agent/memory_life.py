@@ -8,6 +8,7 @@ from .memory_consolidation import MemoryConsolidationService
 from .memory_continuity import MemoryContinuityService
 from .memory_episode import EpisodeMemoryService
 from .memory_evolution import MemoryEvolutionEngine
+from .memory_knowledge import ExperienceKnowledgeConsolidator
 from .memory_procedural import ProceduralMemoryService
 from .memory_semantic import SemanticRelationalMemoryService
 from .memory_system import CanonicalMemoryStore
@@ -27,6 +28,7 @@ class MemoryLifeRuntime:
         self.procedures = ProceduralMemoryService(self.state_root, store=self.store)
         self.semantic = SemanticRelationalMemoryService(self.state_root, store=self.store)
         self.consolidation = MemoryConsolidationService(self.state_root, store=self.store)
+        self.knowledge = ExperienceKnowledgeConsolidator(self.state_root, store=self.store)
         self.evolution = MemoryEvolutionEngine(self.state_root, store=self.store)
         self.continuity = MemoryContinuityService(self.state_root, store=self.store)
 
@@ -63,6 +65,8 @@ class MemoryLifeRuntime:
                 "relation_id": "",
                 "daily_knowledge_id": "",
                 "long_term_knowledge_id": "",
+                "knowledge_memory_ids": [],
+                "memory_evolution": {"status": "ALREADY_RECORDED"},
                 "continuity_checkpoint": None,
             }
         at = str(observed_at or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"))
@@ -79,6 +83,7 @@ class MemoryLifeRuntime:
             actions=[action],
             outcome=outcome,
             lesson=lesson,
+            evidence_refs=refs,
             topics=[topic, "process-experience"],
             importance=0.82 if success else 0.9,
         )
@@ -94,6 +99,14 @@ class MemoryLifeRuntime:
             expected_cost=expected_cost,
         )
         relation = self._record_capability_relation(action, capabilities, refs[0]) if success else None
+        evolution = {"status": "NO_NEW_SIGNALS"}
+        if not success:
+            self.evolution.observe_signal(
+                "PROCEDURE_FAILURE",
+                evidence_ref=refs[0],
+                detail=f"{action} failed: {failure_mode or outcome}"[:1000],
+            )
+            evolution = self.evolution.run_cycle()
         knowledge = self._consolidate_topic(topic=topic, source_ref=episode.memory_id)
         checkpoint = self._checkpoint_process_memory()
         return {
@@ -102,6 +115,8 @@ class MemoryLifeRuntime:
             "relation_id": str((relation or {}).get("memory_id") or ""),
             "daily_knowledge_id": str((knowledge.get("daily") or {}).get("memory_id") or ""),
             "long_term_knowledge_id": str((knowledge.get("long_term") or {}).get("memory_id") or ""),
+            "knowledge_memory_ids": [str(row.get("memory_id") or "") for row in knowledge.get("knowledge") or []],
+            "memory_evolution": evolution,
             "continuity_checkpoint": checkpoint,
         }
     def _existing_process_episode(self, process_id: str) -> dict[str, Any] | None:
@@ -202,7 +217,12 @@ class MemoryLifeRuntime:
             long_term = self.consolidation.consolidate_long_term_pattern(
                 topic=topic, source_ref=source_ref, minimum_episodes=6
             )
-        return {"daily": daily, "long_term": long_term}
+        knowledge = self.knowledge.consolidate(
+            topic=topic,
+            source_ref=source_ref,
+            minimum_support=2,
+        ) if len(ordered) >= 2 else []
+        return {"daily": daily, "long_term": long_term, "knowledge": knowledge}
 
     def _checkpoint_process_memory(self) -> dict[str, Any] | None:
         episodes = self.store.query_memories(
