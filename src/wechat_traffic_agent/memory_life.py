@@ -31,6 +31,131 @@ class MemoryLifeRuntime:
         self.knowledge = ExperienceKnowledgeConsolidator(self.state_root, store=self.store)
         self.evolution = MemoryEvolutionEngine(self.state_root, store=self.store)
         self.continuity = MemoryContinuityService(self.state_root, store=self.store)
+        self._life_event_episode_ids: dict[str, str] = {}
+        for row in self.store.query_memories(
+            memory_types=["EPISODIC"], access_scope="PRIVATE_OWNER", limit=5000,
+        ):
+            for event_id in (row.get("payload") or {}).get("derived_from") or []:
+                if str(event_id).strip():
+                    self._life_event_episode_ids[str(event_id)] = str(row["memory_id"])
+
+    def observe_life_event(
+        self,
+        event: Mapping[str, Any],
+        *,
+        topic: str = "",
+    ) -> dict[str, Any]:
+        """Project one authoritative VirtualBrain autobiographical event into episodic memory."""
+        event_id = str(event.get("event_id") or "").strip()
+        summary = str(event.get("summary") or "").strip()
+        if not event_id or not summary:
+            return {"status": "SKIPPED", "reason": "missing_event_identity"}
+        existing_id = self._life_event_episode_ids.get(event_id)
+        if existing_id:
+            return {"status": "ALREADY_RECORDED", "episode_id": existing_id, "knowledge_memory_ids": []}
+        refs = list(dict.fromkeys(
+            str(item).strip() for item in event.get("evidence_refs") or () if str(item).strip()
+        )) or [event_id]
+        raw_source = str(event.get("source") or "virtualbrain").strip()
+        source = raw_source
+        domain = str(event.get("domain") or "unknown").strip()
+        if event_id.startswith("world-attention:"):
+            source, domain = "world-feed-attention", "crypto-finance-world"
+        elif event_id.startswith("prediction-outcome:"):
+            source, domain = "prospective-world-outcome", "crypto-finance-world"
+        elif event_id.startswith("content-action-outcome:"):
+            source, domain = "content-action-prediction-outcome", "content-prediction"
+        elif event_id.startswith("content-strategy-outcome:"):
+            source, domain = "website-audience-outcome", "content-audience"
+        elif event_id.startswith("content-process:"):
+            source, domain = "content-process", "content-process"
+        context_topic = str(topic or event.get("topic") or "").strip()
+        memory_topic = "virtualbrain-life:" + domain + ((":" + context_topic) if context_topic else "")
+        lesson = ""
+        if source == "prospective-world-outcome":
+            lesson = "Dated world predictions should be calibrated against observed evidence and explicit prediction error."
+        elif source == "content-action-prediction-outcome":
+            lesson = "Content forecasts should be calibrated against mature observed outcomes; prediction error is descriptive, not causal proof."
+        elif source == "website-audience-outcome":
+            lesson = "Mature audience response is descriptive evidence for strategy learning, not causal proof."
+        provenance = event.get("provenance") if isinstance(event.get("provenance"), Mapping) else {}
+        at = str(
+            event.get("observed_at")
+            or event.get("created_at")
+            or provenance.get("ingested_at")
+            or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        )
+        significance = min(1.0, max(0.0, float(event.get("significance") or 0.5)))
+        episode = self.episodes.consolidate(
+            [{"event_id": event_id, "actor": "ferro", "text": summary[:1600], "created_at": at}],
+            goal=f"preserve lived experience in {domain}",
+            outcome=str(event.get("outcome") if event.get("outcome") is not None else "OBSERVED"),
+            lesson=lesson,
+            prediction_error=("" if event.get("prediction_error") is None else str(event.get("prediction_error"))),
+            evidence_refs=refs,
+            attributes={
+                "experience_kind": "VIRTUALBRAIN_AUTOBIOGRAPHICAL_EVENT",
+                "source": source,
+                "raw_authority_source": raw_source,
+                "authority_id": provenance.get("authority_id"),
+                "provenance_kind": event.get("provenance_kind") or provenance.get("source_kind"),
+                "domain": domain,
+                "topic": context_topic,
+                "tick": event.get("tick"),
+                "confidence": event.get("confidence"),
+                "significance": event.get("significance"),
+                "outcome": event.get("outcome"),
+                "prediction_error": event.get("prediction_error"),
+                "identity_relevance": event.get("identity_relevance"),
+                "emotional_intensity": event.get("emotional_intensity"),
+                "causal_claim": False,
+            },
+            topics=[memory_topic, "virtualbrain-life"],
+            importance=min(0.94, max(0.5, significance)),
+        )
+        self._life_event_episode_ids[event_id] = episode.memory_id
+        knowledge = self.knowledge.consolidate(
+            topic=memory_topic,
+            source_ref=episode.memory_id,
+            minimum_support=2,
+        ) if lesson else []
+        return {
+            "status": "RECORDED",
+            "episode_id": episode.memory_id,
+            "knowledge_memory_ids": [str(row.get("memory_id") or "") for row in knowledge],
+            "causal_claim": False,
+        }
+
+    def backfill_life_history(
+        self,
+        events: Iterable[Mapping[str, Any]],
+        *,
+        limit: int = 256,
+    ) -> dict[str, Any]:
+        rows = [dict(row) for row in events if isinstance(row, Mapping)][-max(1, int(limit)):]
+        recorded = already = skipped = 0
+        errors: list[dict[str, str]] = []
+        for row in rows:
+            try:
+                result = self.observe_life_event(row)
+            except Exception as exc:
+                errors.append({"event_id": str(row.get("event_id") or ""), "error_type": type(exc).__name__})
+                continue
+            status = str(result.get("status") or "")
+            if status == "RECORDED":
+                recorded += 1
+            elif status == "ALREADY_RECORDED":
+                already += 1
+            else:
+                skipped += 1
+        return {
+            "status": "OK" if not errors else "PARTIAL",
+            "scanned": len(rows),
+            "recorded": recorded,
+            "already_recorded": already,
+            "skipped": skipped,
+            "errors": errors[:20],
+        }
 
     def observe_process_outcome(
         self,

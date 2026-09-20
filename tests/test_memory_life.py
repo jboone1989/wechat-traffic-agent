@@ -70,3 +70,75 @@ def test_process_outcome_replay_is_idempotent(tmp_path):
     procedures = life.store.query_memories(memory_types=["PROCEDURAL"], statuses=["ACTIVE"], limit=10)
     assert len(procedures) == 1
     assert procedures[0]["payload"]["execution_count"] == 1
+
+
+def test_virtualbrain_life_events_form_idempotent_noncausal_episodes_and_knowledge(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    first = life.observe_life_event({
+        "event_id": "prediction-outcome:p1",
+        "summary": "Dated prediction p1 was refuted by observed funding evidence.",
+        "evidence_refs": ["prediction:p1", "world:funding:1"],
+        "source": "prospective-world-outcome",
+        "domain": "crypto-finance-world",
+        "outcome": 0.0,
+        "prediction_error": 0.8,
+        "confidence": 0.9,
+        "significance": 0.9,
+    })
+    assert first["status"] == "RECORDED"
+    episode = life.store.get_memory(first["episode_id"])
+    assert episode is not None
+    assert episode["payload"]["attributes"]["experience_kind"] == "VIRTUALBRAIN_AUTOBIOGRAPHICAL_EVENT"
+    assert episode["payload"]["attributes"]["causal_claim"] is False
+    assert "world:funding:1" in episode["evidence_refs"]
+
+    duplicate = life.observe_life_event({
+        "event_id": "prediction-outcome:p1",
+        "summary": "Dated prediction p1 was refuted by observed funding evidence.",
+        "evidence_refs": ["prediction:p1", "world:funding:1"],
+        "source": "prospective-world-outcome",
+        "domain": "crypto-finance-world",
+    })
+    assert duplicate["status"] == "ALREADY_RECORDED"
+    assert duplicate["episode_id"] == first["episode_id"]
+
+    second = life.observe_life_event({
+        "event_id": "prediction-outcome:p2",
+        "summary": "Dated prediction p2 was confirmed by later liquidity evidence.",
+        "evidence_refs": ["prediction:p2", "world:liquidity:2"],
+        "source": "prospective-world-outcome",
+        "domain": "crypto-finance-world",
+        "outcome": 1.0,
+        "prediction_error": 0.1,
+        "confidence": 0.85,
+        "significance": 0.8,
+    })
+    assert second["knowledge_memory_ids"]
+    knowledge = life.store.get_memory(second["knowledge_memory_ids"][0])
+    assert knowledge is not None
+    assert knowledge["kind"] == "EXPERIENCE_KNOWLEDGE"
+    assert "calibrated against observed evidence" in knowledge["text"]
+
+
+def test_virtualbrain_life_history_backfill_is_bounded_and_idempotent(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    events = [{
+        "event_id": f"life:{index}",
+        "summary": f"Observed lived event {index}.",
+        "evidence_refs": [f"evidence:{index}"],
+        "source": "content-process",
+        "domain": "content-process",
+        "significance": 0.5,
+    } for index in range(5)]
+    first = life.backfill_life_history(events, limit=3)
+    assert first["status"] == "OK"
+    assert first["scanned"] == 3
+    assert first["recorded"] == 3
+    assert first["already_recorded"] == 0
+    second = life.backfill_life_history(events, limit=3)
+    assert second["recorded"] == 0
+    assert second["already_recorded"] == 3
+    episodes = life.store.query_memories(
+        memory_types=["EPISODIC"], statuses=["ACTIVE"], topic="virtualbrain-life", limit=20
+    )
+    assert len(episodes) == 3

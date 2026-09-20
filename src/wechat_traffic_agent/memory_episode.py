@@ -42,6 +42,7 @@ class EpisodeMemoryService:
         memory_refs: Iterable[str] = (),
         tool_outcomes: Iterable[Mapping[str, Any]] = (),
         evidence_refs: Iterable[str] = (),
+        attributes: Mapping[str, Any] | None = None,
         topics: Iterable[str] = (),
         importance: float = 0.8,
     ) -> EpisodeResult:
@@ -90,6 +91,7 @@ class EpisodeMemoryService:
             ],
             "memory_refs": list(dict.fromkeys(durable_refs)),
             "tool_outcomes": normalized_tools,
+            "attributes": dict(attributes or {}),
             "derived_from": list(event_ids),
         }
         result = self.formation.form_many(
