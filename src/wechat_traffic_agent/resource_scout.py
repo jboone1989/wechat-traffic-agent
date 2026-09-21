@@ -1063,7 +1063,7 @@ class ContentResourceScout:
         engines = [name for name in ("ollama", "llama-cli", "llama-server", "llamafile") if shutil.which(name)]
         gpu_present = Path("/dev/nvidia0").exists() or Path("/dev/dri/renderD128").exists()
         reasons: list[str] = []
-        if disk_free_gib < 5.0 or disk_used_ratio >= 0.90:
+        if disk_free_gib < 10.0 or disk_used_ratio >= 0.85:
             reasons.append("disk_pressure")
         if mem_available_gib is not None and mem_available_gib < 2.0:
             reasons.append("memory_pressure")

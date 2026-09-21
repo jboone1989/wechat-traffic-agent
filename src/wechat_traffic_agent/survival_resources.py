@@ -122,7 +122,7 @@ class SurvivalResourceManager:
             1.0 - (mem_available / mem_total)
             if mem_total and mem_available is not None else None
         )
-        storage_pressure = disk.free < 5 * 1024**3 or disk_ratio >= 0.90
+        storage_pressure = disk.free < 10 * 1024**3 or disk_ratio >= 0.85
         compute_pressure = (
             (mem_available is not None and mem_available < 1024**3)
             or (mem_ratio is not None and mem_ratio >= 0.90)
