@@ -62,6 +62,7 @@ class StorageLifecycle:
         self.inventory_path = root / "inventory.json"
         self.knowledge_path = root / "knowledge.json"
         self.pending_path = root / "pending_outcomes.json"
+        self.root_sizes_path = root / "root_sizes.json"
 
     @staticmethod
     def mode(used_ratio: float) -> str:
@@ -87,6 +88,18 @@ class StorageLifecycle:
             _atomic(self.inventory_path, payload)
             return payload
         candidates = self.inventory(now=now, deep=(mode == "DEEP"))
+        largest_roots = self._root_size_snapshot(now=now)
+        investigation = [
+            row for row in candidates
+            if row.get("recommended_action") != "RECLAIM"
+            and not row.get("protected")
+        ]
+        investigation.sort(
+            key=lambda row: (
+                -int(row.get("size_bytes") or 0),
+                -float(row.get("reclaim_confidence") or 0.0),
+            )
+        )
         payload = {
             "schema_version": "ferro-storage-inventory.v1",
             "observed_at": _iso(now),
@@ -100,6 +113,12 @@ class StorageLifecycle:
                 for row in candidates
                 if row.get("recommended_action") == "RECLAIM"
             ),
+            "known_backup_bytes": sum(
+                int(row.get("size_bytes") or 0)
+                for row in candidates if row.get("kind") == "BACKUP"
+            ),
+            "largest_roots": largest_roots,
+            "investigation_candidates": investigation[:80],
             "candidates": candidates[:120],
         }
         _atomic(self.inventory_path, payload)
@@ -135,17 +154,17 @@ class StorageLifecycle:
         knowledge = _load(self.knowledge_path, {"profiles": {}, "kind_profiles": {}})
         profiles = dict(knowledge.get("profiles") or {})
         kind_profiles = dict(knowledge.get("kind_profiles") or {})
-        worktree_checks_remaining = 40
+        worktree_checks_remaining = 24 if deep else 12
         for row in raw:
             family = str(row["family"])
             kind = str(row["kind"])
             age_hours = float(row.get("age_hours") or 0.0)
+            worktree_rank_min = 2 if deep else 5
             if (
-                deep
-                and kind == "CODE_WORKTREE"
+                kind == "CODE_WORKTREE"
                 and bool(row.get("worktree_detached"))
                 and not row.get("protected")
-                and int(row.get("family_rank") or 0) >= 2
+                and int(row.get("family_rank") or 0) >= worktree_rank_min
                 and age_hours >= 24.0
                 and worktree_checks_remaining > 0
             ):
@@ -161,10 +180,9 @@ class StorageLifecycle:
             row["reclaim_confidence"] = round(confidence, 4)
             threshold = self._threshold(kind=kind, deep=deep)
             worktree_ok = (
-                deep
-                and kind == "CODE_WORKTREE"
+                kind == "CODE_WORKTREE"
                 and bool(row.get("worktree_reclaimable"))
-                and int(row.get("family_rank") or 0) >= 2
+                and int(row.get("family_rank") or 0) >= (2 if deep else 5)
                 and age_hours >= 24.0
             )
             ordinary_ok = self._ordinary_reclaimable(
@@ -280,6 +298,61 @@ class StorageLifecycle:
             ),
         }
 
+    def _root_size_snapshot(self, *, now: datetime) -> list[dict[str, Any]]:
+        cached = _load(self.root_sizes_path, {})
+        observed = str(cached.get("observed_at") or "")
+        if observed:
+            try:
+                cached_at = datetime.fromisoformat(observed)
+                if cached_at.tzinfo is None:
+                    cached_at = cached_at.replace(tzinfo=timezone.utc)
+                if (now - cached_at).total_seconds() < 900:
+                    rows = cached.get("rows")
+                    if isinstance(rows, list) and rows:
+                        return rows
+            except ValueError:
+                pass
+        try:
+            result = subprocess.run(
+                [
+                    "du", "-x", "-b", "--max-depth=1",
+                    str(self.storage_root),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            rows = cached.get("rows")
+            return rows if isinstance(rows, list) else []
+        rows: list[dict[str, Any]] = []
+        # GNU du can return non-zero when one nested directory is unreadable
+        # while still emitting valid sizes for the rest of the tree. Preserve
+        # that partial evidence instead of turning one permission error into an
+        # empty storage picture.
+        for line in result.stdout.splitlines():
+            try:
+                raw_size, raw_path = line.split("\t", 1)
+                path = Path(raw_path)
+                if path.resolve() == self.storage_root:
+                    continue
+                rows.append({
+                    "path": str(path),
+                    "name": path.name,
+                    "size_bytes": int(raw_size),
+                })
+            except (OSError, ValueError):
+                continue
+        rows.sort(key=lambda row: -int(row.get("size_bytes") or 0))
+        rows = rows[:50]
+        _atomic(self.root_sizes_path, {
+            "schema_version": "ferro-storage-root-sizes.v1",
+            "observed_at": _iso(now),
+            "rows": rows,
+        })
+        return rows
+
     def _reclaim_state_tmp(self, *, now: datetime) -> dict[str, int]:
         cutoff = now.timestamp() - 24 * 3600
         reclaimed = deleted = 0
@@ -306,7 +379,56 @@ class StorageLifecycle:
             return rows
         rows.extend(top)
 
-        # Deep mode looks inside generational containers without assuming project names.
+        semantic_containers = {
+            ".cache", ".npm", "cache", "caches",
+            "release", "releases", "backup", "backups",
+            "artifact", "artifacts", "build", "builds",
+        }
+
+        # INITIAL already looks inside generic lifecycle containers. This is how
+        # Ferro discovers cache generations, releases and backups without knowing
+        # project-specific names in advance.
+        inspected = 0
+        for parent in top:
+            if not parent.is_dir() or parent.is_symlink():
+                continue
+            try:
+                children = list(parent.iterdir())[:400]
+            except OSError:
+                continue
+            inspected += 1
+            if parent.name.lower() in semantic_containers:
+                rows.extend(children)
+            for child in children[:120]:
+                if not child.is_dir() or child.is_symlink():
+                    continue
+                if child.name.lower() in semantic_containers:
+                    try:
+                        rows.extend(list(child.iterdir())[:400])
+                    except OSError:
+                        pass
+                    continue
+                # Common project layout: <project>/shared/backups or shared/releases.
+                if child.name.lower() in {"shared", "state", "var"}:
+                    try:
+                        grandchildren = list(child.iterdir())[:160]
+                    except OSError:
+                        continue
+                    for grandchild in grandchildren:
+                        if (
+                            grandchild.is_dir()
+                            and not grandchild.is_symlink()
+                            and grandchild.name.lower() in semantic_containers
+                        ):
+                            try:
+                                rows.extend(list(grandchild.iterdir())[:400])
+                            except OSError:
+                                pass
+            if inspected >= 700:
+                break
+
+        # DEEP mode additionally discovers generational containers by structure,
+        # not by names.
         if deep:
             for parent in top:
                 if not parent.is_dir() or parent.is_symlink():
@@ -343,6 +465,9 @@ class StorageLifecycle:
         except OSError:
             return None
         kind = self._kind(path)
+        backup_live_successor = (
+            self._backup_has_live_successor(path) if kind == "BACKUP" else False
+        )
         worktree_detached = (
             self._git_worktree_detached(path) if kind == "CODE_WORKTREE" else False
         )
@@ -358,6 +483,7 @@ class StorageLifecycle:
             "name": path.name,
             "family": self._family(path.name, kind=kind),
             "kind": kind,
+            "backup_live_successor": backup_live_successor,
             "worktree_detached": worktree_detached,
             "worktree_reclaimable": False,
             "size_bytes": int(stat.st_size) if size_known else 0,
@@ -392,12 +518,19 @@ class StorageLifecycle:
 
     def _kind(self, path: Path) -> str:
         name = path.name.lower()
+        parent_names = {item.name.lower() for item in path.parents}
         if name in {".ssh", ".livingruntime"}:
             return "SECRET"
         if path == self.state_root or self.state_root in path.parents:
             return "STATE"
-        if name in {".cache", ".npm", ".pytest_cache", "__pycache__"} or "cache" in name:
+        if (
+            name in {".cache", ".npm", ".pytest_cache", "__pycache__"}
+            or "cache" in name
+            or parent_names & {".cache", ".npm", "cache", "caches"}
+        ):
             return "CACHE"
+        if parent_names & {"backup", "backups"}:
+            return "BACKUP"
         if path.is_dir() and (path / "pyvenv.cfg").exists():
             return "ENVIRONMENT"
         if "venv" in name or "virtualenv" in name:
@@ -428,6 +561,16 @@ class StorageLifecycle:
     @classmethod
     def _family(cls, name: str, *, kind: str) -> str:
         value = name.lower()
+        if kind == "BACKUP":
+            suffix = Path(value).suffix.lower().lstrip(".") or "dir"
+            stem = value[: -len(Path(value).suffix)] if Path(value).suffix else value
+            for marker in ("-before-", "_before_", "-backup-", "_backup_"):
+                if marker in stem:
+                    stem = stem.split(marker, 1)[0]
+                    break
+            stem = re.sub(r"20\d{6,12}.*$", "", stem).rstrip("-_.")
+            stem = re.sub(r"[-_.]+", "-", stem).strip("-") or "backup"
+            return f"BACKUP:{stem}:{suffix}"
         value = re.sub(r"[0-9a-f]{7,64}", "{id}", value)
         value = re.sub(r"20\d{6,12}", "{date}", value)
         value = re.sub(r"\d{5,}", "{n}", value)
@@ -463,6 +606,7 @@ class StorageLifecycle:
             "CACHE": 0.99,
             "ENVIRONMENT": 0.88,
             "ARCHIVE": 0.70,
+            "BACKUP": 0.55,
             "GENERATED_ARTIFACT": 0.56,
             "CODE_WORKTREE": 0.72 if row.get("worktree_reclaimable") else 0.05,
             "STATE": 0.0,
@@ -502,6 +646,7 @@ class StorageLifecycle:
                 "CACHE": 0.90,
                 "ENVIRONMENT": 0.82,
                 "ARCHIVE": 0.82,
+                "BACKUP": 0.72,
                 "GENERATED_ARTIFACT": 0.72,
                 "CODE_WORKTREE": 0.80,
             }.get(kind, 1.0)
@@ -509,7 +654,9 @@ class StorageLifecycle:
             "CACHE": 0.97,
             "ENVIRONMENT": 0.92,
             "ARCHIVE": 0.90,
+            "BACKUP": 0.84,
             "GENERATED_ARTIFACT": 0.86,
+            "CODE_WORKTREE": 0.88,
         }.get(kind, 1.0)
 
     @staticmethod
@@ -528,6 +675,22 @@ class StorageLifecycle:
             if deep:
                 return age_hours >= 24.0 and (rank >= 1 or age_hours >= 168.0)
             return age_hours >= 72.0 and count >= 2 and rank >= 1
+        if kind == "BACKUP":
+            if deep:
+                return (
+                    bool(row.get("backup_live_successor"))
+                    and age_hours >= 168.0
+                    and count >= 2
+                    and rank >= 1
+                )
+            # Early cleanup is deliberately conservative for durable backups:
+            # keep at least the two newest generations.
+            return (
+                bool(row.get("backup_live_successor"))
+                and age_hours >= 168.0
+                and count >= 3
+                and rank >= 2
+            )
         if kind == "GENERATED_ARTIFACT":
             if deep:
                 return age_hours >= 24.0 and count >= 2 and rank >= 1
@@ -557,6 +720,45 @@ class StorageLifecycle:
             path.unlink()
         elif path.is_dir():
             shutil.rmtree(path)
+
+    @staticmethod
+    def _backup_has_live_successor(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if suffix not in {".db", ".sqlite", ".sqlite3"}:
+            return False
+        stem = name[: -len(suffix)] if suffix else name
+        prefix = stem
+        for marker in ("-before-", "_before_", "-backup-", "_backup_"):
+            if marker in prefix:
+                prefix = prefix.split(marker, 1)[0]
+                break
+        prefix = re.sub(r"20\d{6,12}.*$", "", prefix).rstrip("-_.")
+        if not prefix:
+            return False
+        container = path.parent
+        roots = [container.parent, container.parent.parent]
+        candidates: list[Path] = []
+        for root in roots:
+            candidates.extend([
+                root / "data" / "live" / f"{prefix}{suffix}",
+                root / "live" / f"{prefix}{suffix}",
+                root / f"{prefix}{suffix}",
+            ])
+        try:
+            backup_mtime = path.stat().st_mtime
+        except OSError:
+            return False
+        for candidate in candidates:
+            try:
+                stat = candidate.stat()
+            except OSError:
+                continue
+            if stat.st_size > 0 and stat.st_mtime > backup_mtime:
+                return True
+        return False
 
     @staticmethod
     def _git_worktree_detached(path: Path) -> bool:

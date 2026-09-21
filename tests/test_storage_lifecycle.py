@@ -260,3 +260,106 @@ def test_initial_archive_reclaims_older_duplicate_but_keeps_newest(tmp_path, mon
     by_name = {row["name"]: row for row in candidates}
     assert by_name[older.name]["recommended_action"] == "RECLAIM"
     assert by_name[newer.name]["recommended_action"] == "KEEP_OR_LEARN"
+
+
+def test_initial_discovers_cache_children_instead_of_protecting_whole_cache(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    cache = storage / ".cache"
+    pip_cache = cache / "pip"
+    browser_cache = cache / "browser"
+    pip_cache.mkdir(parents=True)
+    browser_cache.mkdir()
+    (pip_cache / "blob").write_bytes(b"x" * 4096)
+    (browser_cache / "blob").write_bytes(b"x" * 4096)
+    _old(pip_cache, days=4)
+    _old(browser_cache, days=4)
+
+    lifecycle = StorageLifecycle(state)
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    by_name = {row["name"]: row for row in candidates}
+    assert by_name["pip"]["kind"] == "CACHE"
+    assert by_name["browser"]["kind"] == "CACHE"
+    assert by_name["pip"]["recommended_action"] == "RECLAIM"
+
+
+def test_backup_family_groups_before_snapshots_and_keeps_two_in_initial(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    backups = storage / "app" / "shared" / "backups"
+    live = storage / "app" / "shared" / "data" / "live"
+    backups.mkdir(parents=True)
+    live.mkdir(parents=True)
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    snapshots = []
+    for index, label in enumerate(("alpha", "beta", "gamma")):
+        path = backups / f"app-before-{label}-2026091{index}T000000Z.db"
+        path.write_bytes(b"x" * 4096)
+        _old(path, days=12-index)
+        snapshots.append(path)
+    current = live / "app.db"
+    current.write_bytes(b"x" * 8192)
+    os.utime(current, (NOW.timestamp(), NOW.timestamp()))
+
+    lifecycle = StorageLifecycle(state)
+    # Seed kind evidence to isolate retention behavior from learning threshold.
+    for index in range(120):
+        lifecycle._record_learning(
+            signature=f"storage-profile:backup-{index}",
+            kind="BACKUP",
+            outcome="SURVIVED_RECLAIM",
+            now=NOW,
+        )
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    rows = [row for row in candidates if row["kind"] == "BACKUP"]
+    assert len(rows) == 3
+    assert len({row["family"] for row in rows}) == 1
+    reclaim = [row for row in rows if row["recommended_action"] == "RECLAIM"]
+    assert len(reclaim) == 1
+    assert reclaim[0]["family_rank"] == 2
+    assert all(row["backup_live_successor"] for row in rows)
+
+
+def test_initial_can_reclaim_old_detached_clean_worktree_beyond_five_rollbacks(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    (repo / "seed.txt").write_text("seed")
+    subprocess.run(["git", "-C", str(repo), "add", "seed.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "-m", "seed"],
+        check=True, capture_output=True,
+    )
+
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    releases = storage / "project" / "releases"
+    releases.mkdir(parents=True)
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    worktrees = []
+    for index in range(7):
+        path = releases / f"{index+1:08x}"
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "--detach", str(path), "HEAD"],
+            check=True, capture_output=True,
+        )
+        _old(path, days=20-index)
+        worktrees.append(path)
+
+    lifecycle = StorageLifecycle(state)
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    rows = [row for row in candidates if row["kind"] == "CODE_WORKTREE"]
+    reclaim = [row for row in rows if row["recommended_action"] == "RECLAIM"]
+    assert len(reclaim) == 2
+    assert {row["family_rank"] for row in reclaim} == {5, 6}
