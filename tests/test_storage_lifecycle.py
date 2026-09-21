@@ -363,3 +363,83 @@ def test_initial_can_reclaim_old_detached_clean_worktree_beyond_five_rollbacks(t
     reclaim = [row for row in rows if row["recommended_action"] == "RECLAIM"]
     assert len(reclaim) == 2
     assert {row["family_rank"] for row in reclaim} == {5, 6}
+
+
+def test_declared_references_include_current_editable_python_source(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    source = storage / "runtime" / "releases" / "deadbeef"
+    source.mkdir(parents=True)
+    site = storage / "venv" / "lib" / "python3.12" / "site-packages"
+    dist = site / "agent_runtime-0.3.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "direct_url.json").write_text(json.dumps({
+        "url": source.as_uri(),
+        "dir_info": {"editable": True},
+    }))
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+    monkeypatch.setattr(sys, "path", [str(site)])
+
+    lifecycle = StorageLifecycle(state)
+    refs = lifecycle._declared_references()
+
+    assert source.resolve() in refs
+
+
+def test_worktree_batch_cursor_rotates_instead_of_starving_later_candidates(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+    lifecycle = StorageLifecycle(state)
+
+    rows = [
+        {"path": str(storage / f"release-{index}")}
+        for index in range(5)
+    ]
+    first = lifecycle._select_worktree_batch(
+        rows, budget=2, deep=False, now=NOW
+    )
+    second = lifecycle._select_worktree_batch(
+        rows, budget=2, deep=False, now=NOW + timedelta(minutes=1)
+    )
+
+    assert first == {str(storage / "release-0"), str(storage / "release-1")}
+    assert second == {str(storage / "release-2"), str(storage / "release-3")}
+
+
+def test_missing_editable_source_becomes_dependency_issue(tmp_path, monkeypatch):
+    import json
+    import sys
+
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    missing = storage / "runtime" / "releases" / "missing123"
+    site = storage / "venv" / "lib" / "python3.12" / "site-packages"
+    dist = site / "agent_runtime-0.3.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "direct_url.json").write_text(json.dumps({
+        "url": missing.as_uri(),
+        "dir_info": {"editable": True},
+    }))
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+    monkeypatch.setattr(sys, "path", [str(site)])
+
+    lifecycle = StorageLifecycle(state)
+    refs = lifecycle._declared_references()
+    issues = lifecycle.status()["declared_dependency_issues"]["issues"]
+
+    assert missing.resolve() not in refs
+    assert any(
+        row["kind"] == "MISSING_EDITABLE_SOURCE"
+        and row["source"] == str(missing.resolve())
+        for row in issues
+    )

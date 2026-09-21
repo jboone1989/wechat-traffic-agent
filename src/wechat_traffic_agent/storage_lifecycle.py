@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 INITIAL_RECLAIM_RATIO = 0.55
@@ -63,6 +64,8 @@ class StorageLifecycle:
         self.knowledge_path = root / "knowledge.json"
         self.pending_path = root / "pending_outcomes.json"
         self.root_sizes_path = root / "root_sizes.json"
+        self.worktree_cursor_path = root / "worktree_cursor.json"
+        self.dependency_issues_path = root / "declared_dependency_issues.json"
 
     @staticmethod
     def mode(used_ratio: float) -> str:
@@ -88,6 +91,10 @@ class StorageLifecycle:
             _atomic(self.inventory_path, payload)
             return payload
         candidates = self.inventory(now=now, deep=(mode == "DEEP"))
+        dependency_issues = _load(
+            self.dependency_issues_path,
+            {"issues": []},
+        )
         largest_roots = self._root_size_snapshot(now=now)
         investigation = [
             row for row in candidates
@@ -117,6 +124,12 @@ class StorageLifecycle:
                 int(row.get("size_bytes") or 0)
                 for row in candidates if row.get("kind") == "BACKUP"
             ),
+            "declared_dependency_issue_count": len(
+                dependency_issues.get("issues") or []
+            ),
+            "declared_dependency_issues": (
+                dependency_issues.get("issues") or []
+            )[:40],
             "largest_roots": largest_roots,
             "investigation_candidates": investigation[:80],
             "candidates": candidates[:120],
@@ -129,6 +142,9 @@ class StorageLifecycle:
             "inventory": _load(self.inventory_path, {}),
             "knowledge": _load(self.knowledge_path, {"profiles": {}}),
             "pending_outcomes": _load(self.pending_path, []),
+            "declared_dependency_issues": _load(
+                self.dependency_issues_path, {"issues": []}
+            ),
         }
 
     def inventory(self, *, now: datetime, deep: bool) -> list[dict[str, Any]]:
@@ -154,22 +170,34 @@ class StorageLifecycle:
         knowledge = _load(self.knowledge_path, {"profiles": {}, "kind_profiles": {}})
         profiles = dict(knowledge.get("profiles") or {})
         kind_profiles = dict(knowledge.get("kind_profiles") or {})
-        worktree_checks_remaining = 12 if deep else 6
+        worktree_rank_min = 2 if deep else 5
+        worktree_budget = 12 if deep else 6
+        worktree_pool = [
+            row for row in raw
+            if str(row.get("kind") or "") == "CODE_WORKTREE"
+            and bool(row.get("worktree_detached"))
+            and not row.get("protected")
+            and int(row.get("family_rank") or 0) >= worktree_rank_min
+            and float(row.get("age_hours") or 0.0) >= 24.0
+        ]
+        worktree_pool.sort(
+            key=lambda row: (
+                str(row.get("family") or ""),
+                -int(row.get("family_rank") or 0),
+                str(row.get("path") or ""),
+            )
+        )
+        worktree_selected = self._select_worktree_batch(
+            worktree_pool, budget=worktree_budget, deep=deep, now=now
+        )
         for row in raw:
             family = str(row["family"])
             kind = str(row["kind"])
             age_hours = float(row.get("age_hours") or 0.0)
-            worktree_rank_min = 2 if deep else 5
-            if (
-                kind == "CODE_WORKTREE"
-                and bool(row.get("worktree_detached"))
-                and not row.get("protected")
-                and int(row.get("family_rank") or 0) >= worktree_rank_min
-                and age_hours >= 24.0
-                and worktree_checks_remaining > 0
-            ):
-                row["worktree_reclaimable"] = self._git_worktree_clean(Path(str(row["path"])))
-                worktree_checks_remaining -= 1
+            if str(row.get("path") or "") in worktree_selected:
+                row["worktree_reclaimable"] = self._git_worktree_clean(
+                    Path(str(row["path"]))
+                )
             signature = self._signature(row)
             row["signature"] = signature
             profile = dict(profiles.get(signature) or {})
@@ -711,12 +739,38 @@ class StorageLifecycle:
             return age_hours >= 168.0 and count >= 3 and rank >= 2
         return False
 
+    def _select_worktree_batch(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        budget: int,
+        deep: bool,
+        now: datetime,
+    ) -> set[str]:
+        if not rows or budget <= 0:
+            return set()
+        state = _load(self.worktree_cursor_path, {})
+        key = "DEEP" if deep else "INITIAL"
+        start = int(state.get(key) or 0) % len(rows)
+        count = min(budget, len(rows))
+        selected = {
+            str(rows[(start + offset) % len(rows)].get("path") or "")
+            for offset in range(count)
+        }
+        state[key] = (start + count) % len(rows)
+        state["updated_at"] = _iso(now)
+        _atomic(self.worktree_cursor_path, state)
+        return selected
+
     def _delete_candidate(self, *, path: Path, kind: str) -> None:
         if kind in {"STATE", "SECRET", "UNKNOWN"}:
             raise OSError("candidate kind is not autonomously reclaimable")
         if kind == "CODE_WORKTREE":
-            if not self._git_worktree_detached(path) or not self._git_worktree_clean(path):
-                raise OSError("git worktree is no longer safe to reclaim")
+            if not self._git_worktree_detached(path):
+                raise OSError("git worktree is no longer detached")
+            # Inventory already performed the bounded cleanliness check. Do not
+            # repeat an expensive git status here; git worktree remove without
+            # --force independently refuses modified or untracked worktrees.
             try:
                 result = subprocess.run(
                     ["git", "-C", str(path), "worktree", "remove", str(path)],
@@ -797,7 +851,7 @@ class StorageLifecycle:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=8,
+                timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
@@ -990,8 +1044,80 @@ class StorageLifecycle:
         return refs
 
     def _declared_references(self) -> set[Path]:
-        """Protect deploy targets referenced by symlinks or systemd declarations."""
+        """Protect declared runtime dependencies even when no process cwd points at them."""
         refs: set[Path] = set()
+        issues: list[dict[str, Any]] = []
+
+        # Python editable installs and explicit source paths are hidden runtime
+        # dependencies: removing their worktree can leave a live process healthy
+        # until the next import or restart.
+        site_roots: set[Path] = set()
+        for raw in sys.path:
+            if not raw:
+                continue
+            try:
+                path = Path(raw).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if path.exists() and (
+                path == self.storage_root or self.storage_root in path.parents
+            ):
+                refs.add(path)
+            if path.is_dir() and path.name == "site-packages":
+                site_roots.add(path)
+
+        for site_root in site_roots:
+            for direct_url in list(site_root.glob("*.dist-info/direct_url.json"))[:500]:
+                try:
+                    payload = json.loads(direct_url.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if not bool((payload.get("dir_info") or {}).get("editable")):
+                    continue
+                url = str(payload.get("url") or "")
+                parsed = urlparse(url)
+                if parsed.scheme != "file":
+                    continue
+                try:
+                    source = Path(unquote(parsed.path)).resolve()
+                except (OSError, RuntimeError):
+                    continue
+                if source.exists():
+                    refs.add(source)
+                else:
+                    issues.append({
+                        "kind": "MISSING_EDITABLE_SOURCE",
+                        "source": str(source),
+                        "declared_by": str(direct_url),
+                    })
+
+            for pth in list(site_root.glob("*.pth"))[:500]:
+                try:
+                    lines = pth.read_text(encoding="utf-8", errors="ignore").splitlines()
+                except OSError:
+                    continue
+                for line in lines:
+                    value = line.strip()
+                    if not value.startswith("/"):
+                        continue
+                    try:
+                        source = Path(value).resolve()
+                    except (OSError, RuntimeError):
+                        continue
+                    if source.exists():
+                        refs.add(source)
+                    else:
+                        issues.append({
+                            "kind": "MISSING_PTH_SOURCE",
+                            "source": str(source),
+                            "declared_by": str(pth),
+                        })
+
+        _atomic(self.dependency_issues_path, {
+            "schema_version": "ferro-storage-dependency-issues.v1",
+            "observed_at": _iso(datetime.now(timezone.utc)),
+            "issues": issues[:200],
+        })
 
         # Current/release symlinks are common even when a service is temporarily idle.
         try:
