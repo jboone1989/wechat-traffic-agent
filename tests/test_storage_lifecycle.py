@@ -183,3 +183,80 @@ def test_deep_reclaim_uses_git_lifecycle_for_old_detached_worktree(tmp_path, mon
     assert result["deleted_count"] == 1
     assert not worktrees[0].exists()
     assert worktrees[1].exists() and worktrees[2].exists()
+
+
+def test_kind_level_learning_generalizes_reclaim_confidence(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    lifecycle = StorageLifecycle(state)
+    for index in range(12):
+        lifecycle._record_learning(
+            signature=f"storage-profile:env-{index}",
+            kind="ENVIRONMENT",
+            outcome="SURVIVED_RECLAIM",
+            now=NOW,
+        )
+
+    venv = storage / "one-off-test-venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin")
+    (venv / "payload").write_bytes(b"x" * 1024)
+    _old(venv, days=5)
+
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    row = next(item for item in candidates if item["name"] == venv.name)
+    assert row["reclaim_confidence"] >= 0.92
+    assert row["recommended_action"] == "RECLAIM"
+
+
+def test_top_level_symlink_target_is_protected_when_idle(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    current = storage / "service-venv-aaaaaaaa"
+    current.mkdir()
+    (current / "pyvenv.cfg").write_text("home = /usr/bin")
+    _old(current, days=10)
+    (storage / "service-venv-current").symlink_to(current, target_is_directory=True)
+
+    lifecycle = StorageLifecycle(state)
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    row = next(item for item in candidates if item["name"] == current.name)
+    assert row["protected"] is True
+    assert row["protected_reason"] == "ACTIVE_PROCESS_REFERENCE"
+    assert row["recommended_action"] == "KEEP_OR_LEARN"
+
+
+def test_initial_archive_reclaims_older_duplicate_but_keeps_newest(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    older = storage / "release-aaaaaaaa.zip"
+    newer = storage / "release-bbbbbbbb.zip"
+    older.write_bytes(b"x" * 1024)
+    newer.write_bytes(b"x" * 1024)
+    _old(older, days=10)
+    _old(newer, days=5)
+
+    lifecycle = StorageLifecycle(state)
+    for index in range(12):
+        lifecycle._record_learning(
+            signature=f"storage-profile:archive-{index}",
+            kind="ARCHIVE",
+            outcome="SURVIVED_RECLAIM",
+            now=NOW,
+        )
+    candidates = lifecycle.inventory(now=NOW, deep=False)
+    by_name = {row["name"]: row for row in candidates}
+    assert by_name[older.name]["recommended_action"] == "RECLAIM"
+    assert by_name[newer.name]["recommended_action"] == "KEEP_OR_LEARN"
