@@ -54,13 +54,13 @@ def test_pressure_self_authorizes_safe_local_repair_and_remote_discovery(tmp_pat
     manager = SurvivalResourceManager(tmp_path)
     observed = manager.observe(now=NOW)
     needs = {row["action"]: row for row in observed["needs"]}
-    assert needs["RECLAIM_TRANSIENT_STORAGE"]["status"] == "APPROVED"
-    assert needs["RECLAIM_TRANSIENT_STORAGE"]["authorization"] == "AUTONOMOUS_SAFE_POLICY"
+    assert needs["DEEP_RECLAIM_STORAGE"]["status"] == "APPROVED"
+    assert needs["DEEP_RECLAIM_STORAGE"]["authorization"] == "AUTONOMOUS_SAFE_POLICY"
     assert needs["DISCOVER_REMOTE_MACHINE"]["status"] == "APPROVED"
 
     result = manager.execute_approved(now=NOW)
     assert not stale.exists()
-    assert any(row["action"] == "RECLAIM_TRANSIENT_STORAGE" for row in result["results"])
+    assert any(row["action"] == "DEEP_RECLAIM_STORAGE" for row in result["results"])
     assert any(row["status"] == "AWAITING_RESOURCE" for row in result["results"])
 
 

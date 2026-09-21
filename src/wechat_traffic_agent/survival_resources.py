@@ -18,6 +18,8 @@ from urllib.parse import urlparse
 import urllib.error
 import urllib.request
 
+from .storage_lifecycle import StorageLifecycle
+
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -110,6 +112,7 @@ class SurvivalResourceManager:
         self.services_path = self.root / "services.json"
         self.policy_path = self.root / "policy.json"
         self.actions_path = self.root / "actions.jsonl"
+        self.storage_lifecycle = StorageLifecycle(self.state_root)
 
     def observe(self, *, now: datetime) -> dict[str, Any]:
         instant = _iso(now)
@@ -117,12 +120,15 @@ class SurvivalResourceManager:
         mem_total, mem_available = self._memory()
         load_1m = self._load()
         cpu_count = max(1, int(os.cpu_count() or 1))
-        disk_ratio = (disk.used / disk.total) if disk.total else 1.0
+        disk_ratio = (1.0 - (disk.free / disk.total)) if disk.total else 1.0
         mem_ratio = (
             1.0 - (mem_available / mem_total)
             if mem_total and mem_available is not None else None
         )
-        storage_pressure = disk.free < 10 * 1024**3 or disk_ratio >= 0.85
+        storage_mode = self.storage_lifecycle.mode(disk_ratio)
+        storage_pressure = storage_mode != "NORMAL"
+        deep_storage_pressure = storage_mode == "DEEP"
+        storage_learning = self.storage_lifecycle.observe(now=now, used_ratio=disk_ratio)
         compute_pressure = (
             (mem_available is not None and mem_available < 1024**3)
             or (mem_ratio is not None and mem_ratio >= 0.90)
@@ -147,6 +153,11 @@ class SurvivalResourceManager:
             "domain": "STORAGE",
             "kind": "FILESYSTEM",
             "status": "PRESSURE" if storage_pressure else "ACTIVE",
+            "maintenance_mode": storage_mode,
+            "initial_reclaim_ratio": 0.55,
+            "deep_reclaim_ratio": 0.85,
+            "inventory_candidate_count": int(storage_learning.get("candidate_count") or 0),
+            "estimated_reclaimable_gib": round(int(storage_learning.get("estimated_reclaimable_bytes") or 0) / 1024**3, 3),
             "total_gib": round(disk.total / 1024**3, 3),
             "free_gib": round(disk.free / 1024**3, 3),
             "used_ratio": round(disk_ratio, 4),
@@ -194,7 +205,7 @@ class SurvivalResourceManager:
         automatic_replica_gap = self._has_automatic_replica_gap()
         needs = self._reconcile_needs(
             now=now,
-            storage_pressure=storage_pressure,
+            storage_mode=storage_mode,
             compute_pressure=compute_pressure,
             active_remote=active_remote,
             usable_remote=usable_remote,
@@ -202,8 +213,9 @@ class SurvivalResourceManager:
             automatic_replica_gap=automatic_replica_gap,
             provisionable_remote=provisionable_remote,
         )
-        pressure = "CRITICAL" if storage_pressure and compute_pressure else (
-            "CONSERVE" if storage_pressure or compute_pressure else "NORMAL"
+        pressure = (
+            "CRITICAL" if deep_storage_pressure else
+            ("CONSERVE" if compute_pressure else ("WATCH" if storage_pressure else "NORMAL"))
         )
         policy = {
             "schema_version": "survival-resource-policy.v1",
@@ -214,6 +226,7 @@ class SurvivalResourceManager:
             "primary_migration_requires_explicit_approval": True,
             "safe_local_actions": [
                 "RECLAIM_TRANSIENT_STORAGE",
+                "DEEP_RECLAIM_STORAGE",
                 "APPLY_CONSERVATION_POLICY",
                 "PROVISION_REMOTE_RECEIVER",
                 "ENSURE_SERVICE_REPLICA",
@@ -229,6 +242,7 @@ class SurvivalResourceManager:
             "resources": resources,
             "needs": needs,
             "policy": policy,
+            "storage_lifecycle": storage_learning,
         }
 
     def status(self) -> dict[str, Any]:
@@ -240,6 +254,7 @@ class SurvivalResourceManager:
             "placement_candidates": self.placement_candidates(),
             "policy": _load_json(self.policy_path, {}),
             "actions": self.actions(limit=30),
+            "storage_lifecycle": self.storage_lifecycle.status(),
         }
 
     def needs(self) -> list[dict[str, Any]]:
@@ -379,7 +394,10 @@ class SurvivalResourceManager:
                 continue
             action = str(row.get("action") or "")
             if action == "RECLAIM_TRANSIENT_STORAGE":
-                result = self._reclaim_transients(now)
+                result = self.storage_lifecycle.reclaim(now=now, deep=False)
+                row["status"] = "EXECUTED"
+            elif action == "DEEP_RECLAIM_STORAGE":
+                result = self.storage_lifecycle.reclaim(now=now, deep=True)
                 row["status"] = "EXECUTED"
             elif action == "APPLY_CONSERVATION_POLICY":
                 result = {"status": "APPLIED", "mode": "CONSERVE"}
@@ -1985,16 +2003,22 @@ class SurvivalResourceManager:
         return passthrough + merged
 
     def _reconcile_needs(
-        self, *, now: datetime, storage_pressure: bool,
-        compute_pressure: bool, active_remote: bool,
+        self, *, now: datetime, compute_pressure: bool, active_remote: bool,
         usable_remote: bool, degraded_replica: bool,
         automatic_replica_gap: bool, provisionable_remote: bool,
+        storage_mode: str | None = None, storage_pressure: bool | None = None,
     ) -> list[dict[str, Any]]:
         rows = self._coalesce_need_rows(self.needs())
         desired: list[tuple[str, str, str, str]] = []
-        if storage_pressure:
-            desired.append(("STORAGE", "RECLAIM_TRANSIENT_STORAGE", "HIGH",
-                            "Local storage pressure threatens continued operation"))
+        if storage_mode is None:
+            storage_mode = "INITIAL" if storage_pressure else "NORMAL"
+        storage_pressure = storage_mode != "NORMAL"
+        if storage_mode == "DEEP":
+            desired.append(("STORAGE", "DEEP_RECLAIM_STORAGE", "HIGH",
+                            "Disk usage reached deep-reclamation pressure (>=85%)"))
+        elif storage_mode == "INITIAL":
+            desired.append(("STORAGE", "RECLAIM_TRANSIENT_STORAGE", "NORMAL",
+                            "Disk usage reached early reclamation pressure (>=55%)"))
         if compute_pressure:
             desired.append(("COMPUTE", "APPLY_CONSERVATION_POLICY", "HIGH",
                             "CPU/RAM pressure threatens continued operation"))
@@ -2025,6 +2049,8 @@ class SurvivalResourceManager:
 
         desired_keys = {(domain, action) for domain, action, _, _ in desired}
         managed_actions = {
+            "RECLAIM_TRANSIENT_STORAGE",
+            "DEEP_RECLAIM_STORAGE",
             "DISCOVER_REMOTE_MACHINE",
             "RESTORE_REMOTE_RECEIVER",
             "PROVISION_REMOTE_RECEIVER",
@@ -2052,6 +2078,7 @@ class SurvivalResourceManager:
             )
             autonomous = action in {
                 "RECLAIM_TRANSIENT_STORAGE",
+                "DEEP_RECLAIM_STORAGE",
                 "APPLY_CONSERVATION_POLICY",
                 "DISCOVER_REMOTE_MACHINE",
                 "PROVISION_REMOTE_RECEIVER",
@@ -2089,6 +2116,7 @@ class SurvivalResourceManager:
                 signature = f"{domain}|{action}|{reason}"
                 autonomous = action in {
                     "RECLAIM_TRANSIENT_STORAGE",
+                    "DEEP_RECLAIM_STORAGE",
                     "APPLY_CONSERVATION_POLICY",
                     "DISCOVER_REMOTE_MACHINE",
                     "PROVISION_REMOTE_RECEIVER",

@@ -1059,7 +1059,7 @@ class ContentResourceScout:
             pass
         disk = shutil.disk_usage(self.state_root)
         disk_free_gib = round(disk.free / 1024**3, 3)
-        disk_used_ratio = round(disk.used / disk.total, 4) if disk.total else 1.0
+        disk_used_ratio = round(1.0 - (disk.free / disk.total), 4) if disk.total else 1.0
         engines = [name for name in ("ollama", "llama-cli", "llama-server", "llamafile") if shutil.which(name)]
         gpu_present = Path("/dev/nvidia0").exists() or Path("/dev/dri/renderD128").exists()
         reasons: list[str] = []

@@ -119,7 +119,7 @@ class FerroNeuralLife:
 
         try:
             disk = shutil.disk_usage(self.state_root)
-            disk_pressure = _clamp(disk.used / max(1, disk.total))
+            disk_pressure = _clamp(1.0 - (disk.free / max(1, disk.total)))
             disk_free_gib = disk.free / (1024 ** 3)
         except OSError:
             disk_pressure, disk_free_gib = 0.0, None
