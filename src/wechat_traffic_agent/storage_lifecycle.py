@@ -154,7 +154,7 @@ class StorageLifecycle:
         knowledge = _load(self.knowledge_path, {"profiles": {}, "kind_profiles": {}})
         profiles = dict(knowledge.get("profiles") or {})
         kind_profiles = dict(knowledge.get("kind_profiles") or {})
-        worktree_checks_remaining = 24 if deep else 12
+        worktree_checks_remaining = 12 if deep else 6
         for row in raw:
             family = str(row["family"])
             kind = str(row["kind"])
@@ -207,10 +207,16 @@ class StorageLifecycle:
                 -float(row.get("age_hours") or 0.0),
             )
         )
-        for row in reclaim_rows[:24]:
+        sized = 0
+        for row in reclaim_rows:
+            if sized >= 16:
+                break
+            if str(row.get("kind") or "") == "CODE_WORKTREE":
+                continue
             if not row.get("size_known"):
                 row["size_bytes"] = self._path_size(Path(str(row["path"])))
                 row["size_known"] = True
+            sized += 1
 
         return sorted(
             raw,
@@ -229,24 +235,32 @@ class StorageLifecycle:
         reclaimed = int(tmp_result["reclaimed_bytes"])
         deleted: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
+        worktree_delete_budget = 8 if deep else 4
         for row in candidates:
             if row.get("recommended_action") != "RECLAIM":
                 continue
             if reclaimed >= cap:
                 break
             path = Path(str(row["path"]))
+            kind = str(row["kind"])
             size = int(row.get("size_bytes") or 0)
-            if size <= 0:
+            if kind == "CODE_WORKTREE":
+                if worktree_delete_budget <= 0:
+                    continue
+            elif size <= 0:
                 size = self._path_size(path)
                 row["size_bytes"] = size
-            if size <= 0:
+            if kind != "CODE_WORKTREE" and size <= 0:
                 continue
             try:
-                self._delete_candidate(path=path, kind=str(row["kind"]))
-                reclaimed += size
+                self._delete_candidate(path=path, kind=kind)
+                if kind == "CODE_WORKTREE":
+                    worktree_delete_budget -= 1
+                else:
+                    reclaimed += size
                 deleted.append({
                     "path": str(path),
-                    "kind": row["kind"],
+                    "kind": kind,
                     "family": row["family"],
                     "signature": row["signature"],
                     "size_bytes": size,
@@ -255,13 +269,13 @@ class StorageLifecycle:
             except OSError as exc:
                 self._record_learning(
                     signature=str(row["signature"]),
-                    kind=str(row.get("kind") or ""),
+                    kind=kind,
                     outcome="DELETE_FAILED",
                     now=now,
                 )
                 failures.append({
                     "path": str(path),
-                    "kind": row["kind"],
+                    "kind": kind,
                     "error_type": type(exc).__name__,
                 })
 
@@ -321,7 +335,7 @@ class StorageLifecycle:
                 check=False,
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=12,
             )
         except (OSError, subprocess.TimeoutExpired):
             rows = cached.get("rows")
