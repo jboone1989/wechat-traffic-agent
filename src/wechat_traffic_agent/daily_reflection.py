@@ -511,38 +511,97 @@ class DailyReflectionService:
         calls = int(facts["model_calls"])
         belief_changes = int(facts["cognition_states"].get("BELIEF_CHANGED", 0))
         top_topics = facts["top_topics"]
-        topic_text = "、".join(f"{row['topic']}({row['cycles']}轮)" for row in top_topics[:3]) or "没有形成稳定主题"
-        error_text = "、".join(f"{name}×{count}" for name, count in facts["error_types"].items()) or "没有记录到错误"
+        topic_text = "、".join(
+            f"{row['topic']}({row['cycles']}轮)" for row in top_topics[:3]
+        ) or "没有形成稳定主题"
+        error_text = "、".join(
+            f"{name}×{count}" for name, count in facts["error_types"].items()
+        ) or "没有记录到错误"
         held_calls = int(facts["model_calls_by_status"].get("HELD_BY_CHECKS", 0))
+
+        activity_text = (
+            f"昨天共跑了 {facts['cycle_count']} 个内容周期：{published} 次发布，"
+            f"{held} 次被质量门拦住，{cognition_only} 次只形成认知更新，"
+            f"{errors} 次出错。记录到的模型调用共 {calls} 次。"
+        )
+        if belief_changes:
+            learning_text = (
+                f"注意力主要放在：{topic_text}。有 {belief_changes} 次状态明确标记为 "
+                "BELIEF_CHANGED；这些才算真正改变过信念，其他调查或表达不能因为写出来了就算学会。"
+            )
+        else:
+            learning_text = (
+                f"注意力主要放在：{topic_text}。昨天没有状态明确标记为 BELIEF_CHANGED；"
+                "我不会把普通调查或表达写成已经学会。"
+            )
+
+        friction_parts = []
+        if errors:
+            friction_parts.append(f"错误记录是 {error_text}")
+        if held:
+            friction_parts.append(
+                f"质量门拦住了 {held} 轮，其中记录了 {held_calls} 次模型调用"
+            )
+        friction_text = "；".join(friction_parts) + "。" if friction_parts else ""
+
         resource = facts["resource"]
         if resource["status"] == "OBSERVED":
             resource_text = (
                 f"资源方面，我有 {resource['observation_count']} 次可靠余额观测；"
-                f"余额从 {resource['opening_balance']:.2f} 变到 {resource['closing_balance']:.2f} {resource['currency']}。"
+                f"余额从 {resource['opening_balance']:.2f} 变到 "
+                f"{resource['closing_balance']:.2f} {resource['currency']}。"
                 "这只是账户余额变化，不自动等同于全部由内容循环造成的消费。"
             )
         else:
-            resource_text = "资源方面，昨天还没有可靠的时间戳余额观测，所以我不补写消费数字；资源遥测从后续真实观测开始累计。"
+            resource_text = (
+                "资源方面，昨天还没有可靠的时间戳余额观测，所以我不补写消费数字；"
+                "资源遥测从后续真实观测开始累计。"
+            )
+
         adjustment = []
         if held:
-            adjustment.append(f"减少重复撞质量门：昨天 {held} 轮被拦住，其中记录了 {held_calls} 次模型调用")
+            adjustment.append(
+                f"减少重复撞质量门：昨天 {held} 轮被拦住，其中记录了 {held_calls} 次模型调用"
+            )
         if errors:
             adjustment.append(f"先消除可复现错误（{error_text}），再为同类任务继续付模型成本")
         if belief_changes:
-            adjustment.append(f"保留并复查 {belief_changes} 次真正改变信念的证据链，不把普通产出冒充学习")
+            adjustment.append(
+                f"保留并复查 {belief_changes} 次真正改变信念的证据链，不把普通产出冒充学习"
+            )
         if not adjustment:
             adjustment.append("继续比较行动成本与真实外部结果，避免因为单日顺利就过度扩大调用")
+        adjustment_text = "今天我会调整：" + "；".join(adjustment) + "。"
+
+        if errors:
+            lead = f"昨天最该先处理的是失败：{errors} 次出错，具体记录为 {error_text}。"
+            sections = [friction_text, activity_text, learning_text, resource_text, adjustment_text]
+        elif held:
+            lead = (
+                f"昨天最大的摩擦来自质量门：{held} 轮被拦住，"
+                f"这些循环记录了 {held_calls} 次模型调用。"
+            )
+            sections = [friction_text, activity_text, learning_text, resource_text, adjustment_text]
+        elif belief_changes:
+            lead = (
+                f"昨天最值得保留的是学习证据：{belief_changes} 次状态明确标记为 "
+                "BELIEF_CHANGED。"
+            )
+            sections = [learning_text, activity_text, resource_text, adjustment_text]
+        elif published:
+            lead = f"昨天最明确的外部动作是发布：{published} 次内容真正发布。"
+            sections = [activity_text, learning_text, resource_text, adjustment_text]
+        else:
+            lead = (
+                "昨天没有出现错误、质量门拦截或明确的 BELIEF_CHANGED；"
+                "我先把活动量和资源事实摆出来，不把平静误写成学习。"
+            )
+            sections = [activity_text, learning_text, resource_text, adjustment_text]
+
+        body = "\n\n".join(section for section in sections if section)
         return (
             "【证据摘要 fallback：未经过 Ferro 自主认知】\n\n"
-            f"Ferro · {target_date.isoformat()} 日终反思\n\n"
-            f"昨天我跑了 {facts['cycle_count']} 个内容周期：{published} 次发布，{held} 次被质量门拦住，"
-            f"{cognition_only} 次只形成认知更新，{errors} 次出错。记录到的模型调用共 {calls} 次。\n\n"
-            f"我花最多注意力的方向是：{topic_text}。其中有 {belief_changes} 次状态明确标记为 BELIEF_CHANGED；"
-            "其他调查或表达不能因为写出来了就算学会。\n\n"
-            f"我昨天最需要承认的浪费/摩擦是：{error_text}。"
-            + (f" 被质量门拦住的循环消耗了 {held_calls} 次模型调用，这部分值得优先压缩。" if held_calls else "")
-            + "\n\n" + resource_text + "\n\n"
-            "今天我会调整：" + "；".join(adjustment) + "。"
+            f"Ferro · {target_date.isoformat()} 日终反思\n\n{lead}\n\n{body}"
         )
 
     @staticmethod

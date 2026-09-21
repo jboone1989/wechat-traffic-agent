@@ -128,6 +128,47 @@ def test_continuous_reflection_runs_per_trigger_and_is_idempotent(tmp_path):
     assert list((tmp_path / "application/reflections").glob("*.json"))
 
 
+
+def _render_facts(*, statuses, belief_changes=0, errors=None, held_calls=0):
+    return {
+        "cycle_count": sum(statuses.values()),
+        "statuses": statuses,
+        "model_calls": 12,
+        "model_calls_by_status": {"HELD_BY_CHECKS": held_calls} if held_calls else {},
+        "top_topics": [{"topic": "risk", "cycles": 2}],
+        "cognition_states": {"BELIEF_CHANGED": belief_changes} if belief_changes else {},
+        "error_types": errors or {},
+        "resource": {"status": "UNKNOWN"},
+        "evidence_cycle_ids": [],
+    }
+
+
+def test_daily_reflection_structure_follows_material_day_evidence():
+    target = date(2026, 9, 16)
+    error_facts = _render_facts(
+        statuses={"ERROR": 3, "HELD_BY_CHECKS": 1, "PUBLISHED": 1},
+        errors={"ValueError": 3},
+        held_calls=5,
+    )
+    learning_facts = _render_facts(
+        statuses={"COGNITION_ONLY": 2, "PUBLISHED": 1},
+        belief_changes=2,
+    )
+    clean_facts = _render_facts(statuses={"PUBLISHED": 2})
+
+    error_text = DailyReflectionService._render(target, error_facts)
+    learning_text = DailyReflectionService._render(target, learning_facts)
+    clean_text = DailyReflectionService._render(target, clean_facts)
+
+    assert error_text.startswith("【证据摘要 fallback：未经过 Ferro 自主认知】")
+    assert "昨天最该先处理的是失败：3 次出错" in error_text
+    assert "昨天最值得保留的是学习证据：2 次" in learning_text
+    assert error_text.index("错误记录是 ValueError×3") < error_text.index("注意力主要放在")
+    assert learning_text.index("注意力主要放在") < learning_text.index("昨天共跑了")
+    assert "昨天最明确的外部动作是发布：2 次内容真正发布" in clean_text
+    assert "错误记录是" not in clean_text
+    assert DailyReflectionService._render(target, error_facts) == error_text
+
 def test_daily_reflection_sends_once_when_private_notifier_is_configured(tmp_path):
     _cycle(tmp_path, 1789531200, "PUBLISHED", calls=2)
     mind = ContentMind(root=tmp_path, subject_id="content-agent")
