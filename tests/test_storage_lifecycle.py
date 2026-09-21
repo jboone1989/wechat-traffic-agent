@@ -443,3 +443,30 @@ def test_missing_editable_source_becomes_dependency_issue(tmp_path, monkeypatch)
         and row["source"] == str(missing.resolve())
         for row in issues
     )
+
+
+def test_reclaim_reuses_recent_observation_inventory(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    cache = storage / ".cache"
+    cache.mkdir()
+    (cache / "blob").write_bytes(b"x" * 1024)
+    _old(cache)
+
+    lifecycle = StorageLifecycle(state)
+    original = lifecycle.inventory
+    calls = {"count": 0}
+
+    def counted(*, now, deep):
+        calls["count"] += 1
+        return original(now=now, deep=deep)
+
+    monkeypatch.setattr(lifecycle, "inventory", counted)
+    lifecycle.observe(now=NOW, used_ratio=0.60)
+    lifecycle.reclaim(now=NOW, deep=False)
+
+    assert calls["count"] == 1

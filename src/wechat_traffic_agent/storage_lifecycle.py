@@ -66,6 +66,9 @@ class StorageLifecycle:
         self.root_sizes_path = root / "root_sizes.json"
         self.worktree_cursor_path = root / "worktree_cursor.json"
         self.dependency_issues_path = root / "declared_dependency_issues.json"
+        self._recent_inventory: list[dict[str, Any]] | None = None
+        self._recent_inventory_deep: bool | None = None
+        self._recent_inventory_at: datetime | None = None
 
     @staticmethod
     def mode(used_ratio: float) -> str:
@@ -90,7 +93,11 @@ class StorageLifecycle:
             }
             _atomic(self.inventory_path, payload)
             return payload
-        candidates = self.inventory(now=now, deep=(mode == "DEEP"))
+        deep = mode == "DEEP"
+        candidates = self.inventory(now=now, deep=deep)
+        self._recent_inventory = candidates
+        self._recent_inventory_deep = deep
+        self._recent_inventory_at = now
         dependency_issues = _load(
             self.dependency_issues_path,
             {"issues": []},
@@ -258,7 +265,7 @@ class StorageLifecycle:
     def reclaim(self, *, now: datetime, deep: bool) -> dict[str, Any]:
         before = shutil.disk_usage(self.state_root)
         tmp_result = self._reclaim_state_tmp(now=now)
-        candidates = self.inventory(now=now, deep=deep)
+        candidates = self._recent_candidates(now=now, deep=deep)
         cap = DEEP_RECLAIM_LIMIT if deep else INITIAL_RECLAIM_LIMIT
         reclaimed = int(tmp_result["reclaimed_bytes"])
         deleted: list[dict[str, Any]] = []
@@ -339,6 +346,22 @@ class StorageLifecycle:
                 1 for row in candidates if row.get("recommended_action") != "RECLAIM"
             ),
         }
+
+    def _recent_candidates(
+        self, *, now: datetime, deep: bool
+    ) -> list[dict[str, Any]]:
+        if (
+            self._recent_inventory is not None
+            and self._recent_inventory_deep is deep
+            and self._recent_inventory_at is not None
+            and abs((now - self._recent_inventory_at).total_seconds()) <= 120
+        ):
+            rows = self._recent_inventory
+            self._recent_inventory = None
+            self._recent_inventory_deep = None
+            self._recent_inventory_at = None
+            return rows
+        return self.inventory(now=now, deep=deep)
 
     def _root_size_snapshot(self, *, now: datetime) -> list[dict[str, Any]]:
         cached = _load(self.root_sizes_path, {})
