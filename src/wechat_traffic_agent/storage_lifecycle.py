@@ -115,7 +115,7 @@ class StorageLifecycle:
     def inventory(self, *, now: datetime, deep: bool) -> list[dict[str, Any]]:
         if not self.storage_root.is_dir():
             return []
-        active_refs = self._active_references()
+        active_refs = self._active_references() | self._declared_references()
         raw: list[dict[str, Any]] = []
         for path in self._candidate_paths(deep=deep):
             row = self._describe(path=path, now=now, active_refs=active_refs)
@@ -132,8 +132,9 @@ class StorageLifecycle:
                 row["family_rank"] = rank
                 row["newest_in_family"] = rank == 0
 
-        knowledge = _load(self.knowledge_path, {"profiles": {}})
+        knowledge = _load(self.knowledge_path, {"profiles": {}, "kind_profiles": {}})
         profiles = dict(knowledge.get("profiles") or {})
+        kind_profiles = dict(knowledge.get("kind_profiles") or {})
         worktree_checks_remaining = 40
         for row in raw:
             family = str(row["family"])
@@ -153,9 +154,12 @@ class StorageLifecycle:
             signature = self._signature(row)
             row["signature"] = signature
             profile = dict(profiles.get(signature) or {})
-            confidence = self._confidence(row=row, profile=profile)
+            kind_profile = dict(kind_profiles.get(kind) or {})
+            confidence = self._confidence(
+                row=row, profile=profile, kind_profile=kind_profile
+            )
             row["reclaim_confidence"] = round(confidence, 4)
-            threshold = 0.80 if deep else 0.97
+            threshold = self._threshold(kind=kind, deep=deep)
             worktree_ok = (
                 deep
                 and kind == "CODE_WORKTREE"
@@ -163,9 +167,8 @@ class StorageLifecycle:
                 and int(row.get("family_rank") or 0) >= 2
                 and age_hours >= 24.0
             )
-            ordinary_ok = (
-                kind not in {"UNKNOWN", "CODE_WORKTREE", "STATE", "SECRET"}
-                and (kind == "CACHE" or age_hours >= (6.0 if deep else 24.0))
+            ordinary_ok = self._ordinary_reclaimable(
+                row=row, kind=kind, age_hours=age_hours, deep=deep
             )
             eligible = (
                 not row["protected"]
@@ -234,6 +237,7 @@ class StorageLifecycle:
             except OSError as exc:
                 self._record_learning(
                     signature=str(row["signature"]),
+                    kind=str(row.get("kind") or ""),
                     outcome="DELETE_FAILED",
                     now=now,
                 )
@@ -450,7 +454,10 @@ class StorageLifecycle:
         return "storage-profile:" + sha256(material.encode()).hexdigest()[:20]
 
     @staticmethod
-    def _confidence(*, row: dict[str, Any], profile: dict[str, Any]) -> float:
+    def _confidence(
+        *, row: dict[str, Any], profile: dict[str, Any],
+        kind_profile: dict[str, Any],
+    ) -> float:
         kind = str(row["kind"])
         base = {
             "CACHE": 0.99,
@@ -471,9 +478,61 @@ class StorageLifecycle:
             base += 0.04
         confirmed = int(profile.get("confirmed_survival") or 0)
         failures = int(profile.get("failures") or 0)
+        kind_confirmed = int(kind_profile.get("confirmed_survival") or 0)
+        kind_failures = int(kind_profile.get("failures") or 0)
+        rebuilds = int(profile.get("rebuilds") or 0)
+        kind_rebuilds = int(kind_profile.get("rebuilds") or 0)
         base += min(0.12, confirmed * 0.03)
         base -= min(0.35, failures * 0.12)
+        # Generalize cautiously from repeated outcomes of the same storage kind.
+        # This is what lets Ferro learn "unused virtualenvs are rebuildable"
+        # without hard-coding every project or directory name.
+        base += min(0.08, kind_confirmed * 0.004)
+        base -= min(0.24, kind_failures * 0.08)
+        # Recreated objects were safe to remove, but deleting them caused rebuild
+        # work; reduce future enthusiasm so Ferro does not churn required assets.
+        base -= min(0.18, rebuilds * 0.05)
+        base -= min(0.08, kind_rebuilds * 0.004)
         return max(0.0, min(0.999, base))
+
+    @staticmethod
+    def _threshold(*, kind: str, deep: bool) -> float:
+        if deep:
+            return {
+                "CACHE": 0.90,
+                "ENVIRONMENT": 0.82,
+                "ARCHIVE": 0.82,
+                "GENERATED_ARTIFACT": 0.72,
+                "CODE_WORKTREE": 0.80,
+            }.get(kind, 1.0)
+        return {
+            "CACHE": 0.97,
+            "ENVIRONMENT": 0.92,
+            "ARCHIVE": 0.90,
+            "GENERATED_ARTIFACT": 0.86,
+        }.get(kind, 1.0)
+
+    @staticmethod
+    def _ordinary_reclaimable(
+        *, row: dict[str, Any], kind: str, age_hours: float, deep: bool
+    ) -> bool:
+        if kind in {"UNKNOWN", "CODE_WORKTREE", "STATE", "SECRET"}:
+            return False
+        rank = int(row.get("family_rank") or 0)
+        count = int(row.get("family_count") or 0)
+        if kind == "CACHE":
+            return True
+        if kind == "ENVIRONMENT":
+            return age_hours >= (24.0 if deep else 72.0)
+        if kind == "ARCHIVE":
+            if deep:
+                return age_hours >= 24.0 and (rank >= 1 or age_hours >= 168.0)
+            return age_hours >= 72.0 and count >= 2 and rank >= 1
+        if kind == "GENERATED_ARTIFACT":
+            if deep:
+                return age_hours >= 24.0 and count >= 2 and rank >= 1
+            return age_hours >= 168.0 and count >= 3 and rank >= 2
+        return False
 
     def _delete_candidate(self, *, path: Path, kind: str) -> None:
         if kind in {"STATE", "SECRET", "UNKNOWN"}:
@@ -530,11 +589,28 @@ class StorageLifecycle:
 
     def _settle_learning(self, *, now: datetime) -> None:
         pending = _load(self.pending_path, [])
-        if not isinstance(pending, list) or not pending:
-            return
+        if not isinstance(pending, list):
+            pending = []
+        self._bootstrap_kind_learning(pending=pending, now=now)
         changed = False
         for row in pending:
-            if row.get("status") != "PENDING":
+            status = str(row.get("status") or "")
+            path = Path(str(row.get("path") or ""))
+            if status == "SETTLED":
+                if (
+                    row.get("outcome") == "SURVIVED_RECLAIM"
+                    and path.exists()
+                ):
+                    self._record_rebuild(
+                        signature=str(row.get("signature") or ""),
+                        kind=str(row.get("kind") or ""),
+                        now=now,
+                    )
+                    row["outcome"] = "REBUILT_AFTER_RECLAIM"
+                    row["rebuild_detected_at"] = _iso(now)
+                    changed = True
+                continue
+            if status != "PENDING":
                 continue
             settle = str(row.get("settle_after") or "")
             try:
@@ -545,10 +621,10 @@ class StorageLifecycle:
                 due = due.replace(tzinfo=timezone.utc)
             if due > now:
                 continue
-            path = Path(str(row.get("path") or ""))
             outcome = "REBUILT_AFTER_RECLAIM" if path.exists() else "SURVIVED_RECLAIM"
             self._record_learning(
                 signature=str(row.get("signature") or ""),
+                kind=str(row.get("kind") or ""),
                 outcome=outcome,
                 now=now,
             )
@@ -559,21 +635,114 @@ class StorageLifecycle:
         if changed:
             _atomic(self.pending_path, pending[-500:])
 
-    def _record_learning(self, *, signature: str, outcome: str, now: datetime) -> None:
+    def _bootstrap_kind_learning(
+        self, *, pending: list[dict[str, Any]], now: datetime
+    ) -> None:
+        knowledge = _load(
+            self.knowledge_path,
+            {
+                "schema_version": "ferro-storage-knowledge.v2",
+                "profiles": {},
+                "kind_profiles": {},
+            },
+        )
+        if int(knowledge.get("kind_profile_bootstrap_version") or 0) >= 1:
+            return
+        kind_profiles = knowledge.setdefault("kind_profiles", {})
+        for row in pending:
+            if row.get("status") != "SETTLED":
+                continue
+            kind = str(row.get("kind") or "")
+            if not kind:
+                continue
+            outcome = str(row.get("outcome") or "")
+            path = Path(str(row.get("path") or ""))
+            if outcome == "SURVIVED_RECLAIM" and path.exists():
+                outcome = "REBUILT_AFTER_RECLAIM"
+                row["outcome"] = outcome
+                row["rebuild_detected_at"] = _iso(now)
+            profile = dict(kind_profiles.get(kind) or {})
+            profile["attempts"] = int(profile.get("attempts") or 0) + 1
+            if outcome in {"SURVIVED_RECLAIM", "REBUILT_AFTER_RECLAIM"}:
+                profile["confirmed_survival"] = int(
+                    profile.get("confirmed_survival") or 0
+                ) + 1
+            else:
+                profile["failures"] = int(profile.get("failures") or 0) + 1
+            if outcome == "REBUILT_AFTER_RECLAIM":
+                profile["rebuilds"] = int(profile.get("rebuilds") or 0) + 1
+            profile["last_outcome"] = outcome
+            profile["updated_at"] = _iso(now)
+            kind_profiles[kind] = profile
+        knowledge["kind_profile_bootstrap_version"] = 1
+        knowledge["schema_version"] = "ferro-storage-knowledge.v2"
+        knowledge["updated_at"] = _iso(now)
+        _atomic(self.knowledge_path, knowledge)
+        if pending:
+            _atomic(self.pending_path, pending[-500:])
+
+    def _record_rebuild(
+        self, *, signature: str, kind: str, now: datetime
+    ) -> None:
+        knowledge = _load(
+            self.knowledge_path,
+            {
+                "schema_version": "ferro-storage-knowledge.v2",
+                "profiles": {},
+                "kind_profiles": {},
+            },
+        )
+        for key, bucket_name in (
+            (signature, "profiles"),
+            (kind, "kind_profiles"),
+        ):
+            if not key:
+                continue
+            bucket = knowledge.setdefault(bucket_name, {})
+            profile = dict(bucket.get(key) or {})
+            profile["rebuilds"] = int(profile.get("rebuilds") or 0) + 1
+            profile["last_outcome"] = "REBUILT_AFTER_RECLAIM"
+            profile["updated_at"] = _iso(now)
+            bucket[key] = profile
+        knowledge["schema_version"] = "ferro-storage-knowledge.v2"
+        knowledge["updated_at"] = _iso(now)
+        _atomic(self.knowledge_path, knowledge)
+
+    def _record_learning(
+        self, *, signature: str, kind: str, outcome: str, now: datetime
+    ) -> None:
         if not signature:
             return
-        knowledge = _load(self.knowledge_path, {"schema_version": "ferro-storage-knowledge.v1", "profiles": {}})
+        knowledge = _load(
+            self.knowledge_path,
+            {
+                "schema_version": "ferro-storage-knowledge.v2",
+                "profiles": {},
+                "kind_profiles": {},
+            },
+        )
         profiles = knowledge.setdefault("profiles", {})
-        profile = dict(profiles.get(signature) or {})
-        profile["attempts"] = int(profile.get("attempts") or 0) + 1
-        if outcome in {"SURVIVED_RECLAIM", "REBUILT_AFTER_RECLAIM"}:
-            profile["confirmed_survival"] = int(profile.get("confirmed_survival") or 0) + 1
-        else:
-            profile["failures"] = int(profile.get("failures") or 0) + 1
-        profile["last_outcome"] = outcome
-        profile["updated_at"] = _iso(now)
-        profiles[signature] = profile
-        knowledge["schema_version"] = "ferro-storage-knowledge.v1"
+        kind_profiles = knowledge.setdefault("kind_profiles", {})
+
+        def update(profile: dict[str, Any]) -> dict[str, Any]:
+            profile = dict(profile)
+            profile["attempts"] = int(profile.get("attempts") or 0) + 1
+            if outcome in {"SURVIVED_RECLAIM", "REBUILT_AFTER_RECLAIM"}:
+                profile["confirmed_survival"] = int(
+                    profile.get("confirmed_survival") or 0
+                ) + 1
+            else:
+                profile["failures"] = int(profile.get("failures") or 0) + 1
+            if outcome == "REBUILT_AFTER_RECLAIM":
+                profile["rebuilds"] = int(profile.get("rebuilds") or 0) + 1
+            profile["last_outcome"] = outcome
+            profile["updated_at"] = _iso(now)
+            return profile
+
+        profiles[signature] = update(dict(profiles.get(signature) or {}))
+        if kind:
+            kind_profiles[kind] = update(dict(kind_profiles.get(kind) or {}))
+        knowledge["schema_version"] = "ferro-storage-knowledge.v2"
         knowledge["updated_at"] = _iso(now)
         _atomic(self.knowledge_path, knowledge)
 
@@ -602,6 +771,43 @@ class StorageLifecycle:
                         refs.add(Path(raw.split(" (deleted)", 1)[0]).resolve())
                 except (OSError, RuntimeError):
                     pass
+        return refs
+
+    def _declared_references(self) -> set[Path]:
+        """Protect deploy targets referenced by symlinks or systemd declarations."""
+        refs: set[Path] = set()
+
+        # Current/release symlinks are common even when a service is temporarily idle.
+        try:
+            for path in self.storage_root.iterdir():
+                if not path.is_symlink():
+                    continue
+                try:
+                    refs.add(path.resolve())
+                except OSError:
+                    continue
+        except OSError:
+            pass
+
+        # A dormant service may not appear in /proc, but its ExecStart still makes
+        # the referenced deployment an intentional current asset.
+        systemd_root = Path("/etc/systemd/system")
+        if systemd_root.is_dir():
+            files = list(systemd_root.glob("*.service"))
+            files.extend(systemd_root.glob("*.service.d/*.conf"))
+            for unit in files[:500]:
+                try:
+                    text = unit.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                for raw in re.findall(r"(?<![A-Za-z0-9_])(/[A-Za-z0-9_./+@:=,-]+)", text):
+                    token = raw.rstrip(";,")
+                    try:
+                        path = Path(token)
+                        if path.exists():
+                            refs.add(path.resolve())
+                    except (OSError, RuntimeError):
+                        continue
         return refs
 
     @staticmethod
