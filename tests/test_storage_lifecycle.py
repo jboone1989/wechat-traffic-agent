@@ -1,0 +1,185 @@
+from datetime import datetime, timedelta, timezone
+import os
+
+from wechat_traffic_agent.storage_lifecycle import StorageLifecycle
+
+
+NOW = datetime(2026, 9, 21, 2, 30, tzinfo=timezone.utc)
+
+
+def _old(path, *, days=3):
+    ts = (NOW - timedelta(days=days)).timestamp()
+    os.utime(path, (ts, ts))
+
+
+def test_storage_modes_start_early_and_go_deep():
+    assert StorageLifecycle.mode(0.54) == "NORMAL"
+    assert StorageLifecycle.mode(0.55) == "INITIAL"
+    assert StorageLifecycle.mode(0.8499) == "INITIAL"
+    assert StorageLifecycle.mode(0.85) == "DEEP"
+
+
+def test_initial_reclaim_scans_broadly_but_protects_unknown_and_code(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    cache = storage / ".cache"
+    cache.mkdir()
+    (cache / "blob").write_bytes(b"x" * 8192)
+    _old(cache)
+
+    old_venv = storage / "tool-venv-aaaaaaaa"
+    old_venv.mkdir()
+    (old_venv / "pyvenv.cfg").write_text("home = /usr/bin")
+    (old_venv / "payload").write_bytes(b"x" * 4096)
+    _old(old_venv, days=5)
+
+    new_venv = storage / "tool-venv-bbbbbbbb"
+    new_venv.mkdir()
+    (new_venv / "pyvenv.cfg").write_text("home = /usr/bin")
+    (new_venv / "payload").write_bytes(b"x" * 4096)
+    _old(new_venv, days=2)
+
+    unknown = storage / "important-notes"
+    unknown.mkdir()
+    (unknown / "notes.txt").write_text("keep me")
+    _old(unknown, days=100)
+
+    code = storage / "feature-worktree"
+    code.mkdir()
+    (code / ".git").write_text("gitdir: /tmp/fake")
+    (code / "code.py").write_text("print('keep')")
+    _old(code, days=100)
+
+    lifecycle = StorageLifecycle(state)
+    result = lifecycle.reclaim(now=NOW, deep=False)
+
+    assert result["mode"] == "INITIAL"
+    assert not cache.exists()
+    assert not old_venv.exists()
+    assert new_venv.exists()
+    assert unknown.exists()
+    assert code.exists()
+
+
+def test_deep_reclaim_removes_old_duplicate_generated_artifact(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    old = storage / "widget-deploy-aaaaaaaa"
+    old.mkdir()
+    (old / "artifact.bin").write_bytes(b"x" * 4096)
+    _old(old, days=45)
+
+    newest = storage / "widget-deploy-bbbbbbbb"
+    newest.mkdir()
+    (newest / "artifact.bin").write_bytes(b"x" * 4096)
+    _old(newest, days=10)
+
+    lifecycle = StorageLifecycle(state)
+    candidates = lifecycle.inventory(now=NOW, deep=True)
+    by_name = {row["name"]: row for row in candidates}
+
+    assert by_name[old.name]["recommended_action"] == "RECLAIM"
+    assert by_name[newest.name]["recommended_action"] == "KEEP_OR_LEARN"
+
+    result = lifecycle.reclaim(now=NOW, deep=True)
+    assert result["deleted_count"] == 1
+    assert not old.exists()
+    assert newest.exists()
+
+
+def test_unknown_objects_are_inventory_learning_candidates_not_blindly_deleted(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    mystery = storage / "mystery-data"
+    mystery.mkdir()
+    (mystery / "blob").write_bytes(b"x" * 2048)
+    _old(mystery, days=200)
+
+    lifecycle = StorageLifecycle(state)
+    observed = lifecycle.observe(now=NOW, used_ratio=0.86)
+    row = next(x for x in observed["candidates"] if x["name"] == "mystery-data")
+
+    assert row["kind"] == "UNKNOWN"
+    assert row["recommended_action"] == "KEEP_OR_LEARN"
+    assert observed["unknown_candidate_count"] == 1
+    assert mystery.exists()
+
+
+def test_successful_reclaim_outcome_becomes_storage_knowledge(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    cache = storage / ".cache"
+    cache.mkdir()
+    (cache / "blob").write_bytes(b"x" * 1024)
+    _old(cache)
+
+    lifecycle = StorageLifecycle(state)
+    lifecycle.reclaim(now=NOW, deep=False)
+    lifecycle.observe(now=NOW + timedelta(minutes=11), used_ratio=0.60)
+
+    status = lifecycle.status()
+    profiles = status["knowledge"]["profiles"]
+    assert profiles
+    assert max(int(row.get("confirmed_survival") or 0) for row in profiles.values()) >= 1
+
+
+def test_deep_reclaim_uses_git_lifecycle_for_old_detached_worktree(tmp_path, monkeypatch):
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    (repo / "seed.txt").write_text("seed")
+    subprocess.run(["git", "-C", str(repo), "add", "seed.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "-m", "seed"],
+        check=True, capture_output=True,
+    )
+
+    state = tmp_path / "state"
+    state.mkdir()
+    storage = tmp_path / "home"
+    storage.mkdir()
+    monkeypatch.setenv("CONTENT_SURVIVAL_STORAGE_ROOT", str(storage))
+
+    worktrees = []
+    for index, name in enumerate(("release-aaaaaaaa", "release-bbbbbbbb", "release-cccccccc")):
+        path = storage / name
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "add", "--detach", str(path), "HEAD"],
+            check=True, capture_output=True,
+        )
+        _old(path, days=20 - index)
+        worktrees.append(path)
+
+    lifecycle = StorageLifecycle(state)
+    candidates = lifecycle.inventory(now=NOW, deep=True)
+    by_name = {row["name"]: row for row in candidates}
+
+    assert by_name["release-aaaaaaaa"]["kind"] == "CODE_WORKTREE"
+    assert by_name["release-aaaaaaaa"]["worktree_reclaimable"] is True
+    assert by_name["release-aaaaaaaa"]["recommended_action"] == "RECLAIM"
+    assert by_name["release-bbbbbbbb"]["recommended_action"] == "KEEP_OR_LEARN"
+    assert by_name["release-cccccccc"]["recommended_action"] == "KEEP_OR_LEARN"
+
+    result = lifecycle.reclaim(now=NOW, deep=True)
+    assert result["deleted_count"] == 1
+    assert not worktrees[0].exists()
+    assert worktrees[1].exists() and worktrees[2].exists()

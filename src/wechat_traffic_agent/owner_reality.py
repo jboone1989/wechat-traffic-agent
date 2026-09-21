@@ -96,7 +96,7 @@ def build_owner_reality(
             "total_bytes": int(disk.total),
             "used_bytes": int(disk.used),
             "free_bytes": int(disk.free),
-            "used_ratio": round((disk.used / disk.total) if disk.total else 1.0, 6),
+            "used_ratio": round((1.0 - (disk.free / disk.total)) if disk.total else 1.0, 6),
         }
     }
 
