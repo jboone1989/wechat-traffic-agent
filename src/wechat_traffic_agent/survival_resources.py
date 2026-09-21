@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import sys
 import tarfile
 from typing import Any
 from urllib.parse import urlparse
@@ -2184,11 +2185,80 @@ class SurvivalResourceManager:
                 deleted += 1
             except OSError:
                 continue
+
+        venv_result = self._reclaim_stale_content_venvs(
+            now=now,
+            already_reclaimed=reclaimed,
+        )
+        reclaimed += int(venv_result["reclaimed_bytes"])
         return {
             "status": "EXECUTED",
             "deleted_files": deleted,
+            "deleted_venvs": int(venv_result["deleted_venvs"]),
+            "protected_venvs": list(venv_result["protected_venvs"]),
             "reclaimed_bytes": reclaimed,
         }
+
+    def _reclaim_stale_content_venvs(
+        self, *, now: datetime, already_reclaimed: int = 0
+    ) -> dict[str, Any]:
+        """Delete only stale Ferro deployment venvs under the artifact root.
+
+        The running interpreter is always protected and the two newest other
+        environments are retained as rollback candidates. Other projects are
+        intentionally outside this collector's authority.
+        """
+        raw_root = str(os.environ.get("CONTENT_SURVIVAL_ARTIFACT_ROOT") or "").strip()
+        artifact_root = Path(raw_root).expanduser().resolve() if raw_root else Path.home().resolve()
+        if not artifact_root.is_dir():
+            return {"deleted_venvs": 0, "reclaimed_bytes": 0, "protected_venvs": []}
+
+        running_prefix = Path(sys.prefix).resolve()
+        rows: list[tuple[float, Path]] = []
+        for path in artifact_root.glob("content-agent-prod-venv-*"):
+            try:
+                resolved = path.resolve()
+                if not resolved.is_dir() or path.is_symlink():
+                    continue
+                rows.append((resolved.stat().st_mtime, resolved))
+            except OSError:
+                continue
+        rows.sort(key=lambda item: item[0], reverse=True)
+
+        protected = {running_prefix}
+        protected.update(path for _, path in rows[:2])
+        cutoff = now.timestamp() - 24 * 3600
+        deleted_venvs = 0
+        reclaimed = 0
+        reclaim_cap = max(0, 8 * 1024**3 - int(already_reclaimed))
+        for mtime, path in rows:
+            if path in protected or mtime >= cutoff or reclaimed >= reclaim_cap:
+                continue
+            try:
+                size = self._tree_size(path)
+                if size <= 0:
+                    continue
+                shutil.rmtree(path)
+                reclaimed += size
+                deleted_venvs += 1
+            except OSError:
+                continue
+        return {
+            "deleted_venvs": deleted_venvs,
+            "reclaimed_bytes": reclaimed,
+            "protected_venvs": sorted(str(path) for path in protected if path in {p for _, p in rows}),
+        }
+
+    @staticmethod
+    def _tree_size(root: Path) -> int:
+        total = 0
+        for path in root.rglob("*"):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    total += path.stat().st_size
+            except OSError:
+                continue
+        return total
 
     def _record_action(self, payload: dict[str, Any], now: datetime) -> None:
         self.actions_path.parent.mkdir(parents=True, exist_ok=True)
