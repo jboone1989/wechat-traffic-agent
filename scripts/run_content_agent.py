@@ -102,6 +102,87 @@ def _write_shutdown_checkpoint(state_root: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
+
+
+_STARTUP_TASK_REQUEST_SCHEMA = "content-startup-task-batch.v1"
+
+
+def _startup_task_paths(state_root: Path) -> tuple[Path, Path, Path]:
+    application = Path(state_root) / "application"
+    return (
+        application / "startup_task_request.json",
+        application / "startup_task_request.running.json",
+        application / "startup_task_request.receipt.json",
+    )
+
+
+def _write_startup_task_receipt(
+    state_root: Path,
+    *,
+    request_id: str,
+    tasks: list[str],
+    results: list[dict],
+    status: str,
+    error: str | None = None,
+) -> None:
+    _request, running, receipt = _startup_task_paths(state_root)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": _STARTUP_TASK_REQUEST_SCHEMA,
+        "request_id": request_id,
+        "status": status,
+        "tasks": list(tasks),
+        "results": [dict(row) for row in results],
+        "completed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "error": error,
+    }
+    tmp = receipt.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(receipt)
+    running.unlink(missing_ok=True)
+
+
+def _claim_startup_task_request(state_root: Path) -> dict | None:
+    request, running, _receipt = _startup_task_paths(state_root)
+    if running.exists() or not request.exists():
+        return None
+    running.parent.mkdir(parents=True, exist_ok=True)
+    request.replace(running)
+    try:
+        payload = json.loads(running.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("startup task request must be an object")
+        if payload.get("schema_version") != _STARTUP_TASK_REQUEST_SCHEMA:
+            raise ValueError("unsupported startup task request schema")
+        request_id = str(payload.get("request_id") or "").strip()
+        if not request_id or len(request_id) > 128:
+            raise ValueError("startup task request_id is required and bounded")
+        tasks = payload.get("tasks")
+        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 32:
+            raise ValueError("startup task batch must contain 1..32 tasks")
+        normalized = [str(task) for task in tasks]
+        if any(task not in _ONE_SHOT_TASKS for task in normalized):
+            raise ValueError("startup task batch contains a non-allowlisted task")
+        return {
+            "request_id": request_id,
+            "tasks": normalized,
+            "claimed_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _write_startup_task_receipt(
+            state_root,
+            request_id="invalid",
+            tasks=[],
+            results=[],
+            status="REJECTED",
+            error=type(exc).__name__,
+        )
+        return None
+
+
 def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
@@ -378,6 +459,9 @@ def main() -> int:
         web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
         stop_requested=lambda: stopping,
     )
+    startup_request = _claim_startup_task_request(state_root)
+    startup_tasks = list(startup_request.get("tasks") or ()) if startup_request else []
+    startup_results: list[dict] = []
     print(f"{APPLICATION_VERSION} publish_mode={app.status_observation()['publish_mode']}")
     active_task: str | None = None
     active_cycle: str | None = None
@@ -386,7 +470,10 @@ def main() -> int:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.ensure_initial_plans(now)
         wakeful_runtime.refresh_neural_life(now)
-        if args.once or args.task:
+        if startup_tasks:
+            reason_task = startup_tasks.pop(0)
+            wake_reason = None
+        elif args.once or args.task:
             reason_task = args.task or "CONTENT_COGNITION"
             wake_reason = None
         else:
@@ -409,7 +496,13 @@ def main() -> int:
             emit_public_activity(
                 state_root, cycle=runtime_event_cycle, phase=task,
                 title=f"Awake · {task.replace('_', ' ').title()}",
-                detail=(wake_reason.detail if wake_reason is not None else "One-shot content cognition"),
+                detail=(
+                    wake_reason.detail
+                    if wake_reason is not None
+                    else "Startup task batch"
+                    if startup_request is not None
+                    else "One-shot content cognition"
+                ),
             )
             if task == "EVENT_OBSERVE":
                 task_result = {"task": task, "status": "NO_DEEP_COGNITION_JUSTIFIED"}
@@ -417,6 +510,12 @@ def main() -> int:
                 task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
+            if startup_request is not None:
+                startup_results.append({
+                    "task": task,
+                    "status": status,
+                    "observed_at": now.isoformat(),
+                })
             transfer_learning = wakeful_runtime.observe_transfer_outcome(
                 task=task,
                 result=task_result,
@@ -472,6 +571,31 @@ def main() -> int:
                 ),
                 status="completed" if status not in {"ERROR", "DEGRADED"} else "stopped",
             )
+            if startup_request is not None:
+                if status in {"ERROR", "DEGRADED"}:
+                    _write_startup_task_receipt(
+                        state_root,
+                        request_id=str(startup_request["request_id"]),
+                        tasks=list(startup_request["tasks"]),
+                        results=startup_results,
+                        status="FAILED",
+                        error=f"{task}:{status}",
+                    )
+                    return 1
+                if startup_tasks:
+                    active_task = None
+                    active_cycle = None
+                    reason_task = startup_tasks.pop(0)
+                    wake_reason = None
+                    continue
+                _write_startup_task_receipt(
+                    state_root,
+                    request_id=str(startup_request["request_id"]),
+                    tasks=list(startup_request["tasks"]),
+                    results=startup_results,
+                    status="COMPLETED",
+                )
+                return 0
             if args.once or args.task:
                 return 1 if status in {"ERROR", "DEGRADED"} else 0
             active_task = None
