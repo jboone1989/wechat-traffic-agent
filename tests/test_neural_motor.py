@@ -75,7 +75,9 @@ def test_motor_decision_uses_connectome_and_waits_for_world_outcome(tmp_path: Pa
         observed_at=NOW,
     )
     assert learned is not None
-    assert learned["reward"] == 0.75
+    assert learned["reward"] == 0.15
+    assert learned["reward_source"] == "EXECUTION_SUCCESS_ONLY"
+    assert learned["world_grounded"] is False
     assert learned["physical_feedback"]["changed_synapse_count"] == 7
     assert substrate.feedback[-1][0].source_event_id == decision["source_event_id"]
 
@@ -90,10 +92,12 @@ def test_repeated_success_teaches_a_motor_unit_a_habit(tmp_path: Path):
         assert decision["motor_id"] == motor_id
         learned = cortex.observe_outcome(
             task="OBSERVE_WORLD",
-            result={"status": "OK"},
+            result={"status": "OK", "world_utility": 0.8},
             observed_at=NOW,
         )
         assert learned is not None
+        assert learned["reward_source"] == "WORLD_UTILITY"
+        assert learned["world_grounded"] is True
 
     projection = cortex.projection()
     assert projection["habit_count"] == 1
@@ -101,7 +105,7 @@ def test_repeated_success_teaches_a_motor_unit_a_habit(tmp_path: Path):
     assert habit["motor_id"] == motor_id
     assert habit["meaning"] == "OBSERVE_WORLD"
     assert habit["association"]["trials"] == cortex.HABIT_MIN_TRIALS
-    assert habit["association"]["mean_reward"] == 0.75
+    assert habit["association"]["mean_reward"] == 0.8
 
     next_decision = cortex.select(neural_life=life(), now=NOW)
     assert next_decision["decision_kind"] == "HABIT"

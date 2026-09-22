@@ -280,15 +280,46 @@ class NeuralMotorCortex:
         return dict(decision)
 
     @staticmethod
-    def reward_for_result(result: Mapping[str, Any]) -> float:
+    def reward_evaluation(*, task: str, result: Mapping[str, Any]) -> dict[str, Any]:
+        """Evaluate motor reinforcement from outcomes instead of return-code success."""
+        task = str(task or "")
         status = str(result.get("status") or "UNKNOWN").upper()
-        if status in POSITIVE_STATUSES:
-            return 0.75
+
+        explicit = result.get("world_utility")
+        if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+            return {
+                "reward": _clamp(float(explicit)),
+                "source": "WORLD_UTILITY",
+                "world_grounded": True,
+                "status": status,
+            }
+
+        task_reward = result.get("reward")
+        if isinstance(task_reward, (int, float)) and not isinstance(task_reward, bool):
+            internal = task in {"NEURAL_PLAY", "NEURAL_DREAM"}
+            reward = _clamp(float(task_reward))
+            if internal:
+                reward *= 0.25
+            return {
+                "reward": reward,
+                "source": "TASK_REWARD",
+                "world_grounded": not internal,
+                "status": status,
+            }
+
         if status in NEGATIVE_STATUSES:
-            return -0.85
+            return {"reward": -0.85, "source": "EXECUTION_FAILURE", "world_grounded": False, "status": status}
         if status in {"DISABLED", "NOOP", "ALREADY_PROCESSED"}:
-            return -0.10
-        return 0.15
+            return {"reward": -0.10, "source": "NO_EFFECT", "world_grounded": False, "status": status}
+        if task in {"NEURAL_PLAY", "NEURAL_DREAM"} and status in POSITIVE_STATUSES:
+            return {"reward": 0.0, "source": "INTERNAL_SUCCESS_ONLY", "world_grounded": False, "status": status}
+        if status in POSITIVE_STATUSES:
+            return {"reward": 0.15, "source": "EXECUTION_SUCCESS_ONLY", "world_grounded": False, "status": status}
+        return {"reward": 0.0, "source": "UNKNOWN_OUTCOME", "world_grounded": False, "status": status}
+
+    @staticmethod
+    def reward_for_result(result: Mapping[str, Any], *, task: str = "") -> float:
+        return float(NeuralMotorCortex.reward_evaluation(task=task, result=result)["reward"])
 
     def observe_outcome(
         self,
@@ -310,7 +341,8 @@ class NeuralMotorCortex:
         if index is None:
             return None
         decision = dict(decisions[index])
-        reward = self.reward_for_result(result)
+        reward_evaluation = self.reward_evaluation(task=task, result=result)
+        reward = float(reward_evaluation["reward"])
         physical_feedback = None
         if self.substrate is not None and hasattr(self.substrate, "apply_feedback"):
             feedback = SimpleNamespace(
@@ -328,6 +360,8 @@ class NeuralMotorCortex:
             "observed_at": observed_at.isoformat(),
             "status": str(result.get("status") or "UNKNOWN"),
             "reward": reward,
+            "reward_source": str(reward_evaluation.get("source") or ""),
+            "world_grounded": bool(reward_evaluation.get("world_grounded")),
         }
         decisions[index] = decision
 
@@ -374,6 +408,8 @@ class NeuralMotorCortex:
             "motor_id": motor_id,
             "task": action,
             "reward": reward,
+            "reward_source": str(reward_evaluation.get("source") or ""),
+            "world_grounded": bool(reward_evaluation.get("world_grounded")),
             "association": association,
             "motor_state": unit["state"],
             "meaning": unit.get("meaning"),

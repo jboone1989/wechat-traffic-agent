@@ -217,6 +217,7 @@ class WakefulContentTaskRunner:
             rows["status"] = "DEGRADED"
 
         infrastructure_pressure = "UNKNOWN"
+        initial_infrastructure_pressure = "UNKNOWN"
         state_root = getattr(self, "state_root", None) or getattr(
             self.resource_economy, "state_root", None
         )
@@ -231,6 +232,7 @@ class WakefulContentTaskRunner:
                 observed = survival.observe(now=now)
                 rows["survival_resource_observation"] = observed
                 infrastructure_pressure = str(observed.get("pressure") or "UNKNOWN")
+                initial_infrastructure_pressure = infrastructure_pressure
                 network_service = getattr(self, "network_service", None)
                 if network_service is not None and not any(
                     row.get("status") == "ACTIVE"
@@ -452,6 +454,23 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             rows["provider_trial_plans"] = self._error(exc)
             rows["status"] = "DEGRADED"
+
+        initial_rank = pressure_rank.get(str(initial_infrastructure_pressure).upper(), 0)
+        final_rank = pressure_rank.get(str(infrastructure_pressure).upper(), 0)
+        if initial_rank > 0 and final_rank > 0:
+            if final_rank < initial_rank:
+                utility = min(1.0, 0.45 + 0.20 * (initial_rank - final_rank))
+            elif final_rank > initial_rank:
+                utility = max(-1.0, -0.45 - 0.20 * (final_rank - initial_rank))
+            else:
+                utility = 0.0
+            rows["world_utility"] = round(utility, 6)
+            rows["world_utility_evidence"] = {
+                "source": "SURVIVAL_PRESSURE_DELTA",
+                "before": str(initial_infrastructure_pressure).upper(),
+                "after": str(infrastructure_pressure).upper(),
+                "world_grounded": True,
+            }
         return rows
 
     def _reflect(self, now: datetime) -> dict[str, Any]:
