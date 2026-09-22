@@ -997,9 +997,66 @@ def test_stale_managed_ssh_receiver_requires_upgrade(monkeypatch):
         "ssh_receiver_profiles":[
             "content.website-static.v1",
             "content.resource-research.v1",
+            "content.core-standby.v1",
         ],
     }
     assert SurvivalResourceManager._ssh_receiver_needs_provision(current) is False
+
+
+def test_core_standby_uses_operator_managed_storage_gate_and_separate_activation_gate(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:standby",
+        "name":"standby",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "management_transport":"SSH_KEY",
+        "reliability":"OPERATOR_MANAGED",
+        "deployment_profiles":["content.core-standby.v1"],
+        "capacity":{
+            "cpu_count":1,
+            "memory_available_gib":0.075,
+            "disk_free_gib":7.0,
+        },
+    }]))
+    candidate = next(
+        row for row in manager.placement_candidates()
+        if row["service_id"] == "content-agent-core-standby"
+    )
+    assert candidate["eligible"] is True
+    assert candidate["activation_ready"] is False
+    assert candidate["activation_status"] == "STANDBY_NOT_RUNNABLE"
+    assert "CPU_CAPACITY_INSUFFICIENT" in candidate["activation_reasons"]
+    assert "MEMORY_HEADROOM_INSUFFICIENT" in candidate["activation_reasons"]
+
+
+def test_core_standby_rejects_unmanaged_receiver_even_when_capacity_is_large(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:public",
+        "name":"public",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "management_transport":"HTTPS",
+        "reliability":"BEST_EFFORT",
+        "deployment_profiles":["content.core-standby.v1"],
+        "capacity":{
+            "cpu_count":8,
+            "memory_available_gib":16.0,
+            "disk_free_gib":100.0,
+        },
+    }]))
+    candidate = next(
+        row for row in manager.placement_candidates()
+        if row["service_id"] == "content-agent-core-standby"
+    )
+    assert candidate["eligible"] is False
+    assert "CORE_STANDBY_REQUIRES_OPERATOR_MANAGED_HOST" in candidate["reasons"]
+    assert "CORE_STANDBY_REQUIRES_MANAGED_SSH" in candidate["reasons"]
 
 
 def test_pressure_does_not_offload_research_to_insufficient_remote_memory(tmp_path, monkeypatch):

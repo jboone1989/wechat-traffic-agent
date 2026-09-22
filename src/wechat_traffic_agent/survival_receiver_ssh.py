@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shlex
 import subprocess
@@ -20,7 +20,7 @@ from typing import Any
 from .survival_ssh import SSHHostBootstrapper
 
 
-DEFAULT_RECEIVER_SHA = "a56d2c9bbe0569d1c83695c71833e7a7193f6f17"
+DEFAULT_RECEIVER_SHA = "f93f16d622e4ce234127f54caef4c39d46cf2d20"
 DEFAULT_AGENT_NETWORK_MIRROR = Path("/home/ubuntu/deploy/agent-network-bare.git")
 
 
@@ -84,6 +84,48 @@ class SSHWorkloadTransport:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", output):
             raise RuntimeError("remote static index hash response is invalid")
         return output
+
+    def fetch_opaque_artifact(
+        self, deployment_path: str, *, expected_root: str,
+        max_bytes: int = 64 * 1024 * 1024,
+    ) -> bytes:
+        target = PurePosixPath(str(deployment_path or "").strip())
+        root = PurePosixPath(str(expected_root or "").strip())
+        if (
+            not target.is_absolute()
+            or not root.is_absolute()
+            or root not in target.parents
+            or target.parent.name != "core-standby"
+            or target.name != "current.bin"
+        ):
+            raise ValueError("remote core standby path is outside the managed receiver root")
+        client = self._connect()
+        try:
+            sftp = client.open_sftp()
+            try:
+                stat = sftp.stat(str(target))
+                size = int(getattr(stat, "st_size", 0) or 0)
+                if size <= 0 or size > int(max_bytes):
+                    raise RuntimeError("remote core standby artifact size is invalid")
+                chunks: list[bytes] = []
+                total = 0
+                with sftp.file(str(target), "rb") as handle:
+                    while True:
+                        chunk = handle.read(min(1024 * 1024, int(max_bytes) - total + 1))
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > int(max_bytes):
+                            raise RuntimeError("remote core standby artifact exceeds read limit")
+                        chunks.append(bytes(chunk))
+                data = b"".join(chunks)
+                if len(data) != size:
+                    raise RuntimeError("remote core standby artifact changed during read")
+                return data
+            finally:
+                sftp.close()
+        finally:
+            client.close()
 
     def _json_operation(
         self, operation: str, *, stdin: str = "", timeout: int = 25,
@@ -220,7 +262,7 @@ class SSHReceiverProvisioner:
                         "NETWORK_SURVIVAL_WORKLOAD_ROOT=" + str(state / "workloads"),
                         "NETWORK_SURVIVAL_WORKLOAD_TRUSTED_KEYS_FILE=" + str(trusted),
                         "NETWORK_SURVIVAL_WORKLOAD_AGENT_ID=" + agent_id,
-                        "NETWORK_SURVIVAL_WORKLOAD_PROFILES=content.website-static.v1,content.resource-research.v1",
+                        "NETWORK_SURVIVAL_WORKLOAD_PROFILES=content.website-static.v1,content.resource-research.v1,content.core-standby.v1",
                         "",
                     ]
                 )
@@ -268,6 +310,7 @@ class SSHReceiverProvisioner:
         required_profiles = {
             "content.website-static.v1",
             "content.resource-research.v1",
+            "content.core-standby.v1",
         }
         if not required_profiles.issubset(set(profiles)):
             raise RuntimeError("provisioned SSH receiver omitted required profiles")

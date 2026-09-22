@@ -13,6 +13,7 @@ import shutil
 import socket
 import sys
 import tarfile
+import tempfile
 from typing import Any
 from urllib.parse import urlparse
 import urllib.error
@@ -47,6 +48,23 @@ SERVICE_PLACEMENT_DEFAULTS: dict[str, dict[str, Any]] = {
             "mode": "PRIMARY_STATEFUL",
             "desired_remote_replicas": 0,
             "automatic": False,
+        },
+    },
+    "content-agent-core-standby": {
+        "resource_requirements": {
+            "cpu_count": 1,
+            "memory_available_gib": 0.05,
+            "disk_free_gib": 1.0,
+        },
+        "activation_requirements": {
+            "cpu_count": 2,
+            "memory_available_gib": 2.0,
+            "disk_free_gib": 5.0,
+        },
+        "placement_policy": {
+            "mode": "REPLICA",
+            "desired_remote_replicas": 1,
+            "automatic": True,
         },
     },
     "website-static": {
@@ -280,6 +298,18 @@ class SurvivalResourceManager:
                     **json.loads(json.dumps(SERVICE_PLACEMENT_DEFAULTS["content-agent-core"])),
                 },
                 {
+                    "service_id": "content-agent-core-standby",
+                    "role": "CORE_STANDBY",
+                    "placement": "host:local",
+                    "primary_placement": "host:local",
+                    "replicas": [],
+                    "migration_class": "REPLICABLE",
+                    "deployment_profile": "content.core-standby.v1",
+                    **json.loads(json.dumps(
+                        SERVICE_PLACEMENT_DEFAULTS["content-agent-core-standby"]
+                    )),
+                },
+                {
                     "service_id": "website-static",
                     "role": "PUBLIC_SURFACE",
                     "placement": "host:local",
@@ -304,12 +334,35 @@ class SurvivalResourceManager:
             return value
 
         changed = False
+        service_ids = {
+            str(row.get("service_id") or "")
+            for row in value
+            if isinstance(row, dict)
+        }
+        if "content-agent-core-standby" not in service_ids:
+            value.append({
+                "service_id": "content-agent-core-standby",
+                "role": "CORE_STANDBY",
+                "placement": "host:local",
+                "primary_placement": "host:local",
+                "replicas": [],
+                "migration_class": "REPLICABLE",
+                "deployment_profile": "content.core-standby.v1",
+                **json.loads(json.dumps(
+                    SERVICE_PLACEMENT_DEFAULTS["content-agent-core-standby"]
+                )),
+            })
+            changed = True
         for row in value:
             if not isinstance(row, dict):
                 continue
             service_id = str(row.get("service_id") or "")
             defaults = SERVICE_PLACEMENT_DEFAULTS.get(service_id) or {}
-            for field in ("resource_requirements", "placement_policy"):
+            for field in (
+                "resource_requirements",
+                "activation_requirements",
+                "placement_policy",
+            ):
                 if field not in row and field in defaults:
                     row[field] = json.loads(json.dumps(defaults[field]))
                     changed = True
@@ -919,6 +972,7 @@ class SurvivalResourceManager:
             service_id = str(service.get("service_id") or "")
             for host in hosts:
                 fit = self._placement_fit(service, host)
+                activation = self._activation_readiness(service, host)
                 rows.append({
                     "service_id": service_id,
                     "host_id": host.get("host_id"),
@@ -930,6 +984,9 @@ class SurvivalResourceManager:
                     "deployment_profile": service.get("deployment_profile"),
                     "placement_mode": (service.get("placement_policy") or {}).get("mode"),
                     "score": fit["score"],
+                    "activation_ready": activation["ready"],
+                    "activation_status": activation["status"],
+                    "activation_reasons": activation["reasons"],
                 })
         rows.sort(
             key=lambda row: (
@@ -955,6 +1012,11 @@ class SurvivalResourceManager:
         profile = str(service.get("deployment_profile") or "")
         if profile and profile not in set(host.get("deployment_profiles") or ()):
             reasons.append("DEPLOYMENT_PROFILE_UNSUPPORTED")
+        if profile == "content.core-standby.v1":
+            if str(host.get("reliability") or "").upper() != "OPERATOR_MANAGED":
+                reasons.append("CORE_STANDBY_REQUIRES_OPERATOR_MANAGED_HOST")
+            if str(host.get("management_transport") or "") != "SSH_KEY":
+                reasons.append("CORE_STANDBY_REQUIRES_MANAGED_SSH")
 
         requirements = dict(service.get("resource_requirements") or {})
         capacity = dict(host.get("capacity") or {})
@@ -988,6 +1050,37 @@ class SurvivalResourceManager:
             "eligible": not reasons,
             "reasons": reasons,
             "score": round(score, 4),
+        }
+
+    @staticmethod
+    def _activation_readiness(
+        service: dict[str, Any], host: dict[str, Any]
+    ) -> dict[str, Any]:
+        requirements = dict(service.get("activation_requirements") or {})
+        if not requirements:
+            return {"ready": True, "status": "NOT_APPLICABLE", "reasons": []}
+        capacity = dict(host.get("capacity") or {})
+        reasons: list[str] = []
+        for field, reason in (
+            ("cpu_count", "CPU_CAPACITY_INSUFFICIENT"),
+            ("memory_available_gib", "MEMORY_HEADROOM_INSUFFICIENT"),
+            ("disk_free_gib", "DISK_HEADROOM_INSUFFICIENT"),
+        ):
+            required_raw = requirements.get(field)
+            if required_raw is None:
+                continue
+            try:
+                required = float(required_raw)
+                available = float(capacity.get(field))
+            except (TypeError, ValueError):
+                reasons.append(field.upper() + "_UNKNOWN")
+                continue
+            if available < required:
+                reasons.append(reason)
+        return {
+            "ready": not reasons,
+            "status": "STANDBY_RUNNABLE" if not reasons else "STANDBY_NOT_RUNNABLE",
+            "reasons": reasons,
         }
 
     def plan_offload(
@@ -1082,7 +1175,8 @@ class SurvivalResourceManager:
         if not deployment_id:
             raise RuntimeError("remote deployment receipt omitted deployment_id")
         deployment_url = str(receipt.get("deployment_url") or "").strip()
-        if str(service.get("deployment_profile") or "") == "content.website-static.v1":
+        profile = str(service.get("deployment_profile") or "")
+        if profile == "content.website-static.v1":
             self._verify_static_deployment(
                 host=host,
                 deployment_url=deployment_url,
@@ -1090,6 +1184,15 @@ class SurvivalResourceManager:
                 artifact=dict(artifact or {}),
                 transport=deployment_transport,
             )
+        elif profile == "content.core-standby.v1":
+            self._verify_core_standby_deployment(
+                host=host,
+                deployment_path=str(receipt.get("deployment_path") or ""),
+                artifact=dict(artifact or {}),
+                transport=deployment_transport,
+            )
+
+        activation = self._activation_readiness(service, host)
 
         placement_mode = "MOVED"
         for row in service_rows:
@@ -1117,6 +1220,17 @@ class SurvivalResourceManager:
                         (artifact or {}).get("source_manifest_sha256") or ""
                     ),
                     "index_sha256": str((artifact or {}).get("index_sha256") or ""),
+                    "organism_id": str((artifact or {}).get("organism_id") or "") or None,
+                    "memory_state_hash": str(
+                        (artifact or {}).get("memory_state_hash") or ""
+                    ) or None,
+                    "network_agent_id": str(
+                        (artifact or {}).get("network_agent_id") or ""
+                    ) or None,
+                    "member_count": (artifact or {}).get("member_count"),
+                    "activation_ready": activation["ready"],
+                    "activation_status": activation["status"],
+                    "activation_reasons": list(activation["reasons"]),
                     "last_verified_at": _iso(now),
                     "updated_at": _iso(now),
                 })
@@ -1144,6 +1258,12 @@ class SurvivalResourceManager:
             "deployment_path": str(receipt.get("deployment_path") or "") or None,
             "deployment_transport": deployment_transport,
             "artifact_sha256": receipt.get("artifact_sha256"),
+            "organism_id": (artifact or {}).get("organism_id"),
+            "memory_state_hash": (artifact or {}).get("memory_state_hash"),
+            "network_agent_id": (artifact or {}).get("network_agent_id"),
+            "activation_ready": activation["ready"],
+            "activation_status": activation["status"],
+            "activation_reasons": list(activation["reasons"]),
             "task_capability": receipt.get("task_capability"),
             "source_manifest_sha256": (artifact or {}).get(
                 "source_manifest_sha256"
@@ -1162,6 +1282,27 @@ class SurvivalResourceManager:
         profile = str(service.get("deployment_profile") or "")
         if profile == "content.resource-research.v1":
             return None
+        if profile == "content.core-standby.v1":
+            from .organism_continuity import OrganismContinuityService
+
+            with tempfile.TemporaryDirectory(prefix="ferro-core-standby-") as temp_dir:
+                path = Path(temp_dir) / "ferro-core-standby.bin"
+                exported = OrganismContinuityService(self.state_root).export_bundle(path)
+                raw = path.read_bytes()
+            return {
+                "media_type": "application/octet-stream",
+                "encoding": "base64",
+                "sha256": str(exported["sha256"]),
+                "bytes": len(raw),
+                "data": base64.b64encode(raw).decode("ascii"),
+                "organism_id": exported["organism_id"],
+                "memory_state_hash": exported["memory_state_hash"],
+                "network_agent_id": (
+                    (exported.get("network_identity") or {}).get("agent_id")
+                ),
+                "member_count": exported["member_count"],
+                "requires_operator_managed_host": True,
+            }
         if profile != "content.website-static.v1":
             raise ValueError("deployment artifact builder does not support this profile")
         raw_root = str(os.environ.get("CONTENT_WEB_SITE_ROOT") or "").strip()
@@ -1221,6 +1362,11 @@ class SurvivalResourceManager:
     def _deploy_to_host(
         self, host: dict[str, Any], payload: dict[str, Any]
     ) -> tuple[dict[str, Any], str]:
+        if (
+            str(payload.get("deployment_profile") or "") == "content.core-standby.v1"
+            and host.get("ssh_receiver_command")
+        ):
+            return self._ssh_receiver_transport(host).deploy(payload), "SSH"
         control_url = str(host.get("control_url") or "").strip()
         if control_url:
             try:
@@ -1430,6 +1576,35 @@ class SurvivalResourceManager:
         if actual != expected:
             raise RuntimeError("remote static index verification failed")
 
+    def _verify_core_standby_deployment(
+        self, *, host: dict[str, Any], deployment_path: str,
+        artifact: dict[str, Any], transport: str,
+    ) -> None:
+        if transport != "SSH":
+            raise RuntimeError("core standby verification requires managed SSH")
+        expected = str(artifact.get("sha256") or "").strip()
+        if not expected:
+            raise RuntimeError("core standby artifact omitted digest")
+        receiver_root = str(host.get("ssh_receiver_root") or "").strip()
+        if not receiver_root:
+            raise RuntimeError("core standby host omitted managed receiver root")
+        raw = self._ssh_receiver_transport(host).fetch_opaque_artifact(
+            deployment_path,
+            expected_root=receiver_root,
+        )
+        actual = "sha256:" + sha256(raw).hexdigest()
+        if actual != expected:
+            raise RuntimeError("remote core standby artifact hash mismatch")
+        from .organism_continuity import OrganismContinuityService
+
+        with tempfile.TemporaryDirectory(prefix="ferro-core-standby-verify-") as temp_dir:
+            path = Path(temp_dir) / "ferro-core-standby.bin"
+            path.write_bytes(raw)
+            OrganismContinuityService.inspect_bundle(
+                path,
+                expected_sha256=expected,
+            )
+
     def actions(self, *, limit: int = 30) -> list[dict[str, Any]]:
         if not self.actions_path.exists():
             return []
@@ -1623,6 +1798,19 @@ class SurvivalResourceManager:
                             replica["deployment_transport"] = "HTTPS"
                         if not expected or actual != expected:
                             raise RuntimeError("replica content hash mismatch")
+                    elif profile == "content.core-standby.v1":
+                        self._verify_core_standby_deployment(
+                            host=host,
+                            deployment_path=deployment_path,
+                            artifact={
+                                "sha256": str(replica.get("artifact_sha256") or "")
+                            },
+                            transport=transport,
+                        )
+                        activation = self._activation_readiness(service, host)
+                        replica["activation_ready"] = activation["ready"]
+                        replica["activation_status"] = activation["status"]
+                        replica["activation_reasons"] = list(activation["reasons"])
                     replica["status"] = "ACTIVE"
                     replica["last_verified_at"] = _iso(now)
                     replica.pop("last_error", None)
@@ -1692,6 +1880,7 @@ class SurvivalResourceManager:
         required_profiles = {
             "content.website-static.v1",
             "content.resource-research.v1",
+            "content.core-standby.v1",
         }
         ssh_status = str(host.get("ssh_receiver_status") or "")
         overall_status = str(host.get("receiver_status") or "")
