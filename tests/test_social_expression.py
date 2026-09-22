@@ -388,3 +388,51 @@ def test_crypto_question_seeks_market_structure_before_asking(tmp_path):
     assert decision["supplemental_evidence"]["status"] == "AVAILABLE"
     assert decision["resolution"]["action"] == "QUESTION"
     assert len(runtime.calls) == 3
+
+
+class OverlongOKXRuntime(Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("SOCIAL_EXPRESSION_DRAFT"):
+            self.calls.append(task)
+            return json.dumps({
+                "okx": {
+                    "channel": "OKX",
+                    "format": "SHORT_POST",
+                    "intent": "OBSERVATION",
+                    "text": "O" * (OKX_SHORT_POST_MAX_CHARS + 25),
+                    "style_observation_ids": ["conditional"],
+                    "rationale": "Deliberately overlong OKX candidate for channel isolation.",
+                },
+                "x": {
+                    "channel": "X",
+                    "format": "SHORT_POST",
+                    "intent": "OBSERVATION",
+                    "text": "XRP is weaker than BTC; the next window will test whether the divergence persists.",
+                    "style_observation_ids": ["conditional"],
+                    "rationale": "Valid X candidate must survive an unrelated OKX failure.",
+                },
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_invalid_okx_candidate_does_not_discard_valid_x_draft(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    runtime = OverlongOKXRuntime()
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state)
+
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+
+    assert value["status"] == "DRAFTED"
+    saved = json.loads(
+        (
+            state
+            / "content/continuous/cycles"
+            / cycle
+            / "social_expression_drafts.json"
+        ).read_text()
+    )
+    assert saved["status"] == "DRAFT_READY"
+    assert "okx" not in saved["drafts"]
+    assert saved["drafts"]["x"]["channel"] == "X"
+    assert saved["draft_errors"]["okx"]["status"] == "VALIDATION_ERROR"
+    assert saved["draft_errors"]["okx"]["text_length"] > OKX_SHORT_POST_MAX_CHARS

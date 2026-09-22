@@ -53,6 +53,35 @@ class SocialExpressionBundle(BaseModel):
         return self
 
 
+class _CandidateChannelSocialDraft(BaseModel):
+    """Model-output shape before channel-specific publication bounds.
+
+    A bad draft for one channel must not erase a valid draft for another.
+    Strict ChannelSocialDraft validation is applied independently after the
+    model response has been persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    channel: Literal["OKX", "X"]
+    format: Literal["SHORT_POST", "LONG_POST", "ARTICLE"]
+    intent: Literal["ASSERTION", "QUESTION", "OBSERVATION", "UPDATE", "EXPLAINER"] = "ASSERTION"
+    text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
+    style_observation_ids: tuple[str, ...] = Field(max_length=4)
+    rationale: str = Field(min_length=10, max_length=400)
+
+
+class _CandidateSocialExpressionBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    okx: _CandidateChannelSocialDraft
+    x: _CandidateChannelSocialDraft
+
+    @model_validator(mode="after")
+    def channels_match(self) -> "_CandidateSocialExpressionBundle":
+        if self.okx.channel != "OKX" or self.x.channel != "X":
+            raise ValueError("bundle channels must be OKX and X")
+        return self
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -153,16 +182,51 @@ class SocialExpressionDraftWorker:
             }, ensure_ascii=False)
         )
 
-        def validate(value: SocialExpressionBundle) -> None:
-            for channel in (value.okx, value.x):
-                if any(style_id not in allowed_style_ids for style_id in channel.style_observation_ids):
-                    raise ValueError("social draft references an unknown style observation")
+        bundle = await _structured(
+            model_runtime, prompt, _CandidateSocialExpressionBundle
+        )
+        valid_drafts: dict[str, dict[str, Any]] = {}
+        draft_errors: dict[str, dict[str, Any]] = {}
+        for key, candidate in (("okx", bundle.okx), ("x", bundle.x)):
+            try:
+                channel = ChannelSocialDraft.model_validate(
+                    candidate.model_dump(mode="json")
+                )
+                if any(
+                    style_id not in allowed_style_ids
+                    for style_id in channel.style_observation_ids
+                ):
+                    raise ValueError(
+                        "social draft references an unknown style observation"
+                    )
                 if evidence_action == "QUESTION" and channel.intent != "QUESTION":
-                    raise ValueError("QUESTION evidence resolution requires QUESTION social intent")
-                if channel.intent == "QUESTION" and "?" not in channel.text and "？" not in channel.text:
-                    raise ValueError("QUESTION social intent requires an explicit question")
+                    raise ValueError(
+                        "QUESTION evidence resolution requires QUESTION social intent"
+                    )
+                valid_drafts[key] = channel.model_dump(mode="json")
+            except ValueError as exc:
+                draft_errors[key] = {
+                    "status": "VALIDATION_ERROR",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:500],
+                    "channel": str(candidate.channel),
+                    "format": str(candidate.format),
+                    "text_length": len(candidate.text),
+                }
 
-        bundle = await _structured(model_runtime, prompt, SocialExpressionBundle, validate=validate)
+        if not valid_drafts:
+            payload = {
+                "schema_version": "content-social-expression-drafts.v2",
+                "status": "INVALID_DRAFTS", "cycle": cycle,
+                "created_at": now.isoformat(),
+                "publication_authority": False,
+                "evidence_decision": evidence,
+                "draft_errors": draft_errors,
+                "drafts": {},
+            }
+            _put(out, payload)
+            return {"status": "INVALID_DRAFTS", "cycle": cycle, "drafts": payload}
+
         payload = {
             "schema_version": "content-social-expression-drafts.v2",
             "status": "DRAFT_READY", "cycle": cycle, "created_at": now.isoformat(),
@@ -174,7 +238,8 @@ class SocialExpressionDraftWorker:
             "x_growth_mission": x_mission,
             "public_persona": persona,
             "evidence_decision": evidence,
-            "drafts": bundle.model_dump(mode="json"),
+            "draft_errors": draft_errors,
+            "drafts": valid_drafts,
         }
         _put(out, payload)
         emit_public_activity(
