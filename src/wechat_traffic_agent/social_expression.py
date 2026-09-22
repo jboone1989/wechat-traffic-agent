@@ -147,7 +147,7 @@ class SocialExpressionDraftWorker:
         allowed_style_ids = {
             str(row.get("observation_id")) for row in style.get("observations", []) if isinstance(row, dict)
         }
-        model_runtime = ReceiptRuntime(self.runtime, folder / "social-expression-model-calls")
+        model_runtime = ReceiptRuntime(self.runtime, folder / "social-expression-model-calls-v3")
         question_instruction = (
             " Evidence resolution is QUESTION: both channel drafts must have intent QUESTION. Give the known fact briefly, then ask a genuine open question. "
             "Do not smuggle an unsupported answer into a rhetorical question and do not pad the post with a list of caveats."

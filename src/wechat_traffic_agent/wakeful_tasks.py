@@ -1121,6 +1121,49 @@ class WakefulContentTaskRunner:
         tmp.replace(folder / "mission_followup.json")
         return metadata
 
+    def _run_social_stage(
+        self,
+        *,
+        rows: dict[str, Any],
+        continuous: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Run idempotent downstream social work for an already-published cycle."""
+        social_loop = getattr(self, "social_expression_loop", None)
+        if social_loop is not None:
+            try:
+                rows["social_expression_drafts"] = self._run_async(
+                    social_loop.after_content_cycle(result=continuous, now=now)
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["social_expression_drafts"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        for name, publisher in (
+            ("x_browser_publication", getattr(self, "x_browser_publisher", None)),
+            ("okx_orbit_publication", getattr(self, "okx_orbit_publisher", None)),
+        ):
+            if publisher is None:
+                continue
+            try:
+                rows[name] = self._run_async(
+                    publisher.after_content_cycle(
+                        cycle=str(continuous.get("cycle") or ""),
+                        now=now,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows[name] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        x_loop = getattr(self, "x_loop", None)
+        if x_loop is not None:
+            try:
+                rows["x_social_expression"] = self._run_async(
+                    x_loop.after_content_cycle(result=continuous, now=now)
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["x_social_expression"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+
     def _content(self, now: datetime, *, focus_topic: str | None) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
@@ -1343,31 +1386,29 @@ class WakefulContentTaskRunner:
                             schedule(now, seconds=60)
                     except Exception as exc:  # noqa: BLE001
                         rows["self_maintenance"] = self._error(exc)
+            elif continuous.get("status") == "ALREADY_PROCESSED":
+                result_path_raw = str(preflight.get("result_path") or "").strip()
+                if result_path_raw:
+                    try:
+                        prior = json.loads(
+                            Path(result_path_raw).read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        prior = {}
+                    if str(prior.get("status") or "").upper() == "PUBLISHED":
+                        self._run_social_stage(
+                            rows=rows,
+                            continuous=prior,
+                            now=now,
+                        )
+                        rows["social_stage_replay"] = {
+                            "status": "REPLAYED",
+                            "cycle": str(prior.get("cycle") or cycle_id),
+                            "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
+                        }
+                        self.wakeful.mark_cognition(now)
             return rows
-        try:
-            rows["social_expression_drafts"] = self._run_async(
-                self.social_expression_loop.after_content_cycle(result=continuous, now=now)
-            )
-        except Exception as exc:  # noqa: BLE001
-            rows["social_expression_drafts"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        for name, publisher in (
-            ("x_browser_publication", self.x_browser_publisher),
-            ("okx_orbit_publication", self.okx_orbit_publisher),
-        ):
-            try:
-                rows[name] = self._run_async(publisher.after_content_cycle(
-                    cycle=str(continuous.get("cycle") or ""), now=now,
-                ))
-            except Exception as exc:  # noqa: BLE001
-                rows[name] = self._error(exc)
-                rows["status"] = "DEGRADED"
-        if self.x_loop is not None:
-            try:
-                rows["x_social_expression"] = self._run_async(self.x_loop.after_content_cycle(result=continuous, now=now))
-            except Exception as exc:  # noqa: BLE001
-                rows["x_social_expression"] = self._error(exc)
-                rows["status"] = "DEGRADED"
+        self._run_social_stage(rows=rows, continuous=continuous, now=now)
         followup_identity = None
         state_root = getattr(self, "state_root", None)
         cycle = str(continuous.get("cycle") or "").strip()

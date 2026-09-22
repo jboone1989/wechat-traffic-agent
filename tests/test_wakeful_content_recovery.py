@@ -578,3 +578,63 @@ def test_legacy_mission_discovery_error_recovers_identity_from_active_mission(tm
         "mission_id": "mission-growth-1",
         "reason": "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED",
     }
+
+
+class AlreadyProcessedPublishedLoop(Loop):
+    async def run_once(self, *, now, cycle_id, focus_topic):
+        cycle = str(cycle_id)
+        self.calls.append((now, cycle, focus_topic))
+        return {
+            "status": "ALREADY_PROCESSED",
+            "cycle": cycle,
+            "result_path": str(self._result_path(cycle)),
+        }
+
+
+def test_published_cycle_replays_missing_social_stage_without_rewriting_content(tmp_path):
+    state_root = tmp_path / "state"
+    path = (
+        state_root
+        / "content"
+        / "continuous"
+        / "cycles"
+        / BASE_CYCLE
+        / "result.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    published = {
+        "status": "PUBLISHED",
+        "cycle": BASE_CYCLE,
+        "draft_path": str(tmp_path / "artifact.json"),
+        "publication": {"public_route": "/notes/example/"},
+    }
+    path.write_text(json.dumps(published) + "\n", encoding="utf-8")
+    loop = AlreadyProcessedPublishedLoop(state_root)
+    economy = Economy()
+    wakeful = Wakeful()
+    social = AfterCycle()
+    x_publisher = Publisher()
+    okx_publisher = Publisher()
+    runner = WakefulContentTaskRunner(
+        app=App(),
+        state_root=state_root,
+        network_service=None,
+        wakeful=wakeful,
+        web_worker=None,
+        gsc_collector=None,
+        continuous_loop=loop,
+        resource_economy=economy,
+        social_expression_loop=social,
+        x_browser_publisher=x_publisher,
+        okx_orbit_publisher=okx_publisher,
+        x_loop=None,
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    assert result["continuous_content"]["status"] == "ALREADY_PROCESSED"
+    assert result["social_stage_replay"]["status"] == "REPLAYED"
+    assert social.calls == [{"result": published, "now": NOW}]
+    assert x_publisher.calls == [{"cycle": BASE_CYCLE, "now": NOW}]
+    assert okx_publisher.calls == [{"cycle": BASE_CYCLE, "now": NOW}]
+    assert json.loads(path.read_text()) == published
