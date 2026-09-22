@@ -334,6 +334,13 @@ class MemoryRuntimeEvolutionBridge:
             proposal["status"] = "PROMOTED"
             proposal["capability_version_id"] = capability.version_id
             proposal["promoted_at"] = now.isoformat()
+            proposal["known_failure_refs_at_promotion"] = sorted({
+                str(row.get("source_ref") or "")
+                for row in self._sources()
+                if row.get("kind") in CANDIDATE_SPECS
+                and CANDIDATE_SPECS[str(row["kind"])][0] == "RECALL_WEIGHT_CHANGE"
+                and str(row.get("source_ref") or "")
+            })
         elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
             proposal["status"] = "REJECTED_REGRESSION"
         elif evaluation.result is ExperimentResult.NO_IMPROVEMENT:
@@ -350,9 +357,16 @@ class MemoryRuntimeEvolutionBridge:
         if proposal.get("status") != "PROMOTED":
             return proposal
         promoted_at = _aware(proposal.get("promoted_at"))
+        known_at_promotion = {
+            str(ref)
+            for ref in proposal.get("known_failure_refs_at_promotion") or ()
+            if str(ref)
+        }
         failures = []
         for row in self._sources():
             if CANDIDATE_SPECS[row["kind"]][0] != "RECALL_WEIGHT_CHANGE":
+                continue
+            if str(row.get("source_ref") or "") in known_at_promotion:
                 continue
             try:
                 observed = _aware(row.get("observed_at"))

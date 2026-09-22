@@ -38,3 +38,25 @@ def test_memory_prior_comes_from_canonical_lived_outcomes(tmp_path):
     assert prior["profiles"]["evidence-brief"]["sample_count"] == 2
     assert prior["profiles"]["evidence-brief"]["score"] > prior["profiles"]["practical-guide"]["score"]
     assert set(prior["profiles"]["evidence-brief"]["memory_ids"]) == {"m:e1", "m:e2"}
+
+
+def test_memory_prior_generalizes_when_new_topic_has_no_exact_lived_outcomes(tmp_path):
+    store = CanonicalMemoryStore(tmp_path)
+    _episode(store, "m:e1", "evidence-brief", 1, 0.9, 120)
+    _episode(store, "m:e2", "evidence-brief", 2, 0.8, 110)
+    _episode(store, "m:p1", "practical-guide", 3, 0.2, 20)
+    _episode(store, "m:p2", "practical-guide", 4, 0.3, 30)
+
+    prior = MemoryDecisionPrior(tmp_path, store=store).strategy_prior(
+        topic="agent-reliability"
+    )
+
+    assert prior["transfer_scope"] == "GLOBAL_TRANSFER"
+    assert prior["memory_ids"]
+    assert prior["profiles"]["evidence-brief"]["sample_count"] == 2
+    assert prior["profiles"]["evidence-brief"]["transfer_strength"] == 0.25
+    assert (
+        prior["profiles"]["evidence-brief"]["score"]
+        > prior["profiles"]["practical-guide"]["score"]
+    )
+    assert prior["profiles"]["evidence-brief"]["score"] < 0.9

@@ -1121,6 +1121,32 @@ def test_external_mission_never_overrides_existing_endogenous_topic_goal(tmp_pat
     assert not any(call.startswith("MISSION_DISCOVERY:") for call in runtime.calls)
 
 
+def test_running_external_mission_gets_bounded_priority_until_experiment_starts(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    state_root = Path(legacy.state)
+    _write_active_x_mission(state_root)
+    mission_path = state_root / "content" / "x" / "growth_mission.json"
+    mission = json.loads(mission_path.read_text())
+    mission["roadmap"]["steps"][0]["status"] = "RUNNING"
+    mission_path.write_text(json.dumps(mission), encoding="utf-8")
+    runtime = EndogenousMissionRuntime()
+    mind, explorer = GoalMind(), MissionDiscoveryExplorer()
+    worker = v2(
+        legacy,
+        runtime,
+        publisher,
+        mind=mind,
+        explorer=explorer,
+    )
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["mind_plan"]["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert result["mind_plan"]["endogenous_goal"]["origin"] == "INTEREST"
+    assert result["mind_plan"]["required_topic"] == "persistent-ai-agents"
+    assert any(call.startswith("MISSION_DISCOVERY:") for call in runtime.calls)
+
+
 def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
     from wechat_traffic_agent.content_goal_loop import _active_mission_discovery_context
 

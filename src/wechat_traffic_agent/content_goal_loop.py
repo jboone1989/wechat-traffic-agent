@@ -573,6 +573,29 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
         plan_preexisting = plan_path.exists()
+        x_mission_context = x_growth_mission_context(self.state)
+        mission_context = _active_mission_discovery_context(x_mission_context)
+        mission_step = (
+            mission_context.get('roadmap_step')
+            if isinstance(mission_context, dict)
+            and isinstance(mission_context.get('roadmap_step'), dict)
+            else {}
+        )
+        mission_experiment = (
+            mission_context.get('active_experiment')
+            if isinstance(mission_context, dict)
+            and isinstance(mission_context.get('active_experiment'), dict)
+            else {}
+        )
+        # A roadmap step already marked RUNNING must get a bounded chance to
+        # produce the publication that starts its still-PROPOSED experiment.
+        # Once the experiment is RUNNING, ordinary endogenous/dream goals regain
+        # their normal opportunity to compete while the outcome window matures.
+        mission_priority = bool(
+            mission_context is not None
+            and mission_step.get('status') == 'RUNNING'
+            and mission_experiment.get('status') == 'PROPOSED'
+        )
         if plan_preexisting:
             mind_plan = json.loads(plan_path.read_text())
         else:
@@ -605,7 +628,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             # N9: dreams are neural replay first; only here may the rational
             # language layer verbalize an already-formed preconcept. A strong,
             # unexplored association may seed the next evidence-seeking goal.
-            if mind_plan.get('goal') is None and mind_plan.get('required_topic') is None:
+            if (
+                mind_plan.get('goal') is None
+                and mind_plan.get('required_topic') is None
+                and not mission_priority
+            ):
                 dreams_payload = {}
                 dreams_path = self.state / 'application' / 'neural_dreams.json'
                 try:
@@ -832,6 +859,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 self.neural_runtime is not None
                 and not getattr(self, '_focus_topic', None)
                 and snapshot['topics']
+                and not mission_priority
             ):
                 goal = mind_plan.get('goal')
                 origin = str(goal.get('origin') or '') if isinstance(goal, dict) else ''
@@ -879,15 +907,23 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         }
 
         required_topic = mind_plan.get('required_topic')
-        x_mission_context = x_growth_mission_context(self.state)
-        mission_context = _active_mission_discovery_context(x_mission_context)
         selection_started = any(
             (folder / name).exists()
             for name in ('evidence_candidates.json', 'exploration.json', 'model_calls')
         )
+        goal_value = mind_plan.get('goal')
+        goal_origin = (
+            str(goal_value.get('origin') or '')
+            if isinstance(goal_value, dict)
+            else ''
+        )
+        mission_can_claim_cycle = (
+            mind_plan.get('goal') is None and required_topic is None
+        ) or (
+            mission_priority and goal_origin in {'INTEREST', 'INQUIRY'}
+        )
         if (
-            mind_plan.get('goal') is None
-            and required_topic is None
+            mission_can_claim_cycle
             and mission_context is not None
             and not plan_preexisting
             and not selection_started
