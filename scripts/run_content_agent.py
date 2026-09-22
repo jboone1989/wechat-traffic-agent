@@ -43,9 +43,31 @@ def _show_health() -> int:
     return 0
 
 
+_ONE_SHOT_TASKS = (
+    "OBSERVE_WORLD",
+    "RESOURCE_REVIEW",
+    "CHECK_OUTCOMES",
+    "CONTENT_COGNITION",
+    "REFLECT",
+    "CHECK_X",
+    "NEURAL_INTEROCEPTION",
+    "NEURAL_PLAY",
+    "NEURAL_DREAM",
+    "NEURAL_TRANSFER",
+    "NEURAL_DEVELOPMENT",
+    "NEURAL_DEVELOPMENT_TRANSFER",
+    "NEURAL_EVOLUTION_CONSOLIDATION",
+)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="persistent Content Agent")
-    parser.add_argument("--once", action="store_true", help="Run one application tick and exit")
+    parser.add_argument("--once", action="store_true", help="Run one content cognition tick and exit")
+    parser.add_argument(
+        "--task",
+        choices=_ONE_SHOT_TASKS,
+        help="Run exactly one allowlisted wakeful task through the production task runner and exit",
+    )
     parser.add_argument("--health", action="store_true", help="Print persisted application health")
     parser.add_argument("--focus-topic", help="One-shot content focus slug; requires --once and does not replace the persisted autonomous goal")
     parser.add_argument("--watchdog-seconds", type=int, default=1800, help="Low-frequency liveness watchdog; never a cognition cadence")
@@ -83,7 +105,10 @@ def _write_shutdown_checkpoint(state_root: Path, payload: dict) -> None:
 def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
-    if args.focus_topic and not args.once: parser.error("--focus-topic requires --once")
+    if args.once and args.task:
+        parser.error("--once and --task are mutually exclusive")
+    if args.focus_topic and not (args.once or args.task == "CONTENT_COGNITION"):
+        parser.error("--focus-topic requires --once or --task CONTENT_COGNITION")
     if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
 
     state_root = _state_root()
@@ -361,8 +386,8 @@ def main() -> int:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.ensure_initial_plans(now)
         wakeful_runtime.refresh_neural_life(now)
-        if args.once:
-            reason_task = "CONTENT_COGNITION"
+        if args.once or args.task:
+            reason_task = args.task or "CONTENT_COGNITION"
             wake_reason = None
         else:
             wake_reason = wakeful_runtime.core.pop_ready()
@@ -447,7 +472,7 @@ def main() -> int:
                 ),
                 status="completed" if status not in {"ERROR", "DEGRADED"} else "stopped",
             )
-            if args.once:
+            if args.once or args.task:
                 return 1 if status in {"ERROR", "DEGRADED"} else 0
             active_task = None
             active_cycle = None

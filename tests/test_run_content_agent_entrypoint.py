@@ -46,3 +46,16 @@ def test_network_is_capability_not_life_dependency_and_existing_actions_remain()
     assert "live_agent_service.request_stop()" in text
     assert "network_service.request_stop()" in text
     assert "app.status_observation()['publish_mode']" in text
+
+
+def test_one_shot_task_cli_is_bounded_and_uses_normal_runner():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert '"--task"' in text
+    assert "choices=_ONE_SHOT_TASKS" in text
+    assert '"NEURAL_DEVELOPMENT_TRANSFER"' in text
+    assert '"CHECK_X"' in text
+    assert 'if args.once and args.task:' in text
+    assert 'reason_task = args.task or "CONTENT_COGNITION"' in text
+    assert 'if args.once or args.task:' in text
+    assert "task_runner.run(task, now=now" in text
+    assert "observe_development_transfer_outcome" in text
