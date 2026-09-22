@@ -87,6 +87,9 @@ class DevelopmentalArchitectureSearch:
             and getattr(self.substrate, "genome", None) is not None
         )
 
+    def needs_evidence(self) -> bool:
+        return bool(not self.state.get("selected_variant") and self._supports_overlay())
+
     @staticmethod
     def _assignment(seq: int, world_id: str) -> str:
         block = (int(seq) - 1) // 2

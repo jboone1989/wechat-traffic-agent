@@ -140,7 +140,26 @@ class DevelopmentalWorldTransferLab:
             row = worlds.get(str(world_id).upper())
             return dict(row) if isinstance(row, Mapping) else None
         candidate = self.agency.next_candidate_world()
-        return dict(candidate) if isinstance(candidate, Mapping) else None
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
+        if self.architecture is not None and self.architecture.needs_evidence():
+            adopted = [
+                dict(row)
+                for row in worlds.values()
+                if isinstance(row, Mapping)
+                and row.get("status") == "ADOPTED"
+                and row.get("target_task")
+            ]
+            if adopted:
+                adopted.sort(
+                    key=lambda row: (
+                        str(row.get("last_transfer_evaluation_at") or ""),
+                        str(row.get("world_id") or ""),
+                    ),
+                    reverse=True,
+                )
+                return adopted[0]
+        return None
 
     def begin(
         self,
@@ -156,11 +175,21 @@ class DevelopmentalWorldTransferLab:
         world = self._world(world_id)
         if world is None:
             return {"status": "NO_ELIGIBLE_WORLD", "trial": None}
-        if str(world.get("status") or "") not in {"CANDIDATE", "EXPERIMENTING"}:
+        world_status = str(world.get("status") or "")
+        architecture_only = bool(
+            world_status == "ADOPTED"
+            and self.architecture is not None
+            and self.architecture.needs_evidence()
+        )
+        if world_status not in {"CANDIDATE", "EXPERIMENTING"} and not architecture_only:
             return {"status": "WORLD_NOT_EXPERIMENTING", "trial": None}
 
         seq = int(self.state.get("seq") or 0) + 1
-        assignment = self._assignment(str(world["world_id"]), seq)
+        assignment = (
+            "ARCHITECTURE_ONLY"
+            if architecture_only
+            else self._assignment(str(world["world_id"]), seq)
+        )
         trial_id = f"development-transfer:{str(world['world_id']).lower()}:{seq:06d}"
         row = {
             "trial_id": trial_id,
@@ -171,9 +200,19 @@ class DevelopmentalWorldTransferLab:
             "proposal_id": world.get("proposal_id"),
             "target_task": world.get("target_task"),
             "assignment": assignment,
-            "assignment_rule": "sha256_balanced_blocks_pre_intervention.v1",
+            "assignment_rule": (
+                "architecture_only_reuse_adopted_world.v1"
+                if architecture_only
+                else "sha256_balanced_blocks_pre_intervention.v1"
+            ),
+            "world_status_at_assignment": world_status,
+            "architecture_only": architecture_only,
             "status": "ASSIGNED",
-            "training_steps": int(training_steps) if assignment == "TREATMENT" else 0,
+            "training_steps": (
+                int(training_steps)
+                if assignment in {"TREATMENT", "ARCHITECTURE_ONLY"}
+                else 0
+            ),
             "training": None,
             "target_outcome": None,
             "architecture_trial_id": None,
@@ -187,7 +226,7 @@ class DevelopmentalWorldTransferLab:
         # Persist the assignment before any self-generated-world intervention.
         _write(self.path, self.state)
 
-        if assignment == "TREATMENT":
+        if assignment in {"TREATMENT", "ARCHITECTURE_ONLY"}:
             architecture_context = nullcontext({"status": "NO_ARCHITECTURE_SEARCH"})
             if self.architecture is not None:
                 architecture_assignment = self.architecture.assign(
@@ -218,11 +257,12 @@ class DevelopmentalWorldTransferLab:
                     now=now,
                 )
             row["training"] = training
-            self.agency.record_world_trial(
-                world_id=str(world["world_id"]),
-                result=training,
-                observed_at=now,
-            )
+            if assignment == "TREATMENT":
+                self.agency.record_world_trial(
+                    world_id=str(world["world_id"]),
+                    result=training,
+                    observed_at=now,
+                )
         row["status"] = "AWAITING_TARGET_OUTCOME"
         trials[-1] = row
         self.state.update({"updated_at": now.isoformat(), "trials": trials[-MAX_TRIALS:]})
@@ -232,7 +272,9 @@ class DevelopmentalWorldTransferLab:
     def _world_projection(self, world_id: str) -> dict[str, Any]:
         rows = [
             dict(row) for row in self.state.get("trials") or ()
-            if row.get("world_id") == world_id and row.get("status") == "SETTLED"
+            if row.get("world_id") == world_id
+            and row.get("status") == "SETTLED"
+            and row.get("assignment") in {"TREATMENT", "CONTROL"}
         ]
         arms: dict[str, dict[str, Any]] = {}
         for assignment in ("TREATMENT", "CONTROL"):
@@ -331,7 +373,7 @@ class DevelopmentalWorldTransferLab:
         _write(self.path, self.state)
 
         evaluation = self._world_projection(str(row["world_id"]))
-        if row["status"] == "SETTLED":
+        if row["status"] == "SETTLED" and row.get("assignment") != "ARCHITECTURE_ONLY":
             self.agency.apply_world_transfer_evaluation(
                 world_id=str(row["world_id"]),
                 evaluation=evaluation,

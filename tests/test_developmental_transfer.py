@@ -298,3 +298,51 @@ def test_n29_treatment_executes_persisted_n33_phenotype_before_real_outcome(tmp_
     assert architecture_state["trial_count"] == 1
     assert architecture_state["trials"][0]["status"] == "SETTLED"
     assert settled is not None
+
+
+class AdoptedAgencyStub(AgencyStub):
+    def __init__(self):
+        super().__init__()
+        self.state["worlds"]["WORLD_0001"]["status"] = "ADOPTED"
+        self.state["worlds"]["WORLD_0001"]["last_transfer_evaluation_at"] = NOW.isoformat()
+
+    def next_candidate_world(self):
+        return None
+
+
+def test_architecture_only_reuses_adopted_world_without_reopening_n29(tmp_path: Path):
+    agency = AdoptedAgencyStub()
+    substrate = ArchitectureSubstrateStub()
+    brain = ArchitectureBrainLab(tmp_path, substrate)
+    architecture = DevelopmentalArchitectureSearch(tmp_path, substrate=substrate)
+    lab = DevelopmentalWorldTransferLab(
+        tmp_path,
+        brain_lab=brain,
+        agency=agency,
+        architecture=architecture,
+    )
+
+    started = lab.begin(now=NOW)
+    row = started["trial"]
+
+    assert started["status"] == "STARTED"
+    assert row["assignment"] == "ARCHITECTURE_ONLY"
+    assert row["architecture_only"] is True
+    assert row["world_status_at_assignment"] == "ADOPTED"
+    assert row["architecture_trial_id"]
+    assert agency.state["worlds"]["WORLD_0001"]["status"] == "ADOPTED"
+    assert agency.recorded == []
+
+    settled = lab.settle_target(
+        task="CHECK_X",
+        result=_x_result(strong=True),
+        observed_at=NOW,
+    )
+
+    assert settled is not None
+    assert settled["architecture_evaluation"]["status"] == "SETTLED"
+    assert agency.state["worlds"]["WORLD_0001"]["status"] == "ADOPTED"
+    assert agency.evaluations == []
+    world_projection = lab.projection()["worlds"]["WORLD_0001"]
+    assert world_projection["arms"]["TREATMENT"]["count"] == 0
+    assert world_projection["arms"]["CONTROL"]["count"] == 0
