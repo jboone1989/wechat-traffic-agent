@@ -204,3 +204,97 @@ def test_restart_migrates_old_shutdown_trial_out_of_causal_sample(tmp_path: Path
     assert projection["settled_count"] == 0
     assert projection["recent"][0]["status"] == "INCONCLUSIVE"
     assert projection["recent"][0]["target_outcome"]["utility"] is None
+
+
+from wechat_traffic_agent.developmental_architecture import DevelopmentalArchitectureSearch
+
+
+class ArchitectureGenomeStub:
+    def __init__(self):
+        self.state = {
+            "schema_version": "developmental-genome.v1",
+            "ancestral_anchor": "DROSOPHILA_SEEDED_BASELINE",
+            "genes": {
+                "birth_threshold_scale": 1.0,
+                "maturation_time_scale": 1.0,
+                "synaptogenesis_scale": 1.0,
+                "recurrent_affinity_scale": 1.0,
+                "dormancy_resilience_scale": 1.0,
+                "organ_threshold_scale": 1.0,
+            },
+            "mutation_count": 0,
+            "history": [],
+        }
+
+    @property
+    def genes(self):
+        return dict(self.state["genes"])
+
+    def snapshot(self):
+        return {
+            "schema_version": self.state["schema_version"],
+            "ancestral_anchor": self.state["ancestral_anchor"],
+            "genes": dict(self.state["genes"]),
+            "mutation_count": self.state["mutation_count"],
+            "history": [dict(row) for row in self.state["history"]],
+        }
+
+
+class ArchitectureSubstrateStub:
+    def __init__(self):
+        self.genome = ArchitectureGenomeStub()
+        self._state = {"developmental_genome": self.genome.snapshot()}
+
+    def _gene(self, name: str) -> float:
+        return float(self.genome.genes[name])
+
+
+class ArchitectureBrainLab(BrainLabStub):
+    def __init__(self, state_root: Path, substrate: ArchitectureSubstrateStub):
+        super().__init__(state_root)
+        self.substrate = substrate
+        self.effective_birth_scales = []
+
+    def run_session(self, *, environment, steps, now):
+        self.effective_birth_scales.append(
+            self.substrate._gene("birth_threshold_scale")
+        )
+        return super().run_session(environment=environment, steps=steps, now=now)
+
+
+def test_n29_treatment_executes_persisted_n33_phenotype_before_real_outcome(tmp_path: Path):
+    agency = AgencyStub()
+    substrate = ArchitectureSubstrateStub()
+    brain = ArchitectureBrainLab(tmp_path, substrate)
+    architecture = DevelopmentalArchitectureSearch(tmp_path, substrate=substrate)
+    lab = DevelopmentalWorldTransferLab(
+        tmp_path,
+        brain_lab=brain,
+        agency=agency,
+        architecture=architecture,
+    )
+
+    treatment_row = None
+    settled = None
+    for _ in range(2):
+        row = lab.begin(now=NOW)["trial"]
+        if row["assignment"] == "TREATMENT":
+            treatment_row = row
+            assert row["architecture_trial_id"]
+            assert row["architecture_assignment"] in {
+                "ADAPTIVE_FAST", "CONSERVATIVE_STABLE",
+            }
+            assert row["architecture_overlay"]["status"] == "OVERLAY_ACTIVE"
+        settled = lab.settle_target(
+            task="CHECK_X",
+            result=_x_result(strong=True),
+            observed_at=NOW,
+        )
+
+    assert treatment_row is not None
+    assert brain.effective_birth_scales
+    assert any(value != 1.0 for value in brain.effective_birth_scales)
+    architecture_state = architecture.projection()
+    assert architecture_state["trial_count"] == 1
+    assert architecture_state["trials"][0]["status"] == "SETTLED"
+    assert settled is not None

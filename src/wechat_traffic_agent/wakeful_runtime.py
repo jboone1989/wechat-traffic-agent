@@ -128,11 +128,17 @@ class ContentWakefulRuntime:
         self.open_development_acceptance = OpenDevelopmentAcceptance(self.state_root)
         from .developmental_agency import DevelopmentalAgency
         self.developmental_agency = DevelopmentalAgency(self.state_root)
+        from .developmental_architecture import DevelopmentalArchitectureSearch
+        self.developmental_architecture = DevelopmentalArchitectureSearch(
+            self.state_root,
+            substrate=substrate,
+        )
         from .developmental_transfer import DevelopmentalWorldTransferLab
         self.developmental_world_transfer = DevelopmentalWorldTransferLab(
             self.state_root,
             brain_lab=self.brain_lab,
             agency=self.developmental_agency,
+            architecture=self.developmental_architecture,
         )
         from .open_ended_evolution import OpenEndedEvolution
         self.open_ended_evolution = OpenEndedEvolution(
@@ -1181,6 +1187,7 @@ class ContentWakefulRuntime:
             "neural_motor": self.neural_motor.projection(),
             "neural_transfer": self.neural_transfer.projection(),
             "developmental_agency": self.developmental_agency.projection(),
+            "developmental_architecture": self.developmental_architecture.projection(),
             "developmental_world_transfer": self.developmental_world_transfer.projection(),
             "open_ended_evolution": self.open_ended_evolution.projection(),
             "neural_extensions": self.neural_extensions.projection(),

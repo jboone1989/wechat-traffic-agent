@@ -6,6 +6,7 @@ a world is adopted only after real target-task outcomes support it.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -39,10 +40,18 @@ def _write(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 class DevelopmentalWorldTransferLab:
-    def __init__(self, state_root: Path, *, brain_lab: Any, agency: Any) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        *,
+        brain_lab: Any,
+        agency: Any,
+        architecture: Any | None = None,
+    ) -> None:
         self.state_root = Path(state_root)
         self.brain_lab = brain_lab
         self.agency = agency
+        self.architecture = architecture
         self.path = self.state_root / "application" / "developmental_transfer.json"
         raw = _read(self.path)
         self.state = raw if raw.get("schema_version") == SCHEMA else {
@@ -167,6 +176,10 @@ class DevelopmentalWorldTransferLab:
             "training_steps": int(training_steps) if assignment == "TREATMENT" else 0,
             "training": None,
             "target_outcome": None,
+            "architecture_trial_id": None,
+            "architecture_assignment": None,
+            "architecture_overlay": None,
+            "architecture_settlement": None,
         }
         trials = list(self.state.get("trials") or ())
         trials.append(row)
@@ -175,11 +188,35 @@ class DevelopmentalWorldTransferLab:
         _write(self.path, self.state)
 
         if assignment == "TREATMENT":
-            training = self.brain_lab.run_session(
-                environment=str(world["world_id"]),
-                steps=max(1, min(32, int(training_steps))),
-                now=now,
-            )
+            architecture_context = nullcontext({"status": "NO_ARCHITECTURE_SEARCH"})
+            if self.architecture is not None:
+                architecture_assignment = self.architecture.assign(
+                    world_id=str(world["world_id"]),
+                    source_trial_id=trial_id,
+                    now=now,
+                )
+                architecture_trial = (
+                    architecture_assignment.get("trial")
+                    if isinstance(architecture_assignment, Mapping)
+                    else None
+                )
+                if isinstance(architecture_trial, Mapping) and architecture_trial.get("trial_id"):
+                    row["architecture_trial_id"] = str(architecture_trial["trial_id"])
+                    row["architecture_assignment"] = str(architecture_trial.get("assignment") or "")
+                    trials[-1] = row
+                    self.state.update({"updated_at": now.isoformat(), "trials": trials[-MAX_TRIALS:]})
+                    # The phenotype assignment is durable before the intervention.
+                    _write(self.path, self.state)
+                    architecture_context = self.architecture.trial_overlay(
+                        str(architecture_trial["trial_id"])
+                    )
+            with architecture_context as overlay:
+                row["architecture_overlay"] = dict(overlay or {})
+                training = self.brain_lab.run_session(
+                    environment=str(world["world_id"]),
+                    steps=max(1, min(32, int(training_steps))),
+                    now=now,
+                )
             row["training"] = training
             self.agency.record_world_trial(
                 world_id=str(world["world_id"]),
@@ -259,7 +296,9 @@ class DevelopmentalWorldTransferLab:
             return None
         row = dict(trials[index])
         result_status = str(result.get("status") or "UNKNOWN").upper()
+        utility: float | None
         if result_status == "SHUTDOWN_CHECKPOINT":
+            utility = None
             row["target_outcome"] = {
                 "observed_at": observed_at.isoformat(),
                 "status": result_status,
@@ -268,12 +307,25 @@ class DevelopmentalWorldTransferLab:
             }
             row["status"] = "INCONCLUSIVE"
         else:
+            utility = self._utility(task, result)
             row["target_outcome"] = {
                 "observed_at": observed_at.isoformat(),
                 "status": str(result.get("status") or "UNKNOWN"),
-                "utility": self._utility(task, result),
+                "utility": utility,
             }
             row["status"] = "SETTLED"
+
+        architecture_settlement = None
+        architecture_trial_id = str(row.get("architecture_trial_id") or "")
+        if architecture_trial_id and self.architecture is not None:
+            architecture_settlement = self.architecture.settle(
+                trial_id=architecture_trial_id,
+                utility=utility,
+                target_status=result_status,
+                observed_at=observed_at,
+            )
+            row["architecture_settlement"] = architecture_settlement
+
         trials[index] = row
         self.state.update({"updated_at": observed_at.isoformat(), "trials": trials[-MAX_TRIALS:]})
         _write(self.path, self.state)
@@ -285,7 +337,11 @@ class DevelopmentalWorldTransferLab:
                 evaluation=evaluation,
                 observed_at=observed_at,
             )
-        return {**row, "world_evaluation": evaluation}
+        return {
+            **row,
+            "world_evaluation": evaluation,
+            "architecture_evaluation": architecture_settlement,
+        }
 
     def projection(self) -> dict[str, Any]:
         rows = [dict(row) for row in self.state.get("trials") or ()]

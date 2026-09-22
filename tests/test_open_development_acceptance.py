@@ -124,17 +124,24 @@ def seed_n26_to_n34_and_n36(root: Path):
                 "ADAPTIVE_FAST" if index % 2 == 0 else "CONSERVATIVE_STABLE"
             ),
         })
-    write(root, "synthetic_neural_development.json", {
-        "version": 1,
-        "developmental_architecture_search": {
+    write(root, "synthetic_neural_development.json", {"version": 1})
+    for index, row in enumerate(architecture_trials):
+        row["target_outcome"] = {
+            "status": "OK",
+            "utility": 0.62 if row["assignment"] == "ADAPTIVE_FAST" else 0.50,
+        }
+    write(root, "developmental_architecture.json", {
+        "schema_version": "ferro-developmental-architecture.v1",
+        "selected_variant": "ADAPTIVE_FAST",
+        "selected_at": NOW.isoformat(),
+        "trials": architecture_trials,
+        "selection_history": [{
             "selected_variant": "ADAPTIVE_FAST",
-            "trials": architecture_trials,
-            "selection_history": [{
-                "selected_variant": "ADAPTIVE_FAST",
-                "selected_at_trial_seq": 8,
-                "effect_adaptive_minus_conservative": 0.12,
-            }],
-        },
+            "selected_at": NOW.isoformat(),
+            "selected_at_trial_seq": 8,
+            "effect_adaptive_minus_conservative": 0.12,
+            "causal_source": "REAL_TARGET_OUTCOMES",
+        }],
     })
     handoff_trials = []
     for index in range(8):

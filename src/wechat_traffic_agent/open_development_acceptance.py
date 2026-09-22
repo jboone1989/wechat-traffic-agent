@@ -247,15 +247,14 @@ class OpenDevelopmentAcceptance:
             missing=("real sampled sensor extension or Ferro-born unsemantic motor capacity",),
         )
 
-    def _n33(self, development: Mapping[str, Any]) -> dict[str, Any]:
-        search = (
-            development.get("developmental_architecture_search")
-            if isinstance(development.get("developmental_architecture_search"), Mapping)
-            else {}
-        )
+    def _n33(self) -> dict[str, Any]:
+        search = _read(self.application / "developmental_architecture.json")
         trials = [
             row for row in search.get("trials") or ()
-            if isinstance(row, Mapping) and row.get("status") == "SETTLED"
+            if isinstance(row, Mapping)
+            and row.get("status") == "SETTLED"
+            and isinstance(row.get("target_outcome"), Mapping)
+            and (row.get("target_outcome") or {}).get("utility") is not None
         ]
         arms = {
             name: sum(row.get("assignment") == name for row in trials)
@@ -266,9 +265,11 @@ class OpenDevelopmentAcceptance:
             row for row in search.get("selection_history") or ()
             if isinstance(row, Mapping)
             and row.get("selected_variant") == selected
+            and row.get("causal_source") == "REAL_TARGET_OUTCOMES"
         ]
         accepted = bool(
-            selected in {"ADAPTIVE_FAST", "CONSERVATIVE_STABLE"}
+            search.get("schema_version") == "ferro-developmental-architecture.v1"
+            and selected in {"ADAPTIVE_FAST", "CONSERVATIVE_STABLE"}
             and arms["ADAPTIVE_FAST"] >= 4
             and arms["CONSERVATIVE_STABLE"] >= 4
             and history
@@ -279,10 +280,12 @@ class OpenDevelopmentAcceptance:
             evidence={
                 "selected_variant": selected,
                 "settled_counts": arms,
+                "real_target_outcome_count": len(trials),
                 "trial_count": len(search.get("trials") or ()),
                 "selection_history_count": len(history),
+                "selected_at": search.get("selected_at"),
             },
-            missing=("4/4 real outcome trials -> selected developmental architecture",),
+            missing=("4/4 prospective real target outcomes -> selected inherited developmental architecture",),
         )
 
     def _n34(self) -> dict[str, Any]:
@@ -427,7 +430,7 @@ class OpenDevelopmentAcceptance:
             "N30": self._n30(),
             "N31": self._n31(),
             "N32": self._n32(),
-            "N33": self._n33(development),
+            "N33": self._n33(),
             "N34": self._n34(),
             "N35": self._n35(),
             "N36": self._n36(),
