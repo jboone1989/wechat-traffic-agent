@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from hashlib import sha256
 import json
 from pathlib import Path
 from typing import Any, Literal
@@ -105,8 +106,34 @@ class SocialExpressionDraftWorker:
         out = folder / "social_expression_drafts.json"
         if out.exists():
             existing = _read_json(out)
-            status = "ALREADY_SKIPPED" if existing.get("status") == "SKIPPED" else "ALREADY_DRAFTED"
-            return {"status": status, "cycle": cycle, "drafts": existing}
+            existing_status = str(existing.get("status") or "")
+            if existing_status == "SKIPPED":
+                return {"status": "ALREADY_SKIPPED", "cycle": cycle, "drafts": existing}
+            if existing_status == "DRAFT_READY":
+                return {"status": "ALREADY_DRAFTED", "cycle": cycle, "drafts": existing}
+            # INVALID_DRAFTS and malformed partial artifacts are retryable.
+            # Preserve their bytes under a content-addressed audit filename
+            # before recreating the canonical projection.
+            try:
+                raw = out.read_bytes()
+                archive = folder / (
+                    "social_expression_drafts.invalid-"
+                    + sha256(raw).hexdigest()[:16]
+                    + ".json"
+                )
+                if archive.exists():
+                    if archive.read_bytes() != raw:
+                        raise ValueError("social draft recovery archive collision")
+                    out.unlink()
+                else:
+                    out.replace(archive)
+            except OSError as exc:
+                return {
+                    "status": "RECOVERY_ARCHIVE_ERROR",
+                    "cycle": cycle,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
         cognition = _read_json(folder / "cognition.json")
         if not cognition.get("worth_saying"):
             return {"status": "NO_EXPRESSION", "cycle": cycle}

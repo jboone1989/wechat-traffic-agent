@@ -638,3 +638,34 @@ def test_published_cycle_replays_missing_social_stage_without_rewriting_content(
     assert x_publisher.calls == [{"cycle": BASE_CYCLE, "now": NOW}]
     assert okx_publisher.calls == [{"cycle": BASE_CYCLE, "now": NOW}]
     assert json.loads(path.read_text()) == published
+
+
+def test_social_backlog_finds_recent_published_cycle_missing_draft(tmp_path):
+    state_root = tmp_path / "state"
+    folder = (
+        state_root
+        / "content"
+        / "continuous"
+        / "cycles"
+        / "v2-published-social-gap"
+    )
+    folder.mkdir(parents=True, exist_ok=True)
+    published = {
+        "status": "PUBLISHED",
+        "cycle": "v2-published-social-gap",
+        "publication": {"public_route": "/notes/gap/"},
+    }
+    (folder / "result.json").write_text(
+        json.dumps(published) + "\n", encoding="utf-8"
+    )
+    (folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+    runner = WakefulContentTaskRunner(state_root=state_root)
+
+    candidate = runner._social_stage_backlog_candidate()
+
+    assert candidate is not None
+    assert candidate["cycle"] == "v2-published-social-gap"
+    assert candidate["reason"] == "MISSING_SOCIAL_DRAFT"
+    assert candidate["result"] == published

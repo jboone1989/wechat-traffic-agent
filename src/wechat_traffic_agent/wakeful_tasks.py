@@ -1121,6 +1121,69 @@ class WakefulContentTaskRunner:
         tmp.replace(folder / "mission_followup.json")
         return metadata
 
+    def _social_stage_backlog_candidate(self) -> dict[str, Any] | None:
+        """Find one recent published cycle whose downstream social stage is incomplete."""
+        state_root = getattr(self, "state_root", None)
+        if state_root is None:
+            return None
+        cycles_root = (
+            Path(state_root) / "content" / "continuous" / "cycles"
+        )
+        if not cycles_root.is_dir():
+            return None
+        try:
+            folders = sorted(
+                (path for path in cycles_root.iterdir() if path.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )[:200]
+        except OSError:
+            return None
+        for folder in folders:
+            result_path = folder / "result.json"
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(result, dict):
+                continue
+            if str(result.get("status") or "").upper() != "PUBLISHED":
+                continue
+            try:
+                cognition = json.loads(
+                    (folder / "cognition.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                cognition = {}
+            if not bool(
+                cognition.get("worth_saying")
+                if isinstance(cognition, dict)
+                else False
+            ):
+                continue
+            social_path = folder / "social_expression_drafts.json"
+            try:
+                social = json.loads(social_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                social = {}
+            social_status = (
+                str(social.get("status") or "")
+                if isinstance(social, dict)
+                else ""
+            )
+            if social_status in {"DRAFT_READY", "SKIPPED"}:
+                continue
+            return {
+                "cycle": str(result.get("cycle") or folder.name),
+                "result": result,
+                "reason": (
+                    "MISSING_SOCIAL_DRAFT"
+                    if not social_path.exists()
+                    else f"SOCIAL_DRAFT_{social_status or 'INVALID'}"
+                ),
+            }
+        return None
+
     def _run_social_stage(
         self,
         *,
@@ -1177,6 +1240,21 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         if self.continuous_loop is None:
             return rows
+        if focus_topic is None:
+            backlog = self._social_stage_backlog_candidate()
+            if backlog is not None:
+                replay_rows: dict[str, Any] = {"status": "OK"}
+                self._run_social_stage(
+                    rows=replay_rows,
+                    continuous=dict(backlog["result"]),
+                    now=now,
+                )
+                rows["social_stage_backlog_recovery"] = {
+                    "status": "REPLAYED",
+                    "cycle": str(backlog["cycle"]),
+                    "reason": str(backlog["reason"]),
+                    "results": replay_rows,
+                }
         # Strategy selection consumes traffic context, so refresh GSC immediately before it.
         # This preserves the pre-Wakeful ordering contract without restoring a monolithic poll loop.
         if self.gsc_collector is not None:

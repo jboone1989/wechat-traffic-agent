@@ -436,3 +436,29 @@ def test_invalid_okx_candidate_does_not_discard_valid_x_draft(tmp_path):
     assert saved["drafts"]["x"]["channel"] == "X"
     assert saved["draft_errors"]["okx"]["status"] == "VALIDATION_ERROR"
     assert saved["draft_errors"]["okx"]["text_length"] > OKX_SHORT_POST_MAX_CHARS
+
+
+def test_invalid_draft_projection_is_retryable(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    folder = state / "content/continuous/cycles" / cycle
+    (folder / "social_expression_drafts.json").write_text(
+        json.dumps({
+            "schema_version": "content-social-expression-drafts.v2",
+            "status": "INVALID_DRAFTS",
+            "cycle": cycle,
+            "drafts": {},
+            "draft_errors": {"okx": {"status": "VALIDATION_ERROR"}},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    runtime = Runtime()
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state)
+
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+
+    assert value["status"] == "DRAFTED"
+    saved = json.loads(
+        (folder / "social_expression_drafts.json").read_text(encoding="utf-8")
+    )
+    assert saved["status"] == "DRAFT_READY"
+    assert saved["drafts"]["x"]["channel"] == "X"
