@@ -343,7 +343,20 @@ class ContentNetworkService:
             self._record_join_status("PENDING")
             self._join_task = self._loop.create_task(join_with_retry())
 
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        async def guardian_health(_request):
+            return JSONResponse({
+                "status": "ok",
+                "healthy": True,
+                "agent_id": self.agent_id,
+                "guardianNonce": os.environ.get("FERRO_GUARDIAN_HEALTH_NONCE", ""),
+                "capabilities": ["ferro-runtime", "network-health"],
+            })
+
         app = A2AServer(identity=identity, card=card, handlers=handlers).starlette_app(on_start=startup)
+        app.routes.append(Route("/guardian-health", guardian_health, methods=["GET"]))
         if self.engagement_enabled:
             from starlette.responses import JSONResponse, Response
             from starlette.routing import Route
