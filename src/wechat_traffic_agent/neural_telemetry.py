@@ -351,14 +351,54 @@ class NeuralTelemetrySampler:
         return live, edges
 
     @staticmethod
-    def _synthetic_nodes(substrate: Any, projection: Mapping[str, Any], *, compact: bool) -> list[dict[str, Any]]:
+    def _channel_anchors(
+        ancestral_nodes: list[dict[str, Any]],
+    ) -> dict[str, tuple[float, float]]:
+        grouped: dict[str, list[tuple[float, float]]] = {}
+        for row in ancestral_nodes:
+            group = str(row.get("group") or "").strip()
+            if not group:
+                continue
+            grouped.setdefault(group, []).append((
+                _bounded_float(row.get("x"), 0.5),
+                _bounded_float(row.get("y"), 0.5),
+            ))
+        return {
+            group: (
+                sum(point[0] for point in points) / len(points),
+                sum(point[1] for point in points) / len(points),
+            )
+            for group, points in grouped.items()
+            if points
+        }
+
+    @staticmethod
+    def _layout_jitter(ordinal: int) -> tuple[float, float]:
+        # Deterministic irrational rotations keep positions stable across page
+        # refreshes without imposing a false ring/grid structure.
+        ux = ((ordinal * 0.6180339887498949) % 1.0) - 0.5
+        uy = ((ordinal * 0.4142135623730950 + 0.2718281828459) % 1.0) - 0.5
+        return ux, uy
+
+    @classmethod
+    def _synthetic_nodes(
+        cls,
+        substrate: Any,
+        projection: Mapping[str, Any],
+        *,
+        compact: bool,
+        ancestral_nodes: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         state = getattr(substrate, "_state", None)
         neurons = state.get("neurons") if isinstance(state, Mapping) else None
         if not isinstance(neurons, Mapping):
-            return []
+            return [], []
         event_seq = int(state.get("event_seq") or 0)
         limit = 80 if compact else 240
         rows: list[dict[str, Any]] = []
+        positions: dict[str, tuple[float, float]] = {}
+        anchors = cls._channel_anchors(ancestral_nodes)
+        neutral_anchor = (0.50, 0.54)
         alive = [
             row for row in neurons.values()
             if isinstance(row, Mapping) and str(row.get("state") or "") != "DEAD"
@@ -368,19 +408,77 @@ class NeuralTelemetrySampler:
             threshold = max(1e-9, _bounded_float(row.get("threshold"), 1.0))
             membrane = _bounded_float(row.get("membrane"), 0.0)
             fired = int(row.get("last_fired_event_seq") or -1) == event_seq
-            angle = ((int(row.get("ordinal") or idx) * 0.754877666) % 1.0) * math.tau
-            radius = 0.12 + 0.025 * ((idx % 7) / 6.0)
+            ordinal = int(row.get("ordinal") or idx)
+            neuron_id = str(row.get("neuron_id") or f"synthetic:{idx}")
+            parent_channels = [str(x) for x in row.get("parent_channels") or ()]
+            channel_points = [anchors[channel] for channel in parent_channels if channel in anchors]
+            if channel_points:
+                anchor_x = sum(point[0] for point in channel_points) / len(channel_points)
+                anchor_y = sum(point[1] for point in channel_points) / len(channel_points)
+                layout_basis = "parent_channels"
+            else:
+                anchor_x, anchor_y = neutral_anchor
+                layout_basis = "development_unmapped"
+
+            recurrent_inputs = row.get("recurrent_inputs")
+            recurrent_ids = [
+                str(parent_id)
+                for parent_id in recurrent_inputs
+            ] if isinstance(recurrent_inputs, Mapping) else []
+            recurrent_points = [
+                positions[parent_id]
+                for parent_id in recurrent_ids
+                if parent_id in positions
+            ]
+            if recurrent_points:
+                recurrent_x = sum(point[0] for point in recurrent_points) / len(recurrent_points)
+                recurrent_y = sum(point[1] for point in recurrent_points) / len(recurrent_points)
+                # Parent channels retain semantic placement authority while
+                # actual recurrent structure pulls developing neurons together.
+                anchor_x = (0.72 * anchor_x) + (0.28 * recurrent_x)
+                anchor_y = (0.72 * anchor_y) + (0.28 * recurrent_y)
+                layout_basis += "+recurrent_inputs"
+
+            jitter_x, jitter_y = cls._layout_jitter(ordinal)
+            spread = 0.105 if channel_points else 0.14
+            x = max(0.035, min(0.965, anchor_x + jitter_x * spread))
+            y = max(0.055, min(0.945, anchor_y + jitter_y * spread))
+            positions[neuron_id] = (x, y)
             rows.append({
-                "id": str(row.get("neuron_id") or f"synthetic:{idx}"),
+                "id": neuron_id,
                 "state": str(row.get("state") or "UNKNOWN"),
                 "generation": str(row.get("generation") or ""),
                 "activity": 1.0 if fired else round(max(0.0, min(1.0, membrane / threshold)), 5),
                 "fired_latest_event": fired,
-                "x": round(0.5 + radius * math.cos(angle), 5),
-                "y": round(0.5 + radius * math.sin(angle), 5),
-                "parent_channels": [str(x) for x in row.get("parent_channels") or ()],
+                "x": round(x, 5),
+                "y": round(y, 5),
+                "parent_channels": parent_channels,
+                "recurrent_input_count": len(recurrent_ids),
+                "layout_basis": layout_basis,
             })
-        return rows
+
+        visible = set(positions)
+        synthetic_edges: list[dict[str, Any]] = []
+        max_edges = 120 if compact else 360
+        for row in alive[:limit]:
+            target = str(row.get("neuron_id") or "")
+            if target not in visible:
+                continue
+            recurrent_inputs = row.get("recurrent_inputs")
+            if not isinstance(recurrent_inputs, Mapping):
+                continue
+            for source, weight in recurrent_inputs.items():
+                source = str(source)
+                if source not in visible:
+                    continue
+                synthetic_edges.append({
+                    "from": source,
+                    "to": target,
+                    "weight": round(_bounded_float(weight), 6),
+                })
+                if len(synthetic_edges) >= max_edges:
+                    return rows, synthetic_edges
+        return rows, synthetic_edges
 
     @staticmethod
     def _current_action(public: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -429,7 +527,12 @@ class NeuralTelemetrySampler:
         )
         self._build_topology(base, projection)
         nodes, edges = self._live_nodes(base, compact=compact)
-        synthetic = self._synthetic_nodes(substrate, projection, compact=compact)
+        synthetic, synthetic_edges = self._synthetic_nodes(
+            substrate,
+            projection,
+            compact=compact,
+            ancestral_nodes=nodes,
+        )
         development = projection.get("developmental_neurogenesis")
         development = dict(development) if isinstance(development, Mapping) else {}
         total_neurons = int(
@@ -457,8 +560,12 @@ class NeuralTelemetrySampler:
                 "sample_nodes": nodes,
                 "sample_edges": edges,
                 "synthetic_sample": synthetic,
+                "synthetic_edges": synthetic_edges,
                 "sample_is_complete_brain": False,
-                "sample_semantics": "real subgraph around engineered semantic electrodes; geometry is visualization-only",
+                "sample_semantics": (
+                    "ancestral geometry is visualization-only; Ferro-born positions are anchored to real parent channels "
+                    "and pulled by visible recurrent inputs, while rendered edges remain real substrate connections"
+                ),
             },
             "burst": {
                 "seq": int(latest.get("seq") or 0) if latest else None,
@@ -477,7 +584,9 @@ class NeuralTelemetrySampler:
             "resource_pressure": public.get("resource_pressure"),
             "boundary": (
                 "whole-connectome field aggregates every ancestral neuron; detailed nodes are a bounded real subgraph. "
-                "No per-edge spike path is invented when the substrate only exposes aggregate burst evidence."
+                "Yellow Ferro-born neurons are positioned near their real parent-channel regions and recurrent neighbors; "
+                "the coordinates are still visualization geometry, not anatomy. No per-edge spike path is invented when "
+                "the substrate only exposes aggregate burst evidence."
             ),
         }
 

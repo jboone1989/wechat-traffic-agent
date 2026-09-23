@@ -67,6 +67,7 @@ class _Substrate:
                     "threshold": 1.0,
                     "last_fired_event_seq": 8,
                     "parent_channels": ["resource_pressure"],
+                    "recurrent_inputs": {"ferro:1": 0.37},
                 },
             },
         }
@@ -140,6 +141,29 @@ def test_neural_telemetry_aggregates_whole_brain_and_real_subgraph():
     assert payload["brain"]["sample_edges"]
     assert all({"from", "to", "weight"} <= set(edge) for edge in payload["brain"]["sample_edges"])
     assert payload["brain"]["synthetic_sample"][0]["fired_latest_event"] is True
+    synthetic = {row["id"]: row for row in payload["brain"]["synthetic_sample"]}
+    assert synthetic["ferro:1"]["layout_basis"] == "parent_channels"
+    assert synthetic["ferro:2"]["layout_basis"] == "parent_channels+recurrent_inputs"
+    assert synthetic["ferro:2"]["recurrent_input_count"] == 1
+    assert payload["brain"]["synthetic_edges"] == [{
+        "from": "ferro:1",
+        "to": "ferro:2",
+        "weight": 0.37,
+    }]
+
+    anchors = {}
+    for group in ("curiosity", "resource_pressure"):
+        grouped = [row for row in payload["brain"]["sample_nodes"] if row["group"] == group]
+        assert grouped
+        anchors[group] = (
+            sum(row["x"] for row in grouped) / len(grouped),
+            sum(row["y"] for row in grouped) / len(grouped),
+        )
+    curiosity_distance = (
+        (synthetic["ferro:1"]["x"] - anchors["curiosity"][0]) ** 2
+        + (synthetic["ferro:1"]["y"] - anchors["curiosity"][1]) ** 2
+    ) ** 0.5
+    assert curiosity_distance < 0.09
     assert payload["burst"]["seq"] == 9
     assert payload["burst"]["spikes"] == 321
     assert payload["current_action"]["task"] == "REFLECT"
