@@ -183,7 +183,7 @@ function renderTelemetryMeta(t){
  const ranked=Object.entries(drives).sort((a,b)=>n(b[1])-n(a[1]));text('live-drive',ranked.length?ranked[0][0].replaceAll('_',' ').toUpperCase()+' · '+n(ranked[0][1]).toFixed(2):'—');liveDriveBars(drives);
  text('live-action',action.task?String(action.task).replaceAll('_',' '):'No current neural action');
  text('live-action-detail',action.task?((action.authority||'NEURAL')+' · '+(action.status||'PENDING')+(action.reward!==null&&action.reward!==undefined?' · reward '+n(action.reward).toFixed(2):'')):'No recent motor decision or drive-authority action.');
- text('live-render-budget',fmt((brain.sample_nodes||[]).length)+' nodes · '+fmt((brain.sample_edges||[]).length)+' edges');
+ text('live-render-budget',fmt((brain.sample_nodes||[]).length+(brain.synthetic_sample||[]).length)+' nodes · '+fmt((brain.sample_edges||[]).length+(brain.synthetic_edges||[]).length)+' edges');
  text('live-render-detail',fmt((brain.field||[]).length)+' whole-brain aggregate bins · '+(t.detail||'full')+' detail');
  if(t.boundary)text('brain-boundary',t.boundary);
 }
@@ -214,7 +214,16 @@ function drawBrain(){
   ctx.fillStyle=role?'rgba(142,214,232,'+(0.35+0.62*a).toFixed(3)+')':'rgba(112,243,178,'+(0.16+0.72*a).toFixed(3)+')';ctx.fill();
   if(role&&a>.52){ctx.beginPath();ctx.arc(px(node.x),py(node.y),r+4*a,0,Math.PI*2);ctx.strokeStyle='rgba(142,214,232,'+(0.08+0.18*a).toFixed(3)+')';ctx.stroke()}
  }
- for(const node of brain.synthetic_sample||[]){
+ const synthetic=brain.synthetic_sample||[],syntheticById=new Map(synthetic.map(x=>[String(x.id),x]));
+ for(const edge of brain.synthetic_edges||[]){
+  const a=syntheticById.get(String(edge.from)),b=syntheticById.get(String(edge.to));if(!a||!b)continue;
+  const activity=(clamp(a.activity)+clamp(b.activity))/2,weight=Math.min(1,Math.abs(n(edge.weight)));
+  ctx.beginPath();ctx.moveTo(px(a.x),py(a.y));ctx.lineTo(px(b.x),py(b.y));
+  ctx.strokeStyle='rgba(223,185,107,'+(0.10+0.22*weight+0.16*activity).toFixed(3)+')';
+  ctx.lineWidth=.8+1.1*weight;ctx.stroke();
+ }
+ ctx.lineWidth=.65;
+ for(const node of synthetic){
   const a=clamp(node.activity),r=2+3.3*a;ctx.beginPath();ctx.arc(px(node.x),py(node.y),r,0,Math.PI*2);
   ctx.fillStyle=node.fired_latest_event?'rgba(238,192,103,.95)':'rgba(223,185,107,'+(0.22+0.65*a).toFixed(3)+')';ctx.fill();
  }
