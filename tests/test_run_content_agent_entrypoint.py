@@ -1,4 +1,9 @@
+import importlib.util
+import json
+import sys
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRYPOINT = ROOT / "scripts" / "run_content_agent.py"
@@ -59,3 +64,21 @@ def test_one_shot_task_cli_is_bounded_and_uses_normal_runner():
     assert 'if args.once or args.task:' in text
     assert "task_runner.run(task, now=now" in text
     assert "observe_development_transfer_outcome" in text
+
+
+def test_heartbeat_records_failure_when_startup_raises(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("run_content_agent_under_test", ENTRYPOINT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_state_root", lambda: tmp_path)
+    monkeypatch.setattr(sys, "argv", ["run_content_agent.py"])
+
+    def fail_initialization(*_args):
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(module, "_run_initialized_agent", fail_initialization)
+    with pytest.raises(RuntimeError, match="startup failed"):
+        module.main()
+
+    pulse = json.loads((tmp_path / "application" / "ferro-heartbeat.json").read_text())
+    assert pulse["status"] == "FAILED"

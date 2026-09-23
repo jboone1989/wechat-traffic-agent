@@ -67,6 +67,7 @@ class PiRemoteRepairProvider:
             cwd=self.root,
             shell=False,
             check=False,
+            shell=False,
             capture_output=True,
             text=True,
             timeout=self.timeout_seconds,

@@ -72,6 +72,7 @@ def test_motor_decision_uses_connectome_and_waits_for_world_outcome(tmp_path: Pa
     learned = cortex.observe_outcome(
         task="OBSERVE_WORLD",
         result={"status": "OK"},
+        decision_id=decision["decision_id"],
         observed_at=NOW,
     )
     assert learned is not None
@@ -93,6 +94,7 @@ def test_repeated_success_teaches_a_motor_unit_a_habit(tmp_path: Path):
         learned = cortex.observe_outcome(
             task="OBSERVE_WORLD",
             result={"status": "OK", "world_utility": 0.8},
+            decision_id=decision["decision_id"],
             observed_at=NOW,
         )
         assert learned is not None
@@ -117,10 +119,11 @@ def test_repeated_failure_can_make_a_motor_association_dormant(tmp_path: Path):
     substrate = FakeSubstrate()
     cortex = NeuralMotorCortex(tmp_path, substrate=substrate, allowed_actions=("OBSERVE_WORLD",))
     for _ in range(cortex.DORMANT_MIN_TRIALS):
-        cortex.select(neural_life=life(), now=NOW)
+        decision = cortex.select(neural_life=life(), now=NOW)
         learned = cortex.observe_outcome(
             task="OBSERVE_WORLD",
             result={"status": "ERROR"},
+            decision_id=decision["decision_id"],
             observed_at=NOW,
         )
         assert learned is not None
@@ -153,3 +156,23 @@ def test_motor_cortex_can_grow_new_unsemantic_units_without_granting_actions(tmp
     decision = cortex.select(neural_life=life(), now=NOW)
     assert decision["motor_id"].startswith("motor_")
     assert decision["task"] == "OBSERVE_WORLD"
+
+
+def test_no_spikes_never_selects_motor_action(tmp_path: Path):
+    class SilentSubstrate(FakeSubstrate):
+        def stimulate(self, currents, observed_at, *, source_event_id=None, feedback_eligible=None):
+            return {"spikes": 0, "active_neurons": 0, "response_spike_pattern_digest": "sha256:" + "ab" * 32}
+    cortex = NeuralMotorCortex(tmp_path, substrate=SilentSubstrate(), allowed_actions=("OBSERVE_WORLD",))
+    selected = cortex.select(neural_life=life(), now=NOW)
+    assert selected["status"] == "NO_NEURAL_MOTOR_SIGNAL"
+    assert selected["task"] is None
+    assert cortex.state["decisions"] == []
+
+
+def test_unrelated_task_outcome_cannot_settle_motor_decision(tmp_path: Path):
+    cortex = NeuralMotorCortex(tmp_path, substrate=FakeSubstrate(), allowed_actions=("OBSERVE_WORLD",))
+    decision = cortex.select(neural_life=life(), now=NOW)
+    assert cortex.observe_outcome(task="OBSERVE_WORLD", result={"status": "OK"}, observed_at=NOW) is None
+    assert cortex.observe_outcome(task="OBSERVE_WORLD", result={"status": "OK"},
+                                  decision_id="motor-decision:unrelated", observed_at=NOW) is None
+    assert cortex.state["decisions"][-1]["status"] == "PENDING_OUTCOME"

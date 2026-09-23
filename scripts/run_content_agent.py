@@ -257,6 +257,19 @@ def main() -> int:
     if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
 
     state_root = _state_root()
+    from wechat_traffic_agent.guardian_heartbeat import FerroHeartbeat
+    heartbeat = FerroHeartbeat(state_root)
+    terminal_status = "FAILED"
+    try:
+        heartbeat.start()
+        result = _run_initialized_agent(args, state_root, heartbeat)
+        terminal_status = "STOPPED" if result == 0 else "FAILED"
+        return result
+    finally:
+        heartbeat.stop(status=terminal_status)
+
+
+def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     from wechat_traffic_agent.llm_resources import sync_llm_resource_pool
     try:
         pool_bootstrap = sync_llm_resource_pool(
@@ -520,6 +533,7 @@ def main() -> int:
         website_experiment_evaluator=website_experiment_evaluator,
         evolution_bridge=content_evolution_bridge,
         wakeful=wakeful_runtime,
+        resource_regulator=wakeful_runtime.resource_regulator,
         web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
         stop_requested=lambda: stopping,
     )
@@ -553,6 +567,7 @@ def main() -> int:
             task = reason_task or ("OBSERVE_WORLD" if wake_reason and wake_reason.cognition_required else "EVENT_OBSERVE")
             runtime_event_cycle = f"wake-{int(now.timestamp())}"
             active_task = task
+            heartbeat.task = task
             active_cycle = runtime_event_cycle
             wakeful_runtime.core.set_state(
                 WakefulState.THINKING if task in {"CONTENT_COGNITION", "OBSERVE_WORLD"} else WakefulState.OBSERVING
@@ -571,7 +586,25 @@ def main() -> int:
             if task == "EVENT_OBSERVE":
                 task_result = {"task": task, "status": "NO_DEEP_COGNITION_JUSTIFIED"}
             else:
-                task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
+                try:
+                    task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
+                except Exception as exc:
+                    maintenance = getattr(task_runner, "self_maintenance", None)
+                    if maintenance is not None:
+                        try:
+                            maintenance.ingest_task_outcome(task, {
+                                "status": "ERROR", "error_type": type(exc).__name__,
+                                "cycle": runtime_event_cycle,
+                            }, now=now)
+                        except Exception:
+                            pass  # Preserve the original task failure for the supervisor.
+                    raise
+            maintenance = getattr(task_runner, "self_maintenance", None)
+            if maintenance is not None:
+                try:
+                    maintenance.ingest_task_outcome(task, task_result, now=now)
+                except Exception:
+                    pass  # Diagnosis cannot hide a completed task result.
             print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
             if startup_request is not None:
@@ -580,9 +613,11 @@ def main() -> int:
                     "status": status,
                     "observed_at": now.isoformat(),
                 })
+            wake_refs = tuple(wake_reason.relevant_refs) if wake_reason is not None else ()
             transfer_learning = wakeful_runtime.observe_transfer_outcome(
                 task=task,
                 result=task_result,
+                experiment_id=next((ref for ref in wake_refs if ref.startswith("transfer:")), None),
                 observed_at=now,
             )
             if transfer_learning is not None:
@@ -590,6 +625,7 @@ def main() -> int:
             development_transfer = wakeful_runtime.observe_development_transfer_outcome(
                 task=task,
                 result=task_result,
+                trial_id=next((ref for ref in wake_refs if ref.startswith("development-transfer:")), None),
                 observed_at=now,
             )
             if development_transfer is not None:
@@ -601,6 +637,7 @@ def main() -> int:
             motor_learning = wakeful_runtime.observe_motor_outcome(
                 task=task,
                 result=task_result,
+                decision_id=next((ref for ref in wake_refs if ref.startswith("motor-decision:")), None),
                 observed_at=now,
             )
             if motor_learning is not None:

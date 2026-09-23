@@ -89,6 +89,7 @@ def test_real_target_outcome_settles_prospective_trial(tmp_path: Path):
     settled = lab.settle_target(
         task=row["target_task"],
         result={"status": "OK"},
+        experiment_id=row["experiment_id"],
         observed_at=NOW,
     )
     assert settled is not None
@@ -165,7 +166,7 @@ def test_next_trial_advances_source_target_pair_after_settlement(tmp_path: Path)
 
     first = lab.begin(now=NOW)
     target = first["experiment"]["target_task"]
-    lab.settle_target(task=target, result={"status": "OK"}, observed_at=NOW)
+    lab.settle_target(task=target, result={"status": "OK"}, experiment_id=first["experiment"]["experiment_id"], observed_at=NOW)
     second = lab.begin(now=NOW)
 
     assert second["experiment"]["source_environment"] == PAIRS[1][0]

@@ -99,8 +99,8 @@ class FerroNeuralLife:
         try:
             load1 = float(os.getloadavg()[0])
         except (AttributeError, OSError):
-            load1 = 0.0
-        cpu_pressure = _clamp(load1 / cpu_count)
+            load1 = None
+        cpu_pressure = _clamp(load1 / cpu_count) if load1 is not None else 1.0
 
         mem_total = mem_available = None
         try:
@@ -112,9 +112,10 @@ class FerroNeuralLife:
             mem_total, mem_available = rows.get("MemTotal"), rows.get("MemAvailable")
         except OSError:
             pass
+        memory_valid = bool(mem_total and mem_available is not None)
         memory_pressure = (
             _clamp(1.0 - mem_available / mem_total)
-            if mem_total and mem_available is not None else 0.0
+            if memory_valid else 1.0
         )
 
         try:
@@ -122,7 +123,7 @@ class FerroNeuralLife:
             disk_pressure = _clamp(1.0 - (disk.free / max(1, disk.total)))
             disk_free_gib = disk.free / (1024 ** 3)
         except OSError:
-            disk_pressure, disk_free_gib = 0.0, None
+            disk_pressure, disk_free_gib = 1.0, None
         mission = _read_json(self.state_root / "content" / "x" / "growth_mission.json")
         current = mission.get("current")
         target = mission.get("target")
@@ -145,6 +146,11 @@ class FerroNeuralLife:
             "memory_pressure": round(memory_pressure, 6),
             "disk_pressure": round(disk_pressure, 6),
             "disk_free_gib": None if disk_free_gib is None else round(disk_free_gib, 3),
+            "sensor_quality": {
+                "cpu": "OBSERVED" if load1 is not None else "UNKNOWN",
+                "memory": "OBSERVED" if memory_valid else "UNKNOWN",
+                "disk": "OBSERVED" if disk_free_gib is not None else "UNKNOWN",
+            },
             "x_followers": float(current) if isinstance(current, (int, float)) else None,
             "x_target": float(target) if isinstance(target, (int, float)) else None,
             "x_follower_gap": follower_gap,

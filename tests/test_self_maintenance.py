@@ -439,3 +439,16 @@ def test_missing_repair_capability_fails_closed_without_local_edit_authority(tmp
 
     assert result["repair_request"]["status"] == "CAPABILITY_UNAVAILABLE"
     assert "request_id" not in result["repair_request"]
+
+
+def test_non_content_task_failure_enters_durable_maintenance_without_unsafe_repair(tmp_path):
+    service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
+    recorded = service.ingest_task_outcome("NEURAL_PLAY", {
+        "status": "DEGRADED", "brain_lab": {"status": "ERROR"},
+    }, now=NOW)
+    assert recorded["status"] == "RECORDED"
+    assert recorded["repair_proposal"] is None
+    latest = json.loads((tmp_path / "application" / "self_maintenance" / "latest.json").read_text())
+    assert latest["task"] == "NEURAL_PLAY"
+    assert latest["affected_capability"] == "wakeful.neural_play"
+    assert latest["status"] == "DIAGNOSING"

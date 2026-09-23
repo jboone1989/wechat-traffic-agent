@@ -82,6 +82,29 @@ class SelfMaintenanceService:
         self.capability_runtime = capability_runtime
         self.memory = DiagnosticMemory(self.root)
 
+    def ingest_task_outcome(self, task: str, result: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+        """Record failure evidence from every wakeful task without a raw traceback."""
+        if not isinstance(result, dict):
+            return {"status": "IGNORED_NON_ERROR"}
+        task = str(task or "UNKNOWN").upper()
+        if task == "CONTENT_COGNITION" and result.get("self_maintenance"):
+            return dict(result["self_maintenance"])
+        status = str(result.get("status") or "").upper()
+        failed_parts = [
+            key for key, value in result.items()
+            if isinstance(value, dict)
+            and str(value.get("status") or "").upper() in {"ERROR", "DEGRADED"}
+        ]
+        if status not in {"ERROR", "DEGRADED"} and not failed_parts:
+            return {"status": "IGNORED_NON_ERROR"}
+        cycle = str(result.get("cycle") or f"{task.lower()}-{int(now.timestamp())}")
+        return self.ingest_failure({
+            "status": "ERROR", "task": task, "cycle": cycle,
+            "error_type": str(result.get("error_type") or status or "SUBTASK_FAILURE")[:120],
+            "message": "failed components: " + ",".join(sorted(failed_parts)) if failed_parts else status,
+            "failure_site": task.lower() + ":" + ",".join(sorted(failed_parts)) if failed_parts else task.lower(),
+        }, now=now)
+
     def ingest_failure(self, failure: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         if str(failure.get("status") or "") != "ERROR":
             return {"status": "IGNORED_NON_ERROR"}
@@ -91,9 +114,10 @@ class SelfMaintenanceService:
         error_type = str(failure.get("error_type") or "UNKNOWN")
         message = " ".join(str(failure.get("message") or "").split())[:1000]
         cycle = _cycle_ref(failure.get("cycle"))
+        task = str(failure.get("task") or "CONTENT_COGNITION").upper()
         failure_site = str(failure.get("failure_site") or _stable_failure_site(self.state_root, cycle))
         signature = sha256(
-            f"{error_type}\0{message}\0{failure_site}".encode("utf-8")
+            f"{task}\0{error_type}\0{message}\0{failure_site}".encode("utf-8")
         ).hexdigest()
         problem_id = "self-problem:" + signature[:24]
         path = self.root / "problems" / f"{signature[:24]}.json"
@@ -114,7 +138,7 @@ class SelfMaintenanceService:
             }
 
         evidence_refs = [
-            f"content-cycle:{cycle}:result",
+            f"wakeful-task:{task}:{cycle}:result",
             "error-signature:sha256:" + signature,
         ]
         case = self._diagnose(
@@ -124,6 +148,7 @@ class SelfMaintenanceService:
             cycle=cycle,
             failure_site=failure_site,
             evidence_refs=evidence_refs,
+            task=task,
             now=now,
         )
         case_path = self.memory.persist_case(case)
@@ -132,7 +157,7 @@ class SelfMaintenanceService:
             message=message,
             cycle=cycle,
             failure_site=failure_site,
-        )
+        ) if task == "CONTENT_COGNITION" else None
         status = "REPAIR_PROPOSED" if proposal is not None else "DIAGNOSING"
         cycles = [*seen_cycles, cycle][-32:]
         payload = {
@@ -142,8 +167,9 @@ class SelfMaintenanceService:
             "symptom": message or error_type,
             "error_type": error_type,
             "failure_site": failure_site,
-            "failed_goal": "complete one eligible content cognition cycle",
-            "affected_capability": "content.cognition",
+            "failed_goal": f"complete {task} task",
+            "affected_capability": f"wakeful.{task.lower()}",
+            "task": task,
             "first_seen_at": previous.get("first_seen_at") or now.astimezone(timezone.utc).isoformat(),
             "last_seen_at": now.astimezone(timezone.utc).isoformat(),
             "occurrences": int(previous.get("occurrences") or 0) + 1,
@@ -260,17 +286,18 @@ class SelfMaintenanceService:
         cycle: str,
         failure_site: str,
         evidence_refs: list[str],
+        task: str = "CONTENT_COGNITION",
         now: datetime,
     ) -> DiagnosticCase:
         case = DiagnosticCase.start(
             symptom=f"{error_type}: {message}",
-            scope_ladder=("content-cycle", "content-cognition-contract", "content-agent"),
-            tags=("production-failure", "content-cognition", error_type.lower()),
+            scope_ladder=("content-cycle", "content-cognition-contract", "content-agent") if task == "CONTENT_COGNITION" else ("wakeful-task", "wakeful-runtime", "content-agent"),
+            tags=("production-failure", task.lower(), error_type.lower()),
             now=now,
         )
         observation = case.observe(
             statement=f"Cycle {cycle} ended with {error_type}: {message}",
-            scope="content-cycle",
+            scope="content-cycle" if task == "CONTENT_COGNITION" else "wakeful-task",
             kind=ObservationKind.FAILURE,
             evidence_refs=evidence_refs,
             now=now,
@@ -432,13 +459,13 @@ class SelfMaintenanceService:
         try:
             fact = observer(
                 kind=EvolutionFactKind.FAILURE,
-                subject="content-cognition-self-maintenance",
+                subject=f"{problem.get('task', 'CONTENT_COGNITION').lower()}-self-maintenance",
                 summary=str(problem["symptom"]),
                 severity=0.85,
                 evidence_refs=list(problem.get("evidence_refs") or ()),
-                recurrence_key=f"content-cognition:{problem['error_type']}:{problem['problem_id']}",
+                recurrence_key=f"{problem.get('task', 'CONTENT_COGNITION')}:{problem['error_type']}:{problem['problem_id']}",
                 need_hint="Make content cognition failures diagnosable and recoverable without human intervention.",
-                target_capability="self-maintenance.content-cognition",
+                target_capability=f"self-maintenance.{str(problem.get('task') or 'CONTENT_COGNITION').lower().replace('_', '-')}",
                 metadata={
                     "problem_id": problem["problem_id"],
                     "repair_proposed": bool(problem.get("repair_proposal")),

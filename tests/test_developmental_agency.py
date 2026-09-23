@@ -164,3 +164,37 @@ def test_recovered_transfer_resolves_existing_need_without_erasing_history(tmp_p
     assert need["status"] == "RESOLVED"
     assert need["evidence_count"] == 2
     assert need["evidence"][-1]["kind"] == "TRANSFER_EFFECT_RECOVERED"
+
+
+def test_affect_and_motor_failure_create_executable_worlds_and_recover(tmp_path: Path):
+    agency = DevelopmentalAgency(tmp_path)
+    distressed = _life()
+    distressed["history"] = [
+        {"at": f"2026-09-20T0{i}:00:00+00:00", "affect": {"frustration": 0.9, "confidence": 0.2}}
+        for i in range(8)
+    ]
+    failed_motor = {"recent_decisions": [
+        {"decision_id": f"motor-decision:{i}", "task": "CHECK_X", "status": "SETTLED",
+         "outcome": {"reward": -0.8}} for i in range(4)
+    ]}
+    first = agency.refresh(now=NOW, neural_life=distressed, neural_transfer={"strata": {}},
+                           neural_motor=failed_motor)
+    assert {item["strategy"] for item in first["proposals"]} == {
+        "DEVELOPMENTAL_EXPLORATION", "MOTOR_CURRICULUM_SEARCH",
+    }
+    assert {item["target_task"] for item in first["worlds"]} == {"REFLECT", "CHECK_X"}
+    assert agency.next_candidate_world() is not None
+
+    recovered = _life()
+    recovered["history"] = [
+        {"at": f"2026-09-20T1{i}:00:00+00:00", "affect": {"frustration": 0.1, "confidence": 0.8}}
+        for i in range(8)
+    ]
+    successful_motor = {"recent_decisions": [
+        {"decision_id": f"motor-decision:recovered-{i}", "task": "CHECK_X", "status": "SETTLED",
+         "outcome": {"reward": 0.8}} for i in range(4)
+    ]}
+    second = agency.refresh(now=NOW, neural_life=recovered, neural_transfer={"strata": {}},
+                            neural_motor=successful_motor)
+    assert all(need["status"] == "RESOLVED" for need in second["needs"])
+    assert agency.next_candidate_world() is None
