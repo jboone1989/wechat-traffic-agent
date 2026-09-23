@@ -49,6 +49,7 @@ PLANNER_VERSION = "generated-repair.v7"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
+    "pi_remote_repair", "repair_request",
     "credential", "secret", "operator", "network", "auth", "deploy",
 )
 FORBIDDEN_GENERATED_TEXT = (

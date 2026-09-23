@@ -189,6 +189,16 @@ def test_model_cannot_escape_localized_boundary_by_claiming_target_path(tmp_path
     assert recipe["implementation_markers"] == []
 
 
+def test_repair_authority_files_are_never_generated_targets(tmp_path):
+    planner = GeneratedRepairPlanner(
+        workspace_root=_workspace(tmp_path),
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    assert planner.safe_source_path("src/wechat_traffic_agent/pi_remote_repair.py") is False
+    assert planner.safe_source_path("src/wechat_traffic_agent/repair_request.py") is False
+
+
 def test_planner_rejects_generated_network_or_process_capability(tmp_path):
     workspace = _workspace(tmp_path)
     runtime = PlannerRuntime(_valid_plan())

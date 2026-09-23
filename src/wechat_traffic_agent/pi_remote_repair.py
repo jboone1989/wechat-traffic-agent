@@ -51,6 +51,12 @@ class PiRemoteRepairProvider:
         if body.get("schema") != "pi-remote.repair-request.v1" or body.get("schemaVersion") != 1:
             raise ValueError("unsupported RepairRequest protocol version")
         request_payload = request.to_pi_remote_payload()
+        child_env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", str(Path.home())),
+            "USER": os.environ.get("USER", ""),
+            "PI_REMOTE_REPAIR_REQUEST_ONLY": "1",
+        }
         completed = subprocess.run(
             [
                 self.node,
@@ -59,11 +65,12 @@ class PiRemoteRepairProvider:
                 json.dumps({"request": request_payload}, sort_keys=True, separators=(",", ":")),
             ],
             cwd=self.root,
+            shell=False,
             check=False,
             capture_output=True,
             text=True,
             timeout=self.timeout_seconds,
-            env={**os.environ, "PI_REMOTE_REPAIR_REQUEST_ONLY": "1"},
+            env=child_env,
         )
         if completed.returncode != 0:
             raise RuntimeError("Pi Remote rejected RepairRequest")

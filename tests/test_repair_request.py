@@ -93,6 +93,7 @@ def test_pi_remote_provider_invokes_only_fixed_request_cli_without_shell(tmp_pat
         )
 
     monkeypatch.setattr("wechat_traffic_agent.pi_remote_repair.subprocess.run", fake_run)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-pi-remote-request-process")
     provider = PiRemoteRepairProvider(root=tmp_path)
     manifest = provider.manifest()
     assert manifest["capabilities"] == [{
@@ -112,3 +113,5 @@ def test_pi_remote_provider_invokes_only_fixed_request_cli_without_shell(tmp_pat
     assert seen["kwargs"]["timeout"] <= 30
     assert "git" not in " ".join(seen["argv"])
     assert "deploy" not in " ".join(seen["argv"])
+    assert seen["kwargs"]["env"]["PI_REMOTE_REPAIR_REQUEST_ONLY"] == "1"
+    assert "OPENAI_API_KEY" not in seen["kwargs"]["env"]
