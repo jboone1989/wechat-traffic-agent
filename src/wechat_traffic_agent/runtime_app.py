@@ -245,13 +245,25 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
         root / "application" / "subject", subject_id=SUBJECT_ID, trusted_runtime_key=key
     )
     from .x_mcp import XCapabilityProvider, x_enabled, x_writes_enabled
+    from .pi_remote_repair import configured_pi_remote_repair_provider
     x_active = x_enabled()
     x_write_active = x_active and x_writes_enabled()
+    repair_provider = configured_pi_remote_repair_provider()
+    allowed_permissions = set()
+    if x_write_active:
+        allowed_permissions.update({"social.publish", "social.interact"})
+    if repair_provider is not None:
+        allowed_permissions.add("repair.request")
+    side_effect_ceiling = (
+        "EXTERNAL_SIDE_EFFECT" if x_write_active
+        else "LOCAL_STATE" if repair_provider is not None
+        else "READ_ONLY"
+    )
     runtime = ApplicationRuntime.bootstrap(
         root / "application" / "runtime",
         subject_id=SUBJECT_ID,
-        max_side_effect_level="EXTERNAL_SIDE_EFFECT" if x_write_active else "READ_ONLY",
-        allowed_permissions=(frozenset({"social.publish", "social.interact"}) if x_write_active else frozenset()),
+        max_side_effect_level=side_effect_ceiling,
+        allowed_permissions=frozenset(allowed_permissions),
     )
     app = ContentApplication(
         root=root,
@@ -263,6 +275,8 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
     runtime.register_provider(ContentCapabilityPack(app.status_observation))
     if x_active:
         runtime.register_provider(XCapabilityProvider())
+    if repair_provider is not None:
+        runtime.register_provider(repair_provider)
 
     trusted, preferred, configs = _capability_pack_deployment()
     policy = CapabilityPolicy()

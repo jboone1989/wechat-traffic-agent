@@ -19,6 +19,40 @@ class WakefulContentTaskRunner:
     def __init__(self, **components: Any) -> None:
         self.__dict__.update(components)
         self.stop_requested = components.get("stop_requested") or (lambda: False)
+        state_root = components.get("state_root")
+        app = components.get("app")
+        capability_runtime = (
+            components.get("capability_runtime")
+            or components.get("application_runtime")
+            or components.get("app_runtime")
+            or getattr(app, "runtime", None)
+        )
+        evolution_runtime = (
+            components.get("evolution_runtime")
+            or getattr(app, "domain_runtime", None)
+        )
+        if state_root is not None and getattr(self, "self_maintenance", None) is None:
+            from .self_maintenance import SelfMaintenanceService
+
+            self.self_maintenance = SelfMaintenanceService(
+                state_root=Path(state_root),
+                evolution_runtime=evolution_runtime,
+                capability_runtime=capability_runtime,
+            )
+        if (
+            state_root is not None
+            and components.get("repair_planner_runtime") is not None
+            and getattr(self, "self_repair", None) is None
+        ):
+            from .self_repair_executor import SelfRepairExecutor
+
+            self.self_repair = SelfRepairExecutor(
+                state_root=Path(state_root),
+                workspace_root=components.get("workspace_root"),
+                deployed_root=components.get("deployed_root"),
+                planner_runtime=components.get("repair_planner_runtime"),
+                capability_runtime=capability_runtime,
+            )
 
     def _stopping(self) -> bool:
         try:

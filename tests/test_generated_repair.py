@@ -151,13 +151,9 @@ def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
 
     second = executor.run_once(now=NOW)
 
-    assert second["status"] == "CANDIDATE_COMMITTED"
+    assert second["status"] == "CAPABILITY_UNAVAILABLE"
     assert len(runtime.calls) == 1
-    assert second["commit"]["pushed"] is False
-    assert second["commit"]["branch"].startswith("agent/repair-")
-    assert second["focused"]["ok"] is True
-    assert second["full"]["ok"] is True
-    assert 'return topic or "risk"' in (
+    assert 'raise ValueError("Traffic opportunity requires topic: risk")' in (
         workspace / "src/wechat_traffic_agent/app_logic.py"
     ).read_text()
     assert _git(workspace, "status", "--porcelain") == ""
@@ -191,6 +187,16 @@ def test_model_cannot_escape_localized_boundary_by_claiming_target_path(tmp_path
     assert recipe["target_files"] == [SOURCE_PATH]
     assert recipe["edits"][0]["path"] == SOURCE_PATH
     assert recipe["implementation_markers"] == []
+
+
+def test_repair_authority_files_are_never_generated_targets(tmp_path):
+    planner = GeneratedRepairPlanner(
+        workspace_root=_workspace(tmp_path),
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    assert planner.safe_source_path("src/wechat_traffic_agent/pi_remote_repair.py") is False
+    assert planner.safe_source_path("src/wechat_traffic_agent/repair_request.py") is False
 
 
 def test_planner_rejects_generated_network_or_process_capability(tmp_path):

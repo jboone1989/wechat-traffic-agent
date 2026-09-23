@@ -390,3 +390,52 @@ def test_stale_model_recovery_input_change_gets_invalidation_repair_proposal(tmp
     assert result["repair_proposal"]["target_files"] == [
         "src/wechat_traffic_agent/content_loop.py"
     ]
+
+
+
+class RepairCapabilityRuntime:
+    def __init__(self):
+        self.calls = []
+
+    def available_capabilities(self):
+        return {"REQUEST_CODE_REPAIR"}
+
+    def invoke(self, capability, payload):
+        self.calls.append((capability, payload))
+        return {"status": "RECEIVED", "requestId": "repair-123", "unexpected": {"token": "discard"}}
+
+
+def test_low_risk_failure_submits_only_stable_repair_request_and_audits_receipt(tmp_path):
+    runtime = RepairCapabilityRuntime()
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+        capability_runtime=runtime,
+    )
+
+    result = service.ingest_failure(_failure(), now=NOW)
+
+    assert result["repair_request"]["status"] == "RECEIVED"
+    assert result["repair_request"]["requestId"] == "repair-123"
+    assert len(runtime.calls) == 1
+    capability, payload = runtime.calls[0]
+    assert capability == "REQUEST_CODE_REPAIR"
+    assert payload["risk"] == "LOW"
+    assert payload["sourceProblemId"] == result["problem_id"]
+    assert "token" not in payload
+    stored = loads(next((tmp_path / "application/self_maintenance/problems").glob("*.json")).read_text())
+    assert stored["repair_request"]["status"] == "RECEIVED"
+    assert len(stored["repair_request"]["request_sha256"]) == 64
+
+
+def test_missing_repair_capability_fails_closed_without_local_edit_authority(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+        capability_runtime=None,
+    )
+
+    result = service.ingest_failure(_failure(), now=NOW)
+
+    assert result["repair_request"]["status"] == "CAPABILITY_UNAVAILABLE"
+    assert "request_id" not in result["repair_request"]
