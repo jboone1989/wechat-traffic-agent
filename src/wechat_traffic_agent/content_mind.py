@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime
 from hashlib import sha256
 import json
 import os
@@ -37,6 +38,8 @@ class ContentMind:
         self.root.mkdir(parents=True, exist_ok=True)
         self.memory_life = MemoryLifeRuntime(self.state_root)
         self.memory_prior = MemoryDecisionPrior(self.state_root, store=self.memory_life.store)
+        from .world_learning import WorldLearningLedger
+        self.world_learning = WorldLearningLedger(self.state_root)
         self.authority = TrustedIngestionAuthority(AUTHORITY_ID, self._authority_key())
         self.session = ContractV1AgencySession(subject_id, trusted_authorities=[self.authority])
         if not hasattr(self.session, "register_prediction") or not hasattr(self.session, "predictive_learning"):
@@ -422,6 +425,7 @@ class ContentMind:
         row = prediction if isinstance(prediction, ContentActionPrediction) else ContentActionPrediction.model_validate(prediction)
         created = row.created_at
         registered: list[str] = []
+        world_commitments: list[dict[str, Any]] = []
         existing = self.session.predictive_learning.predictions
         for metric in row.selected.metrics:
             brain_prediction_id = f"{row.prediction_id}:{metric.window}"
@@ -436,9 +440,33 @@ class ContentMind:
                 due_at=(created + timedelta(hours=WINDOW_HOURS[metric.window])).isoformat(),
                 evidence_refs=refs, lower=metric.lower_bound, upper=metric.upper_bound,
             )
+            world_commitments.append({
+                "action_kind": "CONTENT_ACTION_PREDICTION",
+                "prediction": (
+                    f"{row.selected_profile_name} on {row.topic} will produce about "
+                    f"{metric.expected_pageviews:.2f} pageviews by {metric.window}"
+                ),
+                "expected_utility": 0.5,
+                "confidence": metric.confidence,
+                "evidence_refs": refs,
+                "now": created,
+                "windows": ((metric.window, timedelta(hours=WINDOW_HOURS[metric.window])),),
+                "metadata": {
+                    "brain_prediction_id": brain_prediction_id,
+                    "content_prediction_id": row.prediction_id,
+                    "topic": row.topic,
+                    "profile_name": row.selected_profile_name,
+                    "expected_pageviews": metric.expected_pageviews,
+                },
+            })
             registered.append(brain_prediction_id)
         if registered:
+            # Persist the canonical VirtualBrain prediction first.  A crash may
+            # omit supplemental world-learning state, but must never leave a
+            # durable orphan action whose canonical prediction disappeared.
             self._persist()
+            for commitment in world_commitments:
+                self.world_learning.commit(**commitment)
         return {"status": "REGISTERED" if registered else "ALREADY_REGISTERED", "prediction_ids": registered}
 
     def observe_action_prediction_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
@@ -480,6 +508,11 @@ class ContentMind:
                 duplicates += 1
                 continue
             brain_prediction_id = f"{prediction_id}:{window}"
+            observed_at = datetime.fromisoformat(
+                str(row.get("observed_at")).replace("Z", "+00:00")
+            )
+            if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+                raise ValueError("action prediction outcome observed_at must be timezone-aware")
             result = self.session.settle_prediction(
                 prediction_id=brain_prediction_id,
                 outcome_id=f"content-outcome:{publication_id}:{window}",
@@ -488,6 +521,22 @@ class ContentMind:
                 learning_authority=(str(row.get("maturity")) == "MATURE"),
                 metric=content_error, inquiry_threshold=ERROR_INQUIRY_THRESHOLD[window],
             )
+            world_action = self.world_learning.find_by_metadata(
+                "brain_prediction_id", brain_prediction_id
+            )
+            if world_action is not None:
+                self.world_learning.settle(
+                    action_id=str(world_action["action_id"]),
+                    window=window,
+                    actual_utility=(actual / (actual + expected + 1.0)),
+                    evidence_refs=refs,
+                    now=observed_at,
+                    counterfactual=(
+                        "Observational forecast settlement only; no randomized control, "
+                        "so causal attribution remains unresolved."
+                    ),
+                    causal_factors={},
+                )
             core_error = float(result["normalized_error"])
             if abs(core_error - error) > 1e-9:
                 raise ValueError("Content and VirtualBrain prediction-error calculations diverged")

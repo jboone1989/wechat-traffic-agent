@@ -642,6 +642,14 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             )
             if motor_learning is not None:
                 print(json.dumps({"neural_motor_learning": motor_learning}, ensure_ascii=False, sort_keys=True))
+            autonomous_goal = wakeful_runtime.observe_autonomous_goal_outcome(
+                task=task,
+                result=task_result,
+                goal_id=next((ref for ref in wake_refs if ref.startswith("autonomous-goal:")), None),
+                observed_at=now,
+            )
+            if autonomous_goal is not None:
+                print(json.dumps({"autonomous_goal_outcome": autonomous_goal}, ensure_ascii=False, sort_keys=True))
             if stopping or status == "SHUTDOWN_CHECKPOINT":
                 shutdown_task_result = _shutdown_task_summary(task, task_result)
                 emit_public_activity(

@@ -129,6 +129,22 @@ class ContentWakefulRuntime:
         self.cortex_continuity = CortexContinuityMonitor(self.state_root)
         from .longitudinal_individuality import LongitudinalIndividuality
         self.longitudinal_individuality = LongitudinalIndividuality(self.state_root)
+        from .organism_state import OrganismStateService
+        from .drive_system import DriveEngine
+        from .developmental_history import DevelopmentalHistory
+        from .world_learning import WorldLearningLedger
+        from .autonomous_life import AutonomousLifeLoop
+        from .self_model import SelfModel
+        from .lineage_experiments import LineageExperimentLedger
+        from .evolution_ledger import EvolutionLedger
+        self.organism_state = OrganismStateService(self.state_root)
+        self.drive_system = DriveEngine(self.state_root)
+        self.developmental_history = DevelopmentalHistory(self.state_root)
+        self.world_learning = WorldLearningLedger(self.state_root)
+        self.autonomous_life = AutonomousLifeLoop(self.state_root)
+        self.self_model = SelfModel(self.state_root)
+        self.lineage_experiments = LineageExperimentLedger(self.state_root)
+        self.evolution_ledger = EvolutionLedger(self.state_root)
         from .open_development_acceptance import OpenDevelopmentAcceptance
         self.open_development_acceptance = OpenDevelopmentAcceptance(self.state_root)
         from .developmental_agency import DevelopmentalAgency
@@ -600,6 +616,39 @@ class ContentWakefulRuntime:
             cortex=cortex,
             neural_graph=dict(current_snap.neural_state),
         )
+        from .organism_closure import refresh_organism_closure
+        closure = refresh_organism_closure(
+            now=now, snapshot=current_snap, neural_life=projection,
+            personality=self.neural_personality.projection(), cortex=cortex,
+            continuity=self.cortex_continuity.projection(),
+            resource_pressure=self.resource_regulator.pressure(now),
+            organism_state=self.organism_state, drive_system=self.drive_system,
+            developmental_history=self.developmental_history,
+            autonomous_life=self.autonomous_life, self_model=self.self_model,
+            world_learning=self.world_learning,
+        )
+        goal = closure.get("goal") or {}
+        goal_task = str(goal.get("task") or "")
+        if goal_task == "CHECK_X" and os.environ.get("CONTENT_X_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
+            goal_task = "CONTENT_COGNITION"
+        if goal_task in _EXTERNAL_WAKE_TASKS:
+            goal_wake_id = f"autonomous:{goal.get('goal_id')}"
+            if not any(wake.wake_id == goal_wake_id for wake in self.core.snapshot().pending_plans):
+                self.core.schedule(PlannedWake(
+                    wake_id=goal_wake_id, at=now + timedelta(seconds=15),
+                    reason=str(goal.get("reason") or "autonomous homeostatic goal")[:300],
+                    task=goal_task, relevant_refs=(str(goal.get("goal_id") or ""),),
+                    preemptible=True,
+                ))
+        if closure.get("world_learning_due") and not any(
+            wake.task == "CHECK_OUTCOMES" and wake.at <= now + timedelta(minutes=5)
+            for wake in self.core.snapshot().pending_plans
+        ):
+            self.core.schedule(PlannedWake(
+                wake_id="content:CHECK_OUTCOMES", at=now + timedelta(seconds=10),
+                reason="settle matured delayed world-learning outcomes",
+                task="CHECK_OUTCOMES", preemptible=False,
+            ))
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()
@@ -677,12 +726,78 @@ class ContentWakefulRuntime:
         decision_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
-        return self.neural_motor.observe_outcome(
+        observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        settled = self.neural_motor.observe_outcome(
             task=task,
             result=result,
             decision_id=decision_id,
             observed_at=observed_at,
         )
+        if settled is None:
+            return None
+        refs = [str(decision_id or "")]
+        if isinstance(result, dict):
+            refs.extend(str(value) for value in result.get("evidence_refs") or () if value)
+            for key in ("receipt_id", "publication_receipt_id", "outcome_id", "cycle"):
+                if result.get(key):
+                    refs.append(str(result[key]))
+        refs = tuple(dict.fromkeys(value for value in refs if value))
+        self.developmental_history.record(
+            kind=(
+                "WORLD_GROUNDED_ACTION_OUTCOME"
+                if bool(settled.get("world_grounded"))
+                else "ACTION_EXECUTION_OUTCOME"
+            ),
+            domain=f"motor:{str(task).lower()}",
+            outcome=float(settled.get("reward") or 0.0),
+            evidence_refs=refs or (f"motor:{task}",),
+            now=observed_at,
+            metadata={
+                "reward_source": settled.get("reward_source"),
+                "world_grounded": bool(settled.get("world_grounded")),
+                "motor_state": settled.get("motor_state"),
+            },
+        )
+        if bool(settled.get("world_grounded")):
+            self.self_model.observe_capability(
+                capability=str(task).lower(),
+                success=float(settled.get("reward") or 0.0) > 0.0,
+                evidence_ref=refs[0] if refs else str(decision_id or task),
+                now=observed_at,
+                weight=max(0.25, abs(float(settled.get("reward") or 0.0))),
+            )
+        return settled
+
+    def observe_autonomous_goal_outcome(
+        self,
+        *,
+        task: str,
+        result,
+        goal_id: str | None,
+        observed_at: datetime | None = None,
+    ) -> dict | None:
+        if not goal_id:
+            return None
+        observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        status = str((result or {}).get("status") or "UNKNOWN").upper() if isinstance(result, dict) else "UNKNOWN"
+        canonical = json.dumps(result if isinstance(result, dict) else {"status": status}, ensure_ascii=False, sort_keys=True, default=str)
+        evidence_ref = "task-result:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+        terminal = "FAILED" if status in {"ERROR", "DEGRADED", "FAILED"} else "EXECUTED"
+        closed = self.autonomous_life.close_goal(
+            goal_id=str(goal_id),
+            status=terminal,
+            evidence_ref=evidence_ref,
+            now=observed_at,
+        )
+        self.developmental_history.record(
+            kind="AUTONOMOUS_GOAL_FAILED" if terminal == "FAILED" else "AUTONOMOUS_GOAL_EXECUTED",
+            domain=f"autonomous:{str(task).lower()}",
+            outcome=-1.0 if terminal == "FAILED" else 0.0,
+            evidence_refs=(str(goal_id), evidence_ref),
+            now=observed_at,
+            metadata={"task_status": status},
+        )
+        return closed
 
     def run_neural_transfer(self, now: datetime | None = None, *, training_steps: int = 12) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1228,6 +1343,14 @@ class ContentWakefulRuntime:
             "neural_organ_handoff": self.neural_organ_handoff.projection(),
             "cortex_continuity": self.cortex_continuity.projection(),
             "longitudinal_individuality": self.longitudinal_individuality.projection(),
+            "organism_state": self.organism_state.projection(),
+            "drive_system": self.drive_system.projection(),
+            "developmental_history": self.developmental_history.projection(),
+            "world_learning": self.world_learning.projection(),
+            "autonomous_life": self.autonomous_life.projection(),
+            "self_model": self.self_model.projection(),
+            "lineage_experiments": self.lineage_experiments.projection(),
+            "evolution_ledger": self.evolution_ledger.projection(),
             "open_development_acceptance": self.open_development_acceptance.projection(),
             "psychodynamics": self.psychodynamics.projection(
                 neural_life=self.neural_life.projection(),

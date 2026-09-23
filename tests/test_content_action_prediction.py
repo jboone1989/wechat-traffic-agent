@@ -131,6 +131,14 @@ def test_action_prediction_settles_early_feedback_and_opens_learning_inquiry(tmp
     assert first["recorded"][0]["actual_pageviews"] == 12
     assert first["recorded"][0]["prediction_error"] > 0.55
     assert first["mind"]["inquiries_opened"]
+    world_learning = mind.world_learning.projection()
+    assert world_learning["action_count"] == 3
+    one_hour = next(
+        row for row in world_learning["recent_actions"]
+        if row["metadata"]["brain_prediction_id"].endswith(":1h")
+    )
+    assert one_hour["settlements"]["1h"]["status"] == "SETTLED"
+    assert one_hour["settlements"]["1h"]["counterfactual"].startswith("Observational forecast")
     question = first["mind"]["inquiries_opened"][0]["question"]
     assert "Which assumption was wrong" in question
     assert f"{expected_1h:.2f}" in question
