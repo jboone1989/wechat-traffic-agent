@@ -229,7 +229,7 @@ function drawBrain(){
 async function refreshNeuralTelemetry(){
  try{
   const detail=window.innerWidth<700?'compact':'full';
-  const response=await fetch('/api/agent/neural-telemetry?detail='+detail,{cache:'no-store'});
+  const response=await fetch('/api/agent/brain-lab?view=telemetry&detail='+detail,{cache:'no-store'});
   if(!response.ok)throw new Error('telemetry '+response.status);
   renderTelemetryMeta(await response.json());
  }catch(error){

@@ -901,7 +901,12 @@ class LiveAgentService:
         async def brain_lab_page(_request: Request):
             return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
 
-        async def brain_lab_status(_request: Request):
+        async def brain_lab_status(request: Request):
+            if str(request.query_params.get("view") or "").strip().lower() == "telemetry":
+                detail = str(request.query_params.get("detail") or "full").strip().lower()
+                compact = detail in {"compact", "mobile", "low"}
+                payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
+                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
                 return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)
             payload = dict(self.wakeful.brain_lab_projection())

@@ -160,7 +160,8 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
         reply = client.post("/api/agent/chat", json={"message": "What are you doing now?"})
         talk = client.get("/talk/")
         neural = client.get("/neural/")
-        telemetry = client.get("/api/agent/neural-telemetry?detail=compact")
+        telemetry = client.get("/api/agent/brain-lab?view=telemetry&detail=compact")
+        telemetry_direct = client.get("/api/agent/neural-telemetry?detail=compact")
         brain = client.get("/brain/")
 
     assert live.status_code == 200
@@ -218,10 +219,12 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "/api/agent/brain-lab" in neural.text
     assert "LIVE BRAIN FIELD · REAL SUBSTRATE" in neural.text
     assert 'id="brain-canvas"' in neural.text
-    assert "/api/agent/neural-telemetry" in neural.text
+    assert "/api/agent/brain-lab?view=telemetry" in neural.text
     assert "No fake events are generated" in neural.text
     assert telemetry.status_code == 200
     assert telemetry.json()["status"] == "UNAVAILABLE"
+    assert telemetry_direct.status_code == 200
+    assert telemetry_direct.json()["status"] == "UNAVAILABLE"
     assert brain.status_code == 200
     assert "Neural Life ↗" in brain.text
     assert "Worlds Ferro generated for itself" in brain.text
