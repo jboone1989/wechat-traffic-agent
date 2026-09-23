@@ -65,7 +65,6 @@ class PiRemoteRepairProvider:
                 json.dumps({"request": request_payload}, sort_keys=True, separators=(",", ":")),
             ],
             cwd=self.root,
-            shell=False,
             check=False,
             shell=False,
             capture_output=True,
