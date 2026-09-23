@@ -20,14 +20,40 @@ main{padding:34px 0 70px}.hero{padding:34px 36px;border:1px solid rgba(112,243,1
 .split{display:grid;grid-template-columns:1.2fr .8fr}.panel{padding:18px 20px;min-width:0}.panel+.panel{border-left:1px solid var(--line)}.panel h3{margin:0 0 12px;font:500 1.08rem Georgia,serif}.rows{display:grid;gap:7px}.row{padding:10px 11px;border:1px solid rgba(112,243,178,.08);border-radius:10px;background:#08150f}.row b{display:block;color:#d9e7df;font-size:.71rem}.row span{display:block;margin-top:3px;color:#788f83;font-size:.63rem;line-height:1.42}.timeline{display:grid;gap:7px}.tick{display:grid;grid-template-columns:92px 130px 1fr;gap:10px;padding:9px 0;border-bottom:1px solid rgba(112,243,178,.08);font-size:.63rem}.tick:last-child{border-bottom:0}.tick time{color:#6d8377}.tick b{color:#d5e5dc}.tick span{color:#81968b}
 .causal{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;padding:14px 18px;border-top:1px solid var(--line)}.causal.five{grid-template-columns:repeat(5,1fr)}.cause-step{position:relative;padding:14px;border:1px solid rgba(112,243,178,.1);border-radius:12px;background:#08150f;min-height:135px}.cause-step:not(:last-child):after{content:"→";position:absolute;right:-14px;top:50%;transform:translateY(-50%);z-index:2;color:#567468;font-size:1.1rem}.cause-step span{display:block;color:#647b6f;font:700 .52rem ui-monospace,monospace;letter-spacing:.1em}.cause-step b{display:block;margin-top:8px;color:#e1eee7;font-size:.78rem;line-height:1.35}.cause-step p{margin:6px 0 0;color:#7f9489;font-size:.65rem;line-height:1.5}.lab-link{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 20px;border-top:1px solid var(--line);background:var(--soft)}.lab-link a{display:inline-flex;padding:9px 13px;border-radius:999px;background:var(--green);color:#06100d;text-decoration:none;font-size:.68rem;font-weight:800}
 .roadmap{width:100%;border-collapse:collapse}.roadmap th,.roadmap td{text-align:left;padding:11px 12px;border-bottom:1px solid rgba(112,243,178,.08);vertical-align:top}.roadmap th{position:sticky;top:0;background:#0b1b15;color:#6f867a;font:700 .52rem ui-monospace,monospace;letter-spacing:.1em}.roadmap td{font-size:.66rem;color:#92a69b}.roadmap td:nth-child(1){width:54px;color:#dce9e2;font:700 .64rem ui-monospace,monospace}.roadmap td:nth-child(2){width:190px;color:#dce9e2;font-weight:700}.status{display:inline-flex;border-radius:999px;padding:4px 7px;border:1px solid #33493d;font:700 .52rem ui-monospace,monospace;white-space:nowrap}.status.live{color:var(--green);border-color:rgba(112,243,178,.28)}.status.partial{color:var(--amber);border-color:rgba(223,185,107,.26)}.status.wait{color:#879b91}.status.research{color:var(--cyan);border-color:rgba(142,214,232,.24)}
+.brain-live{background:radial-gradient(circle at 50% 42%,rgba(72,214,157,.08),transparent 36%),rgba(5,15,12,.97)}.brain-stage{display:grid;grid-template-columns:minmax(0,1fr) 286px;min-height:520px}.brain-canvas-wrap{position:relative;min-width:0;overflow:hidden;border-right:1px solid var(--line);background:radial-gradient(circle at 50% 48%,rgba(112,243,178,.055),transparent 40%),#050d0b}
+#brain-canvas{display:block;width:100%;height:520px;touch-action:none}.brain-hud{position:absolute;left:14px;right:14px;top:12px;display:flex;justify-content:space-between;gap:10px;pointer-events:none}.brain-hud .pill{background:rgba(5,13,11,.74);backdrop-filter:blur(8px)}
+.brain-legend{position:absolute;left:14px;bottom:12px;max-width:520px;padding:8px 10px;border:1px solid rgba(112,243,178,.11);border-radius:10px;background:rgba(5,13,11,.72);color:#6f897b;font-size:.56rem;line-height:1.45;backdrop-filter:blur(8px)}
+.telemetry-side{padding:17px;display:flex;flex-direction:column;gap:10px;background:linear-gradient(180deg,rgba(10,28,21,.94),rgba(6,18,14,.96))}.telemetry-card{padding:12px;border:1px solid rgba(112,243,178,.1);border-radius:12px;background:rgba(5,15,11,.68)}.telemetry-card .label{color:#60796b;font:700 .51rem ui-monospace,monospace;letter-spacing:.1em}.telemetry-card b{display:block;margin-top:7px;color:#e8f6ee;font-size:.8rem;line-height:1.35}.telemetry-card p{margin:5px 0 0;color:#758d80;font-size:.6rem;line-height:1.45}
+.telemetry-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}.telemetry-pair .telemetry-card b{font-size:1rem}.live-drives{display:grid;gap:8px;margin-top:8px}.live-drive{display:grid;grid-template-columns:84px 1fr 34px;gap:7px;align-items:center;color:#91a99c;font-size:.58rem}.live-drive .track{height:6px}.burst-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(112,243,178,.7);margin-right:6px}.burst-dot.quiet{background:#52685c;box-shadow:none}
 .empty{padding:12px;color:#71877b;font-size:.66rem;border:1px dashed rgba(112,243,178,.12);border-radius:9px}
 .small{color:#6f8579;font-size:.61rem;line-height:1.5}.footer{padding:24px 0 40px;text-align:center;color:#60756a;font-size:.59rem}
-@media(max-width:900px){.grid4{grid-template-columns:1fr 1fr}.metric:nth-child(2n){border-right:0}.split,.causal,.causal.five{grid-template-columns:1fr}.panel+.panel{border-left:0;border-top:1px solid var(--line)}.cause-step:not(:last-child):after{content:"↓";right:auto;left:50%;top:auto;bottom:-15px;transform:translateX(-50%)}.tick{grid-template-columns:78px 112px 1fr}.section-head{display:block}.section-head p{margin-top:8px}.roadmap{min-width:760px}.roadmap-wrap{overflow:auto}}
-@media(max-width:560px){.shell{width:min(calc(100% - 20px),1180px)}.top nav a:nth-child(3){display:none}.hero{padding:25px 18px}.hero h1{font-size:3.3rem}.grid4{grid-template-columns:1fr}.metric{border-right:0}.bar-row{grid-template-columns:92px 1fr 38px}.tick{grid-template-columns:1fr;gap:3px}.lab-link{display:block}.lab-link a{margin-top:10px}.section-head,.panel{padding-left:14px;padding-right:14px}}
+@media(max-width:900px){.grid4{grid-template-columns:1fr 1fr}.metric:nth-child(2n){border-right:0}.split,.causal,.causal.five{grid-template-columns:1fr}.panel+.panel{border-left:0;border-top:1px solid var(--line)}.cause-step:not(:last-child):after{content:"↓";right:auto;left:50%;top:auto;bottom:-15px;transform:translateX(-50%)}.tick{grid-template-columns:78px 112px 1fr}.section-head{display:block}.section-head p{margin-top:8px}.roadmap{min-width:760px}.roadmap-wrap{overflow:auto}.brain-stage{grid-template-columns:1fr}.brain-canvas-wrap{border-right:0;border-bottom:1px solid var(--line)}.telemetry-side{display:grid;grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.shell{width:min(calc(100% - 20px),1180px)}.top nav a:nth-child(3){display:none}.hero{padding:25px 18px}.hero h1{font-size:3.3rem}.grid4{grid-template-columns:1fr}.metric{border-right:0}.bar-row{grid-template-columns:92px 1fr 38px}.tick{grid-template-columns:1fr;gap:3px}.lab-link{display:block}.lab-link a{margin-top:10px}.section-head,.panel{padding-left:14px;padding-right:14px}#brain-canvas{height:390px}.brain-stage{min-height:390px}.telemetry-side{grid-template-columns:1fr}.brain-hud{left:9px;right:9px;top:8px}.brain-hud .pill:nth-child(2){display:none}.brain-legend{left:9px;right:9px;bottom:8px;max-width:none}}
 </style></head><body>
 <header class="shell top"><a class="brand" href="/agents/ferro/">Ferro <span>/ Neural Life</span></a><nav><a href="/">LivingRuntime</a><a href="/live/">Live</a><a href="/brain/">Brain Lab</a><a href="/talk/">Talk</a></nav></header>
 <main class="shell">
 <section class="hero"><div class="k">FERRO NEURAL LIFE ROADMAP v1 · LIVE OBSERVATORY</div><h1>One brain.<br>Visible life.</h1><p>This page exposes the real persistent neural state already running inside Ferro and maps it to N0–N25. Missing evidence stays missing: a stage is not marked complete merely because a UI exists.</p><div class="hero-status" id="hero-status"><span class="pill">loading real neural state…</span></div></section>
+
+<section class="section brain-live">
+<div class="section-head"><div><div class="k">LIVE BRAIN FIELD · REAL SUBSTRATE</div><h2>The whole connectome, compressed without pretending.</h2></div><p>Every ancestral neuron contributes to the background field. The detailed foreground is a bounded real subgraph around semantic electrodes. Geometry is visual only; edges and state values come from the live substrate.</p></div>
+<div class="brain-stage">
+<div class="brain-canvas-wrap">
+<canvas id="brain-canvas" aria-label="Live Ferro neural field"></canvas>
+<div class="brain-hud"><span class="pill live"><span class="burst-dot quiet" id="burst-dot"></span><span id="brain-live-state">telemetry loading</span></span><span class="pill" id="brain-observed-at">—</span></div>
+<div class="brain-legend" id="brain-boundary">No fake spike paths: burst waves show aggregate real activity; foreground edges are real synapses; foreground brightness is live membrane state.</div>
+</div>
+<aside class="telemetry-side">
+<div class="telemetry-pair">
+<div class="telemetry-card"><div class="label">TOTAL NEURONS</div><b id="live-neuron-count">—</b><p id="live-neuron-detail">Loading full connectome.</p></div>
+<div class="telemetry-card"><div class="label">CONNECTIONS</div><b id="live-connection-count">—</b><p>Real substrate connections represented at bounded detail.</p></div>
+</div>
+<div class="telemetry-card"><div class="label">LATEST REAL BURST</div><b id="live-burst">—</b><p id="live-burst-detail">Waiting for substrate evidence.</p></div>
+<div class="telemetry-card"><div class="label">DOMINANT DRIVE</div><b id="live-drive">—</b><div class="live-drives" id="live-drive-bars"></div></div>
+<div class="telemetry-card"><div class="label">CURRENT NEURAL ACTION</div><b id="live-action">—</b><p id="live-action-detail">No neural action selected.</p></div>
+<div class="telemetry-card"><div class="label">RENDER BUDGET</div><b id="live-render-budget">—</b><p id="live-render-detail">Desktop uses a larger real subgraph; mobile automatically requests compact telemetry.</p></div>
+</aside>
+</div>
+</section>
 
 <section class="section"><div class="section-head"><div><div class="k">N0–N5 · FROM WORLD TO ACTION</div><h2>Body → drive → mood → intention → authority</h2></div><p>The low-level state is produced outside the LLM. The cortex may interpret or plan around it, but does not own the underlying drive state.</p></div>
 <div class="grid4">
@@ -118,6 +144,100 @@ const text=(id,v,f='—')=>{$(id).textContent=(v===undefined||v===null||v==='')?
 function bars(id,obj,keys){const box=$(id);box.replaceChildren();const entries=(keys||Object.keys(obj||{})).filter(k=>obj&&obj[k]!==undefined);if(!entries.length){box.innerHTML='<div class="empty">No persisted values yet.</div>';return}for(const k of entries){const v=clamp(obj[k]);const r=document.createElement('div');r.className='bar-row';r.innerHTML='<span>'+k.replaceAll('_',' ')+'</span><div class="track"><div class="fill" style="width:'+(v*100).toFixed(1)+'%"></div></div><b>'+v.toFixed(2)+'</b>';box.append(r)}}
 function rows(id,items){const box=$(id);box.replaceChildren();if(!items.length){box.innerHTML='<div class="empty">No evidence recorded yet.</div>';return}for(const [a,b] of items){const r=document.createElement('div');r.className='row';const strong=document.createElement('b');strong.textContent=a;const span=document.createElement('span');span.textContent=b||'';r.append(strong,span);box.append(r)}}
 function timeline(id,items){const box=$(id);box.replaceChildren();if(!items.length){box.innerHTML='<div class="empty">No persisted history yet.</div>';return}for(const x of items){const r=document.createElement('div');r.className='tick';const t=document.createElement('time');t.textContent=when(x.at);const b=document.createElement('b');b.textContent=x.title||'event';const s=document.createElement('span');s.textContent=x.detail||'';r.append(t,b,s);box.append(r)}}
+let neuralTelemetry=null,lastBurstSeq=null,burstStarted=0;
+const brainCanvas=$('brain-canvas'),brainCtx=brainCanvas.getContext('2d');
+function resizeBrainCanvas(){
+ const rect=brainCanvas.getBoundingClientRect(),dpr=Math.min(window.devicePixelRatio||1,2);
+ const w=Math.max(1,Math.round(rect.width*dpr)),h=Math.max(1,Math.round(rect.height*dpr));
+ if(brainCanvas.width!==w||brainCanvas.height!==h){brainCanvas.width=w;brainCanvas.height=h}
+ brainCtx.setTransform(dpr,0,0,dpr,0,0);
+ return {w:rect.width,h:rect.height};
+}
+function liveDriveBars(drives){
+ const box=$('live-drive-bars');box.replaceChildren();
+ const entries=Object.entries(drives||{}).sort((a,b)=>n(b[1])-n(a[1]));
+ if(!entries.length){box.innerHTML='<div class="empty">No drive state.</div>';return}
+ for(const [key,value] of entries){
+  const v=clamp(value),row=document.createElement('div');row.className='live-drive';
+  const label=document.createElement('span');label.textContent=key.replaceAll('_',' ');
+  const track=document.createElement('div');track.className='track';const fill=document.createElement('div');fill.className='fill';fill.style.width=(v*100).toFixed(1)+'%';track.append(fill);
+  const score=document.createElement('b');score.textContent=v.toFixed(2);row.append(label,track,score);box.append(row);
+ }
+}
+function renderTelemetryMeta(t){
+ neuralTelemetry=t;
+ const brain=t.brain||{},burst=t.burst||{},drives=t.drives||{},action=t.current_action||{};
+ text('brain-live-state',t.status==='LIVE'?'LIVE NEURAL TELEMETRY':(t.status||'UNAVAILABLE'));
+ const dot=$('burst-dot');if(dot){dot.className='burst-dot'+(burst&&burst.spikes?'':' quiet')}
+ text('brain-observed-at',t.observed_at?when(t.observed_at):'—');
+ text('live-neuron-count',fmt(brain.total_neurons));
+ text('live-neuron-detail',fmt(brain.ancestral_neurons)+' ancestral · '+fmt(brain.synthetic_neurons)+' Ferro-born');
+ text('live-connection-count',fmt(brain.total_connections));
+ if(burst&&burst.seq!==undefined&&burst.seq!==null){
+  text('live-burst','burst '+burst.seq+' · '+fmt(burst.spikes)+' spikes');
+  text('live-burst-detail',fmt(burst.active_neurons)+' active neurons · '+fmt(burst.synaptic_events)+' synaptic events · '+when(burst.observed_at));
+  if(String(lastBurstSeq)!==String(burst.seq)){lastBurstSeq=burst.seq;burstStarted=performance.now()}
+ }else{
+  text('live-burst','No recent burst');text('live-burst-detail','The substrate has not exposed a recent burst in this window.');
+ }
+ const ranked=Object.entries(drives).sort((a,b)=>n(b[1])-n(a[1]));text('live-drive',ranked.length?ranked[0][0].replaceAll('_',' ').toUpperCase()+' · '+n(ranked[0][1]).toFixed(2):'—');liveDriveBars(drives);
+ text('live-action',action.task?String(action.task).replaceAll('_',' '):'No current neural action');
+ text('live-action-detail',action.task?((action.authority||'NEURAL')+' · '+(action.status||'PENDING')+(action.reward!==null&&action.reward!==undefined?' · reward '+n(action.reward).toFixed(2):'')):'No recent motor decision or drive-authority action.');
+ text('live-render-budget',fmt((brain.sample_nodes||[]).length)+' nodes · '+fmt((brain.sample_edges||[]).length)+' edges');
+ text('live-render-detail',fmt((brain.field||[]).length)+' whole-brain aggregate bins · '+(t.detail||'full')+' detail');
+ if(t.boundary)text('brain-boundary',t.boundary);
+}
+function drawBrain(){
+ const size=resizeBrainCanvas(),ctx=brainCtx,w=size.w,h=size.h,t=performance.now();
+ ctx.clearRect(0,0,w,h);
+ const data=neuralTelemetry,brain=data&&data.brain?data.brain:null;
+ if(!brain){ctx.fillStyle='rgba(180,220,200,.55)';ctx.font='12px ui-monospace,monospace';ctx.fillText('waiting for real neural telemetry…',22,h/2);requestAnimationFrame(drawBrain);return}
+ const px=x=>x*w,py=y=>y*h;
+ // Whole-connectome field: every ancestral neuron contributes through an aggregate bin.
+ for(const cell of brain.field||[]){
+  const a=clamp(cell.activity),peak=clamp(cell.peak),pulse=.76+.24*Math.sin(t/900+cell.bin*.31);
+  const r=1.5+5.5*peak*pulse;
+  ctx.beginPath();ctx.arc(px(cell.x),py(cell.y),r,0,Math.PI*2);
+  ctx.fillStyle='rgba(88,210,157,'+(0.06+0.42*a).toFixed(3)+')';ctx.fill();
+ }
+ const nodes=brain.sample_nodes||[],byId=new Map(nodes.map(x=>[String(x.id),x]));
+ ctx.lineWidth=.65;
+ for(const edge of brain.sample_edges||[]){
+  const a=byId.get(String(edge.from)),b=byId.get(String(edge.to));if(!a||!b)continue;
+  const activity=(clamp(a.activity)+clamp(b.activity))/2,strength=clamp(edge.strength);
+  ctx.beginPath();ctx.moveTo(px(a.x),py(a.y));ctx.lineTo(px(b.x),py(b.y));
+  ctx.strokeStyle=(edge.weight<0?'rgba(183,132,255,':'rgba(116,211,235,')+(0.035+0.17*strength+0.12*activity).toFixed(3)+')';ctx.stroke();
+ }
+ for(const node of nodes){
+  const a=clamp(node.activity),role=(node.roles||[]).length>0,r=role?2.7+2.6*a:1.25+2.2*a;
+  ctx.beginPath();ctx.arc(px(node.x),py(node.y),r,0,Math.PI*2);
+  ctx.fillStyle=role?'rgba(142,214,232,'+(0.35+0.62*a).toFixed(3)+')':'rgba(112,243,178,'+(0.16+0.72*a).toFixed(3)+')';ctx.fill();
+  if(role&&a>.52){ctx.beginPath();ctx.arc(px(node.x),py(node.y),r+4*a,0,Math.PI*2);ctx.strokeStyle='rgba(142,214,232,'+(0.08+0.18*a).toFixed(3)+')';ctx.stroke()}
+ }
+ for(const node of brain.synthetic_sample||[]){
+  const a=clamp(node.activity),r=2+3.3*a;ctx.beginPath();ctx.arc(px(node.x),py(node.y),r,0,Math.PI*2);
+  ctx.fillStyle=node.fired_latest_event?'rgba(238,192,103,.95)':'rgba(223,185,107,'+(0.22+0.65*a).toFixed(3)+')';ctx.fill();
+ }
+ if(burstStarted){
+  const age=t-burstStarted;if(age<2200){
+   const p=age/2200,r=Math.min(w,h)*(.08+.42*p);ctx.beginPath();ctx.arc(w/2,h/2,r,0,Math.PI*2);
+   ctx.strokeStyle='rgba(112,243,178,'+(0.30*(1-p)).toFixed(3)+')';ctx.lineWidth=1.3;ctx.stroke();
+  }
+ }
+ requestAnimationFrame(drawBrain);
+}
+async function refreshNeuralTelemetry(){
+ try{
+  const detail=window.innerWidth<700?'compact':'full';
+  const response=await fetch('/api/agent/brain-lab?view=telemetry&detail='+detail,{cache:'no-store'});
+  if(!response.ok)throw new Error('telemetry '+response.status);
+  renderTelemetryMeta(await response.json());
+ }catch(error){
+  neuralTelemetry=null;text('brain-live-state','TELEMETRY UNAVAILABLE');text('brain-boundary',String(error.message||error));
+ }
+}
+window.addEventListener('resize',resizeBrainCanvas,{passive:true});
+refreshNeuralTelemetry();setInterval(refreshNeuralTelemetry,1800);requestAnimationFrame(drawBrain);
 function stage(status,label,evidence){return {status,label,evidence}}
 function renderRoadmap(wake,lab,dreamInsight){
  const nl=wake.neural_life||{}, graph=wake.neural_graph||{}, sub=graph.substrate||{}, dev=sub.developmental_neurogenesis||{}, dream=wake.dreaming||lab.dreaming||{}, taste=wake.neural_taste||{}, social=wake.neural_social||{}, p=wake.personality||{}, psyche=wake.psychodynamics||{}, comp=wake.brain_vs_cortex||{}, motor=wake.neural_motor||{}, transfer=wake.neural_transfer||{}, cortex=wake.cortex_continuity||{}, agency=wake.developmental_agency||{};

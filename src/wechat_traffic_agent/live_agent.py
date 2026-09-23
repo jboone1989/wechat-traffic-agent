@@ -838,6 +838,7 @@ class LiveAgentService:
         from .channels.agent_live_page import live_agent_document
         from .channels.neural_life_page import neural_life_document
         from .channels.agent_talk_page import talk_agent_document
+        from .neural_telemetry import NeuralTelemetrySampler
         from .website_engagement_client import first_party_engagement_script
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
@@ -879,6 +880,7 @@ class LiveAgentService:
         ) if operator_memory is not None else None
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
         audience_analytics = AudienceAnalytics(self.state_root) if operator_console is not None else None
+        neural_telemetry = NeuralTelemetrySampler(self.wakeful)
 
         engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -899,12 +901,23 @@ class LiveAgentService:
         async def brain_lab_page(_request: Request):
             return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
 
-        async def brain_lab_status(_request: Request):
+        async def brain_lab_status(request: Request):
+            if str(request.query_params.get("view") or "").strip().lower() == "telemetry":
+                detail = str(request.query_params.get("detail") or "full").strip().lower()
+                compact = detail in {"compact", "mobile", "low"}
+                payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
+                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
                 return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)
             payload = dict(self.wakeful.brain_lab_projection())
             if hasattr(self.wakeful, "dream_projection"):
                 payload["dreaming"] = self.wakeful.dream_projection()
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+        async def neural_telemetry_status(request: Request):
+            detail = str(request.query_params.get("detail") or "full").strip().lower()
+            compact = detail in {"compact", "mobile", "low"}
+            payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def status(_request: Request):
@@ -3071,6 +3084,7 @@ class LiveAgentService:
             Route("/agents/ferro/brain", brain_lab_page, methods=["GET"]),
             Route("/agents/ferro/brain/", brain_lab_page, methods=["GET"]),
             Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
+            Route("/api/agent/neural-telemetry", neural_telemetry_status, methods=["GET"]),
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
             Route("/api/agent/chat", chat, methods=["POST"]),
