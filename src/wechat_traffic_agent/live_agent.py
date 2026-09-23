@@ -839,6 +839,7 @@ class LiveAgentService:
         from .channels.neural_life_page import neural_life_document
         from .channels.agent_talk_page import talk_agent_document
         from .neural_telemetry import NeuralTelemetrySampler
+        from .neural_circuit import NeuralCircuitInspector
         from .website_engagement_client import first_party_engagement_script
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
@@ -881,6 +882,7 @@ class LiveAgentService:
         llm_audit = LLMRequestAuditStore(self.state_root) if operator_console is not None else None
         audience_analytics = AudienceAnalytics(self.state_root) if operator_console is not None else None
         neural_telemetry = NeuralTelemetrySampler(self.wakeful)
+        neural_circuit = NeuralCircuitInspector(self.wakeful)
 
         engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -902,10 +904,24 @@ class LiveAgentService:
             return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
 
         async def brain_lab_status(request: Request):
-            if str(request.query_params.get("view") or "").strip().lower() == "telemetry":
+            view = str(request.query_params.get("view") or "").strip().lower()
+            if view == "telemetry":
                 detail = str(request.query_params.get("detail") or "full").strip().lower()
                 compact = detail in {"compact", "mobile", "low"}
                 payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
+                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            if view == "circuit-catalog":
+                payload = await asyncio.to_thread(neural_circuit.catalog)
+                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            if view == "circuit":
+                detail = str(request.query_params.get("detail") or "full").strip().lower()
+                compact = detail in {"compact", "mobile", "low"}
+                selector = str(request.query_params.get("selector") or "").strip()
+                payload = await asyncio.to_thread(neural_circuit.circuit, selector, compact=compact)
+                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+            if view == "neuron":
+                neuron_id = str(request.query_params.get("id") or "").strip()
+                payload = await asyncio.to_thread(neural_circuit.neuron, neuron_id)
                 return JSONResponse(payload, headers={"Cache-Control": "no-store"})
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
                 return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)

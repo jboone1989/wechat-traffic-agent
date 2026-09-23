@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from wechat_traffic_agent.neural_circuit import NeuralCircuitInspector
 from wechat_traffic_agent.neural_telemetry import NeuralTelemetrySampler
 
 
@@ -70,6 +71,21 @@ class _Substrate:
                     "recurrent_inputs": {"ferro:1": 0.37},
                 },
             },
+            "circuits": {
+                "circuit_0001": {
+                    "circuit_id": "circuit_0001",
+                    "state": "STABLE",
+                    "members": ["ferro:1", "ferro:2"],
+                    "stability_events": 8,
+                    "active_events": 4,
+                    "metrics": {
+                        "member_count": 2,
+                        "mature_member_count": 1,
+                        "internal_edge_ratio": 0.5,
+                        "dominant_parent_channels": ["curiosity", "resource_pressure"],
+                    },
+                },
+            },
         }
 
     def projection(self):
@@ -94,6 +110,16 @@ class _Substrate:
                 "ancestral_neuron_count": n,
                 "synthetic_neuron_count": 2,
                 "total_neuron_count": n + 2,
+                "circuits": [{
+                    "circuit_id": "circuit_0001",
+                    "state": "STABLE",
+                    "member_count": 2,
+                    "mature_member_count": 1,
+                    "stability_events": 8,
+                    "active_events": 4,
+                    "internal_edge_ratio": 0.5,
+                    "dominant_parent_channels": ["curiosity", "resource_pressure"],
+                }],
             },
         }
 
@@ -188,3 +214,54 @@ def test_neural_telemetry_reports_unavailable_without_live_substrate():
 
     assert payload["status"] == "UNAVAILABLE"
     assert payload["reason"] == "live neural substrate is not attached"
+
+
+
+def test_neural_circuit_catalog_and_channel_drilldown_are_bounded_real_graphs():
+    inspector = NeuralCircuitInspector(_Wakeful())
+
+    catalog = inspector.catalog()
+    channel = inspector.circuit("channel:curiosity", compact=True)
+
+    assert catalog["status"] == "LIVE"
+    selectors = {row["selector"] for row in catalog["circuits"]}
+    assert "channel:curiosity" in selectors
+    assert "circuit:circuit_0001" in selectors
+    assert channel["status"] == "LIVE"
+    assert channel["kind"] == "ancestral_channel"
+    assert len(channel["nodes"]) <= inspector.COMPACT_NODES
+    assert len(channel["edges"]) <= inspector.COMPACT_EDGES
+    assert all(row["kind"] == "ancestral" for row in channel["nodes"])
+    assert all(row["kind"] == "ancestral_synapse" for row in channel["edges"])
+
+
+def test_neural_circuit_exposes_real_ferro_born_members_and_recurrent_edge():
+    inspector = NeuralCircuitInspector(_Wakeful())
+
+    circuit = inspector.circuit("circuit:circuit_0001")
+
+    assert circuit["status"] == "LIVE"
+    assert circuit["kind"] == "ferro_born_circuit"
+    assert {row["id"] for row in circuit["nodes"]} == {"ferro:1", "ferro:2"}
+    assert circuit["edges"] == [{
+        "from": "ferro:1",
+        "to": "ferro:2",
+        "weight": 0.37,
+        "strength": 0.37,
+        "kind": "synthetic_recurrent",
+    }]
+    assert circuit["meta"]["state"] == "STABLE"
+
+
+def test_neural_circuit_neuron_inspector_reads_live_ancestral_and_synthetic_state():
+    inspector = NeuralCircuitInspector(_Wakeful())
+
+    ancestral = inspector.neuron("0")
+    synthetic = inspector.neuron("ferro:2")
+
+    assert ancestral["status"] == "LIVE"
+    assert ancestral["kind"] == "ancestral"
+    assert ancestral["outgoing_synapses"]
+    assert synthetic["status"] == "LIVE"
+    assert synthetic["kind"] == "ferro_born"
+    assert synthetic["recurrent_inputs"] == [{"source": "ferro:1", "weight": 0.37}]
