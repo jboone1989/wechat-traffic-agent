@@ -45,8 +45,10 @@ class FerroHeartbeat:
             except OSError:
                 pass
 
-    def stop(self) -> None:
+    def stop(self, *, status: str = "STOPPED") -> None:
+        if status not in {"STOPPED", "FAILED"}:
+            raise ValueError("heartbeat terminal status must be STOPPED or FAILED")
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
-        self.pulse("STOPPED")
+        self.pulse(status)

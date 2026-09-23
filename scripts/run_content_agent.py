@@ -195,7 +195,17 @@ def main() -> int:
     state_root = _state_root()
     from wechat_traffic_agent.guardian_heartbeat import FerroHeartbeat
     heartbeat = FerroHeartbeat(state_root)
-    heartbeat.start()
+    terminal_status = "FAILED"
+    try:
+        heartbeat.start()
+        result = _run_initialized_agent(args, state_root, heartbeat)
+        terminal_status = "STOPPED" if result == 0 else "FAILED"
+        return result
+    finally:
+        heartbeat.stop(status=terminal_status)
+
+
+def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     from wechat_traffic_agent.llm_resources import sync_llm_resource_pool
     try:
         pool_bootstrap = sync_llm_resource_pool(
@@ -632,7 +642,6 @@ def main() -> int:
 
         return 0
     finally:
-        heartbeat.stop()
         if stop_requested_at is not None:
             _write_shutdown_checkpoint(state_root, {
                 "schema_version": "content-agent-shutdown:v1",
