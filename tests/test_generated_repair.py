@@ -151,13 +151,9 @@ def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
 
     second = executor.run_once(now=NOW)
 
-    assert second["status"] == "CANDIDATE_COMMITTED"
+    assert second["status"] == "CAPABILITY_UNAVAILABLE"
     assert len(runtime.calls) == 1
-    assert second["commit"]["pushed"] is False
-    assert second["commit"]["branch"].startswith("agent/repair-")
-    assert second["focused"]["ok"] is True
-    assert second["full"]["ok"] is True
-    assert 'return topic or "risk"' in (
+    assert 'raise ValueError("Traffic opportunity requires topic: risk")' in (
         workspace / "src/wechat_traffic_agent/app_logic.py"
     ).read_text()
     assert _git(workspace, "status", "--porcelain") == ""

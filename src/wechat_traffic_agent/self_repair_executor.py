@@ -12,6 +12,7 @@ import sys
 from typing import Any, Iterable
 
 from .generated_repair import GeneratedRepairPlan, GeneratedRepairPlanner, PLANNER_VERSION
+from .repair_request import RepairEvidenceRef, RepairRequest, submit_repair_request
 
 from agent_runtime.coding import (
     BoundedCodingProvider,
@@ -279,6 +280,7 @@ class SelfRepairExecutor:
         recipes: dict[str, RepairRecipe] | None = None,
         python_executable: str | None = None,
         planner_runtime: Any | None = None,
+        capability_runtime: Any | None = None,
         test_pythonpath: str | None = None,
     ) -> None:
         self.state_root = Path(state_root)
@@ -287,6 +289,7 @@ class SelfRepairExecutor:
         self.recipes = dict(recipes or DEFAULT_RECIPES)
         self.python_executable = str(python_executable or sys.executable)
         self.planner_runtime = planner_runtime
+        self.capability_runtime = capability_runtime
         self.test_pythonpath = str(test_pythonpath or "").strip()
         if "\n" in self.test_pythonpath or "\0" in self.test_pythonpath:
             raise ValueError("self repair test_pythonpath must be a single-line path list")
@@ -316,35 +319,61 @@ class SelfRepairExecutor:
         return {"status": "NO_REPAIR_WORK"}
 
     def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
+        """Submit a LOW-risk request; code changes are exclusively owned by Pi Remote."""
         proposal = problem.get("repair_proposal") or {}
-        kind = str(proposal.get("repair_kind") or "")
-        recipe = self._recipe_for_proposal(problem, proposal)
-        if recipe is None:
+        if str(proposal.get("risk") or "").upper() != "LOW":
             return {
-                "status": "NO_BOUNDED_RECIPE",
+                "status": "NEEDS_HUMAN_REVIEW",
                 "problem_id": problem.get("problem_id"),
-                "repair_kind": kind,
+                "repair_kind": proposal.get("repair_kind"),
             }
-
-        rejected_trial = self._existing_rejected_candidate_trial(problem)
-        if rejected_trial is not None:
-            return self._requeue_failed_candidate(
-                problem,
-                recipe,
-                rejected_trial,
-                now=now,
-            )
-
-        if self._implemented(self.deployed_root, recipe):
-            return self._verify_adopted(problem, recipe, now)
-
-        if self.workspace_root is None or not (self.workspace_root / ".git").exists():
-            return {
-                "status": "WORKSPACE_UNAVAILABLE",
-                "problem_id": problem.get("problem_id"),
-                "repair_kind": kind,
-            }
-        return self._build_candidate(problem, recipe, now)
+        problem_id = str(problem.get("problem_id") or "unknown")
+        evidence = [
+            RepairEvidenceRef(type="FerroEvidence", id=str(ref))
+            for ref in (problem.get("evidence_refs") or [])[:32]
+            if str(ref).strip()
+        ]
+        trial = problem.get("repair_trial")
+        failed_tests = [
+            str(item) for item in (trial.get("failed_tests") or [])
+            if str(item).strip()
+        ][:32] if isinstance(trial, dict) else []
+        impact = str(problem.get("observed_world_impact") or "").strip()
+        if not impact:
+            impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
+        request = RepairRequest(
+            idempotency_key=f"{problem_id}:{proposal.get('proposal_id') or 'proposal'}",
+            source_problem_id=problem_id,
+            symptom=str(problem.get("symptom") or problem.get("error_type") or "unknown failure"),
+            failure_site=str(problem.get("failure_site") or "unknown"),
+            evidence=evidence,
+            failed_tests=failed_tests,
+            severity=str(problem.get("severity") or "LOW").upper(),
+            risk="LOW",
+            observed_world_impact=impact,
+            target_files=[str(item) for item in proposal.get("target_files") or []][:2],
+        )
+        receipt = submit_repair_request(self.capability_runtime, request)
+        payload = request.to_pi_remote_payload()
+        trial_record = self._record_trial(
+            problem,
+            status="REQUESTED_TO_PI_REMOTE" if receipt.get("status") in {"REQUESTED", "RECEIVED", "ACCEPTED"} else receipt.get("status", "REQUEST_FAILED"),
+            now=now,
+            extra={
+                "repair_kind": proposal.get("repair_kind"),
+                "request_sha256": sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                "evidence_refs": [item.model_dump(exclude_none=True) for item in evidence],
+                "receipt": receipt,
+                "authority": "REQUEST_CODE_REPAIR",
+            },
+            update_problem=True,
+        )
+        return {
+            "status": trial_record.get("status"),
+            "problem_id": problem_id,
+            "repair_request": receipt,
+            "trial_ref": f"self-repair-trial:{problem_id.replace(':', '-')}",
+        }
 
     def _next_problem(self, *, statuses: set[str] | None = None) -> dict[str, Any] | None:
         statuses = statuses or {"REPAIR_PROPOSED", "OBSERVING_PRODUCTION"}

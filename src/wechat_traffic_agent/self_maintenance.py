@@ -15,6 +15,8 @@ from agent_runtime.agency.diagnosis import (
 )
 from agent_runtime.evolution import EvolutionFactKind
 
+from .repair_request import RepairEvidenceRef, RepairRequest, submit_repair_request
+
 
 _KNOWN_COGNITION_ERROR = "BELIEF_CHANGED requires a persisted worldview change"
 _KNOWN_MODEL_JSON_ERROR = "backend did not return a JSON object"
@@ -153,13 +155,101 @@ class SelfMaintenanceService:
         _atomic_json(path, payload)
         _atomic_json(self.root / "latest.json", payload)
         evolution = self._observe_evolution(payload)
+        repair_request = self.request_code_repair(problem_id) if proposal is not None else {
+            "status": "NOT_ELIGIBLE",
+        }
         return {
             "status": "RECORDED",
             "problem_id": problem_id,
             "problem_status": status,
             "repair_proposal": proposal,
+            "repair_request": repair_request,
             "evolution": evolution,
         }
+
+    def request_code_repair(self, problem_id: str) -> dict[str, Any]:
+        """Submit evidence to Pi Remote; Ferro receives no source-control authority."""
+        folder = self.root / "problems"
+        path = next(
+            (item for item in folder.glob("*.json") if self._problem_id(item) == problem_id),
+            None,
+        )
+        if path is None:
+            return {"status": "PROBLEM_NOT_FOUND"}
+        try:
+            problem = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {"status": "PROBLEM_UNREADABLE"}
+        if not isinstance(problem, dict):
+            return {"status": "PROBLEM_UNREADABLE"}
+        prior = problem.get("repair_request")
+        if isinstance(prior, dict) and (prior.get("request_id") or prior.get("requestId") or prior.get("job_id") or prior.get("jobId")):
+            return dict(prior)
+        proposal = problem.get("repair_proposal")
+        if not isinstance(proposal, dict) or str(proposal.get("risk") or "").upper() != "LOW":
+            return {"status": "NOT_ELIGIBLE"}
+        refs = [
+            RepairEvidenceRef(type="FerroEvidence", id=str(ref))
+            for ref in (problem.get("evidence_refs") or [])[:32]
+            if str(ref).strip()
+        ]
+        failed_tests = []
+        trial = problem.get("repair_trial")
+        if isinstance(trial, dict):
+            failed_tests = [str(item) for item in trial.get("failed_tests") or [] if str(item).strip()][:32]
+        impact = str(problem.get("observed_world_impact") or "").strip()
+        if not impact:
+            impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
+        request = RepairRequest(
+            idempotency_key=f"{problem_id}:{proposal.get('proposal_id') or 'proposal'}",
+            source_problem_id=problem_id,
+            symptom=str(problem.get("symptom") or problem.get("error_type") or "unknown failure"),
+            failure_site=str(problem.get("failure_site") or "unknown"),
+            evidence=refs,
+            failed_tests=failed_tests,
+            severity=str(problem.get("severity") or "LOW").upper(),
+            risk="LOW",
+            observed_world_impact=impact,
+            target_files=[str(item) for item in proposal.get("target_files") or []][:2],
+        )
+        receipt = submit_repair_request(self.capability_runtime, request)
+        audit = {
+            **receipt,
+            "requested_at": datetime.now(timezone.utc).isoformat(),
+            "idempotency_key": request.idempotency_key,
+            "request_sha256": sha256(
+                json.dumps(request.to_pi_remote_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "evidence_refs": [item.model_dump(exclude_none=True) for item in refs],
+        }
+        problem["repair_request"] = audit
+        if audit.get("status") in {"REQUESTED", "RECEIVED", "ACCEPTED"}:
+            problem["status"] = "REPAIR_REQUESTED"
+            proposal["status"] = "REPAIR_REQUESTED"
+            problem["repair_proposal"] = proposal
+        _atomic_json(path, problem)
+        latest = self.root / "latest.json"
+        try:
+            latest_payload = json.loads(latest.read_text(encoding="utf-8"))
+            if isinstance(latest_payload, dict) and latest_payload.get("problem_id") == problem_id:
+                latest_payload["repair_request"] = audit
+                if audit.get("status") in {"REQUESTED", "RECEIVED", "ACCEPTED"}:
+                    latest_payload["status"] = "REPAIR_REQUESTED"
+                    proposal = latest_payload.get("repair_proposal")
+                    if isinstance(proposal, dict):
+                        proposal["status"] = "REPAIR_REQUESTED"
+                _atomic_json(latest, latest_payload)
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+        return audit
+
+    @staticmethod
+    def _problem_id(path: Path) -> str | None:
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return str(row.get("problem_id")) if isinstance(row, dict) else None
 
     def _diagnose(
         self,
