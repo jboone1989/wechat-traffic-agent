@@ -226,6 +226,9 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "view=circuit-catalog" in neural.text
     assert "view=circuit&detail=" in neural.text
     assert "view=neuron&id=" in neural.text
+    assert "addEventListener('touchstart'" in neural.text
+    assert "addEventListener('touchmove'" in neural.text
+    assert "zoomCircuitAt" in neural.text
     assert 'id="brain-canvas"' in neural.text
     assert "/api/agent/brain-lab?view=telemetry" in neural.text
     assert "No fake events are generated" in neural.text

@@ -25,7 +25,7 @@ main{padding:34px 0 70px}.hero{padding:34px 36px;border:1px solid rgba(112,243,1
 .brain-legend{position:absolute;left:14px;bottom:12px;max-width:520px;padding:8px 10px;border:1px solid rgba(112,243,178,.11);border-radius:10px;background:rgba(5,13,11,.72);color:#6f897b;font-size:.56rem;line-height:1.45;backdrop-filter:blur(8px)}
 .telemetry-side{padding:17px;display:flex;flex-direction:column;gap:10px;background:linear-gradient(180deg,rgba(10,28,21,.94),rgba(6,18,14,.96))}.telemetry-card{padding:12px;border:1px solid rgba(112,243,178,.1);border-radius:12px;background:rgba(5,15,11,.68)}.telemetry-card .label{color:#60796b;font:700 .51rem ui-monospace,monospace;letter-spacing:.1em}.telemetry-card b{display:block;margin-top:7px;color:#e8f6ee;font-size:.8rem;line-height:1.35}.telemetry-card p{margin:5px 0 0;color:#758d80;font-size:.6rem;line-height:1.45}
 .telemetry-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}.telemetry-pair .telemetry-card b{font-size:1rem}.live-drives{display:grid;gap:8px;margin-top:8px}.live-drive{display:grid;grid-template-columns:84px 1fr 34px;gap:7px;align-items:center;color:#91a99c;font-size:.58rem}.live-drive .track{height:6px}.burst-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 12px rgba(112,243,178,.7);margin-right:6px}.burst-dot.quiet{background:#52685c;box-shadow:none}
-.circuit-v2{background:linear-gradient(180deg,rgba(5,16,12,.99),rgba(6,18,14,.97))}.circuit-toolbar{display:flex;gap:8px;flex-wrap:wrap;padding:0 18px 16px}.circuit-chip{appearance:none;border:1px solid rgba(112,243,178,.14);background:#071510;color:#7f998b;border-radius:999px;padding:8px 11px;font:700 .55rem ui-monospace,monospace;letter-spacing:.04em;cursor:pointer}.circuit-chip.active{color:#dff8ea;border-color:rgba(112,243,178,.42);background:rgba(112,243,178,.10);box-shadow:0 0 20px rgba(112,243,178,.06)}.circuit-chip.ferro{border-color:rgba(223,185,107,.25);color:#cdb982}.circuit-chip.ferro.active{background:rgba(223,185,107,.10);border-color:rgba(223,185,107,.5);color:#f1cf7b}.circuit-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;border-top:1px solid var(--line)}.circuit-canvas-wrap{position:relative;min-height:500px;background:radial-gradient(circle at 50% 50%,rgba(112,243,178,.04),transparent 44%),#040c09;border-right:1px solid var(--line);overflow:hidden}.circuit-canvas{display:block;width:100%;height:500px;touch-action:none}.circuit-controls{position:absolute;right:12px;top:12px;display:flex;gap:6px}.circuit-controls button{width:34px;height:34px;border-radius:9px;border:1px solid rgba(112,243,178,.15);background:rgba(5,15,11,.82);color:#a4b9ae;font:700 .8rem ui-monospace,monospace}.circuit-caption{position:absolute;left:12px;bottom:12px;right:12px;padding:8px 10px;background:rgba(4,12,9,.82);border:1px solid rgba(112,243,178,.09);border-radius:10px;color:#687f72;font-size:.55rem;line-height:1.45;backdrop-filter:blur(7px)}.inspector{padding:16px;display:flex;flex-direction:column;gap:10px}.inspector h3{margin:0;color:#e5f3ea;font-size:.9rem}.inspector .sub{color:#667d70;font-size:.58rem;line-height:1.5}.inspect-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.inspect-metric{border:1px solid rgba(112,243,178,.09);border-radius:10px;padding:9px;background:rgba(5,15,11,.58)}.inspect-metric span{display:block;color:#587064;font:700 .48rem ui-monospace,monospace;letter-spacing:.08em}.inspect-metric b{display:block;margin-top:5px;color:#e4f3ea;font-size:.72rem}.synapse-list{display:grid;gap:5px;max-height:240px;overflow:auto}.synapse-row{display:grid;grid-template-columns:minmax(0,1fr) 68px;gap:8px;padding:7px 8px;border-bottom:1px solid rgba(112,243,178,.06);color:#83998e;font-size:.56rem}.synapse-row b{color:#bdd2c7;font:700 .56rem ui-monospace,monospace;text-align:right}.circuit-empty{padding:22px;color:#667d70;font-size:.62rem}
+.circuit-v2{background:linear-gradient(180deg,rgba(5,16,12,.99),rgba(6,18,14,.97))}.circuit-toolbar{display:flex;gap:8px;flex-wrap:wrap;padding:0 18px 16px}.circuit-chip{appearance:none;border:1px solid rgba(112,243,178,.14);background:#071510;color:#7f998b;border-radius:999px;padding:8px 11px;font:700 .55rem ui-monospace,monospace;letter-spacing:.04em;cursor:pointer}.circuit-chip.active{color:#dff8ea;border-color:rgba(112,243,178,.42);background:rgba(112,243,178,.10);box-shadow:0 0 20px rgba(112,243,178,.06)}.circuit-chip.ferro{border-color:rgba(223,185,107,.25);color:#cdb982}.circuit-chip.ferro.active{background:rgba(223,185,107,.10);border-color:rgba(223,185,107,.5);color:#f1cf7b}.circuit-grid{display:grid;grid-template-columns:minmax(0,1fr) 310px;border-top:1px solid var(--line)}.circuit-canvas-wrap{position:relative;min-height:500px;background:radial-gradient(circle at 50% 50%,rgba(112,243,178,.04),transparent 44%),#040c09;border-right:1px solid var(--line);overflow:hidden}.circuit-canvas{display:block;width:100%;height:500px;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}.circuit-controls{position:absolute;right:12px;top:12px;display:flex;gap:6px}.circuit-controls button{width:34px;height:34px;border-radius:9px;border:1px solid rgba(112,243,178,.15);background:rgba(5,15,11,.82);color:#a4b9ae;font:700 .8rem ui-monospace,monospace}.circuit-caption{position:absolute;left:12px;bottom:12px;right:12px;padding:8px 10px;background:rgba(4,12,9,.82);border:1px solid rgba(112,243,178,.09);border-radius:10px;color:#687f72;font-size:.55rem;line-height:1.45;backdrop-filter:blur(7px)}.inspector{padding:16px;display:flex;flex-direction:column;gap:10px}.inspector h3{margin:0;color:#e5f3ea;font-size:.9rem}.inspector .sub{color:#667d70;font-size:.58rem;line-height:1.5}.inspect-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.inspect-metric{border:1px solid rgba(112,243,178,.09);border-radius:10px;padding:9px;background:rgba(5,15,11,.58)}.inspect-metric span{display:block;color:#587064;font:700 .48rem ui-monospace,monospace;letter-spacing:.08em}.inspect-metric b{display:block;margin-top:5px;color:#e4f3ea;font-size:.72rem}.synapse-list{display:grid;gap:5px;max-height:240px;overflow:auto}.synapse-row{display:grid;grid-template-columns:minmax(0,1fr) 68px;gap:8px;padding:7px 8px;border-bottom:1px solid rgba(112,243,178,.06);color:#83998e;font-size:.56rem}.synapse-row b{color:#bdd2c7;font:700 .56rem ui-monospace,monospace;text-align:right}.circuit-empty{padding:22px;color:#667d70;font-size:.62rem}
 .empty{padding:12px;color:#71877b;font-size:.66rem;border:1px dashed rgba(112,243,178,.12);border-radius:9px}
 .small{color:#6f8579;font-size:.61rem;line-height:1.5}.footer{padding:24px 0 40px;text-align:center;color:#60756a;font-size:.59rem}
 @media(max-width:900px){.grid4{grid-template-columns:1fr 1fr}.metric:nth-child(2n){border-right:0}.split,.causal,.causal.five{grid-template-columns:1fr}.panel+.panel{border-left:0;border-top:1px solid var(--line)}.cause-step:not(:last-child):after{content:"↓";right:auto;left:50%;top:auto;bottom:-15px;transform:translateX(-50%)}.tick{grid-template-columns:78px 112px 1fr}.section-head{display:block}.section-head p{margin-top:8px}.roadmap{min-width:760px}.roadmap-wrap{overflow:auto}.brain-stage{grid-template-columns:1fr}.brain-canvas-wrap{border-right:0;border-bottom:1px solid var(--line)}.telemetry-side{display:grid;grid-template-columns:repeat(2,1fr)}.circuit-grid{grid-template-columns:1fr}.circuit-canvas-wrap{border-right:0;border-bottom:1px solid var(--line)}}
@@ -368,17 +368,93 @@ function pickCircuitNeuron(clientX,clientY){
  if(best)inspectNeuron(best);
 }
 function clampCircuitScale(value){return Math.max(.65,Math.min(4.5,value))}
-function zoomCircuit(factor){circuitScale=clampCircuitScale(circuitScale*factor)}
+function zoomCircuitAt(factor,clientX,clientY){
+ const rect=circuitCanvas.getBoundingClientRect(),cx=rect.width/2,cy=rect.height/2;
+ const localX=(clientX===undefined?rect.left+cx:clientX)-rect.left,localY=(clientY===undefined?rect.top+cy:clientY)-rect.top;
+ const oldScale=circuitScale,newScale=clampCircuitScale(oldScale*factor),ratio=newScale/oldScale;
+ circuitPanX=localX-cx-ratio*(localX-cx-circuitPanX);
+ circuitPanY=localY-cy-ratio*(localY-cy-circuitPanY);
+ circuitScale=newScale;
+}
+function zoomCircuit(factor){const rect=circuitCanvas.getBoundingClientRect();zoomCircuitAt(factor,rect.left+rect.width/2,rect.top+rect.height/2)}
 $('circuit-zoom-in').addEventListener('click',()=>zoomCircuit(1.25));$('circuit-zoom-out').addEventListener('click',()=>zoomCircuit(.8));$('circuit-reset').addEventListener('click',()=>{circuitScale=1;circuitPanX=0;circuitPanY=0});
-circuitCanvas.addEventListener('wheel',event=>{event.preventDefault();zoomCircuit(event.deltaY<0?1.12:.89)},{passive:false});
-circuitCanvas.addEventListener('pointerdown',event=>{circuitCanvas.setPointerCapture(event.pointerId);circuitPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});circuitDragging=true;circuitDragStart={x:event.clientX,y:event.clientY,panX:circuitPanX,panY:circuitPanY,moved:false}});
-circuitCanvas.addEventListener('pointermove',event=>{
- const prior=circuitPointers.get(event.pointerId);if(!prior)return;circuitPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
- if(circuitPointers.size===1&&circuitDragStart){const dx=event.clientX-circuitDragStart.x,dy=event.clientY-circuitDragStart.y;if(Math.hypot(dx,dy)>5)circuitDragStart.moved=true;circuitPanX=circuitDragStart.panX+dx;circuitPanY=circuitDragStart.panY+dy}
- if(circuitPointers.size===2){const pts=[...circuitPointers.values()];const dist=Math.hypot(pts[0].x-pts[1].x,pts[0].y-pts[1].y);if(circuitCanvas._pinchDist){circuitScale=clampCircuitScale(circuitScale*(dist/circuitCanvas._pinchDist))}circuitCanvas._pinchDist=dist}
+circuitCanvas.addEventListener('wheel',event=>{event.preventDefault();zoomCircuitAt(event.deltaY<0?1.12:.89,event.clientX,event.clientY)},{passive:false});
+
+// Desktop/pen path. Touch is handled explicitly below because iOS Safari's
+// pointer-event gesture delivery has varied across versions.
+circuitCanvas.addEventListener('pointerdown',event=>{
+ if(event.pointerType==='touch')return;
+ try{circuitCanvas.setPointerCapture(event.pointerId)}catch(_error){}
+ circuitPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+ circuitDragging=true;circuitDragStart={x:event.clientX,y:event.clientY,panX:circuitPanX,panY:circuitPanY,moved:false};
 });
-function endCircuitPointer(event){const moved=circuitDragStart&&circuitDragStart.moved;circuitPointers.delete(event.pointerId);if(circuitPointers.size<2)circuitCanvas._pinchDist=0;if(!moved&&circuitPointers.size===0)pickCircuitNeuron(event.clientX,event.clientY);if(circuitPointers.size===0){circuitDragging=false;circuitDragStart=null}}
+circuitCanvas.addEventListener('pointermove',event=>{
+ if(event.pointerType==='touch')return;
+ const prior=circuitPointers.get(event.pointerId);if(!prior)return;
+ circuitPointers.set(event.pointerId,{x:event.clientX,y:event.clientY});
+ if(circuitDragStart){
+  const dx=event.clientX-circuitDragStart.x,dy=event.clientY-circuitDragStart.y;
+  if(Math.hypot(dx,dy)>4)circuitDragStart.moved=true;
+  circuitPanX=circuitDragStart.panX+dx;circuitPanY=circuitDragStart.panY+dy;
+ }
+});
+function endCircuitPointer(event){
+ if(event.pointerType==='touch')return;
+ const moved=circuitDragStart&&circuitDragStart.moved;
+ circuitPointers.delete(event.pointerId);
+ if(!moved&&circuitPointers.size===0)pickCircuitNeuron(event.clientX,event.clientY);
+ if(circuitPointers.size===0){circuitDragging=false;circuitDragStart=null}
+}
 circuitCanvas.addEventListener('pointerup',endCircuitPointer);circuitCanvas.addEventListener('pointercancel',endCircuitPointer);
+
+// iPhone/iPad path: one finger pans, two fingers pinch around their midpoint.
+let circuitTouchGesture=null;
+function touchPoint(touch){return {x:touch.clientX,y:touch.clientY}}
+function touchDistance(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function touchMidpoint(a,b){return {x:(a.x+b.x)/2,y:(a.y+b.y)/2}}
+circuitCanvas.addEventListener('touchstart',event=>{
+ event.preventDefault();
+ const touches=[...event.touches];
+ if(touches.length===1){
+  const p=touchPoint(touches[0]);
+  circuitTouchGesture={mode:'pan',startX:p.x,startY:p.y,startPanX:circuitPanX,startPanY:circuitPanY,moved:false,tapX:p.x,tapY:p.y};
+ }else if(touches.length>=2){
+  const a=touchPoint(touches[0]),b=touchPoint(touches[1]),mid=touchMidpoint(a,b);
+  circuitTouchGesture={mode:'pinch',startDistance:Math.max(1,touchDistance(a,b)),startScale:circuitScale,startPanX:circuitPanX,startPanY:circuitPanY,startMidX:mid.x,startMidY:mid.y,moved:true};
+ }
+},{passive:false});
+circuitCanvas.addEventListener('touchmove',event=>{
+ event.preventDefault();
+ const touches=[...event.touches],gesture=circuitTouchGesture;if(!gesture)return;
+ if(touches.length===1&&gesture.mode==='pan'){
+  const p=touchPoint(touches[0]),dx=p.x-gesture.startX,dy=p.y-gesture.startY;
+  if(Math.hypot(dx,dy)>3)gesture.moved=true;
+  circuitPanX=gesture.startPanX+dx;circuitPanY=gesture.startPanY+dy;
+ }else if(touches.length>=2){
+  const a=touchPoint(touches[0]),b=touchPoint(touches[1]),mid=touchMidpoint(a,b),dist=Math.max(1,touchDistance(a,b));
+  if(gesture.mode!=='pinch'){
+   circuitTouchGesture={mode:'pinch',startDistance:dist,startScale:circuitScale,startPanX:circuitPanX,startPanY:circuitPanY,startMidX:mid.x,startMidY:mid.y,moved:true};
+   return;
+  }
+  const rect=circuitCanvas.getBoundingClientRect(),cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
+  const newScale=clampCircuitScale(gesture.startScale*(dist/gesture.startDistance)),ratio=newScale/gesture.startScale;
+  circuitPanX=(mid.x-cx)-ratio*(gesture.startMidX-cx-gesture.startPanX);
+  circuitPanY=(mid.y-cy)-ratio*(gesture.startMidY-cy-gesture.startPanY);
+  circuitScale=newScale;gesture.moved=true;
+ }
+},{passive:false});
+circuitCanvas.addEventListener('touchend',event=>{
+ event.preventDefault();
+ const gesture=circuitTouchGesture,remaining=[...event.touches];
+ if(remaining.length===0){
+  if(gesture&&gesture.mode==='pan'&&!gesture.moved)pickCircuitNeuron(gesture.tapX,gesture.tapY);
+  circuitTouchGesture=null;
+ }else if(remaining.length===1){
+  const p=touchPoint(remaining[0]);
+  circuitTouchGesture={mode:'pan',startX:p.x,startY:p.y,startPanX:circuitPanX,startPanY:circuitPanY,moved:true,tapX:p.x,tapY:p.y};
+ }
+},{passive:false});
+circuitCanvas.addEventListener('touchcancel',event=>{event.preventDefault();circuitTouchGesture=null},{passive:false});
 window.addEventListener('resize',resizeCircuitCanvas,{passive:true});
 refreshCircuitCatalog();setInterval(()=>{if(circuitSelector)loadCircuit(circuitSelector,false)},2500);requestAnimationFrame(drawCircuit);
 function stage(status,label,evidence){return {status,label,evidence}}
