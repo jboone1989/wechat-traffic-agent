@@ -211,7 +211,9 @@ def _capability_pack_deployment() -> tuple[tuple[str, ...], dict[str, str], dict
     return trusted, preferred, configs
 
 
-def build_content_application(*, root: Path, manifest_path: Path) -> ContentApplication:
+def build_content_application(
+    *, root: Path, manifest_path: Path, allow_missing_required_capabilities: bool = False
+) -> ContentApplication:
     """Production composition root; framework imports remain behind this seam."""
     from agent_runtime import ApplicationRuntime
     from agent_runtime.agents import load_agent_manifest
@@ -295,7 +297,7 @@ def build_content_application(*, root: Path, manifest_path: Path) -> ContentAppl
     except Exception:
         manager.close()
         raise
-    if not report.ready:
+    if not report.ready and not allow_missing_required_capabilities:
         manager.close()
         missing = ",".join(report.missing_required) or "unknown"
         raise RuntimeError("required Runtime capabilities unavailable: " + missing)

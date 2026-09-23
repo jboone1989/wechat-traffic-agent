@@ -63,6 +63,7 @@ _ONE_SHOT_TASKS = (
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="persistent Content Agent")
     parser.add_argument("--once", action="store_true", help="Run one content cognition tick and exit")
+    parser.add_argument("--guardian-canary", action="store_true", help="Start an isolated, no-production-credentials Guardian canary runtime")
     parser.add_argument(
         "--task",
         choices=_ONE_SHOT_TASKS,
@@ -182,10 +183,73 @@ def _claim_startup_task_request(state_root: Path) -> dict | None:
         )
         return None
 
+def _run_guardian_canary() -> int:
+    """Start the smallest real Ferro runtime suitable for external Guardian health checks."""
+    nonce = os.environ.get("FERRO_GUARDIAN_HEALTH_NONCE", "").strip()
+    if not nonce:
+        raise ValueError("FERRO_GUARDIAN_HEALTH_NONCE is required for guardian canary")
+    raw_root = os.environ.get("FERRO_CANDIDATE_STATE_ROOT", "").strip()
+    if not raw_root:
+        raise ValueError("FERRO_CANDIDATE_STATE_ROOT is required for guardian canary")
+    state_root = Path(raw_root).expanduser().resolve()
+    state_root.mkdir(parents=True, exist_ok=True)
+    port = int(os.environ.get("FERRO_CANDIDATE_PORT", "18103"))
+    if port <= 0 or port > 65535:
+        raise ValueError("FERRO_CANDIDATE_PORT is invalid")
+
+    app = build_content_application(
+        root=state_root,
+        manifest_path=ROOT / "agent.yaml",
+        allow_missing_required_capabilities=True,
+    )
+    service = ContentNetworkService(
+        root=state_root,
+        application=app,
+        seed_urls=("http://127.0.0.1:1/a2a",),
+        bind_host="127.0.0.1",
+        advertise_host="127.0.0.1",
+        port=port,
+        startup_timeout_seconds=10.0,
+        join_retry_seconds=0.5,
+    )
+    stopping = False
+
+    def _stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+        service.request_stop()
+
+    previous_term = signal.signal(signal.SIGTERM, _stop)
+    previous_int = signal.signal(signal.SIGINT, _stop)
+    try:
+        service.start()
+        print(json.dumps({
+            "guardian_canary": {
+                "status": "READY",
+                "health_url": f"http://127.0.0.1:{port}/guardian-health",
+                "state_root": str(state_root),
+                "production_credentials_inherited": False,
+            }
+        }, sort_keys=True), flush=True)
+        while not stopping:
+            time.sleep(0.1)
+        return 0
+    finally:
+        try:
+            service.stop()
+        finally:
+            app.close()
+            signal.signal(signal.SIGTERM, previous_term)
+            signal.signal(signal.SIGINT, previous_int)
+
 
 def main() -> int:
     parser = _parser(); args = parser.parse_args()
     if args.health: return _show_health()
+    if args.guardian_canary:
+        if args.once or args.task or args.focus_topic:
+            parser.error("--guardian-canary cannot be combined with normal task execution")
+        return _run_guardian_canary()
     if args.once and args.task:
         parser.error("--once and --task are mutually exclusive")
     if args.focus_topic and not (args.once or args.task == "CONTENT_COGNITION"):

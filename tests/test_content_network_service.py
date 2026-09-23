@@ -264,6 +264,7 @@ def test_local_endpoint_survives_seed_join_failure(monkeypatch, tmp_path):
         startup_timeout_seconds=3,
         join_retry_seconds=0.1,
     )
+    monkeypatch.setenv("FERRO_GUARDIAN_HEALTH_NONCE", "guardian-test-nonce")
     try:
         service.start()
         time.sleep(0.3)
@@ -271,6 +272,13 @@ def test_local_endpoint_survives_seed_join_failure(monkeypatch, tmp_path):
             f"http://127.0.0.1:{port}/.well-known/agent-card.json", timeout=2
         ) as response:
             assert response.status == 200
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/guardian-health", timeout=2
+        ) as response:
+            guardian = json.loads(response.read().decode("utf-8"))
+        assert guardian["status"] == "ok"
+        assert guardian["guardianNonce"] == "guardian-test-nonce"
+        assert guardian["capabilities"] == ["ferro-runtime", "network-health"]
         status = json.loads(service.join_status_path.read_text(encoding="utf-8"))
         assert service.joined is False
         assert status["status"] == "RETRYING"
