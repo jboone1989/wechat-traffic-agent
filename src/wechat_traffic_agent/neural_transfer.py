@@ -113,15 +113,37 @@ class CrossDomainTransferLab:
             "active_neurons": int(burst.get("active_neurons") or 0),
         }
 
-    def pending(self) -> dict[str, Any] | None:
-        for row in reversed(self.state.get("experiments") or ()):
-            if str(row.get("status") or "") == "AWAITING_TARGET_OUTCOME":
-                return dict(row)
+    def pending(self, *, now: datetime | None = None) -> dict[str, Any] | None:
+        experiments = list(self.state.get("experiments") or ())
+        changed = False
+        for index in range(len(experiments) - 1, -1, -1):
+            row = dict(experiments[index])
+            if str(row.get("status") or "") != "AWAITING_TARGET_OUTCOME":
+                continue
+            if now is not None:
+                try:
+                    created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+                    expired = (now.astimezone(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() >= 3600
+                except (KeyError, TypeError, ValueError):
+                    expired = True
+                if expired:
+                    row["status"] = "INCONCLUSIVE"
+                    row["target_outcome"] = {"observed_at": now.isoformat(), "status": "TARGET_TIMEOUT", "utility": None}
+                    experiments[index] = row
+                    changed = True
+                    continue
+            if changed:
+                self.state["experiments"] = experiments
+                _write(self.path, self.state)
+            return row
+        if changed:
+            self.state["experiments"] = experiments
+            _write(self.path, self.state)
         return None
 
     def begin(self, *, now: datetime | None = None, training_steps: int = 12) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        existing = self.pending()
+        existing = self.pending(now=now)
         if existing is not None:
             return {"status": "PENDING_EXISTS", "experiment": existing}
         if self.substrate is None or self.brain_lab is None:
@@ -189,14 +211,18 @@ class CrossDomainTransferLab:
         *,
         task: str,
         result: Mapping[str, Any],
+        experiment_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not experiment_id:
+            return None
         experiments = list(self.state.get("experiments") or ())
         index = next(
             (
                 i for i in range(len(experiments) - 1, -1, -1)
                 if str(experiments[i].get("status") or "") == "AWAITING_TARGET_OUTCOME"
+                and str(experiments[i].get("experiment_id") or "") == str(experiment_id)
                 and str(experiments[i].get("target_task") or "") == str(task)
             ),
             None,

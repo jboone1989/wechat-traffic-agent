@@ -155,3 +155,51 @@ def test_vb_activates_opportunity_feast_for_verified_free_frontier_resource(tmp_
     assert saved["windfall_resource_ids"]==["frontier-free"]
     assert "self_upgrade" in saved["high_value_task_classes"]
     assert saved["windfall_bonus"]==pytest.approx(0.30)
+
+
+def test_verified_free_route_executes_when_paid_balance_sensor_is_unknown(tmp_path, monkeypatch):
+    import json
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    def unavailable(_now):
+        raise RuntimeError("provider unreachable")
+    monkeypatch.setattr(economy.observer, "observe", unavailable)
+    monkeypatch.setenv("TEST_FREE_API_KEY", "present")
+    pool = tmp_path / "application" / "llm_resource_pool"
+    pool.mkdir(parents=True)
+    (pool / "resources.json").write_text(json.dumps({
+        "observed_at": NOW.isoformat(),
+        "resources": [{
+            "resource_id": "verified-free", "pricing_class": "FREE",
+            "credential_env": "TEST_FREE_API_KEY", "metrics_source": "EMPIRICAL_TRIALS",
+            "quota_remaining": 5, "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+        }],
+    }))
+    observed = economy.observe(NOW)
+    assert observed["status"] == "PARTIALLY_OBSERVED"
+    assert observed["balance"] is None
+    decision = economy.begin_cycle(now=NOW, cycle="free-cycle")
+    assert decision["decision"] == "EXECUTE"
+    result = economy.end_cycle(now=NOW, cycle="free-cycle", episode_id=decision["episode_id"],
+                               before_balance=decision["before_balance"], result={"status": "PUBLISHED"})
+    assert result["status"] == "RECORDED_COST_UNKNOWN"
+    outcome = mind.session.resource_awareness.outcomes[-1]
+    assert "cost-sensor:unknown" in outcome.evidence_refs
+    assert "cost unknown" in outcome.result_summary
+
+
+def test_publication_without_measured_downstream_value_does_not_invent_value(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    observations = iter((balance(when=NOW, total=10.0, suffix="a"),
+                         balance(when=NOW + timedelta(minutes=20), total=9.9, suffix="b")))
+    monkeypatch.setattr(economy.observer, "observe", lambda now: next(observations))
+    economy.observe(NOW)
+    decision = economy.begin_cycle(now=NOW, cycle="unmeasured-publication")
+    economy.end_cycle(now=NOW + timedelta(minutes=20), cycle="unmeasured-publication",
+                      episode_id=decision["episode_id"], before_balance=decision["before_balance"],
+                      result={"status": "PUBLISHED"})
+    outcome = mind.session.resource_awareness.outcomes[-1]
+    assert outcome.external_value == 0
+    assert outcome.learning_value == 0
+    assert outcome.reproduction_value == 0

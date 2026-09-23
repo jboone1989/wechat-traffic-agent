@@ -148,12 +148,23 @@ class ContentResourceEconomy:
     def observe(self, now: datetime) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ResourceState
 
-        balance = self.observer.observe(now)
+        try:
+            balance = self.observer.observe(now)
+            balance_observed = True
+        except (RuntimeError, ValueError) as exc:
+            # A failed account sensor is unknown, never a measured zero balance.
+            balance = BalanceObservation(
+                observed_at=_iso(now), is_available=False, currency="CNY",
+                total_balance=0.0, granted_balance=0.0, topped_up_balance=0.0,
+                evidence_ref="deepseek-balance:unobserved:" + type(exc).__name__,
+            )
+            balance_observed = False
         awareness = self.mind.session.resource_awareness
         burn = self._daily_burn(awareness.states, balance)
         runway = balance.total_balance / burn if burn is not None and burn > 0 else None
-        from .llm_resources import pool_metrics
+        from .llm_resources import eligible_free_resources, pool_metrics
         llm_metrics = pool_metrics(self.state_root)
+        free_routes = eligible_free_resources(self.state_root, now)
         state = ResourceState(
             observed_tick=int(self.mind.session.tick),
             observed_at=balance.observed_at,
@@ -168,7 +179,9 @@ class ContentResourceEconomy:
             estimated_daily_burn=burn,
             runway_days=runway,
             quotas={
-                "deepseek_api_available": 1.0 if balance.is_available else 0.0,
+                "deepseek_api_available": 1.0 if balance_observed and balance.is_available else 0.0,
+                "deepseek_balance_observed": 1.0 if balance_observed else 0.0,
+                "llm_eligible_free_route_count": float(len(free_routes)),
                 "deepseek_granted_balance": balance.granted_balance,
                 "deepseek_topped_up_balance": balance.topped_up_balance,
                 **llm_metrics,
@@ -179,8 +192,9 @@ class ContentResourceEconomy:
         self.mind.persist_resource_awareness()
         routing_policy = self.sync_llm_routing_policy(now=now)
         return {
-            "status": "OBSERVED",
-            "balance": balance.payload(),
+            "status": "OBSERVED" if balance_observed else "PARTIALLY_OBSERVED",
+            "balance": balance.payload() if balance_observed else None,
+            "balance_sensor": "OBSERVED" if balance_observed else "UNKNOWN",
             "resource_state": self._state_payload(state),
             "llm_routing_policy": routing_policy,
         }
@@ -189,7 +203,7 @@ class ContentResourceEconomy:
         """Translate VirtualBrain resource awareness into a secret-free Runtime routing policy."""
         current = self.mind.session.resource_awareness.current
         if current is None:
-            pressure = "NORMAL"
+            pressure = "UNKNOWN"
             funds = None
             runway = None
             evidence_refs = (f"vb-mind-tick:{int(self.mind.session.tick)}",)
@@ -342,7 +356,13 @@ class ContentResourceEconomy:
         from virtualbrain.research.resource_awareness import ActionProposal, DecisionEpisode
 
         current = self.mind.session.resource_awareness.current
-        if current is None:
+        observed_at = None
+        if current is not None:
+            try:
+                observed_at = datetime.fromisoformat(str(current.observed_at).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                pass
+        if current is None or observed_at is None or observed_at.tzinfo is None or not 0 <= (now.astimezone(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds() <= 7200:
             self.observe(now)
             current = self.mind.session.resource_awareness.current
         assert current is not None
@@ -381,8 +401,14 @@ class ContentResourceEconomy:
             ))
         existing = next((item for item in awareness.episodes if item.proposal_id == proposal_id), None)
         if existing is None:
-            available = current.quotas.get("deepseek_api_available", 1.0) >= 1.0
-            decision = "EXECUTE" if available and current.available_funds >= estimated_cost else "ASK_HUMAN"
+            from .llm_resources import eligible_free_resources
+            free_available = bool(eligible_free_resources(self.state_root, now))
+            paid_available = (
+                current.quotas.get("deepseek_balance_observed", 1.0) >= 1.0
+                and current.quotas.get("deepseek_api_available", 1.0) >= 1.0
+                and current.available_funds >= estimated_cost
+            )
+            decision = "EXECUTE" if free_available or paid_available else "ASK_HUMAN"
             existing = awareness.record_decision(DecisionEpisode(
                 episode_id=episode_id,
                 proposal_id=proposal_id,
@@ -410,27 +436,37 @@ class ContentResourceEconomy:
         from virtualbrain.research.resource_awareness import Outcome, Reflection
 
         observed = self.observe(now)
+        cost_observed = observed.get("balance_sensor") == "OBSERVED"
         current = self.mind.session.resource_awareness.current
         assert current is not None
-        if current.available_funds > before_balance:
+        if cost_observed and current.available_funds > before_balance:
             return {"status": "AMBIGUOUS_BALANCE_INCREASE", "resource_state": observed["resource_state"]}
         awareness = self.mind.session.resource_awareness
         if any(item.episode_id == episode_id for item in awareness.outcomes):
             return {"status": "ALREADY_RECORDED", "episode_id": episode_id}
         episode = next(item for item in awareness.episodes if item.episode_id == episode_id)
-        actual_cost = before_balance - current.available_funds
+        actual_cost = before_balance - current.available_funds if cost_observed else 0.0
         status = str(result.get("status") or "UNKNOWN")
         published = status == "PUBLISHED"
         succeeded = status not in {"ERROR", "RESOURCE_DEFERRED"}
-        external_value = 0.8 if published else (0.3 if succeeded else 0.0)
-        learning_value = 0.7 if succeeded else 0.1
-        reproduction_value = 0.5 if published else 0.1
+        def observed_value(key: str) -> float:
+            value = result.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return 0.0
+            return max(0.0, min(1.0, float(value)))
+        external_value = observed_value("external_value")
+        if "external_value" not in result:
+            external_value = observed_value("world_utility")
+        learning_value = observed_value("learning_value")
+        reproduction_value = observed_value("reproduction_value")
         outcome_id = "content-cycle-outcome:" + sha256(cycle.encode()).hexdigest()[:20]
-        evidence = tuple(dict.fromkeys((*episode.evidence_refs, *current.source_refs, "cycle-result:" + status)))
+        evidence = tuple(dict.fromkeys((*episode.evidence_refs, *current.source_refs, "cycle-result:" + status,
+                                        "cost-sensor:observed" if cost_observed else "cost-sensor:unknown")))
         outcome = awareness.record_outcome(Outcome(
             outcome_id=outcome_id,
             episode_id=episode_id,
-            result_summary=f"content cycle ended {status}; observed account balance delta {actual_cost:.6f} {current.currency}",
+            result_summary=(f"content cycle ended {status}; observed account balance delta {actual_cost:.6f} {current.currency}"
+                            if cost_observed else f"content cycle ended {status}; account cost unknown"),
             actual_cost=actual_cost,
             external_value=external_value,
             learning_value=learning_value,
@@ -440,13 +476,15 @@ class ContentResourceEconomy:
             evidence_refs=evidence,
         ))
         estimate = max(episode.estimated_cost, 1e-9)
-        prediction_error = max(-1.0, min(1.0, (actual_cost - episode.estimated_cost) / estimate))
+        prediction_error = max(-1.0, min(1.0, (actual_cost - episode.estimated_cost) / estimate)) if cost_observed else 0.0
         waste = min(1.0, actual_cost / estimate) if not succeeded and actual_cost > 0 else 0.0
         lesson = (
-            "Published content produced external and learning value within the observed resource episode."
+            "Publication was observed; downstream external value remains unknown until measured."
             if published else
             "The cycle consumed resources without publication; compare this episode with later outcomes before changing policy."
             if actual_cost > 0 else
+            "Account cost was not observed; retain uncertainty about provider billing."
+            if not cost_observed else
             "No account balance decrease was observed during this cycle; retain uncertainty about delayed billing."
         )
         reflection = awareness.record_reflection(Reflection(
@@ -461,7 +499,7 @@ class ContentResourceEconomy:
         ))
         self.mind.persist_resource_awareness()
         return {
-            "status": "RECORDED",
+            "status": "RECORDED" if cost_observed else "RECORDED_COST_UNKNOWN",
             "episode_id": episode_id,
             "outcome_id": outcome.outcome_id,
             "reflection_id": reflection.reflection_id,

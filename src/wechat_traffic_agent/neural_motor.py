@@ -131,6 +131,8 @@ class NeuralMotorCortex:
         burst: Mapping[str, Any],
         motor_ids: Iterable[str] | None = None,
     ) -> dict[str, float]:
+        if int(burst.get("spikes") or 0) <= 0 and int(burst.get("active_neurons") or 0) <= 0:
+            return {str(motor_id): 0.0 for motor_id in (motor_ids or (f"motor_{index:03d}" for index in range(MOTOR_UNIT_COUNT)))}
         signature = str(
             burst.get("response_spike_pattern_digest")
             or burst.get("state_digest")
@@ -190,6 +192,32 @@ class NeuralMotorCortex:
         token = sha256(f"{motor_id}|explore|{decision_seq}".encode("utf-8")).digest()
         return self.allowed_actions[int.from_bytes(token[:4], "little") % len(self.allowed_actions)]
 
+    def expire_pending(self, *, now: datetime | None = None) -> tuple[str, ...]:
+        """Age decisions even when rest or resource regulation blocks new actions."""
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        decisions = list(self.state.get("decisions") or ())
+        expired_ids: list[str] = []
+        for index, raw in enumerate(decisions):
+            prior = dict(raw)
+            if str(prior.get("status") or "") != "PENDING_OUTCOME":
+                continue
+            try:
+                created = datetime.fromisoformat(str(prior["created_at"]).replace("Z", "+00:00"))
+                age = (now - created.astimezone(timezone.utc)).total_seconds()
+            except (KeyError, TypeError, ValueError):
+                age = 3600
+            if age < 3600:
+                continue
+            prior["status"] = "TIMED_OUT"
+            prior["outcome"] = {"observed_at": now.isoformat(), "status": "NO_MATCHING_WORLD_OUTCOME"}
+            decisions[index] = prior
+            expired_ids.append(str(prior.get("decision_id") or ""))
+        if expired_ids:
+            self.state["decisions"] = decisions
+            self.state["updated_at"] = now.isoformat()
+            _write_json(self.path, self.state)
+        return tuple(expired_ids)
+
     def select(
         self,
         *,
@@ -197,6 +225,7 @@ class NeuralMotorCortex:
         now: datetime | None = None,
     ) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        self.expire_pending(now=now)
         if self.substrate is None:
             return {"status": "CONNECTOME_UNAVAILABLE", "task": None}
         for prior in reversed(self.state.get("decisions") or ()):
@@ -213,6 +242,8 @@ class NeuralMotorCortex:
         ) or {})
         units = dict(self.state.get("units") or {})
         activations = self._motor_activations(burst, units.keys())
+        if not activations or max(activations.values()) <= 0:
+            return {"status": "NO_NEURAL_MOTOR_SIGNAL", "task": None, "burst": burst}
         effective: dict[str, float] = {}
         for motor_id, neural_activation in activations.items():
             unit = units.get(motor_id) if isinstance(units.get(motor_id), Mapping) else {}
@@ -326,14 +357,18 @@ class NeuralMotorCortex:
         *,
         task: str,
         result: Mapping[str, Any],
+        decision_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not decision_id:
+            return None
         decisions = list(self.state.get("decisions") or ())
         index = next(
             (
                 i for i in range(len(decisions) - 1, -1, -1)
-                if str(decisions[i].get("task") or "") == str(task)
+                if str(decisions[i].get("decision_id") or "") == str(decision_id)
+                and str(decisions[i].get("task") or "") == str(task)
                 and str(decisions[i].get("status") or "") == "PENDING_OUTCOME"
             ),
             None,

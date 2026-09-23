@@ -95,7 +95,7 @@ def test_assignment_is_balanced_and_persisted_before_treatment(tmp_path: Path):
         started = lab.begin(now=NOW)
         row = started["trial"]
         assignments.append(row["assignment"])
-        lab.settle_target(task="CHECK_X", result=_x_result(strong=True), observed_at=NOW)
+        lab.settle_target(task="CHECK_X", result=_x_result(strong=True), trial_id=row["trial_id"], observed_at=NOW)
 
     assert assignments.count("TREATMENT") == 4
     assert assignments.count("CONTROL") == 4
@@ -114,7 +114,7 @@ def test_real_target_evidence_can_adopt_world_after_four_per_arm(tmp_path: Path)
         # Strong target evidence is deliberately associated with the treatment
         # arm in this test; the ledger never sees the outcome before assignment.
         result = _x_result(strong=row["assignment"] == "TREATMENT")
-        settled = lab.settle_target(task="CHECK_X", result=result, observed_at=NOW)
+        settled = lab.settle_target(task="CHECK_X", result=result, trial_id=row["trial_id"], observed_at=NOW)
         assert settled is not None
 
     projection = lab.projection()["worlds"]["WORLD_0001"]
@@ -132,8 +132,8 @@ def test_no_real_world_advantage_requires_revision_not_self_congratulation(tmp_p
     lab = DevelopmentalWorldTransferLab(tmp_path, brain_lab=brain, agency=agency)
 
     for _ in range(8):
-        lab.begin(now=NOW)
-        lab.settle_target(task="CHECK_X", result=_x_result(strong=True), observed_at=NOW)
+        trial = lab.begin(now=NOW)["trial"]
+        lab.settle_target(task="CHECK_X", result=_x_result(strong=True), trial_id=trial["trial_id"], observed_at=NOW)
 
     projection = lab.projection()["worlds"]["WORLD_0001"]
     assert projection["estimated_real_world_effect"] == 0.0
@@ -162,6 +162,7 @@ def test_shutdown_checkpoint_is_inconclusive_and_excluded_from_effect(tmp_path: 
     row = lab.settle_target(
         task="CHECK_X",
         result={"task": "CHECK_X", "status": "SHUTDOWN_CHECKPOINT"},
+        trial_id=started["trial"]["trial_id"],
         observed_at=NOW,
     )
 
@@ -288,6 +289,7 @@ def test_n29_treatment_executes_persisted_n33_phenotype_before_real_outcome(tmp_
         settled = lab.settle_target(
             task="CHECK_X",
             result=_x_result(strong=True),
+            trial_id=row["trial_id"],
             observed_at=NOW,
         )
 
@@ -336,6 +338,7 @@ def test_architecture_only_reuses_adopted_world_without_reopening_n29(tmp_path: 
     settled = lab.settle_target(
         task="CHECK_X",
         result=_x_result(strong=True),
+        trial_id=row["trial_id"],
         observed_at=NOW,
     )
 
@@ -346,3 +349,16 @@ def test_architecture_only_reuses_adopted_world_without_reopening_n29(tmp_path: 
     world_projection = lab.projection()["worlds"]["WORLD_0001"]
     assert world_projection["arms"]["TREATMENT"]["count"] == 0
     assert world_projection["arms"]["CONTROL"]["count"] == 0
+
+
+def test_real_world_utility_overrides_ok_transport_status(tmp_path):
+    agency = AgencyStub()
+    brain = BrainLabStub(tmp_path)
+    lab = DevelopmentalWorldTransferLab(tmp_path, brain_lab=brain, agency=agency)
+    trial = lab.begin(now=NOW)["trial"]
+    assert lab.settle_target(task="CHECK_X", result={"status": "OK", "world_utility": -1.0},
+                             observed_at=NOW) is None
+    settled = lab.settle_target(task="CHECK_X", result={"status": "OK", "world_utility": -1.0},
+                                trial_id=trial["trial_id"], observed_at=NOW)
+    assert settled is not None
+    assert settled["target_outcome"]["utility"] == -1.0

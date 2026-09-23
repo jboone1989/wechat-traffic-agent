@@ -302,6 +302,46 @@ def sync_llm_resource_pool(
     }
 
 
+
+def eligible_free_resources(state_root: Path, now: datetime) -> list[dict[str, Any]]:
+    """Only fresh, verified, credentialed and unexhausted free routes count."""
+    path = Path(state_root) / "application" / "llm_resource_pool" / "resources.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        observed = datetime.fromisoformat(str(manifest["observed_at"]).replace("Z", "+00:00"))
+        if observed.tzinfo is None or not 0 <= (now.astimezone(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds() <= 7200:
+            return []
+        rows = manifest.get("resources") or []
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return []
+    eligible = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("pricing_class") != "FREE":
+            continue
+        credential = str(row.get("credential_env") or "")
+        if not credential or not str(os.environ.get(credential) or "").strip():
+            continue
+        remaining = row.get("quota_remaining")
+        if remaining is not None:
+            try:
+                if float(remaining) <= 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        expires = row.get("expires_at")
+        if expires:
+            try:
+                expiry = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+                if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= now.astimezone(timezone.utc):
+                    continue
+            except ValueError:
+                continue
+        if str(row.get("metrics_source") or "") != "EMPIRICAL_TRIALS":
+            continue
+        eligible.append(row)
+    return eligible
+
+
 def pool_metrics(state_root: Path) -> dict[str, float]:
     state_root = Path(state_root)
     folder = state_root / "application" / "llm_resource_pool"
@@ -367,5 +407,6 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
 __all__ = [
     "model_capability_profile",
     "pool_metrics",
+    "eligible_free_resources",
     "sync_llm_resource_pool",
 ]

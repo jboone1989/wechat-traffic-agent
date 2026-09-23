@@ -89,6 +89,11 @@ class ContentWakefulRuntime:
             state_path=self.state_root / "application" / "wakeful.json",
             reflex=reflex,
         )
+        from .resource_regulation import ResourceRegulator
+        self.resource_regulator = ResourceRegulator(self.state_root)
+        self.core.set_plan_admission(
+            lambda wake: self.resource_regulator.defer_seconds(wake.task, self.core.clock())
+        )
         from .neural_playground import FerroBrainLab
         self.brain_lab = FerroBrainLab(
             self.state_root,
@@ -294,6 +299,22 @@ class ContentWakefulRuntime:
             wake_id=wake_id, at=at, reason=self._reason(task), task=task,
         ))
 
+    def _expire_unsettled_actions(self, now: datetime) -> None:
+        """Close action loops whose target never ran, including during REST."""
+        expired_motor_ids = set(self.neural_motor.expire_pending(now=now))
+        active_transfer = self.neural_transfer.pending(now=now)
+        active_development = self.developmental_world_transfer.pending(now=now)
+        active_transfer_id = str((active_transfer or {}).get("experiment_id") or "")
+        active_development_id = str((active_development or {}).get("trial_id") or "")
+        for wake in self.core.snapshot().pending_plans:
+            wake_id = wake.wake_id
+            if wake_id.startswith("motor:") and wake_id.removeprefix("motor:") in expired_motor_ids:
+                self.core.cancel(wake_id)
+            elif wake_id.startswith("transfer-target:") and wake_id.removeprefix("transfer-target:") != active_transfer_id:
+                self.core.cancel(wake_id)
+            elif wake_id.startswith("development-target:") and wake_id.removeprefix("development-target:") != active_development_id:
+                self.core.cancel(wake_id)
+
     def refresh_neural_life(self, now: datetime | None = None) -> dict:
         """Update Ferro's non-LLM body, drives and affective state.
 
@@ -303,6 +324,7 @@ class ContentWakefulRuntime:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if not self.neural_life_enabled:
             return {"status": "DISABLED"}
+        self._expire_unsettled_actions(now)
         snap = self.core.snapshot()
         wakeful = {
             "neural_graph": dict(snap.neural_state),
@@ -404,20 +426,26 @@ class ContentWakefulRuntime:
             social=self.neural_social.projection(),
             neural_authority_fraction=authority_fraction,
         )
-        motor = self.neural_motor.select(neural_life=projection, now=now)
+        intention = (projection.get("intention") or {}).get("name")
+        pressure = self.resource_regulator.pressure(now)
+        motor = (
+            self.neural_motor.select(neural_life=projection, now=now)
+            if intention != "REST" and pressure not in {"CONSERVE", "CRITICAL", "UNKNOWN"}
+            else {"status": "INHIBITED", "task": None}
+        )
         motor_task = str(motor.get("task") or "")
         if motor_task:
             target_at = now + timedelta(seconds=5)
             existing = next(
                 (
                     wake for wake in self.core.snapshot().pending_plans
-                    if wake.task == motor_task and wake.at <= target_at
+                    if wake.wake_id == f"motor:{motor.get('decision_id')}"
                 ),
                 None,
             )
             if existing is None:
                 self.core.schedule(PlannedWake(
-                    wake_id=f"content:{motor_task}",
+                    wake_id=f"motor:{motor.get('decision_id')}",
                     at=target_at,
                     reason=f"{motor.get('authority') or 'NEURAL_MOTOR'} selected {motor_task} via {motor.get('motor_id') or 'motor unit'}",
                     task=motor_task,
@@ -646,11 +674,13 @@ class ContentWakefulRuntime:
         *,
         task: str,
         result,
+        decision_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
         return self.neural_motor.observe_outcome(
             task=task,
             result=result,
+            decision_id=decision_id,
             observed_at=observed_at,
         )
 
@@ -665,7 +695,7 @@ class ContentWakefulRuntime:
                 existing = next(
                     (
                         wake for wake in self.core.snapshot().pending_plans
-                        if wake.task == target_task and wake.at <= target_at
+                        if wake.wake_id == f"transfer-target:{experiment.get('experiment_id')}"
                     ),
                     None,
                 )
@@ -691,11 +721,13 @@ class ContentWakefulRuntime:
         *,
         task: str,
         result,
+        experiment_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
         return self.neural_transfer.settle_target(
             task=task,
             result=result,
+            experiment_id=experiment_id,
             observed_at=observed_at,
         )
 
@@ -803,7 +835,7 @@ class ContentWakefulRuntime:
             if target_task:
                 target_at = now + timedelta(seconds=5)
                 if not any(
-                    wake.task == target_task and wake.at <= target_at
+                    wake.wake_id == f"development-target:{trial.get('trial_id')}"
                     for wake in self.core.snapshot().pending_plans
                 ):
                     self.core.schedule(PlannedWake(
@@ -831,12 +863,14 @@ class ContentWakefulRuntime:
         *,
         task: str,
         result,
+        trial_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         settled = self.developmental_world_transfer.settle_target(
             task=task,
             result=result,
+            trial_id=trial_id,
             observed_at=observed_at,
         )
         if settled is not None:

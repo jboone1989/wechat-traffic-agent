@@ -224,14 +224,27 @@ class DevelopmentalAgency:
         mean_frustration = sum(frustration) / len(frustration)
         mean_confidence = sum(confidence) / len(confidence)
         if mean_frustration < SUSTAINED_FRUSTRATION_THRESHOLD or mean_confidence > 0.55:
-            return []
+            return [{
+                "key": "sustained-affective-mismatch",
+                "kind": "SUSTAINED_AFFECTIVE_MISMATCH",
+                "status": "RESOLVED",
+                "capability": "GENERAL_ADAPTATION",
+                "target_task": "REFLECT",
+                "severity": 0.0,
+                "evidence_strength": _clip(len(history) / 12.0),
+                "neural_pressure": 0.0,
+                "pressure_channels": ["error_recovery", "curiosity", "prediction_due"],
+                "evidence": {"kind": "AFFECT_PATTERN_RECOVERED", "observed_at": observed_at.isoformat(),
+                             "mean_frustration": round(mean_frustration, 6), "mean_confidence": round(mean_confidence, 6),
+                             "history_start": history[0].get("at"), "history_end": history[-1].get("at")},
+            }]
         severity = _clip(mean_frustration * (1.0 - mean_confidence))
         return [{
             "key": "sustained-affective-mismatch",
             "kind": "SUSTAINED_AFFECTIVE_MISMATCH",
             "status": "ACTIVE",
             "capability": "GENERAL_ADAPTATION",
-            "target_task": None,
+            "target_task": "REFLECT",
             "source_environment": None,
             "severity": severity,
             "evidence_strength": _clip(len(history) / 12.0),
@@ -272,6 +285,15 @@ class DevelopmentalAgency:
             mean_reward = sum(rewards) / len(rewards)
             negative = sum(value < 0 for value in rewards)
             if mean_reward > MOTOR_FAILURE_MEAN_THRESHOLD or negative < MOTOR_FAILURE_MIN:
+                observations.append({
+                    "key": f"motor-failure:{task}", "kind": "BEHAVIORAL_FAILURE_CLUSTER",
+                    "status": "RESOLVED", "capability": task, "target_task": task,
+                    "severity": 0.0, "evidence_strength": _clip(len(rows) / 8.0),
+                    "neural_pressure": 0.0, "pressure_channels": list(self._channels_for_target(task)),
+                    "evidence": {"kind": "MOTOR_PERFORMANCE_RECOVERED", "observed_at": observed_at.isoformat(),
+                                 "sample_count": len(rows), "mean_reward": round(mean_reward, 6),
+                                 "decision_refs": [str(row.get("decision_id") or "") for row in rows][-16:]},
+                })
                 continue
             severity = _clip(abs(mean_reward))
             refs = [str(row.get("decision_id") or "") for row in rows if row.get("decision_id")]
@@ -406,7 +428,9 @@ class DevelopmentalAgency:
         return prior
 
     def _generate_world(self, proposal: Mapping[str, Any], observed_at: datetime) -> dict[str, Any] | None:
-        if proposal.get("strategy") != "ALTERNATIVE_TRAINING_WORLD":
+        if proposal.get("strategy") not in {
+            "ALTERNATIVE_TRAINING_WORLD", "MOTOR_CURRICULUM_SEARCH", "DEVELOPMENTAL_EXPLORATION",
+        }:
             return None
         worlds = dict(self.state.get("worlds") or {})
         existing = next(
@@ -457,7 +481,8 @@ class DevelopmentalAgency:
             "created_at": observed_at.isoformat(),
             "proposal_id": proposal["proposal_id"],
             "need_id": proposal["need_id"],
-            "target_task": proposal.get("target_task"),
+            "target_task": proposal.get("target_task") or "REFLECT",
+            "strategy": proposal.get("strategy"),
             "avoids_environment": proposal.get("avoid_source_environment"),
             "generation": "FERRO_BORN",
             "generator": "DEVELOPMENTAL_AGENCY_V1",
@@ -616,6 +641,8 @@ class DevelopmentalAgency:
 
         touched = []
         for observation in observations:
+            if observation.get("status") == "RESOLVED" and self._need_id(str(observation["key"])) not in (self.state.get("needs") or {}):
+                continue
             touched.append(self._apply_observation(observation, now))
 
         for need in list((self.state.get("needs") or {}).values()):

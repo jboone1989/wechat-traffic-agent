@@ -91,6 +91,9 @@ class DevelopmentalWorldTransferLab:
     @staticmethod
     def _utility(task: str, result: Mapping[str, Any]) -> float:
         status = str(result.get("status") or "UNKNOWN").upper()
+        world_utility = result.get("world_utility")
+        if isinstance(world_utility, (int, float)) and not isinstance(world_utility, bool):
+            return round(max(-1.0, min(1.0, float(world_utility))), 6)
         if status in {"ERROR", "DEGRADED"}:
             return -0.85
         if status in {"DISABLED", "NOOP"}:
@@ -128,10 +131,32 @@ class DevelopmentalWorldTransferLab:
             return 0.0
         return 0.15
 
-    def pending(self) -> dict[str, Any] | None:
-        for row in reversed(self.state.get("trials") or ()):
-            if str(row.get("status") or "") == "AWAITING_TARGET_OUTCOME":
-                return dict(row)
+    def pending(self, *, now: datetime | None = None) -> dict[str, Any] | None:
+        trials = list(self.state.get("trials") or ())
+        changed = False
+        for index in range(len(trials) - 1, -1, -1):
+            row = dict(trials[index])
+            if str(row.get("status") or "") != "AWAITING_TARGET_OUTCOME":
+                continue
+            if now is not None:
+                try:
+                    created = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+                    expired = (now.astimezone(timezone.utc) - created.astimezone(timezone.utc)).total_seconds() >= 3600
+                except (KeyError, TypeError, ValueError):
+                    expired = True
+                if expired:
+                    row["status"] = "INCONCLUSIVE"
+                    row["target_outcome"] = {"observed_at": now.isoformat(), "status": "TARGET_TIMEOUT", "utility": None}
+                    trials[index] = row
+                    changed = True
+                    continue
+            if changed:
+                self.state["trials"] = trials
+                _write(self.path, self.state)
+            return row
+        if changed:
+            self.state["trials"] = trials
+            _write(self.path, self.state)
         return None
 
     def _world(self, world_id: str | None = None) -> dict[str, Any] | None:
@@ -169,7 +194,7 @@ class DevelopmentalWorldTransferLab:
         training_steps: int = 12,
     ) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        pending = self.pending()
+        pending = self.pending(now=now)
         if pending is not None:
             return {"status": "PENDING_EXISTS", "trial": pending}
         world = self._world(world_id)
@@ -322,14 +347,18 @@ class DevelopmentalWorldTransferLab:
         *,
         task: str,
         result: Mapping[str, Any],
+        trial_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if not trial_id:
+            return None
         trials = list(self.state.get("trials") or ())
         index = next(
             (
                 i for i in range(len(trials) - 1, -1, -1)
                 if str(trials[i].get("status") or "") == "AWAITING_TARGET_OUTCOME"
+                and str(trials[i].get("trial_id") or "") == str(trial_id)
                 and str(trials[i].get("target_task") or "") == str(task)
             ),
             None,

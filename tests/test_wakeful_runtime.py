@@ -268,6 +268,10 @@ def test_external_self_maintenance_request_wakes_live_runtime_without_restart(tm
         watchdog_seconds=60,
     )
     now = datetime.now(timezone.utc)
+    for name in ("survival_resources", "llm_resource_pool"):
+        policy = tmp_path / "application" / name / "policy.json"
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(json.dumps({"observed_at": now.isoformat(), "pressure": "NORMAL"}))
     live.core.schedule(PlannedWake(
         wake_id="content:REFLECT",
         at=now + timedelta(hours=1),
@@ -588,3 +592,38 @@ def test_public_snapshot_separates_engineering_frontier_from_production_evidence
     assert audit["production_behavior_accepted_count"] == 0
     assert audit["production_behavior_missing_count"] == 11
     assert audit["production_accepted_contiguously_through"] is None
+
+
+def test_expired_action_loops_are_closed_during_rest(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    old = NOW - timedelta(hours=2)
+    runtime.neural_motor.state["decisions"] = [{
+        "decision_id": "motor-decision:expired", "created_at": old.isoformat(),
+        "status": "PENDING_OUTCOME", "task": "CHECK_X",
+    }]
+    runtime.neural_transfer.state["experiments"] = [{
+        "experiment_id": "experiment:expired", "created_at": old.isoformat(),
+        "status": "AWAITING_TARGET_OUTCOME",
+    }]
+    runtime.developmental_world_transfer.state["trials"] = [{
+        "trial_id": "trial:expired", "created_at": old.isoformat(),
+        "status": "AWAITING_TARGET_OUTCOME",
+    }]
+    for wake_id in (
+        "motor:motor-decision:expired",
+        "transfer-target:experiment:expired",
+        "development-target:trial:expired",
+    ):
+        runtime.core.schedule(PlannedWake(
+            wake_id=wake_id, at=NOW, reason="stale target", task="CHECK_X",
+        ))
+
+    runtime._expire_unsettled_actions(NOW)
+
+    assert runtime.neural_motor.state["decisions"][0]["status"] == "TIMED_OUT"
+    assert runtime.neural_transfer.state["experiments"][0]["status"] == "INCONCLUSIVE"
+    assert runtime.developmental_world_transfer.state["trials"][0]["status"] == "INCONCLUSIVE"
+    assert not any(
+        row.wake_id.endswith(":expired")
+        for row in runtime.core.snapshot().pending_plans
+    )

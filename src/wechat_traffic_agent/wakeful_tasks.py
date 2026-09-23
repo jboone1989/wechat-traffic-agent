@@ -151,6 +151,14 @@ class WakefulContentTaskRunner:
     def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
         try:
             self._raise_if_stopping()
+            regulator = getattr(self, "resource_regulator", None)
+            if regulator is not None:
+                admission = regulator.claim(task, now)
+                if not admission["allowed"]:
+                    return {
+                        "task": task, "status": "RESOURCE_DEFERRED",
+                        "resource_admission": admission,
+                    }
             if task == "NEURAL_INTEROCEPTION":
                 return self._neural_interoception(now)
             if task == "NEURAL_PLAY":

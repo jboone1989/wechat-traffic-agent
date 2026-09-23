@@ -149,3 +149,26 @@ def test_zero_elapsed_update_does_not_ratchet_drives(tmp_path):
     first = life.update(now=NOW, wakeful=_wakeful(errors=4), body_override=body)
     second = life.update(now=NOW, wakeful=_wakeful(errors=4), body_override=body)
     assert second["drives"] == first["drives"]
+
+
+def test_failed_body_sensors_are_unknown_and_conservatively_pressurized(tmp_path, monkeypatch):
+    import os
+    import shutil
+    from pathlib import Path
+
+    life = FerroNeuralLife(tmp_path)
+    def fail(*_args, **_kwargs):
+        raise OSError("sensor unavailable")
+    original_read = Path.read_text
+    def read(path, *args, **kwargs):
+        if str(path) == "/proc/meminfo":
+            return fail()
+        return original_read(path, *args, **kwargs)
+    monkeypatch.setattr(os, "getloadavg", fail)
+    monkeypatch.setattr(shutil, "disk_usage", fail)
+    monkeypatch.setattr(Path, "read_text", read)
+    body = life.collect_body(NOW)
+    assert body["sensor_quality"] == {"cpu": "UNKNOWN", "memory": "UNKNOWN", "disk": "UNKNOWN"}
+    assert body["cpu_pressure"] == 1.0
+    assert body["memory_pressure"] == 1.0
+    assert body["disk_pressure"] == 1.0
