@@ -154,3 +154,61 @@ def test_chatgpt_only_provider_fails_when_cognition_unavailable(monkeypatch, tmp
     )
     with pytest.raises(RuntimeError, match="ChatGPT cognition is unavailable"):
         build_chatgpt_only_provider(state_root=tmp_path)
+
+
+def test_external_eval_retries_once_for_malformed_json(tmp_path):
+    class RepairProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, prompt, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return "I will run the shell command now."
+            return '{"kind":"tool","tool_name":"shell","arguments":{"command":"echo hi"}}'
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = RepairProvider()
+    c = FerroExternalEvalContestant(state_root=tmp_path, provider=provider)
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-0")
+    result = asyncio.run(c.tool_turn(
+        observation="Inspect the environment.",
+        instruction="Solve the task.",
+        tools=[{
+            "name": "shell",
+            "description": "Run a command.",
+            "input_schema": {"type": "object"},
+        }],
+    ))
+    assert provider.calls == 2
+    assert result["kind"] == "tool"
+    assert result["tool_name"] == "shell"
+    assert result["arguments"]["command"] == "echo hi"
+
+
+def test_format_repair_cannot_bypass_tool_boundary(tmp_path):
+    class RepairProvider:
+        def __init__(self):
+            self.calls = 0
+
+        async def complete(self, prompt, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                return ""
+            return '{"kind":"tool","tool_name":"root_shell","arguments":{"command":"id"}}'
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = RepairProvider()
+    c = FerroExternalEvalContestant(state_root=tmp_path, provider=provider)
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-0")
+    with pytest.raises(ValueError, match="unavailable tool"):
+        asyncio.run(c.tool_turn(
+            observation="Inspect the environment.",
+            instruction="Solve the task.",
+            tools=[{
+                "name": "shell",
+                "description": "Run a command.",
+                "input_schema": {"type": "object"},
+            }],
+        ))
+    assert provider.calls == 2

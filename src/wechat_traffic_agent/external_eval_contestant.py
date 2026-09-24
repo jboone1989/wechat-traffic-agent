@@ -101,19 +101,39 @@ class FerroExternalEvalContestant:
         }
 
     async def _complete(self, prompt: str, *, max_tokens: int = 900) -> dict[str, Any]:
-        raw = await self.provider.complete(
-            prompt,
-            max_tokens=max_tokens,
-            temperature=0.0,
-            system=_EXTERNAL_SYSTEM,
-            _audit_scope="external-benchmark-evaluation",
-            _audit_response_mode="external-eval-json",
-            _routing_task_class="reasoning",
-            _minimum_quality=0.75,
-            _attempt_timeout_seconds=30,
-            _reserve_timeout_seconds=60,
-        )
-        return _parse_json_object(str(raw))
+        async def request(*, repair: bool) -> Any:
+            request_prompt = prompt
+            response_mode = "external-eval-json"
+            if repair:
+                request_prompt = (
+                    prompt
+                    + "\n\nFORMAT REPAIR\n"
+                    + "Your previous response was malformed. Answer the same request again. "
+                    + "Return exactly one valid JSON object matching the requested schema. "
+                    + "No markdown, no prose outside the JSON, and do not invent unavailable actions or tools."
+                )
+                response_mode = "external-eval-json-repair"
+            return await self.provider.complete(
+                request_prompt,
+                max_tokens=max_tokens,
+                temperature=0.0,
+                system=_EXTERNAL_SYSTEM,
+                _audit_scope="external-benchmark-evaluation",
+                _audit_response_mode=response_mode,
+                _routing_task_class="reasoning",
+                _minimum_quality=0.75,
+                _attempt_timeout_seconds=30,
+                _reserve_timeout_seconds=60,
+            )
+
+        raw = await request(repair=False)
+        try:
+            return _parse_json_object(str(raw))
+        except (json.JSONDecodeError, ValueError):
+            repaired = await request(repair=True)
+            result = _parse_json_object(str(repaired))
+            result["_format_repaired"] = True
+            return result
 
     async def choose(
         self,
