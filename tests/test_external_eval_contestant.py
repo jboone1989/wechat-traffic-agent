@@ -324,3 +324,23 @@ def test_format_repair_prior_output_is_bounded(tmp_path):
     ))
     assert result["kind"] == "final"
     assert len(provider.prompts[1]) < len(provider.prompts[0]) + 5000
+
+def test_external_eval_parser_uses_first_json_object_only():
+    from wechat_traffic_agent.external_eval_contestant import _parse_json_object
+
+    raw = (
+        '{"kind":"tool","tool_name":"shell","arguments":{"command":"pwd"}}\\n'
+        '{"kind":"tool","tool_name":"shell","arguments":{"command":"ls"}}'
+    )
+    assert _parse_json_object(raw) == {
+        "kind": "tool",
+        "tool_name": "shell",
+        "arguments": {"command": "pwd"},
+    }
+
+
+def test_external_eval_parser_still_rejects_prose_without_json():
+    from wechat_traffic_agent.external_eval_contestant import _parse_json_object
+
+    with pytest.raises(__import__("json").JSONDecodeError):
+        _parse_json_object("I think the answer is one second.")

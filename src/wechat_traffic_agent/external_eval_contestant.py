@@ -29,16 +29,15 @@ def _safe_json(value: Any, *, limit: int = 32000) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 def _parse_json_object(raw: str) -> dict[str, Any]:
-    text = str(raw or "").strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    start, end = text.find("{"), text.rfind("}")
-    if start >= 0 and end > start:
-        text = text[start : end + 1]
-    value = json.loads(text)
+    text = str(raw or '').strip()
+    if text.startswith('```'):
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'\s*```$', '', text)
+    start = text.find('{')
+    candidate = text[start:] if start >= 0 else text
+    value, _end = json.JSONDecoder().raw_decode(candidate)
     if not isinstance(value, dict):
-        raise ValueError("external evaluation response must be a JSON object")
+        raise ValueError('external evaluation response must be a JSON object')
     return value
 
 class FerroExternalEvalContestant:
