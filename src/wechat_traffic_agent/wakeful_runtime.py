@@ -255,6 +255,11 @@ class ContentWakefulRuntime:
             self._drain_external_wake_requests()
 
     def ensure_initial_plans(self, now: datetime) -> None:
+        # Requests already persisted before process startup must participate in
+        # the very first scheduling decision. Otherwise a long startup task
+        # such as RESOURCE_REVIEW can delay a durable operator/user wake until
+        # the runtime eventually reaches wait().
+        self._drain_external_wake_requests()
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
         for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "NEURAL_TRANSFER", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
             if task not in existing:

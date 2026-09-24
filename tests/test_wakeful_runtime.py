@@ -349,6 +349,31 @@ def test_external_wake_requests_can_only_make_existing_plan_earlier(tmp_path):
     assert wake.reason == "urgent self maintenance"
 
 
+def test_initial_plans_drain_persisted_external_wake_before_startup_defaults(tmp_path):
+    external = ContentWakefulRuntime(state_root=tmp_path)
+    recovery_at = NOW - timedelta(seconds=30)
+    external._enqueue_external_wake(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=recovery_at,
+        reason="retry content cognition after temporary LLM provider outage",
+        task="CONTENT_COGNITION",
+        relevant_refs=("llm-resource-cooldown:test",),
+        preemptible=True,
+    ))
+
+    restored = ContentWakefulRuntime(state_root=tmp_path)
+    restored.ensure_initial_plans(NOW)
+
+    wake = next(
+        row for row in restored.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert wake.at == recovery_at
+    assert wake.reason == "retry content cognition after temporary LLM provider outage"
+    assert wake.relevant_refs == ("llm-resource-cooldown:test",)
+    assert list((tmp_path / "application/wake_requests").glob("*.json")) == []
+
+
 def test_external_wake_spool_rejects_unapproved_task(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     root = tmp_path / "application/wake_requests"
