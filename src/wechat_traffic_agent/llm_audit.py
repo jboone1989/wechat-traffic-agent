@@ -57,12 +57,34 @@ def _audit_response(value: Any, mode: str) -> str:
 
 
 def _provider_meta(provider: Any) -> dict[str, str]:
+    """Return non-secret provider identity, including bounded wrapper provenance."""
     fields: dict[str, str] = {}
-    for name in ("model", "model_name", "_model", "base_url", "provider_name"):
-        raw = getattr(provider, name, None)
-        if isinstance(raw, str) and raw.strip():
-            fields[name.lstrip("_")] = raw.strip()[:300]
-    fields["class"] = type(provider).__name__
+    classes: list[str] = []
+    current = provider
+    seen: set[int] = set()
+
+    for _depth in range(4):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        classes.append(type(current).__name__)
+
+        for name in ("model", "model_name", "_model", "base_url", "provider_name"):
+            raw = getattr(current, name, None)
+            key = name.lstrip("_")
+            if key not in fields and isinstance(raw, str) and raw.strip():
+                fields[key] = raw.strip()[:300]
+
+        inner = getattr(current, "provider", None)
+        if inner is None:
+            inner = getattr(current, "_provider", None)
+        if inner is current:
+            break
+        current = inner
+
+    fields["class"] = classes[0] if classes else type(provider).__name__
+    if len(classes) > 1:
+        fields["class_chain"] = " -> ".join(classes)[:600]
     return fields
 
 

@@ -108,3 +108,47 @@ def test_owner_audit_redacts_invalid_protocol_stream_body(tmp_path):
     row = LLMRequestAuditStore(tmp_path).recent()[0]
     assert row["scope"] == "operator-private-chat"
     assert row["response"] == "[INVALID_OWNER_ENVELOPE_REDACTED]"
+
+
+def test_audit_provider_meta_follows_bounded_provider_wrapper_chain(tmp_path):
+    class InnerProvider(FakeProvider):
+        model = "nvidia/nemotron-3-super-120b-a12b"
+        base_url = "https://integrate.api.nvidia.com/v1"
+
+    class RetryWrapper:
+        def __init__(self, provider):
+            self.provider = provider
+
+        async def complete(self, prompt, **kwargs):
+            return await self.provider.complete(prompt, **kwargs)
+
+    provider = audited_provider(RetryWrapper(InnerProvider()), tmp_path, scope="external-benchmark-evaluation")
+    asyncio.run(provider.complete("probe"))
+
+    row = LLMRequestAuditStore(tmp_path).recent()[0]
+    assert row["provider"]["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert row["provider"]["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert "RetryWrapper" in row["provider"]["class_chain"]
+    assert "InnerProvider" in row["provider"]["class_chain"]
+
+
+def test_audit_provider_meta_does_not_record_secret_wrapper_fields(tmp_path):
+    class SecretInner(FakeProvider):
+        model = "safe-model"
+        api_key = "sk-do-not-record-this-secret"
+
+    class Wrapper:
+        def __init__(self):
+            self.provider = SecretInner()
+            self.credential = "also-secret"
+
+        async def complete(self, prompt, **kwargs):
+            return await self.provider.complete(prompt, **kwargs)
+
+    provider = audited_provider(Wrapper(), tmp_path)
+    asyncio.run(provider.complete("probe"))
+    metadata = LLMRequestAuditStore(tmp_path).recent()[0]["provider"]
+    rendered = str(metadata)
+    assert "safe-model" in rendered
+    assert "sk-do-not-record-this-secret" not in rendered
+    assert "also-secret" not in rendered
