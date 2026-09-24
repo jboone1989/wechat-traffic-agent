@@ -113,6 +113,45 @@ class Loop:
         return payload
 
 
+class MissionTimeoutLoop(Loop):
+    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
+        cycle = str(cycle_id)
+        self.calls.append((now, cycle, focus_topic))
+        payload = {
+            "status": "ERROR",
+            "cycle": cycle,
+            "error_type": "TimeoutError",
+            "message": "legacy advisory backend exceeded max_duration_seconds",
+            "mind_plan": {
+                "cycle": cycle,
+                "goal": {
+                    "goal_id": "external-mission-pending:mission-growth-1",
+                    "origin": "EXTERNAL_MISSION",
+                },
+                "external_mission_id": "mission-growth-1",
+            },
+        }
+        folder = self._result_path(cycle).parent
+        folder.mkdir(parents=True, exist_ok=True)
+        self._result_path(cycle).write_text(
+            json.dumps(payload) + "\n", encoding="utf-8"
+        )
+        (folder / "mission_discovery_error.json").write_text(
+            json.dumps({
+                "schema_version": "content-mission-discovery-error.v1",
+                "error_type": "TimeoutError",
+                "message": "legacy advisory backend exceeded max_duration_seconds",
+                "mission_id": "mission-growth-1",
+                "roadmap_step_id": "mission-step-community",
+                "experiment_id": "mission-exp-growth",
+                "publication_authority": False,
+                "retryable": True,
+            }) + "\n",
+            encoding="utf-8",
+        )
+        return payload
+
+
 def _write_base_failure(state_root: Path):
     path = (
         state_root
@@ -274,6 +313,39 @@ def test_provider_outage_schedules_content_recovery_wake(tmp_path):
     assert result["provider_recovery"]["status"] == "SCHEDULED"
     assert wakeful.provider_recoveries == [(NOW, 300)]
     assert loop.calls
+
+
+def test_retryable_mission_timeout_schedules_goal_followup_wake(tmp_path):
+    state_root = tmp_path / "state"
+    loop = MissionTimeoutLoop(state_root)
+    wakeful = Wakeful()
+    runner = WakefulContentTaskRunner(
+        app=App(),
+        state_root=state_root,
+        network_service=None,
+        wakeful=wakeful,
+        web_worker=None,
+        gsc_collector=None,
+        continuous_loop=loop,
+        resource_economy=Economy(),
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=None,
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    assert result["continuous_content"]["error_type"] == "TimeoutError"
+    assert result["mission_followup_schedule"] == {
+        "status": "SCHEDULED",
+        "seconds": 5,
+        "goal_id": "external-mission-retry:mission-growth-1:mission-step-community",
+        "mission_id": "mission-growth-1",
+        "reason": "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED",
+    }
+    assert wakeful.goal_followups == [(NOW, 5)]
+    assert wakeful.provider_recoveries == []
 
 
 def test_provider_outages_do_not_exhaust_content_recovery_limit(tmp_path):

@@ -1570,7 +1570,8 @@ class WakefulContentTaskRunner:
         if continuous.get("status") in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
             if continuous.get("status") == "ERROR":
                 rows["status"] = "DEGRADED"
-                if str(continuous.get("error_type") or "") == "LLMProviderError":
+                error_type = str(continuous.get("error_type") or "")
+                if error_type == "LLMProviderError":
                     schedule_provider_recovery = getattr(
                         self.wakeful, "schedule_provider_recovery", None
                     )
@@ -1579,6 +1580,45 @@ class WakefulContentTaskRunner:
                             rows["provider_recovery"] = schedule_provider_recovery(now)
                         except Exception as exc:  # noqa: BLE001
                             rows["provider_recovery"] = self._error(exc)
+                else:
+                    state_root = getattr(self, "state_root", None)
+                    cycle = str(continuous.get("cycle") or "").strip()
+                    if state_root is not None and cycle:
+                        result_path = (
+                            Path(state_root)
+                            / "content"
+                            / "continuous"
+                            / "cycles"
+                            / cycle
+                            / "result.json"
+                        )
+                        followup_identity = self._mission_followup_identity(
+                            prior=continuous,
+                            result_path=result_path,
+                        )
+                        if (
+                            followup_identity is not None
+                            and str(followup_identity.get("reason") or "")
+                            == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
+                        ):
+                            schedule = getattr(
+                                self.wakeful, "schedule_goal_followup", None
+                            )
+                            if callable(schedule):
+                                schedule(now, seconds=5)
+                                rows["mission_followup_schedule"] = {
+                                    "status": "SCHEDULED",
+                                    "seconds": 5,
+                                    "goal_id": str(
+                                        followup_identity.get("goal_id") or ""
+                                    ),
+                                    "mission_id": str(
+                                        followup_identity.get("mission_id") or ""
+                                    ),
+                                    "reason": str(
+                                        followup_identity.get("reason") or ""
+                                    ),
+                                }
                 self_maintenance = getattr(self, "self_maintenance", None)
                 if self_maintenance is not None:
                     try:
