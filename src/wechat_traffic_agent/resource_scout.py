@@ -378,12 +378,22 @@ class ContentResourceScout:
             leads, verifications, available_credentials=available,
             acquisition_outcomes=outcomes, limit=max(3, int(provider_limit)),
         )
-        ready = [item for item in plans if item.status == "READY_TO_TRIAL"][: max(1, min(int(provider_limit), 3))]
         existing = list(self.scout.model_trials())
         executed_measurements: list[ProviderTrialMeasurement] = []
         provider_rows: list[dict[str, Any]] = []
         replan_required = False
         expand_during_outage = self._active_free_pool_is_unavailable(now=now)
+        ready = [item for item in plans if item.status == "READY_TO_TRIAL"]
+        if expand_during_outage:
+            previously_tried_leads = {
+                str(row.opportunity_id)
+                for row in existing
+                if str(row.opportunity_id or "")
+            }
+            ready.sort(
+                key=lambda item: item.lead_id in previously_tried_leads
+            )
+        ready = ready[: max(1, min(int(provider_limit), 3))]
         for plan in ready:
             api_key = str(os.environ.get(plan.credential_env) or "")
             if not api_key:
