@@ -50,10 +50,13 @@ class LivingRuntimeChatGPTProvider:
             os.environ.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or ""
         ).strip().lower()
         enabled = raw_enabled in {"1", "true", "yes", "on"}
+        default_cli = (
+            Path.home() / ".livingruntime" / "plugin" / "scripts" / "cognitionctl.py"
+        )
         cli = Path(
             str(
                 os.environ.get("LIVINGRUNTIME_CHATGPT_COGNITION_CLI")
-                or "/home/ubuntu/src/livingruntime-remote/plugin/scripts/cognitionctl.py"
+                or default_cli
             ).strip()
         ).expanduser()
         agent_id = str(
