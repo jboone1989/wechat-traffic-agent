@@ -1605,7 +1605,18 @@ class WakefulContentTaskRunner:
                                 self.wakeful, "schedule_goal_followup", None
                             )
                             if callable(schedule):
-                                schedule(now, seconds=5)
+                                owner_goal_id = str(
+                                    continuous.get("owner_goal_id") or ""
+                                ).strip()
+                                schedule(
+                                    now,
+                                    seconds=5,
+                                    relevant_refs=(
+                                        (owner_goal_id,)
+                                        if owner_goal_id
+                                        else ()
+                                    ),
+                                )
                                 rows["mission_followup_schedule"] = {
                                     "status": "SCHEDULED",
                                     "seconds": 5,
@@ -1682,7 +1693,18 @@ class WakefulContentTaskRunner:
         if should_schedule_followup:
             schedule = getattr(self.wakeful, "schedule_goal_followup", None)
             if callable(schedule):
-                schedule(now, seconds=5)
+                owner_goal_id = str(
+                    continuous.get("owner_goal_id") or ""
+                ).strip()
+                schedule(
+                    now,
+                    seconds=5,
+                    relevant_refs=(
+                        (owner_goal_id,)
+                        if owner_goal_id
+                        else ()
+                    ),
+                )
                 rows["mission_followup_schedule"] = {
                     "status": "SCHEDULED",
                     "seconds": 5,

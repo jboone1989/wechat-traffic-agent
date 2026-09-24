@@ -43,7 +43,7 @@ class Wakeful:
     def mark_cognition(self, now):
         self.cognition_marks.append(now)
 
-    def schedule_goal_followup(self, now, *, seconds=5):
+    def schedule_goal_followup(self, now, *, seconds=5, relevant_refs=()):
         self.goal_followups.append((now, seconds))
 
     def schedule_provider_recovery(self, now, *, default_seconds=300):

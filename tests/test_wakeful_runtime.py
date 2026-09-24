@@ -29,6 +29,98 @@ def test_content_cognition_is_scheduled_by_semantic_interval(tmp_path):
     assert wake.at == NOW + timedelta(hours=6)
 
 
+def test_active_user_goal_followup_can_enter_cognition_under_llm_pressure(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
+        path = tmp_path / "application" / name / "policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "observed_at": now.isoformat(),
+            "pressure": pressure,
+            "paid_available_funds": 0.0,
+        }), encoding="utf-8")
+    pool = tmp_path / "application" / "llm_resource_pool" / "resources.json"
+    pool.write_text(json.dumps({"observed_at": now.isoformat(), "resources": []}), encoding="utf-8")
+    state = tmp_path / "application" / "domain_runtime" / "agent_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "data": {
+            "goals": [{
+                "data": {
+                    "goal_id": "goal_owner",
+                    "origin": {"value": "USER"},
+                    "status": {"value": "ACTIVE"},
+                }
+            }]
+        }
+    }), encoding="utf-8")
+
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_goal_followup(
+        now - timedelta(seconds=10),
+        seconds=5,
+        relevant_refs=("goal_owner",),
+    )
+
+    wake = runtime.core.pop_ready()
+
+    assert wake is not None
+    assert wake.task == "CONTENT_COGNITION"
+    assert wake.relevant_refs == ("goal_owner",)
+
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=now - timedelta(seconds=1),
+        reason="ordinary scheduled cognition",
+        task="CONTENT_COGNITION",
+        relevant_refs=(),
+        preemptible=True,
+    ))
+    assert runtime.core.pop_ready() is None
+    deferred = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert deferred.at > now
+
+
+def test_persisted_owner_goal_reason_is_compatibly_admitted_under_pressure(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
+        path = tmp_path / "application" / name / "policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"observed_at": now.isoformat(), "pressure": pressure}), encoding="utf-8")
+    pool = tmp_path / "application" / "llm_resource_pool" / "resources.json"
+    pool.write_text(json.dumps({"observed_at": now.isoformat(), "resources": []}), encoding="utf-8")
+    state = tmp_path / "application" / "domain_runtime" / "agent_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "data": {
+            "goals": [{
+                "data": {
+                    "goal_id": "goal_owner",
+                    "origin": {"value": "USER"},
+                    "status": {"value": "ACTIVE"},
+                }
+            }]
+        }
+    }), encoding="utf-8")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=now - timedelta(seconds=1),
+        reason="reconsider priorities after owner activated a goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=(),
+        preemptible=True,
+    ))
+
+    wake = runtime.core.pop_ready()
+
+    assert wake is not None
+    assert wake.task == "CONTENT_COGNITION"
+
+
 def test_talk_stimuli_accumulate_without_storing_prompt_text(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     now = datetime.now(timezone.utc).replace(microsecond=0)

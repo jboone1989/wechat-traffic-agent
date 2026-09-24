@@ -91,9 +91,7 @@ class ContentWakefulRuntime:
         )
         from .resource_regulation import ResourceRegulator
         self.resource_regulator = ResourceRegulator(self.state_root)
-        self.core.set_plan_admission(
-            lambda wake: self.resource_regulator.defer_seconds(wake.task, self.core.clock())
-        )
+        self.core.set_plan_admission(self._plan_admission_delay)
         from .neural_playground import FerroBrainLab
         self.brain_lab = FerroBrainLab(
             self.state_root,
@@ -1073,7 +1071,51 @@ class ContentWakefulRuntime:
             task="RESOURCE_REVIEW",
         ))
 
-    def schedule_goal_followup(self, now: datetime, *, seconds: int = 5) -> None:
+    def _active_user_goal_ids(self) -> set[str]:
+        path = self.state_root / "application" / "domain_runtime" / "agent_state.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return set()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        goals = data.get("goals") if isinstance(data, dict) else None
+        if not isinstance(goals, list):
+            return set()
+        active: set[str] = set()
+        for row in goals:
+            goal = row.get("data") if isinstance(row, dict) else None
+            if not isinstance(goal, dict):
+                continue
+            origin = goal.get("origin")
+            status = goal.get("status")
+            origin_value = origin.get("value") if isinstance(origin, dict) else origin
+            status_value = status.get("value") if isinstance(status, dict) else status
+            goal_id = str(goal.get("goal_id") or "").strip()
+            if goal_id and str(origin_value or "").upper() == "USER" and str(status_value or "").upper() == "ACTIVE":
+                active.add(goal_id)
+        return active
+
+    def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
+        active_user_goals = self._active_user_goal_ids()
+        owner_goal_wake = (
+            wake.task == "CONTENT_COGNITION"
+            and bool(active_user_goals)
+            and (
+                any(str(ref) in active_user_goals for ref in wake.relevant_refs)
+                or wake.reason == "reconsider priorities after owner activated a goal"
+            )
+        )
+        if owner_goal_wake:
+            return None
+        return self.resource_regulator.defer_seconds(wake.task, self.core.clock())
+
+    def schedule_goal_followup(
+        self,
+        now: datetime,
+        *,
+        seconds: int = 5,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> None:
         delay = max(1, min(int(seconds), 300))
         at = now + timedelta(seconds=delay)
         wake_id = "content:CONTENT_COGNITION"
@@ -1088,6 +1130,7 @@ class ContentWakefulRuntime:
             at=at,
             reason="reconsider priorities after owner activated a goal",
             task="CONTENT_COGNITION",
+            relevant_refs=tuple(str(ref) for ref in relevant_refs if str(ref).strip()),
         ))
 
     def schedule_provider_recovery(
