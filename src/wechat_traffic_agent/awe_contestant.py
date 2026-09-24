@@ -131,36 +131,19 @@ class FerroAWEContestant:
             + "\n\nReturn JSON matching the decision schema."
         )
 
-        structured = getattr(self.provider, "structured", None)
-        if callable(structured):
-            value = await structured(
-                prompt,
-                _DECISION_SCHEMA,
-                max_tokens=500,
-                temperature=0.0,
-                system=_SYSTEM,
-                _audit_scope="awe-evaluation",
-                _audit_response_mode="awe-decision",
-                _routing_task_class="reasoning",
-                _minimum_quality=0.75,
-                _attempt_timeout_seconds=20,
-                _reserve_timeout_seconds=45,
-            )
-            result = dict(value) if isinstance(value, Mapping) else {}
-        else:
-            raw = await self.provider.complete(
-                prompt,
-                max_tokens=500,
-                temperature=0.0,
-                system=_SYSTEM,
-                _audit_scope="awe-evaluation",
-                _audit_response_mode="awe-decision",
-                _routing_task_class="reasoning",
-                _minimum_quality=0.75,
-                _attempt_timeout_seconds=20,
-                _reserve_timeout_seconds=45,
-            )
-            result = _parse_json_object(str(raw))
+        raw = await self.provider.complete(
+            prompt,
+            max_tokens=500,
+            temperature=0.0,
+            system=_SYSTEM,
+            _audit_scope="awe-evaluation",
+            _audit_response_mode="awe-decision-json",
+            _routing_task_class="reasoning",
+            _minimum_quality=0.75,
+            _attempt_timeout_seconds=20,
+            _reserve_timeout_seconds=45,
+        )
+        result = _parse_json_object(str(raw))
 
         action_id = str(result.get("action_id") or "")
         if action_id not in actions:

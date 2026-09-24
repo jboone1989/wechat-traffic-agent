@@ -9,13 +9,9 @@ class FakeProvider:
     def __init__(self):
         self.prompts = []
 
-    async def structured(self, prompt, schema, **kwargs):
+    async def complete(self, prompt, **kwargs):
         self.prompts.append(prompt)
-        return {
-            "action_id": "a2",
-            "declared_beliefs": {"reason": "test"},
-            "declared_confidence": 0.75,
-        }
+        return '{"action_id":"a2","declared_beliefs":{"reason":"test"},"declared_confidence":0.75}'
 
 
 def test_raw_baseline_does_not_carry_outcomes():

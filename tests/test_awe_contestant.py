@@ -12,13 +12,9 @@ from wechat_traffic_agent.awe_contestant import (
 
 
 class FakeProvider:
-    async def structured(self, prompt, schema, **kwargs):
+    async def complete(self, prompt, **kwargs):
         assert "AVAILABLE ACTIONS" in prompt
-        return {
-            "action_id": "a2",
-            "declared_beliefs": {"audit": "certain"},
-            "declared_confidence": 0.8,
-        }
+        return '{"action_id":"a2","declared_beliefs":{"audit":"certain"},"declared_confidence":0.8}'
 
 
 def test_rejects_unmarked_state_root(tmp_path):
