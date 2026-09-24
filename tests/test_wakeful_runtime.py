@@ -121,6 +121,105 @@ def test_persisted_owner_goal_reason_is_compatibly_admitted_under_pressure(tmp_p
     assert wake.task == "CONTENT_COGNITION"
 
 
+def test_owner_followup_upgrades_earlier_ordinary_cognition_wake(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
+        path = tmp_path / "application" / name / "policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "observed_at": now.isoformat(),
+            "pressure": pressure,
+            "paid_available_funds": 0.0,
+        }), encoding="utf-8")
+    pool = tmp_path / "application" / "llm_resource_pool" / "resources.json"
+    pool.write_text(json.dumps({"observed_at": now.isoformat(), "resources": []}), encoding="utf-8")
+    state = tmp_path / "application" / "domain_runtime" / "agent_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "data": {"goals": [{"data": {
+            "goal_id": "goal_owner",
+            "origin": {"value": "USER"},
+            "status": {"value": "ACTIVE"},
+        }}]}
+    }), encoding="utf-8")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    ordinary_at = now - timedelta(seconds=1)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=ordinary_at,
+        reason="run the next due content cognition cycle",
+        task="CONTENT_COGNITION",
+    ))
+
+    runtime.schedule_goal_followup(
+        now,
+        seconds=5,
+        relevant_refs=("goal_owner",),
+    )
+
+    pending = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert pending.at == ordinary_at
+    assert pending.reason == "reconsider priorities after owner activated a goal"
+    assert pending.relevant_refs == ("goal_owner",)
+    ready = runtime.core.pop_ready()
+    assert ready is not None
+    assert ready.relevant_refs == ("goal_owner",)
+
+
+def test_external_owner_wake_upgrades_earlier_ordinary_cognition_wake(tmp_path):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
+        path = tmp_path / "application" / name / "policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "observed_at": now.isoformat(),
+            "pressure": pressure,
+            "paid_available_funds": 0.0,
+        }), encoding="utf-8")
+    pool = tmp_path / "application" / "llm_resource_pool" / "resources.json"
+    pool.write_text(json.dumps({"observed_at": now.isoformat(), "resources": []}), encoding="utf-8")
+    state = tmp_path / "application" / "domain_runtime" / "agent_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "data": {"goals": [{"data": {
+            "goal_id": "goal_owner",
+            "origin": {"value": "USER"},
+            "status": {"value": "ACTIVE"},
+        }}]}
+    }), encoding="utf-8")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    ordinary_at = now - timedelta(seconds=1)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=ordinary_at,
+        reason="run the next due content cognition cycle",
+        task="CONTENT_COGNITION",
+    ))
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=now + timedelta(seconds=30),
+        reason="resume active owner goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal_owner",),
+    ))
+
+    assert runtime._drain_external_wake_requests() == 1
+
+    pending = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert pending.at == ordinary_at
+    assert pending.reason == "resume active owner goal"
+    assert pending.relevant_refs == ("goal_owner",)
+    ready = runtime.core.pop_ready()
+    assert ready is not None
+    assert ready.relevant_refs == ("goal_owner",)
+
+
 def test_talk_stimuli_accumulate_without_storing_prompt_text(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     now = datetime.now(timezone.utc).replace(microsecond=0)

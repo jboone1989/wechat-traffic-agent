@@ -235,7 +235,27 @@ class ContentWakefulRuntime:
                     preemptible=bool(payload.get("preemptible", True)),
                 )
                 existing = current.get(wake_id)
-                if existing is None or wake.at < existing.at:
+                incoming_owner = self._is_owner_goal_cognition_wake(wake)
+                existing_owner = self._is_owner_goal_cognition_wake(existing)
+                if existing is not None and incoming_owner and not existing_owner:
+                    # External owner intent has stronger admission semantics
+                    # than an ordinary cadence wake. Preserve the earlier due
+                    # time, but replace the weaker wake's provenance so
+                    # resource pressure cannot defer it indefinitely.
+                    wake = PlannedWake(
+                        wake_id=wake.wake_id,
+                        at=min(wake.at, existing.at),
+                        reason=wake.reason,
+                        task=wake.task,
+                        relevant_refs=wake.relevant_refs,
+                        cancel_conditions=wake.cancel_conditions,
+                        preemptible=wake.preemptible,
+                    )
+                if (
+                    existing is None
+                    or wake.at < existing.at
+                    or (incoming_owner and not existing_owner)
+                ):
                     self.core.schedule(wake)
                     current[wake_id] = wake
                     merged += 1
@@ -1095,15 +1115,31 @@ class ContentWakefulRuntime:
                 active.add(goal_id)
         return active
 
+    def _is_owner_goal_cognition_wake(
+        self,
+        wake: PlannedWake | None,
+        *,
+        active_user_goals: set[str] | None = None,
+    ) -> bool:
+        if wake is None or wake.task != "CONTENT_COGNITION":
+            return False
+        active = (
+            self._active_user_goal_ids()
+            if active_user_goals is None
+            else active_user_goals
+        )
+        if not active:
+            return False
+        return (
+            any(str(ref) in active for ref in wake.relevant_refs)
+            or wake.reason == "reconsider priorities after owner activated a goal"
+        )
+
     def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
         active_user_goals = self._active_user_goal_ids()
-        owner_goal_wake = (
-            wake.task == "CONTENT_COGNITION"
-            and bool(active_user_goals)
-            and (
-                any(str(ref) in active_user_goals for ref in wake.relevant_refs)
-                or wake.reason == "reconsider priorities after owner activated a goal"
-            )
+        owner_goal_wake = self._is_owner_goal_cognition_wake(
+            wake,
+            active_user_goals=active_user_goals,
         )
         if owner_goal_wake:
             return None
@@ -1123,14 +1159,23 @@ class ContentWakefulRuntime:
             (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
             None,
         )
-        if existing is not None and existing.at <= at:
-            return
+        owner_refs = tuple(str(ref) for ref in relevant_refs if str(ref).strip())
+        if existing is not None and self._is_owner_goal_cognition_wake(existing):
+            owner_refs = tuple(dict.fromkeys((*existing.relevant_refs, *owner_refs)))
+            if existing.at <= at and owner_refs == existing.relevant_refs:
+                return
+        # A semantically weaker ordinary cadence wake must not mask a later
+        # owner-authorized wake merely because its timestamp is earlier. Keep
+        # the earliest execution time while upgrading the persisted wake
+        # authority/provenance to the owner goal.
+        if existing is not None:
+            at = min(at, existing.at)
         self.core.schedule(PlannedWake(
             wake_id=wake_id,
             at=at,
             reason="reconsider priorities after owner activated a goal",
             task="CONTENT_COGNITION",
-            relevant_refs=tuple(str(ref) for ref in relevant_refs if str(ref).strip()),
+            relevant_refs=owner_refs,
         ))
 
     def schedule_provider_recovery(
