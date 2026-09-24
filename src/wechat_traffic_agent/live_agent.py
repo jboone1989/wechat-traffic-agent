@@ -951,10 +951,40 @@ class LiveAgentService:
             runtime = getattr(self.application, "domain_runtime", None)
             if runtime is not None:
                 reconciled = operator_chat.reconcile_pending_semantic_upgrades(runtime)
-                if reconciled:
+                active_goal_ids = {
+                    str(getattr(goal, "goal_id", "") or "")
+                    for goal in getattr(runtime, "active_goals", ())
+                    if str(getattr(goal, "goal_id", "") or "")
+                }
+                active_owner_proposals = [
+                    row
+                    for row in operator_chat.proposals(limit=100)
+                    if str(row.get("status") or "") == "ACTIVATED"
+                    and str(row.get("goal_id") or "") in active_goal_ids
+                ]
+                followup_rows = list(reconciled)
+                known_proposal_ids = {
+                    str(row.get("proposal_id") or "") for row in followup_rows
+                }
+                followup_rows.extend(
+                    row
+                    for row in active_owner_proposals
+                    if str(row.get("proposal_id") or "") not in known_proposal_ids
+                )
+                if followup_rows:
                     scheduler = getattr(self.wakeful, "schedule_goal_followup", None)
                     if callable(scheduler):
-                        scheduler(datetime.now(timezone.utc), seconds=5)
+                        relevant_refs = tuple(dict.fromkeys(
+                            str(row.get(field) or "").strip()
+                            for row in followup_rows
+                            for field in ("goal_id", "mission_id", "proposal_id")
+                            if str(row.get(field) or "").strip()
+                        ))
+                        scheduler(
+                            datetime.now(timezone.utc),
+                            seconds=5,
+                            relevant_refs=relevant_refs,
+                        )
         operator_memory = OperatorLongTermMemory(self.state_root) if operator_console is not None else None
         owner_memory_runtime = OwnerMemoryRuntime(
             self.state_root,
@@ -1572,7 +1602,16 @@ class LiveAgentService:
                 ):
                     scheduler = getattr(self.wakeful, "schedule_goal_followup", None)
                     if callable(scheduler):
-                        scheduler(datetime.now(timezone.utc), seconds=5)
+                        relevant_refs = tuple(
+                            str(proposal.get(field) or "").strip()
+                            for field in ("goal_id", "mission_id", "proposal_id")
+                            if str(proposal.get(field) or "").strip()
+                        )
+                        scheduler(
+                            datetime.now(timezone.utc),
+                            seconds=5,
+                            relevant_refs=relevant_refs,
+                        )
             memory_candidates = parsed.get("memory_candidates")
             admitted_memory_candidates = (
                 memory_candidates

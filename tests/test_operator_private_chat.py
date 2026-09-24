@@ -102,8 +102,8 @@ class FakeWakeful:
     def public_snapshot(self):
         return {}
 
-    def schedule_goal_followup(self, now, *, seconds=5):
-        self.calls.append((now, seconds))
+    def schedule_goal_followup(self, now, *, seconds=5, relevant_refs=()):
+        self.calls.append((now, seconds, tuple(relevant_refs)))
 
 
 def _login(client: TestClient, root: Path) -> None:
@@ -209,6 +209,37 @@ def test_operator_conversation_store_persists_and_activates_general_goal(tmp_pat
     assert runtime.persisted == 1
     assert OperatorConversationStore(tmp_path).history()[-1]["role"] == "system"
     assert OperatorConversationStore(tmp_path).proposals()[0]["status"] == "ACTIVATED"
+
+
+def test_live_service_restart_restores_owner_goal_wake_provenance(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    store = OperatorConversationStore(root)
+    message = store.append("operator", "Keep pursuing this owner-authorized task.")
+    proposal = store.create_proposal(
+        {
+            "kind": "GENERAL",
+            "description": "Keep pursuing this owner-authorized task",
+            "reason": "restart continuity",
+        },
+        source_message_id=message["message_id"],
+    )
+    activated = store.activate(proposal["proposal_id"], application.domain_runtime)
+    wakeful = FakeWakeful()
+
+    LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=FakeBackend(),
+        wakeful=wakeful,
+    )._app()
+
+    assert wakeful.calls
+    _, seconds, relevant_refs = wakeful.calls[-1]
+    assert seconds == 5
+    assert activated["goal_id"] in relevant_refs
+    assert activated["proposal_id"] in relevant_refs
 
 
 def test_operator_conversation_store_activates_measurable_external_mission(tmp_path):
