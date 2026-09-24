@@ -119,6 +119,39 @@ def _valid_plan() -> dict:
     }
 
 
+def test_logical_wakeful_failure_site_maps_back_to_bounded_source_files(tmp_path):
+    workspace = _workspace(tmp_path)
+    wakeful = workspace / "src/wechat_traffic_agent/wakeful_tasks.py"
+    wakeful.write_text(
+        'def observe():\n'
+        '    rows["draft_worker"] = run_draft()\n'
+        '    rows["resource_observation"] = observe_resources()\n'
+    )
+    draft_worker = workspace / "src/wechat_traffic_agent/trading_draft_worker.py"
+    draft_worker.write_text("def run_draft():\n    return {}\n")
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    observe_sources = planner.candidate_source_paths({
+        "failure_site": "observe_world:draft_worker",
+        "symptom": "failed components: draft_worker",
+    })
+    resource_sources = planner.candidate_source_paths({
+        "failure_site": "resource_review:resource_observation",
+        "symptom": "failed components: resource_observation",
+    })
+
+    assert observe_sources == [
+        "src/wechat_traffic_agent/wakeful_tasks.py",
+        "src/wechat_traffic_agent/trading_draft_worker.py",
+    ]
+    assert resource_sources == [
+        "src/wechat_traffic_agent/wakeful_tasks.py",
+    ]
+
+
 def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
     state = tmp_path / "state"
     workspace = _workspace(tmp_path)

@@ -93,6 +93,47 @@ class GeneratedRepairPlanner:
             if candidates:
                 return candidates[:2]
 
+            # Wakeful self-maintenance records logical component sites such as
+            # "observe_world:draft_worker" when a subcomponent degrades without
+            # throwing a Python exception.  Those are valid diagnostic sites but
+            # not filenames, so translate them back to the bounded orchestration
+            # surface before asking a model to plan a repair.
+            logical_task, separator, component_text = failure_site.partition(":")
+            wakeful_tasks = {
+                "resource_review",
+                "reflect",
+                "check_x",
+                "check_outcomes",
+                "observe_world",
+                "verify_prediction",
+                "content_cognition",
+            }
+            if separator and logical_task.strip().lower() in wakeful_tasks:
+                orchestration = "src/wechat_traffic_agent/wakeful_tasks.py"
+                if (self.workspace_root / orchestration).is_file():
+                    candidates.append(orchestration)
+                source_root = self.workspace_root / "src" / "wechat_traffic_agent"
+                components = [
+                    value.strip().lower()
+                    for value in component_text.split(",")
+                    if value.strip()
+                ]
+                for component in components:
+                    for path in sorted(source_root.glob("*.py")):
+                        stem = path.stem.lower()
+                        if stem == component or stem.endswith("_" + component):
+                            relative = path.relative_to(self.workspace_root).as_posix()
+                            if (
+                                self.safe_source_path(relative)
+                                and relative not in candidates
+                            ):
+                                candidates.append(relative)
+                                break
+                    if len(candidates) >= 2:
+                        break
+                if candidates:
+                    return candidates[:2]
+
         symptom = " ".join(str(problem.get("symptom") or "").split())
         needles = [symptom]
         if ":" in symptom:
