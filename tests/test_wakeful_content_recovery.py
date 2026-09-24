@@ -276,6 +276,54 @@ def test_provider_outage_schedules_content_recovery_wake(tmp_path):
     assert loop.calls
 
 
+def test_provider_outages_do_not_exhaust_content_recovery_limit(tmp_path):
+    runner, loop, _economy, wakeful, *_ = _runner(
+        tmp_path, result_status="ERROR"
+    )
+
+    attempts = []
+    for offset in (0, 310, 620, 930):
+        result = runner.run(
+            "CONTENT_COGNITION",
+            now=NOW + timedelta(seconds=offset),
+        )
+        recovery = result["content_cycle_recovery"]
+        assert recovery["status"] == "FAILED"
+        attempts.append(recovery["attempt"])
+
+    assert attempts == [1, 2, 3, 4]
+    assert len(loop.calls) == 4
+    assert len(wakeful.provider_recoveries) == 4
+
+
+def test_non_provider_failures_still_stop_after_three_recovery_attempts(tmp_path):
+    runner, loop, _economy, _wakeful, *_ = _runner(tmp_path)
+    cycles_root = (
+        tmp_path / "state" / "content" / "continuous" / "cycles"
+    )
+    for attempt in (1, 2, 3):
+        folder = cycles_root / f"v2-recovery-1789808400-{attempt}-{1789808500 + attempt}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "result.json").write_text(
+            json.dumps({
+                "status": "ERROR",
+                "cycle": folder.name,
+                "error_type": "ValueError",
+                "message": "content logic failed",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    recovery = result["content_cycle_recovery"]
+    assert recovery["status"] == "RECOVERY_LIMIT_REACHED"
+    assert recovery["attempt_count"] == 3
+    assert recovery["bounded_failure_attempt_count"] == 3
+    assert result["continuous_content"]["status"] == "RECOVERY_LIMIT_REACHED"
+    assert loop.calls == []
+
+
 def test_successful_recovery_prevents_duplicate_work_for_same_base_cycle(tmp_path):
     runner, loop, economy, wakeful, *_ = _runner(tmp_path)
 

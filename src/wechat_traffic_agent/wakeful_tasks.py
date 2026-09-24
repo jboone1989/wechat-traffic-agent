@@ -930,7 +930,7 @@ class WakefulContentTaskRunner:
 
         cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
         prefix = f"v2-recovery-{base_epoch}-"
-        completed: list[tuple[Path, str]] = []
+        completed: list[tuple[Path, str, str]] = []
         if cycles_root.exists():
             for folder in sorted(cycles_root.glob(prefix + "*")):
                 result_file = folder / "result.json"
@@ -940,9 +940,13 @@ class WakefulContentTaskRunner:
                     payload = json.loads(result_file.read_text(encoding="utf-8"))
                 except (OSError, ValueError, json.JSONDecodeError):
                     continue
-                completed.append((folder, str(payload.get("status") or "").upper()))
+                completed.append((
+                    folder,
+                    str(payload.get("status") or "").upper(),
+                    str(payload.get("error_type") or ""),
+                ))
 
-        for folder, status in reversed(completed):
+        for folder, status, _error_type in reversed(completed):
             if status not in retryable_statuses:
                 return {
                     "status": "ALREADY_RECOVERED",
@@ -952,12 +956,23 @@ class WakefulContentTaskRunner:
                     "attempt_count": len(completed),
                 }
 
-        if len(completed) >= 3:
+        # Provider outages have their own durable cooldown/backoff evidence and
+        # recovery scheduler. Counting those transient availability failures
+        # against the content-recovery cap can permanently strand an active
+        # owner goal after three provider windows, even when a route later
+        # recovers. Keep the three-attempt guard for content/application
+        # failures, but let provider recovery continue at its bounded cooldown
+        # cadence.
+        bounded_failures = [
+            row for row in completed if row[2] != "LLMProviderError"
+        ]
+        if len(bounded_failures) >= 3:
             return {
                 "status": "RECOVERY_LIMIT_REACHED",
                 "recovery_of": base_cycle,
                 "previous_status": prior_status,
                 "attempt_count": len(completed),
+                "bounded_failure_attempt_count": len(bounded_failures),
             }
 
         attempt = len(completed) + 1
