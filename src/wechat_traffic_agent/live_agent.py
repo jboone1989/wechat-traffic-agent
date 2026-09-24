@@ -1675,18 +1675,38 @@ class LiveAgentService:
             return updated
 
         async def complete_owner_envelope(turn: dict[str, Any]) -> dict[str, Any]:
-            raw = await self.backend.provider.complete(
-                str(turn["prompt"]),
-                max_tokens=900,
-                system=_OWNER_SYSTEM,
-                _audit_scope="operator-private-chat",
-                _audit_response_mode="owner_envelope",
-                _routing_task_class="owner_dialogue",
-                _minimum_quality=0.75,
-                _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
-                _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
-            )
-            envelope = parse_owner_envelope(str(raw))
+            provider = self.backend.provider
+            structured = getattr(provider, "structured", None)
+            if callable(structured):
+                value = await structured(
+                    str(turn["prompt"]),
+                    OWNER_ENVELOPE_SCHEMA,
+                    max_tokens=900,
+                    temperature=0.0,
+                    system=_OWNER_SYSTEM,
+                    _audit_scope="operator-private-chat",
+                    _audit_response_mode="owner_envelope",
+                    _routing_task_class="owner_dialogue",
+                    _minimum_quality=0.75,
+                    _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                    _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
+                )
+                envelope = parse_owner_envelope(
+                    json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+                )
+            else:
+                raw = await provider.complete(
+                    str(turn["prompt"]),
+                    max_tokens=900,
+                    system=_OWNER_SYSTEM,
+                    _audit_scope="operator-private-chat",
+                    _audit_response_mode="owner_envelope",
+                    _routing_task_class="owner_dialogue",
+                    _minimum_quality=0.75,
+                    _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                    _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
+                )
+                envelope = parse_owner_envelope(str(raw))
             if not owner_envelope_acceptable(envelope, turn):
                 envelope = await repair_operator_envelope(turn)
             return envelope

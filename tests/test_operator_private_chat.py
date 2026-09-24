@@ -655,3 +655,49 @@ def test_private_stream_refuses_side_effect_tool_request(tmp_path, monkeypatch):
     assert "不会执行 x.post" in events[-1]["message"]["text"]
     assert application.runtime.calls == []
     assert events[-1]["tool_receipts"][0]["status"] == "FORBIDDEN_SIDE_EFFECT"
+
+
+class PrimaryStructuredProvider:
+    def __init__(self) -> None:
+        self.structured_calls = []
+        self.complete_calls = []
+
+    async def structured(self, prompt, schema, **kwargs):
+        self.structured_calls.append((prompt, schema, kwargs))
+        return {
+            "reply": "我已经收到这个任务，并会把真实执行断点保留下来。",
+            "tool_requests": [],
+            "goal_candidate": None,
+            "memory_candidates": [],
+        }
+
+    async def complete(self, prompt, **kwargs):
+        self.complete_calls.append((prompt, kwargs))
+        raise AssertionError("structured-capable owner provider should not use free-form complete")
+
+
+def test_owner_chat_prefers_structured_primary_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    provider = PrimaryStructuredProvider()
+    service = LiveAgentService(
+        state_root=root,
+        application=FakeApplication(),
+        backend=SimpleNamespace(provider=provider),
+        wakeful=FakeWakeful(),
+    )
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "把宣传 LivingRuntime Remote 作为一个真实任务接收。"},
+        )
+
+    assert response.status_code == 200
+    assert provider.complete_calls == []
+    assert len(provider.structured_calls) == 1
+    kwargs = provider.structured_calls[0][2]
+    assert kwargs["_routing_task_class"] == "owner_dialogue"
+    assert kwargs["_attempt_timeout_seconds"] == 20
+    assert response.json()["reply"].startswith("我已经收到")
