@@ -1333,29 +1333,77 @@ class WakefulContentTaskRunner:
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
+    def _owner_activated_external_goal_ids(self) -> set[str]:
+        """Return external-mission goals with durable private-owner activation evidence."""
+        state_root = getattr(self, "state_root", None)
+        if state_root is None:
+            return set()
+        proposals_root = (
+            Path(state_root) / "application" / "operator_chat" / "goal_proposals"
+        )
+        if not proposals_root.is_dir():
+            return set()
+        goal_ids: set[str] = set()
+        for path in proposals_root.glob("*.json"):
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            if (
+                str(row.get("status") or "") == "ACTIVATED"
+                and str(row.get("kind") or "") == "EXTERNAL_MISSION"
+            ):
+                goal_id = str(row.get("goal_id") or "").strip()
+                if goal_id:
+                    goal_ids.add(goal_id)
+        return goal_ids
+
     def _active_owner_goal_context(self) -> dict[str, Any] | None:
         runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
         goals = list(getattr(runtime, "active_goals", ()) or ())
-        candidates: list[Any] = []
+        owner_external_goal_ids = self._owner_activated_external_goal_ids()
+        candidates: list[tuple[Any, str]] = []
         for goal in goals:
-            origin = getattr(getattr(goal, "origin", None), "value", getattr(goal, "origin", ""))
-            status = getattr(getattr(goal, "status", None), "value", getattr(goal, "status", ""))
-            if str(origin) == "USER" and str(status) == "ACTIVE":
-                candidates.append(goal)
+            origin = str(
+                getattr(
+                    getattr(goal, "origin", None),
+                    "value",
+                    getattr(goal, "origin", ""),
+                )
+            )
+            status = str(
+                getattr(
+                    getattr(goal, "status", None),
+                    "value",
+                    getattr(goal, "status", ""),
+                )
+            )
+            goal_id = str(getattr(goal, "goal_id", "") or "").strip()
+            owner_authorized = (
+                origin == "USER"
+                or (
+                    origin == "EXTERNAL_MISSION"
+                    and goal_id in owner_external_goal_ids
+                )
+            )
+            if owner_authorized and status == "ACTIVE":
+                candidates.append((goal, origin))
         if not candidates:
             return None
         candidates.sort(
-            key=lambda goal: str(getattr(goal, "created_at", "") or ""),
+            key=lambda item: str(getattr(item[0], "created_at", "") or ""),
             reverse=True,
         )
-        goal = candidates[0]
+        goal, origin = candidates[0]
         description = str(getattr(goal, "description", "") or "").strip()
         goal_id = str(getattr(goal, "goal_id", "") or "").strip()
         if not goal_id or not description:
             return None
         return {
             "goal_id": goal_id,
-            "origin": "USER",
+            "origin": origin,
             "description": description,
             "reason": str(getattr(goal, "reason", "") or ""),
             "priority": float(getattr(goal, "priority", 0.0) or 0.0),
