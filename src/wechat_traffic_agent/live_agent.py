@@ -1752,6 +1752,88 @@ class LiveAgentService:
                 envelope, turn, tool_results=tool_results
             )
 
+        def owner_cognition_unavailable(exc: BaseException) -> bool:
+            message = str(exc or "")
+            return (
+                type(exc).__name__ == "LLMProviderError"
+                or message == "chat_backend_unavailable"
+                or "all eligible LLM resources failed" in message
+            )
+
+        def degraded_owner_intake(owner_message: dict[str, Any], exc: BaseException) -> dict[str, Any]:
+            system_message = operator_chat.append(
+                "system",
+                "Owner instruction persisted; cognition is temporarily unavailable, so no interpretation or execution is being claimed.",
+                metadata={
+                    "status": "COGNITION_DEFERRED",
+                    "source_message_id": str(owner_message.get("message_id") or ""),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "ok": True,
+                "status": "COGNITION_DEFERRED",
+                "reply": str(system_message.get("text") or ""),
+                "message": system_message,
+                "proposal": None,
+                "memory_saved": [],
+                "tool_receipts": [],
+                "memories": operator_memory.all(limit=80),
+                "history": operator_chat.history(limit=400),
+                "proposals": operator_chat.proposals(limit=40),
+            }
+
+        def degraded_owner_goal_draft(exc: BaseException) -> dict[str, Any]:
+            history = operator_chat.history(limit=100)
+            owner_message = next(
+                (
+                    row for row in reversed(history)
+                    if str(row.get("role") or "") == "operator"
+                    and str(row.get("text") or "").strip()
+                ),
+                None,
+            )
+            if not isinstance(owner_message, dict):
+                raise RuntimeError("conversation_required")
+            source_text = str(owner_message.get("text") or "").strip()
+            proposal = operator_chat.create_proposal(
+                {
+                    "kind": "GENERAL",
+                    "description": source_text,
+                    "reason": (
+                        "Owner instruction was durably captured while the cognition "
+                        "provider was unavailable; interpretation is deferred."
+                    ),
+                    "constraints": [
+                        "preserve the owner's stated intent",
+                        "do not claim interpretation or external execution until runtime evidence exists",
+                    ],
+                },
+                source_message_id=str(owner_message.get("message_id") or ""),
+            )
+            system_message = operator_chat.append(
+                "system",
+                "Goal Draft persisted from the owner's exact instruction while cognition is deferred.",
+                metadata={
+                    "status": "GOAL_DRAFT_COGNITION_DEFERRED",
+                    "proposal_id": str(proposal.get("proposal_id") or ""),
+                    "source_message_id": str(owner_message.get("message_id") or ""),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "ok": True,
+                "status": "GOAL_DRAFT_COGNITION_DEFERRED",
+                "reply": str(system_message.get("text") or ""),
+                "message": system_message,
+                "proposal": proposal,
+                "memory_saved": [],
+                "tool_receipts": [],
+                "memories": operator_memory.all(limit=80),
+                "history": operator_chat.history(limit=400),
+                "proposals": operator_chat.proposals(limit=40),
+            }
+
         async def operator_chat_get(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -1777,16 +1859,22 @@ class LiveAgentService:
             message = str(body.get("message") or "").strip() if isinstance(body, dict) else ""
             if not message or len(message) > 4000:
                 return JSONResponse({"error": "message_must_be_1_to_4000_characters"}, status_code=400)
-            operator_chat.append("operator", message)
+            owner_message = operator_chat.append("operator", message)
             try:
                 result = await run_operator_private_turn()
             except RuntimeError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=503)
+                if owner_cognition_unavailable(exc):
+                    result = degraded_owner_intake(owner_message, exc)
+                else:
+                    return JSONResponse({"error": str(exc)}, status_code=503)
             except Exception as exc:
-                return JSONResponse({
-                    "error": "operator_chat_failed",
-                    "error_type": type(exc).__name__,
-                }, status_code=502)
+                if owner_cognition_unavailable(exc):
+                    result = degraded_owner_intake(owner_message, exc)
+                else:
+                    return JSONResponse({
+                        "error": "operator_chat_failed",
+                        "error_type": type(exc).__name__,
+                    }, status_code=502)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
         async def operator_chat_stream(request: Request):
@@ -2081,12 +2169,18 @@ class LiveAgentService:
             try:
                 result = await run_operator_private_turn(force_draft=True)
             except RuntimeError as exc:
-                return JSONResponse({"error": str(exc)}, status_code=503)
+                if owner_cognition_unavailable(exc):
+                    result = degraded_owner_goal_draft(exc)
+                else:
+                    return JSONResponse({"error": str(exc)}, status_code=503)
             except Exception as exc:
-                return JSONResponse({
-                    "error": "goal_draft_failed",
-                    "error_type": type(exc).__name__,
-                }, status_code=502)
+                if owner_cognition_unavailable(exc):
+                    result = degraded_owner_goal_draft(exc)
+                else:
+                    return JSONResponse({
+                        "error": "goal_draft_failed",
+                        "error_type": type(exc).__name__,
+                    }, status_code=502)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
         async def operator_chat_goal_activate(request: Request):

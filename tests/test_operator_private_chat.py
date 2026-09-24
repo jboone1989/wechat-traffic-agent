@@ -701,3 +701,63 @@ def test_owner_chat_prefers_structured_primary_path(tmp_path, monkeypatch):
     assert kwargs["_routing_task_class"] == "owner_dialogue"
     assert kwargs["_attempt_timeout_seconds"] == 20
     assert response.json()["reply"].startswith("我已经收到")
+
+
+class UnavailableOwnerProvider:
+    async def structured(self, prompt, schema, **kwargs):
+        raise RuntimeError("all eligible LLM resources failed without exposing provider responses")
+
+    async def complete(self, prompt, **kwargs):
+        raise RuntimeError("all eligible LLM resources failed without exposing provider responses")
+
+
+def test_owner_task_intake_survives_llm_pool_outage(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    wakeful = FakeWakeful()
+    service = LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=SimpleNamespace(provider=UnavailableOwnerProvider()),
+        wakeful=wakeful,
+    )
+    directive = (
+        "宣传 LivingRuntime Remote，并把它作为当前 X 粉丝增长目标的一次真实增长实验来执行；"
+        "如果执行链阻塞，保留断点证据。"
+    )
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        intake = client.post(
+            "/operator/api/chat",
+            headers={"X-Operator-Request": "1"},
+            json={"message": directive},
+        )
+        assert intake.status_code == 200
+        assert intake.json()["status"] == "COGNITION_DEFERRED"
+        assert intake.json()["proposal"] is None
+
+        draft = client.post(
+            "/operator/api/chat/goal-draft",
+            headers={"X-Operator-Request": "1"},
+            json={},
+        )
+        assert draft.status_code == 200
+        body = draft.json()
+        assert body["status"] == "GOAL_DRAFT_COGNITION_DEFERRED"
+        assert body["proposal"]["status"] == "DRAFT"
+        assert body["proposal"]["kind"] == "GENERAL"
+        assert body["proposal"]["description"] == directive
+        proposal_id = body["proposal"]["proposal_id"]
+
+        activated = client.post(
+            "/operator/api/chat/goals/" + proposal_id.replace(":", "%3A") + "/activate",
+            headers={"X-Operator-Request": "1"},
+            json={},
+        )
+        assert activated.status_code == 200
+        assert activated.json()["activated"]["status"] == "ACTIVATED"
+
+    assert application.domain_runtime.active_goals[-1].description == directive
+    assert application.domain_runtime.persisted == 1
+    assert wakeful.calls and wakeful.calls[-1][1] == 5
