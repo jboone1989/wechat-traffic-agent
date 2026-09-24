@@ -1755,7 +1755,8 @@ class LiveAgentService:
         def owner_cognition_unavailable(exc: BaseException) -> bool:
             message = str(exc or "")
             return (
-                type(exc).__name__ == "LLMProviderError"
+                isinstance(exc, OSError)
+                or type(exc).__name__ == "LLMProviderError"
                 or message == "chat_backend_unavailable"
                 or "all eligible LLM resources failed" in message
             )

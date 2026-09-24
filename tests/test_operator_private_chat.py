@@ -761,3 +761,34 @@ def test_owner_task_intake_survives_llm_pool_outage(tmp_path, monkeypatch):
     assert application.domain_runtime.active_goals[-1].description == directive
     assert application.domain_runtime.persisted == 1
     assert wakeful.calls and wakeful.calls[-1][1] == 5
+
+
+class TransientContextFailureProvider:
+    async def structured(self, prompt, schema, **kwargs):
+        raise FileNotFoundError("optional-state-rotated")
+
+    async def complete(self, prompt, **kwargs):
+        raise FileNotFoundError("optional-state-rotated")
+
+
+def test_owner_task_intake_survives_transient_context_io_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    service = LiveAgentService(
+        state_root=root,
+        application=FakeApplication(),
+        backend=SimpleNamespace(provider=TransientContextFailureProvider()),
+        wakeful=FakeWakeful(),
+    )
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "宣传 LivingRuntime Remote，并保留真实断点证据。"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "COGNITION_DEFERRED"
+    assert body["proposal"] is None
+    assert body["history"][-1]["role"] == "system"
