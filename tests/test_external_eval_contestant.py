@@ -260,3 +260,67 @@ def test_fixed_external_eval_provider_is_audited(monkeypatch, tmp_path):
     assert seen["provider"] is base
     assert seen["state_root"] == tmp_path
     assert seen["scope"] == "external-benchmark-evaluation"
+
+
+def test_format_repair_serializes_same_malformed_decision_context(tmp_path):
+    class RepairProvider:
+        def __init__(self):
+            self.prompts = []
+
+        async def complete(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return '{"kind":"tool","tool_name":"shell","arguments":{"command":"cat /home/agent/log'
+            return '{"kind":"tool","tool_name":"shell","arguments":{"command":"cat /home/agent/log"}}'
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = RepairProvider()
+    c = FerroExternalEvalContestant(state_root=tmp_path, provider=provider)
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-0")
+    result = asyncio.run(c.tool_turn(
+        observation="Inspect the log.",
+        instruction="Solve the task.",
+        tools=[{
+            "name": "shell",
+            "description": "Run a command.",
+            "input_schema": {"type": "object"},
+        }],
+    ))
+    assert len(provider.prompts) == 2
+    repair_prompt = provider.prompts[1]
+    assert "PREVIOUS MALFORMED OUTPUT" in repair_prompt
+    assert "cat /home/agent/log" in repair_prompt
+    assert "Do not reconsider the task" in repair_prompt
+    assert result == {
+        "kind": "tool",
+        "tool_name": "shell",
+        "arguments": {"command": "cat /home/agent/log"},
+    }
+
+
+def test_format_repair_prior_output_is_bounded(tmp_path):
+    class RepairProvider:
+        def __init__(self):
+            self.prompts = []
+
+        async def complete(self, prompt, **kwargs):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return "x" * 10000
+            return '{"kind":"final","response":"decision cannot be safely reconstructed"}'
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = RepairProvider()
+    c = FerroExternalEvalContestant(state_root=tmp_path, provider=provider)
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-0")
+    result = asyncio.run(c.tool_turn(
+        observation="Inspect the environment.",
+        instruction="Solve the task.",
+        tools=[{
+            "name": "shell",
+            "description": "Run a command.",
+            "input_schema": {"type": "object"},
+        }],
+    ))
+    assert result["kind"] == "final"
+    assert len(provider.prompts[1]) < len(provider.prompts[0]) + 5000
