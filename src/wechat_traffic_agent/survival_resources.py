@@ -1244,6 +1244,9 @@ class SurvivalResourceManager:
                         (artifact or {}).get("network_agent_id") or ""
                     ) or None,
                     "member_count": (artifact or {}).get("member_count"),
+                    "contains_private_network_identity": bool(
+                        (artifact or {}).get("contains_private_network_identity")
+                    ),
                     "activation_ready": activation["ready"],
                     "activation_status": activation["status"],
                     "activation_reasons": list(activation["reasons"]),
@@ -1277,6 +1280,9 @@ class SurvivalResourceManager:
             "organism_id": (artifact or {}).get("organism_id"),
             "memory_state_hash": (artifact or {}).get("memory_state_hash"),
             "network_agent_id": (artifact or {}).get("network_agent_id"),
+            "contains_private_network_identity": bool(
+                (artifact or {}).get("contains_private_network_identity")
+            ),
             "activation_ready": activation["ready"],
             "activation_status": activation["status"],
             "activation_reasons": list(activation["reasons"]),
@@ -1821,6 +1827,12 @@ class SurvivalResourceManager:
                         if not expected or actual != expected:
                             raise RuntimeError("replica content hash mismatch")
                     elif profile == "content.core-standby.v1":
+                        if replica.get("contains_private_network_identity") is not True:
+                            replica["status"] = "STALE"
+                            replica["last_error"] = "TRUSTED_IDENTITY_SECRET_MISSING"
+                            replica["last_verified_at"] = _iso(now)
+                            changed = True
+                            continue
                         self._verify_core_standby_deployment(
                             host=host,
                             deployment_path=deployment_path,

@@ -527,6 +527,38 @@ class OperatorConversationStore:
         )
         return activated
 
+    def active_canonical_goal_refs(self, runtime: Any) -> tuple[str, ...]:
+        """Return durable owner-goal provenance for canonical goals still active."""
+        active_goal_ids = {
+            str(getattr(goal, "goal_id", "") or "")
+            for goal in (getattr(runtime, "active_goals", ()) or ())
+            if str(getattr(goal, "goal_id", "") or "")
+        }
+        active_mission_ids = {
+            str(getattr(mission, "mission_id", "") or "")
+            for mission in (getattr(runtime, "external_missions", ()) or ())
+            if str(getattr(mission, "mission_id", "") or "")
+            and _enum_text(getattr(mission, "status", "")) == "ACTIVE"
+        }
+        refs: list[str] = []
+        for row in self.proposals(limit=100):
+            if str(row.get("status") or "") != "ACTIVATED":
+                continue
+            if str(row.get("semantic_status") or "CANONICAL") != "CANONICAL":
+                continue
+            goal_id = str(row.get("goal_id") or "").strip()
+            mission_id = str(row.get("mission_id") or "").strip()
+            kind = str(row.get("kind") or "GENERAL").upper()
+            if kind == "EXTERNAL_MISSION":
+                if not mission_id or mission_id not in active_mission_ids:
+                    continue
+            elif not goal_id or goal_id not in active_goal_ids:
+                continue
+            for value in (goal_id, mission_id, str(row.get("proposal_id") or "").strip()):
+                if value and value not in refs:
+                    refs.append(value)
+        return tuple(refs)
+
     def reconcile_pending_semantic_upgrades(self, runtime: Any) -> list[dict[str, Any]]:
         """Reconcile persisted interpreted drafts against previously activated degraded intake."""
         reconciled: list[dict[str, Any]] = []

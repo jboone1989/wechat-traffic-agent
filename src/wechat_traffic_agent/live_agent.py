@@ -950,36 +950,11 @@ class LiveAgentService:
         if operator_chat is not None:
             runtime = getattr(self.application, "domain_runtime", None)
             if runtime is not None:
-                reconciled = operator_chat.reconcile_pending_semantic_upgrades(runtime)
-                active_goal_ids = {
-                    str(getattr(goal, "goal_id", "") or "")
-                    for goal in getattr(runtime, "active_goals", ())
-                    if str(getattr(goal, "goal_id", "") or "")
-                }
-                active_owner_proposals = [
-                    row
-                    for row in operator_chat.proposals(limit=100)
-                    if str(row.get("status") or "") == "ACTIVATED"
-                    and str(row.get("goal_id") or "") in active_goal_ids
-                ]
-                followup_rows = list(reconciled)
-                known_proposal_ids = {
-                    str(row.get("proposal_id") or "") for row in followup_rows
-                }
-                followup_rows.extend(
-                    row
-                    for row in active_owner_proposals
-                    if str(row.get("proposal_id") or "") not in known_proposal_ids
-                )
-                if followup_rows:
+                operator_chat.reconcile_pending_semantic_upgrades(runtime)
+                relevant_refs = operator_chat.active_canonical_goal_refs(runtime)
+                if relevant_refs:
                     scheduler = getattr(self.wakeful, "schedule_goal_followup", None)
                     if callable(scheduler):
-                        relevant_refs = tuple(dict.fromkeys(
-                            str(row.get(field) or "").strip()
-                            for row in followup_rows
-                            for field in ("goal_id", "mission_id", "proposal_id")
-                            if str(row.get(field) or "").strip()
-                        ))
                         scheduler(
                             datetime.now(timezone.utc),
                             seconds=5,

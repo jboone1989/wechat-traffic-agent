@@ -1060,6 +1060,52 @@ def test_core_standby_capacity_gap_creates_explicit_acquisition_need(tmp_path):
     assert "activation_ready=true" in need["satisfaction_condition"]
 
 
+def test_legacy_core_standby_without_split_identity_secret_is_marked_stale(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
+    manager.hosts_path.write_text(json.dumps([{
+        "host_id":"remote-host:standby",
+        "name":"standby",
+        "status":"ACTIVE",
+        "receiver_status":"VERIFIED",
+        "deployment_capable":True,
+        "management_transport":"SSH_KEY",
+        "reliability":"OPERATOR_MANAGED",
+        "deployment_profiles":["content.core-standby.v1"],
+        "capacity":{
+            "cpu_count":1,
+            "memory_available_gib":0.1,
+            "disk_free_gib":7.0,
+        },
+    }]))
+    services = manager.services()
+    core = next(
+        row for row in services
+        if row["service_id"] == "content-agent-core-standby"
+    )
+    core["replicas"] = [{
+        "host_id":"remote-host:standby",
+        "status":"ACTIVE",
+        "deployment_id":"deployment:legacy-core",
+        "deployment_path":"/root/.ferro-survival-receiver/state/workloads/core-standby/current.bin",
+        "deployment_transport":"SSH",
+        "artifact_sha256":"sha256:" + "1" * 64,
+        "activation_ready":False,
+        "activation_status":"STANDBY_NOT_RUNNABLE",
+        "activation_reasons":["CPU_CAPACITY_INSUFFICIENT","MEMORY_HEADROOM_INSUFFICIENT"],
+    }]
+    manager.services_path.write_text(json.dumps(services))
+
+    manager._refresh_service_replicas(now=NOW)
+
+    refreshed = next(
+        row for row in manager.services()
+        if row["service_id"] == "content-agent-core-standby"
+    )["replicas"][0]
+    assert refreshed["status"] == "STALE"
+    assert refreshed["last_error"] == "TRUSTED_IDENTITY_SECRET_MISSING"
+
+
 def test_core_standby_rejects_unmanaged_receiver_even_when_capacity_is_large(tmp_path):
     manager = SurvivalResourceManager(tmp_path)
     manager.hosts_path.parent.mkdir(parents=True, exist_ok=True)
