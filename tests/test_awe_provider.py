@@ -49,3 +49,47 @@ def test_retry_budget_is_bounded():
     with pytest.raises(RetryableError):
         asyncio.run(provider.complete("x"))
     assert inner.calls == 3
+
+
+def test_cerebras_fixed_provider_adds_edge_compatible_headers(monkeypatch):
+    from wechat_traffic_agent.awe_provider import build_fixed_openai_provider
+    import agent_runtime.llm.openai_compatible as module
+
+    captured = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("CEREBRAS_API_KEY", "secret-for-test")
+    monkeypatch.setattr(module, "OpenAICompatibleChatProvider", FakeProvider)
+    provider = build_fixed_openai_provider(
+        credential_env="CEREBRAS_API_KEY",
+        base_url="https://api.cerebras.ai/v1",
+        model="gpt-oss-120b",
+    )
+    assert provider.provider is not None
+    assert captured["extra_headers"] == {
+        "Accept": "application/json",
+        "User-Agent": "LivingRuntime-AWE/1.0",
+    }
+
+
+def test_non_cerebras_fixed_provider_does_not_add_edge_headers(monkeypatch):
+    from wechat_traffic_agent.awe_provider import build_fixed_openai_provider
+    import agent_runtime.llm.openai_compatible as module
+
+    captured = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("NVIDIA_API_KEY", "secret-for-test")
+    monkeypatch.setattr(module, "OpenAICompatibleChatProvider", FakeProvider)
+    build_fixed_openai_provider(
+        credential_env="NVIDIA_API_KEY",
+        base_url="https://integrate.api.nvidia.com/v1",
+        model="mistralai/mistral-nemotron",
+    )
+    assert captured["extra_headers"] == {}

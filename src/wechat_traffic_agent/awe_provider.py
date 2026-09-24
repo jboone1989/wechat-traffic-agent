@@ -62,12 +62,22 @@ def build_fixed_openai_provider(
     if not url or not model_id:
         raise ValueError("fixed AWE provider requires base URL and model")
 
+    extra_headers = (
+        {
+            "Accept": "application/json",
+            "User-Agent": "LivingRuntime-AWE/1.0",
+        }
+        if env_name == "CEREBRAS_API_KEY"
+        else {}
+    )
+
     return RetryingEvaluationProvider(
         OpenAICompatibleChatProvider(
             api_key=api_key,
             model=model_id,
             base_url=url,
             timeout_seconds=max(1.0, float(timeout_seconds)),
+            extra_headers=extra_headers,
             include_usage=False,
         ),
         max_retries=max_retries,
