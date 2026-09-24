@@ -27,7 +27,7 @@ def _install_fake_agent_network(monkeypatch):
     class Identity:
         key_id = "fake-key"
         @classmethod
-        def load_or_create(cls, path, agent_id):
+        def load_or_create(cls, path, agent_id, *, secret_path=None):
             return cls()
         def sign_object(self, payload):
             return "fake-signature"
@@ -113,6 +113,7 @@ def test_network_advertises_content_work_capabilities_as_read_only(tmp_path):
     assert all(row["side_effects"] == "NONE" for row in rows)
     assert service.endpoint == "http://127.0.0.1:8103/a2a"
     assert service.identity_path == Path(tmp_path) / "application/network/identity.json"
+    assert service.identity_secret_path == Path(tmp_path) / "secrets/network-identity.json"
 
 
 def test_network_rejects_mutating_capability(tmp_path):

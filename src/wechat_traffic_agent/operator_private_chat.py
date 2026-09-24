@@ -14,6 +14,24 @@ def _utc_iso(now: datetime | None = None) -> str:
     return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _enum_text(value: object) -> str:
+    return str(getattr(value, "value", value) or "").strip().upper()
+
+
+def _normalize_intent_text(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _normalize_metric(value: object) -> str:
+    text = _normalize_intent_text(value)
+    compact = re.sub(r"[\\s._-]+", "", text)
+    if compact in {"xfollowers", "followers"}:
+        return "x.followers"
+    if "粉丝" in text and ("x" in text or "twitter" in text):
+        return "x.followers"
+    return text
+
+
 OWNER_ENVELOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["reply", "goal_candidate", "memory_candidates", "tool_requests"],
@@ -315,6 +333,7 @@ class OperatorConversationStore:
             "constraints": [str(item)[:500] for item in (raw.get("constraints") or []) if str(item).strip()][:20],
             "source_message_id": str(source_message_id or ""),
             "created_at": _utc_iso(),
+            "semantic_status": str(raw.get("semantic_status") or "INTERPRETED").strip().upper(),
         }
         self._write_proposal(row)
         return row
@@ -327,7 +346,68 @@ class OperatorConversationStore:
         if not isinstance(value, dict):
             raise ValueError("invalid goal proposal")
         return value
-    def activate(self, proposal_id: str, runtime: Any) -> dict[str, Any]:
+    def _message_text(self, message_id: str) -> str:
+        wanted = str(message_id or "").strip()
+        if not wanted:
+            return ""
+        for row in reversed(self.history(limit=2000)):
+            if str(row.get("message_id") or "") == wanted:
+                return str(row.get("text") or "")
+        return ""
+
+    @staticmethod
+    def _cancel_runtime_goal(runtime: Any, goal_id: str) -> bool:
+        wanted = str(goal_id or "").strip()
+        if not wanted:
+            return False
+        rows = getattr(runtime, "goals", None)
+        if not isinstance(rows, list):
+            rows = getattr(runtime, "active_goals", None)
+        if not isinstance(rows, list):
+            return False
+        for goal in rows:
+            if str(getattr(goal, "goal_id", "") or "") != wanted:
+                continue
+            if _enum_text(getattr(goal, "status", "")) not in {"ACTIVE", "BLOCKED"}:
+                return False
+            status = getattr(goal, "status", None)
+            if hasattr(getattr(status, "__class__", object), "CANCELLED"):
+                goal.status = status.__class__.CANCELLED
+            else:
+                goal.status = "CANCELLED"
+            return True
+        return False
+
+    @staticmethod
+    def _compatible_external_mission(runtime: Any, row: Mapping[str, Any]) -> Any | None:
+        metric = _normalize_metric(row.get("metric"))
+        target = row.get("target")
+        if not metric or target is None:
+            return None
+        try:
+            target_value = float(target)
+        except (TypeError, ValueError):
+            return None
+        for mission in reversed(list(getattr(runtime, "external_missions", ()) or ())):
+            if _enum_text(getattr(mission, "status", "")) != "ACTIVE":
+                continue
+            if _normalize_metric(getattr(mission, "metric", "")) != metric:
+                continue
+            try:
+                if abs(float(getattr(mission, "target")) - target_value) > 1e-9:
+                    continue
+            except (TypeError, ValueError, AttributeError):
+                continue
+            return mission
+        return None
+
+    def activate(
+        self,
+        proposal_id: str,
+        runtime: Any,
+        *,
+        inherited_authorization_from: str = "",
+    ) -> dict[str, Any]:
         row = self.get_proposal(proposal_id)
         if str(row.get("status") or "") == "ACTIVATED":
             return row
@@ -337,24 +417,31 @@ class OperatorConversationStore:
         if kind == "EXTERNAL_MISSION":
             from agent_runtime.goals import MissionDirection
             metric = str(row.get("metric") or "").strip()
-            deadline_raw = str(row.get("deadline") or "").strip()
-            if not metric or row.get("baseline") is None or row.get("target") is None or not deadline_raw:
-                raise ValueError("external mission draft requires metric, baseline, target, and deadline")
-            deadline = datetime.fromisoformat(deadline_raw.replace("Z", "+00:00"))
-            if deadline.tzinfo is None:
-                raise ValueError("external mission deadline must include timezone")
+            if not metric or row.get("baseline") is None or row.get("target") is None:
+                raise ValueError("external mission draft requires metric, baseline, and target")
             direction = MissionDirection(str(row.get("direction") or "AT_LEAST"))
-            mission = runtime.submit_external_mission(
-                str(row["description"]),
-                metric=metric,
-                baseline=float(row["baseline"]),
-                target=float(row["target"]),
-                deadline=deadline.astimezone(timezone.utc),
-                direction=direction,
-                constraints=list(row.get("constraints") or []),
-                evidence_refs=[proposal_id],
-                issued_by="owner-private-conversation",
-            )
+            mission = self._compatible_external_mission(runtime, row)
+            if mission is None:
+                deadline_raw = str(row.get("deadline") or "").strip()
+                if not deadline_raw:
+                    raise ValueError("new external mission draft requires a deadline")
+                deadline = datetime.fromisoformat(deadline_raw.replace("Z", "+00:00"))
+                if deadline.tzinfo is None:
+                    raise ValueError("new external mission deadline must include timezone")
+                mission = runtime.submit_external_mission(
+                    str(row["description"]),
+                    metric=metric,
+                    baseline=float(row["baseline"]),
+                    target=float(row["target"]),
+                    deadline=deadline.astimezone(timezone.utc),
+                    direction=direction,
+                    constraints=list(row.get("constraints") or []),
+                    evidence_refs=[proposal_id],
+                    issued_by="owner-private-conversation",
+                )
+                row["mission_binding"] = "CREATED"
+            else:
+                row["mission_binding"] = "EXISTING_COMPATIBLE_MISSION"
             row["mission_id"] = mission.mission_id
             row["goal_id"] = mission.goal_id
         else:
@@ -367,6 +454,9 @@ class OperatorConversationStore:
         runtime.persist()
         row["status"] = "ACTIVATED"
         row["activated_at"] = _utc_iso()
+        row["semantic_status"] = "CANONICAL"
+        if inherited_authorization_from:
+            row["inherited_activation_from"] = str(inherited_authorization_from)
         self._write_proposal(row)
         self.append(
             "system",
@@ -374,6 +464,85 @@ class OperatorConversationStore:
             metadata={"proposal_id": proposal_id, "goal_id": row.get("goal_id"), "mission_id": row.get("mission_id")},
         )
         return row
+
+    def reconcile_semantic_upgrade(self, proposal_id: str, runtime: Any) -> dict[str, Any]:
+        """Supersede an activated outage-capture goal with its later interpretation."""
+        row = self.get_proposal(proposal_id)
+        if str(row.get("status") or "") != "DRAFT":
+            return row
+        current_text = _normalize_intent_text(
+            self._message_text(str(row.get("source_message_id") or ""))
+        )
+        if not current_text:
+            return row
+        prior = None
+        for candidate in self.proposals(limit=100):
+            if candidate.get("proposal_id") == proposal_id:
+                continue
+            if str(candidate.get("status") or "") != "ACTIVATED":
+                continue
+            if str(candidate.get("kind") or "") != "GENERAL":
+                continue
+            deferred = (
+                str(candidate.get("semantic_status") or "") == "PENDING_RECONCILIATION"
+                or "interpretation is deferred" in str(candidate.get("reason") or "").casefold()
+            )
+            if not deferred:
+                continue
+            prior_text = _normalize_intent_text(
+                self._message_text(str(candidate.get("source_message_id") or ""))
+            )
+            if prior_text and prior_text == current_text:
+                prior = candidate
+                break
+        if prior is None:
+            return row
+
+        activated = self.activate(
+            proposal_id,
+            runtime,
+            inherited_authorization_from=str(prior.get("proposal_id") or ""),
+        )
+        old_goal_id = str(prior.get("goal_id") or "")
+        cancelled = self._cancel_runtime_goal(runtime, old_goal_id)
+        prior["status"] = "SUPERSEDED"
+        prior["semantic_status"] = "SUPERSEDED"
+        prior["superseded_by_proposal_id"] = proposal_id
+        prior["superseded_at"] = _utc_iso()
+        self._write_proposal(prior)
+        activated["supersedes_proposal_id"] = str(prior.get("proposal_id") or "")
+        activated["superseded_goal_id"] = old_goal_id
+        activated["superseded_goal_cancelled"] = bool(cancelled)
+        self._write_proposal(activated)
+        runtime.persist()
+        self.append(
+            "system",
+            "Goal semantics reconciled: the degraded intake goal was superseded by the canonical interpreted goal.",
+            metadata={
+                "proposal_id": proposal_id,
+                "supersedes_proposal_id": prior.get("proposal_id"),
+                "goal_id": activated.get("goal_id"),
+                "mission_id": activated.get("mission_id"),
+            },
+        )
+        return activated
+
+    def reconcile_pending_semantic_upgrades(self, runtime: Any) -> list[dict[str, Any]]:
+        """Reconcile persisted interpreted drafts against previously activated degraded intake."""
+        reconciled: list[dict[str, Any]] = []
+        for candidate in list(self.proposals(limit=100)):
+            if str(candidate.get("status") or "") != "DRAFT":
+                continue
+            proposal_id = str(candidate.get("proposal_id") or "").strip()
+            if not proposal_id:
+                continue
+            updated = self.reconcile_semantic_upgrade(proposal_id, runtime)
+            if (
+                str(updated.get("status") or "") == "ACTIVATED"
+                and str(updated.get("inherited_activation_from") or "").strip()
+            ):
+                reconciled.append(updated)
+        return reconciled
 
     def _proposal_path(self, proposal_id: str) -> Path:
         safe = str(proposal_id or "").replace(":", "-").replace("/", "-")

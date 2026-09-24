@@ -159,6 +159,47 @@ def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
     assert _git(workspace, "status", "--porcelain") == ""
 
 
+def test_repair_batch_advances_distinct_problems_with_bounded_throughput(tmp_path):
+    state = tmp_path / "state"
+    workspace = _workspace(tmp_path)
+    deployed = tmp_path / "deployed"
+    (deployed / "src/wechat_traffic_agent").mkdir(parents=True)
+    (deployed / "src/wechat_traffic_agent/app_logic.py").write_text(
+        (workspace / "src/wechat_traffic_agent/app_logic.py").read_text()
+    )
+    first_path = _problem(state)
+    template = json.loads(first_path.read_text())
+    for index in (2, 3):
+        row = dict(template)
+        row["problem_id"] = f"self-problem:traffic-topic-{index}"
+        row["occurrences"] = index
+        row["cycles"] = [f"v2-{index}"]
+        row["evidence_refs"] = [f"content-cycle:v2-{index}:result"]
+        (first_path.parent / f"traffic-{index}.json").write_text(json.dumps(row))
+
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=deployed,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    batch = executor.run_batch(now=NOW, max_items=3)
+
+    assert batch["status"] == "BATCH_PROGRESSED"
+    assert batch["processed_count"] == 3
+    assert len(set(batch["problem_ids"])) == 3
+    assert batch["result_statuses"] == [
+        "GENERATED_REPAIR_PROPOSED",
+        "GENERATED_REPAIR_PROPOSED",
+        "GENERATED_REPAIR_PROPOSED",
+    ]
+    assert len(runtime.calls) == 3
+
+
 def test_model_cannot_escape_localized_boundary_by_claiming_target_path(tmp_path):
     state = tmp_path / "state"
     workspace = _workspace(tmp_path)

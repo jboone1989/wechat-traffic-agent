@@ -151,6 +151,15 @@ class OrganismStateService:
             and isinstance(row.get("success_rate"), (int, float))
         ]
         model_availability = max(model_scores, default=None)
+        free_model_scores = [
+            _clamp(float(row.get("quality_score") or 0.0))
+            * _clamp(float(row.get("success_rate") or 0.0))
+            for row in llm_rows
+            if str(row.get("pricing_class") or "").upper() == "FREE"
+            and isinstance(row.get("quality_score"), (int, float))
+            and isinstance(row.get("success_rate"), (int, float))
+        ]
+        free_model_availability = max(free_model_scores, default=None)
 
         paid_funds = llm_policy.get("paid_available_funds")
         reserve_floor = llm_policy.get("paid_reserve_floor")
@@ -171,7 +180,38 @@ class OrganismStateService:
             if monetary_components
             else llm_pressure
         )
-        token_pressure = llm_pressure
+        if isinstance(free_model_availability, (int, float)):
+            model_resource_pressure = min(
+                1.0 if llm_pressure is None else float(llm_pressure),
+                1.0 - float(free_model_availability),
+            )
+        else:
+            model_resource_pressure = llm_pressure
+
+        free_quota_pressures: list[float] = []
+        for row in llm_rows:
+            if str(row.get("pricing_class") or "").upper() != "FREE":
+                continue
+            limit = row.get("quota_limit")
+            remaining = row.get("quota_remaining")
+            if (
+                isinstance(limit, (int, float))
+                and not isinstance(limit, bool)
+                and float(limit) > 0
+                and isinstance(remaining, (int, float))
+                and not isinstance(remaining, bool)
+            ):
+                free_quota_pressures.append(
+                    _clamp(1.0 - float(remaining) / float(limit))
+                )
+        if free_quota_pressures:
+            token_pressure = min(free_quota_pressures)
+        elif isinstance(free_model_availability, (int, float)):
+            # Unknown quota must not be interpreted as exhausted capacity when
+            # a free route has recent empirical success.
+            token_pressure = 1.0 - float(free_model_availability)
+        else:
+            token_pressure = llm_pressure
 
         survival_resources = _read(
             self.state_root / "application" / "survival_resources" / "resources.json"
@@ -327,9 +367,9 @@ class OrganismStateService:
             ),
             "model_resource_pressure": self._signal(
                 name="model_resource_pressure",
-                value=llm_pressure,
-                observed_at=llm_at,
-                source="llm_resource_pool.policy",
+                value=model_resource_pressure,
+                observed_at=max(filter(None, (llm_at, llm_resources_at)), default=None),
+                source="llm_resource_pool.free_route_availability",
                 now=now,
             ),
             "monetary_pressure": self._signal(
@@ -342,8 +382,8 @@ class OrganismStateService:
             "token_pressure": self._signal(
                 name="token_pressure",
                 value=token_pressure,
-                observed_at=llm_at,
-                source="llm_resource_pool.policy.capacity",
+                observed_at=max(filter(None, (llm_at, llm_resources_at)), default=None),
+                source="llm_resource_pool.free_quota_or_empirical_availability",
                 now=now,
             ),
             "model_availability": self._signal(
@@ -432,10 +472,20 @@ class OrganismStateService:
             name for name, row in signals.items()
             if str(row.get("freshness")) != "FRESH"
         )
+        hard_pressure_names = {
+            "compute_pressure",
+            "memory_pressure",
+            "storage_pressure",
+            "host_resource_pressure",
+            "model_resource_pressure",
+            "token_pressure",
+            "runtime_resource_pressure",
+            "workload_pressure",
+        }
         pressure_values = [
             float(row["value"])
             for name, row in signals.items()
-            if name.endswith("pressure") and row.get("freshness") == "FRESH"
+            if name in hard_pressure_names and row.get("freshness") == "FRESH"
             and isinstance(row.get("value"), (int, float))
         ]
         worst_pressure = max(pressure_values, default=1.0 if unknown else 0.0)
@@ -484,6 +534,14 @@ class OrganismStateService:
             "long_term_reward": round(long_term_reward, 6),
             "uncertainty": round(uncertainty, 6),
             "worst_pressure": round(worst_pressure, 6),
+            "monetary_pressure": (
+                round(float(monetary_pressure), 6)
+                if isinstance(monetary_pressure, (int, float)) else None
+            ),
+            "free_model_availability": (
+                round(float(free_model_availability), 6)
+                if isinstance(free_model_availability, (int, float)) else None
+            ),
             "unknown_signal_count": len(unknown),
             "unknown_signals": unknown,
             "status": (

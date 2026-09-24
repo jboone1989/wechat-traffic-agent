@@ -237,6 +237,83 @@ def test_operator_conversation_store_activates_measurable_external_mission(tmp_p
     assert runtime.persisted == 1
 
 
+def test_semantic_reconciliation_supersedes_degraded_goal_and_inherits_owner_activation(tmp_path):
+    store = OperatorConversationStore(tmp_path)
+    directive = "宣传 LivingRuntime Remote，并把它作为当前 X 粉丝增长目标的一次真实增长实验来执行。"
+    first = store.append("operator", directive)
+    degraded = store.create_proposal(
+        {
+            "kind": "GENERAL",
+            "description": directive,
+            "reason": "Owner instruction was durably captured while the cognition provider was unavailable; interpretation is deferred.",
+            "semantic_status": "PENDING_RECONCILIATION",
+        },
+        source_message_id=first["message_id"],
+    )
+    runtime = FakeRuntime()
+    degraded = store.activate(degraded["proposal_id"], runtime)
+    old_goal = runtime.active_goals[-1]
+
+    second = store.append("operator", directive)
+    canonical = store.create_proposal(
+        {
+            "kind": "EXTERNAL_MISSION",
+            "description": "宣传 LivingRuntime Remote 以提升 X 平台粉丝数",
+            "metric": "x.followers",
+            "baseline": 1836,
+            "target": 5000,
+            "deadline": "2026-10-19T02:32:02+00:00",
+            "direction": "AT_LEAST",
+        },
+        source_message_id=second["message_id"],
+    )
+    reconciled = store.reconcile_pending_semantic_upgrades(runtime)
+    assert len(reconciled) == 1
+    canonical = reconciled[0]
+
+    assert canonical["status"] == "ACTIVATED"
+    assert canonical["kind"] == "EXTERNAL_MISSION"
+    assert canonical["inherited_activation_from"] == degraded["proposal_id"]
+    assert canonical["supersedes_proposal_id"] == degraded["proposal_id"]
+    assert canonical["superseded_goal_cancelled"] is True
+    assert old_goal.status == "CANCELLED"
+    assert store.get_proposal(degraded["proposal_id"])["status"] == "SUPERSEDED"
+    assert len(runtime.external_missions) == 1
+
+
+def test_external_mission_activation_binds_existing_compatible_mission(tmp_path):
+    store = OperatorConversationStore(tmp_path)
+    runtime = FakeRuntime()
+    existing = SimpleNamespace(
+        mission_id="mission:existing-x-growth",
+        goal_id="goal:existing-x-growth",
+        description="Grow X followers",
+        metric="x.followers",
+        baseline=1836.0,
+        target=5000.0,
+        deadline=None,
+        direction="AT_LEAST",
+        status="ACTIVE",
+    )
+    runtime.external_missions.append(existing)
+    proposal = store.create_proposal({
+        "kind": "EXTERNAL_MISSION",
+        "description": "宣传 LivingRuntime Remote 作为 X 增长实验",
+        "metric": "X 平台粉丝数",
+        "baseline": 1836,
+        "target": 5000,
+        "deadline": "2026-10-19",
+        "direction": "AT_LEAST",
+    })
+
+    activated = store.activate(proposal["proposal_id"], runtime)
+
+    assert activated["mission_id"] == existing.mission_id
+    assert activated["goal_id"] == existing.goal_id
+    assert activated["mission_binding"] == "EXISTING_COMPATIBLE_MISSION"
+    assert len(runtime.external_missions) == 1
+
+
 def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
     root = tmp_path / "state"

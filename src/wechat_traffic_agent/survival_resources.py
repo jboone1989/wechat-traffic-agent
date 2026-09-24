@@ -215,10 +215,25 @@ class SurvivalResourceManager:
             self._ssh_receiver_needs_provision(row)
             for row in host_rows
         )
+        service_rows = self.services()
         degraded_replica = any(
             replica.get("status") != "ACTIVE"
-            for service in self.services()
+            for service in service_rows
             for replica in service.get("replicas") or ()
+        )
+        core_standby_rows = [
+            service for service in service_rows
+            if str(service.get("role") or "") == "CORE_STANDBY"
+        ]
+        core_standby_capacity_gap = any(
+            bool(service.get("replicas"))
+            and not any(
+                isinstance(replica, dict)
+                and replica.get("status") == "ACTIVE"
+                and replica.get("activation_ready") is True
+                for replica in service.get("replicas") or ()
+            )
+            for service in core_standby_rows
         )
         automatic_replica_gap = self._has_automatic_replica_gap()
         needs = self._reconcile_needs(
@@ -229,6 +244,7 @@ class SurvivalResourceManager:
             usable_remote=usable_remote,
             degraded_replica=degraded_replica,
             automatic_replica_gap=automatic_replica_gap,
+            core_standby_capacity_gap=core_standby_capacity_gap,
             provisionable_remote=provisionable_remote,
         )
         pressure = (
@@ -1287,7 +1303,10 @@ class SurvivalResourceManager:
 
             with tempfile.TemporaryDirectory(prefix="ferro-core-standby-") as temp_dir:
                 path = Path(temp_dir) / "ferro-core-standby.bin"
-                exported = OrganismContinuityService(self.state_root).export_bundle(path)
+                exported = OrganismContinuityService(self.state_root).export_bundle(
+                    path,
+                    include_network_secret=True,
+                )
                 raw = path.read_bytes()
             return {
                 "media_type": "application/octet-stream",
@@ -1301,6 +1320,9 @@ class SurvivalResourceManager:
                     (exported.get("network_identity") or {}).get("agent_id")
                 ),
                 "member_count": exported["member_count"],
+                "contains_private_network_identity": bool(
+                    exported.get("contains_private_network_identity")
+                ),
                 "requires_operator_managed_host": True,
             }
         if profile != "content.website-static.v1":
@@ -2194,7 +2216,8 @@ class SurvivalResourceManager:
     def _reconcile_needs(
         self, *, now: datetime, compute_pressure: bool, active_remote: bool,
         usable_remote: bool, degraded_replica: bool,
-        automatic_replica_gap: bool, provisionable_remote: bool,
+        automatic_replica_gap: bool, core_standby_capacity_gap: bool,
+        provisionable_remote: bool,
         storage_mode: str | None = None, storage_pressure: bool | None = None,
     ) -> list[dict[str, Any]]:
         rows = self._coalesce_need_rows(self.needs())
@@ -2226,6 +2249,13 @@ class SurvivalResourceManager:
         if automatic_replica_gap:
             desired.append(("SERVICE", "ENSURE_SERVICE_REPLICA", "NORMAL",
                             "A service policy requires a remote replica and an eligible host is available"))
+        if core_standby_capacity_gap:
+            desired.append((
+                "REMOTE_MACHINE",
+                "ACQUIRE_RUNNABLE_CORE_STANDBY",
+                "HIGH",
+                "A core standby artifact exists, but no verified standby body satisfies the CPU/memory activation envelope",
+            ))
         if (
             (storage_pressure or compute_pressure)
             and usable_remote
@@ -2245,6 +2275,7 @@ class SurvivalResourceManager:
             "PROVISION_REMOTE_RECEIVER",
             "RESTORE_SERVICE_REPLICA",
             "ENSURE_SERVICE_REPLICA",
+            "ACQUIRE_RUNNABLE_CORE_STANDBY",
             "OFFLOAD_NON_CORE_SERVICE",
         }
         for row in rows:
@@ -2313,7 +2344,7 @@ class SurvivalResourceManager:
                     "ENSURE_SERVICE_REPLICA",
                     "OFFLOAD_NON_CORE_SERVICE",
                 }
-                rows.append({
+                need_row = {
                     "need_id": "survival-need:" + sha256(signature.encode()).hexdigest()[:20],
                     "domain": domain,
                     "action": action,
@@ -2325,7 +2356,24 @@ class SurvivalResourceManager:
                     "last_occurrence_at": _iso(now),
                     "occurrence_count": 1,
                     "evidence_refs": [f"survival-observation:{domain.lower()}"],
-                })
+                }
+                if action == "ACQUIRE_RUNNABLE_CORE_STANDBY":
+                    core_service = next(
+                        (
+                            service for service in self.services()
+                            if str(service.get("role") or "") == "CORE_STANDBY"
+                        ),
+                        {},
+                    )
+                    need_row["minimum_activation_requirements"] = dict(
+                        core_service.get("activation_requirements")
+                        or core_service.get("resource_requirements")
+                        or {}
+                    )
+                    need_row["satisfaction_condition"] = (
+                        "At least one ACTIVE core standby replica reports activation_ready=true"
+                    )
+                rows.append(need_row)
         _atomic_json(self.needs_path, rows)
         return rows
 

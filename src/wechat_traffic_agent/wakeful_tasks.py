@@ -532,24 +532,46 @@ class WakefulContentTaskRunner:
         self_repair = getattr(self, "self_repair", None)
         if self_repair is not None:
             try:
-                rows["self_repair"] = self_repair.run_once(now=now)
-                repair_status = rows["self_repair"].get("status")
+                run_batch = getattr(self_repair, "run_batch", None)
+                rows["self_repair"] = (
+                    run_batch(now=now, max_items=3)
+                    if callable(run_batch)
+                    else self_repair.run_once(now=now)
+                )
+                repair_status = str(rows["self_repair"].get("status") or "")
+                nested = (
+                    list(rows["self_repair"].get("results") or ())
+                    if repair_status == "BATCH_PROGRESSED"
+                    else [rows["self_repair"]]
+                )
+                repair_statuses = {
+                    str(item.get("status") or "")
+                    for item in nested
+                    if isinstance(item, dict)
+                }
                 schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
-                if repair_status == "GENERATED_REPAIR_PROPOSED" and callable(schedule):
-                    schedule(now, seconds=60)
-                elif repair_status in {
+                immediate = {
+                    "GENERATED_REPAIR_PROPOSED",
+                    "REQUESTED_TO_PI_REMOTE",
                     "CANDIDATE_REJECTED_REPLAN_QUEUED",
                     "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
-                } and callable(schedule):
-                    schedule(
-                        now,
-                        seconds=int(rows["self_repair"].get("retry_seconds") or 60),
-                    )
-                elif repair_status == "GENERATED_PLAN_DEFERRED" and callable(schedule):
-                    schedule(
-                        now,
-                        seconds=int(rows["self_repair"].get("retry_seconds") or 900),
-                    )
+                }
+                if callable(schedule) and repair_statuses & immediate:
+                    retry_values = [
+                        int(item.get("retry_seconds") or 60)
+                        for item in nested
+                        if isinstance(item, dict)
+                        and str(item.get("status") or "") in immediate
+                    ]
+                    schedule(now, seconds=min(retry_values or [60]))
+                elif callable(schedule) and "GENERATED_PLAN_DEFERRED" in repair_statuses:
+                    retry_values = [
+                        int(item.get("retry_seconds") or 900)
+                        for item in nested
+                        if isinstance(item, dict)
+                        and str(item.get("status") or "") == "GENERATED_PLAN_DEFERRED"
+                    ]
+                    schedule(now, seconds=min(retry_values or [900]))
             except Exception as exc:  # noqa: BLE001
                 rows["self_repair"] = self._error(exc)
                 rows["status"] = "DEGRADED"

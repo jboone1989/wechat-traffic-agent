@@ -947,6 +947,14 @@ class LiveAgentService:
         x_oauth_manager = XOAuthHeadlessManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
+        if operator_chat is not None:
+            runtime = getattr(self.application, "domain_runtime", None)
+            if runtime is not None:
+                reconciled = operator_chat.reconcile_pending_semantic_upgrades(runtime)
+                if reconciled:
+                    scheduler = getattr(self.wakeful, "schedule_goal_followup", None)
+                    if callable(scheduler):
+                        scheduler(datetime.now(timezone.utc), seconds=5)
         operator_memory = OperatorLongTermMemory(self.state_root) if operator_console is not None else None
         owner_memory_runtime = OwnerMemoryRuntime(
             self.state_root,
@@ -1554,6 +1562,17 @@ class LiveAgentService:
                     candidate,
                     source_message_id=source_message_id,
                 )
+                proposal = operator_chat.reconcile_semantic_upgrade(
+                    str(proposal.get("proposal_id") or ""),
+                    self.application.domain_runtime,
+                )
+                if (
+                    str(proposal.get("status") or "") == "ACTIVATED"
+                    and str(proposal.get("inherited_activation_from") or "").strip()
+                ):
+                    scheduler = getattr(self.wakeful, "schedule_goal_followup", None)
+                    if callable(scheduler):
+                        scheduler(datetime.now(timezone.utc), seconds=5)
             memory_candidates = parsed.get("memory_candidates")
             admitted_memory_candidates = (
                 memory_candidates
@@ -1809,6 +1828,7 @@ class LiveAgentService:
                         "preserve the owner's stated intent",
                         "do not claim interpretation or external execution until runtime evidence exists",
                     ],
+                    "semantic_status": "PENDING_RECONCILIATION",
                 },
                 source_message_id=str(owner_message.get("message_id") or ""),
             )

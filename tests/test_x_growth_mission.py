@@ -306,6 +306,14 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
     )
     assert started["status"] == "STARTED"
     assert started["experiment_id"] == first_experiment
+    assert str(started["world_learning_action_id"]).startswith("world-action:")
+    world_learning = json.loads(
+        (tmp_path / "application/world_learning.json").read_text()
+    )
+    action = world_learning["actions"][started["world_learning_action_id"]]
+    assert action["metadata"]["mission_experiment_id"] == first_experiment
+    assert action["metadata"]["publication_receipt_id"] == "receipt:x.post:first"
+    assert action["settlements"]["mission_window"]["status"] == "PENDING"
 
     clock.advance(timedelta(hours=24).total_seconds())
     second = asyncio.run(
@@ -321,6 +329,9 @@ def test_mature_experiment_settles_from_real_follower_change_and_replans(tmp_pat
     assert second["settlement"]["experiment_id"] == first_experiment
     assert second["settlement"]["conclusion"] == "SUPPORTED"
     assert second["settlement"]["actual_delta"] == 100.0
+    assert second["settlement"]["world_learning_action_id"] == started["world_learning_action_id"]
+    assert second["settlement"]["world_learning_settlement"]["status"] == "SETTLED"
+    assert second["settlement"]["world_learning_settlement"]["learning_signal"] > 0
     assert second["causal_claim"] is False
     assert second["active_experiment"]["experiment_id"] != first_experiment
     assert second["active_experiment"]["status"] == "PROPOSED"

@@ -136,6 +136,10 @@ class ContentNetworkService:
         return self.root / "application" / "network" / "identity.json"
 
     @property
+    def identity_secret_path(self) -> Path:
+        return self.root / "secrets" / "network-identity.json"
+
+    @property
     def join_status_path(self) -> Path:
         return self.root / "application" / "network" / "join_status.json"
 
@@ -211,7 +215,11 @@ class ContentNetworkService:
 
         rows = self.advertised_capabilities()
         self.identity_path.parent.mkdir(parents=True, exist_ok=True)
-        identity = Identity.load_or_create(self.identity_path, self.agent_id)
+        identity = Identity.load_or_create(
+            self.identity_path,
+            self.agent_id,
+            secret_path=self.identity_secret_path,
+        )
         card = signed_agent_card(
             identity=identity,
             name="Persistent Content Agent",

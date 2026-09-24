@@ -39,9 +39,17 @@ def _seed_state(root: Path) -> str:
                 "agent_id": "ferro.network.cai",
                 "key_id": "key:test",
                 "public_key": "public:test",
-                "private_key": "private:test",
                 "created_at": "2026-09-22T00:00:00Z",
                 "revision": 1,
+                "recovery": {
+                    "threshold": 1,
+                    "keys": [
+                        {
+                            "key_id": "recovery:test",
+                            "public_key": "recovery-public",
+                        }
+                    ],
+                },
             }
         )
         + "\n",
@@ -55,7 +63,6 @@ def _seed_state(root: Path) -> str:
                     {
                         "key_id": "recovery:test",
                         "public_key": "recovery-public",
-                        "private_key": "recovery-private",
                     }
                 ],
             }
@@ -72,6 +79,26 @@ def _seed_state(root: Path) -> str:
         encoding="utf-8",
     )
     (root / "secrets").mkdir(parents=True, exist_ok=True)
+    (root / "secrets" / "network-identity.json").write_text(
+        json.dumps(
+            {
+                "agent_id": "ferro.network.cai",
+                "key_id": "key:test",
+                "private_key": "private:test",
+                "recovery": {
+                    "keys": [
+                        {
+                            "key_id": "recovery:test",
+                            "private_key": "recovery-private",
+                        }
+                    ]
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (root / "secrets" / "network-identity.json").chmod(0o600)
     (root / "secrets" / "deepseek.key").write_text("must-not-leave-primary\n")
     (root / "content-agent.env").write_text("DEEPSEEK_API_KEY=must-not-leave-primary\n")
     (root / "browser").mkdir(parents=True, exist_ok=True)
@@ -141,6 +168,40 @@ def test_bundle_excludes_provider_browser_and_account_secrets(tmp_path):
         assert "llm_resource_pool" not in joined
         assert "state/application/network/identity.json" in names
         assert "memory/continuity.key" in names
+
+
+def test_trusted_core_standby_bundle_carries_only_network_identity_secret(tmp_path):
+    source = tmp_path / "source"
+    _seed_state(source)
+    bundle = tmp_path / "ferro-trusted-standby.bin"
+    exported = OrganismContinuityService(source).export_bundle(
+        bundle,
+        include_network_secret=True,
+    )
+
+    assert exported["contains_private_network_identity"] is True
+    with zipfile.ZipFile(bundle, "r") as archive:
+        names = set(archive.namelist())
+        assert "state/secrets/network-identity.json" in names
+        assert "state/secrets/deepseek.key" not in names
+        assert all(
+            not name.startswith("state/secrets/")
+            or name == "state/secrets/network-identity.json"
+            for name in names
+        )
+
+    destination = tmp_path / "trusted-replacement"
+    restored = OrganismContinuityService.restore_bundle(
+        bundle,
+        destination,
+        expected_sha256=exported["sha256"],
+    )
+    assert restored["status"] == "RESTORED"
+    secret_path = destination / "secrets" / "network-identity.json"
+    secret = json.loads(secret_path.read_text(encoding="utf-8"))
+    assert secret["key_id"] == "key:test"
+    assert secret["private_key"] == "private:test"
+    assert secret_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_restore_rejects_wrong_outer_hash(tmp_path):

@@ -69,6 +69,10 @@ STATE_ALLOWLIST = (
     "content/channel_evidence",
 )
 
+CORE_STANDBY_SECRET_ALLOWLIST = (
+    "secrets/network-identity.json",
+)
+
 EXCLUDED_SECURITY_CLASSES = (
     "state_root/secrets/**",
     "state_root/accounts/**",
@@ -144,9 +148,16 @@ class OrganismContinuityService:
             raw = socket.gethostname()
         return "host-instance:" + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
-    def _iter_state_files(self) -> Iterable[tuple[str, Path]]:
+    def _iter_state_files(
+        self,
+        *,
+        include_network_secret: bool = False,
+    ) -> Iterable[tuple[str, Path]]:
         seen: set[str] = set()
-        for relative in STATE_ALLOWLIST:
+        allowlist = list(STATE_ALLOWLIST)
+        if include_network_secret:
+            allowlist.extend(CORE_STANDBY_SECRET_ALLOWLIST)
+        for relative in allowlist:
             source = self.state_root / relative
             if not source.exists():
                 continue
@@ -174,7 +185,12 @@ class OrganismContinuityService:
                 seen.add(key)
                 yield key, path
 
-    def export_bundle(self, destination: Path) -> dict[str, Any]:
+    def export_bundle(
+        self,
+        destination: Path,
+        *,
+        include_network_secret: bool = False,
+    ) -> dict[str, Any]:
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         organism_id = self.organism_id()
@@ -192,7 +208,9 @@ class OrganismContinuityService:
             with zipfile.ZipFile(
                 tmp_bundle, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6
             ) as archive:
-                for relative, source in self._iter_state_files():
+                for relative, source in self._iter_state_files(
+                    include_network_secret=include_network_secret
+                ):
                     data = source.read_bytes()
                     name = "state/" + relative
                     files[name] = {
@@ -224,6 +242,11 @@ class OrganismContinuityService:
                     "memory_count": int(memory_digest["memory_count"]),
                     "memory_event_count": int(memory_digest["event_count"]),
                     "state_allowlist": list(STATE_ALLOWLIST),
+                    "trusted_secret_paths": (
+                        list(CORE_STANDBY_SECRET_ALLOWLIST)
+                        if include_network_secret else []
+                    ),
+                    "contains_private_network_identity": bool(include_network_secret),
                     "excluded_security_classes": list(EXCLUDED_SECURITY_CLASSES),
                     "files": files,
                 }
@@ -249,6 +272,7 @@ class OrganismContinuityService:
             "network_identity": identity,
             "memory_state_hash": str(memory_digest["state_hash"]),
             "member_count": len(files),
+            "contains_private_network_identity": bool(include_network_secret),
             "requires_operator_managed_host": True,
         }
 
@@ -284,11 +308,52 @@ class OrganismContinuityService:
             files = manifest.get("files")
             if not isinstance(files, dict):
                 raise OrganismContinuityError("organism continuity manifest has no files")
+            trusted_secret_paths = {
+                str(value)
+                for value in (manifest.get("trusted_secret_paths") or ())
+                if str(value)
+            }
+            allowed_trusted_secrets = set(CORE_STANDBY_SECRET_ALLOWLIST)
+            if not trusted_secret_paths <= allowed_trusted_secrets:
+                raise OrganismContinuityError(
+                    "organism continuity manifest declares an unsupported secret path"
+                )
+            contains_private_identity = bool(
+                manifest.get("contains_private_network_identity")
+            )
+            if contains_private_identity != bool(trusted_secret_paths):
+                raise OrganismContinuityError(
+                    "organism continuity trusted secret declaration is inconsistent"
+                )
+            if contains_private_identity and not all(
+                ("state/" + secret_path) in files
+                for secret_path in trusted_secret_paths
+            ):
+                raise OrganismContinuityError(
+                    "organism continuity trusted identity secret is missing"
+                )
+
             expected_names = set(files) | {"manifest.json"}
             if set(names) != expected_names:
                 raise OrganismContinuityError("organism continuity bundle member set mismatch")
             for name, record in files.items():
                 cls._safe_name(name)
+                if str(name).startswith("state/"):
+                    relative_name = str(name)[len("state/"):]
+                    allowed_state = any(
+                        relative_name == allowed
+                        or relative_name.startswith(str(allowed).rstrip("/") + "/")
+                        for allowed in STATE_ALLOWLIST
+                    )
+                    allowed_secret = relative_name in trusted_secret_paths
+                    if not allowed_state and not allowed_secret:
+                        raise OrganismContinuityError(
+                            "organism continuity bundle contains a non-allowlisted state path"
+                        )
+                    if relative_name.startswith("secrets/") and not allowed_secret:
+                        raise OrganismContinuityError(
+                            "organism continuity bundle contains an undeclared secret"
+                        )
                 if not isinstance(record, dict):
                     raise OrganismContinuityError("organism continuity file record is invalid")
                 data = archive.read(name)

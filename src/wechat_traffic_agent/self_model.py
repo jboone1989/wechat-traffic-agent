@@ -107,6 +107,7 @@ class SelfModel:
         autonomous_life: Mapping[str, Any],
         cortex: Mapping[str, Any],
         continuity: Mapping[str, Any],
+        active_user_goal_count: int = 0,
     ) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self model refresh requires timezone-aware time")
@@ -138,12 +139,16 @@ class SelfModel:
             "milestone_count": len(development.get("milestones") or {}),
         }
         summary = organism.get("summary") if isinstance(organism.get("summary"), Mapping) else {}
+        autonomous_goal_count = int(autonomous_life.get("active_goal_count") or 0)
+        owner_goal_count = max(0, int(active_user_goal_count))
         self.state["current_state"] = {
             "observed_at": now.isoformat(),
             "vitality": summary.get("vitality"),
             "uncertainty": summary.get("uncertainty"),
             "resource_status": summary.get("status"),
-            "active_autonomous_goals": int(autonomous_life.get("active_goal_count") or 0),
+            "active_autonomous_goals": autonomous_goal_count,
+            "active_owner_goals": owner_goal_count,
+            "active_total_goals": autonomous_goal_count + owner_goal_count,
         }
 
         # Developmental evidence becomes falsifiable capability belief, never a

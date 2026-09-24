@@ -267,6 +267,32 @@ class XGrowthMissionCoordinator:
                 f"actual_delta={actual_delta:.2f}; expected_pace_delta={expected_delta:.2f}."
             ),
         )
+        from .world_learning import WorldLearningLedger
+        world_learning = WorldLearningLedger(self.state_root)
+        world_action = world_learning.find_by_metadata(
+            "mission_experiment_id",
+            experiment.experiment_id,
+        )
+        world_settlement = None
+        if world_action is not None:
+            if expected_delta > 0:
+                actual_utility = max(-1.0, min(1.0, actual_delta / expected_delta))
+            else:
+                actual_utility = 1.0 if actual_delta > 0 else (-1.0 if actual_delta < 0 else 0.0)
+            world_settlement = world_learning.settle(
+                action_id=str(world_action["action_id"]),
+                window="mission_window",
+                actual_utility=actual_utility,
+                evidence_refs=list(dict.fromkeys([
+                    *evidence_refs,
+                    f"mission-experiment:{experiment.experiment_id}:settled",
+                ])),
+                now=now,
+                counterfactual=(
+                    "Follower movement may include unrelated causes; settlement is "
+                    "observational and must not be interpreted as causal attribution."
+                ),
+            )
         self._persist_runtime()
         return {
             "status": "SETTLED",
@@ -274,6 +300,10 @@ class XGrowthMissionCoordinator:
             "conclusion": conclusion.value,
             "actual_delta": actual_delta,
             "expected_pace_delta": expected_delta,
+            "world_learning_action_id": (
+                None if world_action is None else world_action.get("action_id")
+            ),
+            "world_learning_settlement": world_settlement,
         }
 
     def _planning_context(self) -> dict[str, Any]:
@@ -1026,6 +1056,33 @@ class XGrowthMissionCoordinator:
             )
         )
         started = self.runtime.start_mission_experiment(experiment.experiment_id)
+        from .world_learning import WorldLearningLedger
+        world_learning = WorldLearningLedger(self.state_root)
+        world_action = world_learning.commit(
+            action_kind="X_MISSION_PUBLICATION",
+            prediction=(
+                "The verified X publication will produce follower outcome evidence "
+                "over the bounded mission measurement window."
+            ),
+            expected_utility=0.0,
+            confidence=0.5,
+            evidence_refs=[
+                str(publication_receipt_id).strip(),
+                f"x-post:{str(post_id).strip()}",
+                f"mission-experiment:{experiment.experiment_id}",
+                str(baseline.get("observation_id") or ""),
+            ],
+            now=now.astimezone(timezone.utc),
+            windows=(("mission_window", self._experiment_window(started)),),
+            metadata={
+                "mission_id": mission.mission_id,
+                "mission_experiment_id": experiment.experiment_id,
+                "cycle": str(cycle),
+                "post_id": str(post_id).strip(),
+                "publication_receipt_id": str(publication_receipt_id).strip(),
+                "causal_claim": False,
+            },
+        )
         self._persist_runtime()
         payload = _read_json(self.path)
         active = payload.get("active_experiment")
@@ -1056,6 +1113,7 @@ class XGrowthMissionCoordinator:
             "baseline_observation_id": str(baseline.get("observation_id") or ""),
             "baseline_followers": baseline.get("followers"),
             "roadmap_step_transition": roadmap_step_transition,
+            "world_learning_action_id": world_action.get("action_id"),
         }
 
     async def observe_identity(

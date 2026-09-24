@@ -122,8 +122,8 @@ class FerroExternalEvalContestant:
                 _audit_response_mode=response_mode,
                 _routing_task_class="reasoning",
                 _minimum_quality=0.75,
-                _attempt_timeout_seconds=30,
-                _reserve_timeout_seconds=60,
+                _attempt_timeout_seconds=20,
+                _reserve_timeout_seconds=40,
             )
 
         raw = await request(repair=False)

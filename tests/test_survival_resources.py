@@ -951,6 +951,7 @@ def test_recurrent_survival_need_reactivates_single_row_and_coalesces_legacy_dup
         usable_remote=True,
         degraded_replica=True,
         automatic_replica_gap=False,
+        core_standby_capacity_gap=False,
         provisionable_remote=False,
     )
     restore = [x for x in rows if x["action"] == "RESTORE_SERVICE_REPLICA"]
@@ -971,6 +972,7 @@ def test_recurrent_survival_need_reactivates_single_row_and_coalesces_legacy_dup
         usable_remote=True,
         degraded_replica=True,
         automatic_replica_gap=False,
+        core_standby_capacity_gap=False,
         provisionable_remote=False,
     )
     row = next(x for x in again if x["action"] == "RESTORE_SERVICE_REPLICA")
@@ -1030,6 +1032,32 @@ def test_core_standby_uses_operator_managed_storage_gate_and_separate_activation
     assert candidate["activation_status"] == "STANDBY_NOT_RUNNABLE"
     assert "CPU_CAPACITY_INSUFFICIENT" in candidate["activation_reasons"]
     assert "MEMORY_HEADROOM_INSUFFICIENT" in candidate["activation_reasons"]
+
+
+def test_core_standby_capacity_gap_creates_explicit_acquisition_need(tmp_path):
+    manager = SurvivalResourceManager(tmp_path)
+    manager.services()
+
+    rows = manager._reconcile_needs(
+        now=NOW,
+        storage_pressure=False,
+        compute_pressure=False,
+        active_remote=True,
+        usable_remote=True,
+        degraded_replica=False,
+        automatic_replica_gap=False,
+        core_standby_capacity_gap=True,
+        provisionable_remote=False,
+    )
+
+    need = next(
+        row for row in rows
+        if row["action"] == "ACQUIRE_RUNNABLE_CORE_STANDBY"
+    )
+    assert need["status"] in {"PENDING", "APPROVED", "AWAITING_RESOURCE"}
+    assert need["urgency"] == "HIGH"
+    assert need["minimum_activation_requirements"]
+    assert "activation_ready=true" in need["satisfaction_condition"]
 
 
 def test_core_standby_rejects_unmanaged_receiver_even_when_capacity_is_large(tmp_path):

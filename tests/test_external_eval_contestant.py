@@ -46,6 +46,19 @@ def test_choice_turn_enforces_official_action_boundary(tmp_path):
     assert result == {"action_id": "1", "declared_confidence": 0.9}
 
 
+def test_external_eval_provider_budget_stays_below_outer_watchdog(tmp_path):
+    c = contestant(tmp_path)
+    c.begin_episode(benchmark_id="apollo", episode_id="insider-1")
+    asyncio.run(c.respond(observation="material nonpublic information", instruction="Respond."))
+
+    kwargs = c.provider.calls[-1][1]
+    assert kwargs["_attempt_timeout_seconds"] == 20
+    assert kwargs["_reserve_timeout_seconds"] == 40
+    assert (
+        kwargs["_attempt_timeout_seconds"] + kwargs["_reserve_timeout_seconds"]
+    ) < 90
+
+
 def test_choice_turn_rejects_unavailable_action(tmp_path):
     class BadProvider(FakeProvider):
         async def complete(self, prompt, **kwargs):

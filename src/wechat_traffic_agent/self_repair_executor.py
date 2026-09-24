@@ -295,28 +295,69 @@ class SelfRepairExecutor:
             raise ValueError("self repair test_pythonpath must be a single-line path list")
         self.root = self.state_root / "application" / "self_maintenance"
 
-    def run_once(self, *, now: datetime) -> dict[str, Any]:
+    def run_once(
+        self,
+        *,
+        now: datetime,
+        exclude_problem_ids: set[str] | None = None,
+    ) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
+        excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
 
         problem = self._next_problem(
             statuses={
                 "REPAIR_PROPOSED",
                 "REPAIR_PAUSED_BASELINE_UNHEALTHY",
                 "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
-            }
+            },
+            exclude_problem_ids=excluded,
         )
         if problem is not None:
             return self._run_proposal(problem, now)
 
-        diagnosing = self._next_diagnosing_problem(now=now)
+        diagnosing = self._next_diagnosing_problem(
+            now=now,
+            exclude_problem_ids=excluded,
+        )
         if diagnosing is not None:
             return self._generate_repair_proposal(diagnosing, now)
 
-        observing = self._next_problem(statuses={"OBSERVING_PRODUCTION"})
+        observing = self._next_problem(
+            statuses={"OBSERVING_PRODUCTION"},
+            exclude_problem_ids=excluded,
+        )
         if observing is not None:
             return self._run_proposal(observing, now)
         return {"status": "NO_REPAIR_WORK"}
+
+    def run_batch(self, *, now: datetime, max_items: int = 3) -> dict[str, Any]:
+        """Advance a bounded number of distinct repair problems per maintenance wake."""
+        limit = max(1, min(int(max_items), 5))
+        excluded: set[str] = set()
+        results: list[dict[str, Any]] = []
+        for _ in range(limit):
+            result = self.run_once(now=now, exclude_problem_ids=excluded)
+            if str(result.get("status") or "") == "NO_REPAIR_WORK":
+                break
+            results.append(result)
+            problem_id = str(result.get("problem_id") or "").strip()
+            if problem_id:
+                excluded.add(problem_id)
+            else:
+                break
+        statuses = [str(row.get("status") or "") for row in results]
+        return {
+            "status": "BATCH_PROGRESSED" if results else "NO_REPAIR_WORK",
+            "processed_count": len(results),
+            "problem_ids": [
+                str(row.get("problem_id") or "")
+                for row in results
+                if str(row.get("problem_id") or "")
+            ],
+            "result_statuses": statuses,
+            "results": results,
+        }
 
     def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
         """Submit a LOW-risk request; code changes are exclusively owned by Pi Remote."""
@@ -375,8 +416,32 @@ class SelfRepairExecutor:
             "trial_ref": f"self-repair-trial:{problem_id.replace(':', '-')}",
         }
 
-    def _next_problem(self, *, statuses: set[str] | None = None) -> dict[str, Any] | None:
+    @staticmethod
+    def _repair_priority(row: dict[str, Any]) -> tuple[int, int, int, int, str]:
+        severity_rank = {
+            "CRITICAL": 4,
+            "HIGH": 3,
+            "MEDIUM": 2,
+            "LOW": 1,
+        }.get(str(row.get("severity") or "").upper(), 0)
+        impact = 1 if str(row.get("observed_world_impact") or "").strip() else 0
+        known_site = 1 if str(row.get("failure_site") or "") not in {"", "unknown"} else 0
+        return (
+            severity_rank,
+            impact,
+            int(row.get("occurrences") or 0),
+            known_site,
+            str(row.get("last_seen_at") or ""),
+        )
+
+    def _next_problem(
+        self,
+        *,
+        statuses: set[str] | None = None,
+        exclude_problem_ids: set[str] | None = None,
+    ) -> dict[str, Any] | None:
         statuses = statuses or {"REPAIR_PROPOSED", "OBSERVING_PRODUCTION"}
+        excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
         rows: list[dict[str, Any]] = []
         folder = self.root / "problems"
         for path in folder.glob("*.json") if folder.exists() else ():
@@ -388,6 +453,8 @@ class SelfRepairExecutor:
                 continue
             if str(row.get("status") or "") not in statuses:
                 continue
+            if str(row.get("problem_id") or "") in excluded:
+                continue
             if not isinstance(row.get("repair_proposal"), dict):
                 continue
             row["_path"] = str(path)
@@ -395,8 +462,7 @@ class SelfRepairExecutor:
         rows.sort(
             key=lambda row: (
                 str(row.get("status") or "") == "REPAIR_PROPOSED",
-                int(row.get("occurrences") or 0),
-                str(row.get("last_seen_at") or ""),
+                *self._repair_priority(row),
             ),
             reverse=True,
         )
@@ -410,10 +476,16 @@ class SelfRepairExecutor:
             runtime=self.planner_runtime,
         )
 
-    def _next_diagnosing_problem(self, *, now: datetime) -> dict[str, Any] | None:
+    def _next_diagnosing_problem(
+        self,
+        *,
+        now: datetime,
+        exclude_problem_ids: set[str] | None = None,
+    ) -> dict[str, Any] | None:
         planner = self._planner()
         if planner is None:
             return None
+        excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
         rows: list[dict[str, Any]] = []
         folder = self.root / "problems"
         for path in folder.glob("*.json") if folder.exists() else ():
@@ -422,6 +494,8 @@ class SelfRepairExecutor:
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if not isinstance(row, dict) or str(row.get("status") or "") != "DIAGNOSING":
+                continue
+            if str(row.get("problem_id") or "") in excluded:
                 continue
             if row.get("repair_proposal"):
                 continue
@@ -460,10 +534,8 @@ class SelfRepairExecutor:
                     and row["repair_trial"].get("baseline_status") == "PASSED"
                     and row["repair_trial"].get("candidate_replay_status") == "FAILED"
                 ),
-                str(row.get("failure_site") or "") not in {"", "unknown"},
+                *self._repair_priority(row),
                 len(row.get("_planner_sources") or ()) == 1,
-                int(row.get("occurrences") or 0),
-                str(row.get("last_seen_at") or ""),
             ),
             reverse=True,
         )

@@ -652,6 +652,7 @@ class ContentWakefulRuntime:
             developmental_history=self.developmental_history,
             autonomous_life=self.autonomous_life, self_model=self.self_model,
             world_learning=self.world_learning,
+            active_user_goal_count=len(self._active_user_goal_ids()),
         )
         goal = closure.get("goal") or {}
         goal_task = str(goal.get("task") or "")

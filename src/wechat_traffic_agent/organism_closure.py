@@ -25,6 +25,7 @@ def refresh_organism_closure(
     autonomous_life: Any,
     self_model: Any,
     world_learning: Any,
+    active_user_goal_count: int = 0,
 ) -> dict[str, Any]:
     organism = organism_state.refresh(
         now=now,
@@ -76,6 +77,7 @@ def refresh_organism_closure(
         autonomous_life=autonomous_life.projection(),
         cortex=cortex,
         continuity=continuity,
+        active_user_goal_count=active_user_goal_count,
     )
     return {
         "organism_state": organism,
