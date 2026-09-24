@@ -663,3 +663,37 @@ def test_expired_action_loops_are_closed_during_rest(tmp_path):
         row.wake_id.endswith(":expired")
         for row in runtime.core.snapshot().pending_plans
     )
+
+
+def test_prediction_verification_error_defers_same_prediction_for_one_hour(tmp_path):
+    from wechat_traffic_agent.prospective_predictions import ProspectivePredictionLedger
+
+    ledger = ProspectivePredictionLedger(tmp_path)
+    prediction = ledger.record(
+        cycle="v2-retry",
+        topic="btc",
+        proposition="BTC liquidity conditions matter for execution quality.",
+        proposition_stance=0.1,
+        statement="BTC execution evidence will remain mixed at the horizon.",
+        confidence=0.6,
+        created_at=NOW - timedelta(hours=2),
+        due_at=NOW - timedelta(hours=1),
+        verification_query="BTC execution evidence",
+        falsifier="Fresh evidence clearly resolves the execution claim.",
+        source_evidence_refs=("e:retry",),
+    )
+    ledger.record_verification_error(
+        prediction.prediction_id,
+        attempted_at=NOW,
+        error_type="LLMProviderError",
+    )
+
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.ensure_initial_plans(NOW)
+
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == f"wake:{prediction.prediction_id}"
+    )
+    assert wake.at == NOW + timedelta(hours=1)
+    assert wake.relevant_refs == (prediction.prediction_id,)

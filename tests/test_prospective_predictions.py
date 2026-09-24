@@ -61,7 +61,7 @@ def test_inconclusive_check_keeps_prediction_open(tmp_path):
 import asyncio
 import json
 
-from wechat_traffic_agent.prospective_predictions import assess_prediction
+from wechat_traffic_agent.prospective_predictions import assess_prediction, settle_predictions
 
 
 class AssessmentRuntime:
@@ -127,3 +127,66 @@ def test_web_discovery_time_cannot_substitute_for_post_prediction_publication_ti
     assert assessment.status == "INCONCLUSIVE"
     assert evidence == ()
     assert runtime.calls == []
+
+
+def test_check_history_rolls_oldest_entry_into_durable_archive_at_cap(tmp_path):
+    ledger = ProspectivePredictionLedger(tmp_path)
+    row = _record(ledger)
+    due = NOW + timedelta(days=1)
+    first_check_id = None
+    for index in range(33):
+        updated = ledger.check(
+            row.prediction_id,
+            checked_at=due + timedelta(minutes=index + 1),
+            status="INCONCLUSIVE",
+            evidence=(),
+            reliability=0.0,
+            rationale="No decisive post-prediction evidence is available yet.",
+        )
+        if index == 0:
+            first_check_id = updated.checks[-1].check_id
+
+    assert len(updated.checks) == 32
+    assert first_check_id not in {item.check_id for item in updated.checks}
+    archived = list(
+        (tmp_path / "content" / "predictions" / "check_archive").glob("*/*.json")
+    )
+    assert len(archived) == 1
+    payload = json.loads(archived[0].read_text(encoding="utf-8"))
+    assert payload["prediction_id"] == row.prediction_id
+    assert payload["check"]["check_id"] == first_check_id
+    restarted = ProspectivePredictionLedger(tmp_path)
+    assert len(restarted.open()[0].checks) == 32
+
+
+class FailingAssessmentRuntime:
+    async def cognitive_probe(self, task, max_tokens):
+        raise RuntimeError("provider unavailable")
+
+
+def test_settlement_error_records_durable_verification_retry(tmp_path):
+    ledger = ProspectivePredictionLedger(tmp_path)
+    row = _record(ledger)
+    attempted = NOW + timedelta(days=1, hours=1)
+    result = asyncio.run(settle_predictions(
+        ledger=ledger,
+        runtime=FailingAssessmentRuntime(),
+        items=[{
+            "evidence_id": "fresh",
+            "source": "fresh-source",
+            "title": "Fresh post-horizon evidence",
+            "summary": "Fresh evidence that requires model assessment.",
+            "published_at": (NOW + timedelta(days=1)).isoformat(),
+        }],
+        now=attempted,
+        mind=None,
+        cycle="wakeful-prediction-test",
+    ))
+
+    assert result[0]["check_status"] == "ERROR"
+    assert result[0]["error_type"] == "RuntimeError"
+    assert ledger.verification_retry_after(row.prediction_id) == attempted + timedelta(hours=1)
+    retry_files = list(
+        (tmp_path / "content" / "predictions" / "verification_retries").glob("*.json")
+    )
+    assert len(retry_files) == 1

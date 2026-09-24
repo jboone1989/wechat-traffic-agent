@@ -281,6 +281,9 @@ class ContentWakefulRuntime:
                 at = max(now, row.checks[-1].checked_at + timedelta(hours=1))
             elif at <= now:
                 at = now
+            retry_after = ledger.verification_retry_after(row.prediction_id)
+            if retry_after is not None:
+                at = max(at, retry_after)
             self.core.schedule(PlannedWake(
                 wake_id=f"wake:{row.prediction_id}", at=at,
                 reason=f"verify prediction {row.prediction_id}", task="VERIFY_PREDICTION",

@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .content_service import _extract_json
 
 SCHEMA_VERSION = "content-prospective-predictions.v1"
+_MAX_ACTIVE_CHECKS = 32
+_VERIFICATION_RETRY_DELAY = timedelta(hours=1)
 
 
 def _aware(value: datetime, field: str) -> datetime:
@@ -103,7 +105,7 @@ class ProspectivePrediction(BaseModel):
     falsifier: str = Field(min_length=10, max_length=600)
     source_evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=16)
     status: Literal["OPEN", "RESOLVED"] = "OPEN"
-    checks: tuple[PredictionCheck, ...] = Field(default=(), max_length=32)
+    checks: tuple[PredictionCheck, ...] = Field(default=(), max_length=_MAX_ACTIVE_CHECKS)
 
     @model_validator(mode="after")
     def validate_temporal_boundary(self):
@@ -288,6 +290,11 @@ async def settle_predictions(
                 "resolved": updated.status == "RESOLVED", "prediction_error": (updated.outcome.prediction_error if updated.outcome else None),
             })
         except Exception as exc:
+            ledger.record_verification_error(
+                prediction.prediction_id,
+                attempted_at=point,
+                error_type=type(exc).__name__,
+            )
             results.append({"prediction_id": prediction.prediction_id, "check_status": "ERROR", "error_type": type(exc).__name__})
 
     if mind is None or not hasattr(mind, "observe_prediction_outcome"):
@@ -379,6 +386,76 @@ class ProspectivePredictionLedger:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
         os.replace(tmp, self.path)
 
+    def _check_archive_path(self, prediction_id: str, check_id: str) -> Path:
+        prediction_key = prediction_id.split(":")[-1]
+        check_key = check_id.split(":")[-1]
+        return self.root / "check_archive" / prediction_key / f"{check_key}.json"
+
+    def _archive_check(self, prediction_id: str, check: PredictionCheck) -> None:
+        path = self._check_archive_path(prediction_id, check.check_id)
+        payload = {
+            "schema_version": "content-prospective-prediction-check-archive.v1",
+            "prediction_id": prediction_id,
+            "check": check.model_dump(mode="json"),
+        }
+        if path.exists():
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if existing != payload:
+                raise ValueError("prediction check archive identity collision")
+            return
+        _atomic_json(path, payload)
+
+    def _verification_retry_path(self, prediction_id: str) -> Path:
+        return self.root / "verification_retries" / (
+            prediction_id.split(":")[-1] + ".json"
+        )
+
+    def record_verification_error(
+        self,
+        prediction_id: str,
+        *,
+        attempted_at: datetime,
+        error_type: str,
+    ) -> dict[str, Any]:
+        if prediction_id not in self._records:
+            raise ValueError("unknown prediction_id")
+        attempted = _aware(attempted_at, "prediction verification attempted_at")
+        path = self._verification_retry_path(prediction_id)
+        prior: dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except (OSError, ValueError, json.JSONDecodeError):
+                prior = {}
+        payload = {
+            "schema_version": "content-prediction-verification-retry.v1",
+            "prediction_id": prediction_id,
+            "attempted_at": attempted.isoformat(),
+            "retry_after": (attempted + _VERIFICATION_RETRY_DELAY).isoformat(),
+            "error_type": str(error_type or "ERROR")[:120],
+            "consecutive_errors": int(prior.get("consecutive_errors") or 0) + 1,
+        }
+        _atomic_json(path, payload)
+        return payload
+
+    def verification_retry_after(self, prediction_id: str) -> datetime | None:
+        path = self._verification_retry_path(prediction_id)
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict) or raw.get("prediction_id") != prediction_id:
+                return None
+            value = datetime.fromisoformat(str(raw.get("retry_after") or "").replace("Z", "+00:00"))
+            return _aware(value, "prediction verification retry_after")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def _clear_verification_retry(self, prediction_id: str) -> None:
+        self._verification_retry_path(prediction_id).unlink(missing_ok=True)
+
     def record(
         self, *, cycle: str, topic: str, proposition: str, proposition_stance: float,
         statement: str, confidence: float, created_at: datetime, due_at: datetime,
@@ -454,13 +531,20 @@ class ProspectivePredictionLedger:
             check_id=check_id, status=status, checked_at=checked, evidence=evidence,
             reliability=reliability, rationale=rationale, prediction_error=error,
         )
+        checks = (*row.checks, check)
+        if len(checks) > _MAX_ACTIVE_CHECKS:
+            archived = checks[:-_MAX_ACTIVE_CHECKS]
+            for prior in archived:
+                self._archive_check(prediction_id, prior)
+            checks = checks[-_MAX_ACTIVE_CHECKS:]
         updated = row.model_copy(update={
-            "checks": (*row.checks, check),
+            "checks": checks,
             "status": "RESOLVED" if status in {"CONFIRMED", "REFUTED"} else "OPEN",
         })
         updated = ProspectivePrediction.model_validate(updated.model_dump(mode="python"))
         self._records[prediction_id] = updated
         self._persist()
+        self._clear_verification_retry(prediction_id)
         return updated
 
     def projection(self, *, limit: int = 8) -> dict[str, list[dict]]:
