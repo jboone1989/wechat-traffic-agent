@@ -387,6 +387,42 @@ def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
     assert payload["at"] == (now + timedelta(seconds=30)).isoformat()
 
 
+def test_schedule_provider_recovery_uses_earliest_runtime_cooldown(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime(2026, 9, 24, 7, 20, 0, tzinfo=timezone.utc)
+    health = (
+        tmp_path
+        / "application"
+        / "llm_resource_pool"
+        / "runtime"
+        / "health.json"
+    )
+    health.parent.mkdir(parents=True, exist_ok=True)
+    health.write_text(json.dumps({
+        "schema_version": "llm-resource-health.v1",
+        "resources": {
+            "later": {"cooldown_until": (now + timedelta(minutes=10)).isoformat()},
+            "earlier": {"cooldown_until": (now + timedelta(seconds=90)).isoformat()},
+            "past": {"cooldown_until": (now - timedelta(seconds=1)).isoformat()},
+        },
+    }), encoding="utf-8")
+
+    result = runtime.schedule_provider_recovery(now)
+
+    assert result["status"] == "SCHEDULED"
+    assert result["retry_seconds"] == 95
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert wake.at == now + timedelta(seconds=95)
+    assert wake.relevant_refs == (
+        f"llm-resource-cooldown:earlier:{(now + timedelta(seconds=90)).isoformat()}",
+    )
+    requests = list((tmp_path / "application/wake_requests").glob("*.json"))
+    assert len(requests) == 1
+
+
 
 def test_brain_lab_uses_handoff_environment_and_settles_trial(tmp_path, monkeypatch):
     runtime = ContentWakefulRuntime(state_root=tmp_path)

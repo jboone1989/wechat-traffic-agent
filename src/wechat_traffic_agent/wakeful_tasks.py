@@ -1555,6 +1555,15 @@ class WakefulContentTaskRunner:
         if continuous.get("status") in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
             if continuous.get("status") == "ERROR":
                 rows["status"] = "DEGRADED"
+                if str(continuous.get("error_type") or "") == "LLMProviderError":
+                    schedule_provider_recovery = getattr(
+                        self.wakeful, "schedule_provider_recovery", None
+                    )
+                    if callable(schedule_provider_recovery):
+                        try:
+                            rows["provider_recovery"] = schedule_provider_recovery(now)
+                        except Exception as exc:  # noqa: BLE001
+                            rows["provider_recovery"] = self._error(exc)
                 self_maintenance = getattr(self, "self_maintenance", None)
                 if self_maintenance is not None:
                     try:

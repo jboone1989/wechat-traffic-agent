@@ -38,12 +38,21 @@ class Wakeful:
     def __init__(self):
         self.cognition_marks = []
         self.goal_followups = []
+        self.provider_recoveries = []
 
     def mark_cognition(self, now):
         self.cognition_marks.append(now)
 
     def schedule_goal_followup(self, now, *, seconds=5):
         self.goal_followups.append((now, seconds))
+
+    def schedule_provider_recovery(self, now, *, default_seconds=300):
+        self.provider_recoveries.append((now, default_seconds))
+        return {
+            "status": "SCHEDULED",
+            "retry_at": (now + timedelta(seconds=default_seconds)).isoformat(),
+            "retry_seconds": default_seconds,
+        }
 
 
 class AfterCycle:
@@ -93,6 +102,11 @@ class Loop:
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {"status": self.result_status, "cycle": cycle}
+        if self.result_status == "ERROR":
+            payload.update({
+                "error_type": "LLMProviderError",
+                "message": "no viable LLM resource is currently available",
+            })
         path = self._result_path(cycle)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
@@ -247,6 +261,19 @@ def test_invalidated_recovery_attempt_does_not_suppress_next_attempt(tmp_path):
     assert recovery["recovery_cycle"].startswith("v2-recovery-1789808400-2-")
     assert loop.calls == [(NOW, recovery["recovery_cycle"], None)]
     assert wakeful.cognition_marks == [NOW]
+
+
+def test_provider_outage_schedules_content_recovery_wake(tmp_path):
+    runner, loop, _economy, wakeful, *_ = _runner(
+        tmp_path, result_status="ERROR"
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    assert result["continuous_content"]["error_type"] == "LLMProviderError"
+    assert result["provider_recovery"]["status"] == "SCHEDULED"
+    assert wakeful.provider_recoveries == [(NOW, 300)]
+    assert loop.calls
 
 
 def test_successful_recovery_prevents_duplicate_work_for_same_base_cycle(tmp_path):

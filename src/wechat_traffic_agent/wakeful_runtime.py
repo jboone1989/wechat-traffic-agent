@@ -1082,6 +1082,89 @@ class ContentWakefulRuntime:
             task="CONTENT_COGNITION",
         ))
 
+    def schedule_provider_recovery(
+        self,
+        now: datetime,
+        *,
+        default_seconds: int = 300,
+    ) -> dict:
+        """Retry content cognition when the earliest LLM cooldown can recover.
+
+        Provider health is already durable runtime evidence.  Use its earliest
+        future cooldown instead of letting a transient outage fall through to
+        the normal multi-hour content cadence.  The wake still re-enters the
+        ordinary resource/content/publication gates; it never calls a provider
+        or publisher directly.
+        """
+        now = now.astimezone(timezone.utc)
+        delay = max(30, min(int(default_seconds), 1800))
+        evidence_ref = None
+        health_path = (
+            self.state_root
+            / "application"
+            / "llm_resource_pool"
+            / "runtime"
+            / "health.json"
+        )
+        try:
+            payload = json.loads(health_path.read_text(encoding="utf-8"))
+            resources = payload.get("resources") if isinstance(payload, dict) else {}
+            recoveries = []
+            for resource_id, row in (resources.items() if isinstance(resources, dict) else ()):
+                if not isinstance(row, dict):
+                    continue
+                raw = str(row.get("cooldown_until") or "").strip()
+                if not raw:
+                    continue
+                cooldown = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if cooldown.tzinfo is None or cooldown.utcoffset() is None:
+                    continue
+                cooldown = cooldown.astimezone(timezone.utc)
+                if cooldown > now:
+                    recoveries.append((cooldown, str(resource_id)))
+            if recoveries:
+                cooldown, resource_id = min(recoveries)
+                delay = max(
+                    5,
+                    min(
+                        1800,
+                        int((cooldown - now).total_seconds()) + 5,
+                    ),
+                )
+                evidence_ref = f"llm-resource-cooldown:{resource_id}:{cooldown.isoformat()}"
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+
+        at = now + timedelta(seconds=delay)
+        wake_id = "content:CONTENT_COGNITION"
+        existing = next(
+            (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
+            None,
+        )
+        if existing is not None and existing.at <= at:
+            return {
+                "status": "EARLIER_WAKE_ALREADY_SCHEDULED",
+                "retry_at": existing.at.isoformat(),
+                "retry_seconds": max(0, int((existing.at - now).total_seconds())),
+                "evidence_ref": evidence_ref,
+            }
+        wake = PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason="retry content cognition after temporary LLM provider outage",
+            task="CONTENT_COGNITION",
+            relevant_refs=((evidence_ref,) if evidence_ref else ()),
+            preemptible=True,
+        )
+        self._enqueue_external_wake(wake)
+        self.core.schedule(wake)
+        return {
+            "status": "SCHEDULED",
+            "retry_at": at.isoformat(),
+            "retry_seconds": delay,
+            "evidence_ref": evidence_ref,
+        }
+
     def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
         delay = max(30, min(int(seconds), 900))
         at = now + timedelta(seconds=delay)
