@@ -62,7 +62,7 @@ def test_audit_detects_broken_internal_link(tmp_path):
     assert any("/missing/" in item for item in audit.broken_links)
 
 
-def test_audit_accepts_known_runtime_live_route_but_not_arbitrary_missing_routes(tmp_path):
+def test_audit_accepts_known_runtime_routes_but_not_arbitrary_missing_routes(tmp_path):
     output = tmp_path / "site"
     config = StaticWebsiteConfig(
         site_name="Audit Site",
@@ -74,7 +74,13 @@ def test_audit_accepts_known_runtime_live_route_but_not_arbitrary_missing_routes
     page = output / "index.html"
     page.write_text(
         page.read_text(encoding="utf-8")
-        + '<a href="/live/">runtime</a><a href="/still-missing/">broken</a>',
+        + (
+            '<a href="/live/">live runtime</a>'
+            '<a href="/neural/">neural runtime</a>'
+            '<a href="/brain/">brain runtime</a>'
+            '<a href="/agents/ferro/brain/">agent brain runtime</a>'
+            '<a href="/still-missing/">broken</a>'
+        ),
         encoding="utf-8",
     )
 
@@ -82,4 +88,7 @@ def test_audit_accepts_known_runtime_live_route_but_not_arbitrary_missing_routes
 
     assert audit.passed is False
     assert not any("/live/" in item for item in audit.broken_links)
+    assert not any("/neural/" in item for item in audit.broken_links)
+    assert not any("/brain/" in item for item in audit.broken_links)
+    assert not any("/agents/ferro/brain/" in item for item in audit.broken_links)
     assert any("/still-missing/" in item for item in audit.broken_links)

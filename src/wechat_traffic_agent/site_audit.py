@@ -8,7 +8,14 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict
 
 
-RUNTIME_INTERNAL_ROUTES = frozenset({"/live", "/live/"})
+RUNTIME_INTERNAL_ROUTES = frozenset({
+    "/live", "/live/",
+    "/neural", "/neural/",
+    "/brain", "/brain/",
+    "/agents/ferro/live", "/agents/ferro/live/",
+    "/agents/ferro/neural", "/agents/ferro/neural/",
+    "/agents/ferro/brain", "/agents/ferro/brain/",
+})
 
 
 class StaticSiteAudit(BaseModel):
