@@ -22,10 +22,12 @@ MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 
-_OWNER_PROMPT_CONTEXT_CHARS = 28000
-_OWNER_PROMPT_MEMORY_CHARS = 14000
-_OWNER_PROMPT_ARCHIVE_CHARS = 8000
-_OWNER_PROMPT_HISTORY_CHARS = 16000
+_OWNER_PROMPT_CONTEXT_CHARS = 10000
+_OWNER_PROMPT_MEMORY_CHARS = 5000
+_OWNER_PROMPT_ARCHIVE_CHARS = 2500
+_OWNER_PROMPT_HISTORY_CHARS = 6000
+_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS = 20
+_OWNER_LLM_RESERVE_TIMEOUT_SECONDS = 35
 
 
 def _compact_owner_prompt_value(
@@ -1635,8 +1637,8 @@ class LiveAgentService:
                 _audit_response_mode="owner_envelope",
                 _routing_task_class="owner_dialogue",
                 _minimum_quality=0.75,
-                _attempt_timeout_seconds=10,
-                _reserve_timeout_seconds=25,
+                _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
             )
             envelope = parse_owner_envelope(
                 json.dumps(value, ensure_ascii=False, separators=(",", ":"))
@@ -1681,8 +1683,8 @@ class LiveAgentService:
                 _audit_response_mode="owner_envelope",
                 _routing_task_class="owner_dialogue",
                 _minimum_quality=0.75,
-                _attempt_timeout_seconds=10,
-                _reserve_timeout_seconds=25,
+                _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
             )
             envelope = parse_owner_envelope(str(raw))
             if not owner_envelope_acceptable(envelope, turn):
@@ -1833,8 +1835,8 @@ class LiveAgentService:
                             _audit_response_mode="owner_envelope",
                             _routing_task_class="owner_dialogue",
                             _minimum_quality=0.75,
-                            _attempt_timeout_seconds=10,
-                            _reserve_timeout_seconds=25,
+                            _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                            _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
                         ):
                             text_chunk = str(chunk or "")
                             if not text_chunk:
@@ -1924,8 +1926,8 @@ class LiveAgentService:
                                 _audit_response_mode="owner_envelope",
                                 _routing_task_class="owner_dialogue",
                                 _minimum_quality=0.75,
-                                _attempt_timeout_seconds=10,
-                                _reserve_timeout_seconds=25,
+                                _attempt_timeout_seconds=_OWNER_LLM_ATTEMPT_TIMEOUT_SECONDS,
+                                _reserve_timeout_seconds=_OWNER_LLM_RESERVE_TIMEOUT_SECONDS,
                             ):
                                 text_chunk = str(chunk or "")
                                 if not text_chunk:
