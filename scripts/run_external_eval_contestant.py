@@ -17,6 +17,7 @@ from wechat_traffic_agent.external_eval_contestant import (
     build_chatgpt_only_provider,
     handle_external_request,
 )
+from wechat_traffic_agent.llm_audit import audited_provider
 from wechat_traffic_agent.runtime_backend import load_optional_advisory_backend
 
 
@@ -31,12 +32,17 @@ def _provider(args):
     if fixed_requested:
         if not (args.fixed_model and args.fixed_base_url and args.fixed_credential_env):
             raise SystemExit("fixed provider requires model, base URL, and credential env")
-        return build_fixed_openai_provider(
+        provider = build_fixed_openai_provider(
             credential_env=args.fixed_credential_env,
             base_url=args.fixed_base_url,
             model=args.fixed_model,
             max_retries=args.infra_retries,
             timeout_seconds=args.provider_timeout_seconds,
+        )
+        return audited_provider(
+            provider,
+            args.state_root,
+            scope="external-benchmark-evaluation",
         )
     backend = load_optional_advisory_backend(state_root=args.state_root)
     if backend is None:

@@ -225,3 +225,38 @@ def test_format_repair_cannot_bypass_tool_boundary(tmp_path):
             }],
         ))
     assert provider.calls == 2
+
+def test_fixed_external_eval_provider_is_audited(monkeypatch, tmp_path):
+    import argparse
+    import importlib.util
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_external_eval_contestant.py"
+    spec = importlib.util.spec_from_file_location("run_external_eval_contestant_test", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+
+    base = object()
+    seen = {}
+    monkeypatch.setattr(module, "build_fixed_openai_provider", lambda **kwargs: base)
+
+    def fake_audited(provider, state_root, *, scope):
+        seen.update(provider=provider, state_root=Path(state_root), scope=scope)
+        return ("audited", provider)
+
+    monkeypatch.setattr(module, "audited_provider", fake_audited)
+    args = argparse.Namespace(
+        state_root=tmp_path,
+        chatgpt_only=False,
+        fixed_model="model-x",
+        fixed_base_url="https://example.invalid/v1",
+        fixed_credential_env="API_KEY",
+        infra_retries=0,
+        provider_timeout_seconds=10.0,
+    )
+    result = module._provider(args)
+    assert result == ("audited", base)
+    assert seen["provider"] is base
+    assert seen["state_root"] == tmp_path
+    assert seen["scope"] == "external-benchmark-evaluation"
