@@ -79,6 +79,28 @@ def _enabled(name: str) -> bool:
     return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
 
 
+def _restore_owner_goal_followup(
+    *,
+    state_root: Path,
+    runtime,
+    wakeful_runtime,
+    now: datetime,
+) -> tuple[str, ...]:
+    """Restore durable owner-goal wake provenance after wake plans are initialized."""
+    from wechat_traffic_agent.operator_private_chat import OperatorConversationStore
+
+    store = OperatorConversationStore(state_root)
+    store.reconcile_pending_semantic_upgrades(runtime)
+    refs = store.active_canonical_goal_refs(runtime)
+    if refs:
+        wakeful_runtime.schedule_goal_followup(
+            now,
+            seconds=1,
+            relevant_refs=refs,
+        )
+    return refs
+
+
 def _shutdown_task_summary(task: str | None, result: dict | None) -> dict | None:
     if task is None:
         return None
@@ -547,6 +569,28 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     try:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         wakeful_runtime.ensure_initial_plans(now)
+        try:
+            owner_goal_refs = _restore_owner_goal_followup(
+                state_root=state_root,
+                runtime=app.domain_runtime,
+                wakeful_runtime=wakeful_runtime,
+                now=now,
+            )
+            if owner_goal_refs:
+                print(json.dumps({
+                    "owner_goal_followup": {
+                        "status": "RESTORED",
+                        "ref_count": len(owner_goal_refs),
+                    }
+                }, sort_keys=True))
+        except Exception as exc:  # owner-goal restoration must not take Ferro offline
+            print(json.dumps({
+                "owner_goal_followup": {
+                    "status": "DEGRADED",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:300],
+                }
+            }, sort_keys=True), file=sys.stderr)
         wakeful_runtime.refresh_neural_life(now)
         if startup_tasks:
             reason_task = startup_tasks.pop(0)

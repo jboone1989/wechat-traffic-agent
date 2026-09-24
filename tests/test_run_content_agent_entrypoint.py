@@ -82,3 +82,65 @@ def test_heartbeat_records_failure_when_startup_raises(tmp_path, monkeypatch):
 
     pulse = json.loads((tmp_path / "application" / "ferro-heartbeat.json").read_text())
     assert pulse["status"] == "FAILED"
+
+
+
+def test_restore_owner_goal_followup_runs_after_plan_initialization(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("run_content_agent_owner_wake_test", ENTRYPOINT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    class Store:
+        def __init__(self, state_root):
+            assert state_root == tmp_path
+
+        def reconcile_pending_semantic_upgrades(self, runtime):
+            assert runtime is runtime_obj
+            return []
+
+        def active_canonical_goal_refs(self, runtime):
+            assert runtime is runtime_obj
+            return (
+                "goal_owner",
+                "mission_owner",
+                "goal-proposal:owner",
+            )
+
+    class Wakeful:
+        def __init__(self):
+            self.calls = []
+
+        def schedule_goal_followup(self, now, *, seconds=5, relevant_refs=()):
+            self.calls.append((now, seconds, tuple(relevant_refs)))
+
+    runtime_obj = object()
+    wakeful = Wakeful()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.operator_private_chat.OperatorConversationStore",
+        Store,
+    )
+    now = module.datetime.now(module.timezone.utc).replace(microsecond=0)
+
+    refs = module._restore_owner_goal_followup(
+        state_root=tmp_path,
+        runtime=runtime_obj,
+        wakeful_runtime=wakeful,
+        now=now,
+    )
+
+    assert refs == ("goal_owner", "mission_owner", "goal-proposal:owner")
+    assert wakeful.calls == [
+        (
+            now,
+            1,
+            ("goal_owner", "mission_owner", "goal-proposal:owner"),
+        )
+    ]
+
+
+def test_entrypoint_restores_owner_goal_followup_after_initial_plans():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "_restore_owner_goal_followup(" in text
+    assert text.index("wakeful_runtime.ensure_initial_plans(now)") < text.index(
+        "owner_goal_refs = _restore_owner_goal_followup("
+    )
