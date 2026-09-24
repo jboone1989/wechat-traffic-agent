@@ -423,6 +423,41 @@ def test_schedule_provider_recovery_uses_earliest_runtime_cooldown(tmp_path):
     assert len(requests) == 1
 
 
+def test_schedule_provider_recovery_ignores_unaffordable_paid_cooldown(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime(2026, 9, 24, 7, 20, 0, tzinfo=timezone.utc)
+    pool_root = tmp_path / "application" / "llm_resource_pool"
+    runtime_root = pool_root / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    paid_at = now + timedelta(seconds=30)
+    free_at = now + timedelta(seconds=90)
+    (runtime_root / "health.json").write_text(json.dumps({
+        "schema_version": "llm-resource-health.v1",
+        "resources": {
+            "paid": {"cooldown_until": paid_at.isoformat()},
+            "free": {"cooldown_until": free_at.isoformat()},
+        },
+    }), encoding="utf-8")
+    (pool_root / "resources.json").write_text(json.dumps({
+        "resources": [
+            {"resource_id": "paid", "pricing_class": "PAID"},
+            {"resource_id": "free", "pricing_class": "FREE"},
+        ],
+    }), encoding="utf-8")
+    (pool_root / "policy.json").write_text(json.dumps({
+        "paid_available_funds": 0.0,
+        "paid_reserve_floor": 20.0,
+    }), encoding="utf-8")
+
+    result = runtime.schedule_provider_recovery(now)
+
+    assert result["status"] == "SCHEDULED"
+    assert result["retry_seconds"] == 95
+    assert result["evidence_ref"] == (
+        f"llm-resource-cooldown:free:{free_at.isoformat()}"
+    )
+
+
 
 def test_brain_lab_uses_handoff_environment_and_settles_trial(tmp_path, monkeypatch):
     runtime = ContentWakefulRuntime(state_root=tmp_path)

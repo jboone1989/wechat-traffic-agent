@@ -1112,9 +1112,45 @@ class ContentWakefulRuntime:
         try:
             payload = json.loads(health_path.read_text(encoding="utf-8"))
             resources = payload.get("resources") if isinstance(payload, dict) else {}
+            eligible_recovery_ids: set[str] | None = None
+            pool_root = health_path.parent.parent
+            try:
+                manifest = json.loads(
+                    (pool_root / "resources.json").read_text(encoding="utf-8")
+                )
+                policy = json.loads(
+                    (pool_root / "policy.json").read_text(encoding="utf-8")
+                )
+                funds = policy.get("paid_available_funds")
+                floor = policy.get("paid_reserve_floor")
+                paid_affordable = (
+                    funds is not None
+                    and floor is not None
+                    and float(funds) > float(floor)
+                )
+                eligible_recovery_ids = {
+                    str(row.get("resource_id") or "")
+                    for row in (manifest.get("resources") or ())
+                    if isinstance(row, dict)
+                    and str(row.get("resource_id") or "")
+                    and (
+                        str(row.get("pricing_class") or "").upper() == "FREE"
+                        or (
+                            str(row.get("pricing_class") or "").upper() == "PAID"
+                            and paid_affordable
+                        )
+                    )
+                }
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                eligible_recovery_ids = None
             recoveries = []
             for resource_id, row in (resources.items() if isinstance(resources, dict) else ()):
                 if not isinstance(row, dict):
+                    continue
+                if (
+                    eligible_recovery_ids is not None
+                    and str(resource_id) not in eligible_recovery_ids
+                ):
                     continue
                 raw = str(row.get("cooldown_until") or "").strip()
                 if not raw:
