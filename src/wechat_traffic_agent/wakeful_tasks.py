@@ -153,7 +153,15 @@ class WakefulContentTaskRunner:
             self._raise_if_stopping()
             regulator = getattr(self, "resource_regulator", None)
             if regulator is not None:
-                admission = regulator.claim(task, now)
+                owner_authorized = (
+                    task == "CONTENT_COGNITION"
+                    and self._active_owner_goal_context() is not None
+                )
+                admission = regulator.claim(
+                    task,
+                    now,
+                    owner_authorized=owner_authorized,
+                )
                 if not admission["allowed"]:
                     return {
                         "task": task, "status": "RESOURCE_DEFERRED",

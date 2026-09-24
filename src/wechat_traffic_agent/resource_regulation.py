@@ -69,7 +69,13 @@ class ResourceRegulator:
             states.append(value)
         return max(states, key=lambda value: PRESSURE_ORDER[value])
 
-    def assess(self, task: str, now: datetime) -> dict[str, Any]:
+    def assess(
+        self,
+        task: str,
+        now: datetime,
+        *,
+        owner_authorized: bool = False,
+    ) -> dict[str, Any]:
         task = str(task or "")
         pressure = self.pressure(now)
         neural = _read(self.state_root / "application" / "neural_life.json")
@@ -81,6 +87,14 @@ class ResourceRegulator:
                 pressure = "UNKNOWN"
         if task in ESSENTIAL_TASKS:
             return {"allowed": True, "pressure": pressure, "reason": "RECOVERY_LANE"}
+        if owner_authorized and task == "CONTENT_COGNITION":
+            from .llm_resources import eligible_free_resources
+            if eligible_free_resources(self.state_root, now):
+                return {
+                    "allowed": True,
+                    "pressure": pressure,
+                    "reason": "OWNER_GOAL_FREE_COGNITION_LANE",
+                }
         if neural_fresh and str((neural.get("intention") or {}).get("name") or "") == "REST":
             return {"allowed": False, "pressure": pressure, "reason": "NEURAL_REST",
                     "retry_after_seconds": 300}
@@ -101,8 +115,14 @@ class ResourceRegulator:
         result = self.assess(task, now)
         return None if result["allowed"] else float(result["retry_after_seconds"])
 
-    def claim(self, task: str, now: datetime) -> dict[str, Any]:
-        result = self.assess(task, now)
+    def claim(
+        self,
+        task: str,
+        now: datetime,
+        *,
+        owner_authorized: bool = False,
+    ) -> dict[str, Any]:
+        result = self.assess(task, now, owner_authorized=owner_authorized)
         if not result["allowed"]:
             return result
         if task in ESSENTIAL_TASKS:

@@ -856,6 +856,23 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     )
     app = App()
     app.domain_runtime = SimpleNamespace(active_goals=[older, owner_goal])
+
+    class BlockingRegulator:
+        def __init__(self):
+            self.calls = []
+
+        def claim(self, task, now, *, owner_authorized=False):
+            self.calls.append((task, owner_authorized))
+            return {
+                "allowed": bool(owner_authorized),
+                "pressure": "CRITICAL",
+                "reason": (
+                    "OWNER_GOAL_FREE_COGNITION_LANE"
+                    if owner_authorized else "RESOURCE_PRESSURE"
+                ),
+            }
+
+    regulator = BlockingRegulator()
     runner = WakefulContentTaskRunner(
         app=app,
         state_root=state_root,
@@ -865,6 +882,7 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
         gsc_collector=None,
         continuous_loop=loop,
         resource_economy=Economy(),
+        resource_regulator=regulator,
         social_expression_loop=None,
         x_browser_publisher=None,
         okx_orbit_publisher=None,
@@ -876,3 +894,4 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     assert result["owner_goal_context"]["goal_id"] == "goal-owner-new"
     assert loop.owner_goals[-1]["goal_id"] == "goal-owner-new"
     assert "LivingRuntime Remote" in loop.owner_goals[-1]["description"]
+    assert regulator.calls == [("CONTENT_COGNITION", True)]
