@@ -324,6 +324,51 @@ class ContentResourceScout:
         self._persist_trial_plan(payload)
         return payload
 
+    def _active_free_pool_is_unavailable(self, *, now: datetime) -> bool:
+        """Return true only when every currently activated free route is cooling down.
+
+        Provider acquisition is normally idempotent after a model has completed a
+        bounded trial. During a total free-pool outage, however, that behavior can
+        strand the agent on the same already-known models forever. This predicate
+        enables bounded catalogue expansion only for that outage window.
+        """
+        pool_root = self.state_root / "application" / "llm_resource_pool"
+        try:
+            manifest = json.loads(
+                (pool_root / "resources.json").read_text(encoding="utf-8")
+            )
+            health = json.loads(
+                (pool_root / "runtime" / "health.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return False
+        resources = [
+            row
+            for row in (manifest.get("resources") or ())
+            if isinstance(row, dict)
+            and str(row.get("pricing_class") or "").upper() == "FREE"
+            and str(row.get("resource_id") or "")
+        ]
+        if not resources:
+            return False
+        health_rows = health.get("resources") if isinstance(health, dict) else {}
+        point = now.astimezone(timezone.utc)
+        for row in resources:
+            resource_id = str(row["resource_id"])
+            state = health_rows.get(resource_id) if isinstance(health_rows, dict) else None
+            if not isinstance(state, dict):
+                return False
+            raw = str(state.get("cooldown_until") or "").strip()
+            if not raw:
+                return False
+            try:
+                cooldown_until = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if cooldown_until.tzinfo is None or cooldown_until.astimezone(timezone.utc) <= point:
+                return False
+        return True
+
     def run_ready_trials(self, *, now: datetime, provider_limit: int = 2) -> dict[str, Any]:
         leads = self.scout.provider_leads()
         verifications = self.scout.provider_verifications()
@@ -338,6 +383,7 @@ class ContentResourceScout:
         executed_measurements: list[ProviderTrialMeasurement] = []
         provider_rows: list[dict[str, Any]] = []
         replan_required = False
+        expand_during_outage = self._active_free_pool_is_unavailable(now=now)
         for plan in ready:
             api_key = str(os.environ.get(plan.credential_env) or "")
             if not api_key:
@@ -355,7 +401,11 @@ class ContentResourceScout:
                     for row in rows
                 )
             }
-            excluded_models: frozenset[str] = frozenset(incompatible_models)
+            previously_tried_models = set(plan_model_rows)
+            excluded_models: frozenset[str] = frozenset(
+                incompatible_models
+                | (previously_tried_models if expand_during_outage else set())
+            )
             if plan.credential_env == "OPENROUTER_API_KEY":
                 model_rows: dict[str, list[ModelTrial]] = {}
                 for row in existing:
@@ -425,7 +475,10 @@ class ContentResourceScout:
                         "error_codes": error_codes,
                     })
                     continue
-                excluded_models = frozenset(exhausted_models)
+                excluded_models = frozenset(
+                    exhausted_models
+                    | (previously_tried_models if expand_during_outage else set())
+                )
             try:
                 target = resolve_trial_target(
                     plan.credential_env, api_key=api_key, exclude_models=excluded_models,

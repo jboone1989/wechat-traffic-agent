@@ -99,6 +99,56 @@ def test_completed_plan_is_idempotent_and_does_not_repeat_requests(tmp_path, mon
     assert calls==["lead:o"]
 
 
+def test_completed_model_rotates_to_new_candidate_during_total_free_pool_outage(tmp_path, monkeypatch):
+    import json
+
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
+    resolved=[]
+    def resolve(env, **kwargs):
+        excluded=set(kwargs.get("exclude_models") or ())
+        resolved.append(excluded)
+        model="known-model" if "known-model" not in excluded else "fresh-model"
+        return ProviderTrialTarget(env,"https://example/v1",model)
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    calls=[]
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{target.model}:{i}",plan_id=plan.plan_id,lead_id=plan.lead_id,
+            provider_label=plan.provider_label,credential_env=plan.credential_env,
+            model=target.model,task_id=f"t{i}",status="COMPLETED",
+            observed_at=now.isoformat(),quality_score=1.0,latency_ms=10,
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    first=scout.run_ready_trials(now=NOW,provider_limit=1)
+    assert first["executed_request_count"]==3
+
+    pool=tmp_path/"application/llm_resource_pool"
+    runtime=pool/"runtime"
+    runtime.mkdir(parents=True,exist_ok=True)
+    (pool/"resources.json").write_text(json.dumps({
+        "resources":[{"resource_id":"active-free","pricing_class":"FREE"}],
+    }))
+    (runtime/"health.json").write_text(json.dumps({
+        "resources":{
+            "active-free":{
+                "cooldown_until":(NOW+timedelta(hours=1)).isoformat(),
+            },
+        },
+    }))
+
+    second=scout.run_ready_trials(
+        now=NOW+timedelta(minutes=1),provider_limit=1
+    )
+
+    assert second["executed_request_count"]==3
+    assert calls==["known-model","fresh-model"]
+    assert resolved[0]==set()
+    assert resolved[1]=={"known-model"}
+
+
 def test_changed_resolved_model_retries_without_erasing_prior_trials(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
