@@ -384,17 +384,32 @@ class ContentResourceScout:
         replan_required = False
         expand_during_outage = self._active_free_pool_is_unavailable(now=now)
         ready = [item for item in plans if item.status == "READY_TO_TRIAL"]
-        previously_tried_leads = {
+        previously_attempted_leads = {
             str(row.opportunity_id)
             for row in existing
             if str(row.opportunity_id or "")
         }
+        previously_attempted_leads.update(
+            str(row.lead_id)
+            for row in outcomes
+            if str(row.lead_id or "")
+            and row.status in {
+                "TRIAL_STARTED",
+                "TRIAL_FAILED",
+                "TRIAL_SUCCEEDED",
+                "NO_VIABLE_MODEL",
+                "AUTHENTICATION_REJECTED",
+                "PROVIDER_UNAVAILABLE",
+                "MODEL_TARGETS_INCOMPATIBLE",
+                "FREE_CANDIDATES_EXHAUSTED",
+            }
+        )
         # A static provider priority must not permanently starve a verified
         # provider that has never received its first bounded trial. Keep the
         # planner's original priority ordering within each group, but let
         # never-tried READY_TO_TRIAL providers enter the bounded shortlist
         # before providers that already have empirical evidence.
-        ready.sort(key=lambda item: item.lead_id in previously_tried_leads)
+        ready.sort(key=lambda item: item.lead_id in previously_attempted_leads)
         ready = ready[: max(1, min(int(provider_limit), 3))]
         for plan in ready:
             api_key = str(os.environ.get(plan.credential_env) or "")
@@ -533,6 +548,56 @@ class ContentResourceScout:
                         "error_codes": ["HTTP_404", "HTTP_410"],
                     })
                     continue
+                if error_code == "HTTP_401":
+                    outcome_status = "AUTHENTICATION_REJECTED"
+                elif error_code == "NO_COMPATIBLE_MODEL":
+                    outcome_status = "NO_VIABLE_MODEL"
+                else:
+                    outcome_status = "TRIAL_FAILED"
+                outcome = self.record_acquisition_outcome(
+                    plan_id=plan.plan_id,
+                    lead_id=plan.lead_id,
+                    status=outcome_status,
+                    now=now,
+                    source="RUNTIME",
+                    detail_summary=(
+                        "bounded provider trial target resolution failed "
+                        f"with {error_code}"
+                    ),
+                    evidence_refs=(f"target-resolution-error:{error_code}",),
+                )
+                replan_required = replan_required or bool(outcome.get("created"))
+                provider_rows.append({
+                    "provider_label": plan.provider_label,
+                    "credential_env": plan.credential_env,
+                    "lead_id": plan.lead_id,
+                    "status": (
+                        "AUTHENTICATION_REJECTED"
+                        if outcome_status == "AUTHENTICATION_REJECTED"
+                        else "TARGET_RESOLUTION_FAILED"
+                    ),
+                    "request_count": 0,
+                    "completed_count": 0,
+                    "trial_ids": [],
+                    "mean_quality": None,
+                    "mean_latency_ms": None,
+                    "observed_cost_total": None,
+                    "cost_observed_for_all_completed": False,
+                    "models": [],
+                    "error_codes": [error_code],
+                })
+                continue
+            if target is None:
+                outcome = self.record_acquisition_outcome(
+                    plan_id=plan.plan_id,
+                    lead_id=plan.lead_id,
+                    status="NO_VIABLE_MODEL",
+                    now=now,
+                    source="RUNTIME",
+                    detail_summary="bounded provider trial target resolution returned no candidate",
+                    evidence_refs=("target-resolution:no-candidate",),
+                )
+                replan_required = replan_required or bool(outcome.get("created"))
                 provider_rows.append({
                     "provider_label": plan.provider_label,
                     "credential_env": plan.credential_env,
@@ -546,10 +611,8 @@ class ContentResourceScout:
                     "observed_cost_total": None,
                     "cost_observed_for_all_completed": False,
                     "models": [],
-                    "error_codes": [error_code],
+                    "error_codes": ["NO_VIABLE_MODEL"],
                 })
-                continue
-            if target is None:
                 continue
             prior = [
                 row for row in existing

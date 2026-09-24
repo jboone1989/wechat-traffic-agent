@@ -297,6 +297,81 @@ def test_never_tried_verified_provider_is_not_starved_by_static_priority(tmp_pat
     assert "lead:c" in calls
 
 
+def test_target_resolution_failure_counts_as_first_provider_attempt(tmp_path, monkeypatch):
+    scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
+    scout.scout._write_provider_lead(ProviderLead(
+        "lead:c","op:c","Cerebras","CEREBRAS_API_KEY",
+        "https://cloud.cerebras.ai/","cerebras.ai",NOW.isoformat(),"r",
+    ))
+    scout.scout._write_provider_verification(ProviderVerification(
+        "lead:c","VERIFIED_TRIAL_CREDIT",NOW.isoformat(),free_status="TRIAL_CREDIT",
+    ))
+    for env,value in (
+        ("NVIDIA_API_KEY","n-secret"),
+        ("OPENROUTER_API_KEY","o-secret"),
+        ("CEREBRAS_API_KEY","c-secret"),
+    ):
+        monkeypatch.setenv(env,value)
+    for lead,label,model in (
+        ("lead:n","N","old-nvidia"),
+        ("lead:o","O","old-openrouter"),
+    ):
+        scout.scout.record_model_trial(ModelTrial(
+            trial_id=f"trial:{lead}:old",
+            opportunity_id=lead,
+            task_class="simple_public_text",
+            status="COMPLETED",
+            quality_score=1.0,
+            latency_ms=10.0,
+            observed_cost=0.0,
+            evidence_refs=("prior-trial",),
+            provider_lead_id=lead,
+            provider_label=label,
+            model_id=model,
+            started_at=NOW.isoformat(),
+            completed_at=NOW.isoformat(),
+            error_code="",
+        ))
+
+    resolved=[]
+    def resolve(env, **kwargs):
+        resolved.append(env)
+        if env=="CEREBRAS_API_KEY":
+            raise resource_module.ProviderTrialRequestError("HTTP_403")
+        return ProviderTrialTarget(env,"https://example/v1","fresh-"+env.lower())
+    monkeypatch.setattr(resource_module,"resolve_trial_target",resolve)
+    def fake(plan, *, api_key, now, target):
+        return [ProviderTrialMeasurement(
+            trial_id=f"trial:{plan.lead_id}:fresh:{i}",
+            plan_id=plan.plan_id,
+            lead_id=plan.lead_id,
+            provider_label=plan.provider_label,
+            credential_env=plan.credential_env,
+            model=target.model,
+            task_id=f"t{i}",
+            status="COMPLETED",
+            observed_at=now.isoformat(),
+            quality_score=1.0,
+            latency_ms=10,
+            observed_cost=0.0,
+        ) for i in range(3)]
+    monkeypatch.setattr(resource_module,"run_bounded_provider_trial",fake)
+
+    first=scout.run_ready_trials(now=NOW,provider_limit=2)
+    second=scout.run_ready_trials(now=NOW+timedelta(minutes=1),provider_limit=2)
+
+    assert first["providers"][0]["lead_id"]=="lead:c"
+    assert first["providers"][0]["status"]=="TARGET_RESOLUTION_FAILED"
+    assert first["providers"][0]["error_codes"]==["HTTP_403"]
+    assert resolved.count("CEREBRAS_API_KEY")==1
+    outcomes=[
+        row for row in scout.acquisition_outcomes()
+        if row.lead_id=="lead:c"
+    ]
+    assert any(row.status=="TRIAL_FAILED" for row in outcomes)
+    assert second["status"] in {"TRIALED","ALREADY_TRIALED"}
+
+
 def test_changed_resolved_model_retries_without_erasing_prior_trials(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
