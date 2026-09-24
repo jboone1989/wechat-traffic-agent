@@ -97,9 +97,17 @@ class ProviderAWEBaseline:
         )
         result = _parse_json_object(str(raw))
 
-        action_id = str(result.get("action_id") or "")
+        action_id = str(result.get("action_id") or result.get("action") or "").strip()
         if action_id not in actions:
-            raise ValueError("baseline selected an action outside the AWE boundary")
+            normalized = " ".join(action_id.casefold().split())
+            matches = [
+                key for key, text in actions.items()
+                if " ".join(str(text).casefold().split()) == normalized
+            ]
+            if len(matches) == 1:
+                action_id = matches[0]
+        result["action_id"] = action_id
+        result.pop("action", None)
         confidence = float(result.get("declared_confidence", 0.5))
         result["declared_confidence"] = min(1.0, max(0.0, confidence))
         beliefs = result.get("declared_beliefs")
