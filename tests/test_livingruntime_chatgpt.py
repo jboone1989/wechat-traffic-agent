@@ -156,11 +156,49 @@ def test_runtime_backend_can_use_remote_when_legacy_provider_is_unconfigured(
     assert backend.default_duration_seconds == 120.0
 
 
-def test_runtime_backend_preserves_existing_provider_when_remote_disabled(monkeypatch):
+def test_runtime_backend_can_use_local_enable_marker(tmp_path, monkeypatch):
+    fallback = _Fallback()
+    cli = tmp_path / ".livingruntime" / "plugin" / "scripts" / "cognitionctl.py"
+    cli.parent.mkdir(parents=True)
+    _write_fake_cli(cli)
+    marker = tmp_path / ".livingruntime" / "ferro-chatgpt-provider.enabled"
+    marker.write_text("enabled\n", encoding="utf-8")
+    import agent_runtime.llm as runtime_llm
+
+    monkeypatch.setattr(runtime_llm, "load_llm_provider", lambda: fallback)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", raising=False)
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", raising=False)
+
+    backend = load_optional_advisory_backend()
+
+    assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
+    assert backend.provider.fallback is fallback
+    assert backend.provider.cli_path == cli
+
+
+def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
+    fallback = _Fallback()
+    marker = tmp_path / ".livingruntime" / "ferro-chatgpt-provider.enabled"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("enabled\n", encoding="utf-8")
+    import agent_runtime.llm as runtime_llm
+
+    monkeypatch.setattr(runtime_llm, "load_llm_provider", lambda: fallback)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+
+    backend = load_optional_advisory_backend()
+
+    assert backend.provider is fallback
+
+
+def test_runtime_backend_preserves_existing_provider_when_remote_disabled(tmp_path, monkeypatch):
     fallback = _Fallback()
     import agent_runtime.llm as runtime_llm
 
     monkeypatch.setattr(runtime_llm, "load_llm_provider", lambda: fallback)
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", raising=False)
 
     backend = load_optional_advisory_backend()

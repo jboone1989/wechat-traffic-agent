@@ -46,10 +46,14 @@ class LivingRuntimeChatGPTProvider:
 
     @classmethod
     def from_environment(cls, *, fallback: Any | None = None) -> "LivingRuntimeChatGPTProvider":
-        raw_enabled = str(
-            os.environ.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or ""
-        ).strip().lower()
-        enabled = raw_enabled in {"1", "true", "yes", "on"}
+        raw_enabled = os.environ.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED")
+        enable_marker = (
+            Path.home() / ".livingruntime" / "ferro-chatgpt-provider.enabled"
+        )
+        if raw_enabled is None or not str(raw_enabled).strip():
+            enabled = enable_marker.is_file()
+        else:
+            enabled = str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
         default_cli = (
             Path.home() / ".livingruntime" / "plugin" / "scripts" / "cognitionctl.py"
         )
