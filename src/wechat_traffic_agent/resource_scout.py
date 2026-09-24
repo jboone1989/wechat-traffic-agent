@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import inspect
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,29 @@ _REPLAN_OUTCOME_STATUSES = {
     "TEMPORARY_RATE_LIMIT",
     "TASK_MISMATCH",
 }
+
+
+def _provider_trial_resolver_evidence_ref() -> str:
+    """Fingerprint target-resolution behavior without depending on a release path.
+
+    Target-resolution failures are durable evidence, but they must not make a
+    provider look permanently "already attempted" after the resolver itself has
+    changed.  Hashing the resolver source gives those failures an implementation
+    generation while preserving the original immutable outcome.
+    """
+    try:
+        payload = inspect.getsource(resolve_trial_target)
+    except (OSError, TypeError):
+        code = getattr(resolve_trial_target, "__code__", None)
+        payload = "\0".join((
+            str(getattr(resolve_trial_target, "__module__", "")),
+            str(getattr(resolve_trial_target, "__qualname__", "")),
+            bytes(getattr(code, "co_code", b"")).hex(),
+            repr(tuple(getattr(code, "co_names", ()))),
+        ))
+    return "provider-trial-resolver-sha256:" + sha256(
+        payload.encode("utf-8")
+    ).hexdigest()
 
 
 def rank_high_capability_model(
@@ -384,6 +408,7 @@ class ContentResourceScout:
         replan_required = False
         expand_during_outage = self._active_free_pool_is_unavailable(now=now)
         ready = [item for item in plans if item.status == "READY_TO_TRIAL"]
+        resolver_evidence_ref = _provider_trial_resolver_evidence_ref()
         previously_attempted_leads = {
             str(row.opportunity_id)
             for row in existing
@@ -393,16 +418,21 @@ class ContentResourceScout:
             str(row.lead_id)
             for row in outcomes
             if str(row.lead_id or "")
-            and row.status in {
-                "TRIAL_STARTED",
-                "TRIAL_FAILED",
-                "TRIAL_SUCCEEDED",
-                "NO_VIABLE_MODEL",
-                "AUTHENTICATION_REJECTED",
-                "PROVIDER_UNAVAILABLE",
-                "MODEL_TARGETS_INCOMPATIBLE",
-                "FREE_CANDIDATES_EXHAUSTED",
-            }
+            and (
+                row.status in {
+                    "TRIAL_STARTED",
+                    "TRIAL_SUCCEEDED",
+                    "NO_VIABLE_MODEL",
+                    "AUTHENTICATION_REJECTED",
+                    "PROVIDER_UNAVAILABLE",
+                    "MODEL_TARGETS_INCOMPATIBLE",
+                    "FREE_CANDIDATES_EXHAUSTED",
+                }
+                or (
+                    row.status == "TRIAL_FAILED"
+                    and resolver_evidence_ref in row.evidence_refs
+                )
+            )
         )
         # A static provider priority must not permanently starve a verified
         # provider that has never received its first bounded trial. Keep the
@@ -564,7 +594,10 @@ class ContentResourceScout:
                         "bounded provider trial target resolution failed "
                         f"with {error_code}"
                     ),
-                    evidence_refs=(f"target-resolution-error:{error_code}",),
+                    evidence_refs=(
+                        f"target-resolution-error:{error_code}",
+                        resolver_evidence_ref,
+                    ),
                 )
                 replan_required = replan_required or bool(outcome.get("created"))
                 provider_rows.append({
