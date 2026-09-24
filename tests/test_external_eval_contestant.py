@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 import asyncio
 
 import pytest
@@ -105,3 +106,51 @@ def test_external_outcome_is_written_only_to_evaluation_snapshot(tmp_path):
     assert memory["source_type"] == "EXTERNAL_BENCHMARK"
     assert memory["payload"]["benchmark_id"] == "agentbench"
     assert memory["payload"]["public_state"]["score"] == 1.0
+
+
+def test_chatgpt_only_provider_has_no_api_fallback(monkeypatch, tmp_path):
+    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_mod
+    import wechat_traffic_agent.llm_audit as audit_mod
+    from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
+
+    seen = {}
+
+    class FakeProvider:
+        available = True
+
+    def fake_from_environment(*, fallback=None):
+        seen["fallback"] = fallback
+        return FakeProvider()
+
+    monkeypatch.setattr(
+        chatgpt_mod.LivingRuntimeChatGPTProvider,
+        "from_environment",
+        staticmethod(fake_from_environment),
+    )
+    monkeypatch.setattr(
+        audit_mod,
+        "audited_provider",
+        lambda provider, state_root, scope: ("audited", provider, Path(state_root), scope),
+    )
+
+    provider = build_chatgpt_only_provider(state_root=tmp_path)
+    assert seen["fallback"] is None
+    assert provider[0] == "audited"
+    assert provider[2] == tmp_path
+    assert provider[3] == "external-benchmark-evaluation"
+
+
+def test_chatgpt_only_provider_fails_when_cognition_unavailable(monkeypatch, tmp_path):
+    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_mod
+    from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
+
+    class FakeProvider:
+        available = False
+
+    monkeypatch.setattr(
+        chatgpt_mod.LivingRuntimeChatGPTProvider,
+        "from_environment",
+        staticmethod(lambda *, fallback=None: FakeProvider()),
+    )
+    with pytest.raises(RuntimeError, match="ChatGPT cognition is unavailable"):
+        build_chatgpt_only_provider(state_root=tmp_path)

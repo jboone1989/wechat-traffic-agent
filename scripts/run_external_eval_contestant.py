@@ -14,12 +14,21 @@ sys.path.insert(0, str(ROOT / "src"))
 from wechat_traffic_agent.awe_provider import build_fixed_openai_provider
 from wechat_traffic_agent.external_eval_contestant import (
     FerroExternalEvalContestant,
+    build_chatgpt_only_provider,
     handle_external_request,
 )
 from wechat_traffic_agent.runtime_backend import load_optional_advisory_backend
 
+
 def _provider(args):
-    if args.fixed_model or args.fixed_base_url or args.fixed_credential_env:
+    fixed_requested = bool(
+        args.fixed_model or args.fixed_base_url or args.fixed_credential_env
+    )
+    if args.chatgpt_only and fixed_requested:
+        raise SystemExit("--chatgpt-only cannot be combined with fixed provider options")
+    if args.chatgpt_only:
+        return build_chatgpt_only_provider(state_root=args.state_root)
+    if fixed_requested:
         if not (args.fixed_model and args.fixed_base_url and args.fixed_credential_env):
             raise SystemExit("fixed provider requires model, base URL, and credential env")
         return build_fixed_openai_provider(
@@ -34,9 +43,15 @@ def _provider(args):
         raise SystemExit("Ferro advisory provider is not configured for this evaluation snapshot")
     return backend.provider
 
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-root", type=Path, required=True)
+    parser.add_argument(
+        "--chatgpt-only",
+        action="store_true",
+        help="Require LivingRuntime ChatGPT cognition and forbid API fallback.",
+    )
     parser.add_argument("--fixed-model")
     parser.add_argument("--fixed-base-url")
     parser.add_argument("--fixed-credential-env")
@@ -67,6 +82,7 @@ def main() -> int:
                 "retryable": bool(getattr(exc, "retryable", False)),
             }, ensure_ascii=False), flush=True)
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
