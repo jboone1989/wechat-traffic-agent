@@ -458,6 +458,50 @@ def test_schedule_provider_recovery_ignores_unaffordable_paid_cooldown(tmp_path)
     )
 
 
+def test_schedule_provider_recovery_prefers_runtime_proven_route(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime(2026, 9, 24, 8, 27, 0, tzinfo=timezone.utc)
+    pool_root = tmp_path / "application" / "llm_resource_pool"
+    runtime_root = pool_root / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    never_succeeded_at = now + timedelta(seconds=73)
+    proven_at = now + timedelta(seconds=84)
+    (runtime_root / "health.json").write_text(json.dumps({
+        "schema_version": "llm-resource-health.v1",
+        "resources": {
+            "never-succeeded": {
+                "cooldown_until": never_succeeded_at.isoformat(),
+                "successes": 0,
+                "failures": 223,
+            },
+            "runtime-proven": {
+                "cooldown_until": proven_at.isoformat(),
+                "successes": 38,
+                "failures": 294,
+                "last_success_at": (now - timedelta(hours=4)).isoformat(),
+            },
+        },
+    }), encoding="utf-8")
+    (pool_root / "resources.json").write_text(json.dumps({
+        "resources": [
+            {"resource_id": "never-succeeded", "pricing_class": "FREE"},
+            {"resource_id": "runtime-proven", "pricing_class": "FREE"},
+        ],
+    }), encoding="utf-8")
+    (pool_root / "policy.json").write_text(json.dumps({
+        "paid_available_funds": 0.0,
+        "paid_reserve_floor": 20.0,
+    }), encoding="utf-8")
+
+    result = runtime.schedule_provider_recovery(now)
+
+    assert result["status"] == "SCHEDULED"
+    assert result["retry_seconds"] == 89
+    assert result["evidence_ref"] == (
+        f"llm-resource-cooldown:runtime-proven:{proven_at.isoformat()}"
+    )
+
+
 
 def test_brain_lab_uses_handoff_environment_and_settles_trial(tmp_path, monkeypatch):
     runtime = ContentWakefulRuntime(state_root=tmp_path)

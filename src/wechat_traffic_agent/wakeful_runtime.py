@@ -1144,6 +1144,7 @@ class ContentWakefulRuntime:
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 eligible_recovery_ids = None
             recoveries = []
+            proven_recoveries = []
             for resource_id, row in (resources.items() if isinstance(resources, dict) else ()):
                 if not isinstance(row, dict):
                     continue
@@ -1160,9 +1161,21 @@ class ContentWakefulRuntime:
                     continue
                 cooldown = cooldown.astimezone(timezone.utc)
                 if cooldown > now:
-                    recoveries.append((cooldown, str(resource_id)))
+                    candidate = (cooldown, str(resource_id))
+                    recoveries.append(candidate)
+                    if (
+                        int(row.get("successes") or 0) > 0
+                        or bool(str(row.get("last_success_at") or "").strip())
+                    ):
+                        proven_recoveries.append(candidate)
             if recoveries:
-                cooldown, resource_id = min(recoveries)
+                # Production success is stronger recovery evidence than an
+                # offline/provider trial score. Avoid waking an active owner
+                # goal early for a route that has never succeeded at runtime
+                # when a proven spendable route has a known later cooldown.
+                # If nothing has ever succeeded, retain the earliest-cooldown
+                # fallback so a fresh installation can still bootstrap.
+                cooldown, resource_id = min(proven_recoveries or recoveries)
                 delay = max(
                     5,
                     min(
