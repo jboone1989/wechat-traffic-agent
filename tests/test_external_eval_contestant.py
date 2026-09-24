@@ -369,3 +369,13 @@ def test_external_tool_turn_inherits_generic_epistemic_action_policy(tmp_path):
     assert "AgentBench" not in guidance
     assert "/home/agent" not in guidance
     assert "succeed" not in guidance
+
+
+def test_external_eval_parser_accepts_unescaped_control_characters_inside_json_strings():
+    from wechat_traffic_agent.external_eval_contestant import _parse_json_object
+
+    raw = '{"kind":"tool","tool_name":"shell","arguments":{"command":"printf \'line1\nline2\'"}}'
+    parsed = _parse_json_object(raw)
+    assert parsed["kind"] == "tool"
+    assert parsed["tool_name"] == "shell"
+    assert parsed["arguments"]["command"] == "printf 'line1\nline2'"

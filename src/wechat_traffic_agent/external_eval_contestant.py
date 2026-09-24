@@ -36,7 +36,7 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
         text = re.sub(r'\s*```$', '', text)
     start = text.find('{')
     candidate = text[start:] if start >= 0 else text
-    value, _end = json.JSONDecoder().raw_decode(candidate)
+    value, _end = json.JSONDecoder(strict=False).raw_decode(candidate)
     if not isinstance(value, dict):
         raise ValueError('external evaluation response must be a JSON object')
     return value
