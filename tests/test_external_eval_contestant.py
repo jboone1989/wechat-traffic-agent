@@ -344,3 +344,28 @@ def test_external_eval_parser_still_rejects_prose_without_json():
 
     with pytest.raises(__import__("json").JSONDecodeError):
         _parse_json_object("I think the answer is one second.")
+
+
+def test_external_tool_turn_inherits_generic_epistemic_action_policy(tmp_path):
+    from wechat_traffic_agent.epistemic_action import epistemic_action_guidance
+
+    c = contestant(tmp_path)
+    c.begin_episode(benchmark_id="generic-tool-eval", episode_id="dynamic-state")
+    asyncio.run(c.tool_turn(
+        observation="Several observations are still compatible with the task.",
+        instruction="Determine the correct answer using available evidence.",
+        tools=[{
+            "name": "shell",
+            "description": "Run a bounded observation command.",
+            "input_schema": {"type": "object"},
+        }],
+    ))
+    prompt = c.provider.calls[-1][0]
+    guidance = epistemic_action_guidance()
+    assert "bounded discriminating probe" in prompt
+    assert "baseline and interval" in prompt
+    assert guidance in prompt
+    # The reusable policy must stay benchmark-independent.
+    assert "AgentBench" not in guidance
+    assert "/home/agent" not in guidance
+    assert "succeed" not in guidance

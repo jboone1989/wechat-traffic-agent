@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from .awe_contestant import AWE_SENTINEL
 from .drive_system import DriveEngine
+from .epistemic_action import epistemic_action_guidance
 from .memory_retrieval import MemoryRouter
 from .memory_system import CanonicalMemoryStore
 from .self_model import SelfModel
@@ -221,6 +222,7 @@ class FerroExternalEvalContestant:
             + "\n\nTASK INSTRUCTION\n" + str(instruction)
             + "\n\nOBSERVATION\n" + str(observation)
             + "\n\nAVAILABLE TOOLS\n" + _safe_json(normalized_tools)
+            + "\n\nEPISTEMIC ACTION POLICY\n" + epistemic_action_guidance()
             + '\n\nReturn either {"kind":"tool","tool_name":"<exact name>","arguments":{...}} '
               'or {"kind":"final","response":"..."}.'
         )
