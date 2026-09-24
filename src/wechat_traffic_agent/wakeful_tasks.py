@@ -505,6 +505,19 @@ class WakefulContentTaskRunner:
             rows["provider_trial_plans"] = self._error(exc)
             rows["status"] = "DEGRADED"
 
+        # Self-repair is part of the recovery lane, not ordinary reflection.
+        # Under sustained host pressure REFLECT may be deferred indefinitely, so
+        # RESOURCE_REVIEW advances at most one repair problem per pass.
+        if getattr(self, "self_repair", None) is not None:
+            try:
+                rows["self_repair_recovery"] = self._self_repair_recovery(
+                    now,
+                    max_items=1,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["self_repair_recovery"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+
         initial_rank = pressure_rank.get(str(initial_infrastructure_pressure).upper(), 0)
         final_rank = pressure_rank.get(str(infrastructure_pressure).upper(), 0)
         if initial_rank > 0 and final_rank > 0:
@@ -522,6 +535,58 @@ class WakefulContentTaskRunner:
                 "world_grounded": True,
             }
         return rows
+
+    def _self_repair_recovery(
+        self,
+        now: datetime,
+        *,
+        max_items: int,
+    ) -> dict[str, Any]:
+        """Advance bounded repair work from a recovery-safe task lane."""
+        self_repair = getattr(self, "self_repair", None)
+        if self_repair is None:
+            return {"status": "SELF_REPAIR_UNAVAILABLE"}
+        run_batch = getattr(self_repair, "run_batch", None)
+        result = (
+            run_batch(now=now, max_items=max_items)
+            if callable(run_batch)
+            else self_repair.run_once(now=now)
+        )
+        repair_status = str(result.get("status") or "")
+        nested = (
+            list(result.get("results") or ())
+            if repair_status == "BATCH_PROGRESSED"
+            else [result]
+        )
+        repair_statuses = {
+            str(item.get("status") or "")
+            for item in nested
+            if isinstance(item, dict)
+        }
+        schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
+        immediate = {
+            "GENERATED_REPAIR_PROPOSED",
+            "REQUESTED_TO_PI_REMOTE",
+            "CANDIDATE_REJECTED_REPLAN_QUEUED",
+            "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
+        }
+        if callable(schedule) and repair_statuses & immediate:
+            retry_values = [
+                int(item.get("retry_seconds") or 60)
+                for item in nested
+                if isinstance(item, dict)
+                and str(item.get("status") or "") in immediate
+            ]
+            schedule(now, seconds=min(retry_values or [60]))
+        elif callable(schedule) and "GENERATED_PLAN_DEFERRED" in repair_statuses:
+            retry_values = [
+                int(item.get("retry_seconds") or 900)
+                for item in nested
+                if isinstance(item, dict)
+                and str(item.get("status") or "") == "GENERATED_PLAN_DEFERRED"
+            ]
+            schedule(now, seconds=min(retry_values or [900]))
+        return result
 
     def _reflect(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "REFLECT", "status": "OK"}

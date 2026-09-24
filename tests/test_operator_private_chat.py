@@ -242,6 +242,40 @@ def test_live_service_restart_restores_owner_goal_wake_provenance(tmp_path, monk
     assert activated["proposal_id"] in relevant_refs
 
 
+def test_live_service_restart_restores_external_mission_wake_provenance(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    store = OperatorConversationStore(root)
+    proposal = store.create_proposal(
+        {
+            "kind": "EXTERNAL_MISSION",
+            "description": "Promote LivingRuntime Remote as an X growth experiment",
+            "metric": "x.followers",
+            "baseline": 1836,
+            "target": 5000,
+            "deadline": "2026-10-19T02:32:02+00:00",
+            "direction": "AT_LEAST",
+        },
+    )
+    activated = store.activate(proposal["proposal_id"], application.domain_runtime)
+    wakeful = FakeWakeful()
+
+    LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=FakeBackend(),
+        wakeful=wakeful,
+    )._app()
+
+    assert wakeful.calls
+    _, seconds, relevant_refs = wakeful.calls[-1]
+    assert seconds == 5
+    assert activated["goal_id"] in relevant_refs
+    assert activated["mission_id"] in relevant_refs
+    assert activated["proposal_id"] in relevant_refs
+
+
 def test_operator_conversation_store_activates_measurable_external_mission(tmp_path):
     store = OperatorConversationStore(tmp_path)
     proposal = store.create_proposal({

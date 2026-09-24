@@ -39,6 +39,7 @@ class Wakeful:
         self.cognition_marks = []
         self.goal_followups = []
         self.provider_recoveries = []
+        self.self_maintenance_retries = []
 
     def mark_cognition(self, now):
         self.cognition_marks.append(now)
@@ -53,6 +54,9 @@ class Wakeful:
             "retry_at": (now + timedelta(seconds=default_seconds)).isoformat(),
             "retry_seconds": default_seconds,
         }
+
+    def schedule_self_maintenance(self, now, *, seconds=60):
+        self.self_maintenance_retries.append((now, seconds))
 
 
 class AfterCycle:
@@ -895,3 +899,130 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     assert loop.owner_goals[-1]["goal_id"] == "goal-owner-new"
     assert "LivingRuntime Remote" in loop.owner_goals[-1]["description"]
     assert regulator.calls == [("CONTENT_COGNITION", True)]
+
+def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
+    from types import SimpleNamespace
+
+    state_root = tmp_path / "state"
+    proposals = state_root / "application" / "operator_chat" / "goal_proposals"
+    proposals.mkdir(parents=True, exist_ok=True)
+    (proposals / "goal-proposal-owner-external.json").write_text(
+        json.dumps(
+            {
+                "proposal_id": "goal-proposal:owner-external",
+                "status": "ACTIVATED",
+                "kind": "EXTERNAL_MISSION",
+                "goal_id": "goal-owner-external",
+                "mission_id": "mission-owner-external",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loop = Loop(state_root, result_status="COGNITION_ONLY")
+    loop.owner_goals = []
+    original = loop.run_once
+
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None):
+        loop.owner_goals.append(owner_goal)
+        return await original(
+            now=now,
+            cycle_id=cycle_id,
+            focus_topic=focus_topic,
+            owner_goal=owner_goal,
+        )
+
+    loop.run_once = capture
+    external_goal = SimpleNamespace(
+        goal_id="goal-owner-external",
+        description="宣传 LivingRuntime Remote，并把它作为 X 增长实验。",
+        reason="owner private conversation",
+        priority=0.7,
+        created_at=NOW + timedelta(minutes=1),
+        origin=SimpleNamespace(value="EXTERNAL_MISSION"),
+        status=SimpleNamespace(value="ACTIVE"),
+    )
+    app = App()
+    app.domain_runtime = SimpleNamespace(active_goals=[external_goal])
+
+    class BlockingRegulator:
+        def __init__(self):
+            self.calls = []
+
+        def claim(self, task, now, *, owner_authorized=False):
+            self.calls.append((task, owner_authorized))
+            return {
+                "allowed": bool(owner_authorized),
+                "pressure": "CRITICAL",
+                "reason": (
+                    "OWNER_GOAL_FREE_COGNITION_LANE"
+                    if owner_authorized else "RESOURCE_PRESSURE"
+                ),
+            }
+
+    regulator = BlockingRegulator()
+    runner = WakefulContentTaskRunner(
+        app=app,
+        state_root=state_root,
+        network_service=None,
+        wakeful=Wakeful(),
+        web_worker=None,
+        gsc_collector=None,
+        continuous_loop=loop,
+        resource_economy=Economy(),
+        resource_regulator=regulator,
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=None,
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW + timedelta(minutes=2))
+
+    assert result["owner_goal_context"]["goal_id"] == "goal-owner-external"
+    assert result["owner_goal_context"]["origin"] == "EXTERNAL_MISSION"
+    assert loop.owner_goals[-1]["goal_id"] == "goal-owner-external"
+    assert regulator.calls == [("CONTENT_COGNITION", True)]
+
+
+def test_resource_review_advances_one_self_repair_item_on_recovery_lane(tmp_path):
+    class Repair:
+        def __init__(self):
+            self.calls = []
+
+        def run_batch(self, *, now, max_items):
+            self.calls.append((now, max_items))
+            return {
+                "status": "BATCH_PROGRESSED",
+                "processed": 1,
+                "results": [{
+                    "status": "GENERATED_PLAN_DEFERRED",
+                    "problem_id": "self-problem:test",
+                    "retry_seconds": 120,
+                }],
+            }
+
+    repair = Repair()
+    wakeful = Wakeful()
+    runner = WakefulContentTaskRunner(
+        app=App(),
+        state_root=tmp_path / "state",
+        network_service=None,
+        wakeful=wakeful,
+        web_worker=None,
+        gsc_collector=None,
+        continuous_loop=None,
+        resource_economy=Economy(),
+        self_repair=repair,
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=None,
+    )
+
+    result = runner._self_repair_recovery(NOW, max_items=1)
+
+    assert result["status"] == "BATCH_PROGRESSED"
+    assert repair.calls == [(NOW, 1)]
+    assert wakeful.self_maintenance_retries == [(NOW, 120)]

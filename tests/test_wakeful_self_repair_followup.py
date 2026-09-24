@@ -47,6 +47,16 @@ def _runner(status):
     return runner, wakeful
 
 
+def test_resource_recovery_lane_advances_one_self_repair_without_reflection():
+    runner, wakeful = _runner("GENERATED_REPAIR_PROPOSED")
+
+    result = runner._self_repair_recovery(NOW, max_items=1)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert result["problem_id"] == "self-problem:test"
+    assert wakeful.calls == [(NOW, 60)]
+
+
 def test_generated_repair_proposal_schedules_prompt_second_reflect():
     runner, wakeful = _runner("GENERATED_REPAIR_PROPOSED")
 
