@@ -1051,7 +1051,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'publication_authority': False,
                     })
                 except Exception as exc:
-                    _put(folder / 'mission_discovery_error.json', {
+                    mission_error = {
                         'schema_version': 'content-mission-discovery-error.v1',
                         'error_type': type(exc).__name__,
                         'message': str(exc)[:500],
@@ -1067,7 +1067,46 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
                         'retryable': True,
                         'publication_authority': False,
-                    })
+                    }
+                    _put(folder / 'mission_discovery_error.json', mission_error)
+                    if owner_goal is not None:
+                        mission_id = str(mission_context.get('mission_id') or '')
+                        owner_goal_id = str(owner_goal.get('goal_id') or '')
+                        mind_plan = {
+                            **mind_plan,
+                            'endogenous_goal': mind_plan.get('goal'),
+                            'goal': {
+                                'goal_id': (
+                                    'external-mission-pending:'
+                                    + (mission_id or 'unknown')
+                                ),
+                                'origin': 'EXTERNAL_MISSION',
+                                'description': (
+                                    'Resolve evidence search for the owner-directed external mission: '
+                                    + str(owner_goal.get('description') or '')
+                                )[:2400],
+                                'confidence': 1.0,
+                                'expected_value': 1.0,
+                                'interest_refs': [],
+                                'inquiry_refs': [owner_goal_id],
+                                'value_refs': [mission_id],
+                            },
+                            'required_topic': None,
+                            'external_mission_id': mission_id,
+                            'owner_goal_id': owner_goal_id,
+                            'mission_discovery_error': mission_error,
+                        }
+                        _put(plan_path, mind_plan)
+                        return {
+                            'status': 'ERROR',
+                            'cycle': cycle,
+                            'error_type': type(exc).__name__,
+                            'message': str(exc)[:500],
+                            'retryable': True,
+                            'mission_id': mission_id,
+                            'owner_goal_id': owner_goal_id,
+                            'mind_plan': mind_plan,
+                        }
             if mission_decision is not None:
                 mission_goal_id = (
                     'external-mission-discovery:'

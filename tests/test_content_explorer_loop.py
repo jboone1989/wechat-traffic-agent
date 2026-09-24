@@ -1307,6 +1307,65 @@ def test_mission_discovery_error_persists_external_mission_identity(tmp_path):
     assert error["publication_authority"] is False
 
 
+class LLMProviderError(RuntimeError):
+    pass
+
+
+class OwnerMissionLLMOutageRuntime(V2Runtime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("MISSION_DISCOVERY:"):
+            self.calls.append(task)
+            raise LLMProviderError("no viable LLM resource is currently available")
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_owner_goal_mission_discovery_outage_fails_closed_before_generic_evidence(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = OwnerMissionLLMOutageRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+    owner_goal = {
+        "goal_id": "goal-livingruntime-remote",
+        "origin": "USER",
+        "description": (
+            "宣传 LivingRuntime Remote，并把它作为当前 X 粉丝增长目标的一次真实增长实验来执行。"
+        ),
+        "reason": "operator submitted",
+        "priority": 0.4,
+        "created_at": NOW.isoformat(),
+    }
+
+    result = asyncio.run(worker.run_once(now=NOW, owner_goal=owner_goal))
+
+    assert result["status"] == "ERROR"
+    assert result["error_type"] == "LLMProviderError"
+    assert result["retryable"] is True
+    assert result["owner_goal_id"] == "goal-livingruntime-remote"
+    assert result["mind_plan"]["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert result["mind_plan"]["owner_goal_id"] == "goal-livingruntime-remote"
+    assert result["mind_plan"]["required_topic"] is None
+    assert explorer.collect_active is None
+    assert explorer.filter_topics == []
+    assert explorer.queries == []
+
+    cycle_dir = (
+        Path(legacy.state)
+        / "content"
+        / "continuous"
+        / "cycles"
+        / result["cycle"]
+    )
+    error = json.loads((cycle_dir / "mission_discovery_error.json").read_text())
+    plan = json.loads((cycle_dir / "mind_plan.json").read_text())
+    assert error["owner_goal_id"] == "goal-livingruntime-remote"
+    assert error["publication_authority"] is False
+    assert plan["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert plan["mission_discovery_error"]["error_type"] == "LLMProviderError"
+    assert not (cycle_dir / "evidence_candidates.json").exists()
+    assert not (cycle_dir / "exploration.json").exists()
+
+
 class UnknownEvidenceIdSelectionRuntime(V2Runtime):
     async def cognitive_probe(self, task, max_tokens):
         if task.startswith("SELECT_EVIDENCE:"):
