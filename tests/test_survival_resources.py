@@ -12,6 +12,26 @@ from wechat_traffic_agent.survival_resources import SurvivalResourceManager
 NOW = datetime(2026, 9, 18, 13, 0, tzinfo=timezone.utc)
 
 
+def test_survival_network_identity_reopens_split_secret(tmp_path):
+    from agent_network.crypto import Identity
+
+    public_path = tmp_path / "application" / "network" / "identity.json"
+    secret_path = tmp_path / "secrets" / "network-identity.json"
+    created = Identity.load_or_create(
+        public_path,
+        "content.cai.001",
+        secret_path=secret_path,
+    )
+    public_record = json.loads(public_path.read_text(encoding="utf-8"))
+    assert "private_key" not in public_record
+
+    loaded = SurvivalResourceManager(tmp_path)._network_identity()
+
+    assert loaded.key_id == created.key_id
+    assert loaded.public_key == created.public_key
+    assert secret_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_observe_builds_unified_local_resource_pool(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "wechat_traffic_agent.survival_resources.shutil.disk_usage",

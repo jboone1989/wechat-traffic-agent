@@ -59,6 +59,28 @@ class _Source:
         )]
 
 
+def test_outbound_network_client_reopens_split_identity_secret(monkeypatch, tmp_path):
+    from agent_network.crypto import Identity
+    from wechat_traffic_agent import trading_draft_worker as module
+
+    monkeypatch.setenv("CONTENT_NETWORK_SEED_URLS", "https://seed.example/a2a")
+    public_path = tmp_path / "application" / "network" / "identity.json"
+    secret_path = tmp_path / "secrets" / "network-identity.json"
+    created = Identity.load_or_create(
+        public_path,
+        "content.cai.001",
+        secret_path=secret_path,
+    )
+    public_record = json.loads(public_path.read_text(encoding="utf-8"))
+    assert "private_key" not in public_record
+
+    client = module._network_client(tmp_path)
+
+    assert client.identity.key_id == created.key_id
+    assert client.identity.public_key == created.public_key
+    assert secret_path.stat().st_mode & 0o777 == 0o600
+
+
 def test_worker_creates_one_non_public_draft_per_stable_source(monkeypatch, tmp_path):
     import wechat_traffic_agent.trading_draft_worker as module
 

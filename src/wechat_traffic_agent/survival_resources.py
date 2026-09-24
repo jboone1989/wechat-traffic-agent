@@ -2560,7 +2560,11 @@ class SurvivalResourceManager:
             agent_id = str(
                 os.environ.get("CONTENT_NETWORK_AGENT_ID") or "content.cai.001"
             ).strip()
-        return Identity.load_or_create(path, agent_id)
+        return Identity.load_or_create(
+            path,
+            agent_id,
+            secret_path=self.state_root / "secrets" / "network-identity.json",
+        )
 
     @staticmethod
     def _verify_deployment_receipt(

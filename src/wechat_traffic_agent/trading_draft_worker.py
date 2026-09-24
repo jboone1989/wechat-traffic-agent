@@ -132,6 +132,7 @@ def _network_client(state_root: Path):
     identity = Identity.load_or_create(
         Path(state_root) / "application" / "network" / "identity.json",
         agent_id,
+        secret_path=Path(state_root) / "secrets" / "network-identity.json",
     )
     return AgentNetwork(
         identity=identity,
