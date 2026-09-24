@@ -6,8 +6,25 @@ developmental history, delayed learning and the evidence-bound self model.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping
+
+
+def _due_plan_count(snapshot: Any, now: datetime) -> int:
+    """Count current backlog, not future calendar commitments."""
+    current = now.astimezone(timezone.utc)
+    count = 0
+    for plan in getattr(snapshot, "pending_plans", ()) or ():
+        at = getattr(plan, "at", None)
+        if not isinstance(at, datetime):
+            count += 1
+            continue
+        if at.tzinfo is None or at.utcoffset() is None:
+            count += 1
+            continue
+        if at.astimezone(timezone.utc) <= current:
+            count += 1
+    return count
 
 
 def refresh_organism_closure(
@@ -31,7 +48,7 @@ def refresh_organism_closure(
         now=now,
         neural_life=neural_life,
         resource_pressure=resource_pressure,
-        pending_plan_count=len(snapshot.pending_plans),
+        pending_plan_count=_due_plan_count(snapshot, now),
         last_cognition_at=snapshot.last_cognition_at,
         last_action_at=snapshot.last_action_at,
     )

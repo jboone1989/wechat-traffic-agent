@@ -1,13 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from types import SimpleNamespace
 
 from wechat_traffic_agent.autonomous_life import AutonomousLifeLoop
 from wechat_traffic_agent.developmental_history import DevelopmentalHistory
 from wechat_traffic_agent.drive_system import DriveEngine
 from wechat_traffic_agent.evolution_ledger import EvolutionLedger
 from wechat_traffic_agent.lineage_experiments import LineageExperimentLedger
-from wechat_traffic_agent.organism_closure import refresh_organism_closure
+from wechat_traffic_agent.organism_closure import _due_plan_count, refresh_organism_closure
 from wechat_traffic_agent.organism_state import OrganismStateService
 from wechat_traffic_agent.self_model import SelfModel
 from wechat_traffic_agent.world_learning import WorldLearningLedger
@@ -91,6 +92,20 @@ class _Snap:
     pending_plans = ()
     last_cognition_at = NOW - timedelta(hours=2)
     last_action_at = NOW - timedelta(hours=3)
+
+
+def test_future_calendar_plans_do_not_count_as_current_workload():
+    snapshot = SimpleNamespace(
+        pending_plans=(
+            SimpleNamespace(at=NOW - timedelta(minutes=1), task="DUE"),
+            SimpleNamespace(at=NOW, task="DUE_NOW"),
+            SimpleNamespace(at=NOW + timedelta(minutes=1), task="FUTURE"),
+            SimpleNamespace(at=NOW + timedelta(days=365), task="FAR_FUTURE"),
+        )
+    )
+
+    assert _due_plan_count(snapshot, NOW) == 2
+
 
 
 def test_organism_state_unknown_never_becomes_healthy(tmp_path):
