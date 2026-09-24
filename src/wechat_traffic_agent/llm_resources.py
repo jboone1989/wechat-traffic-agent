@@ -55,6 +55,39 @@ def _resource_id(provider_id: str, model: str) -> str:
     return f"llm-resource:{provider_id}:{digest}"
 
 
+def _parse_time(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _runtime_health(state_root: Path) -> dict[str, dict[str, Any]]:
+    path = (
+        Path(state_root)
+        / "application"
+        / "llm_resource_pool"
+        / "runtime"
+        / "health.json"
+    )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        rows = raw.get("resources") if isinstance(raw, dict) else {}
+        return {
+            str(key): dict(value)
+            for key, value in (rows or {}).items()
+            if isinstance(value, dict)
+        }
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
 def _env_metadata(credential_env: str) -> dict[str, Any]:
     return {
         "quota_remaining": _optional_float(credential_env + "_QUOTA_REMAINING"),
@@ -145,7 +178,9 @@ def sync_llm_resource_pool(
     leads = {row.lead_id: row for row in scout.provider_leads()}
     verifications = {row.lead_id: row for row in scout.provider_verifications()}
     trials = scout.model_trials()
+    runtime_health = _runtime_health(state_root)
     resources: list[dict[str, Any]] = []
+    suppressed_runtime_invalid: list[str] = []
 
     stable_credential = next(
         (
@@ -242,12 +277,37 @@ def sync_llm_resource_pool(
             if lead.credential_env == "NVIDIA_API_KEY"
             else lead.official_root.replace(".", "-").lower()
         )
+        resource_id = _resource_id(provider_id, model)
+        health = runtime_health.get(resource_id) or {}
+        hard_runtime_error = str(health.get("last_error_code") or "").upper()
+        hard_runtime_failure_at = _parse_time(health.get("last_failure_at"))
+        latest_trial_success_at = max(
+            (
+                parsed
+                for parsed in (
+                    _parse_time(row.completed_at)
+                    for row in completed
+                )
+                if parsed is not None
+            ),
+            default=None,
+        )
+        if (
+            hard_runtime_error in {"HTTP_404", "HTTP_410"}
+            and hard_runtime_failure_at is not None
+            and (
+                latest_trial_success_at is None
+                or hard_runtime_failure_at > latest_trial_success_at
+            )
+        ):
+            suppressed_runtime_invalid.append(resource_id)
+            continue
         metadata = _env_metadata(lead.credential_env)
         capability = model_capability_profile(
             model, reputation_book=reputation_book
         )
         resources.append({
-            "resource_id": _resource_id(provider_id, model),
+            "resource_id": resource_id,
             "provider_id": provider_id,
             "provider_label": lead.provider_label,
             "model": model,
@@ -299,6 +359,8 @@ def sync_llm_resource_pool(
         "paid_count": sum(1 for row in resources if row["pricing_class"] == "PAID"),
         "windfall_count": sum(1 for row in resources if row.get("windfall_eligible")),
         "resource_ids": [row["resource_id"] for row in resources],
+        "suppressed_runtime_invalid_count": len(suppressed_runtime_invalid),
+        "suppressed_runtime_invalid_resource_ids": suppressed_runtime_invalid,
     }
 
 

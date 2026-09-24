@@ -118,6 +118,75 @@ def test_sync_carries_operator_quota_and_expiry_metadata(tmp_path, monkeypatch):
     assert free["expires_at"] == "2026-10-01T00:00:00+00:00"
 
 
+def test_sync_suppresses_runtime_invalid_model_until_newer_success_evidence(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "free-secret")
+    scout = _seed_openrouter(tmp_path)
+
+    initial = sync_llm_resource_pool(state_root=tmp_path, now=NOW)
+    assert initial["free_count"] == 1
+    manifest_path = (
+        tmp_path / "application" / "llm_resource_pool" / "resources.json"
+    )
+    resource_id = next(
+        row["resource_id"]
+        for row in json.loads(manifest_path.read_text())["resources"]
+        if row["pricing_class"] == "FREE"
+    )
+
+    runtime_dir = (
+        tmp_path / "application" / "llm_resource_pool" / "runtime"
+    )
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_failure_at = NOW.replace(minute=40)
+    (runtime_dir / "health.json").write_text(
+        json.dumps({
+            "resources": {
+                resource_id: {
+                    "successes": 20,
+                    "failures": 1,
+                    "consecutive_failures": 1,
+                    "last_error_code": "HTTP_404",
+                    "last_failure_at": runtime_failure_at.isoformat(),
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    suppressed = sync_llm_resource_pool(
+        state_root=tmp_path, now=NOW.replace(minute=45)
+    )
+    assert suppressed["free_count"] == 0
+    assert suppressed["suppressed_runtime_invalid_count"] == 1
+    assert suppressed["suppressed_runtime_invalid_resource_ids"] == [resource_id]
+
+    recovered_at = NOW.replace(minute=50)
+    scout.record_model_trial(ModelTrial(
+        trial_id="trial:o:recovered",
+        opportunity_id="lead:o",
+        task_class="simple_public_text",
+        status="COMPLETED",
+        quality_score=1.0,
+        latency_ms=800.0,
+        observed_cost=0.0,
+        evidence_refs=("receipt:o:recovered",),
+        provider_lead_id="lead:o",
+        provider_label="OpenRouter",
+        model_id="openrouter/free",
+        started_at=recovered_at.isoformat(),
+        completed_at=recovered_at.isoformat(),
+        error_code="",
+    ))
+
+    restored = sync_llm_resource_pool(
+        state_root=tmp_path, now=NOW.replace(minute=55)
+    )
+    assert restored["free_count"] == 1
+    assert restored["suppressed_runtime_invalid_count"] == 0
+
+
 def test_runtime_backend_loads_resource_pool_from_content_state(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "free-secret")
     monkeypatch.setenv("VIRTUALBRAIN_LLM_API_KEY", "paid-secret")
