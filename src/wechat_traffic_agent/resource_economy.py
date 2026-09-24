@@ -160,8 +160,13 @@ class ContentResourceEconomy:
             )
             balance_observed = False
         awareness = self.mind.session.resource_awareness
+        # Provider APIs may report a small negative account balance after usage.
+        # Preserve that raw observation as evidence, but ResourceState.available_funds
+        # means spendable funds and is non-negative by contract.
+        spendable_funds = max(0.0, float(balance.total_balance))
+        provider_debt = max(0.0, -float(balance.total_balance))
         burn = self._daily_burn(awareness.states, balance)
-        runway = balance.total_balance / burn if burn is not None and burn > 0 else None
+        runway = spendable_funds / burn if burn is not None and burn > 0 else None
         from .llm_resources import eligible_free_resources, pool_metrics
         llm_metrics = pool_metrics(self.state_root)
         free_routes = eligible_free_resources(self.state_root, now)
@@ -169,7 +174,7 @@ class ContentResourceEconomy:
             observed_tick=int(self.mind.session.tick),
             observed_at=balance.observed_at,
             currency=balance.currency,
-            available_funds=balance.total_balance,
+            available_funds=spendable_funds,
             period_budget=self.monthly_budget,
             carryover_funds=None,
             spent_today=None,
@@ -182,8 +187,9 @@ class ContentResourceEconomy:
                 "deepseek_api_available": 1.0 if balance_observed and balance.is_available else 0.0,
                 "deepseek_balance_observed": 1.0 if balance_observed else 0.0,
                 "llm_eligible_free_route_count": float(len(free_routes)),
-                "deepseek_granted_balance": balance.granted_balance,
-                "deepseek_topped_up_balance": balance.topped_up_balance,
+                "deepseek_granted_balance": max(0.0, float(balance.granted_balance)),
+                "deepseek_topped_up_balance": max(0.0, float(balance.topped_up_balance)),
+                "deepseek_account_debt": provider_debt,
                 **llm_metrics,
             },
             source_refs=(balance.evidence_ref,),
@@ -334,7 +340,7 @@ class ContentResourceEconomy:
         if candidate is None:
             return fallback
         prior, seconds = candidate
-        delta = prior.available_funds - current.total_balance
+        delta = prior.available_funds - max(0.0, float(current.total_balance))
         if delta < 0:
             return None  # top-up/grant/change: do not mislabel it as negative spend
         return delta * 86400.0 / seconds

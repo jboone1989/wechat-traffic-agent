@@ -21,7 +21,7 @@ class App:
 class Loop:
     def preflight(self, *, now, cycle_id):
         return {"cycle": "cycle-1", "status": "ALREADY_PROCESSED"}
-    async def run_once(self, *, now, cycle_id, focus_topic):
+    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
         return {
             "status": "DRAFT_CREATED", "cycle": "cycle-1",
             "action_prediction": {"prediction_id": PREDICTION_ID},

@@ -89,7 +89,7 @@ class Loop:
             "result_path": str(path),
         }
 
-    async def run_once(self, *, now, cycle_id, focus_topic):
+    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {"status": self.result_status, "cycle": cycle}
@@ -290,7 +290,7 @@ class MissionLoop(Loop):
     def __init__(self, state_root: Path, *, result_status: str = "COGNITION_ONLY"):
         super().__init__(state_root, result_status=result_status)
 
-    async def run_once(self, *, now, cycle_id, focus_topic):
+    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {
@@ -581,7 +581,7 @@ def test_legacy_mission_discovery_error_recovers_identity_from_active_mission(tm
 
 
 class AlreadyProcessedPublishedLoop(Loop):
-    async def run_once(self, *, now, cycle_id, focus_topic):
+    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         return {
@@ -669,3 +669,63 @@ def test_social_backlog_finds_recent_published_cycle_missing_draft(tmp_path):
     assert candidate["cycle"] == "v2-published-social-gap"
     assert candidate["reason"] == "MISSING_SOCIAL_DRAFT"
     assert candidate["result"] == published
+
+
+def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
+    from types import SimpleNamespace
+
+    state_root = tmp_path / "state"
+    loop = Loop(state_root, result_status="COGNITION_ONLY")
+    loop.owner_goals = []
+    original = loop.run_once
+
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None):
+        loop.owner_goals.append(owner_goal)
+        return await original(
+            now=now,
+            cycle_id=cycle_id,
+            focus_topic=focus_topic,
+            owner_goal=owner_goal,
+        )
+
+    loop.run_once = capture
+    owner_goal = SimpleNamespace(
+        goal_id="goal-owner-new",
+        description="宣传 LivingRuntime Remote，并把它作为 X 增长实验。",
+        reason="operator submitted",
+        priority=0.4,
+        created_at=NOW + timedelta(minutes=1),
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+    )
+    older = SimpleNamespace(
+        goal_id="goal-owner-old",
+        description="older owner goal",
+        reason="operator submitted",
+        priority=0.4,
+        created_at=NOW,
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+    )
+    app = App()
+    app.domain_runtime = SimpleNamespace(active_goals=[older, owner_goal])
+    runner = WakefulContentTaskRunner(
+        app=app,
+        state_root=state_root,
+        network_service=None,
+        wakeful=Wakeful(),
+        web_worker=None,
+        gsc_collector=None,
+        continuous_loop=loop,
+        resource_economy=Economy(),
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=None,
+    )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW + timedelta(minutes=2))
+
+    assert result["owner_goal_context"]["goal_id"] == "goal-owner-new"
+    assert loop.owner_goals[-1]["goal_id"] == "goal-owner-new"
+    assert "LivingRuntime Remote" in loop.owner_goals[-1]["description"]

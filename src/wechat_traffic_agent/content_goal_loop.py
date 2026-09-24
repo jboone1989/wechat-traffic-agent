@@ -106,6 +106,27 @@ class DreamInsightDecision(Contract):
     rationale: str = Field(min_length=10, max_length=600)
 
 
+def _normalize_owner_goal_context(value):
+    if not isinstance(value, dict):
+        return None
+    goal_id = str(value.get("goal_id") or "").strip()
+    description = str(value.get("description") or "").strip()
+    if not goal_id or not description:
+        return None
+    try:
+        priority = float(value.get("priority") or 0.0)
+    except (TypeError, ValueError):
+        priority = 0.0
+    return {
+        "goal_id": goal_id[:160],
+        "origin": "USER",
+        "description": description[:2400],
+        "reason": str(value.get("reason") or "")[:800],
+        "priority": max(0.0, min(1.0, priority)),
+        "created_at": str(value.get("created_at") or "")[:80],
+    }
+
+
 def _active_mission_discovery_context(value):
     if not isinstance(value, dict) or value.get("status") != "ACTIVE":
         return None
@@ -422,15 +443,17 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         return emit_public_activity(self.state, cycle=cycle, phase=phase, title=title, detail=detail,
                                     status=status, kind=kind)
 
-    async def run_once(self, *, now=None, cycle_id=None, focus_topic=None):
+    async def run_once(self, *, now=None, cycle_id=None, focus_topic=None, owner_goal=None):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
             raise ValueError('focus_topic must be a lowercase kebab-case slug')
         self._focus_topic = topic or None
+        self._owner_goal = _normalize_owner_goal_context(owner_goal)
         try:
             return await super().run_once(now=now, cycle_id=cycle_id)
         finally:
             self._focus_topic = None
+            self._owner_goal = None
 
     async def verify_due_predictions(self, *, now):
         due = self.predictions.due(now)
@@ -575,6 +598,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         plan_preexisting = plan_path.exists()
         x_mission_context = x_growth_mission_context(self.state)
         mission_context = _active_mission_discovery_context(x_mission_context)
+        owner_goal = _normalize_owner_goal_context(getattr(self, '_owner_goal', None))
         mission_step = (
             mission_context.get('roadmap_step')
             if isinstance(mission_context, dict)
@@ -958,7 +982,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 task = (
                     'MISSION_DISCOVERY: choose one concrete research subject for the next '
                     'content evidence search that advances the active external mission without '
-                    'forcing publication. The topic must describe the subject matter, not '
+                    'forcing publication. When owner_goal is present, it is the current human '
+                    'task constraint: if it explicitly asks to serve this mission, the chosen '
+                    'subject and search query must directly investigate that owner-specified '
+                    'subject rather than silently substituting an unrelated mission angle. '
+                    'The topic must describe the subject matter, not '
                     'follower growth or engagement tactics. Prefer Ferro/LivingRuntime strengths '
                     'and existing site topics when genuinely useful; a new durable topic is '
                     'allowed. The search_query must seek current public factual evidence about '
@@ -975,6 +1003,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'factual evidence.\n'
                     + json.dumps({
                         'external_mission': mission_context,
+                        'owner_goal': owner_goal,
                         'existing_topics': sorted(snapshot['topics'])[:80],
                         'recent_site_coverage': recent_articles,
                         'recent_no_material_change_attempts': recent_noop_attempts,
@@ -1015,6 +1044,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'experiment_id': (
                             (mission_context.get('active_experiment') or {}).get('experiment_id')
                         ),
+                        'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
                         'decision': mission_decision.model_dump(mode='json'),
                         'recent_no_material_change_attempts': recent_noop_attempts,
                         'generation_authority': 'DISCOVERY_ONLY',
@@ -1034,6 +1064,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                             (mission_context.get('active_experiment') or {}).get('experiment_id')
                             or ''
                         ),
+                        'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
                         'retryable': True,
                         'publication_authority': False,
                     })
@@ -1067,6 +1098,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'required_topic': mission_decision.topic,
                     'mission_discovery': mission_decision.model_dump(mode='json'),
                     'external_mission_id': mission_context.get('mission_id'),
+                    'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
                 }
                 required_topic = mission_decision.topic
 

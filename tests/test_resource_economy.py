@@ -203,3 +203,47 @@ def test_publication_without_measured_downstream_value_does_not_invent_value(tmp
     assert outcome.external_value == 0
     assert outcome.learning_value == 0
     assert outcome.reproduction_value == 0
+
+
+def test_negative_paid_balance_keeps_raw_debt_but_free_route_can_execute(tmp_path, monkeypatch):
+    import json
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    negative = BalanceObservation(
+        observed_at=NOW.isoformat(),
+        is_available=False,
+        currency="CNY",
+        total_balance=-0.02,
+        granted_balance=0.0,
+        topped_up_balance=-0.02,
+        evidence_ref="deepseek-balance:sha256:" + "n" * 64,
+    )
+    monkeypatch.setattr(economy.observer, "observe", lambda now: negative)
+    monkeypatch.setenv("TEST_FREE_API_KEY", "present")
+    pool = tmp_path / "application" / "llm_resource_pool"
+    pool.mkdir(parents=True)
+    (pool / "resources.json").write_text(json.dumps({
+        "observed_at": NOW.isoformat(),
+        "resources": [{
+            "resource_id": "verified-free",
+            "pricing_class": "FREE",
+            "credential_env": "TEST_FREE_API_KEY",
+            "metrics_source": "EMPIRICAL_TRIALS",
+            "quota_remaining": 5,
+            "expires_at": (NOW + timedelta(hours=1)).isoformat(),
+        }],
+    }))
+
+    observed = economy.observe(NOW)
+    current = mind.session.resource_awareness.current
+
+    assert observed["balance"]["total_balance"] == pytest.approx(-0.02)
+    assert observed["balance"]["topped_up_balance"] == pytest.approx(-0.02)
+    assert current is not None
+    assert current.available_funds == 0.0
+    assert current.quotas["deepseek_account_debt"] == pytest.approx(0.02)
+    assert current.quotas["deepseek_topped_up_balance"] == 0.0
+
+    decision = economy.begin_cycle(now=NOW, cycle="negative-paid-free-route")
+    assert decision["decision"] == "EXECUTE"
+    assert decision["available_funds"] == 0.0

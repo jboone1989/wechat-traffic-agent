@@ -1288,6 +1288,35 @@ class WakefulContentTaskRunner:
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
+    def _active_owner_goal_context(self) -> dict[str, Any] | None:
+        runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
+        goals = list(getattr(runtime, "active_goals", ()) or ())
+        candidates: list[Any] = []
+        for goal in goals:
+            origin = getattr(getattr(goal, "origin", None), "value", getattr(goal, "origin", ""))
+            status = getattr(getattr(goal, "status", None), "value", getattr(goal, "status", ""))
+            if str(origin) == "USER" and str(status) == "ACTIVE":
+                candidates.append(goal)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda goal: str(getattr(goal, "created_at", "") or ""),
+            reverse=True,
+        )
+        goal = candidates[0]
+        description = str(getattr(goal, "description", "") or "").strip()
+        goal_id = str(getattr(goal, "goal_id", "") or "").strip()
+        if not goal_id or not description:
+            return None
+        return {
+            "goal_id": goal_id,
+            "origin": "USER",
+            "description": description,
+            "reason": str(getattr(goal, "reason", "") or ""),
+            "priority": float(getattr(goal, "priority", 0.0) or 0.0),
+            "created_at": str(getattr(goal, "created_at", "") or ""),
+        }
+
     def _content(self, now: datetime, *, focus_topic: str | None) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
@@ -1421,8 +1450,18 @@ class WakefulContentTaskRunner:
             rows["continuous_content"] = {"status": "RESOURCE_DEFERRED", "cycle": cycle_id, "resource_decision": decision}
             rows["status"] = "DEFERRED"
             return rows
+        owner_goal = self._active_owner_goal_context()
+        if owner_goal is not None:
+            rows["owner_goal_context"] = {
+                "goal_id": owner_goal["goal_id"],
+                "origin": owner_goal["origin"],
+                "priority": owner_goal["priority"],
+            }
         continuous = self._run_async(self.continuous_loop.run_once(
-            now=now, cycle_id=directed_cycle_id, focus_topic=focus_topic,
+            now=now,
+            cycle_id=directed_cycle_id,
+            focus_topic=focus_topic,
+            owner_goal=owner_goal,
         ))
         rows["continuous_content"] = continuous
         if recovery is not None and recovery.get("status") == "READY":

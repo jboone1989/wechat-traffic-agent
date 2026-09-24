@@ -1436,3 +1436,58 @@ def test_goal_loop_executes_mature_content_retry_skill_variant(tmp_path):
     )
     assert selected["variant_id"] == retry["variant_id"]
     assert selected["success_count"] == 4
+
+
+class OwnerBoundMissionRuntime(MissionDiscoveryRuntime):
+    async def cognitive_probe(self, task, max_tokens):
+        if task.startswith("MISSION_DISCOVERY:"):
+            self.calls.append(task)
+            assert "LivingRuntime Remote" in task
+            assert "goal-livingruntime-remote" in task
+            return json.dumps({
+                "topic": "livingruntime-remote",
+                "search_query": "LivingRuntime Remote ChatGPT remote host Pi Remote durable receipt",
+                "reader_need": (
+                    "Explain how LivingRuntime Remote lets an AI agent safely operate a remote host "
+                    "with bounded approvals and durable execution evidence."
+                ),
+                "rationale": (
+                    "The owner explicitly asked to promote LivingRuntime Remote as a real X growth "
+                    "experiment, and the topic can be grounded in product behavior and public evidence."
+                ),
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_owner_goal_constrains_external_mission_discovery_without_breaking_binding(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = OwnerBoundMissionRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+    owner_goal = {
+        "goal_id": "goal-livingruntime-remote",
+        "origin": "USER",
+        "description": (
+            "宣传 LivingRuntime Remote，并把它作为当前 X 粉丝增长目标的一次真实增长实验来执行。"
+        ),
+        "reason": "operator submitted",
+        "priority": 0.4,
+        "created_at": NOW.isoformat(),
+    }
+
+    result = asyncio.run(worker.run_once(now=NOW, owner_goal=owner_goal))
+
+    assert result["mind_plan"]["goal"]["origin"] == "EXTERNAL_MISSION"
+    assert result["mind_plan"]["required_topic"] == "livingruntime-remote"
+    assert result["mind_plan"]["external_mission_id"] == "mission-growth-1"
+    assert result["mind_plan"]["owner_goal_id"] == "goal-livingruntime-remote"
+    cycle_dir = Path(legacy.state) / "content" / "continuous" / "cycles" / result["cycle"]
+    discovery = json.loads((cycle_dir / "mission_discovery.json").read_text())
+    assert discovery["mission_id"] == "mission-growth-1"
+    assert discovery["owner_goal_id"] == "goal-livingruntime-remote"
+    assert discovery["publication_authority"] is False
+    assert explorer.queries == [(
+        "LivingRuntime Remote ChatGPT remote host Pi Remote durable receipt",
+        "livingruntime-remote",
+    )]
