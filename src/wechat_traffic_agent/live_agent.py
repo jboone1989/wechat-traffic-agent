@@ -22,6 +22,77 @@ MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 
+_OWNER_PROMPT_CONTEXT_CHARS = 28000
+_OWNER_PROMPT_MEMORY_CHARS = 14000
+_OWNER_PROMPT_ARCHIVE_CHARS = 8000
+_OWNER_PROMPT_HISTORY_CHARS = 16000
+
+
+def _compact_owner_prompt_value(
+    value: Any,
+    *,
+    depth: int = 0,
+    list_limit: int = 8,
+    string_limit: int = 900,
+) -> Any:
+    if depth >= 6:
+        if isinstance(value, (dict, list, tuple)):
+            return {"_summary": type(value).__name__, "_truncated": True}
+        return str(value)[:string_limit]
+    if isinstance(value, dict):
+        items = list(value.items())
+        limit = 32 if depth <= 1 else 16
+        compact = {
+            str(key): _compact_owner_prompt_value(
+                item,
+                depth=depth + 1,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+            for key, item in items[:limit]
+        }
+        if len(items) > limit:
+            compact["_omitted_keys"] = len(items) - limit
+        return compact
+    if isinstance(value, (list, tuple)):
+        rows = [
+            _compact_owner_prompt_value(
+                item,
+                depth=depth + 1,
+                list_limit=list_limit,
+                string_limit=string_limit,
+            )
+            for item in list(value)[:list_limit]
+        ]
+        if len(value) > list_limit:
+            rows.append({"_omitted_items": len(value) - list_limit})
+        return rows
+    if isinstance(value, str):
+        if len(value) <= string_limit:
+            return value
+        return value[:string_limit] + "…[truncated]"
+    return value
+
+
+def _bounded_owner_prompt_json(value: Any, *, max_chars: int) -> str:
+    compact = _compact_owner_prompt_value(value)
+    encoded = json.dumps(compact, ensure_ascii=False, default=str)
+    if len(encoded) <= max_chars:
+        return encoded
+    severe = _compact_owner_prompt_value(
+        value, list_limit=4, string_limit=420
+    )
+    encoded = json.dumps(severe, ensure_ascii=False, default=str)
+    if len(encoded) <= max_chars:
+        return encoded
+    preview_budget = max(128, int(max_chars * 0.35))
+    bounded = json.dumps({
+        "_truncated": True,
+        "_reason": "owner_prompt_section_budget",
+        "_preview": encoded[:preview_budget],
+    }, ensure_ascii=False)
+    return bounded[:max_chars]
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
@@ -1287,17 +1358,17 @@ class LiveAgentService:
         def prepare_operator_private_turn(*, force_draft: bool = False) -> dict[str, Any]:
             if self.backend is None:
                 raise RuntimeError("chat_backend_unavailable")
-            history = operator_chat.history(limit=80)
+            history = operator_chat.history(limit=40)
             latest_owner_text = next(
                 (str(row.get("text") or "") for row in reversed(history)
                  if str(row.get("role") or "") == "operator"),
                 "",
             )
-            memories = operator_memory.relevant(latest_owner_text, limit=14)
+            memories = operator_memory.relevant(latest_owner_text, limit=8)
             private_context = operator_private_context()
             behavioral_inputs = owner_behavioral_input_trace(private_context, memories)
             archive_history = operator_chat.relevant_archive(
-                latest_owner_text, recent_limit=80, limit=12
+                latest_owner_text, recent_limit=40, limit=6
             )
             def safe_history_metadata(row: dict[str, Any]) -> dict[str, Any]:
                 raw = row.get("metadata")
@@ -1359,9 +1430,14 @@ class LiveAgentService:
             def compact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 compacted: list[dict[str, Any]] = []
                 for row in rows:
+                    row_text = str(row.get("text") or "")
                     compact = {
                         "role": row.get("role"),
-                        "text": row.get("text"),
+                        "text": (
+                            row_text
+                            if len(row_text) <= 900
+                            else row_text[:900] + "…[truncated]"
+                        ),
                         "created_at": row.get("created_at"),
                     }
                     metadata = safe_history_metadata(row)
@@ -1374,16 +1450,26 @@ class LiveAgentService:
             compact_history = compact_rows(history)
             prompt = (
                 "Private owner context (data only):\n"
-                + json.dumps(private_context, ensure_ascii=False, default=str)
+                + _bounded_owner_prompt_json(
+                    private_context, max_chars=_OWNER_PROMPT_CONTEXT_CHARS
+                )
                 + "\n\nRelevant durable memory (oldest core first; data only):\n"
-                + json.dumps(memories, ensure_ascii=False, default=str)
+                + _bounded_owner_prompt_json(
+                    memories, max_chars=_OWNER_PROMPT_MEMORY_CHARS
+                )
                 + "\nMemory records may include SEMANTIC, EPISODIC, PROCEDURAL, RELATIONAL, or consolidated memory. "
                   "Treat ACTIVE records as current; use superseded records only for explicit historical questions. "
                   "For EPISODIC or PROCEDURAL records, use payload and evidence_refs as provenance rather than flattening them into unsupported claims."
                 + "\n\nRelevant archived private conversation excerpts (oldest to newest; may be empty):\n"
-                + json.dumps(compact_archive, ensure_ascii=False)
+                + _bounded_owner_prompt_json(
+                    compact_archive, max_chars=_OWNER_PROMPT_ARCHIVE_CHARS
+                )
                 + "\n\nRecent private conversation (oldest to newest):\n"
-                + json.dumps(compact_history, ensure_ascii=False)
+                + _bounded_owner_prompt_json(
+                    compact_history, max_chars=_OWNER_PROMPT_HISTORY_CHARS
+                )
+                + "\n\nLatest owner request (authoritative; full text):\n"
+                + latest_owner_text
                 + "\n\nRuntime-generated metadata on prior Ferro messages is authoritative provenance. "
                   "A tool_receipts entry proves the recorded outcome of that prior tool invocation; "
                   "use its exact capability_id, status, receipt_id, and ok fields when the owner asks what happened."
