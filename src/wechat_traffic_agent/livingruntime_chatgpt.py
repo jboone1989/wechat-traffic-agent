@@ -137,6 +137,27 @@ class LivingRuntimeChatGPTProvider:
             except (TypeError, ValueError):
                 pass
 
+        effective_timeout = self.timeout_seconds
+        caller_budget = kwargs.get("_reserve_timeout_seconds")
+        if caller_budget is None:
+            caller_budget = kwargs.get("_attempt_timeout_seconds")
+        if caller_budget is not None:
+            try:
+                budget = float(caller_budget)
+            except (TypeError, ValueError):
+                budget = None
+            if budget is not None and math.isfinite(budget) and budget > 0:
+                # Leave a small margin for cognitionctl serialization/process
+                # teardown so the outer advisory budget remains authoritative.
+                effective_timeout = min(
+                    effective_timeout,
+                    max(1.0, budget - 3.0),
+                )
+
+        cli_timeout_seconds = max(
+            1,
+            min(int(math.ceil(effective_timeout)), 180),
+        )
         payload = {
             "agent_id": self.agent_id,
             "purpose": task_class[:512] or "content_cognition",
@@ -144,7 +165,7 @@ class LivingRuntimeChatGPTProvider:
             "response_format": response_format,
             "options": options,
             "metadata": metadata,
-            "timeout_seconds": max(5, min(int(math.ceil(self.timeout_seconds)), 180)),
+            "timeout_seconds": cli_timeout_seconds,
         }
         body = json.dumps(
             payload,
@@ -162,7 +183,7 @@ class LivingRuntimeChatGPTProvider:
             str(self.cli_path),
             "call",
             "--wait-timeout-seconds",
-            str(max(1, int(math.ceil(self.timeout_seconds)))),
+            str(cli_timeout_seconds),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -170,7 +191,7 @@ class LivingRuntimeChatGPTProvider:
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(body),
-                timeout=self.timeout_seconds + 3.0,
+                timeout=effective_timeout + 3.0,
             )
         except asyncio.TimeoutError as exc:
             proc.kill()

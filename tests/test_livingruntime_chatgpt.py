@@ -101,6 +101,55 @@ def test_remote_structured_uses_json_schema(tmp_path):
     assert result == {"remote": True}
 
 
+def test_remote_honors_reserve_budget_with_process_teardown_margin(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+idx = sys.argv.index("--wait-timeout-seconds")
+wait_timeout = int(sys.argv[idx + 1])
+text = json.dumps({
+    "payload_timeout": payload["timeout_seconds"],
+    "wait_timeout": wait_timeout,
+}, separators=(",", ":"))
+print(json.dumps({
+    "status": "COMPLETED",
+    "request_id": "llmreq_budget",
+    "created_at": 100.0,
+    "finished_at": 101.0,
+    "response": {
+        "text": text,
+        "provider": "livingruntime-chatgpt",
+        "model": "gpt-5.6-sol",
+        "session_id": "session-budget",
+        "sha256": "budget123",
+        "completed_at": 101.0
+    }
+}, separators=(",", ":")))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=120,
+    )
+
+    result = asyncio.run(
+        provider.complete(
+            "bounded cognition",
+            _attempt_timeout_seconds=15,
+            _reserve_timeout_seconds=100,
+        )
+    )
+
+    assert json.loads(result) == {
+        "payload_timeout": 97,
+        "wait_timeout": 97,
+    }
+
+
 def test_disabled_remote_falls_back_without_running_cli(tmp_path):
     fallback = _Fallback()
     provider = LivingRuntimeChatGPTProvider(
