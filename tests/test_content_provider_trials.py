@@ -1120,3 +1120,75 @@ def test_newer_runtime_404_invalidates_old_success_and_rotates_model(tmp_path, m
     assert calls == ["old-free", "new-free"]
     assert resolved[1] == {"old-free"}
     assert second["empirical_selection"]["model_id"] == "new-free"
+
+
+def test_failed_trial_from_old_executor_gets_one_refresh_retry():
+    from agent_runtime.resource_discovery import ProviderTrialPlan
+    plan = ProviderTrialPlan(
+        plan_id="provider-trial:c",
+        lead_id="lead:c",
+        provider_label="Cerebras",
+        credential_env="CEREBRAS_API_KEY",
+        status="READY_TO_TRIAL",
+        priority_score=1.0,
+    )
+    prior = [
+        ModelTrial(
+            trial_id=f"old:{i}",
+            opportunity_id="lead:c",
+            task_class="simple_public_text",
+            status="FAILED",
+            provider_lead_id="lead:c",
+            provider_label="Cerebras",
+            model_id="gpt-oss-120b",
+            started_at=(NOW - timedelta(days=1)).isoformat(),
+            completed_at=(NOW - timedelta(days=1)).isoformat(),
+            error_code="HTTP_403",
+            evidence_refs=("old-executor",),
+        )
+        for i in range(3)
+    ]
+
+    retry = resource_module._provider_trial_retry_plan(plan, prior, now=NOW)
+
+    assert retry is not None
+    assert retry.plan_id.endswith(":executor-refresh")
+    assert resource_module.provider_trial_execution_evidence_ref() in retry.evidence_refs
+
+
+def test_current_executor_failure_retries_only_after_bounded_cooldown():
+    from agent_runtime.resource_discovery import ProviderTrialPlan
+    current_ref = resource_module.provider_trial_execution_evidence_ref()
+    plan = ProviderTrialPlan(
+        plan_id="provider-trial:c",
+        lead_id="lead:c",
+        provider_label="Cerebras",
+        credential_env="CEREBRAS_API_KEY",
+        status="READY_TO_TRIAL",
+        priority_score=1.0,
+    )
+    prior = [
+        ModelTrial(
+            trial_id=f"current:{i}",
+            opportunity_id="lead:c",
+            task_class="simple_public_text",
+            status="FAILED",
+            provider_lead_id="lead:c",
+            provider_label="Cerebras",
+            model_id="gpt-oss-120b",
+            started_at=NOW.isoformat(),
+            completed_at=NOW.isoformat(),
+            error_code="REQUEST_FAILED",
+            evidence_refs=(current_ref,),
+        )
+        for i in range(3)
+    ]
+
+    assert resource_module._provider_trial_retry_plan(
+        plan, prior, now=NOW + timedelta(hours=1)
+    ) is None
+    retry = resource_module._provider_trial_retry_plan(
+        plan, prior, now=NOW + timedelta(hours=7)
+    )
+    assert retry is not None
+    assert ":retry:" in retry.plan_id

@@ -17,7 +17,7 @@ from agent_runtime.resource_discovery import (
 )
 from agent_runtime.resource_trials import (
     ProviderTrialMeasurement, ProviderTrialRequestError, model_trials_from_measurements,
-    resolve_trial_target, run_bounded_provider_trial,
+    provider_trial_execution_evidence_ref, resolve_trial_target, run_bounded_provider_trial,
 )
 
 from .nvidia_catalog import classify_nvidia_model
@@ -67,6 +67,60 @@ def _parse_aware_time(value: Any) -> datetime | None:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _provider_trial_retry_plan(
+    plan: Any,
+    prior: list[ModelTrial],
+    *,
+    now: datetime,
+) -> Any | None:
+    """Return a bounded retry plan when old failure evidence is no longer decisive."""
+    if not prior:
+        return plan
+    if any(row.status == "COMPLETED" for row in prior):
+        return None
+
+    current_ref = provider_trial_execution_evidence_ref()
+    current = [row for row in prior if current_ref in tuple(row.evidence_refs or ())]
+    # A changed trial executor (headers/protocol semantics/etc.) gets one fresh
+    # evidence opportunity immediately instead of being poisoned by old failures.
+    if not current:
+        return replace(
+            plan,
+            plan_id=f"{plan.plan_id}:executor-refresh",
+            evidence_refs=tuple(dict.fromkeys((*plan.evidence_refs, current_ref))),
+        )
+
+    # Authentication and hard model-removal errors need a credential/model change,
+    # not periodic hammering. Runtime model rotation handles 404/410 separately.
+    terminal_codes = {"HTTP_401", "HTTP_404", "HTTP_410"}
+    if any(str(row.error_code or "").upper() in terminal_codes for row in current):
+        return None
+
+    batch_size = max(1, min(int(plan.max_requests), 3))
+    if len(current) >= batch_size * 3:
+        return None
+    latest = max(
+        (
+            value
+            for value in (
+                _parse_aware_time(row.completed_at or row.started_at)
+                for row in current
+            )
+            if value is not None
+        ),
+        default=None,
+    )
+    point = now.astimezone(timezone.utc)
+    if latest is not None and point - latest < timedelta(hours=6):
+        return None
+    retry_bucket = int(point.timestamp() // int(timedelta(hours=6).total_seconds()))
+    return replace(
+        plan,
+        plan_id=f"{plan.plan_id}:retry:{retry_bucket}",
+        evidence_refs=tuple(dict.fromkeys((*plan.evidence_refs, current_ref))),
+    )
 
 
 def rank_high_capability_model(
@@ -717,19 +771,20 @@ class ContentResourceScout:
                 row for row in existing
                 if row.opportunity_id == plan.lead_id and row.model_id == target.model
             ]
-            if prior:
+            trial_plan = _provider_trial_retry_plan(plan, prior, now=now)
+            if trial_plan is None:
                 provider_rows.append(self._trial_provider_summary(
                     plan.provider_label, plan.credential_env, plan.lead_id, prior, status="ALREADY_TRIED"
                 ))
                 continue
             self.record_acquisition_outcome(
-                plan_id=plan.plan_id, lead_id=plan.lead_id, status="CREDENTIAL_ACQUIRED",
+                plan_id=trial_plan.plan_id, lead_id=plan.lead_id, status="CREDENTIAL_ACQUIRED",
                 now=now, source="ENVIRONMENT",
                 detail_summary=f"credential variable {plan.credential_env} is present",
                 evidence_refs=(f"env-presence:{plan.credential_env}",),
             )
             measurements = run_bounded_provider_trial(
-                plan, api_key=api_key, now=now, target=target,
+                trial_plan, api_key=api_key, now=now, target=target,
             )
             trials = model_trials_from_measurements(measurements)
             for measurement, trial in zip(measurements, trials):
@@ -748,7 +803,7 @@ class ContentResourceScout:
                 else "TRIAL_FAILED"
             )
             self.record_acquisition_outcome(
-                plan_id=plan.plan_id, lead_id=plan.lead_id, status=outcome_status, now=now,
+                plan_id=trial_plan.plan_id, lead_id=plan.lead_id, status=outcome_status, now=now,
                 source="RUNTIME",
                 detail_summary=(
                     f"bounded synthetic trial completed={len(completed)}/{len(measurements)} "
