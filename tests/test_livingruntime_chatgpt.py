@@ -147,7 +147,7 @@ print(json.dumps({
 
     assert json.loads(result) == {
         "payload_timeout": 97,
-        "dispatch_timeout": 15,
+        "dispatch_timeout": 90,
         "wait_timeout": 97,
     }
 
@@ -276,7 +276,7 @@ def test_default_remote_budget_allows_chatgpt_watcher_round_trip(tmp_path, monke
     )
 
     assert provider.timeout_seconds == 300.0
-    assert provider.dispatch_grace_seconds == 15.0
+    assert provider.dispatch_grace_seconds == 90.0
 
 
 def test_remote_dispatch_grace_is_configurable_and_bounded(tmp_path, monkeypatch):
