@@ -187,6 +187,27 @@ def test_runtime_backend_uses_chatgpt_only_when_enabled_by_default(tmp_path, mon
 
 
 
+def test_runtime_backend_does_not_construct_legacy_provider_in_chatgpt_only_mode(
+    tmp_path, monkeypatch
+):
+    cli = tmp_path / "cognitionctl.py"
+    _write_fake_cli(cli)
+    import agent_runtime.llm as runtime_llm
+
+    def forbidden_loader():
+        raise AssertionError("legacy provider must not be constructed")
+
+    monkeypatch.setattr(runtime_llm, "load_llm_provider", forbidden_loader)
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
+
+    backend = load_optional_advisory_backend()
+
+    assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
+    assert backend.provider.fallback is None
+
+
 def test_runtime_backend_can_opt_in_to_legacy_fallback(tmp_path, monkeypatch):
     fallback = _Fallback()
     cli = tmp_path / "cognitionctl.py"

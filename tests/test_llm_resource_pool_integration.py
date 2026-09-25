@@ -222,6 +222,7 @@ def test_runtime_pool_paths_are_process_local(tmp_path, monkeypatch):
 
 
 def test_virtualbrain_resource_pressure_persists_routing_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
     mind = ContentMind(root=tmp_path, subject_id="content-agent")
     economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
     monkeypatch.setattr(
@@ -253,6 +254,45 @@ def test_virtualbrain_resource_pressure_persists_routing_policy(tmp_path, monkey
     assert policy["paid_available_funds"] == 20.0
     assert policy["paid_reserve_floor"] == 20.0
     assert policy["evidence_refs"]
+
+
+def test_chatgpt_only_routing_ignores_empty_api_balance_for_cognition_pressure(
+    tmp_path, monkeypatch
+):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("print('unused')\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
+
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(
+        economy.observer,
+        "observe",
+        lambda now: BalanceObservation(
+            observed_at=now.isoformat(),
+            is_available=True,
+            currency="CNY",
+            total_balance=0.0,
+            granted_balance=0.0,
+            topped_up_balance=0.0,
+            evidence_ref="deepseek-balance:sha256:" + "b" * 64,
+        ),
+    )
+
+    result = economy.observe(NOW)
+    policy = json.loads(
+        (tmp_path / "application" / "llm_resource_pool" / "policy.json").read_text()
+    )
+
+    assert result["llm_routing_policy"]["routing_mode"] == "CHATGPT_ONLY"
+    assert result["llm_routing_policy"]["pressure"] == "NORMAL"
+    assert result["llm_routing_policy"]["prefer_free"] is False
+    assert result["llm_routing_policy"]["max_failovers"] == 0
+    assert policy["chatgpt_available"] is True
+    assert policy["preferred_lifecycles"] == []
+    assert policy["paid_available_funds"] == 0.0
 
 
 def test_pool_metrics_feed_route_outcomes_back_to_vb_observation(tmp_path):
