@@ -20,6 +20,7 @@ class FakeRuntime:
     def __init__(self) -> None:
         self.active_goals = []
         self.external_missions = []
+        self.evolution_capability_registry = SimpleNamespace(versions=[])
         self.persisted = 0
 
     def submit_goal(self, description, reason="", *, auto_complete=True):
@@ -188,6 +189,74 @@ def test_operator_conversation_store_does_not_return_unrelated_archive(tmp_path)
         store.append("ferro", f"recent ack {index}")
 
     assert store.relevant_archive("量子纠缠实验", recent_limit=6) == []
+
+
+def test_owner_context_exposes_only_active_promoted_runtime_evolution(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    root = tmp_path / "state"
+    application = FakeApplication()
+    application.domain_runtime.evolution_capability_registry.versions = [
+        SimpleNamespace(
+            capability_id="content.strategy.selection",
+            version_id="evcap:baseline",
+            implementation_ref="content-strategy:baseline",
+            candidate_id="BASELINE",
+            experiment_id="BASELINE",
+            confidence=1.0,
+            usage_count=9,
+            success_count=8,
+            born_at="2026-09-20T00:00:00+00:00",
+            state="ACTIVE",
+        ),
+        SimpleNamespace(
+            capability_id="content.strategy.selection",
+            version_id="evcap:promoted",
+            implementation_ref="content-strategy:evolved:v2",
+            candidate_id="candidate:v2",
+            experiment_id="experiment:v2",
+            confidence=0.88,
+            usage_count=4,
+            success_count=3,
+            born_at="2026-09-24T00:00:00+00:00",
+            state="ACTIVE",
+        ),
+        SimpleNamespace(
+            capability_id="memory.recall.policy",
+            version_id="evcap:shadow",
+            implementation_ref="memory:shadow",
+            candidate_id="candidate:shadow",
+            experiment_id="experiment:shadow",
+            confidence=0.9,
+            usage_count=0,
+            success_count=0,
+            born_at="2026-09-24T00:00:00+00:00",
+            state="SHADOW",
+        ),
+    ]
+    backend = FakeBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=application,
+        backend=backend,
+        wakeful=FakeWakeful(),
+    )
+
+    with TestClient(service._app()) as client:
+        _login(client, root)
+        response = client.post(
+            "/operator/api/chat",
+            headers={"X-Operator-Request": "1"},
+            json={"message": "What operating policies have you actually learned?"},
+        )
+
+    assert response.status_code == 200
+    prompt = backend.provider.calls[0][0]
+    assert '"runtime_evolution"' in prompt
+    assert "content-strategy:evolved:v2" in prompt
+    assert "memory:shadow" not in prompt
+    trace = response.json()["behavioral_inputs"]["runtime_evolution"]
+    assert trace["active_promoted_count"] == 1
+    assert trace["active_promoted_capabilities"][0]["implementation_ref"] == "content-strategy:evolved:v2"
 
 
 def test_operator_conversation_store_persists_and_activates_general_goal(tmp_path):
@@ -440,6 +509,7 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert "canned identity sentence" in owner_system
         assert "STRICT JSON" in owner_system
         assert backend.provider.calls[0][1]["_minimum_quality"] == 0.75
+        assert backend.provider.calls[0][1]["_max_failovers"] == 1
         assert backend.provider.calls[0][1]["_attempt_timeout_seconds"] == 20
         assert backend.provider.calls[0][1]["_reserve_timeout_seconds"] == 35
         proposal_id = body["proposal"]["proposal_id"]
@@ -456,6 +526,7 @@ def test_private_operator_chat_is_authenticated_persistent_and_goal_bound(tmp_pa
         assert any(row["type"] == "status" and row.get("stage") == "reply" for row in events)
         assert backend.provider.stream_calls
         assert backend.provider.stream_calls[0][1]["_minimum_quality"] == 0.75
+        assert backend.provider.stream_calls[0][1]["_max_failovers"] == 1
         assert backend.provider.stream_calls[0][1]["_attempt_timeout_seconds"] == 20
         assert backend.provider.stream_calls[0][1]["_reserve_timeout_seconds"] == 35
         visible_reply = "".join(
