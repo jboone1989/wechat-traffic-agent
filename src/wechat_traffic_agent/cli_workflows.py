@@ -24,8 +24,6 @@ from typing import Awaitable, Callable
 
 import httpx
 from agent_runtime.agents import load_agent_manifest
-from agent_runtime.backends import LegacyProviderBackend
-from agent_runtime.llm import load_llm_provider
 from agent_runtime.runtime import AgentRuntime
 
 from .agent_reach import AgentReachProvider
@@ -53,8 +51,10 @@ def bootstrap_runtime(state_dir: Path) -> AgentRuntime:
     package_root = Path(__file__).resolve().parents[2]
     manifest = load_agent_manifest(package_root / "agent.yaml")
     state_dir = state_dir.resolve()
-    from .llm_audit import audited_provider
-    backend = LegacyProviderBackend(audited_provider(load_llm_provider(), state_dir, scope="cli-workflow"))
+    from .runtime_backend import load_optional_advisory_backend
+    backend = load_optional_advisory_backend(state_root=state_dir)
+    if backend is None:
+        raise RuntimeError("no advisory cognition provider is configured")
     if (state_dir / "agent_state.json").exists():
         runtime = AgentRuntime.restore(state_dir, agent_backend=backend)
         if runtime.agent_manifest is None:

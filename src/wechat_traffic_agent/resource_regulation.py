@@ -51,7 +51,16 @@ class ResourceRegulator:
         now = now.astimezone(timezone.utc)
         policy = _read(self.state_root / "application" / "survival_resources" / "policy.json")
         routing = _read(self.state_root / "application" / "llm_resource_pool" / "policy.json")
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .runtime_backend import chatgpt_only_mode
         from .llm_resources import eligible_free_resources
+
+        chatgpt_only = chatgpt_only_mode()
+        chatgpt_available = (
+            bool(LivingRuntimeChatGPTProvider.from_environment(fallback=None).available)
+            if chatgpt_only
+            else False
+        )
         free_available = bool(eligible_free_resources(self.state_root, now))
         states = []
         for domain, row in (("host", policy), ("llm", routing)):
@@ -62,10 +71,14 @@ class ResourceRegulator:
                 value = str(row.get("pressure") or "UNKNOWN").upper()
                 if value not in PRESSURE_ORDER:
                     value = "UNKNOWN"
-            # A verified free route keeps ordinary cognition alive when only
-            # the paid account is exhausted; host pressure still wins.
-            if domain == "llm" and free_available and value in {"CONSERVE", "CRITICAL", "UNKNOWN"}:
-                value = "WATCH"
+            if domain == "llm":
+                # In production ChatGPT-only mode, API/free-pool state is not
+                # cognition capacity. The bridge itself is the LLM availability
+                # signal; host pressure still wins independently.
+                if chatgpt_only:
+                    value = "NORMAL" if chatgpt_available else "UNKNOWN"
+                elif free_available and value in {"CONSERVE", "CRITICAL", "UNKNOWN"}:
+                    value = "WATCH"
             states.append(value)
         return max(states, key=lambda value: PRESSURE_ORDER[value])
 
@@ -88,8 +101,22 @@ class ResourceRegulator:
         if task in ESSENTIAL_TASKS:
             return {"allowed": True, "pressure": pressure, "reason": "RECOVERY_LANE"}
         if owner_authorized and task == "CONTENT_COGNITION":
+            from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+            from .runtime_backend import chatgpt_only_mode
             from .llm_resources import eligible_free_resources
-            if eligible_free_resources(self.state_root, now):
+
+            if (
+                chatgpt_only_mode()
+                and LivingRuntimeChatGPTProvider.from_environment(
+                    fallback=None
+                ).available
+            ):
+                return {
+                    "allowed": True,
+                    "pressure": pressure,
+                    "reason": "OWNER_GOAL_CHATGPT_COGNITION_LANE",
+                }
+            if not chatgpt_only_mode() and eligible_free_resources(self.state_root, now):
                 return {
                     "allowed": True,
                     "pressure": pressure,

@@ -3,11 +3,19 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from wechat_traffic_agent.browser_runtime import (
     JevBrowserExecutor,
     browser_runtime_status,
     jev_readiness,
 )
+
+
+@pytest.fixture(autouse=True)
+def _multi_provider_default(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
 
 
 class _FakeAgent:
@@ -34,6 +42,22 @@ class _FakeAgent:
             "page": {"url": "https://example.test/done"},
             "history": [{"kind": "click"}, {"kind": "wait"}],
         }
+
+
+def test_chatgpt_only_disables_jev_external_model_helper(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
+    monkeypatch.setenv("TYPESAFE_API_KEY", "typesafe")
+    monkeypatch.setenv("VIRTUALBRAIN_LLM_API_KEY", "deepseek-must-not-be-used")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-must-not-be-used")
+    monkeypatch.setenv("CONTENT_JEV_TEXT_MODEL", "free-model")
+
+    row = jev_readiness()
+
+    assert row["status"] == "DISABLED"
+    assert row["chatgpt_only"] is True
+    assert row["text_helper_configured"] is False
+    assert "ChatGPT-only" in row["reason"]
 
 
 def test_jev_readiness_reports_missing_account_without_crashing(monkeypatch):
