@@ -522,4 +522,3 @@ def test_deferred_task_outcome_is_not_recorded_as_recovery(tmp_path):
     )
     assert outcome["status"] == "IGNORED_NON_ERROR"
     assert service.review()["open_count"] == 1
-
