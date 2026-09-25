@@ -6,11 +6,29 @@ import math
 import os
 from pathlib import Path
 import sys
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Mapping
 
 
 class LivingRuntimeChatGPTProviderError(RuntimeError):
     pass
+
+
+def livingruntime_chatgpt_enabled(
+    environ: Mapping[str, str] | None = None,
+    *,
+    home: Path | None = None,
+) -> bool:
+    """Return whether the durable ChatGPT cognition bridge is enabled."""
+    env = os.environ if environ is None else environ
+    raw_enabled = env.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED")
+    enable_marker = (
+        (Path.home() if home is None else Path(home))
+        / ".livingruntime"
+        / "ferro-chatgpt-provider.enabled"
+    )
+    if raw_enabled is None or not str(raw_enabled).strip():
+        return enable_marker.is_file()
+    return str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class LivingRuntimeChatGPTProvider:
@@ -53,14 +71,7 @@ class LivingRuntimeChatGPTProvider:
 
     @classmethod
     def from_environment(cls, *, fallback: Any | None = None) -> "LivingRuntimeChatGPTProvider":
-        raw_enabled = os.environ.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED")
-        enable_marker = (
-            Path.home() / ".livingruntime" / "ferro-chatgpt-provider.enabled"
-        )
-        if raw_enabled is None or not str(raw_enabled).strip():
-            enabled = enable_marker.is_file()
-        else:
-            enabled = str(raw_enabled).strip().lower() in {"1", "true", "yes", "on"}
+        enabled = livingruntime_chatgpt_enabled()
         default_cli = (
             Path.home() / ".livingruntime" / "plugin" / "scripts" / "cognitionctl.py"
         )
@@ -312,4 +323,5 @@ class LivingRuntimeChatGPTProvider:
 __all__ = [
     "LivingRuntimeChatGPTProvider",
     "LivingRuntimeChatGPTProviderError",
+    "livingruntime_chatgpt_enabled",
 ]

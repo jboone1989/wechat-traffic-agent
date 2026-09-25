@@ -148,17 +148,34 @@ class ContentResourceEconomy:
     def observe(self, now: datetime) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ResourceState
 
-        try:
-            balance = self.observer.observe(now)
-            balance_observed = True
-        except (RuntimeError, ValueError) as exc:
-            # A failed account sensor is unknown, never a measured zero balance.
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .runtime_backend import chatgpt_only_mode
+        chatgpt = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+        chatgpt_exclusive = chatgpt_only_mode()
+        if chatgpt_exclusive:
+            # DeepSeek/API balance is not the cognition budget in ChatGPT mode.
+            # Keep the historical sensor out of the production hot path.
             balance = BalanceObservation(
                 observed_at=_iso(now), is_available=False, currency="CNY",
                 total_balance=0.0, granted_balance=0.0, topped_up_balance=0.0,
-                evidence_ref="deepseek-balance:unobserved:" + type(exc).__name__,
+                evidence_ref=(
+                    "cognition-provider:livingruntime-chatgpt:"
+                    + ("available" if chatgpt.available else "unavailable")
+                ),
             )
             balance_observed = False
+        else:
+            try:
+                balance = self.observer.observe(now)
+                balance_observed = True
+            except (RuntimeError, ValueError) as exc:
+                # A failed account sensor is unknown, never a measured zero balance.
+                balance = BalanceObservation(
+                    observed_at=_iso(now), is_available=False, currency="CNY",
+                    total_balance=0.0, granted_balance=0.0, topped_up_balance=0.0,
+                    evidence_ref="deepseek-balance:unobserved:" + type(exc).__name__,
+                )
+                balance_observed = False
         awareness = self.mind.session.resource_awareness
         # Provider APIs may report a small negative account balance after usage.
         # Preserve that raw observation as evidence, but ResourceState.available_funds
@@ -186,6 +203,8 @@ class ContentResourceEconomy:
             quotas={
                 "deepseek_api_available": 1.0 if balance_observed and balance.is_available else 0.0,
                 "deepseek_balance_observed": 1.0 if balance_observed else 0.0,
+                "chatgpt_cognition_enabled": 1.0 if chatgpt.enabled else 0.0,
+                "chatgpt_cognition_available": 1.0 if chatgpt.available else 0.0,
                 "llm_eligible_free_route_count": float(len(free_routes)),
                 "deepseek_granted_balance": max(0.0, float(balance.granted_balance)),
                 "deepseek_topped_up_balance": max(0.0, float(balance.topped_up_balance)),
@@ -207,6 +226,12 @@ class ContentResourceEconomy:
 
     def sync_llm_routing_policy(self, *, now: datetime) -> dict[str, Any]:
         """Translate VirtualBrain resource awareness into a secret-free Runtime routing policy."""
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .runtime_backend import chatgpt_only_mode
+
+        chatgpt = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+        chatgpt_exclusive = chatgpt_only_mode()
+        chatgpt_available = bool(chatgpt.available) if chatgpt_exclusive else False
         current = self.mind.session.resource_awareness.current
         if current is None:
             pressure = "UNKNOWN"
@@ -269,29 +294,52 @@ class ContentResourceEconomy:
             os.environ.get("CONTENT_LLM_RESERVE_FLOOR_CNY") or reserve_default
         )
         max_failovers = 2 if pressure in {"CRITICAL", "CONSERVE"} else 4
+        effective_pressure = (
+            "NORMAL" if chatgpt_available
+            else "UNKNOWN" if chatgpt_exclusive
+            else pressure
+        )
         payload = {
             "schema_version": "vb-llm-routing-policy.v1",
             "observed_at": _iso(now),
-            "routing_mode": "FREE_FIRST_RESERVE_PAID",
-            "pressure": pressure,
-            "prefer_free": True,
+            "routing_mode": (
+                "CHATGPT_EXCLUSIVE" if chatgpt_exclusive
+                else "FREE_FIRST_RESERVE_PAID"
+            ),
+            "pressure": effective_pressure,
+            "provider_balance_pressure": pressure,
+            "prefer_free": False if chatgpt_exclusive else True,
             "minimum_quality": float(
                 os.environ.get("CONTENT_LLM_MINIMUM_QUALITY") or 0.70
             ),
-            "max_failovers": max_failovers,
-            "preferred_lifecycles": [
-                "TEMPORARY_FREE", "RECURRING_FREE", "STABLE_PAID"
-            ],
-            "windfall_active": windfall_active,
+            "max_failovers": 0 if chatgpt_exclusive else max_failovers,
+            "preferred_lifecycles": (
+                ["LIVINGRUNTIME_CHATGPT"]
+                if chatgpt_exclusive
+                else ["TEMPORARY_FREE", "RECURRING_FREE", "STABLE_PAID"]
+            ),
+            "windfall_active": False if chatgpt_exclusive else windfall_active,
             "windfall_bonus": windfall_bonus,
             "high_value_task_classes": high_value_task_classes,
-            "windfall_resource_ids": [
-                str(row.get("resource_id") or "") for row in windfall_resources
-                if row.get("resource_id")
-            ],
-            "windfall_mode": (
-                "OPPORTUNITY_FEAST" if windfall_active else "NONE"
+            "windfall_resource_ids": (
+                []
+                if chatgpt_exclusive
+                else [
+                    str(row.get("resource_id") or "")
+                    for row in windfall_resources
+                    if row.get("resource_id")
+                ]
             ),
+            "windfall_mode": (
+                "NONE"
+                if chatgpt_exclusive
+                else "OPPORTUNITY_FEAST" if windfall_active
+                else "NONE"
+            ),
+            "authoritative_provider": (
+                "livingruntime-chatgpt" if chatgpt_exclusive else None
+            ),
+            "chatgpt_available": chatgpt_available,
             "paid_available_funds": funds,
             "paid_reserve_floor": reserve_floor,
             "runway_days": runway,
@@ -311,13 +359,18 @@ class ContentResourceEconomy:
         return {
             "status": "SYNCED",
             "routing_mode": payload["routing_mode"],
-            "pressure": pressure,
-            "prefer_free": True,
-            "max_failovers": max_failovers,
+            "pressure": effective_pressure,
+            "provider_balance_pressure": pressure,
+            "prefer_free": payload["prefer_free"],
+            "max_failovers": payload["max_failovers"],
+            "authoritative_provider": payload["authoritative_provider"],
+            "chatgpt_available": chatgpt_available,
             "paid_reserve_floor": reserve_floor,
-            "windfall_active": windfall_active,
+            "windfall_active": payload["windfall_active"],
             "windfall_bonus": windfall_bonus,
-            "windfall_resource_count": len(windfall_resources),
+            "windfall_resource_count": (
+                0 if chatgpt_exclusive else len(windfall_resources)
+            ),
             "windfall_mode": payload["windfall_mode"],
             "mind_tick": payload["mind_tick"],
             "evidence_refs": list(evidence_refs),
@@ -381,7 +434,17 @@ class ContentResourceEconomy:
             item.actual_cost for item in recent_outcomes
             if item.actual_cost > 0.0 and "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary
         ]
-        estimated_cost = mean(cost_evidence) if cost_evidence else self.bootstrap_cycle_estimate
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .runtime_backend import chatgpt_only_mode
+        chatgpt = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+        chatgpt_exclusive = chatgpt_only_mode()
+        chatgpt_available = bool(chatgpt.available) if chatgpt_exclusive else False
+        estimated_cost = (
+            0.0
+            if chatgpt_available
+            else mean(cost_evidence) if cost_evidence
+            else self.bootstrap_cycle_estimate
+        )
         prior_values = [
             item for item in recent_outcomes
             if "ALREADY_PROCESSED" not in item.result_summary and "BUSY" not in item.result_summary
@@ -414,7 +477,12 @@ class ContentResourceEconomy:
                 and current.quotas.get("deepseek_api_available", 1.0) >= 1.0
                 and current.available_funds >= estimated_cost
             )
-            decision = "EXECUTE" if free_available or paid_available else "ASK_HUMAN"
+            decision = (
+                "EXECUTE"
+                if chatgpt_available
+                or (not chatgpt_exclusive and (free_available or paid_available))
+                else "ASK_HUMAN"
+            )
             existing = awareness.record_decision(DecisionEpisode(
                 episode_id=episode_id,
                 proposal_id=proposal_id,
@@ -442,16 +510,32 @@ class ContentResourceEconomy:
         from virtualbrain.research.resource_awareness import Outcome, Reflection
 
         observed = self.observe(now)
-        cost_observed = observed.get("balance_sensor") == "OBSERVED"
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .runtime_backend import chatgpt_only_mode
+        chatgpt = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+        chatgpt_exclusive = chatgpt_only_mode()
+        cost_observed = (
+            chatgpt_exclusive
+            or observed.get("balance_sensor") == "OBSERVED"
+        )
         current = self.mind.session.resource_awareness.current
         assert current is not None
-        if cost_observed and current.available_funds > before_balance:
+        if (
+            not chatgpt_exclusive
+            and cost_observed
+            and current.available_funds > before_balance
+        ):
             return {"status": "AMBIGUOUS_BALANCE_INCREASE", "resource_state": observed["resource_state"]}
         awareness = self.mind.session.resource_awareness
         if any(item.episode_id == episode_id for item in awareness.outcomes):
             return {"status": "ALREADY_RECORDED", "episode_id": episode_id}
         episode = next(item for item in awareness.episodes if item.episode_id == episode_id)
-        actual_cost = before_balance - current.available_funds if cost_observed else 0.0
+        actual_cost = (
+            0.0
+            if chatgpt_exclusive
+            else before_balance - current.available_funds if cost_observed
+            else 0.0
+        )
         status = str(result.get("status") or "UNKNOWN")
         published = status == "PUBLISHED"
         succeeded = status not in {"ERROR", "RESOURCE_DEFERRED"}
@@ -466,13 +550,28 @@ class ContentResourceEconomy:
         learning_value = observed_value("learning_value")
         reproduction_value = observed_value("reproduction_value")
         outcome_id = "content-cycle-outcome:" + sha256(cycle.encode()).hexdigest()[:20]
-        evidence = tuple(dict.fromkeys((*episode.evidence_refs, *current.source_refs, "cycle-result:" + status,
-                                        "cost-sensor:observed" if cost_observed else "cost-sensor:unknown")))
+        cost_evidence_ref = (
+            "cost-sensor:chatgpt-subscription"
+            if chatgpt_exclusive
+            else "cost-sensor:observed" if cost_observed
+            else "cost-sensor:unknown"
+        )
+        evidence = tuple(dict.fromkeys((
+            *episode.evidence_refs,
+            *current.source_refs,
+            "cycle-result:" + status,
+            cost_evidence_ref,
+        )))
         outcome = awareness.record_outcome(Outcome(
             outcome_id=outcome_id,
             episode_id=episode_id,
-            result_summary=(f"content cycle ended {status}; observed account balance delta {actual_cost:.6f} {current.currency}"
-                            if cost_observed else f"content cycle ended {status}; account cost unknown"),
+            result_summary=(
+                f"content cycle ended {status}; marginal API cost 0 under LivingRuntime ChatGPT subscription"
+                if chatgpt_exclusive
+                else f"content cycle ended {status}; observed account balance delta {actual_cost:.6f} {current.currency}"
+                if cost_observed
+                else f"content cycle ended {status}; account cost unknown"
+            ),
             actual_cost=actual_cost,
             external_value=external_value,
             learning_value=learning_value,
@@ -485,6 +584,8 @@ class ContentResourceEconomy:
         prediction_error = max(-1.0, min(1.0, (actual_cost - episode.estimated_cost) / estimate)) if cost_observed else 0.0
         waste = min(1.0, actual_cost / estimate) if not succeeded and actual_cost > 0 else 0.0
         lesson = (
+            "LivingRuntime ChatGPT supplied cognition without marginal API spend; downstream external value still requires measurement."
+            if chatgpt_exclusive else
             "Publication was observed; downstream external value remains unknown until measured."
             if published else
             "The cycle consumed resources without publication; compare this episode with later outcomes before changing policy."

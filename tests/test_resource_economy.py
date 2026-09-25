@@ -8,12 +8,58 @@ from wechat_traffic_agent.resource_economy import BalanceObservation, ContentRes
 NOW = datetime(2026, 9, 17, 9, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _legacy_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+
+
 def balance(*, when=NOW, total=97.35, available=True, suffix="a"):
     return BalanceObservation(
         observed_at=when.isoformat(), is_available=available, currency="CNY",
         total_balance=total, granted_balance=0.0, topped_up_balance=total,
         evidence_ref="deepseek-balance:sha256:" + suffix * 64,
     )
+
+
+def test_chatgpt_exclusive_policy_ignores_zero_api_balance_for_cognition(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    monkeypatch.setattr(
+        economy.observer,
+        "observe",
+        lambda now: balance(when=now, total=0.0, available=False, suffix="z"),
+    )
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# available\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+
+    observed = economy.observe(NOW)
+    policy = observed["llm_routing_policy"]
+
+    assert policy["routing_mode"] == "CHATGPT_EXCLUSIVE"
+    assert policy["pressure"] == "NORMAL"
+    assert policy["provider_balance_pressure"] == "CRITICAL"
+    assert policy["prefer_free"] is False
+    assert policy["max_failovers"] == 0
+    assert policy["windfall_active"] is False
+    assert policy["authoritative_provider"] == "livingruntime-chatgpt"
+    assert policy["chatgpt_available"] is True
+
+    decision = economy.begin_cycle(now=NOW, cycle="chatgpt-only")
+    assert decision["decision"] == "EXECUTE"
+    assert decision["estimated_cost"] == 0.0
+    result = economy.end_cycle(
+        now=NOW,
+        cycle="chatgpt-only",
+        episode_id=decision["episode_id"],
+        before_balance=decision["before_balance"],
+        result={"status": "PUBLISHED"},
+    )
+    assert result["status"] == "RECORDED"
+    outcome = mind.session.resource_awareness.outcomes[-1]
+    assert outcome.actual_cost == 0.0
+    assert "cost-sensor:chatgpt-subscription" in outcome.evidence_refs
 
 
 def test_real_balance_observation_enters_persistent_virtualbrain_state(tmp_path, monkeypatch):

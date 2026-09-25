@@ -28,6 +28,11 @@ from wechat_traffic_agent.runtime_backend import (
 NOW = datetime(2026, 9, 18, 3, 30, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _legacy_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+
+
 def _seed_openrouter(state_root):
     scout = ResourceScout(state_root / "application", lambda *a, **k: {"results": []})
     lead = ProviderLead(
@@ -284,8 +289,8 @@ def test_pool_metrics_feed_route_outcomes_back_to_vb_observation(tmp_path):
     assert metrics["llm_pool_recent_failovers"] == 1.0
 
 
-@pytest.mark.asyncio
-async def test_content_backend_adds_bounded_default_duration_without_overriding_explicit_budget():
+def test_content_backend_adds_bounded_default_duration_without_overriding_explicit_budget():
+    import asyncio
     from agent_runtime.backends import AgentRequest, AgentResult, AgentRunMode
     from wechat_traffic_agent.runtime_backend import ContentBoundedLegacyProviderBackend
 
@@ -305,21 +310,21 @@ async def test_content_backend_adds_bounded_default_duration_without_overriding_
     backend = ContentBoundedLegacyProviderBackend(
         inner, default_duration_seconds=45
     )
-    await backend.run(
+    asyncio.run(backend.run(
         AgentRequest(
             mode=AgentRunMode.ADVISORY,
             task="bounded content cognition",
             context={},
         )
-    )
-    await backend.run(
+    ))
+    asyncio.run(backend.run(
         AgentRequest(
             mode=AgentRunMode.ADVISORY,
             task="explicit owner/live budget",
             context={},
             max_duration_seconds=20,
         )
-    )
+    ))
 
     assert inner.requests[0].max_duration_seconds == 45
     assert inner.requests[1].max_duration_seconds == 20

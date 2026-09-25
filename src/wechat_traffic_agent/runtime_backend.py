@@ -121,21 +121,26 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
     from agent_runtime.llm import LLMProviderError, load_llm_provider
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 
-    provider = None
-    with _temporary_runtime_llm_environment(state_root):
-        try:
-            provider = load_llm_provider()
-        except LLMProviderError as exc:
-            if "not configured" not in str(exc).lower():
-                raise
-
-    chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-        fallback=None if chatgpt_only_mode() else provider
-    )
-    if chatgpt_provider.enabled:
-        provider = chatgpt_provider
-    elif provider is None:
-        return None
+    chatgpt_only = chatgpt_only_mode()
+    if chatgpt_only:
+        # Production default: ChatGPT is authoritative. Do not even construct
+        # API/free-model routes, so an outage stays visible instead of silently
+        # changing the cognition substrate.
+        provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    else:
+        legacy_provider = None
+        with _temporary_runtime_llm_environment(state_root):
+            try:
+                legacy_provider = load_llm_provider()
+            except LLMProviderError as exc:
+                if "not configured" not in str(exc).lower():
+                    raise
+        chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
+            fallback=legacy_provider
+        )
+        provider = chatgpt_provider if chatgpt_provider.enabled else legacy_provider
+        if provider is None:
+            return None
 
     advisory_timeout = _content_advisory_timeout_seconds()
     if isinstance(provider, LivingRuntimeChatGPTProvider):

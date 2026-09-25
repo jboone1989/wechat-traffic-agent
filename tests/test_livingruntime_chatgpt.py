@@ -173,7 +173,13 @@ def test_runtime_backend_uses_chatgpt_only_when_enabled_by_default(tmp_path, mon
     _write_fake_cli(cli)
     import agent_runtime.llm as runtime_llm
 
-    monkeypatch.setattr(runtime_llm, "load_llm_provider", lambda: fallback)
+    monkeypatch.setattr(
+        runtime_llm,
+        "load_llm_provider",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("legacy/free provider must not be constructed")
+        ),
+    )
     monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
     monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
     monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS", "120")

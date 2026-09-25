@@ -1,9 +1,15 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
 NOW=datetime(2026,9,17,13,30,tzinfo=timezone.utc)
+
+@pytest.fixture(autouse=True)
+def _legacy_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
 
 class Economy:
     def observe(self, now): return {"status":"OK"}
@@ -27,6 +33,37 @@ class Scout:
 class Assistance:
     def __init__(self): self.calls=[]
     def request(self, **kwargs): self.calls.append(kwargs); return {"request_id":"human-request:1","delivery_status":"SENT","kind":kwargs["kind"]}
+
+def test_resource_review_does_not_execute_free_trials_when_chatgpt_is_authoritative(tmp_path, monkeypatch):
+    class ReadyScout(Scout):
+        def plan_trials(self, **kwargs):
+            row=super().plan_trials(**kwargs)
+            row["plans"][0]["status"]="READY_TO_TRIAL"
+            return row
+        def run_ready_trials(self, **kwargs):
+            raise AssertionError("free provider trials must not run in ChatGPT-exclusive mode")
+        def probe_capability_windfall(self, **kwargs):
+            raise AssertionError("free-model windfall probing must not run in ChatGPT-exclusive mode")
+
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# available\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+
+    result=WakefulContentTaskRunner(
+        resource_economy=Economy(),
+        content_mind=Mind(),
+        wakeful=Wakeful(),
+        resource_scout=ReadyScout(),
+        human_assistance=Assistance(),
+    ).run("RESOURCE_REVIEW",now=NOW)
+
+    assert result["status"]=="OK"
+    assert result["provider_trial_plans"]["status"]=="SKIPPED_CHATGPT_ONLY"
+    assert result["provider_trials"]["status"]=="SKIPPED_CHATGPT_ONLY"
+    assert result["capability_windfall"]["status"]=="SKIPPED_CHATGPT_ONLY"
+    assert result["resource_observation"]["cognition_resource_mode"]=="CHATGPT_EXCLUSIVE"
+
 
 def test_resource_review_requests_only_top_credential_when_local_path_is_deferred():
     assistance=Assistance()

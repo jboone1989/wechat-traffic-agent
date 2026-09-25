@@ -1,16 +1,55 @@
 from datetime import datetime, timedelta, timezone
 import json
 
+import pytest
+
 from wechat_traffic_agent.resource_regulation import ResourceRegulator
 
 
 NOW = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _legacy_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+
+
 def _policy(root, name, pressure, observed_at=NOW):
     file = root / "application" / name / "policy.json"
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps({"pressure": pressure, "observed_at": observed_at.isoformat()}))
+
+
+def test_chatgpt_bridge_replaces_api_balance_pressure_for_cognition(tmp_path, monkeypatch):
+    _policy(tmp_path, "survival_resources", "NORMAL")
+    _policy(tmp_path, "llm_resource_pool", "CRITICAL")
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# available\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+
+    regulator = ResourceRegulator(tmp_path)
+
+    assert regulator.pressure(NOW) == "NORMAL"
+    admitted = regulator.claim("CONTENT_COGNITION", NOW)
+    assert admitted["allowed"] is True
+    assert admitted["reason"] == "WITHIN_BUDGET"
+
+
+def test_owner_goal_chatgpt_lane_survives_host_pressure(tmp_path, monkeypatch):
+    _policy(tmp_path, "survival_resources", "CRITICAL")
+    _policy(tmp_path, "llm_resource_pool", "CRITICAL")
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# available\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+
+    admitted = ResourceRegulator(tmp_path).claim(
+        "CONTENT_COGNITION", NOW, owner_authorized=True
+    )
+
+    assert admitted["allowed"] is True
+    assert admitted["reason"] == "OWNER_GOAL_CHATGPT_COGNITION_LANE"
 
 
 def test_free_verified_route_preserves_cognition_when_paid_balance_is_critical(tmp_path, monkeypatch):

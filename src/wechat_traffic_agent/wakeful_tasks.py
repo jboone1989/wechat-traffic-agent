@@ -254,7 +254,13 @@ class WakefulContentTaskRunner:
         }
 
     def _resource(self, now: datetime) -> dict[str, Any]:
+        from .runtime_backend import chatgpt_only_mode
+
+        chatgpt_only = chatgpt_only_mode()
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
+        rows["llm_provider_mode"] = (
+            "LIVINGRUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
+        )
         pressure = "UNKNOWN"
         try:
             observation = self.resource_economy.observe(now)
@@ -262,6 +268,10 @@ class WakefulContentTaskRunner:
             projection = self.content_mind.public_projection().get("resource_awareness") or {}
             current = projection.get("current") or {}
             pressure = str(current.get("pressure") or "UNKNOWN")
+            if chatgpt_only:
+                rows["resource_observation"]["cognition_resource_mode"] = "CHATGPT_EXCLUSIVE"
+                rows["resource_observation"]["provider_balance_pressure"] = pressure
+                pressure = "NORMAL"
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
@@ -331,14 +341,8 @@ class WakefulContentTaskRunner:
         pressure = str(combined_pressure).upper()
         self.wakeful.set_resource_pressure(pressure)
 
-        from .runtime_backend import chatgpt_only_mode
-        chatgpt_only = chatgpt_only_mode()
-        rows["llm_provider_mode"] = (
-            "LIVINGRUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
-        )
-
         model_reputation = getattr(self, "model_reputation", None)
-        if model_reputation is not None:
+        if model_reputation is not None and not chatgpt_only:
             try:
                 rows["model_reputation"] = model_reputation.observe(now=now)
             except Exception as exc:  # noqa: BLE001
@@ -351,11 +355,17 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["nvidia_capability_catalog"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        try:
-            rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
-        except Exception as exc:  # noqa: BLE001
-            rows["resource_scout"] = self._error(exc)
-            rows["status"] = "DEGRADED"
+        if chatgpt_only:
+            rows["resource_scout"] = {
+                "status": "SKIPPED_CHATGPT_ONLY",
+                "reason": "alternate model discovery is disabled",
+            }
+        else:
+            try:
+                rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
+            except Exception as exc:  # noqa: BLE001
+                rows["resource_scout"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         capability_evolution = getattr(self, "capability_evolution", None)
         if capability_evolution is not None:
             try:
@@ -367,23 +377,40 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["capability_evolution"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+        if chatgpt_only:
+            rows["resource_verification"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["provider_leads"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["provider_verification"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+        else:
+            try:
+                rows["resource_verification"] = self.resource_scout.verify_pending(now=now, limit=8)
+            except Exception as exc:  # noqa: BLE001
+                rows["resource_verification"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+            try:
+                rows["provider_leads"] = self.resource_scout.expand_provider_leads(now=now, limit=12)
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_leads"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+            try:
+                rows["provider_verification"] = self.resource_scout.verify_provider_leads(now=now, limit=8)
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_verification"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         try:
-            rows["resource_verification"] = self.resource_scout.verify_pending(now=now, limit=8)
-        except Exception as exc:  # noqa: BLE001
-            rows["resource_verification"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            rows["provider_leads"] = self.resource_scout.expand_provider_leads(now=now, limit=12)
-        except Exception as exc:  # noqa: BLE001
-            rows["provider_leads"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            rows["provider_verification"] = self.resource_scout.verify_provider_leads(now=now, limit=8)
-        except Exception as exc:  # noqa: BLE001
-            rows["provider_verification"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
+            trial_plans = (
+                {
+                    "status": "SKIPPED_CHATGPT_ONLY",
+                    "plans": [],
+                    "available_credential_envs": [],
+                    "pending_verification_count": 0,
+                    "pending_provider_verification_count": 0,
+                    "autonomous_work_pending": False,
+                    "local_inference": {"status": "SKIPPED_CHATGPT_ONLY"},
+                }
+                if chatgpt_only
+                else self.resource_scout.plan_trials(now=now, limit=3)
+            )
             rows["provider_trial_plans"] = trial_plans
             plans = list(trial_plans.get("plans") or [])
             local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
@@ -738,7 +765,10 @@ class WakefulContentTaskRunner:
         if runtime is None or not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
 
-        pending_windfall = self._load_windfall_pending()
+        from .runtime_backend import chatgpt_only_mode
+        pending_windfall = (
+            None if chatgpt_only_mode() else self._load_windfall_pending()
+        )
         needs = list(getattr(runtime, "evolution_needs", ()) or ())
         if not needs:
             if pending_windfall is not None:
@@ -790,7 +820,7 @@ class WakefulContentTaskRunner:
 
         windfall_active = False
         state_root = getattr(self, "state_root", None)
-        if state_root is not None:
+        if state_root is not None and not chatgpt_only_mode():
             policy_path = (
                 state_root / "application" / "llm_resource_pool" / "policy.json"
             )

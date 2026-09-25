@@ -3,11 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from wechat_traffic_agent.browser_runtime import (
     JevBrowserExecutor,
     browser_runtime_status,
     jev_readiness,
 )
+
+
+@pytest.fixture(autouse=True)
+def _legacy_browser_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
 
 
 class _FakeAgent:
@@ -44,6 +51,20 @@ def test_jev_readiness_reports_missing_account_without_crashing(monkeypatch):
     assert row["provider"] == "JEV"
     assert row["status"] == "NOT_CONFIGURED"
     assert row["typesafe_configured"] is False
+
+
+def test_chatgpt_exclusive_disables_external_jev_text_helpers(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("VIRTUALBRAIN_LLM_API_KEY", "deepseek-should-not-be-used")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-should-not-be-used")
+    monkeypatch.setenv("CONTENT_JEV_TEXT_MODEL", "free-model")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "typesafe")
+
+    row = jev_readiness()
+
+    assert row["status"] == "DISABLED"
+    assert row["chatgpt_exclusive"] is True
+    assert "ChatGPT-exclusive" in row["reason"]
 
 
 def test_browser_runtime_keeps_tinyfish_as_fallback(monkeypatch):
