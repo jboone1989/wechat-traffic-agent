@@ -22,6 +22,15 @@ _KNOWN_COGNITION_ERROR = "BELIEF_CHANGED requires a persisted worldview change"
 _KNOWN_MODEL_JSON_ERROR = "backend did not return a JSON object"
 _KNOWN_RECOVERY_INPUT_CHANGE = "model phase input changed during recovery"
 
+_TASK_NON_SUCCESS_STATUSES = {
+    "", "ERROR", "DEGRADED", "FAILED", "BUSY", "RESOURCE_DEFERRED", "DEFERRED",
+    "SHUTDOWN_CHECKPOINT", "CANCELLED", "SKIPPED", "INTERRUPTED",
+}
+
+
+def _task_result_is_success(status: str, failed_parts: list[str]) -> bool:
+    return not failed_parts and str(status or "").upper() not in _TASK_NON_SUCCESS_STATUSES
+
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,27 +92,144 @@ class SelfMaintenanceService:
         self.memory = DiagnosticMemory(self.root)
 
     def ingest_task_outcome(self, task: str, result: dict[str, Any], *, now: datetime) -> dict[str, Any]:
-        """Record failure evidence from every wakeful task without a raw traceback."""
+        """Record both failure and same-task recovery evidence from every wakeful task."""
         if not isinstance(result, dict):
             return {"status": "IGNORED_NON_ERROR"}
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("self-maintenance time requires timezone awareness")
         task = str(task or "UNKNOWN").upper()
-        if task == "CONTENT_COGNITION" and result.get("self_maintenance"):
-            return dict(result["self_maintenance"])
         status = str(result.get("status") or "").upper()
         failed_parts = [
             key for key, value in result.items()
             if isinstance(value, dict)
             and str(value.get("status") or "").upper() in {"ERROR", "DEGRADED"}
         ]
+        embedded = (
+            dict(result["self_maintenance"])
+            if task == "CONTENT_COGNITION" and isinstance(result.get("self_maintenance"), dict)
+            else None
+        )
+        cycle = str(result.get("cycle") or f"{task.lower()}-{int(now.timestamp())}")
+        if _task_result_is_success(status, failed_parts):
+            recovery = self._record_task_success(
+                task=task,
+                status=status,
+                cycle=cycle,
+                now=now,
+            )
+            if embedded is not None:
+                return {**embedded, "task_recovery": recovery}
+            return recovery
+        if embedded is not None:
+            return embedded
         if status not in {"ERROR", "DEGRADED"} and not failed_parts:
             return {"status": "IGNORED_NON_ERROR"}
-        cycle = str(result.get("cycle") or f"{task.lower()}-{int(now.timestamp())}")
         return self.ingest_failure({
             "status": "ERROR", "task": task, "cycle": cycle,
             "error_type": str(result.get("error_type") or status or "SUBTASK_FAILURE")[:120],
             "message": "failed components: " + ",".join(sorted(failed_parts)) if failed_parts else status,
             "failure_site": task.lower() + ":" + ",".join(sorted(failed_parts)) if failed_parts else task.lower(),
         }, now=now)
+
+    def _record_task_success(
+        self,
+        *,
+        task: str,
+        status: str,
+        cycle: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        observed_at = now.astimezone(timezone.utc).isoformat()
+        evidence_ref = f"wakeful-task:{task}:{cycle}:result"
+        success = {
+            "schema_version": "self-maintenance-task-success.v1",
+            "task": task,
+            "status": status,
+            "cycle": cycle,
+            "observed_at": observed_at,
+            "evidence_ref": evidence_ref,
+        }
+        safe = re.sub(r"[^a-z0-9_.-]+", "-", task.lower()).strip("-") or "unknown"
+        _atomic_json(self.root / "task_successes" / f"{safe}.json", success)
+        recovered = self._reconcile_task_recovery(
+            task=task,
+            observed_at=now.astimezone(timezone.utc),
+            evidence_ref=evidence_ref,
+            result_status=status,
+        )
+        return {
+            "status": "RECOVERY_RECORDED",
+            "task": task,
+            "cycle": cycle,
+            "evidence_ref": evidence_ref,
+            **recovered,
+        }
+
+    def _reconcile_task_recovery(
+        self,
+        *,
+        task: str,
+        observed_at: datetime,
+        evidence_ref: str,
+        result_status: str,
+    ) -> dict[str, Any]:
+        folder = self.root / "problems"
+        recovered: list[dict[str, Any]] = []
+        terminal = {
+            "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED",
+            "LEGACY_AGGREGATE", "LEGACY_DUPLICATE",
+        }
+        for path in sorted(folder.glob("*.json")) if folder.exists() else ():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("status") or "") in terminal:
+                continue
+            if str(payload.get("task") or "").upper() != task:
+                continue
+            try:
+                last_seen = datetime.fromisoformat(str(payload.get("last_seen_at") or ""))
+            except (TypeError, ValueError):
+                continue
+            if last_seen.tzinfo is None or last_seen.utcoffset() is None:
+                continue
+            if last_seen.astimezone(timezone.utc) >= observed_at:
+                continue
+            payload["status"] = "RECOVERED_VERIFIED"
+            payload["recovered_at"] = observed_at.isoformat()
+            payload["recovery_result_status"] = str(result_status)
+            payload["recovery_evidence_refs"] = list(dict.fromkeys([
+                *(str(x) for x in payload.get("recovery_evidence_refs") or () if str(x)),
+                evidence_ref,
+            ]))[-16:]
+            _atomic_json(path, payload)
+            recovered.append(payload)
+
+        if recovered:
+            latest_path = self.root / "latest.json"
+            latest_id = ""
+            try:
+                latest = json.loads(latest_path.read_text(encoding="utf-8"))
+                if isinstance(latest, dict):
+                    latest_id = str(latest.get("problem_id") or "")
+            except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+                pass
+            replacement = next(
+                (row for row in recovered if str(row.get("problem_id") or "") == latest_id),
+                None,
+            )
+            if replacement is not None:
+                _atomic_json(latest_path, replacement)
+        return {
+            "recovered_count": len(recovered),
+            "recovered_problem_ids": [
+                str(row.get("problem_id") or "") for row in recovered
+                if str(row.get("problem_id") or "")
+            ],
+        }
 
     def ingest_failure(self, failure: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         if str(failure.get("status") or "") != "ERROR":
@@ -490,7 +616,7 @@ class SelfMaintenanceService:
                 continue
             if not isinstance(payload, dict) or payload.get("failure_site"):
                 continue
-            if str(payload.get("status") or "") in {"VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE"}:
+            if str(payload.get("status") or "") in {"VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED", "LEGACY_AGGREGATE"}:
                 continue
             migrated_for_row: set[str] = set()
             for cycle in [str(x) for x in payload.get("cycles") or () if str(x)]:
@@ -538,7 +664,7 @@ class SelfMaintenanceService:
             if not isinstance(payload, dict):
                 continue
             if str(payload.get("status") or "") in {
-                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+                "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
             }:
                 continue
             rows.append((path, payload))
@@ -606,7 +732,7 @@ class SelfMaintenanceService:
             if not isinstance(payload, dict) or payload.get("repair_proposal"):
                 continue
             if str(payload.get("status") or "") in {
-                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+                "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
             }:
                 continue
             cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
@@ -641,7 +767,7 @@ class SelfMaintenanceService:
         open_rows = [
             row for row in rows
             if str(row.get("status") or "") not in {
-                "VERIFIED", "CLOSED", "REJECTED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
+                "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
             }
         ]
         open_rows.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)

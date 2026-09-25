@@ -379,3 +379,26 @@ def test_external_eval_parser_accepts_unescaped_control_characters_inside_json_s
     assert parsed["kind"] == "tool"
     assert parsed["tool_name"] == "shell"
     assert parsed["arguments"]["command"] == "printf 'line1\nline2'"
+
+
+
+def test_parse_json_object_accepts_python_dict_serialization():
+    from wechat_traffic_agent.external_eval_contestant import _parse_json_object
+
+    parsed = _parse_json_object(
+        "{'kind': 'tool', 'tool_name': 'shell', 'arguments': {'command': 'echo hi'}}"
+    )
+    assert parsed == {
+        "kind": "tool",
+        "tool_name": "shell",
+        "arguments": {"command": "echo hi"},
+    }
+
+
+def test_parse_json_object_tracks_nested_braces_inside_strings():
+    from wechat_traffic_agent.external_eval_contestant import _parse_json_object
+
+    parsed = _parse_json_object(
+        """{"kind":"tool","tool_name":"shell","arguments":{"command":"echo '{x}'"}} trailing"""
+    )
+    assert parsed["arguments"]["command"] == "echo '{x}'"

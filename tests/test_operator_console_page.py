@@ -115,7 +115,9 @@ def test_account_cards_offer_confirmed_delete_action():
 def test_x_account_card_offers_account_scoped_web_login():
     page = operator_console_document()
 
-    assert "网页登录" in page
+    assert "登录 / 更换 JEV 网页会话" in page
+    assert "现有 TinyFish 登录态可以继续复用" in page
+    assert page.index("登录 / 更换 JEV 网页会话") < page.index("高级操作 / 技术信息")
     assert "/operator/api/account-instances/" in page
     assert "/browser/login/connect" in page
     assert "/browser/login/stream" in page

@@ -144,3 +144,31 @@ def test_entrypoint_restores_owner_goal_followup_after_initial_plans():
     assert text.index("wakeful_runtime.ensure_initial_plans(now)") < text.index(
         "owner_goal_refs = _restore_owner_goal_followup("
     )
+
+
+
+def test_task_result_logging_keeps_small_results_intact_and_bounds_large_results():
+    spec = importlib.util.spec_from_file_location("run_content_agent_log_test", ENTRYPOINT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+
+    small = {"status": "OK", "task": "CHECK_X", "count": 3}
+    assert module._task_result_for_log(small) == small
+
+    large = {
+        "status": "OK",
+        "task": "RESOURCE_REVIEW",
+        "resource_observation": {"status": "OBSERVED", "huge": ["x" * 512] * 100},
+        "survival_resource_after_actions": {"status": "OK", "candidates": ["y" * 512] * 100},
+    }
+    summarized = module._task_result_for_log(large)
+
+    assert summarized["status"] == "OK"
+    assert summarized["task"] == "RESOURCE_REVIEW"
+    assert summarized["log_truncated"] is True
+    assert summarized["serialized_bytes"] > module._TASK_RESULT_LOG_MAX_BYTES
+    assert summarized["sections"]["resource_observation"]["status"] == "OBSERVED"
+    assert summarized["sections"]["survival_resource_after_actions"]["status"] == "OK"
+    assert "huge" not in json.dumps(summarized)
+    assert len(json.dumps(summarized).encode("utf-8")) < module._TASK_RESULT_LOG_MAX_BYTES

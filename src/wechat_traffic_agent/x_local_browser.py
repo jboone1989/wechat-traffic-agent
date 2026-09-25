@@ -215,8 +215,12 @@ class LocalHarnessXTransport:
             time.sleep(0.1)
         return False
 
-    @staticmethod
-    def _authenticated_handle(browser: Any) -> str:
+    def _authenticated_handle(self, browser: Any) -> str:
+        selector = '[data-testid="AppTabBar_Profile_Link"]'
+        if not self._wait_selector(browser, selector):
+            raise BrowserRuntimeUnavailable(
+                "local X browser profile is not authenticated"
+            )
         href = str(
             browser.evaluate(
                 """(() => document.querySelector('[data-testid="AppTabBar_Profile_Link"]')?.getAttribute('href') || '')()"""
@@ -272,31 +276,38 @@ class LocalHarnessXTransport:
 
     @staticmethod
     def _fill_exact(browser: Any, text: str) -> None:
-        focused = browser.evaluate(
+        payload = json.dumps(text)
+        inserted = browser.evaluate(
             """(() => {
               const e=document.querySelector('[data-testid="tweetTextarea_0"]');
               if(!e) return false;
               e.focus();
               document.execCommand('selectAll',false,null);
               document.execCommand('delete',false,null);
-              return true;
+              return document.execCommand('insertText',false,"""
+            + payload
+            + """);
             })()"""
         )
-        if not focused:
-            raise BrowserRuntimeUnavailable("X editor disappeared before input")
-        browser.call("Input.insertText", text=text)
+        if not inserted:
+            raise BrowserRuntimeUnavailable(
+                "X editor rejected browser-context text insertion"
+            )
         time.sleep(0.15)
 
     @staticmethod
     def _click(browser: Any, x: float, y: float) -> None:
-        for event in ("mousePressed", "mouseReleased"):
-            browser.call(
-                "Input.dispatchMouseEvent",
-                type=event,
-                x=x,
-                y=y,
-                button="left",
-                clickCount=1,
+        clicked = browser.evaluate(
+            """(() => {
+              const b=document.querySelector('[data-testid="tweetButton"]');
+              if(!b || b.disabled || b.getAttribute('aria-disabled')==='true') return false;
+              b.click();
+              return true;
+            })()"""
+        )
+        if not clicked:
+            raise XBrowserPublicationUnverified(
+                "X publish button became unavailable before click"
             )
 
 

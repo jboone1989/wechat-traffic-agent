@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from json import loads
 from types import SimpleNamespace
@@ -452,3 +452,74 @@ def test_non_content_task_failure_enters_durable_maintenance_without_unsafe_repa
     assert latest["task"] == "NEURAL_PLAY"
     assert latest["affected_capability"] == "wakeful.neural_play"
     assert latest["status"] == "DIAGNOSING"
+
+
+def test_same_task_success_reconciles_older_problem_and_recurrence_reopens_it(tmp_path):
+    service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
+    failed = service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "DEGRADED", "brain_lab": {"status": "ERROR"}},
+        now=NOW,
+    )
+    assert failed["status"] == "RECORDED"
+    assert service.review()["open_count"] == 1
+
+    recovered = service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "OK", "cycle": "neural-play-success"},
+        now=NOW + timedelta(minutes=1),
+    )
+    assert recovered["status"] == "RECOVERY_RECORDED"
+    assert recovered["recovered_count"] == 1
+    assert recovered["recovered_problem_ids"] == [failed["problem_id"]]
+    stored = json.loads(
+        next((tmp_path / "application/self_maintenance/problems").glob("*.json")).read_text()
+    )
+    assert stored["status"] == "RECOVERED_VERIFIED"
+    assert stored["recovery_result_status"] == "OK"
+    assert recovered["evidence_ref"] in stored["recovery_evidence_refs"]
+    assert service.review()["open_count"] == 0
+
+    recurring = service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "DEGRADED", "brain_lab": {"status": "ERROR"}},
+        now=NOW + timedelta(minutes=2),
+    )
+    assert recurring["status"] == "RECORDED"
+    assert recurring["problem_id"] == failed["problem_id"]
+    assert recurring["problem_status"] == "DIAGNOSING"
+    assert service.review()["open_count"] == 1
+
+
+def test_success_from_other_task_does_not_close_problem(tmp_path):
+    service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
+    service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "DEGRADED", "brain_lab": {"status": "ERROR"}},
+        now=NOW,
+    )
+    outcome = service.ingest_task_outcome(
+        "REFLECT",
+        {"status": "OK", "cycle": "reflect-success"},
+        now=NOW + timedelta(minutes=1),
+    )
+    assert outcome["status"] == "RECOVERY_RECORDED"
+    assert outcome["recovered_count"] == 0
+    assert service.review()["open_count"] == 1
+
+
+def test_deferred_task_outcome_is_not_recorded_as_recovery(tmp_path):
+    service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
+    service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {"status": "ERROR", "error_type": "RuntimeError", "cycle": "content-fail"},
+        now=NOW,
+    )
+    outcome = service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {"status": "RESOURCE_DEFERRED", "cycle": "content-deferred"},
+        now=NOW + timedelta(minutes=1),
+    )
+    assert outcome["status"] == "IGNORED_NON_ERROR"
+    assert service.review()["open_count"] == 1
+

@@ -644,3 +644,65 @@ def test_x_metrics_router_prefers_tinyfish_over_local_browser(tmp_path, monkeypa
     )
     assert result.views == 7
 
+
+
+def test_local_x_auth_waits_for_react_profile_link(tmp_path):
+    class DelayedProfileBrowser:
+        def __init__(self):
+            self.selector_checks = 0
+
+        def evaluate(self, expression: str):
+            if "Boolean(document.querySelector" in expression:
+                self.selector_checks += 1
+                return self.selector_checks >= 3
+            if "AppTabBar_Profile_Link" in expression:
+                return "/ferro"
+            raise AssertionError(expression)
+
+    transport = LocalHarnessXTransport(
+        state_root=tmp_path,
+        timeout_ms=100,
+        browser_factory=None,
+    )
+    browser = DelayedProfileBrowser()
+
+    assert transport._authenticated_handle(browser) == "ferro"
+    assert browser.selector_checks >= 3
+
+
+def test_local_x_fill_exact_uses_browser_context_insertion(tmp_path):
+    class EditorBrowser:
+        def __init__(self):
+            self.expression = ""
+
+        def evaluate(self, expression: str):
+            self.expression = expression
+            return True
+
+        def call(self, method: str, **params):
+            raise AssertionError("remote CDP Input.insertText must not be required")
+
+    browser = EditorBrowser()
+    LocalHarnessXTransport._fill_exact(browser, "中文 Ferro")
+
+    assert "execCommand('insertText'" in browser.expression
+    assert json.dumps("中文 Ferro") in browser.expression
+
+
+def test_local_x_click_uses_browser_context_button_click():
+    class ButtonBrowser:
+        def __init__(self):
+            self.expression = ""
+
+        def evaluate(self, expression: str):
+            self.expression = expression
+            return True
+
+        def call(self, method: str, **params):
+            raise AssertionError("remote CDP mouse events must not be required")
+
+    browser = ButtonBrowser()
+    LocalHarnessXTransport._click(browser, 1.0, 1.0)
+
+    assert "tweetButton" in browser.expression
+    assert ".click()" in browser.expression

@@ -59,6 +59,54 @@ _ONE_SHOT_TASKS = (
     "NEURAL_EVOLUTION_CONSOLIDATION",
 )
 
+_TASK_RESULT_LOG_MAX_BYTES = 16 * 1024
+_TASK_RESULT_LOG_SUMMARY_FIELDS = (
+    "status",
+    "task",
+    "cycle",
+    "error_type",
+    "message",
+    "mission_id",
+    "experiment_id",
+    "owner_goal_id",
+)
+
+
+def _task_result_for_log(result: dict) -> dict:
+    """Keep stdout bounded without changing the durable task result."""
+    payload = dict(result or {})
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    if len(encoded) <= _TASK_RESULT_LOG_MAX_BYTES:
+        return payload
+
+    summary: dict[str, object] = {
+        "status": str(payload.get("status") or "UNKNOWN"),
+        "log_truncated": True,
+        "serialized_bytes": len(encoded),
+        "top_level_keys": sorted(str(key) for key in payload.keys())[:64],
+    }
+    for field in _TASK_RESULT_LOG_SUMMARY_FIELDS:
+        value = payload.get(field)
+        if value is not None and not isinstance(value, (dict, list, tuple, set)):
+            summary[field] = value
+
+    sections: dict[str, dict[str, object]] = {}
+    for key in sorted(payload.keys(), key=str)[:32]:
+        value = payload.get(key)
+        if not isinstance(value, dict):
+            continue
+        section = {
+            field: value.get(field)
+            for field in _TASK_RESULT_LOG_SUMMARY_FIELDS
+            if value.get(field) is not None
+            and not isinstance(value.get(field), (dict, list, tuple, set))
+        }
+        if section:
+            sections[str(key)] = section
+    if sections:
+        summary["sections"] = sections
+    return summary
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="persistent Content Agent")
@@ -686,7 +734,10 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                     maintenance.ingest_task_outcome(task, task_result, now=now)
                 except Exception:
                     pass  # Diagnosis cannot hide a completed task result.
-            print(json.dumps({"wake_reason": wake_reason.__dict__ if wake_reason else {"kind":"ONCE"}, "task_result": task_result}, ensure_ascii=False, sort_keys=True))
+            print(json.dumps({
+                "wake_reason": wake_reason.__dict__ if wake_reason else {"kind": "ONCE"},
+                "task_result": _task_result_for_log(task_result),
+            }, ensure_ascii=False, sort_keys=True))
             status = str(task_result.get("status") or "UNKNOWN")
             if startup_request is not None:
                 startup_results.append({

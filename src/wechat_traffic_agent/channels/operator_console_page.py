@@ -328,18 +328,20 @@ function renderAccounts(data){
   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
   const profileReady=profile.status==='PROVISIONED';
   webTitle.append(node('strong','网页自动化'),badge(profileReady?'独立环境已创建':'按需创建',profileReady?'ok':'info'));
-  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie；若已有兼容浏览器会话处于登录状态，JEV 可直接复用该登录会话，无需重复登录。网页登录仅用于新增账号或会话失效。','muted'));
+  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'JEV')+'。每个账号拥有独立 Chrome profile/cookie；若已有兼容浏览器会话处于登录状态，JEV 可直接复用该登录会话，无需重复登录。现有 TinyFish 登录态可以继续复用。只有新增账号、登录失效或切换独立 JEV profile 时才需要重新登录。','muted'));
+  const webActions=node('div',undefined,'account-actions'),login=node('button','登录 / 更换 JEV 网页会话');
+  login.onclick=()=>beginAccountInstanceLogin(acct);
+  webActions.append(login);webBox.append(webActions);
   if(automation.compatibility_fallback)webBox.append(node('p','当前兼容 fallback：'+automation.compatibility_fallback+'（临时，不是长期依赖）。','muted'));
   c.append(webBox);
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
   tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
-  const actions=node('div',undefined,'account-actions'),login=node('button','网页登录','ghost'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost'),remove=node('button','删除账户','danger');
-  login.onclick=()=>beginAccountInstanceLogin(acct);
+  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Jev','ghost'),remove=node('button','删除账户','danger');
   provision.onclick=async()=>{provision.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/provision',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · 浏览器环境 '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{provision.disabled=false}};
   test.onclick=async()=>{test.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/jev-test',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · Jev '+out.status)}catch(e){flash(e.message,true)}finally{test.disabled=false}};
   remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？\n\n将删除该账号的本地浏览器 profile 和运行状态。'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
-  actions.append(login,provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
+  actions.append(provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
  }
  const instanceProviders=new Set(instances.map(x=>x.provider_id));
  for(const row of providers){
