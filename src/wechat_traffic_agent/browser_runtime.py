@@ -50,6 +50,8 @@ def _module_available(name: str) -> bool:
 
 def jev_readiness() -> dict[str, Any]:
     enabled = _enabled("CONTENT_JEV_BROWSER_ENABLED", default=True)
+    from .runtime_backend import chatgpt_only_mode
+    chatgpt_exclusive = chatgpt_only_mode()
     typesafe = bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
     explicit_text_key = bool(os.environ.get("TEXT_MODEL_API_KEY", "").strip())
     deepseek_key = bool(os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip())
@@ -60,6 +62,11 @@ def jev_readiness() -> dict[str, Any]:
     harness = _module_available("browser_harness")
     if not enabled:
         status, reason = "DISABLED", "CONTENT_JEV_BROWSER_ENABLED is false"
+    elif chatgpt_exclusive:
+        status, reason = (
+            "DISABLED",
+            "ChatGPT-exclusive cognition disables external API text helpers for Jev",
+        )
     elif not typesafe:
         status, reason = "NOT_CONFIGURED", "TYPESAFE_API_KEY is not configured"
     elif not text_key:
@@ -74,7 +81,8 @@ def jev_readiness() -> dict[str, Any]:
         "reason": reason,
         "adaptive_default": True,
         "typesafe_configured": typesafe,
-        "text_helper_configured": text_key,
+        "text_helper_configured": text_key and not chatgpt_exclusive,
+        "chatgpt_exclusive": chatgpt_exclusive,
         "text_helper_source": (
             "EXPLICIT"
             if explicit_text_key
@@ -176,7 +184,11 @@ class JevBrowserExecutor:
         readiness = jev_readiness()
         if readiness["status"] != "READY":
             raise BrowserRuntimeUnavailable(str(readiness["reason"] or readiness["status"]))
-        if not os.environ.get("TEXT_MODEL_API_KEY", "").strip():
+        from .runtime_backend import chatgpt_only_mode
+        if (
+            not chatgpt_only_mode()
+            and not os.environ.get("TEXT_MODEL_API_KEY", "").strip()
+        ):
             deepseek = os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip()
             openrouter = os.environ.get("OPENROUTER_API_KEY", "").strip()
             openrouter_model = os.environ.get("CONTENT_JEV_TEXT_MODEL", "").strip()
@@ -264,7 +276,11 @@ class AccountJevExecutor:
     @staticmethod
     def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
         env = dict(os.environ)
-        if not env.get("TEXT_MODEL_API_KEY", "").strip():
+        from .runtime_backend import chatgpt_only_mode
+        if (
+            not chatgpt_only_mode(env)
+            and not env.get("TEXT_MODEL_API_KEY", "").strip()
+        ):
             deepseek = env.get("VIRTUALBRAIN_LLM_API_KEY", "").strip()
             openrouter = env.get("OPENROUTER_API_KEY", "").strip()
             model = env.get("CONTENT_JEV_TEXT_MODEL", "").strip()

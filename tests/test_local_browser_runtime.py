@@ -22,6 +22,11 @@ from wechat_traffic_agent.x_outcomes import LocalHarnessXMetricsTransport
 NOW = datetime(2026, 9, 19, 1, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _legacy_llm_mode(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+
+
 class _MentionsBrowser:
     def __init__(self, url: str):
         self.url = url
