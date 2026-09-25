@@ -549,12 +549,37 @@ class ContentResourceScout:
                 )
             )
         )
-        # A static provider priority must not permanently starve a verified
-        # provider that has never received its first bounded trial. Keep the
-        # planner's original priority ordering within each group, but let
-        # never-tried READY_TO_TRIAL providers enter the bounded shortlist
-        # before providers that already have empirical evidence.
-        ready.sort(key=lambda item: item.lead_id in previously_attempted_leads)
+        current_executor_ref = provider_trial_execution_evidence_ref()
+        stale_failed_leads = {
+            str(row.opportunity_id)
+            for row in existing
+            if str(row.opportunity_id or "")
+        }
+        stale_failed_leads = {
+            lead_id
+            for lead_id in stale_failed_leads
+            if not any(
+                row.opportunity_id == lead_id and row.status == "COMPLETED"
+                for row in existing
+            )
+            and not any(
+                row.opportunity_id == lead_id
+                and current_executor_ref in tuple(row.evidence_refs or ())
+                for row in existing
+            )
+        }
+        # A bounded shortlist must not permanently starve a provider merely
+        # because higher-priority providers already have usable evidence.
+        # Give a provider whose only failures came from an older executor one
+        # refresh opportunity first; then prefer genuinely never-tried leads.
+        # Preserve planner priority within each class.
+        ready.sort(
+            key=lambda item: (
+                0 if item.lead_id not in previously_attempted_leads
+                else 1 if item.lead_id in stale_failed_leads
+                else 2
+            )
+        )
         ready = ready[: max(1, min(int(provider_limit), 3))]
         for plan in ready:
             api_key = str(os.environ.get(plan.credential_env) or "")
