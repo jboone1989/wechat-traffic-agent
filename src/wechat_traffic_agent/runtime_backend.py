@@ -103,26 +103,32 @@ def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterat
 
 
 def load_optional_advisory_backend(*, state_root: Path | None = None):
-    """Load Runtime's advisory backend, or return None when credentials are absent."""
+    """Load Ferro's advisory backend.
+
+    When the LivingRuntime ChatGPT provider is enabled it is authoritative:
+    do not construct or retain API-provider fallbacks.  A ChatGPT outage must
+    surface as a bounded cognition failure/retry instead of silently changing
+    the model underneath the persistent harness.
+    """
     from agent_runtime.backends import LegacyProviderBackend
     from agent_runtime.llm import LLMProviderError, load_llm_provider
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 
-    provider = None
-    with _temporary_runtime_llm_environment(state_root):
-        try:
-            provider = load_llm_provider()
-        except LLMProviderError as exc:
-            if "not configured" not in str(exc).lower():
-                raise
-
     chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-        fallback=provider
+        fallback=None
     )
     if chatgpt_provider.enabled:
         provider = chatgpt_provider
-    elif provider is None:
-        return None
+    else:
+        provider = None
+        with _temporary_runtime_llm_environment(state_root):
+            try:
+                provider = load_llm_provider()
+            except LLMProviderError as exc:
+                if "not configured" not in str(exc).lower():
+                    raise
+        if provider is None:
+            return None
 
     advisory_timeout = _content_advisory_timeout_seconds()
     if isinstance(provider, LivingRuntimeChatGPTProvider):

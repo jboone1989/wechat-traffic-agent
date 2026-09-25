@@ -188,6 +188,7 @@ def test_sync_suppresses_runtime_invalid_model_until_newer_success_evidence(
 
 
 def test_runtime_backend_loads_resource_pool_from_content_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
     monkeypatch.setenv("OPENROUTER_API_KEY", "free-secret")
     monkeypatch.setenv("VIRTUALBRAIN_LLM_API_KEY", "paid-secret")
     monkeypatch.setenv("VIRTUALBRAIN_LLM_MODEL", "deepseek-flash")
