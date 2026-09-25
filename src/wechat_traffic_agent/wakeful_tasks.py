@@ -1446,15 +1446,16 @@ class WakefulContentTaskRunner:
                 )
             )
             goal_id = str(getattr(goal, "goal_id", "") or "").strip()
-            owner_authorized = (
-                origin == "USER"
-                or (
-                    origin == "EXTERNAL_MISSION"
-                    and goal_id in owner_external_goal_ids
-                )
-            )
-            if owner_authorized and status == "ACTIVE":
-                candidates.append((goal, origin))
+            context_origin = ""
+            if goal_id in owner_external_goal_ids and origin in {"USER", "EXTERNAL_MISSION"}:
+                # Agent Runtime represents an external mission's backing Goal as
+                # USER-origin. Durable owner proposal binding is the stronger
+                # application-level fact for content routing.
+                context_origin = "EXTERNAL_MISSION"
+            elif origin == "USER":
+                context_origin = "USER"
+            if context_origin and status == "ACTIVE":
+                candidates.append((goal, context_origin))
         if not candidates:
             return None
         candidates.sort(

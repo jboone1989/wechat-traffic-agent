@@ -831,6 +831,36 @@ def test_verified_publication_starts_ready_content_step_and_records_progress(tmp
     assert progress["roadmap_id"] == roadmap.roadmap_id
     assert progress["steps"][publication_step.step_id]["publication_count"] == 1
 
+    publication_receipt = (
+        tmp_path / "content" / "continuous" / "cycles" / cycle
+        / "x_browser_publication.json"
+    )
+    publication_receipt.write_text(json.dumps({
+        "status": "POSTED",
+        "cycle": cycle,
+        "post_id": "progress-1",
+        "mission_experiment_transition": started,
+    }))
+
+    repaired = coordinator.repair_invalid_experiment_start(
+        cycle=cycle,
+        publication_receipt_id="receipt:x.post:progress-1",
+        post_id="progress-1",
+        reason="publication attribution was invalidated",
+        now=clock.now(),
+    )
+    assert repaired["status"] == "REPAIRED_TO_PROPOSED"
+    assert repaired["roadmap_repair"]["status"] == "REPAIRED"
+    assert repaired["roadmap_repair"]["publication_count"] == 0
+    assert repaired["roadmap_repair"]["step_reset_to_ready"] is True
+    repaired_step = runtime.missions.get_step(publication_step.step_id)
+    assert repaired_step.started_at is None
+    assert repaired_step.completed_at is None
+    assert "receipt:x.post:progress-1" not in repaired_step.evidence_refs
+    assert "x-post:progress-1" not in repaired_step.evidence_refs
+    progress = json.loads(progress_path.read_text())
+    assert progress["steps"][publication_step.step_id]["publication_count"] == 0
+
 
 def test_legacy_proposed_experiment_is_replanned_with_measurement_context(tmp_path):
     runtime, _clock, backend = _runtime(tmp_path)

@@ -1048,3 +1048,75 @@ def test_target_resolution_failure_records_current_resolver_generation(
     assert len(failed)==1
     assert "target-resolution-error:HTTP_403" in failed[0].evidence_refs
     assert expected_ref in failed[0].evidence_refs
+
+
+
+def test_newer_runtime_404_invalidates_old_success_and_rotates_model(tmp_path, monkeypatch):
+    import json
+
+    scout = ContentResourceScout(state_root=tmp_path, capability_runtime=Runtime())
+    _seed(scout)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "o-secret")
+    resolved = []
+
+    def resolve(env, **kwargs):
+        excluded = set(kwargs.get("exclude_models") or ())
+        resolved.append(excluded)
+        model = "old-free" if "old-free" not in excluded else "new-free"
+        return ProviderTrialTarget(env, "https://example/v1", model)
+
+    monkeypatch.setattr(resource_module, "resolve_trial_target", resolve)
+    calls = []
+
+    def fake(plan, *, api_key, now, target):
+        calls.append(target.model)
+        return [
+            ProviderTrialMeasurement(
+                trial_id=f"trial:{target.model}:{i}",
+                plan_id=plan.plan_id,
+                lead_id=plan.lead_id,
+                provider_label=plan.provider_label,
+                credential_env=plan.credential_env,
+                model=target.model,
+                task_id=f"t{i}",
+                status="COMPLETED",
+                observed_at=now.isoformat(),
+                quality_score=1.0,
+                latency_ms=10,
+                observed_cost=0.0,
+            )
+            for i in range(3)
+        ]
+
+    monkeypatch.setattr(resource_module, "run_bounded_provider_trial", fake)
+
+    first = scout.run_ready_trials(now=NOW, provider_limit=2)
+    assert first["executed_request_count"] == 3
+    manifest_path = tmp_path / "application/llm_resource_pool/resources.json"
+    manifest = json.loads(manifest_path.read_text())
+    old = next(row for row in manifest["resources"] if row["model"] == "old-free")
+    health_path = tmp_path / "application/llm_resource_pool/runtime/health.json"
+    health_path.parent.mkdir(parents=True, exist_ok=True)
+    health_path.write_text(json.dumps({
+        "schema_version": "llm-resource-health.v1",
+        "resources": {
+            old["resource_id"]: {
+                "successes": 3,
+                "failures": 1,
+                "consecutive_failures": 1,
+                "cooldown_until": (NOW + timedelta(hours=7)).isoformat(),
+                "last_error_code": "HTTP_404",
+                "last_success_at": NOW.isoformat(),
+                "last_failure_at": (NOW + timedelta(hours=1)).isoformat(),
+                "consumed_quota": 0.0,
+                "quota_window_signature": "",
+            }
+        },
+    }))
+
+    second = scout.run_ready_trials(now=NOW + timedelta(hours=2), provider_limit=2)
+
+    assert second["executed_request_count"] == 3
+    assert calls == ["old-free", "new-free"]
+    assert resolved[1] == {"old-free"}
+    assert second["empirical_selection"]["model_id"] == "new-free"

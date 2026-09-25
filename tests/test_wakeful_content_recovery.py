@@ -940,7 +940,9 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
         reason="owner private conversation",
         priority=0.7,
         created_at=NOW + timedelta(minutes=1),
-        origin=SimpleNamespace(value="EXTERNAL_MISSION"),
+        # Agent Runtime currently exposes the mission backing goal as USER;
+        # the activated EXTERNAL_MISSION proposal must promote the host context.
+        origin=SimpleNamespace(value="USER"),
         status=SimpleNamespace(value="ACTIVE"),
     )
     app = App()

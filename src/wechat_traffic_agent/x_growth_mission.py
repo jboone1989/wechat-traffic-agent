@@ -918,6 +918,240 @@ class XGrowthMissionCoordinator:
             return {}
         return payload
 
+    def _repair_invalid_roadmap_publication(
+        self,
+        *,
+        mission: Any,
+        cycle: str,
+        publication_receipt_id: str,
+        post_id: str,
+        reason: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Remove invalid publication progress and undo a step start caused by it."""
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return {"status": "NO_ROADMAP"}
+        workspace = (
+            self.state_root / "content" / "x" / "missions" / str(mission.mission_id)
+        )
+        progress_path = workspace / "roadmap_progress.json"
+        progress = _read_json(progress_path)
+        if (
+            progress.get("schema_version") != MISSION_PROGRESS_SCHEMA
+            or progress.get("roadmap_id") != roadmap.roadmap_id
+        ):
+            return {"status": "NO_MATCHING_ROADMAP_PROGRESS"}
+
+        receipt_path = (
+            self.state_root
+            / "content"
+            / "continuous"
+            / "cycles"
+            / str(cycle)
+            / "x_browser_publication.json"
+        )
+        receipt = _read_json(receipt_path)
+        transition = (
+            receipt.get("mission_experiment_transition")
+            if isinstance(receipt.get("mission_experiment_transition"), dict)
+            else {}
+        )
+        step_transition = (
+            transition.get("roadmap_step_transition")
+            if isinstance(transition.get("roadmap_step_transition"), dict)
+            else {}
+        )
+        transition_step_id = str(step_transition.get("step_id") or "").strip()
+        transition_status = str(step_transition.get("status") or "").strip()
+        transition_progress_ref = str(step_transition.get("progress_ref") or "").strip()
+
+        step_rows = (
+            progress.get("steps") if isinstance(progress.get("steps"), dict) else {}
+        )
+        matched_step_id = None
+        if transition_step_id and transition_step_id in step_rows:
+            matched_step_id = transition_step_id
+        else:
+            for step_id, row in step_rows.items():
+                if not isinstance(row, dict):
+                    continue
+                publications = row.get("publications")
+                if not isinstance(publications, list):
+                    continue
+                if any(
+                    isinstance(item, dict)
+                    and str(item.get("publication_receipt_id") or "")
+                    == str(publication_receipt_id)
+                    and str(item.get("post_id") or "") == str(post_id)
+                    for item in publications
+                ):
+                    matched_step_id = str(step_id)
+                    break
+        if not matched_step_id:
+            return {"status": "NO_MATCHING_PUBLICATION"}
+
+        row = step_rows.get(matched_step_id)
+        if not isinstance(row, dict):
+            return {"status": "NO_MATCHING_PUBLICATION"}
+        publications = row.get("publications")
+        if not isinstance(publications, list):
+            publications = []
+        kept = [
+            item
+            for item in publications
+            if not (
+                isinstance(item, dict)
+                and str(item.get("publication_receipt_id") or "")
+                == str(publication_receipt_id)
+                and str(item.get("post_id") or "") == str(post_id)
+            )
+        ]
+        if len(kept) == len(publications):
+            return {"status": "NO_MATCHING_PUBLICATION"}
+
+        row["publications"] = kept
+        row["publication_count"] = len(kept)
+        invalidations = row.setdefault("invalidations", [])
+        if isinstance(invalidations, list) and not any(
+            isinstance(item, dict)
+            and item.get("publication_receipt_id") == str(publication_receipt_id)
+            for item in invalidations
+        ):
+            invalidations.append(
+                {
+                    "publication_receipt_id": str(publication_receipt_id),
+                    "post_id": str(post_id),
+                    "cycle": str(cycle),
+                    "reason": str(reason)[:500],
+                    "invalidated_at": now.astimezone(timezone.utc).isoformat(),
+                }
+            )
+
+        step = self.runtime.missions.get_step(matched_step_id)
+        invalid_refs = {
+            str(publication_receipt_id),
+            f"x-post:{str(post_id)}",
+        }
+        if transition_progress_ref:
+            invalid_refs.add(transition_progress_ref)
+        step.evidence_refs = [
+            ref for ref in step.evidence_refs if str(ref) not in invalid_refs
+        ]
+
+        step_reset = False
+        if (
+            transition_status == "STARTED"
+            and not kept
+            and step.started_at is not None
+            and step.completed_at is None
+            and step.cancelled_at is None
+        ):
+            step.started_at = None
+            row["started_at"] = None
+            step_reset = True
+
+        progress["updated_at"] = now.astimezone(timezone.utc).isoformat()
+        _write_json(progress_path, progress)
+        self._persist_runtime()
+        return {
+            "status": "REPAIRED",
+            "step_id": matched_step_id,
+            "publication_count": len(kept),
+            "step_reset_to_ready": step_reset,
+        }
+
+    def _reconcile_invalidated_roadmap_publications(
+        self, *, mission: Any, now: datetime
+    ) -> dict[str, Any] | None:
+        """Self-heal roadmap progress left behind by older invalidation logic."""
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return None
+        progress_path = (
+            self.state_root
+            / "content"
+            / "x"
+            / "missions"
+            / str(mission.mission_id)
+            / "roadmap_progress.json"
+        )
+        progress = _read_json(progress_path)
+        if (
+            progress.get("schema_version") != MISSION_PROGRESS_SCHEMA
+            or progress.get("roadmap_id") != roadmap.roadmap_id
+        ):
+            return None
+        candidates: list[tuple[str, str, str, str]] = []
+        step_rows = (
+            progress.get("steps") if isinstance(progress.get("steps"), dict) else {}
+        )
+        for row in step_rows.values():
+            if not isinstance(row, dict):
+                continue
+            publications = row.get("publications")
+            if not isinstance(publications, list):
+                continue
+            for item in publications:
+                if not isinstance(item, dict):
+                    continue
+                receipt_id = str(item.get("publication_receipt_id") or "").strip()
+                post_id = str(item.get("post_id") or "").strip()
+                prefix = "x-browser-publication:"
+                if not receipt_id.startswith(prefix) or not post_id:
+                    continue
+                remainder = receipt_id[len(prefix):]
+                suffix = ":" + post_id
+                if not remainder.endswith(suffix):
+                    continue
+                cycle = remainder[: -len(suffix)]
+                receipt = _read_json(
+                    self.state_root
+                    / "content"
+                    / "continuous"
+                    / "cycles"
+                    / cycle
+                    / "x_browser_publication.json"
+                )
+                invalidation = (
+                    receipt.get("mission_experiment_invalidation")
+                    if isinstance(
+                        receipt.get("mission_experiment_invalidation"), dict
+                    )
+                    else {}
+                )
+                if (
+                    str(invalidation.get("publication_receipt_id") or "") == receipt_id
+                    and str(invalidation.get("post_id") or "") == post_id
+                ):
+                    candidates.append(
+                        (
+                            cycle,
+                            receipt_id,
+                            post_id,
+                            str(invalidation.get("reason") or "invalid mission publication"),
+                        )
+                    )
+        repairs = [
+            self._repair_invalid_roadmap_publication(
+                mission=mission,
+                cycle=cycle,
+                publication_receipt_id=receipt_id,
+                post_id=post_id,
+                reason=reason,
+                now=now,
+            )
+            for cycle, receipt_id, post_id, reason in candidates
+        ]
+        applied = [row for row in repairs if row.get("status") == "REPAIRED"]
+        if not repairs:
+            return None
+        return {
+            "status": "REPAIRED" if applied else "NO_CHANGE",
+            "repair_count": len(applied),
+            "repairs": repairs,
+        }
+
     def repair_invalid_experiment_start(
         self,
         *,
@@ -982,9 +1216,18 @@ class XGrowthMissionCoordinator:
         if receipt.get("status") == "POSTED":
             receipt["mission_experiment_invalidation"] = dict(active["start_invalidation"])
             _write_json(folder / "x_browser_publication.json", receipt)
+        roadmap_repair = self._repair_invalid_roadmap_publication(
+            mission=mission,
+            cycle=str(cycle),
+            publication_receipt_id=str(publication_receipt_id),
+            post_id=str(post_id),
+            reason=str(reason),
+            now=now,
+        )
         return {
             "status": "REPAIRED_TO_PROPOSED",
             "experiment_id": experiment.experiment_id,
+            "roadmap_repair": roadmap_repair,
             **active["start_invalidation"],
         }
 
@@ -1151,6 +1394,10 @@ class XGrowthMissionCoordinator:
             now=now,
             evidence_refs=evidence_refs,
         )
+        roadmap_reconciliation = self._reconcile_invalidated_roadmap_publications(
+            mission=mission,
+            now=now,
+        )
         observation = None
         if self._should_record(mission, followers, now):
             observation = self.runtime.observe_mission_metric(
@@ -1246,6 +1493,7 @@ class XGrowthMissionCoordinator:
             "settlement": settlement,
             "roadmap_transition": roadmap_result,
             "roadmap_execution": roadmap_execution,
+            "roadmap_reconciliation": roadmap_reconciliation,
             "hard_stop": hard_stop,
             "roadmap": (
                 None

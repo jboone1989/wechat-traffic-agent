@@ -56,6 +56,19 @@ def _provider_trial_resolver_evidence_ref() -> str:
     ).hexdigest()
 
 
+def _parse_aware_time(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
 def rank_high_capability_model(
     model_ids: list[str],
     excluded_models: frozenset[str],
@@ -124,6 +137,54 @@ class ContentResourceScout:
             return ranked[0] if ranked else None
 
         return _ranker
+
+    def _runtime_incompatible_models(
+        self,
+        *,
+        credential_env: str,
+        model_rows: dict[str, list[ModelTrial]],
+    ) -> dict[str, str]:
+        pool = self.state_root / "application" / "llm_resource_pool"
+        try:
+            manifest = json.loads((pool / "resources.json").read_text(encoding="utf-8"))
+            health_doc = json.loads(
+                (pool / "runtime" / "health.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+        resources = manifest.get("resources") if isinstance(manifest, dict) else []
+        health = health_doc.get("resources") if isinstance(health_doc, dict) else {}
+        if not isinstance(resources, list) or not isinstance(health, dict):
+            return {}
+
+        invalidated: dict[str, str] = {}
+        for resource in resources:
+            if not isinstance(resource, dict):
+                continue
+            if str(resource.get("credential_env") or "") != str(credential_env):
+                continue
+            model = str(resource.get("model") or "")
+            resource_id = str(resource.get("resource_id") or "")
+            row = health.get(resource_id)
+            if not model or not resource_id or not isinstance(row, dict):
+                continue
+            code = str(row.get("last_error_code") or "")
+            failure_at = _parse_aware_time(row.get("last_failure_at"))
+            if code not in {"HTTP_404", "HTTP_410"} or failure_at is None:
+                continue
+            successful_at = [
+                parsed
+                for trial in model_rows.get(model, [])
+                if trial.status == "COMPLETED"
+                for parsed in [_parse_aware_time(getattr(trial, "completed_at", None))]
+                if parsed is not None
+            ]
+            if successful_at and max(successful_at) >= failure_at:
+                continue
+            invalidated[model] = (
+                f"llm-runtime-health:{resource_id}:{code}:{failure_at.isoformat()}"
+            )
+        return invalidated
 
     def maybe_discover(self, *, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
@@ -458,6 +519,11 @@ class ContentResourceScout:
                     for row in rows
                 )
             }
+            runtime_incompatible = self._runtime_incompatible_models(
+                credential_env=plan.credential_env,
+                model_rows=plan_model_rows,
+            )
+            incompatible_models.update(runtime_incompatible)
             previously_tried_models = set(plan_model_rows)
             excluded_models: frozenset[str] = frozenset(
                 incompatible_models

@@ -556,7 +556,7 @@ def test_transient_planner_retry_budget_exhausts_after_three_scheduled_retries(t
     stored = json.loads(problem_path.read_text())
     assert stored["planner_attempt"]["retry_count"] == 4
     assert stored["planner_attempt"]["status"] == "REJECTED"
-    assert stored["status"] == "DIAGNOSING"
+    assert stored["status"] == "AUTO_REPAIR_REJECTED"
 
 
 def test_historical_rejected_validation_error_is_retryable_without_new_occurrence(tmp_path):

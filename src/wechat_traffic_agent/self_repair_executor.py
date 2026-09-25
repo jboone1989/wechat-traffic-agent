@@ -505,11 +505,21 @@ class SelfRepairExecutor:
                 and str(attempt.get("planner_version") or "") == PLANNER_VERSION
             )
             attempt_status = str(attempt.get("status") or "")
+            row["_path"] = str(path)
             if (
                 attempt_status == "REJECTED"
                 and same_attempt
                 and not _transient_planner_reason(attempt.get("reason"))
             ):
+                self._planner_attempt(
+                    row,
+                    now=now,
+                    status="REJECTED",
+                    details={
+                        "reason": str(attempt.get("reason") or "planner rejected bounded repair"),
+                        "retry_count": attempt.get("retry_count"),
+                    },
+                )
                 continue
             if attempt_status.startswith("DEFERRED_") and same_attempt:
                 retry_after_raw = str(attempt.get("retry_after") or "")
@@ -523,8 +533,15 @@ class SelfRepairExecutor:
                     continue
             sources = planner.candidate_source_paths(row)
             if not sources:
+                self._planner_attempt(
+                    row,
+                    now=now,
+                    status="UNLOCALIZED",
+                    details={
+                        "reason": "no bounded candidate source paths for the current failure evidence",
+                    },
+                )
                 continue
-            row["_path"] = str(path)
             row["_planner_sources"] = sources
             rows.append(row)
         rows.sort(
@@ -559,7 +576,22 @@ class SelfRepairExecutor:
             **details,
         }
         updated["planner_attempt"] = attempt
+        if status == "REJECTED":
+            updated["status"] = "AUTO_REPAIR_REJECTED"
+        elif status == "UNLOCALIZED":
+            updated["status"] = "AUTO_REPAIR_UNLOCALIZED"
         _atomic_json(path, updated)
+        latest = self.root / "latest.json"
+        try:
+            latest_payload = json.loads(latest.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            latest_payload = {}
+        if (
+            isinstance(latest_payload, dict)
+            and str(latest_payload.get("problem_id") or "")
+            == str(problem.get("problem_id") or "")
+        ):
+            _atomic_json(latest, updated)
         safe = str(problem.get("problem_id") or "unknown").replace(":", "-")
         _atomic_json(
             self.root / "repair_plans" / f"{safe}.json",
