@@ -828,8 +828,17 @@ class ContentMind:
             balance = float(raw_resource.get("available_funds") or 0.0)
             budget = float(raw_resource.get("period_budget") or 0.0)
             runway = raw_resource.get("runway_days")
+            quotas = raw_resource.get("quotas") or {}
+            chatgpt_authoritative = bool(
+                float(quotas.get("chatgpt_cognition_authoritative") or 0.0) >= 1.0
+            )
+            chatgpt_available = bool(
+                float(quotas.get("chatgpt_cognition_available") or 0.0) >= 1.0
+            )
             ratio = (balance / budget) if budget > 0 else None
-            if balance <= 0 or (ratio is not None and ratio < 0.10) or (runway is not None and float(runway) < 3):
+            if chatgpt_authoritative:
+                pressure = "NORMAL" if chatgpt_available else "UNKNOWN"
+            elif balance <= 0 or (ratio is not None and ratio < 0.10) or (runway is not None and float(runway) < 3):
                 pressure = "CRITICAL"
             elif (ratio is not None and ratio < 0.25) or (runway is not None and float(runway) < 7):
                 pressure = "CONSERVE"
@@ -841,7 +850,16 @@ class ContentMind:
                 "observed_at": raw_resource.get("observed_at"),
                 "currency": raw_resource.get("currency"),
                 "pressure": pressure,
-                "provider_available": bool((raw_resource.get("quotas") or {}).get("deepseek_api_available", 0.0)),
+                "provider_available": (
+                    chatgpt_available
+                    if chatgpt_authoritative
+                    else bool(quotas.get("deepseek_api_available", 0.0))
+                ),
+                "provider_mode": (
+                    "LIVINGRUNTIME_CHATGPT_ONLY"
+                    if chatgpt_authoritative
+                    else "API_POOL"
+                ),
             }
         return {
             "mind_schema": MIND_SCHEMA,

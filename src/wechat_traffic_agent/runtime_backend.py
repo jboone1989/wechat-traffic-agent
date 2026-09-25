@@ -102,23 +102,32 @@ def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterat
             os.environ.pop(key, None)
 
 
+def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
+    """True when LivingRuntime ChatGPT is enabled and API/free-model fallback is forbidden."""
+    env = os.environ if environ is None else environ
+    raw_enabled = str(env.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or "").strip()
+    if raw_enabled:
+        enabled = raw_enabled.lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = (Path.home() / ".livingruntime" / "ferro-chatgpt-provider.enabled").is_file()
+    raw_fallback = str(env.get("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK") or "").strip()
+    allow_fallback = raw_fallback.lower() in {"1", "true", "yes", "on"}
+    return enabled and not allow_fallback
+
+
 def load_optional_advisory_backend(*, state_root: Path | None = None):
     """Load Ferro's advisory backend.
 
-    When the LivingRuntime ChatGPT provider is enabled it is authoritative:
-    do not construct or retain API-provider fallbacks.  A ChatGPT outage must
-    surface as a bounded cognition failure/retry instead of silently changing
-    the model underneath the persistent harness.
+    ChatGPT-only mode is fail-closed: API/free-model providers are not even
+    constructed. If ChatGPT is temporarily unavailable, the cognition request
+    fails boundedly and can be retried without silently changing the model.
     """
     from agent_runtime.backends import LegacyProviderBackend
     from agent_runtime.llm import LLMProviderError, load_llm_provider
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 
-    chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-        fallback=None
-    )
-    if chatgpt_provider.enabled:
-        provider = chatgpt_provider
+    if chatgpt_only_mode():
+        provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
     else:
         provider = None
         with _temporary_runtime_llm_environment(state_root):
@@ -127,7 +136,12 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
             except LLMProviderError as exc:
                 if "not configured" not in str(exc).lower():
                     raise
-        if provider is None:
+        chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
+            fallback=provider
+        )
+        if chatgpt_provider.enabled:
+            provider = chatgpt_provider
+        elif provider is None:
             return None
 
     advisory_timeout = _content_advisory_timeout_seconds()
@@ -151,4 +165,5 @@ __all__ = [
     "_content_advisory_timeout_seconds",
     "load_optional_advisory_backend",
     "runtime_llm_aliases",
+    "chatgpt_only_mode",
 ]

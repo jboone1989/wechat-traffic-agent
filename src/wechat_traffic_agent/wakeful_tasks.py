@@ -256,12 +256,26 @@ class WakefulContentTaskRunner:
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
         pressure = "UNKNOWN"
+        from .runtime_backend import chatgpt_only_mode
+        chatgpt_only = chatgpt_only_mode()
         try:
             observation = self.resource_economy.observe(now)
             rows["resource_observation"] = observation
+            routing_policy = (
+                observation.get("llm_routing_policy")
+                if isinstance(observation, dict) else {}
+            ) or {}
+            chatgpt_only = chatgpt_only or (
+                str(routing_policy.get("routing_mode") or "").upper()
+                == "CHATGPT_ONLY"
+            )
             projection = self.content_mind.public_projection().get("resource_awareness") or {}
             current = projection.get("current") or {}
-            pressure = str(current.get("pressure") or "UNKNOWN")
+            pressure = str(
+                (routing_policy.get("pressure") if chatgpt_only else None)
+                or current.get("pressure")
+                or "UNKNOWN"
+            )
         except Exception as exc:  # noqa: BLE001
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
@@ -331,25 +345,32 @@ class WakefulContentTaskRunner:
         pressure = str(combined_pressure).upper()
         self.wakeful.set_resource_pressure(pressure)
 
+        rows["llm_provider_mode"] = (
+            "LIVINGRUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
+        )
+
         model_reputation = getattr(self, "model_reputation", None)
-        if model_reputation is not None:
+        if model_reputation is not None and not chatgpt_only:
             try:
                 rows["model_reputation"] = model_reputation.observe(now=now)
             except Exception as exc:  # noqa: BLE001
                 rows["model_reputation"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         nvidia_catalog = getattr(self, "nvidia_catalog", None)
-        if nvidia_catalog is not None:
+        if nvidia_catalog is not None and not chatgpt_only:
             try:
                 rows["nvidia_capability_catalog"] = nvidia_catalog.observe(now=now)
             except Exception as exc:  # noqa: BLE001
                 rows["nvidia_capability_catalog"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        try:
-            rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
-        except Exception as exc:  # noqa: BLE001
-            rows["resource_scout"] = self._error(exc)
-            rows["status"] = "DEGRADED"
+        if chatgpt_only:
+            rows["resource_scout"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+        else:
+            try:
+                rows["resource_scout"] = self.resource_scout.maybe_discover(now=now)
+            except Exception as exc:  # noqa: BLE001
+                rows["resource_scout"] = self._error(exc)
+                rows["status"] = "DEGRADED"
         capability_evolution = getattr(self, "capability_evolution", None)
         if capability_evolution is not None:
             try:
@@ -361,149 +382,164 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["capability_evolution"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        try:
-            rows["resource_verification"] = self.resource_scout.verify_pending(now=now, limit=8)
-        except Exception as exc:  # noqa: BLE001
-            rows["resource_verification"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            rows["provider_leads"] = self.resource_scout.expand_provider_leads(now=now, limit=12)
-        except Exception as exc:  # noqa: BLE001
-            rows["provider_leads"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            rows["provider_verification"] = self.resource_scout.verify_provider_leads(now=now, limit=8)
-        except Exception as exc:  # noqa: BLE001
-            rows["provider_verification"] = self._error(exc)
-            rows["status"] = "DEGRADED"
-        try:
-            trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
-            rows["provider_trial_plans"] = trial_plans
-            plans = list(trial_plans.get("plans") or [])
-            local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
-            autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
-            credential_resolutions = []
-            for credential_env in trial_plans.get("available_credential_envs") or []:
-                credential_resolutions.extend(self.human_assistance.fulfill_matching(
-                    kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
-                    detail_value=str(credential_env), now=now,
-                    evidence_refs=(f"env-presence:{credential_env}",),
-                ))
-            if credential_resolutions:
-                rows["provider_access_resolution"] = {
-                    "status": "FULFILLED",
-                    "request_ids": [row.get("request_id") for row in credential_resolutions],
-                }
-            if autonomous_pending:
-                self.wakeful.schedule_resource_followup(now, seconds=300)
-                rows["resource_followup"] = {
-                    "status": "SCHEDULED",
-                    "reason": "unverified autonomous resource/provider evidence remains",
-                    "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
-                    "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
-                    "delay_seconds": 300,
-                }
-            ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
-            if ready is not None:
-                trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
-                rows["provider_trials"] = trial_result
-                if bool(trial_result.get("replan_required")):
+        if chatgpt_only:
+            rows["resource_verification"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["provider_leads"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["provider_verification"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+        else:
+            try:
+                rows["resource_verification"] = self.resource_scout.verify_pending(now=now, limit=8)
+            except Exception as exc:  # noqa: BLE001
+                rows["resource_verification"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+            try:
+                rows["provider_leads"] = self.resource_scout.expand_provider_leads(now=now, limit=12)
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_leads"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+            try:
+                rows["provider_verification"] = self.resource_scout.verify_provider_leads(now=now, limit=8)
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_verification"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        if chatgpt_only:
+            rows["provider_trial_plans"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["provider_trials"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+            rows["capability_windfall"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+        else:
+            try:
+                trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
+                rows["provider_trial_plans"] = trial_plans
+                plans = list(trial_plans.get("plans") or [])
+                local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
+                autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
+                credential_resolutions = []
+                for credential_env in trial_plans.get("available_credential_envs") or []:
+                    credential_resolutions.extend(self.human_assistance.fulfill_matching(
+                        kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                        detail_value=str(credential_env), now=now,
+                        evidence_refs=(f"env-presence:{credential_env}",),
+                    ))
+                if credential_resolutions:
+                    rows["provider_access_resolution"] = {
+                        "status": "FULFILLED",
+                        "request_ids": [row.get("request_id") for row in credential_resolutions],
+                    }
+                if autonomous_pending:
                     self.wakeful.schedule_resource_followup(now, seconds=300)
                     rows["resource_followup"] = {
                         "status": "SCHEDULED",
-                        "reason": "provider trial evidence requires alternate routes",
+                        "reason": "unverified autonomous resource/provider evidence remains",
                         "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                        "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
                         "delay_seconds": 300,
                     }
-                resolutions = []
-                for provider in trial_result.get("providers") or []:
-                    if int(provider.get("completed_count") or 0) <= 0:
-                        continue
-                    fulfilled = self.human_assistance.fulfill_matching(
-                        kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
-                        detail_value=str(provider.get("credential_env") or ""), now=now,
-                        evidence_refs=tuple(str(x) for x in provider.get("trial_ids") or () if x),
-                    )
-                    resolutions.extend(fulfilled)
-                if resolutions:
-                    rows["provider_access_resolution"] = {
-                        "status": "FULFILLED",
-                        "request_ids": [row.get("request_id") for row in resolutions],
-                    }
-                elif any(
-                    code in {"HTTP_401", "HTTP_403"}
-                    for provider in trial_result.get("providers") or []
-                    for code in provider.get("error_codes") or []
-                ):
-                    rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
-            probe_windfall = getattr(
-                self.resource_scout, "probe_capability_windfall", None
-            )
-            if callable(probe_windfall):
-                try:
-                    windfall = probe_windfall(now=now)
-                    rows["capability_windfall"] = windfall
-                    if windfall.get("status") == "AVAILABLE":
-                        self._record_windfall_pending(windfall, now)
-                        sync_policy = getattr(
-                            self.resource_economy, "sync_llm_routing_policy", None
+                ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
+                if ready is not None and not chatgpt_only:
+                    trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
+                    rows["provider_trials"] = trial_result
+                    if bool(trial_result.get("replan_required")):
+                        self.wakeful.schedule_resource_followup(now, seconds=300)
+                        rows["resource_followup"] = {
+                            "status": "SCHEDULED",
+                            "reason": "provider trial evidence requires alternate routes",
+                            "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                            "delay_seconds": 300,
+                        }
+                    resolutions = []
+                    for provider in trial_result.get("providers") or []:
+                        if int(provider.get("completed_count") or 0) <= 0:
+                            continue
+                        fulfilled = self.human_assistance.fulfill_matching(
+                            kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                            detail_value=str(provider.get("credential_env") or ""), now=now,
+                            evidence_refs=tuple(str(x) for x in provider.get("trial_ids") or () if x),
                         )
-                        if callable(sync_policy):
-                            rows["llm_routing_policy"] = sync_policy(now=now)
-                        schedule = getattr(
-                            self.wakeful, "schedule_windfall_reflection", None
-                        )
-                        if callable(schedule):
-                            schedule(now, seconds=60)
-                            rows["windfall_feast"] = {
-                                "status": "SCHEDULED",
-                                "task": "REFLECT",
-                                "reason": "new high-capability free model verified",
-                                "model": windfall.get("model"),
-                                "capability_tier": windfall.get("capability_tier"),
-                                "capability_score": windfall.get("capability_score"),
-                            }
-                except Exception as exc:  # noqa: BLE001
-                    rows["capability_windfall"] = self._error(exc)
-                    rows["status"] = "DEGRADED"
-
-            top = plans[0] if plans else None
-            if (
-                not autonomous_pending
-                and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
-                and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
-            ):
-                request = self.human_assistance.request(
-                    kind="MODEL_RESOURCE_ACCESS",
-                    urgency="NORMAL",
-                    summary=(
-                        f"我已验证 {top['provider_label']} 是当前更值得试的低成本模型资源，"
-                        "但本机资源压力不适合新增本地推理栈，而且我缺少访问凭据。"
-                    ),
-                    requested_action=(
-                        f"请在官方 {top['signup_url']} 创建/获取 {top['credential_env']}，"
-                        "并把它配置到 Content Agent 的受保护服务器环境中；不要通过聊天或企业微信发送密钥明文。"
-                    ),
-                    now=now,
-                    details={
-                        "plan_id": top.get("plan_id"),
-                        "lead_id": top.get("lead_id"),
-                        "provider_label": top.get("provider_label"),
-                        "credential_env": top.get("credential_env"),
-                        "signup_url": top.get("signup_url"),
-                        "priority_score": top.get("priority_score"),
-                        "reasons": top.get("reasons"),
-                        "local_inference": trial_plans.get("local_inference"),
-                    },
+                        resolutions.extend(fulfilled)
+                    if resolutions:
+                        rows["provider_access_resolution"] = {
+                            "status": "FULFILLED",
+                            "request_ids": [row.get("request_id") for row in resolutions],
+                        }
+                    elif any(
+                        code in {"HTTP_401", "HTTP_403"}
+                        for provider in trial_result.get("providers") or []
+                        for code in provider.get("error_codes") or []
+                    ):
+                        rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
+                probe_windfall = getattr(
+                    self.resource_scout, "probe_capability_windfall", None
                 )
-                rows["provider_access_request"] = {
-                    "request_id": request.get("request_id"),
-                    "delivery_status": request.get("delivery_status"),
-                    "kind": request.get("kind"),
-                }
-        except Exception as exc:  # noqa: BLE001
-            rows["provider_trial_plans"] = self._error(exc)
-            rows["status"] = "DEGRADED"
+                if callable(probe_windfall) and not chatgpt_only:
+                    try:
+                        windfall = probe_windfall(now=now)
+                        rows["capability_windfall"] = windfall
+                        if windfall.get("status") == "AVAILABLE":
+                            self._record_windfall_pending(windfall, now)
+                            sync_policy = getattr(
+                                self.resource_economy, "sync_llm_routing_policy", None
+                            )
+                            if callable(sync_policy):
+                                rows["llm_routing_policy"] = sync_policy(now=now)
+                            schedule = getattr(
+                                self.wakeful, "schedule_windfall_reflection", None
+                            )
+                            if callable(schedule):
+                                schedule(now, seconds=60)
+                                rows["windfall_feast"] = {
+                                    "status": "SCHEDULED",
+                                    "task": "REFLECT",
+                                    "reason": "new high-capability free model verified",
+                                    "model": windfall.get("model"),
+                                    "capability_tier": windfall.get("capability_tier"),
+                                    "capability_score": windfall.get("capability_score"),
+                                }
+                    except Exception as exc:  # noqa: BLE001
+                        rows["capability_windfall"] = self._error(exc)
+                        rows["status"] = "DEGRADED"
+
+                if chatgpt_only:
+                    rows["provider_trials"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+                    rows["capability_windfall"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+
+                top = plans[0] if plans else None
+                if (
+                    not chatgpt_only
+                    and not autonomous_pending
+                    and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
+                    and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
+                ):
+                    request = self.human_assistance.request(
+                        kind="MODEL_RESOURCE_ACCESS",
+                        urgency="NORMAL",
+                        summary=(
+                            f"我已验证 {top['provider_label']} 是当前更值得试的低成本模型资源，"
+                            "但本机资源压力不适合新增本地推理栈，而且我缺少访问凭据。"
+                        ),
+                        requested_action=(
+                            f"请在官方 {top['signup_url']} 创建/获取 {top['credential_env']}，"
+                            "并把它配置到 Content Agent 的受保护服务器环境中；不要通过聊天或企业微信发送密钥明文。"
+                        ),
+                        now=now,
+                        details={
+                            "plan_id": top.get("plan_id"),
+                            "lead_id": top.get("lead_id"),
+                            "provider_label": top.get("provider_label"),
+                            "credential_env": top.get("credential_env"),
+                            "signup_url": top.get("signup_url"),
+                            "priority_score": top.get("priority_score"),
+                            "reasons": top.get("reasons"),
+                            "local_inference": trial_plans.get("local_inference"),
+                        },
+                    )
+                    rows["provider_access_request"] = {
+                        "request_id": request.get("request_id"),
+                        "delivery_status": request.get("delivery_status"),
+                        "kind": request.get("kind"),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_trial_plans"] = self._error(exc)
+                rows["status"] = "DEGRADED"
 
         # Self-repair is part of the recovery lane, not ordinary reflection.
         # Under sustained host pressure REFLECT may be deferred indefinitely, so
@@ -727,7 +763,10 @@ class WakefulContentTaskRunner:
         if runtime is None or not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
 
-        pending_windfall = self._load_windfall_pending()
+        from .runtime_backend import chatgpt_only_mode
+        pending_windfall = (
+            None if chatgpt_only_mode() else self._load_windfall_pending()
+        )
         needs = list(getattr(runtime, "evolution_needs", ()) or ())
         if not needs:
             if pending_windfall is not None:
@@ -779,7 +818,7 @@ class WakefulContentTaskRunner:
 
         windfall_active = False
         state_root = getattr(self, "state_root", None)
-        if state_root is not None:
+        if state_root is not None and not chatgpt_only_mode():
             policy_path = (
                 state_root / "application" / "llm_resource_pool" / "policy.json"
             )

@@ -167,7 +167,7 @@ def test_disabled_remote_falls_back_without_running_cli(tmp_path):
     assert fallback.complete_calls == 1
 
 
-def test_runtime_backend_uses_chatgpt_without_api_fallback_when_enabled(tmp_path, monkeypatch):
+def test_runtime_backend_uses_chatgpt_only_when_enabled_by_default(tmp_path, monkeypatch):
     fallback = _Fallback()
     cli = tmp_path / "cognitionctl.py"
     _write_fake_cli(cli)
@@ -182,11 +182,12 @@ def test_runtime_backend_uses_chatgpt_without_api_fallback_when_enabled(tmp_path
 
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
     assert backend.provider.fallback is None
-    assert fallback.complete_calls == 0
     assert backend.default_duration_seconds == 120.0
 
 
-def test_runtime_backend_does_not_even_construct_legacy_provider_when_chatgpt_enabled(
+
+
+def test_runtime_backend_does_not_construct_legacy_provider_in_chatgpt_only_mode(
     tmp_path, monkeypatch
 ):
     cli = tmp_path / "cognitionctl.py"
@@ -194,17 +195,34 @@ def test_runtime_backend_does_not_even_construct_legacy_provider_when_chatgpt_en
     import agent_runtime.llm as runtime_llm
 
     def forbidden_loader():
-        raise AssertionError("legacy provider must not be constructed in ChatGPT-only mode")
+        raise AssertionError("legacy provider must not be constructed")
 
     monkeypatch.setattr(runtime_llm, "load_llm_provider", forbidden_loader)
     monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
     monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
 
     backend = load_optional_advisory_backend()
 
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
     assert backend.provider.fallback is None
 
+
+def test_runtime_backend_can_opt_in_to_legacy_fallback(tmp_path, monkeypatch):
+    fallback = _Fallback()
+    cli = tmp_path / "cognitionctl.py"
+    _write_fake_cli(cli)
+    import agent_runtime.llm as runtime_llm
+
+    monkeypatch.setattr(runtime_llm, "load_llm_provider", lambda: fallback)
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", "1")
+
+    backend = load_optional_advisory_backend()
+
+    assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
+    assert backend.provider.fallback is fallback
 
 def test_runtime_backend_can_use_remote_when_legacy_provider_is_unconfigured(
     tmp_path, monkeypatch

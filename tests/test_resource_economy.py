@@ -8,6 +8,12 @@ from wechat_traffic_agent.resource_economy import BalanceObservation, ContentRes
 NOW = datetime(2026, 9, 17, 9, 0, tzinfo=timezone.utc)
 
 
+@pytest.fixture(autouse=True)
+def _disable_chatgpt_only_by_default(monkeypatch):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
+
+
 def balance(*, when=NOW, total=97.35, available=True, suffix="a"):
     return BalanceObservation(
         observed_at=when.isoformat(), is_available=available, currency="CNY",
@@ -247,3 +253,42 @@ def test_negative_paid_balance_keeps_raw_debt_but_free_route_can_execute(tmp_pat
     decision = economy.begin_cycle(now=NOW, cycle="negative-paid-free-route")
     assert decision["decision"] == "EXECUTE"
     assert decision["available_funds"] == 0.0
+
+
+def test_chatgpt_only_resource_state_ignores_deepseek_balance_for_cognition(tmp_path, monkeypatch):
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.setattr(
+        economy.observer,
+        "observe",
+        lambda _now: (_ for _ in ()).throw(
+            AssertionError("DeepSeek balance must not be queried in ChatGPT-only mode")
+        ),
+    )
+
+    observed = economy.observe(NOW)
+    current = mind.session.resource_awareness.current
+    projection = mind.public_projection()["resource_awareness"]["current"]
+
+    assert observed["status"] == "CHATGPT_ONLY"
+    assert observed["balance"] is None
+    assert observed["balance_sensor"] == "NOT_APPLICABLE"
+    assert current is not None
+    assert current.quotas["chatgpt_cognition_authoritative"] == 1.0
+    assert current.quotas["chatgpt_cognition_available"] == 1.0
+    assert current.quotas["llm_eligible_free_route_count"] == 0.0
+    assert projection["pressure"] == "NORMAL"
+    assert projection["provider_available"] is True
+    assert projection["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert observed["llm_routing_policy"]["routing_mode"] == "CHATGPT_ONLY"
+    assert observed["llm_routing_policy"]["prefer_free"] is False
+    assert observed["llm_routing_policy"]["max_failovers"] == 0
+    assert observed["llm_routing_policy"]["windfall_active"] is False
+
+    decision = economy.begin_cycle(now=NOW, cycle="chatgpt-only-cycle")
+    assert decision["decision"] == "EXECUTE"
+    assert decision["estimated_cost"] == 0.0
