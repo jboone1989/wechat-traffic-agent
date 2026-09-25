@@ -116,26 +116,33 @@ def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
 
 
 def load_optional_advisory_backend(*, state_root: Path | None = None):
-    """Load Runtime's advisory backend, or return None when credentials are absent."""
+    """Load Ferro's advisory backend.
+
+    ChatGPT-only mode is fail-closed: API/free-model providers are not even
+    constructed. If ChatGPT is temporarily unavailable, the cognition request
+    fails boundedly and can be retried without silently changing the model.
+    """
     from agent_runtime.backends import LegacyProviderBackend
     from agent_runtime.llm import LLMProviderError, load_llm_provider
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 
-    provider = None
-    with _temporary_runtime_llm_environment(state_root):
-        try:
-            provider = load_llm_provider()
-        except LLMProviderError as exc:
-            if "not configured" not in str(exc).lower():
-                raise
-
-    chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-        fallback=None if chatgpt_only_mode() else provider
-    )
-    if chatgpt_provider.enabled:
-        provider = chatgpt_provider
-    elif provider is None:
-        return None
+    if chatgpt_only_mode():
+        provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    else:
+        provider = None
+        with _temporary_runtime_llm_environment(state_root):
+            try:
+                provider = load_llm_provider()
+            except LLMProviderError as exc:
+                if "not configured" not in str(exc).lower():
+                    raise
+        chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
+            fallback=provider
+        )
+        if chatgpt_provider.enabled:
+            provider = chatgpt_provider
+        elif provider is None:
+            return None
 
     advisory_timeout = _content_advisory_timeout_seconds()
     if isinstance(provider, LivingRuntimeChatGPTProvider):
