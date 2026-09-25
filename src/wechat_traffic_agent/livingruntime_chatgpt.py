@@ -32,15 +32,15 @@ class LivingRuntimeChatGPTProvider:
         cli_path: Path,
         enabled: bool,
         agent_id: str = "ferro",
-        timeout_seconds: float = 120.0,
+        timeout_seconds: float = 300.0,
     ) -> None:
         self.fallback = fallback
         self.cli_path = Path(cli_path)
         self.enabled = bool(enabled)
         self.agent_id = str(agent_id or "ferro").strip()
         timeout = float(timeout_seconds)
-        if not math.isfinite(timeout) or not 10.0 <= timeout <= 180.0:
-            raise ValueError("LivingRuntime ChatGPT timeout must be within 10..180 seconds")
+        if not math.isfinite(timeout) or not 10.0 <= timeout <= 900.0:
+            raise ValueError("LivingRuntime ChatGPT timeout must be within 10..900 seconds")
         self.timeout_seconds = timeout
         self.last_provenance: dict[str, Any] | None = None
 
@@ -67,7 +67,7 @@ class LivingRuntimeChatGPTProvider:
             os.environ.get("LIVINGRUNTIME_CHATGPT_AGENT_ID") or "ferro"
         ).strip()
         raw_timeout = str(
-            os.environ.get("LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS") or "120"
+            os.environ.get("LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS") or "300"
         ).strip()
         try:
             timeout = float(raw_timeout)
@@ -156,7 +156,7 @@ class LivingRuntimeChatGPTProvider:
 
         cli_timeout_seconds = max(
             1,
-            min(int(math.ceil(effective_timeout)), 180),
+            min(int(math.ceil(effective_timeout)), 900),
         )
         payload = {
             "agent_id": self.agent_id,

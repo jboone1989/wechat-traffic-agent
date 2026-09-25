@@ -26,8 +26,8 @@ class ContentBoundedLegacyProviderBackend:
 
     def __init__(self, backend, *, default_duration_seconds: float) -> None:
         duration = float(default_duration_seconds)
-        if not math.isfinite(duration) or not 10.0 <= duration <= 180.0:
-            raise ValueError("content advisory timeout must be within 10..180 seconds")
+        if not math.isfinite(duration) or not 10.0 <= duration <= 900.0:
+            raise ValueError("content advisory timeout must be within 10..900 seconds")
         self._backend = backend
         self.default_duration_seconds = duration
 
@@ -58,8 +58,8 @@ def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) 
         value = float(raw)
     except ValueError as exc:
         raise ValueError("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS must be numeric") from exc
-    if not math.isfinite(value) or not 10.0 <= value <= 180.0:
-        raise ValueError("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS must be within 10..180")
+    if not math.isfinite(value) or not 10.0 <= value <= 900.0:
+        raise ValueError("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS must be within 10..900")
     return value
 
 

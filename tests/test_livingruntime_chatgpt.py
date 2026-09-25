@@ -202,7 +202,7 @@ def test_runtime_backend_can_use_remote_when_legacy_provider_is_unconfigured(
 
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
     assert backend.provider.fallback is None
-    assert backend.default_duration_seconds == 120.0
+    assert backend.default_duration_seconds == 300.0
 
 
 def test_runtime_backend_can_use_local_enable_marker(tmp_path, monkeypatch):
@@ -224,6 +224,17 @@ def test_runtime_backend_can_use_local_enable_marker(tmp_path, monkeypatch):
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
     assert backend.provider.fallback is fallback
     assert backend.provider.cli_path == cli
+
+
+def test_default_remote_budget_allows_chatgpt_watcher_round_trip(tmp_path, monkeypatch):
+    cli = tmp_path / "cognitionctl.py"
+    _write_fake_cli(cli)
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+    )
+
+    assert provider.timeout_seconds == 300.0
 
 
 def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):

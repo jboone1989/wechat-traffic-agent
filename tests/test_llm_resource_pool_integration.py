@@ -332,5 +332,5 @@ def test_content_advisory_timeout_env_is_bounded(monkeypatch):
     monkeypatch.setenv("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS", "30")
     assert _content_advisory_timeout_seconds() == 30.0
     monkeypatch.setenv("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS", "5")
-    with pytest.raises(ValueError, match="10..180"):
+    with pytest.raises(ValueError, match="10..900"):
         _content_advisory_timeout_seconds()
