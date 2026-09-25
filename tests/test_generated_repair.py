@@ -344,7 +344,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     problem = json.loads(problem_path.read_text())
     problem["planner_attempt"] = {
         "status": "REJECTED",
-        "planner_version": "generated-repair.v3",
+        "planner_version": "generated-repair.v7",
         "occurrences_seen": 1,
         "reason": "ValueError:implementation marker absent after edits",
     }
@@ -364,7 +364,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v7"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v8"
 
 
 
@@ -431,7 +431,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v7"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v8"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -670,7 +670,7 @@ def test_model_selected_unapproved_test_is_ignored_by_authoritative_binding(tmp_
     stored = json.loads(problem_path.read_text())
     recipe = stored["repair_proposal"]["generated_recipe"]
     assert recipe["focused_tests"] == ["tests/test_app_logic.py"]
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v7"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v8"
 
 
 
@@ -830,5 +830,5 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
     assert result["focused_tests"][0] == counter_test
     assert "tests/test_app_logic.py" in result["focused_tests"]
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v7"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v8"
     assert counter_test in updated["planner_attempt"]["allowed_tests"]
