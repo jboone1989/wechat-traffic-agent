@@ -331,6 +331,12 @@ class WakefulContentTaskRunner:
         pressure = str(combined_pressure).upper()
         self.wakeful.set_resource_pressure(pressure)
 
+        from .runtime_backend import chatgpt_only_mode
+        chatgpt_only = chatgpt_only_mode()
+        rows["llm_provider_mode"] = (
+            "LIVINGRUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
+        )
+
         model_reputation = getattr(self, "model_reputation", None)
         if model_reputation is not None:
             try:
@@ -339,7 +345,7 @@ class WakefulContentTaskRunner:
                 rows["model_reputation"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         nvidia_catalog = getattr(self, "nvidia_catalog", None)
-        if nvidia_catalog is not None:
+        if nvidia_catalog is not None and not chatgpt_only:
             try:
                 rows["nvidia_capability_catalog"] = nvidia_catalog.observe(now=now)
             except Exception as exc:  # noqa: BLE001
@@ -404,7 +410,7 @@ class WakefulContentTaskRunner:
                     "delay_seconds": 300,
                 }
             ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
-            if ready is not None:
+            if ready is not None and not chatgpt_only:
                 trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
                 rows["provider_trials"] = trial_result
                 if bool(trial_result.get("replan_required")):
@@ -439,7 +445,7 @@ class WakefulContentTaskRunner:
             probe_windfall = getattr(
                 self.resource_scout, "probe_capability_windfall", None
             )
-            if callable(probe_windfall):
+            if callable(probe_windfall) and not chatgpt_only:
                 try:
                     windfall = probe_windfall(now=now)
                     rows["capability_windfall"] = windfall
@@ -467,9 +473,14 @@ class WakefulContentTaskRunner:
                     rows["capability_windfall"] = self._error(exc)
                     rows["status"] = "DEGRADED"
 
+            if chatgpt_only:
+                rows["provider_trials"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+                rows["capability_windfall"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+
             top = plans[0] if plans else None
             if (
-                not autonomous_pending
+                not chatgpt_only
+                and not autonomous_pending
                 and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
                 and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
             ):

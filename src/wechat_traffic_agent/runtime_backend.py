@@ -102,6 +102,19 @@ def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterat
             os.environ.pop(key, None)
 
 
+def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
+    """True when LivingRuntime ChatGPT is enabled and API/free-model fallback is forbidden."""
+    env = os.environ if environ is None else environ
+    raw_enabled = str(env.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or "").strip()
+    if raw_enabled:
+        enabled = raw_enabled.lower() in {"1", "true", "yes", "on"}
+    else:
+        enabled = (Path.home() / ".livingruntime" / "ferro-chatgpt-provider.enabled").is_file()
+    raw_fallback = str(env.get("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK") or "").strip()
+    allow_fallback = raw_fallback.lower() in {"1", "true", "yes", "on"}
+    return enabled and not allow_fallback
+
+
 def load_optional_advisory_backend(*, state_root: Path | None = None):
     """Load Runtime's advisory backend, or return None when credentials are absent."""
     from agent_runtime.backends import LegacyProviderBackend
@@ -117,7 +130,7 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
                 raise
 
     chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-        fallback=provider
+        fallback=None if chatgpt_only_mode() else provider
     )
     if chatgpt_provider.enabled:
         provider = chatgpt_provider
@@ -145,4 +158,5 @@ __all__ = [
     "_content_advisory_timeout_seconds",
     "load_optional_advisory_backend",
     "runtime_llm_aliases",
+    "chatgpt_only_mode",
 ]
