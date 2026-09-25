@@ -3,11 +3,68 @@ import json
 import threading
 import time
 
-from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
+from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, _connectome_body_currents
 from agent_runtime.wakeful import PlannedWake
 
 
 NOW = datetime(2026, 9, 17, 8, 0, tzinfo=timezone.utc)
+
+
+
+def test_connectome_body_currents_are_low_semantic_and_bounded():
+    currents = _connectome_body_currents(
+        {
+            "body": {
+                "cpu_pressure": 0.75,
+                "memory_pressure": 0.25,
+                "disk_pressure": 1.2,
+                "x_follower_gap": 0.4,
+                "x_recent_decline": 0.1,
+                "circadian_sin": -0.6,
+            }
+        },
+        recent_stimulus_kinds=("NETWORK_ERROR", "NETWORK_ERROR"),
+    )
+    assert currents["sense_cpu_pressure"] == 0.75
+    assert currents["sense_memory_pressure"] == 0.25
+    assert currents["sense_disk_pressure"] == 1.0
+    assert currents["sense_x_follower_gap"] == 0.4
+    assert currents["sense_circadian_day"] == 0.2
+    assert currents["sense_circadian_night"] == 0.8
+    assert currents["sense_network_error"] == 0.5
+
+
+def test_neural_life_stimulates_aux_body_electrodes_without_feedback_authority(tmp_path):
+    class _AuxProbe:
+        aux_channels = (
+            "sense_cpu_pressure", "sense_memory_pressure", "sense_disk_pressure",
+            "sense_x_follower_gap", "sense_x_recent_decline",
+            "sense_circadian_day", "sense_circadian_night", "sense_network_error",
+        )
+
+        def __init__(self):
+            self.calls = []
+
+        def stimulate(self, currents, observed_at, *, source_event_id=None, feedback_eligible=None):
+            self.calls.append({
+                "currents": dict(currents),
+                "source_event_id": source_event_id,
+                "feedback_eligible": feedback_eligible,
+            })
+            return {"delta_readout_hz": {key: 0.0 for key in self.aux_channels}}
+
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    probe = _AuxProbe()
+    runtime.core.reflex.substrate = probe
+    runtime.refresh_neural_life(NOW)
+
+    assert len(probe.calls) == 1
+    call = probe.calls[0]
+    assert call["source_event_id"].startswith("body-sense:")
+    assert call["feedback_eligible"] is False
+    assert set(call["currents"]) <= set(probe.aux_channels)
+    assert call["currents"]
+
 
 
 def test_initial_plans_are_explicit_and_restart_safe(tmp_path):
@@ -397,6 +454,9 @@ def test_real_minifly_shadow_substrate_is_separate_from_semantic_ports(tmp_path,
     assert substrate["neuron_count"] == 850
     assert substrate["connection_count"] == 4_928
     assert substrate["lifecycle"] == "SHADOW"
+    assert substrate["auxiliary_electrodes"] is True
+    assert substrate["auxiliary_channel_count"] == 8
+    assert "sense_cpu_pressure" in substrate["auxiliary_channels"]
     assert substrate["recent_bursts"][-1]["synaptic_events"] > 0
     assert snapshot["connectome"]["status"] == "SHADOW_ACTIVE"
 

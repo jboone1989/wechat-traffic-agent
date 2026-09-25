@@ -7,6 +7,7 @@ import json
 import os
 import threading
 from pathlib import Path
+from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from agent_runtime.wakeful import (
@@ -25,6 +26,40 @@ _DEFAULT_INTERVALS = {
     "NEURAL_DREAM": 21600,
     "NEURAL_TRANSFER": 14400,
 }
+
+_CONNECTOME_AUX_CHANNELS = (
+    "sense_cpu_pressure",
+    "sense_memory_pressure",
+    "sense_disk_pressure",
+    "sense_x_follower_gap",
+    "sense_x_recent_decline",
+    "sense_circadian_day",
+    "sense_circadian_night",
+    "sense_network_error",
+)
+
+
+def _connectome_body_currents(
+    neural_life: Mapping[str, Any],
+    *,
+    recent_stimulus_kinds: tuple[str, ...] = (),
+) -> dict[str, float]:
+    body = neural_life.get("body") if isinstance(neural_life.get("body"), Mapping) else {}
+    circadian_sin = float(body.get("circadian_sin") or 0.0)
+    return {
+        "sense_cpu_pressure": max(0.0, min(1.0, float(body.get("cpu_pressure") or 0.0))),
+        "sense_memory_pressure": max(0.0, min(1.0, float(body.get("memory_pressure") or 0.0))),
+        "sense_disk_pressure": max(0.0, min(1.0, float(body.get("disk_pressure") or 0.0))),
+        "sense_x_follower_gap": max(0.0, min(1.0, float(body.get("x_follower_gap") or 0.0))),
+        "sense_x_recent_decline": max(0.0, min(1.0, float(body.get("x_recent_decline") or 0.0))),
+        "sense_circadian_day": max(0.0, min(1.0, 0.5 + 0.5 * circadian_sin)),
+        "sense_circadian_night": max(0.0, min(1.0, 0.5 - 0.5 * circadian_sin)),
+        "sense_network_error": max(
+            0.0,
+            min(1.0, sum(1 for kind in recent_stimulus_kinds if kind == "NETWORK_ERROR") / 4.0),
+        ),
+    }
+
 
 _EXTERNAL_WAKE_TASKS = frozenset({
     "OBSERVE_WORLD",
@@ -63,6 +98,7 @@ class ContentWakefulRuntime:
                     source=source,
                     state_path=self.state_root / "application" / "fly_connectome_state.npz",
                     channels=semantic.neuron_names,
+                    aux_channels=_CONNECTOME_AUX_CHANNELS,
                     upstream_commit=os.environ.get("CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT", "3e26934"),
                     electrode_size=int(os.environ.get("CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE", "64")),
                     input_hz=float(os.environ.get("CONTENT_FLY_CONNECTOME_INPUT_HZ", "120")),
@@ -385,6 +421,29 @@ class ContentWakefulRuntime:
         projection = self.neural_life.update(now=now, wakeful=wakeful)
 
         if self.neural_life.should_stimulate(now):
+            substrate = getattr(self.core.reflex, "substrate", None)
+            aux_channels = set(getattr(substrate, "aux_channels", ()) or ())
+            if substrate is not None and aux_channels:
+                raw_currents = {
+                    key: value
+                    for key, value in _connectome_body_currents(
+                        projection,
+                        recent_stimulus_kinds=tuple(wakeful["recent_stimulus_kinds"]),
+                    ).items()
+                    if key in aux_channels and value > 0.0
+                }
+                if raw_currents:
+                    try:
+                        substrate.stimulate(
+                            raw_currents,
+                            now,
+                            source_event_id=f"body-sense:{int(now.timestamp() // 240)}",
+                            feedback_eligible=False,
+                        )
+                    except Exception as exc:
+                        record_error = getattr(substrate, "record_error", None)
+                        if callable(record_error):
+                            record_error(exc, now)
             drives = projection.get("drives") or {}
             mapping = {
                 "survival": ("resource_pressure", "INTEROCEPTION_SURVIVAL"),
