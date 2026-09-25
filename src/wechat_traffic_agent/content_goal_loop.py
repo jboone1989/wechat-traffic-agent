@@ -117,9 +117,12 @@ def _normalize_owner_goal_context(value):
         priority = float(value.get("priority") or 0.0)
     except (TypeError, ValueError):
         priority = 0.0
+    origin = str(value.get("origin") or "USER").strip().upper()
+    if origin not in {"USER", "EXTERNAL_MISSION"}:
+        origin = "USER"
     return {
         "goal_id": goal_id[:160],
-        "origin": "USER",
+        "origin": origin,
         "description": description[:2400],
         "reason": str(value.get("reason") or "")[:800],
         "priority": max(0.0, min(1.0, priority)),
@@ -531,9 +534,23 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         f"Applied {len(strategy_sync['applied'])} mature 24h Website outcome(s) before choosing this cycle's action.",
                         status='completed',
                     )
+        # Owner-authorized external mission follow-ups are already grounded in a
+        # durable goal + mission + roadmap. Do not spend their bounded cognition
+        # window on generic world-attention/prediction LLM calls before mission
+        # discovery. The ordinary world/prediction loop remains available to
+        # autonomous cycles and to explicit VERIFY_PREDICTION wakes.
+        x_mission_context = x_growth_mission_context(self.state)
+        mission_context = _active_mission_discovery_context(x_mission_context)
+        owner_goal = _normalize_owner_goal_context(getattr(self, '_owner_goal', None))
+        owner_mission_fast_path = bool(
+            owner_goal is not None
+            and owner_goal.get('origin') == 'EXTERNAL_MISSION'
+            and mission_context is not None
+        )
+
         world_payload = None
         prefetched_evidence_pool = None
-        if self.world_feed is not None:
+        if self.world_feed is not None and not owner_mission_fast_path:
             world_path = folder / 'world_feed.json'
             if world_path.exists():
                 world_payload = json.loads(world_path.read_text())
@@ -596,9 +613,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
         plan_preexisting = plan_path.exists()
-        x_mission_context = x_growth_mission_context(self.state)
-        mission_context = _active_mission_discovery_context(x_mission_context)
-        owner_goal = _normalize_owner_goal_context(getattr(self, '_owner_goal', None))
         mission_step = (
             mission_context.get('roadmap_step')
             if isinstance(mission_context, dict)
@@ -616,9 +630,12 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         # Once the experiment is RUNNING, ordinary endogenous/dream goals regain
         # their normal opportunity to compete while the outcome window matures.
         mission_priority = bool(
-            mission_context is not None
-            and mission_step.get('status') == 'RUNNING'
-            and mission_experiment.get('status') == 'PROPOSED'
+            owner_mission_fast_path
+            or (
+                mission_context is not None
+                and mission_step.get('status') == 'RUNNING'
+                and mission_experiment.get('status') == 'PROPOSED'
+            )
         )
         if plan_preexisting:
             mind_plan = json.loads(plan_path.read_text())

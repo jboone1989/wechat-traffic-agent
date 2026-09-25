@@ -1319,6 +1319,49 @@ class OwnerMissionLLMOutageRuntime(V2Runtime):
         return await super().cognitive_probe(task, max_tokens)
 
 
+class ForbiddenOwnerMissionWorldFeed:
+    async def collect(self, **_kwargs):
+        raise AssertionError("owner external mission must reach mission discovery before generic world attention")
+
+
+def test_owner_external_mission_skips_generic_world_attention_before_discovery(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    _write_active_x_mission(Path(legacy.state))
+    runtime = OwnerMissionLLMOutageRuntime()
+    explorer = MissionDiscoveryExplorer()
+    worker = v2(legacy, runtime, publisher, explorer=explorer)
+    worker.world_feed = ForbiddenOwnerMissionWorldFeed()
+    owner_goal = {
+        "goal_id": "goal-livingruntime-remote",
+        "origin": "EXTERNAL_MISSION",
+        "description": (
+            "宣传 LivingRuntime Remote，并把它作为当前 X 粉丝增长目标的一次真实增长实验来执行。"
+        ),
+        "reason": "owner activated external mission",
+        "priority": 0.79,
+        "created_at": NOW.isoformat(),
+    }
+
+    result = asyncio.run(worker.run_once(now=NOW, owner_goal=owner_goal))
+
+    assert result["status"] == "ERROR"
+    assert result["error_type"] == "LLMProviderError"
+    assert runtime.calls and runtime.calls[0].startswith("MISSION_DISCOVERY:")
+    cycle_dir = (
+        Path(legacy.state)
+        / "content"
+        / "continuous"
+        / "cycles"
+        / result["cycle"]
+    )
+    assert not (cycle_dir / "world_feed.json").exists()
+    assert not (cycle_dir / "world_model_calls").exists()
+    assert not (cycle_dir / "prediction_model_calls").exists()
+    plan = json.loads((cycle_dir / "mind_plan.json").read_text())
+    assert plan["owner_goal_id"] == "goal-livingruntime-remote"
+    assert plan["goal"]["origin"] == "EXTERNAL_MISSION"
+
+
 def test_owner_goal_mission_discovery_outage_fails_closed_before_generic_evidence(tmp_path):
     _runtime, legacy, publisher = setup(tmp_path)
     _write_active_x_mission(Path(legacy.state))
