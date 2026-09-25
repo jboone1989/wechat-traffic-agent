@@ -454,6 +454,12 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     )
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
     wakeful_runtime = ContentWakefulRuntime(state_root=state_root, content_interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")), watchdog_seconds=args.watchdog_seconds)
+    from wechat_traffic_agent.cognition_context import bind_ferro_cognition_context
+    bind_ferro_cognition_context(
+        application=app,
+        mind=content_mind,
+        wakeful=wakeful_runtime,
+    )
     try:
         from wechat_traffic_agent.public_persona import ensure_public_persona
         persona = asyncio.run(ensure_public_persona(runtime=app.domain_runtime, state_root=state_root))

@@ -129,9 +129,13 @@ class ProspectiveSelfMemoryService:
             raw = project()
             if isinstance(raw, dict):
                 mind_projection = raw
-        runtime_capabilities = getattr(getattr(application, "runtime", None), "capabilities", None)
+        application_runtime = getattr(application, "runtime", None)
+        runtime_capabilities = getattr(application_runtime, "capabilities", None)
         capabilities: list[str] = []
-        if isinstance(runtime_capabilities, Mapping):
+        available = getattr(application_runtime, "available_capabilities", None)
+        if callable(available):
+            capabilities = [str(item) for item in available()]
+        elif isinstance(runtime_capabilities, Mapping):
             capabilities = [str(key) for key in runtime_capabilities]
         elif isinstance(runtime_capabilities, (list, tuple, set)):
             capabilities = [str(item) for item in runtime_capabilities]
