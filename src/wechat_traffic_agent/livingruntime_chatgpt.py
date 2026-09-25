@@ -33,6 +33,7 @@ class LivingRuntimeChatGPTProvider:
         enabled: bool,
         agent_id: str = "ferro",
         timeout_seconds: float = 300.0,
+        dispatch_grace_seconds: float = 15.0,
     ) -> None:
         self.fallback = fallback
         self.cli_path = Path(cli_path)
@@ -42,6 +43,12 @@ class LivingRuntimeChatGPTProvider:
         if not math.isfinite(timeout) or not 10.0 <= timeout <= 900.0:
             raise ValueError("LivingRuntime ChatGPT timeout must be within 10..900 seconds")
         self.timeout_seconds = timeout
+        dispatch_grace = float(dispatch_grace_seconds)
+        if not math.isfinite(dispatch_grace) or not 1.0 <= dispatch_grace <= 60.0:
+            raise ValueError(
+                "LivingRuntime ChatGPT dispatch grace must be within 1..60 seconds"
+            )
+        self.dispatch_grace_seconds = dispatch_grace
         self.last_provenance: dict[str, Any] | None = None
 
     @classmethod
@@ -75,12 +82,22 @@ class LivingRuntimeChatGPTProvider:
             raise ValueError(
                 "LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS must be numeric"
             ) from exc
+        raw_dispatch_grace = str(
+            os.environ.get("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS") or "15"
+        ).strip()
+        try:
+            dispatch_grace = float(raw_dispatch_grace)
+        except ValueError as exc:
+            raise ValueError(
+                "LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS must be numeric"
+            ) from exc
         return cls(
             fallback=fallback,
             cli_path=cli,
             enabled=enabled,
             agent_id=agent_id,
             timeout_seconds=timeout,
+            dispatch_grace_seconds=dispatch_grace,
         )
 
     @property
@@ -158,6 +175,10 @@ class LivingRuntimeChatGPTProvider:
             1,
             min(int(math.ceil(effective_timeout)), 900),
         )
+        dispatch_timeout_seconds = max(
+            1,
+            min(int(math.ceil(self.dispatch_grace_seconds)), cli_timeout_seconds),
+        )
         payload = {
             "agent_id": self.agent_id,
             "purpose": task_class[:512] or "content_cognition",
@@ -166,6 +187,7 @@ class LivingRuntimeChatGPTProvider:
             "options": options,
             "metadata": metadata,
             "timeout_seconds": cli_timeout_seconds,
+            "dispatch_timeout_seconds": dispatch_timeout_seconds,
         }
         body = json.dumps(
             payload,

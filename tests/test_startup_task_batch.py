@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -93,4 +94,38 @@ def test_stale_running_request_blocks_automatic_replay(tmp_path: Path):
 
     assert claim is None
     assert request.exists()
+    assert running.exists()
+
+
+def test_process_start_archives_stale_running_batch_and_allows_new_request(tmp_path: Path):
+    module = _module()
+    request, running, _receipt = module._startup_task_paths(tmp_path)
+    request.parent.mkdir(parents=True, exist_ok=True)
+    running.write_text(json.dumps({
+        "schema_version": "content-startup-task-batch.v1",
+        "request_id": "interrupted-first",
+        "tasks": ["CONTENT_COGNITION"],
+    }), encoding="utf-8")
+    request.write_text(json.dumps({
+        "schema_version": "content-startup-task-batch.v1",
+        "request_id": "second",
+        "tasks": ["CHECK_X"],
+    }), encoding="utf-8")
+
+    archive = module._recover_stale_startup_task_request(
+        tmp_path,
+        now=datetime(2026, 9, 25, 5, 0, tzinfo=timezone.utc),
+    )
+    claim = module._claim_startup_task_request(tmp_path)
+
+    assert archive is not None
+    assert archive.name == "startup_task_request.interrupted-20260925T050000Z.json"
+    assert not running.exists() or claim is not None
+    interrupted = json.loads(archive.read_text(encoding="utf-8"))
+    assert interrupted["request_id"] == "interrupted-first"
+    assert interrupted["tasks"] == ["CONTENT_COGNITION"]
+    assert claim is not None
+    assert claim["request_id"] == "second"
+    assert claim["tasks"] == ["CHECK_X"]
+    assert not request.exists()
     assert running.exists()

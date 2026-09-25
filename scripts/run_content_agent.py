@@ -168,6 +168,35 @@ def _write_startup_task_receipt(
     running.unlink(missing_ok=True)
 
 
+def _recover_stale_startup_task_request(
+    state_root: Path,
+    *,
+    now: datetime | None = None,
+) -> Path | None:
+    """Archive a startup batch left RUNNING by a previous process.
+
+    This is called exactly once during process initialization, before this
+    process can claim a startup batch. A pre-existing .running file therefore
+    belongs to an interrupted predecessor and must not permanently block newer
+    operator work. The interrupted batch is preserved as evidence and is never
+    replayed automatically.
+    """
+    _request, running, _receipt = _startup_task_paths(state_root)
+    if not running.exists():
+        return None
+    observed = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    stamp = observed.strftime("%Y%m%dT%H%M%SZ")
+    archive = running.with_name(f"startup_task_request.interrupted-{stamp}.json")
+    suffix = 1
+    while archive.exists():
+        archive = running.with_name(
+            f"startup_task_request.interrupted-{stamp}-{suffix}.json"
+        )
+        suffix += 1
+    running.replace(archive)
+    return archive
+
+
 def _claim_startup_task_request(state_root: Path) -> dict | None:
     request, running, _receipt = _startup_task_paths(state_root)
     if running.exists() or not request.exists():
@@ -559,6 +588,14 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         web_base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
         stop_requested=lambda: stopping,
     )
+    recovered_startup_request = _recover_stale_startup_task_request(state_root)
+    if recovered_startup_request is not None:
+        print(json.dumps({
+            "startup_task_recovery": {
+                "status": "INTERRUPTED_BATCH_ARCHIVED",
+                "archive": recovered_startup_request.name,
+            }
+        }, sort_keys=True))
     startup_request = _claim_startup_task_request(state_root)
     startup_tasks = list(startup_request.get("tasks") or ()) if startup_request else []
     startup_results: list[dict] = []

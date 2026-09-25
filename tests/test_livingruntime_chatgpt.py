@@ -111,6 +111,7 @@ idx = sys.argv.index("--wait-timeout-seconds")
 wait_timeout = int(sys.argv[idx + 1])
 text = json.dumps({
     "payload_timeout": payload["timeout_seconds"],
+    "dispatch_timeout": payload["dispatch_timeout_seconds"],
     "wait_timeout": wait_timeout,
 }, separators=(",", ":"))
 print(json.dumps({
@@ -146,6 +147,7 @@ print(json.dumps({
 
     assert json.loads(result) == {
         "payload_timeout": 97,
+        "dispatch_timeout": 15,
         "wait_timeout": 97,
     }
 
@@ -235,6 +237,49 @@ def test_default_remote_budget_allows_chatgpt_watcher_round_trip(tmp_path, monke
     )
 
     assert provider.timeout_seconds == 300.0
+    assert provider.dispatch_grace_seconds == 15.0
+
+
+def test_remote_dispatch_grace_is_configurable_and_bounded(tmp_path, monkeypatch):
+    cli = tmp_path / "cognitionctl.py"
+    _write_fake_cli(cli)
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS", "7")
+
+    provider = LivingRuntimeChatGPTProvider.from_environment()
+
+    assert provider.dispatch_grace_seconds == 7.0
+
+
+def test_remote_dispatch_grace_never_exceeds_short_caller_budget(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+print(json.dumps({
+  "status":"COMPLETED","request_id":"llmreq_short","created_at":1,"finished_at":2,
+  "response":{"text":json.dumps({
+    "timeout":payload["timeout_seconds"],
+    "dispatch":payload["dispatch_timeout_seconds"]
+  }),"provider":"livingruntime-chatgpt","model":"test","session_id":"s","sha256":"x","completed_at":2}
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+        dispatch_grace_seconds=15,
+    )
+
+    result = asyncio.run(
+        provider.complete("short", _reserve_timeout_seconds=10)
+    )
+
+    assert json.loads(result) == {"timeout": 7, "dispatch": 7}
 
 
 def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
