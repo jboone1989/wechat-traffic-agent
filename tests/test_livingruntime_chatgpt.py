@@ -147,7 +147,7 @@ print(json.dumps({
 
     assert json.loads(result) == {
         "payload_timeout": 97,
-        "dispatch_timeout": 90,
+        "dispatch_timeout": 97,
         "wait_timeout": 97,
     }
 
@@ -243,7 +243,7 @@ def test_runtime_backend_can_use_remote_when_legacy_provider_is_unconfigured(
 
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
     assert backend.provider.fallback is None
-    assert backend.default_duration_seconds == 300.0
+    assert backend.default_duration_seconds == 900.0
 
 
 def test_runtime_backend_can_use_local_enable_marker(tmp_path, monkeypatch):
@@ -275,8 +275,8 @@ def test_default_remote_budget_allows_chatgpt_watcher_round_trip(tmp_path, monke
         enabled=True,
     )
 
-    assert provider.timeout_seconds == 300.0
-    assert provider.dispatch_grace_seconds == 90.0
+    assert provider.timeout_seconds == 900.0
+    assert provider.dispatch_grace_seconds == 900.0
 
 
 def test_remote_dispatch_grace_is_configurable_and_bounded(tmp_path, monkeypatch):

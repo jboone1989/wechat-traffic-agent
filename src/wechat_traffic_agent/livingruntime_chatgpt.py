@@ -32,8 +32,8 @@ class LivingRuntimeChatGPTProvider:
         cli_path: Path,
         enabled: bool,
         agent_id: str = "ferro",
-        timeout_seconds: float = 300.0,
-        dispatch_grace_seconds: float = 90.0,
+        timeout_seconds: float = 900.0,
+        dispatch_grace_seconds: float = 900.0,
     ) -> None:
         self.fallback = fallback
         self.cli_path = Path(cli_path)
@@ -44,9 +44,9 @@ class LivingRuntimeChatGPTProvider:
             raise ValueError("LivingRuntime ChatGPT timeout must be within 10..900 seconds")
         self.timeout_seconds = timeout
         dispatch_grace = float(dispatch_grace_seconds)
-        if not math.isfinite(dispatch_grace) or not 1.0 <= dispatch_grace <= 300.0:
+        if not math.isfinite(dispatch_grace) or not 1.0 <= dispatch_grace <= 900.0:
             raise ValueError(
-                "LivingRuntime ChatGPT dispatch grace must be within 1..300 seconds"
+                "LivingRuntime ChatGPT dispatch grace must be within 1..900 seconds"
             )
         self.dispatch_grace_seconds = dispatch_grace
         self.last_provenance: dict[str, Any] | None = None
@@ -74,7 +74,7 @@ class LivingRuntimeChatGPTProvider:
             os.environ.get("LIVINGRUNTIME_CHATGPT_AGENT_ID") or "ferro"
         ).strip()
         raw_timeout = str(
-            os.environ.get("LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS") or "300"
+            os.environ.get("LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS") or "900"
         ).strip()
         try:
             timeout = float(raw_timeout)
@@ -83,7 +83,7 @@ class LivingRuntimeChatGPTProvider:
                 "LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS must be numeric"
             ) from exc
         raw_dispatch_grace = str(
-            os.environ.get("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS") or "90"
+            os.environ.get("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS") or "900"
         ).strip()
         try:
             dispatch_grace = float(raw_dispatch_grace)
