@@ -1063,6 +1063,22 @@ class WakefulContentTaskRunner:
         candidates.sort(key=lambda item: item[0], reverse=True)
         return candidates[0][1]
 
+    def _runtime_revision(self) -> str:
+        """Return the deployed Ferro revision when release metadata is available."""
+        release = Path(__file__).resolve().parents[2] / ".ferro-release.json"
+        try:
+            payload = json.loads(release.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return "unknown"
+        if not isinstance(payload, dict):
+            return "unknown"
+        revision = str(
+            payload.get("gitCommit")
+            or payload.get("releaseId")
+            or ""
+        ).strip()
+        return revision[:128] or "unknown"
+
     def _content_recovery(
         self,
         *,
@@ -1098,7 +1114,7 @@ class WakefulContentTaskRunner:
 
         cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
         prefix = f"v2-recovery-{base_epoch}-"
-        completed: list[tuple[Path, str, str]] = []
+        completed: list[tuple[Path, str, str, str | None]] = []
         if cycles_root.exists():
             for folder in sorted(cycles_root.glob(prefix + "*")):
                 result_file = folder / "result.json"
@@ -1108,13 +1124,28 @@ class WakefulContentTaskRunner:
                     payload = json.loads(result_file.read_text(encoding="utf-8"))
                 except (OSError, ValueError, json.JSONDecodeError):
                     continue
+                runtime_revision = None
+                recovery_file = folder / "recovery.json"
+                if recovery_file.exists():
+                    try:
+                        recovery_payload = json.loads(
+                            recovery_file.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        recovery_payload = None
+                    if isinstance(recovery_payload, dict):
+                        value = str(
+                            recovery_payload.get("runtime_revision") or ""
+                        ).strip()
+                        runtime_revision = value or None
                 completed.append((
                     folder,
                     str(payload.get("status") or "").upper(),
                     str(payload.get("error_type") or ""),
+                    runtime_revision,
                 ))
 
-        for folder, status, _error_type in reversed(completed):
+        for folder, status, _error_type, _revision in reversed(completed):
             if status not in retryable_statuses:
                 return {
                     "status": "ALREADY_RECOVERED",
@@ -1131,8 +1162,15 @@ class WakefulContentTaskRunner:
         # recovers. Keep the three-attempt guard for content/application
         # failures, but let provider recovery continue at its bounded cooldown
         # cadence.
+        current_revision = self._runtime_revision()
         bounded_failures = [
-            row for row in completed if row[2] != "LLMProviderError"
+            row
+            for row in completed
+            if row[2] != "LLMProviderError"
+            and (
+                current_revision == "unknown"
+                or row[3] == current_revision
+            )
         ]
         if len(bounded_failures) >= 3:
             return {
@@ -1158,6 +1196,7 @@ class WakefulContentTaskRunner:
             "attempt": attempt,
             "triggered_at": now.isoformat(),
             "preserves_failed_cycle": True,
+            "runtime_revision": current_revision,
         }
         folder = cycles_root / recovery_cycle
         folder.mkdir(parents=True, exist_ok=True)

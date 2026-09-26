@@ -400,6 +400,35 @@ def test_non_provider_failures_still_stop_after_three_recovery_attempts(tmp_path
     assert loop.calls == []
 
 
+def test_new_runtime_revision_gets_fresh_bounded_recovery_budget(tmp_path):
+    runner, loop, _economy, _wakeful, *_ = _runner(tmp_path)
+    runner._runtime_revision = lambda: "new-runtime-revision"
+    cycles_root = (
+        tmp_path / "state" / "content" / "continuous" / "cycles"
+    )
+    for attempt in (1, 2, 3):
+        folder = cycles_root / f"v2-recovery-1789808400-{attempt}-{1789808500 + attempt}"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "result.json").write_text(
+            json.dumps({
+                "status": "ERROR",
+                "cycle": folder.name,
+                "error_type": "ValueError",
+                "message": "old runtime failed",
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+    result = runner.run("CONTENT_COGNITION", now=NOW)
+
+    recovery = result["content_cycle_recovery"]
+    assert recovery["status"] == "COMPLETED"
+    assert recovery["attempt"] == 4
+    assert recovery["runtime_revision"] == "new-runtime-revision"
+    assert recovery["recovery_cycle"].startswith("v2-recovery-1789808400-4-")
+    assert loop.calls == [(NOW, recovery["recovery_cycle"], None)]
+
+
 def test_successful_recovery_prevents_duplicate_work_for_same_base_cycle(tmp_path):
     runner, loop, economy, wakeful, *_ = _runner(tmp_path)
 
