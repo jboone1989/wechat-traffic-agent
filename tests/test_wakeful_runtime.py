@@ -317,6 +317,49 @@ def test_open_prediction_becomes_precise_planned_wake(tmp_path):
     assert wake.reason == f"verify prediction {prediction.prediction_id}"
 
 
+def test_pending_chatgpt_prediction_verification_is_single_flight(tmp_path):
+    from wechat_traffic_agent.prospective_predictions import ProspectivePredictionLedger
+
+    ledger = ProspectivePredictionLedger(tmp_path)
+    prediction = ledger.record(
+        cycle="v2-single-flight",
+        topic="btc",
+        proposition="BTC liquidity conditions matter",
+        proposition_stance=0.1,
+        statement="BTC evidence changes",
+        confidence=0.6,
+        created_at=NOW - timedelta(hours=2),
+        due_at=NOW - timedelta(hours=1),
+        verification_query="BTC evidence",
+        falsifier="No material change",
+        source_evidence_refs=("e:1",),
+    )
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.ensure_initial_plans(NOW)
+    assert any(
+        row.wake_id == f"wake:{prediction.prediction_id}"
+        for row in runtime.core.snapshot().pending_plans
+    )
+
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_singleflight",
+        task="VERIFY_PREDICTION",
+    )
+    runtime.sync_prediction_wakes(NOW + timedelta(seconds=1))
+
+    pending = runtime.core.snapshot().pending_plans
+    resume = next(
+        row for row in pending
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    assert resume.relevant_refs == ("cognition-request:llmreq_singleflight",)
+    assert not any(
+        row.wake_id.startswith("wake:prediction:")
+        for row in pending
+    )
+
+
 def test_full_neural_graph_is_exposed_without_claiming_future_plasticity(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     snapshot = runtime.public_snapshot()

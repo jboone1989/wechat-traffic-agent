@@ -331,7 +331,26 @@ class ContentWakefulRuntime:
         from .prospective_predictions import ProspectivePredictionLedger
         ledger = ProspectivePredictionLedger(self.state_root)
         rows = {row.prediction_id: row for row in ledger.open()}
-        for wake in self.core.snapshot().pending_plans:
+        pending = tuple(self.core.snapshot().pending_plans)
+        waiting_on_chatgpt = any(
+            wake.task == "VERIFY_PREDICTION"
+            and any(
+                str(ref).startswith("cognition-request:")
+                for ref in wake.relevant_refs
+            )
+            for wake in pending
+        )
+        if waiting_on_chatgpt:
+            # VERIFY_PREDICTION is single-flight while one durable ChatGPT
+            # cognition is unresolved. The ledger entry remains open, so
+            # repeatedly materializing its ordinary due wake would create a
+            # fresh request from mutable host state on every scheduler pass.
+            # Keep only the durable resume wake until that request settles.
+            for wake in pending:
+                if wake.wake_id.startswith("wake:prediction:"):
+                    self.core.cancel(wake.wake_id)
+            return
+        for wake in pending:
             ref = wake.wake_id[5:] if wake.wake_id.startswith("wake:prediction:") else None
             if ref is not None and ref not in rows:
                 self.core.cancel(wake.wake_id)
