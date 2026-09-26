@@ -41,12 +41,22 @@ def test_receipt_runtime_resumes_same_durable_phase_after_chatgpt_pending(tmp_pa
     # A restarted content-cycle runtime starts at phase index zero and must
     # re-enter the same durable request rather than create a new model phase.
     resumed = ReceiptRuntime(runtime, receipt_root)
-    result = asyncio.run(resumed.cognitive_probe("choose", 100))
+    result = asyncio.run(
+        resumed.cognitive_probe("choose with newer host state", 100)
+    )
 
     assert result == "completed-response"
-    assert runtime.calls[1] == "choose"
-    assert (receipt_root / "0.json").exists()
+    assert runtime.calls[1] == "choose with newer host state"
+    receipt = json.loads((receipt_root / "0.json").read_text(encoding="utf-8"))
+    assert receipt["durable_request_id"] == "llmreq_durable_test"
+    assert receipt["resume_input_changed"] is True
     assert not (receipt_root / "0.started").exists()
+
+    replayed = ReceiptRuntime(runtime, receipt_root)
+    assert asyncio.run(
+        replayed.cognitive_probe("choose with even newer host state", 100)
+    ) == "completed-response"
+    assert len(runtime.calls) == 2
 
 
 def test_content_cycle_pending_is_nonterminal_and_has_no_result_receipt(tmp_path):

@@ -177,6 +177,12 @@ class ReceiptRuntime:
             row = json.loads(path.read_text())
             if row['request_sha256'] == fingerprint:
                 return row['response']
+            # A durable workflow replays already-completed external cognition
+            # by sequence number. Mutable host context may have changed while
+            # ChatGPT was unavailable, but the response belongs to the exact
+            # persisted request that this cycle already submitted.
+            if str(row.get('durable_request_id') or '').strip():
+                return row['response']
             # A completed earlier phase may now be represented by its own durable artifact,
             # so recovery can legitimately skip that phase. Reuse only an exact later
             # request fingerprint; never guess, reorder, or call the model again.
@@ -190,13 +196,23 @@ class ReceiptRuntime:
             raise ValueError('model phase input changed during recovery')
         if started.exists():
             marker = json.loads(started.read_text(encoding='utf-8'))
-            if marker.get('request_sha256') != fingerprint:
+            marker_status = str(marker.get('status') or '')
+            marker_request_id = str(marker.get('request_id') or '').strip()
+            if (
+                marker.get('request_sha256') != fingerprint
+                and not (
+                    marker_status == 'WAITING_FOR_CHATGPT'
+                    and marker_request_id
+                )
+            ):
                 raise ValueError('model phase input changed during recovery')
-            if marker.get('status') != 'WAITING_FOR_CHATGPT':
+            if marker_status != 'WAITING_FOR_CHATGPT':
                 raise ValueError('model call interrupted without receipt; skip this cycle')
             phase_id = str(marker.get('phase_id') or phase_id)
-            resume_request_id = str(marker.get('request_id') or '').strip() or None
+            resume_request_id = marker_request_id or None
+            original_fingerprint = str(marker.get('request_sha256') or fingerprint)
         else:
+            original_fingerprint = fingerprint
             _put(started, {
                 'request_sha256': fingerprint,
                 'phase_id': phase_id,
@@ -219,7 +235,17 @@ class ReceiptRuntime:
                 'status': 'WAITING_FOR_CHATGPT',
             })
             raise
-        _put(path, {'request_sha256': fingerprint, 'response': raw})
+        receipt = {
+            'request_sha256': fingerprint,
+            'response': raw,
+        }
+        if resume_request_id:
+            receipt.update({
+                'durable_request_id': resume_request_id,
+                'submitted_request_sha256': original_fingerprint,
+                'resume_input_changed': original_fingerprint != fingerprint,
+            })
+        _put(path, receipt)
         started.unlink(missing_ok=True)
         return raw
 
