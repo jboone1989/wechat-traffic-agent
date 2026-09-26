@@ -269,6 +269,7 @@ def test_writing_experience_projection_drops_large_cycle_payloads():
     assert huge not in encoded
     assert compact[-1]["cycle"] == "v2-7"
     assert compact[-1]["self_check"]["useful"] is False
+    assert _compact_writing_experience(compact) == compact
 
 
 class V2Runtime(Runtime):
@@ -1074,6 +1075,45 @@ def test_one_shot_crypto_bootstrap_sets_direction_without_replacing_future_auton
     check_call = next(call for call in runtime.calls if call.startswith("CHECK_ARTICLE:"))
     assert '"public_safe"' not in check_call
     assert "workflow/admission metadata is not private data" in check_call
+
+
+class OwnerSeedExplorer(CryptoMissionExplorer):
+    async def collect(self, *, now, active):
+        raise AssertionError("owner SEARCH_WORLD seed should precede a fresh generic collector scan")
+
+
+def test_owner_search_seed_becomes_first_evidence_pool_and_persists_for_resume(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = CryptoMissionRuntime()
+    explorer = OwnerSeedExplorer()
+    worker = ContinuousContentLoop(
+        runtime=runtime, state_root=legacy.state, artifacts_path=legacy.artifacts_path,
+        site_root=legacy.site_root, base_url=legacy.base_url, curriculum_path=legacy.curriculum_path,
+        feeds=legacy.feeds, interval_hours=legacy.interval_hours, fetcher=legacy.fetcher,
+        publisher=publisher, explorer=explorer,
+    )
+    seed = dict(CryptoMissionExplorer.row)
+    result = asyncio.run(worker.run_once(
+        now=NOW,
+        cycle_id="v2-owner-seed-1789491603",
+        focus_topic="crypto-market",
+        owner_goal={
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Run the owner evidence experiment",
+            "priority": 0.9,
+        },
+        seed_evidence=[seed],
+    ))
+
+    assert result["status"] == "PUBLISHED"
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    persisted_seed = json.loads((cycle / "owner_seed_evidence.json").read_text())
+    candidates = json.loads((cycle / "evidence_candidates.json").read_text())
+    assert persisted_seed["source"] == "OWNER_AGENT_EPISODE_SEARCH_WORLD"
+    assert [row["evidence_id"] for row in persisted_seed["items"]] == ["crypto-market-1"]
+    assert candidates["seed_source"] == "OWNER_AGENT_EPISODE_SEARCH_WORLD"
+    assert [row["evidence_id"] for row in candidates["items"]] == ["crypto-market-1"]
 
 
 class CatalystCryptoExplorer(CryptoMissionExplorer):

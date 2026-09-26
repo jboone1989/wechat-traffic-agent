@@ -22,6 +22,7 @@ from .content_explorer import (
     collect_okx_public_market, collect_trading_evidence,
 )
 from .content_service import ContentAgent
+from .cognition_context import owner_cognition_scope
 from .content_strategy import bind_content_strategy, collect_mature_strategy_outcomes, strategy_instruction
 from .content_action_prediction import bind_action_prediction, forecast_strategy_candidates
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
@@ -626,8 +627,13 @@ def _compact_writing_experience(rows, *, row_limit=4):
             continue
         lesson = row.get("lesson") if isinstance(row.get("lesson"), dict) else {}
         self_check = row.get("self_check") if isinstance(row.get("self_check"), dict) else {}
+        source_techniques = (
+            row.get("techniques")
+            if isinstance(row.get("techniques"), list)
+            else lesson.get("techniques")
+        )
         techniques = []
-        for technique in list(lesson.get("techniques") or ())[:3]:
+        for technique in list(source_techniques or ())[:3]:
             if not isinstance(technique, dict):
                 continue
             techniques.append({
@@ -638,7 +644,9 @@ def _compact_writing_experience(rows, *, row_limit=4):
         compact.append({
             "cycle": str(row.get("cycle") or "")[:100],
             "techniques": techniques,
-            "adaptation": str(lesson.get("adaptation") or "")[:360],
+            "adaptation": str(
+                row.get("adaptation") or lesson.get("adaptation") or ""
+            )[:360],
             "automated_checks_passed": bool(row.get("automated_checks_passed")),
             "expression_kind": str(row.get("expression_kind") or "")[:40],
             "word_count": int(row.get("word_count") or 0),
@@ -752,17 +760,40 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         return emit_public_activity(self.state, cycle=cycle, phase=phase, title=title, detail=detail,
                                     status=status, kind=kind)
 
-    async def run_once(self, *, now=None, cycle_id=None, focus_topic=None, owner_goal=None):
+    async def run_once(
+        self,
+        *,
+        now=None,
+        cycle_id=None,
+        focus_topic=None,
+        owner_goal=None,
+        seed_evidence=None,
+    ):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
             raise ValueError('focus_topic must be a lowercase kebab-case slug')
         self._focus_topic = topic or None
         self._owner_goal = _normalize_owner_goal_context(owner_goal)
+        self._seed_evidence = [
+            dict(row)
+            for row in list(seed_evidence or ())[:8]
+            if isinstance(row, dict)
+        ]
+        owner_scope = (
+            {
+                **self._owner_goal,
+                'topic': topic,
+            }
+            if self._owner_goal is not None
+            else None
+        )
         try:
-            return await super().run_once(now=now, cycle_id=cycle_id)
+            with owner_cognition_scope(owner_scope):
+                return await super().run_once(now=now, cycle_id=cycle_id)
         finally:
             self._focus_topic = None
             self._owner_goal = None
+            self._seed_evidence = []
 
     async def verify_due_predictions(self, *, now):
         due = self.predictions.due(now)
@@ -818,7 +849,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if len(curriculum) > 16000:
                 raise ValueError('curriculum exceeds budget')
             previous = [r.artifact.title for r in self.inbox.list_records()][-200:]
-            inputs = {'context_version': 2, 'website': snapshot, 'prior_experience': history,
+            inputs = {'context_version': 2, 'website': snapshot,
+                      'prior_experience': _compact_writing_experience(history),
                       'curriculum': curriculum, 'previous_titles': previous, 'now': now.isoformat()}
             _put(inputs_path, inputs)
         snapshot = inputs['website']
@@ -853,6 +885,34 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             and owner_goal.get('origin') == 'EXTERNAL_MISSION'
             and mission_context is not None
         )
+        owner_seed_path = folder / 'owner_seed_evidence.json'
+        if owner_seed_path.exists():
+            owner_seed_payload = json.loads(
+                owner_seed_path.read_text(encoding='utf-8')
+            )
+        else:
+            owner_seed_items = [
+                dict(row)
+                for row in list(getattr(self, '_seed_evidence', ()) or ())[:8]
+                if isinstance(row, dict)
+                and str(row.get('evidence_id') or '').strip()
+                and str(row.get('title') or '').strip()
+                and str(row.get('summary') or '').strip()
+            ]
+            owner_seed_payload = {
+                'schema_version': 'content-owner-seed-evidence.v1',
+                'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
+                'topic': str(getattr(self, '_focus_topic', None) or ''),
+                'items': owner_seed_items,
+                'source': 'OWNER_AGENT_EPISODE_SEARCH_WORLD',
+            }
+            if owner_seed_items:
+                _put(owner_seed_path, owner_seed_payload)
+        owner_seed_items = [
+            row
+            for row in list(owner_seed_payload.get('items') or ())
+            if isinstance(row, dict)
+        ]
 
         world_payload = None
         prefetched_evidence_pool = None
@@ -1514,6 +1574,18 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             evidence_pool = json.loads(candidates_path.read_text())
         elif prefetched_evidence_pool is not None:
             evidence_pool = prefetched_evidence_pool
+            _put(candidates_path, evidence_pool)
+        elif owner_seed_items:
+            evidence_pool = {
+                'items': [
+                    row for row in owner_seed_items
+                    if _candidate_available_for_pool(self.inbox, row)
+                ],
+                'failures': [],
+                'observed_at': now.isoformat(),
+                'signal_kind': 'owner-agent preflight public evidence',
+                'seed_source': 'OWNER_AGENT_EPISODE_SEARCH_WORLD',
+            }
             _put(candidates_path, evidence_pool)
         else:
             self._activity(cycle, 'OBSERVE', 'I’m scanning available signals',

@@ -1,11 +1,39 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
 import re
 from typing import Any, Mapping
 
 from .memory_self import ProspectiveSelfMemoryService
+
+
+_OWNER_COGNITION_SCOPE: ContextVar[dict[str, str] | None] = ContextVar(
+    "ferro_owner_cognition_scope",
+    default=None,
+)
+
+
+@contextmanager
+def owner_cognition_scope(value: Mapping[str, Any] | None):
+    """Propagate one explicit owner objective through downstream cognition."""
+    scope = None
+    if isinstance(value, Mapping):
+        goal_id = str(value.get("goal_id") or "").strip()
+        if goal_id:
+            scope = {
+                "goal_id": goal_id,
+                "mission_id": str(value.get("mission_id") or "").strip(),
+                "description": str(value.get("description") or "").strip()[:2400],
+                "topic": str(value.get("topic") or "").strip()[:120],
+            }
+    token = _OWNER_COGNITION_SCOPE.set(scope)
+    try:
+        yield
+    finally:
+        _OWNER_COGNITION_SCOPE.reset(token)
 
 
 def _enum(value: Any) -> str:
@@ -161,14 +189,48 @@ def build_ferro_cognition_context(
     packet = ProspectiveSelfMemoryService.snapshot_from_runtime(application, mind)
     projection = mind.public_projection()
     wake = wakeful.public_snapshot()
-    owner_mode = str(prompt).lstrip().startswith("OWNER_AGENT_EPISODE")
+    owner_scope = _OWNER_COGNITION_SCOPE.get()
+    owner_mode = bool(owner_scope) or str(prompt).lstrip().startswith("OWNER_AGENT_EPISODE")
     mission_state = (
         _mission_state(domain_runtime, now)
         if (domain_runtime := getattr(application, "domain_runtime", None)) is not None
         else {"active": [], "recent_experiments": []}
     )
+    if owner_scope:
+        scoped_goal_id = str(owner_scope.get("goal_id") or "")
+        scoped_mission_id = str(owner_scope.get("mission_id") or "")
+        active = [
+            row for row in list(mission_state.get("active") or [])
+            if (
+                (scoped_goal_id and str(row.get("goal_id") or "") == scoped_goal_id)
+                or (
+                    scoped_mission_id
+                    and str(row.get("mission_id") or "") == scoped_mission_id
+                )
+            )
+        ]
+        active_mission_ids = {
+            str(row.get("mission_id") or "")
+            for row in active
+            if str(row.get("mission_id") or "")
+        }
+        mission_state = {
+            "active": active,
+            "recent_experiments": [
+                row for row in list(mission_state.get("recent_experiments") or [])
+                if str(row.get("mission_id") or "") in active_mission_ids
+            ],
+        }
     query_context = " ".join(
-        [str(prompt), *[str(row.get("description") or "") for row in mission_state.get("active") or []]]
+        [
+            str(prompt),
+            str((owner_scope or {}).get("description") or ""),
+            str((owner_scope or {}).get("topic") or ""),
+            *[
+                str(row.get("description") or "")
+                for row in mission_state.get("active") or []
+            ],
+        ]
     )
 
     neural_life = wake.get("neural_life") if isinstance(wake, Mapping) else {}
@@ -197,12 +259,16 @@ def build_ferro_cognition_context(
     capabilities = sorted(set(str(item) for item in [*app_caps, *domain_caps, *manifest_caps] if str(item).strip()))
 
     intents = list(packet.current_intent)
-    if owner_mode and mission_state.get("active"):
-        owner_goal_ids = {
-            str(row.get("goal_id") or "")
-            for row in mission_state["active"]
-            if str(row.get("goal_id") or "")
-        }
+    if owner_mode:
+        owner_goal_ids = (
+            {str(owner_scope.get("goal_id") or "")}
+            if owner_scope and str(owner_scope.get("goal_id") or "")
+            else {
+                str(row.get("goal_id") or "")
+                for row in mission_state.get("active") or []
+                if str(row.get("goal_id") or "")
+            }
+        )
         scoped_intents = []
         for row in intents:
             if str(row.get("goal_id") or "") not in owner_goal_ids:
@@ -293,4 +359,8 @@ def bind_ferro_cognition_context(*, application: Any, mind: Any, wakeful: Any) -
     )
 
 
-__all__ = ["bind_ferro_cognition_context", "build_ferro_cognition_context"]
+__all__ = [
+    "bind_ferro_cognition_context",
+    "build_ferro_cognition_context",
+    "owner_cognition_scope",
+]

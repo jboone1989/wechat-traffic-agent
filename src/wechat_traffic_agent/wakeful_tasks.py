@@ -1936,14 +1936,30 @@ class WakefulContentTaskRunner:
                 for item in list(found or ())[:8]:
                     if not isinstance(item, dict):
                         continue
-                    rows.append({
+                    row = {
                         key: item.get(key)
                         for key in (
-                            "evidence_id", "source", "title", "summary",
-                            "url", "published_at", "observed_at",
+                            "evidence_id", "source_kind", "source", "title",
+                            "summary", "url", "published_at", "observed_at",
+                            "evidence_refs",
                         )
                         if item.get(key) is not None
-                    })
+                    }
+                    if not str(row.get("evidence_id") or "").strip():
+                        row["evidence_id"] = "owner-search:" + sha256(
+                            json.dumps(
+                                {
+                                    "url": row.get("url"),
+                                    "title": row.get("title"),
+                                    "summary": row.get("summary"),
+                                },
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ).encode("utf-8")
+                        ).hexdigest()[:32]
+                    row.setdefault("source_kind", "web-search")
+                    row.setdefault("evidence_refs", [row["evidence_id"]])
+                    rows.append(row)
                 return {"status": "OK", "query": query, "items": rows}
             if action == "CHECK_X":
                 loop = getattr(self, "x_loop", None)
@@ -1972,6 +1988,34 @@ class WakefulContentTaskRunner:
             )
         )
 
+    @staticmethod
+    def _owner_agent_seed_evidence(control: dict[str, Any]) -> list[dict[str, Any]]:
+        """Carry read-only evidence gathered by the controller into its executor."""
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for step in list(control.get("steps") or ()):
+            if not isinstance(step, dict):
+                continue
+            decision = step.get("decision")
+            result = step.get("result")
+            if (
+                not isinstance(decision, dict)
+                or str(decision.get("action") or "") != "SEARCH_WORLD"
+                or not isinstance(result, dict)
+            ):
+                continue
+            for item in list(result.get("items") or ())[:8]:
+                if not isinstance(item, dict):
+                    continue
+                evidence_id = str(item.get("evidence_id") or "").strip()
+                title = str(item.get("title") or "").strip()
+                summary = str(item.get("summary") or "").strip()
+                if not evidence_id or not title or not summary or evidence_id in seen:
+                    continue
+                seen.add(evidence_id)
+                rows.append(dict(item))
+        return rows
+
     def _content(
         self,
         now: datetime,
@@ -1986,6 +2030,7 @@ class WakefulContentTaskRunner:
         owner_goal = self._active_owner_goal_context()
         owner_directed_cycle_id: str | None = None
         owner_episode_active = False
+        owner_seed_evidence: list[dict[str, Any]] = []
         has_durable_resume = any(
             str(ref).startswith("cognition-request:")
             for ref in relevant_refs
@@ -2037,6 +2082,7 @@ class WakefulContentTaskRunner:
                     return rows
                 if action == "RUN_CONTENT_PIPELINE":
                     focus_topic = str(decision.get("topic") or "").strip() or None
+                    owner_seed_evidence = self._owner_agent_seed_evidence(control)
         if self.web_worker is not None:
             try:
                 rows["web_editorial"] = self._run_async(self.web_worker.run_once(now=now))
@@ -2221,6 +2267,7 @@ class WakefulContentTaskRunner:
             cycle_id=directed_cycle_id,
             focus_topic=focus_topic,
             owner_goal=owner_goal,
+            seed_evidence=owner_seed_evidence,
         ))
         rows["continuous_content"] = continuous
         if str(continuous.get("status") or "").upper() == "WAITING_FOR_CHATGPT":

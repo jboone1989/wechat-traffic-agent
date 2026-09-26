@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from wechat_traffic_agent.cognition_context import build_ferro_cognition_context
+from wechat_traffic_agent.cognition_context import (
+    build_ferro_cognition_context,
+    owner_cognition_scope,
+)
 from wechat_traffic_agent.memory_self import ProspectiveSelfMemoryService
 
 
@@ -188,3 +191,55 @@ def test_owner_episode_context_filters_noise_and_demotes_neural_control():
     assert context["neural_state"]["control_signals"] == []
     assert context["neural_state"]["feedback"] == []
     assert context["neural_state"]["control_authority"] == "ADVISORY_SIGNAL_ONLY"
+
+
+def test_owner_scope_filters_downstream_pipeline_prompts_not_only_episode_prompt():
+    mission = SimpleNamespace(
+        mission_id="mission-x",
+        goal_id="goal-owner",
+        description="Grow the real X audience for LivingRuntime Remote",
+        metric="followers",
+        baseline=1800,
+        target=5000,
+        direction=SimpleNamespace(value="INCREASE"),
+        status=SimpleNamespace(value="ACTIVE"),
+        deadline=None,
+        constraints=(),
+    )
+
+    class Missions:
+        experiments = []
+
+        def active(self):
+            return [mission]
+
+        def progress(self, _mission_id, _now):
+            return SimpleNamespace(
+                current_value=1810,
+                trajectory="BEHIND",
+                pressure=0.8,
+            )
+
+    domain = _DomainRuntime()
+    domain.missions = Missions()
+    domain.external_missions = [mission]
+    app = _application()
+    app.domain_runtime = domain
+
+    with owner_cognition_scope({
+        "goal_id": "goal-owner",
+        "mission_id": "mission-x",
+        "description": "Grow the real X audience for LivingRuntime Remote",
+        "topic": "livingruntime-remote-durable-execution",
+    }):
+        context = build_ferro_cognition_context(
+            application=app,
+            mind=_Mind(),
+            wakeful=_Wakeful(),
+            prompt="classify candidate relevance for durable execution",
+        )
+
+    assert [row["goal_id"] for row in context["current_intent"]] == ["goal-owner"]
+    assert [row["mission_id"] for row in context["missions"]["active"]] == ["mission-x"]
+    assert context["neural_state"]["control_signals"] == []
+    assert context["neural_state"]["feedback"] == []
