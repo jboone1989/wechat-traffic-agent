@@ -293,8 +293,17 @@ class ContinuousContentLoop:
         cycle = str(cycle_id or ('v2-' + str(int(now.timestamp()) // seconds * seconds)))
         if cycle_id is not None:
             parts = cycle.split('-')
-            if len(parts) < 3 or parts[0] != 'v2' or not parts[-1].isdigit():
-                raise ValueError('directed cycle_id must be v2-<label>-<unix-seconds>')
+            safe_parts = (
+                len(parts) >= 2
+                and parts[0] == 'v2'
+                and parts[-1].isdigit()
+                and all(
+                    part and part.replace('_', '').isalnum()
+                    for part in parts[1:]
+                )
+            )
+            if not safe_parts:
+                raise ValueError('directed cycle_id must be v2-<unix-seconds> or v2-<label>-<unix-seconds>')
         result_path = self.root / 'cycles' / cycle / 'result.json'
         return {
             'cycle': cycle,

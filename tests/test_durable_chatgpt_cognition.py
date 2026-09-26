@@ -97,6 +97,20 @@ def test_content_cycle_pending_is_nonterminal_and_has_no_result_receipt(tmp_path
     assert json.loads(waiting_path.read_text(encoding="utf-8"))["resumable"] is True
 
 
+def test_preflight_accepts_explicit_standard_scheduled_cycle_id(tmp_path):
+    loop = object.__new__(ContinuousContentLoop)
+    loop.root = tmp_path / "continuous"
+    loop.interval_hours = 6
+
+    result = loop.preflight(
+        now=datetime(2026, 9, 26, tzinfo=timezone.utc),
+        cycle_id="v2-1790402400",
+    )
+
+    assert result["cycle"] == "v2-1790402400"
+    assert result["status"] == "READY"
+
+
 def test_content_cycle_resume_clears_waiting_marker_and_writes_terminal_result(tmp_path):
     loop = object.__new__(ContinuousContentLoop)
     loop.root = tmp_path / "continuous"
