@@ -29,6 +29,7 @@ def main() -> int:
     os.environ["LIVINGRUNTIME_CHATGPT_AGENT_ID"] = args.agent_id
     os.environ["LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS"] = "900"
     os.environ["LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS"] = "60"
+    os.environ["LIVINGRUNTIME_CHATGPT_FOREGROUND_WAIT_SECONDS"] = "120"
 
     contestant = ExternalEvalBaselineContestant(
         state_root=args.state_root,
