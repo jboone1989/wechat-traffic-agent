@@ -1662,6 +1662,21 @@ class WakefulContentTaskRunner:
             owner_goal=owner_goal,
         ))
         rows["continuous_content"] = continuous
+        if str(continuous.get("status") or "").upper() == "WAITING_FOR_CHATGPT":
+            rows["status"] = "WAITING_FOR_CHATGPT"
+            request_id = str(continuous.get("request_id") or "").strip()
+            schedule_resume = getattr(
+                self.wakeful, "schedule_chatgpt_resume", None
+            )
+            if request_id and callable(schedule_resume):
+                try:
+                    rows["chatgpt_resume"] = schedule_resume(
+                        now,
+                        request_id=request_id,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    rows["chatgpt_resume"] = self._error(exc)
+            return rows
         if recovery is not None and recovery.get("status") == "READY":
             recovery_path = (
                 Path(self.state_root)

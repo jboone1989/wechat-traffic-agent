@@ -86,7 +86,7 @@ def test_content_cognition_is_scheduled_by_semantic_interval(tmp_path):
     assert wake.at == NOW + timedelta(hours=6)
 
 
-def test_active_user_goal_followup_can_enter_cognition_under_llm_pressure(tmp_path):
+def test_chatgpt_only_cognition_ignores_legacy_api_pool_pressure(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
         path = tmp_path / "application" / name / "policy.json"
@@ -133,12 +133,10 @@ def test_active_user_goal_followup_can_enter_cognition_under_llm_pressure(tmp_pa
         relevant_refs=(),
         preemptible=True,
     ))
-    assert runtime.core.pop_ready() is None
-    deferred = next(
-        row for row in runtime.core.snapshot().pending_plans
-        if row.wake_id == "content:CONTENT_COGNITION"
-    )
-    assert deferred.at > now
+    ordinary = runtime.core.pop_ready()
+    assert ordinary is not None
+    assert ordinary.task == "CONTENT_COGNITION"
+    assert ordinary.relevant_refs == ()
 
 
 def test_persisted_owner_goal_reason_is_compatibly_admitted_under_pressure(tmp_path):

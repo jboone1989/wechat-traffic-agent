@@ -812,6 +812,11 @@ class ContentWakefulRuntime:
         decision_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
+        if (
+            isinstance(result, dict)
+            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
+        ):
+            return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         settled = self.neural_motor.observe_outcome(
             task=task,
@@ -863,6 +868,11 @@ class ContentWakefulRuntime:
         observed_at: datetime | None = None,
     ) -> dict | None:
         if not goal_id:
+            return None
+        if (
+            isinstance(result, dict)
+            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
+        ):
             return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         status = str((result or {}).get("status") or "UNKNOWN").upper() if isinstance(result, dict) else "UNKNOWN"
@@ -925,6 +935,11 @@ class ContentWakefulRuntime:
         experiment_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
+        if (
+            isinstance(result, dict)
+            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
+        ):
+            return None
         return self.neural_transfer.settle_target(
             task=task,
             result=result,
@@ -1067,6 +1082,11 @@ class ContentWakefulRuntime:
         trial_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
+        if (
+            isinstance(result, dict)
+            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
+        ):
+            return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         settled = self.developmental_world_transfer.settle_target(
             task=task,
@@ -1368,6 +1388,53 @@ class ContentWakefulRuntime:
             "retry_at": at.isoformat(),
             "retry_seconds": delay,
             "evidence_ref": evidence_ref,
+        }
+
+    def schedule_chatgpt_resume(
+        self,
+        now: datetime,
+        *,
+        request_id: str,
+        delay_seconds: int = 60,
+    ) -> dict:
+        """Re-enter a suspended content cycle without creating new cognition work."""
+        now = now.astimezone(timezone.utc)
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            raise ValueError("request_id is required")
+        delay = max(30, min(int(delay_seconds), 900))
+        at = now + timedelta(seconds=delay)
+        wake_id = f"chatgpt-resume:{request_id}"
+        existing = next(
+            (
+                wake
+                for wake in self.core.snapshot().pending_plans
+                if wake.wake_id == wake_id
+            ),
+            None,
+        )
+        if existing is not None and existing.at <= at:
+            return {
+                "status": "EARLIER_WAKE_ALREADY_SCHEDULED",
+                "request_id": request_id,
+                "retry_at": existing.at.isoformat(),
+                "retry_seconds": max(0, int((existing.at - now).total_seconds())),
+            }
+        wake = PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason="resume durable content cognition after ChatGPT response",
+            task="CONTENT_COGNITION",
+            relevant_refs=(f"cognition-request:{request_id}",),
+            preemptible=True,
+        )
+        self._enqueue_external_wake(wake)
+        self.core.schedule(wake)
+        return {
+            "status": "SCHEDULED",
+            "request_id": request_id,
+            "retry_at": at.isoformat(),
+            "retry_seconds": delay,
         }
 
     def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:

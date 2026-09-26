@@ -4,7 +4,11 @@ import asyncio
 import json
 from pathlib import Path
 
-from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+from wechat_traffic_agent.livingruntime_chatgpt import (
+    LivingRuntimeChatGPTPendingError,
+    LivingRuntimeChatGPTProvider,
+    durable_cognition_phase,
+)
 from wechat_traffic_agent.runtime_backend import load_optional_advisory_backend
 
 
@@ -147,8 +151,8 @@ print(json.dumps({
 
     assert json.loads(result) == {
         "payload_timeout": 97,
-        "dispatch_timeout": 97,
-        "wait_timeout": 97,
+        "dispatch_timeout": 0,
+        "wait_timeout": 5,
     }
 
 
@@ -318,7 +322,75 @@ print(json.dumps({
         provider.complete("short", _reserve_timeout_seconds=10)
     )
 
-    assert json.loads(result) == {"timeout": 7, "dispatch": 7}
+    assert json.loads(result) == {"timeout": 7, "dispatch": 0}
+
+
+def test_remote_can_opt_out_of_durable_dispatch_and_use_bounded_grace(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+print(json.dumps({
+  "status":"COMPLETED","request_id":"llmreq_bounded","created_at":1,"finished_at":2,
+  "response":{"text":json.dumps({"dispatch":payload["dispatch_timeout_seconds"]}),
+  "provider":"livingruntime-chatgpt","model":"test","session_id":"s","sha256":"x","completed_at":2}
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+        dispatch_grace_seconds=15,
+        durable_dispatch=False,
+    )
+
+    result = asyncio.run(provider.complete("bounded dispatch"))
+
+    assert json.loads(result) == {"dispatch": 15}
+
+
+def test_durable_timeout_is_pending_and_request_identity_is_stable(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+if sys.argv[1] == "wait":
+    request_id = sys.argv[2]
+    print(json.dumps({
+      "status":"COMPLETED","request_id":request_id,"created_at":1,"finished_at":2,
+      "response":{"text":"resumed-answer","provider":"livingruntime-chatgpt",
+      "model":"test","session_id":"s","sha256":"x","completed_at":2}
+    }))
+else:
+    json.load(sys.stdin)
+    print(json.dumps({"ok":False,"error":"TimeoutError: waiting for cognition response exceeded timeout"}), file=sys.stderr)
+    raise SystemExit(1)
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+        foreground_wait_seconds=1,
+    )
+    first_prompt = "Runtime state:\nA\n\nTask:\nChoose."
+    second_prompt = "Runtime state:\nB changed\n\nTask:\nChoose."
+
+    try:
+        with durable_cognition_phase("phase-123"):
+            asyncio.run(provider.complete(first_prompt))
+        raise AssertionError("expected pending")
+    except LivingRuntimeChatGPTPendingError as exc:
+        first_id = exc.request_id
+    with durable_cognition_phase("phase-123", request_id=first_id):
+        resumed = asyncio.run(provider.complete(second_prompt))
+
+    assert resumed == "resumed-answer"
+    assert first_id.startswith("llmreq_")
 
 
 def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):

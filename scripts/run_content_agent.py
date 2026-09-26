@@ -802,7 +802,10 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             if task != "NEURAL_INTEROCEPTION":
                 wakeful_runtime.refresh_neural_life(now)
             wakeful_runtime.sync_prediction_wakes(now)
-            if task not in {"EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}:
+            if (
+                task not in {"EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}
+                and status != "WAITING_FOR_CHATGPT"
+            ):
                 wakeful_runtime.core.mark_action(now)
             if wake_reason is not None and wake_reason.kind == "PLAN" and reason_task:
                 wakeful_runtime.schedule_next(reason_task, now)
@@ -812,7 +815,13 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                 state_root, cycle=runtime_event_cycle, phase="WAITING",
                 title="Awake · Waiting",
                 detail=(
-                    "No deeper cognition is currently justified. "
+                    (
+                        "A durable ChatGPT cognition request is pending; "
+                        "this cycle is suspended and will resume the same request. "
+                    )
+                    if status == "WAITING_FOR_CHATGPT"
+                    else "No deeper cognition is currently justified. "
+                ) + (
                     f"Next intentional wake: {next_state.get('next_wake_at') or 'event-driven'} · "
                     f"{next_state.get('next_wake_reason') or 'external stimulus'}"
                 ),
