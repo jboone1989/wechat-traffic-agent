@@ -227,6 +227,59 @@ def test_existing_autonomous_goal_recovers_missing_wake_during_cooldown(tmp_path
     assert wake.relevant_refs == (goal_id,)
 
 
+def test_durable_resume_replaces_autonomous_goal_wake_instead_of_duplicating_it(
+    tmp_path,
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:suspended-resource",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+    runtime._ensure_autonomous_goal_wakes(NOW)
+    assert any(
+        wake.wake_id == f"autonomous:{goal_id}"
+        for wake in runtime.core.snapshot().pending_plans
+    )
+
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_suspended_resource",
+        task="RESOURCE_REVIEW",
+        relevant_refs=(goal_id,),
+    )
+    restored = runtime._ensure_autonomous_goal_wakes(
+        NOW + timedelta(seconds=1)
+    )
+
+    assert restored == 0
+    pending = tuple(runtime.core.snapshot().pending_plans)
+    assert not any(
+        wake.wake_id == f"autonomous:{goal_id}"
+        for wake in pending
+    )
+    resume = next(
+        wake for wake in pending
+        if wake.wake_id == "content:RESOURCE_REVIEW"
+    )
+    assert resume.relevant_refs == (
+        goal_id,
+        "cognition-request:llmreq_suspended_resource",
+    )
+
+
 def test_regular_task_settlement_cancels_recovered_autonomous_wake(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     scheduled = runtime.autonomous_life.tick(

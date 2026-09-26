@@ -394,10 +394,8 @@ class ContentWakefulRuntime:
             if isinstance(row, dict)
             and str(row.get("status") or "").upper() in {"OPEN", "SCHEDULED"}
         ]
-        pending_ids = {
-            wake.wake_id
-            for wake in self.core.snapshot().pending_plans
-        }
+        pending = tuple(self.core.snapshot().pending_plans)
+        pending_ids = {wake.wake_id for wake in pending}
         restored = 0
         for goal in active:
             goal_id = str(goal.get("goal_id") or "").strip()
@@ -411,6 +409,26 @@ class ContentWakefulRuntime:
             ):
                 task = "CONTENT_COGNITION"
             wake_id = f"autonomous:{goal_id}"
+            related = [
+                wake
+                for wake in pending
+                if goal_id in tuple(str(ref) for ref in wake.relevant_refs)
+            ]
+            durable_resumes = [
+                wake
+                for wake in related
+                if any(
+                    str(ref).startswith("cognition-request:")
+                    for ref in wake.relevant_refs
+                )
+            ]
+            if durable_resumes:
+                if wake_id in pending_ids:
+                    self.core.cancel(wake_id)
+                    pending_ids.discard(wake_id)
+                continue
+            if related:
+                continue
             if wake_id in pending_ids:
                 continue
             self.core.schedule(PlannedWake(
