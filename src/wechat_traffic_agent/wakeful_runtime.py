@@ -379,6 +379,48 @@ class ContentWakefulRuntime:
         while not stop.wait(0.25):
             self._drain_external_wake_requests()
 
+    def _ensure_autonomous_goal_wakes(self, now: datetime) -> int:
+        """Recover durable autonomous goals that lost their scheduler wake."""
+        projection = self.autonomous_life.projection()
+        active = [
+            row
+            for row in projection.get("active_goals") or ()
+            if isinstance(row, dict)
+            and str(row.get("status") or "").upper() in {"OPEN", "SCHEDULED"}
+        ]
+        pending_ids = {
+            wake.wake_id
+            for wake in self.core.snapshot().pending_plans
+        }
+        restored = 0
+        for goal in active:
+            goal_id = str(goal.get("goal_id") or "").strip()
+            task = str(goal.get("task") or "").strip()
+            if not goal_id or task not in _EXTERNAL_WAKE_TASKS:
+                continue
+            if (
+                task == "CHECK_X"
+                and os.environ.get("CONTENT_X_ENABLED", "").lower()
+                not in {"1", "true", "yes", "on"}
+            ):
+                task = "CONTENT_COGNITION"
+            wake_id = f"autonomous:{goal_id}"
+            if wake_id in pending_ids:
+                continue
+            self.core.schedule(PlannedWake(
+                wake_id=wake_id,
+                at=now + timedelta(seconds=15),
+                reason=str(
+                    goal.get("reason") or "resume durable autonomous goal"
+                )[:300],
+                task=task,
+                relevant_refs=(goal_id,),
+                preemptible=True,
+            ))
+            pending_ids.add(wake_id)
+            restored += 1
+        return restored
+
     def ensure_initial_plans(self, now: datetime) -> None:
         # Requests already persisted before process startup must participate in
         # the very first scheduling decision. Otherwise a long startup task
@@ -809,19 +851,10 @@ class ContentWakefulRuntime:
             world_learning=self.world_learning,
             active_user_goal_count=len(self._active_user_goal_ids()),
         )
-        goal = closure.get("goal") or {}
-        goal_task = str(goal.get("task") or "")
-        if goal_task == "CHECK_X" and os.environ.get("CONTENT_X_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
-            goal_task = "CONTENT_COGNITION"
-        if goal_task in _EXTERNAL_WAKE_TASKS:
-            goal_wake_id = f"autonomous:{goal.get('goal_id')}"
-            if not any(wake.wake_id == goal_wake_id for wake in self.core.snapshot().pending_plans):
-                self.core.schedule(PlannedWake(
-                    wake_id=goal_wake_id, at=now + timedelta(seconds=15),
-                    reason=str(goal.get("reason") or "autonomous homeostatic goal")[:300],
-                    task=goal_task, relevant_refs=(str(goal.get("goal_id") or ""),),
-                    preemptible=True,
-                ))
+        # Durable active goals remain obligations across process restarts.
+        # Rebuild missing scheduler wakes even when autonomous_life.tick()
+        # returned COOLDOWN rather than a newly-created goal this cycle.
+        self._ensure_autonomous_goal_wakes(now)
         if closure.get("world_learning_due") and not any(
             wake.task == "CHECK_OUTCOMES" and wake.at <= now + timedelta(minutes=5)
             for wake in self.core.snapshot().pending_plans
@@ -1014,6 +1047,7 @@ class ContentWakefulRuntime:
             evidence_ref=evidence_ref,
             now=observed_at,
         )
+        self.core.cancel(f"autonomous:{goal_id}")
         drive_feedback = self.drive_system.settle(
             drive=str(closed.get("drive") or ""),
             task=task,

@@ -189,6 +189,80 @@ def test_matching_regular_task_settles_unique_active_autonomous_goal(tmp_path):
     assert settled["drive_feedback"]["last_outcome_task"] == "RESOURCE_REVIEW"
 
 
+def test_existing_autonomous_goal_recovers_missing_wake_during_cooldown(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:orphan-resource",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+    assert not any(
+        wake.wake_id == f"autonomous:{goal_id}"
+        for wake in runtime.core.snapshot().pending_plans
+    )
+
+    restored = runtime._ensure_autonomous_goal_wakes(
+        NOW + timedelta(minutes=1)
+    )
+
+    assert restored == 1
+    wake = next(
+        wake
+        for wake in runtime.core.snapshot().pending_plans
+        if wake.wake_id == f"autonomous:{goal_id}"
+    )
+    assert wake.task == "RESOURCE_REVIEW"
+    assert wake.relevant_refs == (goal_id,)
+
+
+def test_regular_task_settlement_cancels_recovered_autonomous_wake(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:cancel-stale-wake",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+    runtime._ensure_autonomous_goal_wakes(NOW)
+
+    settled = runtime.observe_autonomous_goal_outcome(
+        task="RESOURCE_REVIEW",
+        result={"status": "OK", "world_utility": 0.4},
+        goal_id=None,
+        observed_at=NOW + timedelta(seconds=30),
+    )
+
+    assert settled is not None
+    assert settled["goal_id"] == goal_id
+    assert not any(
+        wake.wake_id == f"autonomous:{goal_id}"
+        for wake in runtime.core.snapshot().pending_plans
+    )
+
+
 def test_chatgpt_only_cognition_ignores_legacy_api_pool_pressure(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
