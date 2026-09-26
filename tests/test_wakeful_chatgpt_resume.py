@@ -98,6 +98,43 @@ def test_pending_autonomous_task_preserves_goal_provenance_for_resume(tmp_path):
     }]
 
 
+def test_pending_content_injects_active_owner_goal_into_resume_provenance(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+    )
+
+    def pending_content(now, *, focus_topic=None):
+        raise LivingRuntimeChatGPTPendingError("llmreq-owner-content")
+
+    monkeypatch.setattr(runner, "_content", pending_content)
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+        },
+    )
+
+    result = runner.run(
+        "CONTENT_COGNITION",
+        now=datetime.now(timezone.utc),
+        relevant_refs=("cycle:v2-owner",),
+    )
+
+    assert result["status"] == "WAITING_FOR_CHATGPT"
+    assert wakeful.scheduled == [{
+        "request_id": "llmreq-owner-content",
+        "task": "CONTENT_COGNITION",
+        "relevant_refs": ("cycle:v2-owner", "goal-owner"),
+    }]
+
+
 def test_wake_request_ref_resumes_exact_request_for_next_cognition_only(
     monkeypatch, tmp_path
 ):

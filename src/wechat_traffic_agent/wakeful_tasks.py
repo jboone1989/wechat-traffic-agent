@@ -232,6 +232,18 @@ class WakefulContentTaskRunner:
                 "request_id": exc.request_id,
                 "resumable": True,
             }
+            resume_refs = tuple(relevant_refs)
+            if task == "CONTENT_COGNITION":
+                owner_goal = self._active_owner_goal_context()
+                owner_goal_id = (
+                    str(owner_goal.get("goal_id") or "").strip()
+                    if isinstance(owner_goal, dict)
+                    else ""
+                )
+                if owner_goal_id:
+                    resume_refs = tuple(
+                        dict.fromkeys((*resume_refs, owner_goal_id))
+                    )
             schedule_resume = getattr(self.wakeful, "schedule_chatgpt_resume", None)
             if callable(schedule_resume):
                 try:
@@ -239,7 +251,7 @@ class WakefulContentTaskRunner:
                         now,
                         request_id=exc.request_id,
                         task=task,
-                        relevant_refs=relevant_refs,
+                        relevant_refs=resume_refs,
                     )
                 except Exception as schedule_exc:  # noqa: BLE001
                     result["chatgpt_resume"] = self._error(schedule_exc)
