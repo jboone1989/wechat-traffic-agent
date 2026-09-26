@@ -8,11 +8,39 @@ from wechat_traffic_agent.content_goal_loop import (
     ContinuousContentLoop, MissionDiscoveryDecision, _explicit_hypothetical_note_sections,
     _market_expression_instruction, _market_companion_evidence,
     _market_expression_fingerprint, _candidate_available_for_pool,
-    _normalize_mission_discovery,
+    _normalize_mission_discovery, _compact_website_decision_view,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
+
+
+def test_website_decision_view_drops_full_article_bodies_and_stays_bounded():
+    huge = "x" * 20000
+    articles = [{
+        "artifact": {
+            "artifact_id": f"a{index}",
+            "title": f"Article {index}",
+            "summary": huge,
+            "tags": ["reliability"],
+            "sections": [{"heading": "Body", "paragraphs": [huge, huge]}],
+        },
+        "content_sha256": str(index),
+    } for index in range(40)]
+    snapshot = {
+        "articles": articles,
+        "topics": {"reliability": [f"a{index}" for index in range(40)]},
+    }
+
+    compact = _compact_website_decision_view(snapshot)
+    encoded = json.dumps(compact, ensure_ascii=False)
+
+    assert len(encoded.encode("utf-8")) < 32 * 1024
+    assert "sections" not in encoded
+    assert huge not in encoded
+    assert compact["article_count"] == 40
+    assert compact["articles"][-1]["artifact_id"] == "a39"
+    assert len(compact["topics"]["reliability"]) == 24
 
 
 class V2Runtime(Runtime):
