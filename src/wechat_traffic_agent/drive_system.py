@@ -108,6 +108,18 @@ class DriveEngine:
         affect = neural_life.get("affect") if isinstance(neural_life.get("affect"), Mapping) else {}
         legacy = neural_life.get("drives") if isinstance(neural_life.get("drives"), Mapping) else {}
         traits = personality.get("traits") if isinstance(personality.get("traits"), Mapping) else {}
+        model_resource_pressure = _signal(organism, "model_resource_pressure")
+        token_pressure = _signal(organism, "token_pressure")
+        model_availability = _signal(organism, "model_availability", 0.0)
+        monetary_pressure = _signal(organism, "monetary_pressure")
+        # Money is a model-survival constraint only when usable model capacity
+        # is actually scarce. In ChatGPT-only/free-capacity operation, a zero
+        # legacy API balance must not manufacture a resource emergency.
+        effective_monetary_pressure = monetary_pressure * max(
+            model_resource_pressure,
+            token_pressure,
+            1.0 - model_availability,
+        )
 
         survival = _clamp(
             0.42 * (1.0 - float(summary.get("vitality") or 0.0))
@@ -119,12 +131,12 @@ class DriveEngine:
         resource = _clamp(
             0.36 * max(
                 _signal(organism, "host_resource_pressure"),
-                _signal(organism, "model_resource_pressure"),
+                model_resource_pressure,
                 _signal(organism, "storage_pressure"),
-                _signal(organism, "monetary_pressure"),
-                _signal(organism, "token_pressure"),
+                effective_monetary_pressure,
+                token_pressure,
             )
-            + 0.20 * (1.0 - _signal(organism, "model_availability", 0.0))
+            + 0.20 * (1.0 - model_availability)
             + 0.18 * float(affect.get("resource_hunger") or 0.0)
             + 0.16 * float(legacy.get("survival") or 0.0)
             + 0.10 * float(traits.get("caution") or 0.5)
@@ -246,10 +258,10 @@ class DriveEngine:
             str(summary.get("status") or "").upper() == "CRITICAL"
             or max(
                 _signal(organism, "host_resource_pressure"),
-                _signal(organism, "model_resource_pressure"),
+                model_resource_pressure,
                 _signal(organism, "storage_pressure"),
-                _signal(organism, "monetary_pressure"),
-                _signal(organism, "token_pressure"),
+                effective_monetary_pressure,
+                token_pressure,
             ) >= 0.90
         )
         for row in candidates:

@@ -169,6 +169,41 @@ def test_free_verified_models_prevent_paid_budget_pressure_from_self_locking_cog
     assert result["summary"]["status"] == "NORMAL"
 
 
+def test_legacy_zero_balance_does_not_dominate_drive_when_models_are_available(tmp_path):
+    _policies(tmp_path)
+    policy = tmp_path / "application/llm_resource_pool/policy.json"
+    policy.write_text(
+        (
+            '{"observed_at":"%s","pressure":"CRITICAL",'
+            '"paid_available_funds":0.0,"paid_reserve_floor":20.0}'
+        ) % NOW.isoformat(),
+        encoding="utf-8",
+    )
+    organism = OrganismStateService(tmp_path).refresh(
+        now=NOW,
+        neural_life=_neural(),
+        resource_pressure="NORMAL",
+        pending_plan_count=0,
+        last_cognition_at=NOW,
+        last_action_at=NOW,
+    )
+
+    result = DriveEngine(tmp_path).refresh(
+        now=NOW,
+        organism=organism,
+        neural_life=_neural(),
+        personality=_personality(),
+    )
+
+    assert organism["signals"]["monetary_pressure"]["value"] == 1.0
+    assert organism["summary"]["model_availability"] == 1.0
+    assert result["drives"]["resource"]["intensity"] < 0.3
+    assert (
+        result["drives"]["resource"]["intensity"]
+        < result["drives"]["curiosity"]["intensity"]
+    )
+
+
 def test_drive_engine_is_neural_and_homeostatic_but_cannot_bypass_admission(tmp_path):
     _policies(tmp_path)
     organism = OrganismStateService(tmp_path).refresh(
