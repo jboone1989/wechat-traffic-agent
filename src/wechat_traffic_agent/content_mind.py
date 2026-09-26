@@ -517,7 +517,15 @@ class ContentMind:
             world_action = self.world_learning.find_by_metadata(
                 "brain_prediction_id", brain_prediction_id
             )
-            if world_action is not None:
+            settlement_state = (
+                (world_action.get("settlements") or {}).get(window)
+                if isinstance(world_action, Mapping)
+                else None
+            )
+            if (
+                world_action is not None
+                and str((settlement_state or {}).get("status") or "") != "SETTLED"
+            ):
                 self.world_learning.settle(
                     action_id=str(world_action["action_id"]),
                     window=window,

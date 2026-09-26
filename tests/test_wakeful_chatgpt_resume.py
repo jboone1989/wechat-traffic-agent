@@ -506,3 +506,54 @@ def test_owner_external_mission_defers_prediction_task_even_without_due_rows(
     assert result["deferred_count"] == 0
     assert result["retry_after"] is None
     assert loop.called is False
+
+
+def test_legacy_content_resume_is_consumed_before_new_owner_episode(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=_WaitingContentLoop(),
+        resource_economy=_NoCostEconomy(),
+        web_worker=None,
+        gsc_collector=None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runtime_tick",
+        lambda now: (_GenerationReady(), {"application": {}}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+            "priority": 0.9,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_pending_chatgpt_cycle",
+        lambda: {"cycle": "v2-legacy", "request_id": "llmreq-legacy"},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_owner_agent_control",
+        lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("legacy content resume must run before a new owner episode")
+        ),
+    )
+
+    result = runner._content(
+        datetime.now(timezone.utc),
+        focus_topic=None,
+        relevant_refs=("cognition-request:llmreq-legacy", "goal-owner"),
+    )
+
+    assert result["content_chatgpt_resume"]["request_id"] == "llmreq-legacy"
+    assert "owner_agent_episode" not in result
+    assert result["status"] == "WAITING_FOR_CHATGPT"

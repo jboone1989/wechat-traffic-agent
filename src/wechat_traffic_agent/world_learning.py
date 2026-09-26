@@ -164,7 +164,12 @@ class WorldLearningLedger:
             raise KeyError("unknown settlement window")
         if current.get("status") == "SETTLED":
             same_refs = set(current.get("evidence_refs") or ()) == set(refs)
-            same_value = float(current.get("actual_utility") or 0.0) == float(actual_utility)
+            # Settlements are persisted at six decimal places below. Compare
+            # at the same canonical precision so an exact replay of the
+            # pre-rounded input remains idempotent after restart.
+            same_value = round(float(current.get("actual_utility") or 0.0), 6) == round(
+                float(actual_utility), 6
+            )
             if same_refs and same_value:
                 return current
             raise ValueError("settlement already committed with different evidence")
