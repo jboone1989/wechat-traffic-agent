@@ -28,7 +28,7 @@ def test_receipt_runtime_resumes_same_durable_phase_after_chatgpt_pending(tmp_pa
     wrapped = ReceiptRuntime(runtime, receipt_root)
 
     try:
-        asyncio.run(wrapped.cognitive_probe("choose", 100))
+        asyncio.run(wrapped.cognitive_probe("CHOOSE: original host state", 100))
         raise AssertionError("expected pending")
     except LivingRuntimeChatGPTPendingError as exc:
         assert exc.request_id == "llmreq_durable_test"
@@ -36,27 +36,65 @@ def test_receipt_runtime_resumes_same_durable_phase_after_chatgpt_pending(tmp_pa
     marker = json.loads((receipt_root / "0.started").read_text(encoding="utf-8"))
     assert marker["status"] == "WAITING_FOR_CHATGPT"
     assert marker["request_id"] == "llmreq_durable_test"
-    assert runtime.calls[0] == "choose"
+    assert runtime.calls[0] == "CHOOSE: original host state"
 
     # A restarted content-cycle runtime starts at phase index zero and must
     # re-enter the same durable request rather than create a new model phase.
     resumed = ReceiptRuntime(runtime, receipt_root)
     result = asyncio.run(
-        resumed.cognitive_probe("choose with newer host state", 100)
+        resumed.cognitive_probe("CHOOSE: newer host state", 100)
     )
 
     assert result == "completed-response"
-    assert runtime.calls[1] == "choose with newer host state"
+    assert runtime.calls[1] == "CHOOSE: newer host state"
     receipt = json.loads((receipt_root / "0.json").read_text(encoding="utf-8"))
     assert receipt["durable_request_id"] == "llmreq_durable_test"
+    assert receipt["phase_signature"]
     assert receipt["resume_input_changed"] is True
     assert not (receipt_root / "0.started").exists()
 
     replayed = ReceiptRuntime(runtime, receipt_root)
     assert asyncio.run(
-        replayed.cognitive_probe("choose with even newer host state", 100)
+        replayed.cognitive_probe("CHOOSE: even newer host state", 100)
     ) == "completed-response"
     assert len(runtime.calls) == 2
+
+
+def test_completed_durable_receipt_does_not_bleed_into_next_semantic_phase(tmp_path):
+    runtime = _PendingThenCompleteRuntime()
+    receipt_root = tmp_path / "cycle" / "model_calls"
+
+    first = ReceiptRuntime(runtime, receipt_root)
+    try:
+        asyncio.run(first.cognitive_probe("PREDICT: old host context", 100))
+        raise AssertionError("expected pending")
+    except LivingRuntimeChatGPTPendingError:
+        pass
+
+    resumed = ReceiptRuntime(runtime, receipt_root)
+    assert asyncio.run(
+        resumed.cognitive_probe("PREDICT: newer host context", 100)
+    ) == "completed-response"
+
+    async def expression(task: str, *, max_tokens: int):
+        runtime.calls.append(task)
+        return "expression-response"
+
+    runtime.cognitive_probe = expression
+    shifted = ReceiptRuntime(runtime, receipt_root)
+    result = asyncio.run(
+        shifted.cognitive_probe(
+            "DECIDE_EXPRESSION: evaluate the completed cognition",
+            100,
+        )
+    )
+
+    assert result == "expression-response"
+    assert runtime.calls[-1].startswith("DECIDE_EXPRESSION:")
+    first_receipt = json.loads((receipt_root / "0.json").read_text())
+    second_receipt = json.loads((receipt_root / "1.json").read_text())
+    assert first_receipt["phase_signature"] != second_receipt["phase_signature"]
+    assert second_receipt["response"] == "expression-response"
 
 
 def test_content_cycle_pending_is_nonterminal_and_has_no_result_receipt(tmp_path):
