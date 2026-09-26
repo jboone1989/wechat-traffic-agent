@@ -161,15 +161,16 @@ class WakefulContentTaskRunner:
             resume_next_durable_cognition,
         )
 
-        resume_request_id = next(
-            (
-                str(ref).split(":", 1)[1]
-                for ref in relevant_refs
-                if str(ref).startswith("cognition-request:")
-                and str(ref).split(":", 1)[1].strip()
-            ),
-            "",
-        )
+        resume_request_ids = [
+            str(ref).split(":", 1)[1]
+            for ref in relevant_refs
+            if str(ref).startswith("cognition-request:")
+            and str(ref).split(":", 1)[1].strip()
+        ]
+        # A multi-call wakeful task can suspend more than once. Older persisted
+        # refs are historical checkpoints; the newest request is the only
+        # unresolved continuation pointer.
+        resume_request_id = resume_request_ids[-1] if resume_request_ids else ""
         resume_context = (
             resume_next_durable_cognition(resume_request_id)
             if resume_request_id
@@ -1063,8 +1064,8 @@ class WakefulContentTaskRunner:
     def _verify_prediction(self, now: datetime) -> dict[str, Any]:
         if self.continuous_loop is None:
             return {"task": "VERIFY_PREDICTION", "status": "DISABLED"}
+        ledger = getattr(self.continuous_loop, "predictions", None)
         try:
-            ledger = getattr(self.continuous_loop, "predictions", None)
             if ledger is not None and callable(getattr(ledger, "due", None)):
                 for prediction in ledger.due(now):
                     self.wakeful.emit_prediction_due(

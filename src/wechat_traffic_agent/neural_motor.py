@@ -168,14 +168,23 @@ class NeuralMotorCortex:
         trials = int(raw.get("trials") or 0)
         return 0.0 if trials <= 0 else float(raw.get("reward_sum") or 0.0) / trials
 
+    @staticmethod
+    def _world_association_mean(raw: Mapping[str, Any]) -> float:
+        trials = int(raw.get("world_trials") or 0)
+        return (
+            0.0
+            if trials <= 0
+            else float(raw.get("world_reward_sum") or 0.0) / trials
+        )
+
     def _best_learned_action(self, unit: Mapping[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
         associations = unit.get("associations") if isinstance(unit.get("associations"), Mapping) else {}
         candidates = []
         for action, raw in associations.items():
             if action not in self.allowed_actions or not isinstance(raw, Mapping):
                 continue
-            trials = int(raw.get("trials") or 0)
-            mean = self._association_mean(raw)
+            trials = int(raw.get("world_trials") or 0)
+            mean = self._world_association_mean(raw)
             if trials > 0:
                 candidates.append((mean, trials, str(action), dict(raw)))
         if not candidates:
@@ -248,8 +257,10 @@ class NeuralMotorCortex:
         for motor_id, neural_activation in activations.items():
             unit = units.get(motor_id) if isinstance(units.get(motor_id), Mapping) else {}
             _action, association = self._best_learned_action(unit)
-            trials = int((association or {}).get("trials") or 0)
-            learned_mean = max(0.0, self._association_mean(association or {}))
+            trials = int((association or {}).get("world_trials") or 0)
+            learned_mean = max(
+                0.0, self._world_association_mean(association or {})
+            )
             # World-success makes a motor unit easier to re-enter, but never fully
             # overrides the current connectome state. That is how a habit stabilizes.
             effective[motor_id] = float(neural_activation) + 0.25 * learned_mean + 0.03 * min(5, trials)
@@ -262,8 +273,8 @@ class NeuralMotorCortex:
         activation = float(activations[selected_motor])
         unit = dict(units.get(selected_motor) or {})
         learned_action, association = self._best_learned_action(unit)
-        association_trials = int((association or {}).get("trials") or 0)
-        association_mean = self._association_mean(association or {})
+        association_trials = int((association or {}).get("world_trials") or 0)
+        association_mean = self._world_association_mean(association or {})
         is_habit = (
             learned_action is not None
             and association_trials >= self.HABIT_MIN_TRIALS
@@ -409,17 +420,32 @@ class NeuralMotorCortex:
         trials = int(association.get("trials") or 0) + 1
         reward_sum = float(association.get("reward_sum") or 0.0) + reward
         mean_reward = reward_sum / trials
+        world_grounded = bool(reward_evaluation.get("world_grounded"))
+        world_trials = int(association.get("world_trials") or 0)
+        world_reward_sum = float(association.get("world_reward_sum") or 0.0)
+        if world_grounded:
+            world_trials += 1
+            world_reward_sum += reward
+        world_mean_reward = (
+            0.0 if world_trials <= 0 else world_reward_sum / world_trials
+        )
         association.update({
             "action": action,
             "trials": trials,
             "reward_sum": round(reward_sum, 6),
             "mean_reward": round(mean_reward, 6),
+            "world_trials": world_trials,
+            "world_reward_sum": round(world_reward_sum, 6),
+            "world_mean_reward": round(world_mean_reward, 6),
             "last_outcome_at": observed_at.isoformat(),
         })
         associations[action] = association
         unit["associations"] = associations
 
-        if trials >= self.HABIT_MIN_TRIALS and mean_reward >= self.HABIT_MEAN_REWARD:
+        if (
+            world_trials >= self.HABIT_MIN_TRIALS
+            and world_mean_reward >= self.HABIT_MEAN_REWARD
+        ):
             unit["state"] = "HABIT"
             unit["meaning"] = action
             unit["meaning_acquired_at"] = observed_at.isoformat()
@@ -427,8 +453,10 @@ class NeuralMotorCortex:
             unit["state"] = "DORMANT"
             if unit.get("meaning") == action:
                 unit["meaning"] = None
-        elif unit.get("state") != "HABIT":
+        else:
             unit["state"] = "LEARNING"
+            if unit.get("meaning") == action:
+                unit["meaning"] = None
         units[motor_id] = unit
         habit_count = sum(1 for raw in units.values() if str(raw.get("state") or "") == "HABIT")
         self.state.update({

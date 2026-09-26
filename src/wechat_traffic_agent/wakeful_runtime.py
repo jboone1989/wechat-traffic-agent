@@ -272,6 +272,57 @@ class ContentWakefulRuntime:
                     preemptible=bool(payload.get("preemptible", True)),
                 )
                 existing = current.get(wake_id)
+                incoming_cognition_refs = tuple(
+                    str(ref)
+                    for ref in wake.relevant_refs
+                    if str(ref).startswith("cognition-request:")
+                )
+                existing_cognition_ref = (
+                    next(
+                        (
+                            str(ref)
+                            for ref in reversed(existing.relevant_refs)
+                            if str(ref).startswith("cognition-request:")
+                        ),
+                        None,
+                    )
+                    if existing is not None
+                    else None
+                )
+                replace_cognition_pointer = bool(
+                    existing is not None
+                    and incoming_cognition_refs
+                    and incoming_cognition_refs[-1] != existing_cognition_ref
+                )
+                if existing is not None and incoming_cognition_refs:
+                    non_cognition_refs = tuple(
+                        dict.fromkeys(
+                            (
+                                *(
+                                    str(ref)
+                                    for ref in existing.relevant_refs
+                                    if not str(ref).startswith("cognition-request:")
+                                ),
+                                *(
+                                    str(ref)
+                                    for ref in wake.relevant_refs
+                                    if not str(ref).startswith("cognition-request:")
+                                ),
+                            )
+                        )
+                    )
+                    wake = PlannedWake(
+                        wake_id=wake.wake_id,
+                        at=min(wake.at, existing.at),
+                        reason=wake.reason,
+                        task=wake.task,
+                        relevant_refs=(
+                            *non_cognition_refs,
+                            incoming_cognition_refs[-1],
+                        ),
+                        cancel_conditions=wake.cancel_conditions,
+                        preemptible=wake.preemptible,
+                    )
                 incoming_owner = self._is_owner_goal_cognition_wake(wake)
                 existing_owner = self._is_owner_goal_cognition_wake(existing)
                 if existing is not None and incoming_owner and not existing_owner:
@@ -291,8 +342,11 @@ class ContentWakefulRuntime:
                 if (
                     existing is None
                     or wake.at < existing.at
+                    or replace_cognition_pointer
                     or (incoming_owner and not existing_owner)
                 ):
+                    if existing is not None and replace_cognition_pointer:
+                        self.core.cancel(wake_id)
                     self.core.schedule(wake)
                     current[wake_id] = wake
                     merged += 1
@@ -1440,9 +1494,25 @@ class ContentWakefulRuntime:
         relevant_refs = (f"cognition-request:{request_id}",)
         if existing is not None:
             at = min(at, existing.at)
+            # A durable wake represents exactly one suspended cognition.
+            # Preserve non-cognition provenance, but replace any older
+            # cognition-request ref instead of accumulating stale requests.
             relevant_refs = tuple(
-                dict.fromkeys((*existing.relevant_refs, *relevant_refs))
+                dict.fromkeys(
+                    (
+                        *(
+                            str(ref)
+                            for ref in existing.relevant_refs
+                            if not str(ref).startswith("cognition-request:")
+                        ),
+                        *relevant_refs,
+                    )
+                )
             )
+            # PlannedWake identity is wake_id. Re-scheduling the same id at the
+            # same/earlier time is not a reliable provenance replacement, so
+            # explicitly remove the stale continuation pointer first.
+            self.core.cancel(wake_id)
         wake = PlannedWake(
             wake_id=wake_id,
             at=at,

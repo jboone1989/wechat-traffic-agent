@@ -360,6 +360,111 @@ def test_pending_chatgpt_prediction_verification_is_single_flight(tmp_path):
     )
 
 
+def test_chatgpt_resume_replaces_stale_request_ref_without_losing_provenance(
+    tmp_path,
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_old",
+        task="VERIFY_PREDICTION",
+    )
+    existing = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    runtime.core.schedule(type(existing)(
+        wake_id=existing.wake_id,
+        at=existing.at,
+        reason=existing.reason,
+        task=existing.task,
+        relevant_refs=(
+            "prediction:abc",
+            "cognition-request:llmreq_old",
+        ),
+        cancel_conditions=existing.cancel_conditions,
+        preemptible=existing.preemptible,
+    ))
+
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_new",
+        task="VERIFY_PREDICTION",
+    )
+
+    resumed = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    assert resumed.relevant_refs == (
+        "prediction:abc",
+        "cognition-request:llmreq_new",
+    )
+
+
+
+def test_chatgpt_resume_replaces_stale_cognition_pointer(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_old",
+        task="VERIFY_PREDICTION",
+    )
+    first = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    first_at = first.at
+
+    runtime.schedule_chatgpt_resume(
+        NOW + timedelta(seconds=5),
+        request_id="llmreq_new",
+        task="VERIFY_PREDICTION",
+    )
+
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    assert wake.at == first_at
+    assert wake.relevant_refs == ("cognition-request:llmreq_new",)
+
+
+def test_external_chatgpt_resume_replaces_stale_cognition_pointer(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    first_at = NOW + timedelta(seconds=30)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:VERIFY_PREDICTION",
+        at=first_at,
+        reason="resume old cognition",
+        task="VERIFY_PREDICTION",
+        relevant_refs=(
+            "prediction:test",
+            "cognition-request:llmreq_old",
+        ),
+    ))
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:VERIFY_PREDICTION",
+        at=NOW + timedelta(seconds=60),
+        reason="resume latest cognition",
+        task="VERIFY_PREDICTION",
+        relevant_refs=("cognition-request:llmreq_new",),
+    ))
+
+    assert runtime._drain_external_wake_requests() == 1
+
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:VERIFY_PREDICTION"
+    )
+    assert wake.at == first_at
+    assert wake.relevant_refs == (
+        "prediction:test",
+        "cognition-request:llmreq_new",
+    )
+
+
 def test_full_neural_graph_is_exposed_without_claiming_future_plasticity(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     snapshot = runtime.public_snapshot()

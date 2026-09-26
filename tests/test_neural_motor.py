@@ -115,6 +115,77 @@ def test_repeated_success_teaches_a_motor_unit_a_habit(tmp_path: Path):
     assert next_decision["task"] == "OBSERVE_WORLD"
 
 
+def test_internal_task_reward_never_creates_a_motor_habit(tmp_path: Path):
+    substrate = FakeSubstrate()
+    cortex = NeuralMotorCortex(
+        tmp_path,
+        substrate=substrate,
+        allowed_actions=("NEURAL_PLAY",),
+    )
+    for _ in range(cortex.HABIT_MIN_TRIALS + 3):
+        decision = cortex.select(neural_life=life(), now=NOW)
+        learned = cortex.observe_outcome(
+            task="NEURAL_PLAY",
+            result={
+                "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM",
+                "reward": 0.12,
+            },
+            decision_id=decision["decision_id"],
+            observed_at=NOW,
+        )
+        assert learned is not None
+        assert learned["world_grounded"] is False
+
+    projection = cortex.projection()
+    assert projection["habit_count"] == 0
+    learned_units = [
+        row for row in cortex.state["units"].values()
+        if row["state"] == "LEARNING"
+    ]
+    assert learned_units
+    association = learned_units[0]["associations"]["NEURAL_PLAY"]
+    assert association["trials"] >= cortex.HABIT_MIN_TRIALS
+    assert association["world_trials"] == 0
+    assert association["world_mean_reward"] == 0.0
+
+
+def test_legacy_habit_without_world_reinforcement_demotes_on_next_outcome(
+    tmp_path: Path,
+):
+    substrate = FakeSubstrate()
+    cortex = NeuralMotorCortex(
+        tmp_path,
+        substrate=substrate,
+        allowed_actions=("NEURAL_PLAY",),
+    )
+    decision = cortex.select(neural_life=life(), now=NOW)
+    motor_id = decision["motor_id"]
+    unit = cortex.state["units"][motor_id]
+    unit["state"] = "HABIT"
+    unit["meaning"] = "NEURAL_PLAY"
+    unit["associations"]["NEURAL_PLAY"] = {
+        "action": "NEURAL_PLAY",
+        "trials": 20,
+        "reward_sum": 16.0,
+        "mean_reward": 0.8,
+    }
+
+    learned = cortex.observe_outcome(
+        task="NEURAL_PLAY",
+        result={
+            "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM",
+            "reward": 0.12,
+        },
+        decision_id=decision["decision_id"],
+        observed_at=NOW,
+    )
+
+    assert learned is not None
+    assert learned["motor_state"] == "LEARNING"
+    assert learned["meaning"] is None
+    assert learned["association"]["world_trials"] == 0
+
+
 def test_repeated_failure_can_make_a_motor_association_dormant(tmp_path: Path):
     substrate = FakeSubstrate()
     cortex = NeuralMotorCortex(tmp_path, substrate=substrate, allowed_actions=("OBSERVE_WORLD",))
