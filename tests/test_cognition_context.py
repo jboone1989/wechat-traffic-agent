@@ -340,3 +340,57 @@ def test_owner_scope_drops_latest_plan_bound_to_another_goal():
         )
 
     assert context["mind"]["latest_plan"] is None
+
+def test_owner_scope_relevance_ignores_generic_orchestration_words():
+    class NoisySession:
+        def snapshot(self):
+            return {
+                "autobiography": {
+                    "events": [
+                        {
+                            "event_id": "relevant",
+                            "tick": 1,
+                            "summary": (
+                                "LivingRuntime Remote durable execution preserved "
+                                "a remote coding session after restart."
+                            ),
+                            "source": "content-process",
+                            "outcome": 1.0,
+                            "confidence": 1.0,
+                        },
+                        {
+                            "event_id": "generic-noise",
+                            "tick": 2,
+                            "summary": (
+                                "The current agent action used evidence to choose "
+                                "a policy response for crypto market rates."
+                            ),
+                            "source": "session",
+                            "outcome": 0.5,
+                            "confidence": 1.0,
+                        },
+                    ]
+                }
+            }
+
+    class NoisyMind(_Mind):
+        session = NoisySession()
+
+    with owner_cognition_scope({
+        "goal_id": "goal-owner",
+        "description": "Grow LivingRuntime Remote",
+        "topic": "livingruntime-remote-durable-execution",
+    }):
+        context = build_ferro_cognition_context(
+            application=_application(),
+            mind=NoisyMind(),
+            wakeful=_Wakeful(),
+            prompt=(
+                "OWNER_AGENT_EPISODE: choose the current agent action using "
+                "evidence and tools"
+            ),
+        )
+
+    assert [row["event_id"] for row in context["recent_experience"]] == [
+        "relevant"
+    ]

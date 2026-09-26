@@ -15,6 +15,17 @@ _OWNER_COGNITION_SCOPE: ContextVar[dict[str, str] | None] = ContextVar(
     default=None,
 )
 
+_CONTEXT_STOP_TERMS = frozenset({
+    "the", "and", "for", "from", "with", "without", "within", "into",
+    "over", "under", "this", "that", "these", "those", "then", "than",
+    "what", "which", "when", "where", "why", "how", "who", "does", "did",
+    "can", "could", "would", "should", "will", "may", "might", "have",
+    "has", "had", "been", "being", "are", "was", "were", "not", "only",
+    "before", "after", "current", "next", "one", "use", "using", "choose",
+    "owner", "goal", "mission", "agent", "episode", "task", "action",
+    "tool", "tools", "content", "evidence", "return", "json",
+})
+
 
 @contextmanager
 def owner_cognition_scope(value: Mapping[str, Any] | None):
@@ -52,6 +63,7 @@ def _terms(value: Any) -> set[str]:
             r"[A-Za-z0-9][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}",
             str(value or ""),
         )
+        if token.lower() not in _CONTEXT_STOP_TERMS
     }
 
 

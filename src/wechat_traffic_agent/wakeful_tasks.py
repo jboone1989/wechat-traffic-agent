@@ -2006,15 +2006,22 @@ class WakefulContentTaskRunner:
                 return self._outcomes(now)
             return {"status": "UNSUPPORTED", "action": action}
 
-        return self._run_async(
-            episode.run(
-                runtime=runtime,
-                owner_goal=owner_goal,
-                mission_context=mission_context,
-                tool_executor=execute_tool,
-                now=now,
+        from .cognition_context import owner_cognition_scope
+
+        with owner_cognition_scope({
+            "goal_id": str(owner_goal.get("goal_id") or ""),
+            "mission_id": str(mission_context.get("mission_id") or ""),
+            "description": str(owner_goal.get("description") or ""),
+        }):
+            return self._run_async(
+                episode.run(
+                    runtime=runtime,
+                    owner_goal=owner_goal,
+                    mission_context=mission_context,
+                    tool_executor=execute_tool,
+                    now=now,
+                )
             )
-        )
 
     @staticmethod
     def _owner_agent_seed_evidence(control: dict[str, Any]) -> list[dict[str, Any]]:
