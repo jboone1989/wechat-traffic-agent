@@ -392,7 +392,7 @@ def _compact_website_decision_view(snapshot, *, article_limit=80):
     }
 
 
-def _compact_evidence_decision_view(rows, *, row_limit=16):
+def _compact_evidence_decision_view(rows, *, row_limit=8):
     """Bound evidence for semantic selection; full rows remain local by evidence_id."""
     compact = []
     for row in list(rows or ())[:max(1, min(int(row_limit), 24))]:
@@ -403,19 +403,129 @@ def _compact_evidence_decision_view(rows, *, row_limit=16):
             "source_kind": str(row.get("source_kind") or "")[:80],
             "source": str(row.get("source") or "")[:300],
             "title": str(row.get("title") or "")[:300],
-            "summary": str(row.get("summary") or "")[:1600],
-            "url": str(row.get("url") or "")[:1200],
+            "summary": str(row.get("summary") or "")[:1200],
+            "url": str(row.get("url") or "")[:600],
             "observed_at": str(row.get("observed_at") or "")[:80],
             "published_at": str(row.get("published_at") or "")[:80],
-            "search_query": str(row.get("search_query") or "")[:400],
+            "search_query": str(row.get("search_query") or "")[:300],
             "search_rank": row.get("search_rank"),
             "source_revision": str(row.get("source_revision") or "")[:240],
             "evidence_refs": [
                 str(value)[:300]
-                for value in list(row.get("evidence_refs") or ())[:12]
+                for value in list(row.get("evidence_refs") or ())[:6]
             ],
         })
     return compact
+
+
+def _compact_selection_traffic(value, *, topic_limit=12):
+    """Keep only traffic signals that can change an evidence-angle decision."""
+    if not isinstance(value, dict):
+        return {}
+    topics = [
+        dict(row)
+        for row in list(value.get("topics") or ())
+        if isinstance(row, dict)
+    ]
+    topics.sort(
+        key=lambda row: (
+            float(row.get("priority_score") or 0.0),
+            float(row.get("demand_score") or 0.0),
+            int(row.get("trend_hits") or 0),
+        ),
+        reverse=True,
+    )
+    fields = (
+        "topic", "article_count", "exposure_status", "search_rows",
+        "impressions", "clicks", "ctr", "average_position",
+        "mean_pageviews_24h", "pageview_samples_24h", "trend_hits",
+        "priority_score",
+    )
+    return {
+        "search_data_status": value.get("search_data_status"),
+        "pageview_data_status": value.get("pageview_data_status"),
+        "selected_topic": value.get("selected_topic"),
+        "selection_authority": value.get("selection_authority"),
+        "topics": [
+            {field: row.get(field) for field in fields if field in row}
+            for row in topics[:max(1, min(int(topic_limit), 20))]
+        ],
+    }
+
+
+def _compact_selection_mind_plan(value):
+    """Drop the large available-topic catalog from semantic selection."""
+    if not isinstance(value, dict):
+        return {}
+    goal = value.get("goal") if isinstance(value.get("goal"), dict) else {}
+    discovery = (
+        value.get("mission_discovery")
+        if isinstance(value.get("mission_discovery"), dict)
+        else {}
+    )
+    return {
+        "cycle": value.get("cycle"),
+        "required_topic": value.get("required_topic"),
+        "external_mission_id": value.get("external_mission_id"),
+        "owner_goal_id": value.get("owner_goal_id"),
+        "goal": {
+            "goal_id": goal.get("goal_id"),
+            "origin": goal.get("origin"),
+            "description": str(goal.get("description") or "")[:600],
+            "confidence": goal.get("confidence"),
+            "expected_value": goal.get("expected_value"),
+            "interest_refs": [
+                str(ref)[:160] for ref in list(goal.get("interest_refs") or ())[:8]
+            ],
+            "inquiry_refs": [
+                str(ref)[:160] for ref in list(goal.get("inquiry_refs") or ())[:8]
+            ],
+            "value_refs": [
+                str(ref)[:160] for ref in list(goal.get("value_refs") or ())[:8]
+            ],
+        },
+        "mission_discovery": {
+            "topic": str(discovery.get("topic") or "")[:100],
+            "search_query": str(discovery.get("search_query") or "")[:500],
+            "reader_need": str(discovery.get("reader_need") or "")[:600],
+            "rationale": str(discovery.get("rationale") or "")[:500],
+        },
+    }
+
+
+def _compact_selection_mission(value):
+    """Project the active X mission without historical experiments or constraints."""
+    if not isinstance(value, dict):
+        return {}
+    roadmap = (
+        value.get("roadmap_step")
+        if isinstance(value.get("roadmap_step"), dict)
+        else {}
+    )
+    experiment = (
+        value.get("active_experiment")
+        if isinstance(value.get("active_experiment"), dict)
+        else {}
+    )
+    return {
+        "status": value.get("status"),
+        "mission_id": value.get("mission_id"),
+        "metric": value.get("metric"),
+        "current": value.get("current"),
+        "target": value.get("target"),
+        "trajectory": value.get("trajectory"),
+        "roadmap_step": {
+            "step_id": roadmap.get("step_id"),
+            "title": str(roadmap.get("title") or "")[:300],
+            "status": roadmap.get("status"),
+        },
+        "active_experiment": {
+            "experiment_id": experiment.get("experiment_id"),
+            "status": experiment.get("status"),
+            "strategy": str(experiment.get("strategy") or "")[:1000],
+            "expected_effect": str(experiment.get("expected_effect") or "")[:800],
+        },
+    }
 
 
 def _select_evidence_decision_context(
@@ -431,12 +541,12 @@ def _select_evidence_decision_context(
     return {
         "evidence": _compact_evidence_decision_view(evidence),
         "website": _compact_website_decision_view(snapshot, article_limit=32),
-        "traffic_context": traffic_payload,
+        "traffic_context": _compact_selection_traffic(traffic_payload),
         "previous_titles": [
             str(value)[:200] for value in list(previous_titles or ())[-50:]
         ],
-        "mind_plan": mind_plan,
-        "x_growth_mission": x_mission_context,
+        "mind_plan": _compact_selection_mind_plan(mind_plan),
+        "x_growth_mission": _compact_selection_mission(x_mission_context),
     }
 
 
