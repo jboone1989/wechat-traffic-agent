@@ -2006,7 +2006,8 @@ class WakefulContentTaskRunner:
                         for key in (
                             "evidence_id", "source_kind", "source", "title",
                             "summary", "url", "published_at", "observed_at",
-                            "evidence_refs",
+                            "source_revision", "evidence_refs", "publisher_feed",
+                            "search_query", "search_rank", "learning_kind",
                         )
                         if item.get(key) is not None
                     }
@@ -2023,6 +2024,10 @@ class WakefulContentTaskRunner:
                             ).encode("utf-8")
                         ).hexdigest()[:32]
                     row.setdefault("source_kind", "web-search")
+                    row.setdefault(
+                        "source_revision",
+                        str(item.get("source_revision") or row["evidence_id"]),
+                    )
                     row.setdefault("evidence_refs", [row["evidence_id"]])
                     rows.append(row)
                 return {"status": "OK", "query": query, "items": rows}
