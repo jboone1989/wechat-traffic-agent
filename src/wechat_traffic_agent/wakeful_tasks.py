@@ -1762,6 +1762,26 @@ class WakefulContentTaskRunner:
                 goals.append(goal)
                 seen_goal_ids.add(goal_id)
         owner_external_goal_ids = self._owner_activated_external_goal_ids()
+        # Runtime external missions are already durable operator-issued
+        # commitments. Use them as an independent owner-authority source so a
+        # stale/missing application proposal projection cannot demote an active
+        # owner mission to an ordinary USER goal.
+        for mission in (getattr(runtime, "external_missions", ()) or ()):
+            mission_status = str(
+                getattr(
+                    getattr(mission, "status", None),
+                    "value",
+                    getattr(mission, "status", ""),
+                )
+            )
+            issued_by = str(getattr(mission, "issued_by", "") or "").strip().lower()
+            mission_goal_id = str(getattr(mission, "goal_id", "") or "").strip()
+            if (
+                mission_status == "ACTIVE"
+                and issued_by == "operator"
+                and mission_goal_id
+            ):
+                owner_external_goal_ids.add(mission_goal_id)
         candidates: list[tuple[Any, str]] = []
         for goal in goals:
             origin = str(

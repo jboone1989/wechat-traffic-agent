@@ -432,3 +432,38 @@ def test_owner_context_falls_back_to_authoritative_goal_ledger(tmp_path):
     assert context is not None
     assert context["goal_id"] == "goal-owner"
     assert context["origin"] == "EXTERNAL_MISSION"
+
+
+
+def test_owner_context_uses_active_operator_external_mission_without_proposal(tmp_path):
+    goal = SimpleNamespace(
+        goal_id="goal-owner-runtime",
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+        description="Execute the runtime owner mission",
+        reason="operator-issued external mission",
+        priority=0.9,
+        created_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
+    )
+    mission = SimpleNamespace(
+        goal_id="goal-owner-runtime",
+        status=SimpleNamespace(value="ACTIVE"),
+        issued_by="operator",
+    )
+    domain_runtime = SimpleNamespace(
+        active_goals=[goal],
+        goals=[goal],
+        external_missions=[mission],
+    )
+    runner = WakefulContentTaskRunner(
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+        continuous_loop=_CompletedLoop(),
+    )
+
+    context = runner._active_owner_goal_context()
+
+    assert context is not None
+    assert context["goal_id"] == "goal-owner-runtime"
+    assert context["origin"] == "EXTERNAL_MISSION"
