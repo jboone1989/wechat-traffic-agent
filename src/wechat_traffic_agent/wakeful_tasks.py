@@ -1045,11 +1045,25 @@ class WakefulContentTaskRunner:
             draft = self._run_async(self.draft_worker.run_once(now=now))
             draft_payload = draft.to_payload()
             rows["draft_worker"] = draft_payload
+            draft_status = str(draft_payload.get("status") or "").upper()
             evidence_ref = str(
-                draft_payload.get("artifact_id") or draft_payload.get("contract_id")
-                or draft_payload.get("task_id") or f"trading-draft:{int(now.timestamp())}"
-            )
-            self.wakeful.emit_network_evidence(evidence_ref=evidence_ref, observed_at=now)
+                draft_payload.get("artifact_id")
+                or draft_payload.get("contract_id")
+                or draft_payload.get("task_id")
+                or ""
+            ).strip()
+            if evidence_ref:
+                self.wakeful.emit_network_evidence(
+                    evidence_ref=evidence_ref,
+                    observed_at=now,
+                )
+            elif draft_status in {"NO_RESEARCH_PROVIDER", "NO_RESEARCH"}:
+                rows["draft_worker"]["required_for_observation"] = False
+                if (
+                    not observed_items
+                    and rows.get("world_evidence", {}).get("status") == "ERROR"
+                ):
+                    rows["status"] = "DEGRADED"
         except Exception as exc:  # noqa: BLE001
             code = str(getattr(exc, "code", "") or "")
             if code or type(exc).__name__ == "NetworkError":

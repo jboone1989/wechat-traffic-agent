@@ -38,6 +38,28 @@ class _MissingTradingDraft:
         )
 
 
+class _NoTradingProviderResult:
+    def to_payload(self):
+        return {
+            "status": "NO_RESEARCH_PROVIDER",
+            "topic_count": 0,
+            "artifact_id": None,
+        }
+
+
+class _NoTradingProviderDraft:
+    async def run_once(self, *, now):
+        return _NoTradingProviderResult()
+
+
+class _WakefulRecorder:
+    def __init__(self):
+        self.network_evidence = []
+
+    def emit_network_evidence(self, *, evidence_ref, observed_at):
+        self.network_evidence.append((evidence_ref, observed_at))
+
+
 def _runner(tmp_path):
     runner = WakefulContentTaskRunner(
         state_root=tmp_path,
@@ -50,6 +72,22 @@ def _runner(tmp_path):
         {"application": {"status": "OK"}},
     )
     return runner
+
+
+def test_observe_world_does_not_invent_network_evidence_when_provider_absent(tmp_path):
+    runner = _runner(tmp_path)
+    recorder = _WakefulRecorder()
+    runner.wakeful = recorder
+    runner.draft_worker = _NoTradingProviderDraft()
+
+    result = runner._observe(NOW)
+
+    assert result["status"] == "OK"
+    assert result["world_evidence"]["novel_evidence_count"] == 1
+    assert result["world_utility"] > 0.05
+    assert result["draft_worker"]["status"] == "NO_RESEARCH_PROVIDER"
+    assert result["draft_worker"]["required_for_observation"] is False
+    assert recorder.network_evidence == []
 
 
 def test_observe_world_uses_public_explorer_when_trading_provider_missing(tmp_path):
