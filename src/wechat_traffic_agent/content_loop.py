@@ -157,6 +157,17 @@ async def collect_news(urls, now):
             'signal_kind': 'recent publisher coverage; not measured popularity'}
 
 
+def _receipt_phase_signature(task: str, max_tokens: int) -> str:
+    """Stable identity for one semantic cognition phase, excluding mutable payload."""
+    text = str(task or "").strip()
+    first_line = text.splitlines()[0] if text else ""
+    labelled = re.match(r"^([A-Z][A-Z0-9_]{2,80}):", first_line)
+    phase_key = labelled.group(1) if labelled else first_line[:512]
+    if "\nOne repair only." in text:
+        phase_key += ":REPAIR"
+    return digest({"phase_key": phase_key, "max_tokens": int(max_tokens)})
+
+
 class ReceiptRuntime:
     """Persist each response and suspend safely while ChatGPT is unavailable."""
     def __init__(self, runtime, root):
@@ -167,6 +178,7 @@ class ReceiptRuntime:
         key = str(self.index); self.index += 1
         path, started = self.root / (key + '.json'), self.root / (key + '.started')
         fingerprint = digest({'task': task, 'max_tokens': max_tokens})
+        phase_signature = _receipt_phase_signature(task, max_tokens)
         resume_request_id = None
         phase_id = digest({
             'receipt_root': str(self.root),
@@ -177,15 +189,18 @@ class ReceiptRuntime:
             row = json.loads(path.read_text())
             if row['request_sha256'] == fingerprint:
                 return row['response']
-            # A durable workflow replays already-completed external cognition
-            # by sequence number. Mutable host context may have changed while
-            # ChatGPT was unavailable, but the response belongs to the exact
-            # persisted request that this cycle already submitted.
-            if str(row.get('durable_request_id') or '').strip():
+            # Mutable host context may drift while ChatGPT is unavailable, but
+            # sequence position alone is not phase identity: completed phase
+            # artifacts can make later calls shift left after a restart.
+            if (
+                str(row.get('durable_request_id') or '').strip()
+                and str(row.get('phase_signature') or '') == phase_signature
+            ):
                 return row['response']
             # A completed earlier phase may now be represented by its own durable artifact,
             # so recovery can legitimately skip that phase. Reuse only an exact later
             # request fingerprint; never guess, reorder, or call the model again.
+            semantic_matches = []
             for candidate in sorted(self.root.glob('*.json'), key=lambda item: int(item.stem) if item.stem.isdigit() else 10**9):
                 if not candidate.stem.isdigit() or int(candidate.stem) <= int(key):
                     continue
@@ -193,6 +208,24 @@ class ReceiptRuntime:
                 if later.get('request_sha256') == fingerprint:
                     self.index = int(candidate.stem) + 1
                     return later['response']
+                if (
+                    str(later.get('durable_request_id') or '').strip()
+                    and str(later.get('phase_signature') or '') == phase_signature
+                ):
+                    semantic_matches.append((candidate, later))
+            if len(semantic_matches) == 1:
+                candidate, later = semantic_matches[0]
+                self.index = int(candidate.stem) + 1
+                return later['response']
+            row_signature = str(row.get('phase_signature') or '')
+            if row_signature and row_signature != phase_signature:
+                numeric_indices = [
+                    int(candidate.stem)
+                    for candidate in self.root.glob('*.json')
+                    if candidate.stem.isdigit()
+                ]
+                self.index = (max(numeric_indices) + 1) if numeric_indices else self.index
+                return await self.cognitive_probe(task, max_tokens)
             raise ValueError('model phase input changed during recovery')
         if started.exists():
             marker = json.loads(started.read_text(encoding='utf-8'))
@@ -215,6 +248,7 @@ class ReceiptRuntime:
             original_fingerprint = fingerprint
             _put(started, {
                 'request_sha256': fingerprint,
+                'phase_signature': phase_signature,
                 'phase_id': phase_id,
                 'status': 'STARTED',
             })
@@ -230,6 +264,7 @@ class ReceiptRuntime:
         except LivingRuntimeChatGPTPendingError as exc:
             _replace(started, {
                 'request_sha256': fingerprint,
+                'phase_signature': phase_signature,
                 'phase_id': phase_id,
                 'request_id': exc.request_id,
                 'status': 'WAITING_FOR_CHATGPT',
@@ -237,6 +272,7 @@ class ReceiptRuntime:
             raise
         receipt = {
             'request_sha256': fingerprint,
+            'phase_signature': phase_signature,
             'response': raw,
         }
         if resume_request_id:
