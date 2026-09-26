@@ -634,6 +634,74 @@ def test_agent_perspective_expression_is_required_for_publication(tmp_path):
     assert len(json.loads(publisher.inventory_path().read_text())) == before
 
 
+class RepairMissingTechniqueRuntime(BeliefRuntime):
+    def __init__(self):
+        super().__init__()
+        self.compose_attempts = 0
+
+    async def cognitive_probe(self, task, max_tokens):
+        if (
+            "Create one original, useful web-ready content artifact" in task
+            and "agent_expression_context" in task
+        ):
+            self.calls.append(task)
+            self.compose_attempts += 1
+            repaired = "ONE BOUNDED DRAFT REPAIR" in task
+            sentence = (
+                "Reader question: what does this observation actually support? "
+                "Explanation of supplied evidence separates observation from hypothetical interpretation. "
+                "I keep the interpretation bounded to the observed evidence. "
+                if repaired
+                else
+                "I keep this interpretation bounded to the observed evidence while preserving uncertainty. "
+            )
+            paragraph = " ".join(sentence for _ in range(90))
+            return json.dumps({
+                "title": f"Explaining evidence question {self.number}",
+                "summary": "My bounded interpretation of fresh validation evidence.",
+                "sections": [{
+                    "heading": "My current view",
+                    "paragraphs": [paragraph],
+                }],
+                "topic": f"Explaining evidence question {self.number}",
+                "source_urls": [],
+                "disclosure": None,
+            })
+        return await super().cognitive_probe(task, max_tokens)
+
+
+def test_missing_learned_technique_gets_one_bounded_draft_repair(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime = RepairMissingTechniqueRuntime()
+    worker = v2(
+        legacy,
+        runtime,
+        publisher,
+        mind=BeliefMind(),
+        explorer=Explorer(),
+    )
+
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["status"] == "PUBLISHED"
+    assert runtime.compose_attempts == 2
+    assert result["memory_process_variant"]["draft_repair_attempts"] == 1
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    receipt = json.loads((cycle / "draft_repair.json").read_text())
+    assert receipt["reason"] == "MISSING_LEARNED_TECHNIQUE"
+    assert receipt["missing_technique_indices_before"] == [0]
+    assert receipt["recheck_passed"] is True
+    assert receipt["gate_weakened"] is False
+    experience = json.loads((cycle / "experience.json").read_text())
+    assert experience["automated_checks_passed"] is True
+    assert experience["missing_technique_applications"] == []
+    assert experience["memory_process_variant"]["draft_repair_attempts"] == 1
+    draft = json.loads(Path(result["draft_path"]).read_text())
+    article_text = json.dumps(draft["artifact"], ensure_ascii=False)
+    assert "Reader question:" in article_text
+    assert "Explanation of supplied evidence" in article_text
+
+
 class ShortThoughtRuntime(BeliefRuntime):
     async def cognitive_probe(self, task, max_tokens):
         if task.startswith("DECIDE_EXPRESSION:"):
