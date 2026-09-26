@@ -9,6 +9,7 @@ from wechat_traffic_agent.content_goal_loop import (
     _market_expression_instruction, _market_companion_evidence,
     _market_expression_fingerprint, _candidate_available_for_pool,
     _normalize_mission_discovery, _compact_website_decision_view,
+    _compact_writing_experience,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -41,6 +42,50 @@ def test_website_decision_view_drops_full_article_bodies_and_stays_bounded():
     assert compact["article_count"] == 40
     assert compact["articles"][-1]["artifact_id"] == "a39"
     assert len(compact["topics"]["reliability"]) == 24
+
+
+def test_writing_experience_projection_drops_large_cycle_payloads():
+    huge = "x" * 100000
+    history = [{
+        "cycle": f"v2-{index}",
+        "lesson": {
+            "adaptation": "Keep the useful lesson concise. " + huge,
+            "techniques": [{
+                "name": "Evidence first",
+                "instruction": "Lead with the observed fact. " + huge,
+                "before": huge,
+                "after": huge,
+                "check": "Check the opening claim. " + huge,
+            }],
+        },
+        "self_check": {
+            "grounded": True,
+            "useful": False,
+            "no_private_data": True,
+            "no_investment_advice": True,
+            "next_practice": "Make the next note more specific. " + huge,
+            "rationale": "The prior note was too diffuse. " + huge,
+            "support": [{"source_quote": huge}],
+        },
+        "content_strategy": {"giant": huge},
+        "action_prediction": {"giant": huge},
+        "automated_checks_passed": False,
+        "expression_kind": "RESEARCH_NOTE",
+        "word_count": 420,
+        "missing_technique_applications": [0],
+        "missing_section_grounding": [1, 2],
+    } for index in range(8)]
+
+    compact = _compact_writing_experience(history)
+    encoded = json.dumps(compact, ensure_ascii=False)
+
+    assert len(compact) == 4
+    assert len(encoded.encode("utf-8")) < 16 * 1024
+    assert "content_strategy" not in encoded
+    assert "action_prediction" not in encoded
+    assert huge not in encoded
+    assert compact[-1]["cycle"] == "v2-7"
+    assert compact[-1]["self_check"]["useful"] is False
 
 
 class V2Runtime(Runtime):
