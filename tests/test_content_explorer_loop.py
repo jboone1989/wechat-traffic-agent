@@ -147,7 +147,7 @@ def test_select_evidence_context_stays_below_chatgpt_message_budget():
     encoded = json.dumps(context, ensure_ascii=False).encode("utf-8")
 
     assert len(encoded) < 50 * 1024
-    assert len(context["evidence"]) == 16
+    assert len(context["evidence"]) == 8
     assert len(context["website"]["articles"]) == 24
     assert len(context["previous_titles"]) == 32
     assert len(context["traffic_context"]["topics"]) == 12
