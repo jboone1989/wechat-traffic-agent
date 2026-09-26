@@ -311,8 +311,27 @@ def test_positive_world_utility_satisfies_and_cools_drive(tmp_path):
         personality=_personality(NOW + timedelta(minutes=1)),
     )
     curiosity = refreshed["drives"]["curiosity"]
-    assert curiosity["outcome_satisfaction"] > 0.0
+    assert curiosity["outcome_satisfaction"] == settled["outcome_satisfaction"]
+    first_effective = curiosity["effective_outcome_satisfaction"]
+    assert 0.0 < first_effective < curiosity["outcome_satisfaction"]
     assert curiosity["urgency"] < curiosity["intensity"]
+
+    refreshed_again = engine.refresh(
+        now=NOW + timedelta(minutes=2),
+        organism=organism,
+        neural_life=_neural(NOW + timedelta(minutes=2)),
+        personality=_personality(NOW + timedelta(minutes=2)),
+    )
+    curiosity_again = refreshed_again["drives"]["curiosity"]
+    assert (
+        curiosity_again["outcome_satisfaction"]
+        == settled["outcome_satisfaction"]
+    )
+    assert (
+        0.0
+        < curiosity_again["effective_outcome_satisfaction"]
+        < first_effective
+    )
 
 
 def test_resource_emergency_caps_feedback_backoff(tmp_path):

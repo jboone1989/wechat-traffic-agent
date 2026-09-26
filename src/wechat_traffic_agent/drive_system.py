@@ -197,28 +197,33 @@ class DriveEngine:
             old = prior.get(name) if isinstance(prior.get(name), Mapping) else {}
             prior_intensity = float(old.get("intensity") or 0.0)
             last_satisfied_at = old.get("last_satisfied_at")
-            satisfaction_credit = float(old.get("outcome_satisfaction") or 0.0)
+            satisfaction_credit = _clamp(
+                float(old.get("outcome_satisfaction") or 0.0)
+            )
+            effective_satisfaction = satisfaction_credit
             if last_satisfied_at:
                 try:
                     satisfied_at = datetime.fromisoformat(
                         str(last_satisfied_at).replace("Z", "+00:00")
                     ).astimezone(timezone.utc)
                     age_seconds = max(0.0, (now - satisfied_at).total_seconds())
-                    satisfaction_credit *= math.exp(-age_seconds / 1800.0)
+                    effective_satisfaction = satisfaction_credit * math.exp(
+                        -age_seconds / 1800.0
+                    )
                 except ValueError:
-                    satisfaction_credit = 0.0
-            satisfaction_credit = _clamp(satisfaction_credit)
+                    effective_satisfaction = 0.0
+            effective_satisfaction = _clamp(effective_satisfaction)
             frustration = _clamp(
                 float(old.get("frustration") or 0.0) * 0.72
                 + max(0.0, intensity - float(old.get("satisfaction") or 0.0)) * 0.28
-                - 0.30 * satisfaction_credit
+                - 0.30 * effective_satisfaction
             )
-            satisfaction = _clamp(max(1.0 - intensity, satisfaction_credit))
+            satisfaction = _clamp(max(1.0 - intensity, effective_satisfaction))
             habituation = _clamp(float(old.get("habituation") or 0.0) * 0.94 + 0.06 * prior_intensity)
             urgency = _clamp(
                 intensity
                 * (1.0 + frustration * 0.25)
-                * (1.0 - 0.45 * satisfaction_credit)
+                * (1.0 - 0.45 * effective_satisfaction)
             )
             drives[name] = {
                 "intensity": round(intensity, 6),
@@ -232,7 +237,13 @@ class DriveEngine:
                 "last_outcome_status": old.get("last_outcome_status"),
                 "last_outcome_utility": old.get("last_outcome_utility"),
                 "last_outcome_evidence_ref": old.get("last_outcome_evidence_ref"),
+                # Persist the settlement value unchanged. The effective value
+                # is derived from last_satisfied_at so repeated refreshes do
+                # not compound the same elapsed-time decay.
                 "outcome_satisfaction": round(satisfaction_credit, 6),
+                "effective_outcome_satisfaction": round(
+                    effective_satisfaction, 6
+                ),
                 "no_effect_streak": int(old.get("no_effect_streak") or 0),
                 "failure_streak": int(old.get("failure_streak") or 0),
                 "cooldown_until": old.get("cooldown_until"),
@@ -276,7 +287,9 @@ class DriveEngine:
                     cooldown_active = now < cooldown_at
                 except ValueError:
                     cooldown_active = False
-            penalty = 0.12 * float(feedback.get("outcome_satisfaction") or 0.0)
+            penalty = 0.12 * float(
+                feedback.get("effective_outcome_satisfaction") or 0.0
+            )
             if cooldown_active:
                 penalty += min(
                     0.28,
