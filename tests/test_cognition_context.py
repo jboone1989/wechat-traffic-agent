@@ -187,10 +187,75 @@ def test_owner_episode_context_filters_noise_and_demotes_neural_control():
     assert {row["kind"] for row in context["current_intent"]} == {"GOAL"}
     assert [row["mission_id"] for row in context["missions"]["active"]] == ["mission-x"]
     assert len(context["mind"]["interests"]) <= 3
-    assert len(context["mind"]["open_inquiries"]) <= 3
+    assert context["mind"]["open_inquiries"] == []
+    assert context["mind"]["beliefs"] == []
     assert context["neural_state"]["control_signals"] == []
     assert context["neural_state"]["feedback"] == []
     assert context["neural_state"]["control_authority"] == "ADVISORY_SIGNAL_ONLY"
+
+
+def test_owner_episode_does_not_use_generic_instruction_words_as_memory_query():
+    mission = SimpleNamespace(
+        mission_id="mission-x",
+        goal_id="goal-owner",
+        description="Grow the real X audience for LivingRuntime Remote",
+        metric="followers",
+        baseline=1800,
+        target=5000,
+        direction=SimpleNamespace(value="INCREASE"),
+        status=SimpleNamespace(value="ACTIVE"),
+        deadline=None,
+        constraints=(),
+    )
+
+    class Missions:
+        experiments = []
+        def active(self):
+            return [mission]
+        def progress(self, _mission_id, _now):
+            return SimpleNamespace(current_value=1810, trajectory="BEHIND", pressure=0.8)
+
+    class GenericOverlapMind(_Mind):
+        def public_projection(self):
+            value = super().public_projection()
+            value["open_inquiries"] = [{
+                "inquiry_id": "rates-noise",
+                "question": "What current evidence changes the rates regime?",
+                "origin": "curiosity",
+                "status": "OPEN",
+            }]
+            value["beliefs"] = [{
+                "proposition": "Current evidence changes the rates regime.",
+                "stance": 0.4,
+                "confidence": 0.5,
+            }]
+            value["latest_plan"] = {
+                **value["latest_plan"],
+                "goal": {"goal_id": "goal-rates", "origin": "INQUIRY"},
+                "owner_goal_id": None,
+                "external_mission_id": None,
+            }
+            return value
+
+    domain = _DomainRuntime()
+    domain.missions = Missions()
+    domain.external_missions = [mission]
+    app = _application()
+    app.domain_runtime = domain
+
+    context = build_ferro_cognition_context(
+        application=app,
+        mind=GenericOverlapMind(),
+        wakeful=_Wakeful(),
+        prompt=(
+            "OWNER_AGENT_EPISODE: choose the next useful action for the current "
+            "owner goal using evidence and tools."
+        ),
+    )
+
+    assert context["mind"]["open_inquiries"] == []
+    assert context["mind"]["beliefs"] == []
+    assert context["mind"]["latest_plan"] is None
 
 
 def test_owner_scope_filters_downstream_pipeline_prompts_not_only_episode_prompt():

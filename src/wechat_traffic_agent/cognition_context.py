@@ -229,17 +229,34 @@ def build_ferro_cognition_context(
                 if str(row.get("mission_id") or "") in active_mission_ids
             ],
         }
-    query_context = " ".join(
-        [
-            str(prompt),
+    # The owner controller prompt contains generic orchestration words such as
+    # "current", "evidence", "goal" and "action".  Using the whole prompt as
+    # a memory-retrieval query made unrelated rates/crypto memories look
+    # relevant.  Owner retrieval is anchored only to the actual objective,
+    # mission and bounded topic.  Ordinary cognition still uses its prompt.
+    if owner_mode:
+        query_parts = [
             str((owner_scope or {}).get("description") or ""),
             str((owner_scope or {}).get("topic") or ""),
+            *[
+                " ".join(
+                    (
+                        str(row.get("description") or ""),
+                        str(row.get("metric") or ""),
+                    )
+                )
+                for row in mission_state.get("active") or []
+            ],
+        ]
+    else:
+        query_parts = [
+            str(prompt),
             *[
                 str(row.get("description") or "")
                 for row in mission_state.get("active") or []
             ],
         ]
-    )
+    query_context = " ".join(part for part in query_parts if part.strip())
 
     neural_life = wake.get("neural_life") if isinstance(wake, Mapping) else {}
     if not isinstance(neural_life, Mapping):
@@ -267,6 +284,7 @@ def build_ferro_cognition_context(
     capabilities = sorted(set(str(item) for item in [*app_caps, *domain_caps, *manifest_caps] if str(item).strip()))
 
     intents = list(packet.current_intent)
+    owner_goal_ids: set[str] = set()
     if owner_mode:
         owner_goal_ids = (
             {str(owner_scope.get("goal_id") or "")}
@@ -295,7 +313,6 @@ def build_ferro_cognition_context(
 
     latest_plan = _compact_latest_plan(projection.get("latest_plan"))
     if owner_mode and isinstance(latest_plan, Mapping):
-        scoped_goal_id = str((owner_scope or {}).get("goal_id") or "")
         plan_goal = (
             latest_plan.get("goal")
             if isinstance(latest_plan.get("goal"), Mapping)
@@ -306,12 +323,28 @@ def build_ferro_cognition_context(
             or plan_goal.get("goal_id")
             or ""
         )
-        if scoped_goal_id and plan_goal_id != scoped_goal_id:
+        if owner_goal_ids and plan_goal_id not in owner_goal_ids:
             latest_plan = None
     strategy_topics = list(
         ((projection.get("strategy_learning") or {}).get("topics") or [])
     )[-16:]
     if owner_mode:
+        # Keep only the most recent settled/proposed owner experiments in the
+        # cognition snapshot.  Full experiment history remains durable in the
+        # mission ledger and does not need to consume every reasoning turn.
+        compact_experiments = []
+        for row in list(mission_state.get("recent_experiments") or [])[-2:]:
+            if not isinstance(row, Mapping):
+                continue
+            compact_experiments.append({
+                **dict(row),
+                "strategy": _clip(row.get("strategy"), 800),
+                "expected_effect": _clip(row.get("expected_effect"), 500),
+            })
+        mission_state = {
+            **mission_state,
+            "recent_experiments": compact_experiments,
+        }
         strategy_topics = [
             str(row)
             for row in _relevant_rows(
