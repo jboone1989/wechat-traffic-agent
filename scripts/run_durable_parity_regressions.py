@@ -14,6 +14,7 @@ TESTS = [
     "tests/test_livingruntime_chatgpt.py",
     "tests/test_wakeful_chatgpt_resume.py",
     "tests/test_wakeful_runtime.py",
+    "tests/test_wakeful_observe_world.py",
     "tests/test_organism_closure.py",
     "tests/test_storage_reclaim_backoff.py",
     "tests/test_storage_pressure_modes.py",

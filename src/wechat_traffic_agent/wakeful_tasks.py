@@ -944,7 +944,102 @@ class WakefulContentTaskRunner:
     def _observe(self, now: datetime) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "OBSERVE_WORLD", "status": "OK" if result is not None else "DEGRADED"})
-        if result is None or not result.generation_ready or self.draft_worker is None:
+        if result is None or not result.generation_ready:
+            return rows
+
+        # World observation must not depend on the optional Trading Agent
+        # Network producer. The content explorer already owns the bounded
+        # public sensing stack (RSS, OKX and any configured evidence sources).
+        explorer = getattr(getattr(self, "continuous_loop", None), "explorer", None)
+        observed_items: list[dict[str, Any]] = []
+        if explorer is not None:
+            try:
+                evidence_pool = self._run_async(
+                    explorer.collect(now=now, active=True)
+                )
+                observed_items = [
+                    row
+                    for row in (evidence_pool.get("items") or ())
+                    if isinstance(row, dict)
+                ]
+                failures = [
+                    row
+                    for row in (evidence_pool.get("failures") or ())
+                    if isinstance(row, dict)
+                ]
+                evidence_ids = [
+                    str(row.get("evidence_id") or "").strip()
+                    for row in observed_items
+                    if str(row.get("evidence_id") or "").strip()
+                ]
+                receipt_path = (
+                    Path(self.state_root)
+                    / "application"
+                    / "world_observation_receipt.json"
+                )
+                prior_ids: set[str] = set()
+                try:
+                    prior = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    prior_ids = {
+                        str(value)
+                        for value in (prior.get("seen_evidence_ids") or ())
+                        if str(value)
+                    }
+                except (OSError, ValueError, json.JSONDecodeError):
+                    prior_ids = set()
+                novel_ids = [
+                    evidence_id
+                    for evidence_id in evidence_ids
+                    if evidence_id not in prior_ids
+                ]
+                combined_ids = list(
+                    dict.fromkeys((*evidence_ids, *prior_ids))
+                )[:256]
+                receipt = {
+                    "schema_version": "ferro-world-observation.v1",
+                    "observed_at": now.isoformat(),
+                    "seen_evidence_ids": combined_ids,
+                    "current_evidence_count": len(evidence_ids),
+                    "novel_evidence_count": len(novel_ids),
+                }
+                receipt_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = receipt_path.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(
+                        receipt,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                tmp.replace(receipt_path)
+                rows["world_evidence"] = {
+                    "status": "OBSERVED" if observed_items else "NO_EVIDENCE",
+                    "item_count": len(observed_items),
+                    "novel_evidence_count": len(novel_ids),
+                    "failure_count": len(failures),
+                    "failures": failures[:8],
+                    "evidence_refs": novel_ids[:12],
+                }
+                if novel_ids:
+                    # Weak reward for genuinely new external evidence. This is
+                    # intentionally far below task/business outcome utility.
+                    rows["world_utility"] = round(
+                        min(0.24, 0.08 + 0.02 * min(len(novel_ids), 8)),
+                        6,
+                    )
+                    rows["world_utility_evidence"] = novel_ids[:12]
+                else:
+                    rows["world_utility"] = 0.0
+                    rows["world_utility_evidence"] = []
+            except Exception as exc:  # noqa: BLE001
+                rows["world_evidence"] = self._error(exc)
+
+        if self.draft_worker is None:
+            if not observed_items and rows.get("world_evidence", {}).get("status") == "ERROR":
+                rows["status"] = "DEGRADED"
             return rows
         try:
             draft = self._run_async(self.draft_worker.run_once(now=now))
@@ -966,6 +1061,9 @@ class WakefulContentTaskRunner:
             rows["draft_worker"] = self._error(exc, code=code)
             if blocked:
                 rows["draft_worker"]["status"] = "BLOCKED_BY_NETWORK_TRUST"
+            elif observed_items:
+                rows["draft_worker"]["status"] = "OPTIONAL_SOURCE_UNAVAILABLE"
+                rows["draft_worker"]["required_for_observation"] = False
             else:
                 rows["status"] = "DEGRADED"
         return rows
