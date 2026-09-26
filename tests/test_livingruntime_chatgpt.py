@@ -358,7 +358,7 @@ def test_durable_timeout_is_pending_and_request_identity_is_stable(tmp_path):
     cli.write_text(
         """from __future__ import annotations
 import json, sys
-if sys.argv[1] == "wait":
+if sys.argv[1] == "get":
     request_id = sys.argv[2]
     print(json.dumps({
       "status":"COMPLETED","request_id":request_id,"created_at":1,"finished_at":2,
@@ -428,9 +428,9 @@ def test_resume_next_durable_cognition_is_consumed_by_one_provider_call(tmp_path
     cli.write_text(
         """from __future__ import annotations
 import json, sys
-if sys.argv[1] == "wait":
+if sys.argv[1] == "get":
     request_id = sys.argv[2]
-    text = "wait:" + request_id
+    text = "get:" + request_id
 else:
     payload = json.load(sys.stdin)
     request_id = payload["request_id"]
@@ -453,6 +453,33 @@ print(json.dumps({
         first = asyncio.run(provider.complete("changed host prompt"))
         second = asyncio.run(provider.complete("next independent cognition"))
 
-    assert first == "wait:llmreq-original"
+    assert first == "get:llmreq-original"
     assert second.startswith("call:llmreq_")
     assert second != "call:llmreq-original"
+
+
+def test_signal_terminated_resume_remains_pending(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import os, signal, sys
+assert sys.argv[1] == "get"
+os.kill(os.getpid(), signal.SIGTERM)
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+    )
+
+    caught = None
+    try:
+        with resume_next_durable_cognition("llmreq-existing"):
+            asyncio.run(provider.complete("resume after service restart"))
+    except LivingRuntimeChatGPTPendingError as exc:
+        caught = exc
+
+    assert caught is not None
+    assert caught.request_id == "llmreq-existing"

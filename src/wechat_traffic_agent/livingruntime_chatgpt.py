@@ -341,10 +341,8 @@ class LivingRuntimeChatGPTProvider:
             [
                 sys.executable,
                 str(self.cli_path),
-                "wait",
+                "get",
                 request_id,
-                "--wait-timeout-seconds",
-                str(foreground_wait_seconds),
             ]
             if resume_existing
             else [
@@ -386,6 +384,16 @@ class LivingRuntimeChatGPTProvider:
                 detail = detail[-1000:]
             if (
                 self.durable_dispatch
+                and resume_existing
+                and proc.returncode < 0
+            ):
+                # The request is already durable. A service shutdown can
+                # terminate the short-lived status subprocess with SIGTERM;
+                # keep the cognition resumable instead of recording a false
+                # model/content failure.
+                raise LivingRuntimeChatGPTPendingError(request_id)
+            if (
+                self.durable_dispatch
                 and "waiting for cognition response exceeded timeout" in detail
             ):
                 raise LivingRuntimeChatGPTPendingError(request_id)
@@ -399,7 +407,21 @@ class LivingRuntimeChatGPTProvider:
             raise LivingRuntimeChatGPTProviderError(
                 "LivingRuntime cognition CLI returned invalid JSON"
             ) from exc
-        if not isinstance(result, dict) or result.get("status") != "COMPLETED":
+        if not isinstance(result, dict):
+            raise LivingRuntimeChatGPTProviderError(
+                "LivingRuntime cognition request did not complete"
+            )
+        result_status = str(result.get("status") or "").upper()
+        if resume_existing and result_status in {"PENDING", "DISPATCHED"}:
+            # Durable resume is a state check, not another blocking wait. The
+            # exact request remains authoritative and will be retried by the
+            # wakeful scheduler when ChatGPT has written its response.
+            raise LivingRuntimeChatGPTPendingError(request_id)
+        if result_status == "TIMED_OUT":
+            raise LivingRuntimeChatGPTProviderError(
+                "LivingRuntime cognition request timed out"
+            )
+        if result_status != "COMPLETED":
             raise LivingRuntimeChatGPTProviderError(
                 "LivingRuntime cognition request did not complete"
             )
