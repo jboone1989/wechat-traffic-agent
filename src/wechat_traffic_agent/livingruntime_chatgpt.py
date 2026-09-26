@@ -20,6 +20,10 @@ _DURABLE_REQUEST_ID: ContextVar[str] = ContextVar(
     "livingruntime_chatgpt_durable_request_id",
     default="",
 )
+_NEXT_DURABLE_REQUEST_STATE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "livingruntime_chatgpt_next_durable_request_state",
+    default=None,
+)
 
 
 @contextmanager
@@ -31,6 +35,20 @@ def durable_cognition_phase(phase_id: str, *, request_id: str | None = None):
     finally:
         _DURABLE_REQUEST_ID.reset(request_token)
         _DURABLE_PHASE_ID.reset(phase_token)
+
+
+@contextmanager
+def resume_next_durable_cognition(request_id: str):
+    """Resume one exact durable request on the next provider call only."""
+    request_id = str(request_id or "").strip()
+    if not request_id:
+        raise ValueError("request_id is required")
+    state = {"request_id": request_id, "consumed": False}
+    token = _NEXT_DURABLE_REQUEST_STATE.set(state)
+    try:
+        yield
+    finally:
+        _NEXT_DURABLE_REQUEST_STATE.reset(token)
 
 
 class LivingRuntimeChatGPTProviderError(RuntimeError):
@@ -229,10 +247,25 @@ class LivingRuntimeChatGPTProvider:
                 options["temperature"] = max(0.0, min(value, 2.0))
 
         task_class = str(kwargs.get("_routing_task_class") or "content_cognition").strip()
-        request_id = self._request_id(
-            prompt,
-            response_format=response_format,
-            task_class=task_class,
+        one_shot_state = _NEXT_DURABLE_REQUEST_STATE.get()
+        one_shot_resume_id = ""
+        if isinstance(one_shot_state, dict) and not bool(
+            one_shot_state.get("consumed")
+        ):
+            one_shot_resume_id = str(
+                one_shot_state.get("request_id") or ""
+            ).strip()
+            if one_shot_resume_id:
+                one_shot_state["consumed"] = True
+        durable_resume_id = _DURABLE_REQUEST_ID.get().strip()
+        explicit_resume_id = durable_resume_id or one_shot_resume_id
+        request_id = (
+            explicit_resume_id
+            or self._request_id(
+                prompt,
+                response_format=response_format,
+                task_class=task_class,
+            )
         )
         metadata: dict[str, Any] = {
             "source": "ferro",
@@ -303,7 +336,7 @@ class LivingRuntimeChatGPTProvider:
                 max(1, cli_timeout_seconds - 1),
             ),
         )
-        resume_existing = bool(_DURABLE_REQUEST_ID.get().strip())
+        resume_existing = bool(explicit_resume_id)
         command = (
             [
                 sys.executable,
@@ -442,6 +475,7 @@ class LivingRuntimeChatGPTProvider:
 
 __all__ = [
     "durable_cognition_phase",
+    "resume_next_durable_cognition",
     "LivingRuntimeChatGPTProvider",
     "LivingRuntimeChatGPTProviderError",
     "LivingRuntimeChatGPTPendingError",

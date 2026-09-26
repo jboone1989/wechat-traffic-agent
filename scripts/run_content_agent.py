@@ -722,7 +722,16 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                 task_result = {"task": task, "status": "NO_DEEP_COGNITION_JUSTIFIED"}
             else:
                 try:
-                    task_result = task_runner.run(task, now=now, focus_topic=args.focus_topic)
+                    task_result = task_runner.run(
+                        task,
+                        now=now,
+                        focus_topic=args.focus_topic,
+                        relevant_refs=(
+                            tuple(wake_reason.relevant_refs)
+                            if wake_reason is not None
+                            else ()
+                        ),
+                    )
                 except Exception as exc:
                     maintenance = getattr(task_runner, "self_maintenance", None)
                     if maintenance is not None:

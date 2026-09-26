@@ -148,54 +148,100 @@ class WakefulContentTaskRunner:
         tmp.replace(receipt_path)
         path.unlink(missing_ok=True)
 
-    def run(self, task: str, *, now: datetime, focus_topic: str | None = None) -> dict[str, Any]:
+    def run(
+        self,
+        task: str,
+        *,
+        now: datetime,
+        focus_topic: str | None = None,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        from .livingruntime_chatgpt import (
+            LivingRuntimeChatGPTPendingError,
+            resume_next_durable_cognition,
+        )
+
+        resume_request_id = next(
+            (
+                str(ref).split(":", 1)[1]
+                for ref in relevant_refs
+                if str(ref).startswith("cognition-request:")
+                and str(ref).split(":", 1)[1].strip()
+            ),
+            "",
+        )
+        resume_context = (
+            resume_next_durable_cognition(resume_request_id)
+            if resume_request_id
+            else nullcontext()
+        )
         try:
-            self._raise_if_stopping()
-            regulator = getattr(self, "resource_regulator", None)
-            if regulator is not None:
-                owner_authorized = (
-                    task == "CONTENT_COGNITION"
-                    and self._active_owner_goal_context() is not None
-                )
-                admission = regulator.claim(
-                    task,
-                    now,
-                    owner_authorized=owner_authorized,
-                )
-                if not admission["allowed"]:
-                    return {
-                        "task": task, "status": "RESOURCE_DEFERRED",
-                        "resource_admission": admission,
-                    }
-            if task == "NEURAL_INTEROCEPTION":
-                return self._neural_interoception(now)
-            if task == "NEURAL_PLAY":
-                return self._neural_play(now)
-            if task == "NEURAL_DREAM":
-                return self._neural_dream(now)
-            if task == "NEURAL_TRANSFER":
-                return self._neural_transfer(now)
-            if task == "NEURAL_DEVELOPMENT":
-                return self._neural_development(now)
-            if task == "NEURAL_DEVELOPMENT_TRANSFER":
-                return self._neural_development_transfer(now)
-            if task == "NEURAL_EVOLUTION_CONSOLIDATION":
-                return self._neural_evolution_consolidation(now)
-            if task == "RESOURCE_REVIEW":
-                return self._resource(now)
-            if task == "REFLECT":
-                return self._reflect(now)
-            if task == "CHECK_X":
-                return self._x(now)
-            if task == "CHECK_OUTCOMES":
-                return self._outcomes(now)
-            if task == "OBSERVE_WORLD":
-                return self._observe(now)
-            if task == "VERIFY_PREDICTION":
-                return self._verify_prediction(now)
-            if task == "CONTENT_COGNITION":
-                return self._content(now, focus_topic=focus_topic)
-            return {"status": "NOOP", "task": task}
+            with resume_context:
+                self._raise_if_stopping()
+                regulator = getattr(self, "resource_regulator", None)
+                if regulator is not None:
+                    owner_authorized = (
+                        task == "CONTENT_COGNITION"
+                        and self._active_owner_goal_context() is not None
+                    )
+                    admission = regulator.claim(
+                        task,
+                        now,
+                        owner_authorized=owner_authorized,
+                    )
+                    if not admission["allowed"]:
+                        return {
+                            "task": task,
+                            "status": "RESOURCE_DEFERRED",
+                            "resource_admission": admission,
+                        }
+                if task == "NEURAL_INTEROCEPTION":
+                    return self._neural_interoception(now)
+                if task == "NEURAL_PLAY":
+                    return self._neural_play(now)
+                if task == "NEURAL_DREAM":
+                    return self._neural_dream(now)
+                if task == "NEURAL_TRANSFER":
+                    return self._neural_transfer(now)
+                if task == "NEURAL_DEVELOPMENT":
+                    return self._neural_development(now)
+                if task == "NEURAL_DEVELOPMENT_TRANSFER":
+                    return self._neural_development_transfer(now)
+                if task == "NEURAL_EVOLUTION_CONSOLIDATION":
+                    return self._neural_evolution_consolidation(now)
+                if task == "RESOURCE_REVIEW":
+                    return self._resource(now)
+                if task == "REFLECT":
+                    return self._reflect(now)
+                if task == "CHECK_X":
+                    return self._x(now)
+                if task == "CHECK_OUTCOMES":
+                    return self._outcomes(now)
+                if task == "OBSERVE_WORLD":
+                    return self._observe(now)
+                if task == "VERIFY_PREDICTION":
+                    return self._verify_prediction(now)
+                if task == "CONTENT_COGNITION":
+                    return self._content(now, focus_topic=focus_topic)
+                return {"status": "NOOP", "task": task}
+        except LivingRuntimeChatGPTPendingError as exc:
+            result: dict[str, Any] = {
+                "task": task,
+                "status": "WAITING_FOR_CHATGPT",
+                "request_id": exc.request_id,
+                "resumable": True,
+            }
+            schedule_resume = getattr(self.wakeful, "schedule_chatgpt_resume", None)
+            if callable(schedule_resume):
+                try:
+                    result["chatgpt_resume"] = schedule_resume(
+                        now,
+                        request_id=exc.request_id,
+                        task=task,
+                    )
+                except Exception as schedule_exc:  # noqa: BLE001
+                    result["chatgpt_resume"] = self._error(schedule_exc)
+            return result
         except _ShutdownRequested:
             return {
                 "status": "SHUTDOWN_CHECKPOINT",

@@ -8,6 +8,7 @@ from wechat_traffic_agent.livingruntime_chatgpt import (
     LivingRuntimeChatGPTPendingError,
     LivingRuntimeChatGPTProvider,
     durable_cognition_phase,
+    resume_next_durable_cognition,
 )
 from wechat_traffic_agent.runtime_backend import load_optional_advisory_backend
 
@@ -420,3 +421,38 @@ def test_runtime_backend_preserves_existing_provider_when_remote_disabled(tmp_pa
     backend = load_optional_advisory_backend()
 
     assert backend.provider is fallback
+
+
+def test_resume_next_durable_cognition_is_consumed_by_one_provider_call(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+if sys.argv[1] == "wait":
+    request_id = sys.argv[2]
+    text = "wait:" + request_id
+else:
+    payload = json.load(sys.stdin)
+    request_id = payload["request_id"]
+    text = "call:" + request_id
+print(json.dumps({
+  "status":"COMPLETED","request_id":request_id,"created_at":1,"finished_at":2,
+  "response":{"text":text,"provider":"livingruntime-chatgpt","model":"test",
+  "session_id":"s","sha256":"x","completed_at":2}
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+    )
+
+    with resume_next_durable_cognition("llmreq-original"):
+        first = asyncio.run(provider.complete("changed host prompt"))
+        second = asyncio.run(provider.complete("next independent cognition"))
+
+    assert first == "wait:llmreq-original"
+    assert second.startswith("call:llmreq_")
+    assert second != "call:llmreq-original"

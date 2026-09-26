@@ -65,6 +65,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
     "CHECK_OUTCOMES",
+    "VERIFY_PREDICTION",
     "CONTENT_COGNITION",
     "REFLECT",
     "CHECK_X",
@@ -1395,16 +1396,20 @@ class ContentWakefulRuntime:
         now: datetime,
         *,
         request_id: str,
+        task: str = "CONTENT_COGNITION",
         delay_seconds: int = 60,
     ) -> dict:
-        """Re-enter a suspended content cycle without creating new cognition work."""
+        """Re-enter one suspended wakeful task without creating new cognition."""
         now = now.astimezone(timezone.utc)
         request_id = str(request_id or "").strip()
+        task = str(task or "").strip().upper()
         if not request_id:
             raise ValueError("request_id is required")
+        if task not in _EXTERNAL_WAKE_TASKS:
+            raise ValueError(f"unsupported ChatGPT resume task: {task}")
         delay = max(30, min(int(delay_seconds), 900))
         at = now + timedelta(seconds=delay)
-        wake_id = "content:CONTENT_COGNITION"
+        wake_id = f"content:{task}"
         existing = next(
             (
                 wake
@@ -1416,12 +1421,14 @@ class ContentWakefulRuntime:
         relevant_refs = (f"cognition-request:{request_id}",)
         if existing is not None:
             at = min(at, existing.at)
-            relevant_refs = tuple(dict.fromkeys((*existing.relevant_refs, *relevant_refs)))
+            relevant_refs = tuple(
+                dict.fromkeys((*existing.relevant_refs, *relevant_refs))
+            )
         wake = PlannedWake(
             wake_id=wake_id,
             at=at,
-            reason="resume durable content cognition after ChatGPT response",
-            task="CONTENT_COGNITION",
+            reason=f"resume durable {task.lower()} after ChatGPT response",
+            task=task,
             relevant_refs=relevant_refs,
             preemptible=True,
         )
@@ -1429,6 +1436,7 @@ class ContentWakefulRuntime:
         self.core.schedule(wake)
         return {
             "status": "SCHEDULED",
+            "task": task,
             "request_id": request_id,
             "retry_at": at.isoformat(),
             "retry_seconds": delay,
