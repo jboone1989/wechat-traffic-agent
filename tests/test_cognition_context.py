@@ -241,5 +241,37 @@ def test_owner_scope_filters_downstream_pipeline_prompts_not_only_episode_prompt
 
     assert [row["goal_id"] for row in context["current_intent"]] == ["goal-owner"]
     assert [row["mission_id"] for row in context["missions"]["active"]] == ["mission-x"]
+    assert context["mind"]["open_inquiries"] == []
+    assert context["mind"]["beliefs"] == []
+    assert context["mind"]["latest_plan"]["owner_goal_id"] == "goal-owner"
+    assert context["recent_experience"] == []
     assert context["neural_state"]["control_signals"] == []
     assert context["neural_state"]["feedback"] == []
+
+
+def test_owner_scope_drops_latest_plan_bound_to_another_goal():
+    class OtherPlanMind(_Mind):
+        def public_projection(self):
+            value = super().public_projection()
+            value["latest_plan"] = {
+                **value["latest_plan"],
+                "goal": {"goal_id": "goal-internal", "origin": "INQUIRY"},
+                "owner_goal_id": None,
+                "external_mission_id": None,
+            }
+            return value
+
+    app = _application()
+    with owner_cognition_scope({
+        "goal_id": "goal-owner",
+        "description": "Grow LivingRuntime Remote",
+        "topic": "livingruntime-remote-durable-execution",
+    }):
+        context = build_ferro_cognition_context(
+            application=app,
+            mind=OtherPlanMind(),
+            wakeful=_Wakeful(),
+            prompt="classify durable execution evidence",
+        )
+
+    assert context["mind"]["latest_plan"] is None

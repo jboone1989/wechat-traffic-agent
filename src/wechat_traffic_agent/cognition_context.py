@@ -55,7 +55,14 @@ def _terms(value: Any) -> set[str]:
     }
 
 
-def _relevant_rows(rows: list[Any], query: str, *, limit: int) -> list[Any]:
+def _relevant_rows(
+    rows: list[Any],
+    query: str,
+    *,
+    limit: int,
+    fallback_to_recent: bool = True,
+    min_score: int = 1,
+) -> list[Any]:
     if not rows:
         return []
     wanted = _terms(query)
@@ -68,8 +75,9 @@ def _relevant_rows(rows: list[Any], query: str, *, limit: int) -> list[Any]:
         )
         scored.append((len(wanted & _terms(haystack)), index, row))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    selected = [row for score, _index, row in scored if score > 0][:limit]
-    return selected or list(rows[-limit:])
+    threshold = max(1, int(min_score))
+    selected = [row for score, _index, row in scored if score >= threshold][:limit]
+    return selected or (list(rows[-limit:]) if fallback_to_recent else [])
 
 
 def _iso(value: Any) -> str | None:
@@ -285,21 +293,73 @@ def build_ferro_cognition_context(
         # already present in missions.active with metric/trajectory/constraints;
         # repeating it here makes one objective look like competing intents.
 
+    latest_plan = _compact_latest_plan(projection.get("latest_plan"))
+    if owner_mode and isinstance(latest_plan, Mapping):
+        scoped_goal_id = str((owner_scope or {}).get("goal_id") or "")
+        plan_goal = (
+            latest_plan.get("goal")
+            if isinstance(latest_plan.get("goal"), Mapping)
+            else {}
+        )
+        plan_goal_id = str(
+            latest_plan.get("owner_goal_id")
+            or plan_goal.get("goal_id")
+            or ""
+        )
+        if scoped_goal_id and plan_goal_id != scoped_goal_id:
+            latest_plan = None
+    strategy_topics = list(
+        ((projection.get("strategy_learning") or {}).get("topics") or [])
+    )[-16:]
+    if owner_mode:
+        strategy_topics = [
+            str(row)
+            for row in _relevant_rows(
+                strategy_topics,
+                query_context,
+                limit=6,
+                fallback_to_recent=False,
+                min_score=2,
+            )
+        ]
+
     mind_section = {
         "mind_schema": projection.get("mind_schema"),
         "mind_tick": projection.get("mind_tick"),
-        "interests": _relevant_rows(list(projection.get("interests") or []), query_context, limit=3 if owner_mode else 6),
-        "open_inquiries": _relevant_rows(list(projection.get("open_inquiries") or []), query_context, limit=3 if owner_mode else 6),
-        "beliefs": _relevant_rows(list(projection.get("beliefs") or []), query_context, limit=3 if owner_mode else 6),
-        "recent_belief_changes": _relevant_rows(list(projection.get("recent_belief_changes") or []), query_context, limit=3 if owner_mode else 6),
-        "latest_plan": _compact_latest_plan(projection.get("latest_plan")),
+        "interests": _relevant_rows(
+            list(projection.get("interests") or []),
+            query_context,
+            limit=3 if owner_mode else 6,
+            fallback_to_recent=not owner_mode,
+            min_score=2 if owner_mode else 1,
+        ),
+        "open_inquiries": _relevant_rows(
+            list(projection.get("open_inquiries") or []),
+            query_context,
+            limit=3 if owner_mode else 6,
+            fallback_to_recent=not owner_mode,
+            min_score=2 if owner_mode else 1,
+        ),
+        "beliefs": _relevant_rows(
+            list(projection.get("beliefs") or []),
+            query_context,
+            limit=3 if owner_mode else 6,
+            fallback_to_recent=not owner_mode,
+            min_score=2 if owner_mode else 1,
+        ),
+        "recent_belief_changes": _relevant_rows(
+            list(projection.get("recent_belief_changes") or []),
+            query_context,
+            limit=3 if owner_mode else 6,
+            fallback_to_recent=not owner_mode,
+            min_score=2 if owner_mode else 1,
+        ),
+        "latest_plan": latest_plan,
         "strategy_learning": {
             "outcome_count": int(
                 ((projection.get("strategy_learning") or {}).get("outcome_count") or 0)
             ),
-            "topics": list(
-                ((projection.get("strategy_learning") or {}).get("topics") or [])
-            )[-16:],
+            "topics": strategy_topics,
         },
         "learning_boundary": _clip(projection.get("learning_boundary"), 1200),
     }
@@ -317,7 +377,13 @@ def build_ferro_cognition_context(
         "current_intent": intents[:4] if owner_mode else intents[:8],
         "missions": mission_state,
         "mind": mind_section,
-        "recent_experience": _relevant_rows(_recent_life_experience(mind), query_context, limit=4 if owner_mode else 8),
+        "recent_experience": _relevant_rows(
+            _recent_life_experience(mind),
+            query_context,
+            limit=4 if owner_mode else 8,
+            fallback_to_recent=not owner_mode,
+            min_score=2 if owner_mode else 1,
+        ),
         "resources": dict(packet.current_resources),
         "capabilities": {
             "available": capabilities,
