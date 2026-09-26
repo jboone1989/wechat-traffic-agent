@@ -35,4 +35,33 @@ def test_storage_reclaim_no_effect_enters_retry_backoff(tmp_path, monkeypatch):
             "created_at": NOW.isoformat(),
             "occurrence_count": 1,
         }]),
-        encodi
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        manager.storage_lifecycle,
+        "reclaim",
+        lambda **kwargs: {
+            "status": "OK",
+            "deleted_count": 0,
+            "deleted_tmp_files": 0,
+            "reclaimed_bytes_estimated": 0,
+        },
+    )
+
+    result = manager.execute_approved(now=NOW)
+
+    assert result["results"][0]["status"] == "NO_EFFECT"
+    need = manager.needs()[0]
+    assert need["status"] == "AWAITING_RESOURCE"
+    assert need["retry_count"] == 1
+    assert need["last_action_at"] == NOW.isoformat()
+    assert need["next_retry_at"] == (NOW + timedelta(seconds=300)).isoformat()
+
+    early = _reconcile(manager, NOW + timedelta(minutes=1))
+    assert early[0]["status"] == "AWAITING_RESOURCE"
+
+    due = _reconcile(manager, NOW + timedelta(seconds=301))
+    assert due[0]["status"] == "APPROVED"
+    assert due[0]["retry_rearmed_at"] == (
+        NOW + timedelta(seconds=301)
+    ).isoformat()
