@@ -137,6 +137,53 @@ def test_pending_content_injects_active_owner_goal_into_resume_provenance(
     }]
 
 
+def test_stale_owner_cognition_resume_is_ignored_before_content_pipeline(
+    monkeypatch, tmp_path
+):
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+    )
+    runner.owner_agent_episode = SimpleNamespace(
+        classify_request=lambda goal_id, request_id: (
+            "STALE"
+            if (goal_id, request_id)
+            == ("goal-owner", "llmreq-owner-stale")
+            else "NOT_OWNER"
+        )
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_content",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("stale owner response must not enter content pipeline")
+        ),
+    )
+
+    result = runner.run(
+        "CONTENT_COGNITION",
+        now=datetime.now(timezone.utc),
+        relevant_refs=("cognition-request:llmreq-owner-stale", "goal-owner"),
+    )
+
+    assert result == {
+        "task": "CONTENT_COGNITION",
+        "status": "STALE_OWNER_COGNITION_IGNORED",
+        "request_id": "llmreq-owner-stale",
+        "owner_goal_id": "goal-owner",
+        "resumable": False,
+    }
+
+
 def test_content_provider_timeout_is_task_failure_not_process_failure(
     monkeypatch, tmp_path
 ):

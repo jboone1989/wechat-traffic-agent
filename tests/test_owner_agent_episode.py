@@ -200,6 +200,10 @@ def test_exact_owner_resume_clears_pending_single_flight(tmp_path):
             now=NOW,
         ))
 
+    assert episode.classify_request(
+        "goal-owner", "llmreq-owner-resume"
+    ) == "PENDING"
+
     resumed = asyncio.run(episode.run(
         runtime=Runtime([{
             "action": "WAIT",
@@ -219,6 +223,10 @@ def test_exact_owner_resume_clears_pending_single_flight(tmp_path):
     persisted = episode._read()
     assert persisted["pending_request_id"] is None
     assert persisted["pending_step_index"] is None
+    assert "llmreq-owner-resume" in persisted["cognition_request_ids"]
+    assert episode.classify_request(
+        "goal-owner", "llmreq-owner-resume"
+    ) == "STALE"
 
 
 def test_clear_pending_request_only_releases_matching_request(tmp_path):
@@ -250,3 +258,30 @@ def test_clear_pending_request_only_releases_matching_request(tmp_path):
     persisted = episode._read()
     assert persisted["pending_request_id"] is None
     assert persisted["last_cognition_error"]["request_id"] == "llmreq-owner-timeout"
+    assert episode.classify_request(
+        "goal-owner", "llmreq-owner-timeout"
+    ) == "STALE"
+
+
+def test_pending_request_from_previous_owner_goal_is_stale(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-old-owner")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs while cognition is pending")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={"goal_id": "goal-old", "description": "Old owner task"},
+            mission_context={"mission_id": "mission-old"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    assert episode.classify_request(
+        "goal-new", "llmreq-old-owner"
+    ) == "STALE"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -10,7 +11,10 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .content_service import _extract_json
-from .livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
+from .livingruntime_chatgpt import (
+    LivingRuntimeChatGPTPendingError,
+    resume_next_durable_cognition,
+)
 
 
 ToolExecutor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -134,7 +138,20 @@ class OwnerAgentEpisode:
             "steps": [],
             "decision": None,
             "outcome": None,
+            "cognition_request_ids": [],
+            "stale_request_ids": list(dict.fromkeys([
+                *list(current.get("stale_request_ids") or ()),
+                *list(current.get("cognition_request_ids") or ()),
+                str(current.get("pending_request_id") or ""),
+            ]))[-24:],
+            "pending_request_id": None,
+            "pending_step_index": None,
         }
+        state["stale_request_ids"] = [
+            request_id
+            for request_id in state["stale_request_ids"]
+            if str(request_id).strip()
+        ]
         self._write(state)
         return state
 
@@ -145,6 +162,38 @@ class OwnerAgentEpisode:
             and str(state.get("goal_id") or "") == str(goal_id or "")
             and str(state.get("status") or "") == "RUNNING"
         )
+
+    def classify_request(self, goal_id: str, request_id: str) -> str:
+        """Classify one durable cognition request against the current episode.
+
+        PENDING may advance the current owner step. STALE is an already-used
+        owner request and must never be injected into a later owner/content
+        cognition phase. NOT_OWNER belongs to another durable workflow.
+        """
+        request_id = str(request_id or "").strip()
+        state = self._read()
+        if (
+            not request_id
+            or state.get("schema_version") != self.SCHEMA
+        ):
+            return "NOT_OWNER"
+        same_goal = str(state.get("goal_id") or "") == str(goal_id or "")
+        pending = str(state.get("pending_request_id") or "").strip()
+        if pending and request_id == pending:
+            if same_goal and str(state.get("status") or "") == "RUNNING":
+                return "PENDING"
+            return "STALE"
+        known = {
+            str(value)
+            for value in (
+                *list(state.get("cognition_request_ids") or ()),
+                *list(state.get("stale_request_ids") or ()),
+            )
+            if str(value).strip()
+        }
+        if request_id in known:
+            return "STALE"
+        return "NOT_OWNER"
 
     @staticmethod
     def _tool_contracts() -> list[dict[str, Any]]:
@@ -258,21 +307,37 @@ class OwnerAgentEpisode:
 
         while len(list(state.get("steps") or [])) < self.MAX_STEPS:
             try:
-                decision = await self._decide(
-                    runtime=runtime,
-                    owner_goal=owner_goal,
-                    mission_context=mission_context,
-                    state=state,
+                decision_resume = (
+                    resume_next_durable_cognition(resume_request_id)
+                    if resume_request_id
+                    else nullcontext()
                 )
+                with decision_resume:
+                    decision = await self._decide(
+                        runtime=runtime,
+                        owner_goal=owner_goal,
+                        mission_context=mission_context,
+                        state=state,
+                    )
             except LivingRuntimeChatGPTPendingError as exc:
+                cognition_request_ids = list(
+                    dict.fromkeys([
+                        *list(state.get("cognition_request_ids") or ()),
+                        exc.request_id,
+                    ])
+                )[-24:]
                 state = {
                     **state,
+                    "cognition_request_ids": cognition_request_ids,
                     "pending_request_id": exc.request_id,
                     "pending_step_index": len(list(state.get("steps") or [])),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 self._write(state)
                 raise
+            # The resume pointer belongs to exactly this owner decision attempt.
+            # Later episode steps must create or resume their own request.
+            resume_request_id = ""
             payload = decision.model_dump(mode="json")
             if decision.action in self.TERMINAL:
                 state = {

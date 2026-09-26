@@ -176,9 +176,35 @@ class WakefulContentTaskRunner:
         # refs are historical checkpoints; the newest request is the only
         # unresolved continuation pointer.
         resume_request_id = resume_request_ids[-1] if resume_request_ids else ""
+        if task == "CONTENT_COGNITION" and resume_request_id:
+            owner_goal = self._active_owner_goal_context()
+            episode = getattr(self, "owner_agent_episode", None)
+            classify = getattr(episode, "classify_request", None)
+            owner_goal_id = (
+                str(owner_goal.get("goal_id") or "").strip()
+                if isinstance(owner_goal, dict)
+                else ""
+            )
+            if owner_goal_id and callable(classify):
+                request_class = str(
+                    classify(owner_goal_id, resume_request_id) or ""
+                )
+                if request_class == "STALE":
+                    return {
+                        "task": task,
+                        "status": "STALE_OWNER_COGNITION_IGNORED",
+                        "request_id": resume_request_id,
+                        "owner_goal_id": owner_goal_id,
+                        "resumable": False,
+                    }
+        # CONTENT_COGNITION contains multiple semantic LLM phases.  Never bind
+        # its wake-level request id to "the next provider call": a duplicate
+        # owner-episode wake can otherwise leak a completed OwnerAgent response
+        # into the following mission/content phase.  OwnerAgentEpisode and
+        # ReceiptRuntime each bind their own exact durable request below.
         resume_context = (
             resume_next_durable_cognition(resume_request_id)
-            if resume_request_id
+            if resume_request_id and task != "CONTENT_COGNITION"
             else nullcontext()
         )
         try:
