@@ -184,6 +184,57 @@ def test_stale_owner_cognition_resume_is_ignored_before_content_pipeline(
     }
 
 
+def test_content_cognition_never_uses_task_wide_next_llm_resume(
+    monkeypatch, tmp_path
+):
+    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_module
+
+    @contextmanager
+    def forbidden_resume(_request_id):
+        raise AssertionError(
+            "CONTENT_COGNITION must route durable requests by semantic owner"
+        )
+        yield
+
+    monkeypatch.setattr(
+        chatgpt_module,
+        "resume_next_durable_cognition",
+        forbidden_resume,
+    )
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+    )
+    runner.owner_agent_episode = SimpleNamespace(
+        classify_request=lambda _goal_id, _request_id: "NOT_OWNER"
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_content",
+        lambda *args, **kwargs: {
+            "task": "CONTENT_COGNITION",
+            "status": "OK",
+        },
+    )
+
+    result = runner.run(
+        "CONTENT_COGNITION",
+        now=datetime.now(timezone.utc),
+        relevant_refs=("cognition-request:llmreq-content-phase", "goal-owner"),
+    )
+
+    assert result["status"] == "OK"
+
+
 def test_content_provider_timeout_is_task_failure_not_process_failure(
     monkeypatch, tmp_path
 ):
