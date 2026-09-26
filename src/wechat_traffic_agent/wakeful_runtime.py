@@ -271,12 +271,24 @@ class ContentWakefulRuntime:
         """Merge external wake intents into the live core without postponing work."""
         if not self._wake_request_root.exists():
             return 0
+        paths = list(self._wake_request_root.glob("*.json"))
+        # Cognition continuations for the same wake id are last-writer-wins.
+        # Filename order is a hash/name implementation detail and must not
+        # decide which durable request is authoritative.  Process spool files
+        # in write order so the newest cognition pointer is merged last, while
+        # the existing min(at) rule still preserves the earliest due time.
+        def spool_order(path: Path) -> tuple[int, str]:
+            try:
+                return (path.stat().st_mtime_ns, path.name)
+            except OSError:
+                return (0, path.name)
+
         current = {
             wake.wake_id: wake
             for wake in self.core.snapshot().pending_plans
         }
         merged = 0
-        for path in sorted(self._wake_request_root.glob("*.json")):
+        for path in sorted(paths, key=spool_order):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 task = str(payload.get("task") or "")

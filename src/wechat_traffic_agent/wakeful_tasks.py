@@ -278,6 +278,16 @@ class WakefulContentTaskRunner:
                 "message": str(exc)[:500],
             }
             if task == "CONTENT_COGNITION":
+                episode = getattr(self, "owner_agent_episode", None)
+                clear_pending = getattr(episode, "clear_pending_request", None)
+                if resume_request_id and callable(clear_pending):
+                    result["owner_episode_pending_cleared"] = bool(
+                        clear_pending(
+                            resume_request_id,
+                            error_type=type(exc).__name__,
+                            now=now,
+                        )
+                    )
                 schedule_recovery = getattr(
                     self.wakeful,
                     "schedule_provider_recovery",
@@ -1926,6 +1936,7 @@ class WakefulContentTaskRunner:
         *,
         owner_goal: dict[str, Any],
         now: datetime,
+        resume_request_id: str | None = None,
     ) -> dict[str, Any]:
         episode = getattr(self, "owner_agent_episode", None)
         runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
@@ -2020,6 +2031,7 @@ class WakefulContentTaskRunner:
                     mission_context=mission_context,
                     tool_executor=execute_tool,
                     now=now,
+                    resume_request_id=resume_request_id,
                 )
             )
 
@@ -2070,6 +2082,15 @@ class WakefulContentTaskRunner:
             str(ref).startswith("cognition-request:")
             for ref in relevant_refs
         )
+        owner_resume_request_id = next(
+            (
+                str(ref).split(":", 1)[1]
+                for ref in reversed(relevant_refs)
+                if str(ref).startswith("cognition-request:")
+                and str(ref).split(":", 1)[1].strip()
+            ),
+            None,
+        )
         owner_episode_running = bool(
             owner_goal is not None
             and getattr(self, "owner_agent_episode", None) is not None
@@ -2082,7 +2103,11 @@ class WakefulContentTaskRunner:
             and focus_topic is None
             and (not has_durable_resume or owner_episode_running)
         ):
-            control = self._owner_agent_control(owner_goal=owner_goal, now=now)
+            control = self._owner_agent_control(
+                owner_goal=owner_goal,
+                now=now,
+                resume_request_id=owner_resume_request_id,
+            )
             rows["owner_agent_episode"] = control
             if str(control.get("status") or "") == "DECIDED":
                 decision = (

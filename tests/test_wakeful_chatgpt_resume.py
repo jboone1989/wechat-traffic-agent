@@ -594,3 +594,48 @@ def test_legacy_content_resume_is_consumed_before_new_owner_episode(
     assert result["content_chatgpt_resume"]["request_id"] == "llmreq-legacy"
     assert "owner_agent_episode" not in result
     assert result["status"] == "WAITING_FOR_CHATGPT"
+
+
+def test_provider_timeout_releases_matching_owner_single_flight(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    recoveries = []
+    cleared = []
+
+    def schedule_provider_recovery(now, *, default_seconds=300):
+        recoveries.append((now, default_seconds))
+        return {"status": "SCHEDULED", "retry_seconds": default_seconds}
+
+    wakeful.schedule_provider_recovery = schedule_provider_recovery
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+    )
+    runner.owner_agent_episode = SimpleNamespace(
+        clear_pending_request=lambda request_id, **kwargs: (
+            cleared.append((request_id, kwargs.get("error_type"))) or True
+        )
+    )
+
+    def unavailable_content(now, *, focus_topic=None, relevant_refs=()):
+        raise LivingRuntimeChatGPTProviderError(
+            "LivingRuntime cognition request timed out"
+        )
+
+    monkeypatch.setattr(runner, "_content", unavailable_content)
+    now = datetime.now(timezone.utc)
+
+    result = runner.run(
+        "CONTENT_COGNITION",
+        now=now,
+        relevant_refs=("cognition-request:llmreq-owner-timeout",),
+    )
+
+    assert result["status"] == "CHATGPT_UNAVAILABLE"
+    assert result["owner_episode_pending_cleared"] is True
+    assert result["provider_recovery"]["status"] == "SCHEDULED"
+    assert cleared == [
+        ("llmreq-owner-timeout", "LivingRuntimeChatGPTProviderError")
+    ]
+    assert recoveries == [(now, 300)]

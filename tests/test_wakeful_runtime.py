@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import threading
 import time
 
@@ -874,6 +875,46 @@ def test_external_chatgpt_resume_replaces_stale_cognition_pointer(tmp_path):
     assert wake.at == first_at
     assert wake.relevant_refs == (
         "prediction:test",
+        "cognition-request:llmreq_new",
+    )
+
+
+def test_external_wake_spool_uses_write_order_not_filename_for_latest_cognition(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    root = tmp_path / "application" / "wake_requests"
+    root.mkdir(parents=True, exist_ok=True)
+
+    def write(path, *, request_id, at):
+        path.write_text(json.dumps({
+            "schema_version": "content-wake-request.v1",
+            "wake_id": "content:CONTENT_COGNITION",
+            "at": at.isoformat(),
+            "reason": "resume cognition",
+            "task": "CONTENT_COGNITION",
+            "relevant_refs": [
+                "goal-owner",
+                f"cognition-request:{request_id}",
+            ],
+            "cancel_conditions": [],
+            "preemptible": True,
+        }), encoding="utf-8")
+
+    # Deliberately make the newer request sort *before* the older one by name.
+    old_path = root / "z-old.json"
+    new_path = root / "a-new.json"
+    write(old_path, request_id="llmreq_old", at=NOW + timedelta(seconds=30))
+    write(new_path, request_id="llmreq_new", at=NOW + timedelta(seconds=60))
+    os.utime(old_path, ns=(1_000_000_000, 1_000_000_000))
+    os.utime(new_path, ns=(2_000_000_000, 2_000_000_000))
+
+    assert runtime._drain_external_wake_requests() == 2
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert wake.at == NOW + timedelta(seconds=30)
+    assert wake.relevant_refs == (
+        "goal-owner",
         "cognition-request:llmreq_new",
     )
 

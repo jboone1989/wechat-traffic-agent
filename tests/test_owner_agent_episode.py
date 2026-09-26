@@ -137,3 +137,116 @@ def test_pending_owner_cognition_leaves_running_episode_for_durable_resume(tmp_p
 
     assert episode.running_for("goal-owner") is True
     assert episode.running_for("other-goal") is False
+    persisted = episode._read()
+    assert persisted["pending_request_id"] == "llmreq-owner-episode"
+    assert persisted["pending_step_index"] == 0
+
+
+def test_pending_owner_step_is_single_flight_across_duplicate_wakes(tmp_path):
+    class PendingRuntime:
+        def __init__(self):
+            self.calls = 0
+
+        async def cognitive_probe(self, prompt, max_tokens):
+            self.calls += 1
+            raise LivingRuntimeChatGPTPendingError("llmreq-single-flight")
+
+    episode = OwnerAgentEpisode(tmp_path)
+    first_runtime = PendingRuntime()
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs while cognition is pending")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=first_runtime,
+            owner_goal={"goal_id": "goal-owner", "description": "Grow X audience"},
+            mission_context={"mission_id": "mission-x"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+    assert first_runtime.calls == 1
+
+    duplicate_runtime = Runtime([])
+    with pytest.raises(LivingRuntimeChatGPTPendingError) as caught:
+        asyncio.run(episode.run(
+            runtime=duplicate_runtime,
+            owner_goal={"goal_id": "goal-owner", "description": "Grow X audience"},
+            mission_context={"mission_id": "mission-x"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    assert caught.value.request_id == "llmreq-single-flight"
+    assert duplicate_runtime.prompts == []
+
+
+def test_exact_owner_resume_clears_pending_single_flight(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-owner-resume")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("WAIT is terminal and must not execute a tool")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={"goal_id": "goal-owner", "description": "Grow X audience"},
+            mission_context={"mission_id": "mission-x"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    resumed = asyncio.run(episode.run(
+        runtime=Runtime([{
+            "action": "WAIT",
+            "query": None,
+            "topic": None,
+            "wait_seconds": 300,
+            "rationale": "Fresh evidence is not available yet, so retry after the bounded wait.",
+        }]),
+        owner_goal={"goal_id": "goal-owner", "description": "Grow X audience"},
+        mission_context={"mission_id": "mission-x"},
+        tool_executor=execute,
+        now=NOW,
+        resume_request_id="llmreq-owner-resume",
+    ))
+
+    assert resumed["status"] == "DECIDED"
+    persisted = episode._read()
+    assert persisted["pending_request_id"] is None
+    assert persisted["pending_step_index"] is None
+
+
+def test_clear_pending_request_only_releases_matching_request(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-owner-timeout")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs while cognition is pending")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={"goal_id": "goal-owner", "description": "Grow X audience"},
+            mission_context={"mission_id": "mission-x"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    assert episode.clear_pending_request("llmreq-other") is False
+    assert episode._read()["pending_request_id"] == "llmreq-owner-timeout"
+    assert episode.clear_pending_request(
+        "llmreq-owner-timeout",
+        error_type="LivingRuntimeChatGPTProviderError",
+        now=NOW,
+    ) is True
+    persisted = episode._read()
+    assert persisted["pending_request_id"] is None
+    assert persisted["last_cognition_error"]["request_id"] == "llmreq-owner-timeout"

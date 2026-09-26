@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .content_service import _extract_json
+from .livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
 
 
 ToolExecutor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -233,6 +234,7 @@ class OwnerAgentEpisode:
         mission_context: Mapping[str, Any] | None,
         tool_executor: ToolExecutor,
         now: datetime,
+        resume_request_id: str | None = None,
     ) -> dict[str, Any]:
         now = now.astimezone(timezone.utc)
         state = self._state_for(owner_goal, now)
@@ -246,19 +248,39 @@ class OwnerAgentEpisode:
                 "resumed": True,
             }
 
+        pending_request_id = str(state.get("pending_request_id") or "").strip()
+        resume_request_id = str(resume_request_id or "").strip()
+        if pending_request_id and pending_request_id != resume_request_id:
+            # One episode step owns at most one durable cognition request.
+            # Other wakes must converge on that request instead of creating
+            # duplicate model calls against the same state snapshot.
+            raise LivingRuntimeChatGPTPendingError(pending_request_id)
+
         while len(list(state.get("steps") or [])) < self.MAX_STEPS:
-            decision = await self._decide(
-                runtime=runtime,
-                owner_goal=owner_goal,
-                mission_context=mission_context,
-                state=state,
-            )
+            try:
+                decision = await self._decide(
+                    runtime=runtime,
+                    owner_goal=owner_goal,
+                    mission_context=mission_context,
+                    state=state,
+                )
+            except LivingRuntimeChatGPTPendingError as exc:
+                state = {
+                    **state,
+                    "pending_request_id": exc.request_id,
+                    "pending_step_index": len(list(state.get("steps") or [])),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self._write(state)
+                raise
             payload = decision.model_dump(mode="json")
             if decision.action in self.TERMINAL:
                 state = {
                     **state,
                     "status": "DECIDED",
                     "decision": payload,
+                    "pending_request_id": None,
+                    "pending_step_index": None,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 self._write(state)
@@ -282,6 +304,8 @@ class OwnerAgentEpisode:
                 **state,
                 "status": "RUNNING",
                 "steps": [*list(state.get("steps") or []), step],
+                "pending_request_id": None,
+                "pending_step_index": None,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             self._write(state)
@@ -309,6 +333,37 @@ class OwnerAgentEpisode:
             "resumed": False,
         }
 
+    def clear_pending_request(
+        self,
+        request_id: str,
+        *,
+        error_type: str | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """Release one failed durable request without disturbing episode state."""
+        request_id = str(request_id or "").strip()
+        state = self._read()
+        if (
+            not request_id
+            or state.get("schema_version") != self.SCHEMA
+            or str(state.get("pending_request_id") or "") != request_id
+        ):
+            return False
+        stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        state = {
+            **state,
+            "pending_request_id": None,
+            "pending_step_index": None,
+            "last_cognition_error": {
+                "request_id": request_id,
+                "error_type": str(error_type or "PROVIDER_ERROR"),
+                "at": stamp.isoformat(),
+            },
+            "updated_at": stamp.isoformat(),
+        }
+        self._write(state)
+        return True
+
     def complete(self, *, outcome: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         state = self._read()
         if state.get("schema_version") != self.SCHEMA:
@@ -317,6 +372,8 @@ class OwnerAgentEpisode:
             **state,
             "status": "COMPLETED",
             "outcome": self._compact(dict(outcome)),
+            "pending_request_id": None,
+            "pending_step_index": None,
             "updated_at": now.astimezone(timezone.utc).isoformat(),
             "completed_at": now.astimezone(timezone.utc).isoformat(),
         }
