@@ -59,6 +59,15 @@ _ONE_SHOT_TASKS = (
     "NEURAL_EVOLUTION_CONSOLIDATION",
 )
 
+_DOMAIN_EXPERIENCE_TASKS = frozenset({
+    "OBSERVE_WORLD",
+    "RESOURCE_REVIEW",
+    "CHECK_OUTCOMES",
+    "VERIFY_PREDICTION",
+    "CONTENT_COGNITION",
+    "CHECK_X",
+})
+
 _TASK_RESULT_LOG_MAX_BYTES = 16 * 1024
 _TASK_RESULT_LOG_SUMMARY_FIELDS = (
     "status",
@@ -797,6 +806,37 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             )
             if autonomous_goal is not None:
                 print(json.dumps({"autonomous_goal_outcome": autonomous_goal}, ensure_ascii=False, sort_keys=True))
+            if task in _DOMAIN_EXPERIENCE_TASKS:
+                domain_goal_ref = next(
+                    (
+                        ref
+                        for ref in wake_refs
+                        if ref.startswith("autonomous-goal:")
+                        or ref.startswith("goal_")
+                    ),
+                    None,
+                )
+                try:
+                    domain_experience = app.observe_domain_task_result(
+                        task=task,
+                        result=task_result,
+                        observed_at=now,
+                        evidence_refs=wake_refs,
+                        goal_id=domain_goal_ref,
+                    )
+                    print(json.dumps(
+                        {"domain_runtime_experience": domain_experience},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ))
+                except Exception as exc:
+                    print(json.dumps({
+                        "domain_runtime_experience": {
+                            "status": "DEGRADED",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc)[:300],
+                        }
+                    }, ensure_ascii=False, sort_keys=True), file=sys.stderr)
             if stopping or status == "SHUTDOWN_CHECKPOINT":
                 shutdown_task_result = _shutdown_task_summary(task, task_result)
                 emit_public_activity(

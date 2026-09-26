@@ -22,6 +22,7 @@ TESTS = [
     "tests/test_prospective_predictions.py",
     "tests/test_x_growth_mission.py",
     "tests/test_content_explorer_loop.py",
+    "tests/test_content_runtime_app.py",
     "tests/test_owner_mission_output_fallback.py",
     "tests/test_owner_cognition.py",
     "tests/test_owner_prompt_budget.py",

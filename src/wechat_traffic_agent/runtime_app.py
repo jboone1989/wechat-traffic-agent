@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -117,6 +118,76 @@ class ContentApplication:
         self.capability_manager = None
         if manager is not None:
             manager.close()
+
+    def observe_domain_task_result(
+        self,
+        *,
+        task: str,
+        result: Mapping[str, Any],
+        observed_at: datetime,
+        evidence_refs: tuple[str, ...] = (),
+        goal_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Feed a settled host task into AgentRuntime without re-executing it."""
+        status = str(result.get("status") or "UNKNOWN").upper()
+        if status == "WAITING_FOR_CHATGPT":
+            return {"status": "DEFERRED", "reason": "cognition_not_settled"}
+        observer = getattr(self.domain_runtime, "observe_external_experience", None)
+        if not callable(observer):
+            return {"status": "UNSUPPORTED"}
+
+        def utility_of(value: Any, depth: int = 0) -> float | None:
+            if depth > 4 or not isinstance(value, Mapping):
+                return None
+            direct = value.get("world_utility")
+            if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+                return max(-1.0, min(1.0, float(direct)))
+            for nested in value.values():
+                found = utility_of(nested, depth + 1)
+                if found is not None:
+                    return found
+            return None
+
+        utility = utility_of(result)
+        canonical = json.dumps(
+            dict(result),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        )
+        result_ref = (
+            "task-result:"
+            + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+        )
+        refs = tuple(
+            dict.fromkeys(
+                (
+                    *tuple(str(ref) for ref in evidence_refs if str(ref)),
+                    result_ref,
+                )
+            )
+        )
+        success = (
+            status not in {"ERROR", "DEGRADED", "FAILED"}
+            and not (utility is not None and utility < -0.05)
+        )
+        receipt = observer(
+            source="ferro-wakeful",
+            action_kind=str(task),
+            success=success,
+            description=f"{task} settled with status {status}",
+            world_updates={
+                "last_wakeful_task": str(task),
+                "last_wakeful_status": status,
+                "last_world_utility": utility,
+            },
+            evidence_refs=list(refs),
+            goal_id=goal_id,
+            world_utility=utility,
+            timestamp=observed_at.astimezone(timezone.utc),
+        )
+        return {"status": "RECORDED", **dict(receipt)}
 
     def run_tick(self, *, as_of_time: str) -> ContentApplicationTickResult:
         _instant(as_of_time)
