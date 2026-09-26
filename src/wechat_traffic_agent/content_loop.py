@@ -336,6 +336,7 @@ class ContinuousContentLoop:
                         'message': str(exc)[:1000],
                         'diagnostic_ref': f'content-cycle:{cycle}:error-diagnostic',
                     }
+            (folder / 'waiting_for_chatgpt.json').unlink(missing_ok=True)
             _put(result_path, result)
             return result
 

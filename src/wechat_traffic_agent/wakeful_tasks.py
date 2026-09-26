@@ -1029,6 +1029,40 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             return {"task": "VERIFY_PREDICTION", "status": "DEGRADED", "prediction_verification": self._error(exc)}
 
+    def _pending_chatgpt_cycle(self) -> dict[str, str] | None:
+        """Return the newest unfinished cycle suspended on a durable ChatGPT request."""
+        state_root = getattr(self, "state_root", None)
+        if state_root is None:
+            return None
+        cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
+        if not cycles_root.is_dir():
+            return None
+        candidates: list[tuple[float, dict[str, str]]] = []
+        for marker in cycles_root.glob("*/waiting_for_chatgpt.json"):
+            folder = marker.parent
+            if (folder / "result.json").exists():
+                continue
+            try:
+                payload = json.loads(marker.read_text(encoding="utf-8"))
+                mtime = marker.stat().st_mtime
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("status") or "").upper() != "WAITING_FOR_CHATGPT":
+                continue
+            if payload.get("resumable") is not True:
+                continue
+            cycle = str(payload.get("cycle") or folder.name).strip()
+            request_id = str(payload.get("request_id") or "").strip()
+            if cycle != folder.name or not request_id:
+                continue
+            candidates.append((mtime, {"cycle": cycle, "request_id": request_id}))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
+
     def _content_recovery(
         self,
         *,
@@ -1551,13 +1585,54 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["google_search_console"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+        pending_chatgpt = (
+            self._pending_chatgpt_cycle()
+            if focus_topic is None
+            else None
+        )
         focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if focus_topic else None
-        directed_cycle_id = focus_cycle_id
+        directed_cycle_id = (
+            str(pending_chatgpt["cycle"])
+            if pending_chatgpt is not None
+            else focus_cycle_id
+        )
         preflight = self.continuous_loop.preflight(now=now, cycle_id=directed_cycle_id)
         base_cycle_id = str(preflight["cycle"])
         recovery = None
         mission_followup = None
-        if focus_topic is None:
+        if pending_chatgpt is not None:
+            rows["content_chatgpt_resume"] = {
+                "status": "RESUMING",
+                "cycle": str(pending_chatgpt["cycle"]),
+                "request_id": str(pending_chatgpt["request_id"]),
+            }
+            cycle_folder = (
+                Path(self.state_root)
+                / "content"
+                / "continuous"
+                / "cycles"
+                / str(pending_chatgpt["cycle"])
+            )
+            for filename, target in (
+                ("recovery.json", "recovery"),
+                ("mission_followup.json", "mission_followup"),
+            ):
+                path = cycle_folder / filename
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("status") or "").upper() != "READY":
+                    continue
+                if target == "recovery":
+                    recovery = payload
+                    rows["content_cycle_recovery"] = payload
+                else:
+                    mission_followup = payload
+                    rows["content_mission_followup"] = payload
+        elif focus_topic is None:
             recovery = self._content_recovery(preflight=preflight, now=now)
             if recovery is not None:
                 rows["content_cycle_recovery"] = recovery

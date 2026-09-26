@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from wechat_traffic_agent.content_loop import ContinuousContentLoop, ReceiptRuntime
 from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
+from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
 
 class _PendingThenCompleteRuntime:
@@ -84,3 +85,77 @@ def test_content_cycle_pending_is_nonterminal_and_has_no_result_receipt(tmp_path
     }
     assert not result_path.exists()
     assert json.loads(waiting_path.read_text(encoding="utf-8"))["resumable"] is True
+
+
+def test_content_cycle_resume_clears_waiting_marker_and_writes_terminal_result(tmp_path):
+    loop = object.__new__(ContinuousContentLoop)
+    loop.root = tmp_path / "continuous"
+    cycle = "v2-test-2000"
+    calls = 0
+
+    def preflight(*, now=None, cycle_id=None):
+        result_path = loop.root / "cycles" / cycle / "result.json"
+        return {
+            "cycle": cycle,
+            "status": "ALREADY_PROCESSED" if result_path.exists() else "READY",
+            "result_path": str(result_path),
+        }
+
+    async def run_once(folder, cycle_id, now):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise LivingRuntimeChatGPTPendingError("llmreq_resume_same_cycle")
+        return {"status": "COGNITION_ONLY", "cycle": cycle}
+
+    loop.preflight = preflight
+    loop._run = run_once
+    now = datetime(2026, 9, 26, tzinfo=timezone.utc)
+
+    first = asyncio.run(loop.run_once(now=now, cycle_id=cycle))
+    second = asyncio.run(loop.run_once(now=now, cycle_id=cycle))
+
+    folder = loop.root / "cycles" / cycle
+    assert first["status"] == "WAITING_FOR_CHATGPT"
+    assert second == {"status": "COGNITION_ONLY", "cycle": cycle}
+    assert not (folder / "waiting_for_chatgpt.json").exists()
+    assert json.loads((folder / "result.json").read_text()) == second
+
+
+def test_wakeful_runner_prefers_newest_unfinished_chatgpt_cycle(tmp_path):
+    runner = object.__new__(WakefulContentTaskRunner)
+    runner.state_root = tmp_path
+    cycles = tmp_path / "content" / "continuous" / "cycles"
+    older = cycles / "v2-recovery-1000-1-2000"
+    newer = cycles / "v2-recovery-1000-2-3000"
+    done = cycles / "v2-recovery-1000-3-4000"
+    for folder, request_id in (
+        (older, "llmreq_old"),
+        (newer, "llmreq_new"),
+        (done, "llmreq_done"),
+    ):
+        folder.mkdir(parents=True)
+        (folder / "waiting_for_chatgpt.json").write_text(
+            json.dumps({
+                "status": "WAITING_FOR_CHATGPT",
+                "cycle": folder.name,
+                "request_id": request_id,
+                "resumable": True,
+            }),
+            encoding="utf-8",
+        )
+    (done / "result.json").write_text(
+        json.dumps({"status": "COGNITION_ONLY", "cycle": done.name}),
+        encoding="utf-8",
+    )
+    older_marker = older / "waiting_for_chatgpt.json"
+    newer_marker = newer / "waiting_for_chatgpt.json"
+    older_marker.touch()
+    import os
+    os.utime(older_marker, (1000, 1000))
+    os.utime(newer_marker, (2000, 2000))
+
+    assert runner._pending_chatgpt_cycle() == {
+        "cycle": newer.name,
+        "request_id": "llmreq_new",
+    }

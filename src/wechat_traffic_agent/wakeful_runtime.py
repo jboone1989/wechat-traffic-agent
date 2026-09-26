@@ -1404,7 +1404,7 @@ class ContentWakefulRuntime:
             raise ValueError("request_id is required")
         delay = max(30, min(int(delay_seconds), 900))
         at = now + timedelta(seconds=delay)
-        wake_id = f"chatgpt-resume:{request_id}"
+        wake_id = "content:CONTENT_COGNITION"
         existing = next(
             (
                 wake
@@ -1413,19 +1413,16 @@ class ContentWakefulRuntime:
             ),
             None,
         )
-        if existing is not None and existing.at <= at:
-            return {
-                "status": "EARLIER_WAKE_ALREADY_SCHEDULED",
-                "request_id": request_id,
-                "retry_at": existing.at.isoformat(),
-                "retry_seconds": max(0, int((existing.at - now).total_seconds())),
-            }
+        relevant_refs = (f"cognition-request:{request_id}",)
+        if existing is not None:
+            at = min(at, existing.at)
+            relevant_refs = tuple(dict.fromkeys((*existing.relevant_refs, *relevant_refs)))
         wake = PlannedWake(
             wake_id=wake_id,
             at=at,
             reason="resume durable content cognition after ChatGPT response",
             task="CONTENT_COGNITION",
-            relevant_refs=(f"cognition-request:{request_id}",),
+            relevant_refs=relevant_refs,
             preemptible=True,
         )
         self._enqueue_external_wake(wake)
