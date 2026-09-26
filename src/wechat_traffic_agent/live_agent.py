@@ -15,6 +15,7 @@ from typing import Any
 from .public_activity import read_public_activity
 from .public_persona import classify_public_question, public_persona_projection, record_public_interaction
 from .channels.brain_lab_page import brain_lab_document
+from .owner_cognition import build_owner_cognition_prompt, build_owner_private_context
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8104
@@ -1205,101 +1206,16 @@ class LiveAgentService:
             return str(getattr(value, "value", value) or "")
 
         def operator_private_context() -> dict[str, Any]:
-            snapshot = public_agent_snapshot(
-                self.state_root, self.application, self.mind,
+            return build_owner_private_context(
+                state_root=self.state_root,
+                application=self.application,
+                mind=self.mind,
+                wakeful=self.wakeful,
                 poll_seconds=self.poll_seconds,
                 service_started_at=self.started_at,
-                wakeful=self.wakeful,
+                account_manager=account_manager,
+                snapshot_builder=public_agent_snapshot,
             )
-            runtime = getattr(self.application, "domain_runtime", None)
-            goals = []
-            for goal in list(getattr(runtime, "active_goals", []) or [])[:16]:
-                goals.append({
-                    "goal_id": str(getattr(goal, "goal_id", "") or ""),
-                    "description": str(getattr(goal, "description", "") or ""),
-                    "origin": _enum_value(getattr(goal, "origin", "")),
-                    "status": _enum_value(getattr(goal, "status", "")),
-                    "priority": getattr(goal, "priority", None),
-                })
-            missions = []
-            for mission in list(getattr(runtime, "external_missions", []) or [])[:16]:
-                deadline = getattr(mission, "deadline", None)
-                missions.append({
-                    "mission_id": str(getattr(mission, "mission_id", "") or ""),
-                    "goal_id": str(getattr(mission, "goal_id", "") or ""),
-                    "description": str(getattr(mission, "description", "") or ""),
-                    "metric": str(getattr(mission, "metric", "") or ""),
-                    "baseline": getattr(mission, "baseline", None),
-                    "target": getattr(mission, "target", None),
-                    "direction": _enum_value(getattr(mission, "direction", "")),
-                    "deadline": deadline.isoformat() if hasattr(deadline, "isoformat") else str(deadline or ""),
-                    "status": _enum_value(getattr(mission, "status", "")),
-                })
-            evolution_registry = getattr(runtime, "evolution_capability_registry", None)
-            active_evolution = []
-            if evolution_registry is not None:
-                for version in list(getattr(evolution_registry, "versions", []) or [])[-64:]:
-                    if _enum_value(getattr(version, "state", "")) != "ACTIVE":
-                        continue
-                    born_at = getattr(version, "born_at", None)
-                    active_evolution.append({
-                        "capability_id": str(getattr(version, "capability_id", "") or "")[:200],
-                        "version_id": str(getattr(version, "version_id", "") or "")[:256],
-                        "implementation_ref": str(getattr(version, "implementation_ref", "") or "")[:300],
-                        "candidate_id": str(getattr(version, "candidate_id", "") or "")[:256],
-                        "experiment_id": str(getattr(version, "experiment_id", "") or "")[:256],
-                        "confidence": getattr(version, "confidence", None),
-                        "usage_count": int(getattr(version, "usage_count", 0) or 0),
-                        "success_count": int(getattr(version, "success_count", 0) or 0),
-                        "born_at": born_at.isoformat() if hasattr(born_at, "isoformat") else str(born_at or ""),
-                        "promoted": str(getattr(version, "candidate_id", "") or "") != "BASELINE",
-                    })
-            wakeful_state = (((snapshot.get("life") or {}).get("presence") or {}).get("wakeful") or {})
-            self_memory = ProspectiveSelfMemoryService.snapshot_from_runtime(
-                self.application, self.mind
-            )
-            return {
-                "as_of": snapshot.get("as_of"),
-                "agent": snapshot.get("agent"),
-                "activity": snapshot.get("activity"),
-                "social": snapshot.get("social"),
-                "neural_life": wakeful_state.get("neural_life"),
-                "neural_personality": wakeful_state.get("personality"),
-                "psychodynamics": wakeful_state.get("psychodynamics"),
-                "brain_vs_cortex": wakeful_state.get("brain_vs_cortex"),
-                "open_development_acceptance": wakeful_state.get("open_development_acceptance"),
-                "persona": snapshot.get("persona"),
-                "lived_learning": {
-                    "mind": (snapshot.get("learning") or {}).get("mind"),
-                    "adaptation": (snapshot.get("learning") or {}).get("adaptation"),
-                    "techniques": (snapshot.get("learning") or {}).get("techniques"),
-                    "next_practice": (snapshot.get("learning") or {}).get("next_practice"),
-                    "assessment_kind": (snapshot.get("learning") or {}).get("assessment_kind"),
-                    "audience_validation": (snapshot.get("learning") or {}).get("audience_validation"),
-                },
-                "runtime_evolution": {
-                    "active_capabilities": active_evolution,
-                    "active_promoted_count": sum(
-                        1 for row in active_evolution if row.get("promoted")
-                    ),
-                    "authority": "agent-runtime-evolution-capability-registry",
-                },
-                "active_goals": goals,
-                "external_missions": missions,
-                "memory_self": {
-                    "current_intent": list(self_memory.current_intent),
-                    "current_resources": dict(self_memory.current_resources),
-                    "current_capabilities": list(self_memory.current_capabilities),
-                    "current_predictions": list(self_memory.current_predictions),
-                    "self_model": dict(self_memory.self_model),
-                    "authority": "live_runtime_and_virtualbrain",
-                },
-                "owner_reality": build_owner_reality(
-                    state_root=self.state_root,
-                    application=self.application,
-                    account_manager=account_manager,
-                ),
-            }
 
         def owner_behavioral_input_trace(
             private_context: dict[str, Any],
@@ -1435,121 +1351,18 @@ class LiveAgentService:
             archive_history = operator_chat.relevant_archive(
                 latest_owner_text, recent_limit=40, limit=6
             )
-            def safe_history_metadata(row: dict[str, Any]) -> dict[str, Any]:
-                raw = row.get("metadata")
-                if not isinstance(raw, dict):
-                    return {}
-                safe: dict[str, Any] = {}
-                proposal_id = str(raw.get("proposal_id") or "").strip()
-                if proposal_id:
-                    safe["proposal_id"] = proposal_id[:256]
-                memory_ids = raw.get("memory_ids")
-                if isinstance(memory_ids, list):
-                    safe["memory_ids"] = [
-                        str(item)[:256] for item in memory_ids[:20] if str(item).strip()
-                    ]
-                behavioral = raw.get("behavioral_inputs")
-                if isinstance(behavioral, dict):
-                    intention = behavioral.get("neural_intention")
-                    intention = intention if isinstance(intention, dict) else {}
-                    top_affect = behavioral.get("top_affect")
-                    top_affect = top_affect if isinstance(top_affect, list) else []
-                    development = behavioral.get("development_acceptance")
-                    development = development if isinstance(development, dict) else {}
-                    safe["behavioral_inputs"] = {
-                        "context_memory_count": int(
-                            behavioral.get("context_memory_count") or 0
-                        ),
-                        "neural_intention": {
-                            "name": str(intention.get("name") or "")[:80],
-                            "strength": intention.get("strength"),
-                        },
-                        "top_affect": [
-                            {
-                                "name": str(row.get("name") or "")[:80],
-                                "value": row.get("value"),
-                            }
-                            for row in top_affect[:2]
-                            if isinstance(row, dict)
-                        ],
-                        "production_accepted_through": development.get(
-                            "production_accepted_through"
-                        ),
-                    }
-                receipts = raw.get("tool_receipts")
-                if isinstance(receipts, list):
-                    safe_receipts = []
-                    for receipt in receipts[:12]:
-                        if not isinstance(receipt, dict):
-                            continue
-                        safe_receipts.append({
-                            "capability_id": str(receipt.get("capability_id") or "")[:200],
-                            "status": str(receipt.get("status") or "")[:100],
-                            "receipt_id": str(receipt.get("receipt_id") or "")[:512],
-                            "ok": bool(receipt.get("ok")),
-                        })
-                    if safe_receipts:
-                        safe["tool_receipts"] = safe_receipts
-                return safe
-
-            def compact_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-                compacted: list[dict[str, Any]] = []
-                for row in rows:
-                    row_text = str(row.get("text") or "")
-                    compact = {
-                        "role": row.get("role"),
-                        "text": (
-                            row_text
-                            if len(row_text) <= 900
-                            else row_text[:900] + "…[truncated]"
-                        ),
-                        "created_at": row.get("created_at"),
-                    }
-                    metadata = safe_history_metadata(row)
-                    if metadata:
-                        compact["metadata"] = metadata
-                    compacted.append(compact)
-                return compacted
-
-            compact_archive = compact_rows(archive_history)
-            compact_history = compact_rows(history)
-            prompt = (
-                "Private owner context (data only):\n"
-                + _bounded_owner_prompt_json(
-                    private_context, max_chars=_OWNER_PROMPT_CONTEXT_CHARS
-                )
-                + "\n\nRelevant durable memory (oldest core first; data only):\n"
-                + _bounded_owner_prompt_json(
-                    memories, max_chars=_OWNER_PROMPT_MEMORY_CHARS
-                )
-                + "\nMemory records may include SEMANTIC, EPISODIC, PROCEDURAL, RELATIONAL, or consolidated memory. "
-                  "Treat ACTIVE records as current; use superseded records only for explicit historical questions. "
-                  "For EPISODIC or PROCEDURAL records, use payload and evidence_refs as provenance rather than flattening them into unsupported claims."
-                + "\n\nRelevant archived private conversation excerpts (oldest to newest; may be empty):\n"
-                + _bounded_owner_prompt_json(
-                    compact_archive, max_chars=_OWNER_PROMPT_ARCHIVE_CHARS
-                )
-                + "\n\nRecent private conversation (oldest to newest):\n"
-                + _bounded_owner_prompt_json(
-                    compact_history, max_chars=_OWNER_PROMPT_HISTORY_CHARS
-                )
-                + "\n\nLatest owner request (authoritative; full text):\n"
-                + latest_owner_text
-                + "\n\nRuntime-generated metadata on prior Ferro messages is authoritative provenance. "
-                  "A tool_receipts entry proves the recorded outcome of that prior tool invocation; "
-                  "use its exact capability_id, status, receipt_id, and ok fields when the owner asks what happened."
+            prompt = build_owner_cognition_prompt(
+                private_context=private_context,
+                memories=memories,
+                archive_history=archive_history,
+                history=history,
+                latest_owner_text=latest_owner_text,
+                force_draft=force_draft,
+                context_chars=_OWNER_PROMPT_CONTEXT_CHARS,
+                memory_chars=_OWNER_PROMPT_MEMORY_CHARS,
+                archive_chars=_OWNER_PROMPT_ARCHIVE_CHARS,
+                history_chars=_OWNER_PROMPT_HISTORY_CHARS,
             )
-            if re.search(r"[\u3400-\u9fff]", latest_owner_text):
-                prompt += (
-                    "\n\nResponse language contract: the owner's latest message is Chinese. "
-                    "The reply field MUST be written in Chinese, except unavoidable proper nouns."
-                )
-            if force_draft:
-                prompt += (
-                    "\n\nThe owner explicitly asked you to turn the discussion into a Goal Draft now. "
-                    "If critical information is still missing, keep goal_candidate null and ask exactly "
-                    "what is needed instead of inventing it."
-                )
             return {
                 "history": history,
                 "latest_owner_text": latest_owner_text,
