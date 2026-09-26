@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,10 +11,75 @@ from wechat_traffic_agent.content_goal_loop import (
     _market_expression_fingerprint, _candidate_available_for_pool,
     _normalize_mission_discovery, _compact_website_decision_view,
     _compact_writing_experience, _select_evidence_decision_context,
+    _resolve_technique_requirements, _required_techniques_applied,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
+from wechat_traffic_agent.content_loop import Lesson, Technique
+
+
+def _opening_conflict_lesson():
+    return Lesson(
+        techniques=(
+            Technique(
+                name="Named-Source Question Opener",
+                instruction="Open with the reader's question, then name the source.",
+                before="Here is the topic.",
+                after="What survives a crash? The source says...",
+                check="Does the opening begin with the reader's question?",
+            ),
+            Technique(
+                name="Concrete Falsifier",
+                instruction="Give one observable outcome that would weaken the claim.",
+                before="This could be wrong.",
+                after="This would be falsified if the resumed run repeats completed work.",
+                check="Is there one observable falsifier?",
+            ),
+            Technique(
+                name="Observation Lead",
+                instruction="Begin with a source-grounded observation before interpretation.",
+                before="I think this matters.",
+                after="Observation: the journal restored the completed step.",
+                check="Does the opening start from an observation?",
+            ),
+        ),
+        adaptation="Keep the source boundary explicit and testable.",
+    )
+
+
+def test_evidence_first_defers_conflicting_reader_question_opener():
+    requirement = _resolve_technique_requirements(
+        _opening_conflict_lesson(),
+        SimpleNamespace(treatment_value="evidence_first"),
+    )
+
+    assert requirement["required_indices"] == [1, 2]
+    assert requirement["deferred_indices"] == [0]
+    assert _required_techniques_applied({1, 2}, requirement) is True
+    assert _required_techniques_applied({1}, requirement) is False
+
+
+def test_reader_question_first_defers_conflicting_observation_opener():
+    requirement = _resolve_technique_requirements(
+        _opening_conflict_lesson(),
+        SimpleNamespace(treatment_value="reader_question_first"),
+    )
+
+    assert requirement["required_indices"] == [0, 1]
+    assert requirement["deferred_indices"] == [2]
+    assert _required_techniques_applied({0, 1}, requirement) is True
+    assert _required_techniques_applied({0}, requirement) is False
+
+
+def test_without_hard_opening_constraint_all_techniques_remain_required():
+    requirement = _resolve_technique_requirements(
+        _opening_conflict_lesson(),
+        None,
+    )
+
+    assert requirement["required_indices"] == [0, 1, 2]
+    assert requirement["deferred_indices"] == []
 
 
 def test_website_decision_view_drops_full_article_bodies_and_stays_bounded():
