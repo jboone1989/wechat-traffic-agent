@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from wechat_traffic_agent.livingruntime_chatgpt import (
     LivingRuntimeChatGPTPendingError,
@@ -382,3 +383,52 @@ def test_owner_external_mission_defers_prediction_verification(monkeypatch, tmp_
         "reason": "OWNER_EXTERNAL_MISSION_PRIORITY",
     }]
     assert wakeful.sync_calls == [now]
+
+
+
+def test_owner_context_falls_back_to_authoritative_goal_ledger(tmp_path):
+    proposals = (
+        tmp_path
+        / "application"
+        / "operator_chat"
+        / "goal_proposals"
+    )
+    proposals.mkdir(parents=True)
+    (proposals / "owner.json").write_text(
+        '{"status":"ACTIVATED","kind":"EXTERNAL_MISSION","goal_id":"goal-owner"}',
+        encoding="utf-8",
+    )
+    goal = SimpleNamespace(
+        goal_id="goal-owner",
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+        description="Execute the owner external mission",
+        reason="operator-issued external mission",
+        priority=0.9,
+        created_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
+    )
+    internal_goal = SimpleNamespace(
+        goal_id="goal-internal",
+        origin=SimpleNamespace(value="INTERNAL"),
+        status=SimpleNamespace(value="ACTIVE"),
+        description="Internal maintenance",
+        reason="internal",
+        priority=0.5,
+        created_at=datetime(2026, 9, 25, tzinfo=timezone.utc),
+    )
+    domain_runtime = SimpleNamespace(
+        active_goals=[internal_goal],
+        goals=[internal_goal, goal],
+    )
+    runner = WakefulContentTaskRunner(
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+        continuous_loop=_CompletedLoop(),
+    )
+
+    context = runner._active_owner_goal_context()
+
+    assert context is not None
+    assert context["goal_id"] == "goal-owner"
+    assert context["origin"] == "EXTERNAL_MISSION"

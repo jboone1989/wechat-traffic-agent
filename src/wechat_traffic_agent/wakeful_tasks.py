@@ -1745,6 +1745,22 @@ class WakefulContentTaskRunner:
     def _active_owner_goal_context(self) -> dict[str, Any] | None:
         runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
         goals = list(getattr(runtime, "active_goals", ()) or ())
+        seen_goal_ids = {
+            str(getattr(goal, "goal_id", "") or "").strip()
+            for goal in goals
+        }
+        for goal in (getattr(runtime, "goals", ()) or ()):
+            status = str(
+                getattr(
+                    getattr(goal, "status", None),
+                    "value",
+                    getattr(goal, "status", ""),
+                )
+            )
+            goal_id = str(getattr(goal, "goal_id", "") or "").strip()
+            if status == "ACTIVE" and goal_id not in seen_goal_ids:
+                goals.append(goal)
+                seen_goal_ids.add(goal_id)
         owner_external_goal_ids = self._owner_activated_external_goal_ids()
         candidates: list[tuple[Any, str]] = []
         for goal in goals:
