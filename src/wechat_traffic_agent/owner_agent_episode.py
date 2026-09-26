@@ -137,6 +137,14 @@ class OwnerAgentEpisode:
         self._write(state)
         return state
 
+    def running_for(self, goal_id: str) -> bool:
+        state = self._read()
+        return (
+            state.get("schema_version") == self.SCHEMA
+            and str(state.get("goal_id") or "") == str(goal_id or "")
+            and str(state.get("status") or "") == "RUNNING"
+        )
+
     @staticmethod
     def _tool_contracts() -> list[dict[str, Any]]:
         return [

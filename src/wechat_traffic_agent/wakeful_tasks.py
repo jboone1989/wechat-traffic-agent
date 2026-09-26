@@ -1990,10 +1990,17 @@ class WakefulContentTaskRunner:
             str(ref).startswith("cognition-request:")
             for ref in relevant_refs
         )
+        owner_episode_running = bool(
+            owner_goal is not None
+            and getattr(self, "owner_agent_episode", None) is not None
+            and self.owner_agent_episode.running_for(
+                str(owner_goal.get("goal_id") or "")
+            )
+        )
         if (
             owner_goal is not None
             and focus_topic is None
-            and not has_durable_resume
+            and (not has_durable_resume or owner_episode_running)
         ):
             control = self._owner_agent_control(owner_goal=owner_goal, now=now)
             rows["owner_agent_episode"] = control

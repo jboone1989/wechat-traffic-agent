@@ -4,6 +4,9 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import pytest
+
+from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
 from wechat_traffic_agent.owner_agent_episode import OwnerAgentEpisode
 
 
@@ -108,3 +111,29 @@ def test_owner_episode_resume_reuses_durable_terminal_decision(tmp_path):
     assert second["resumed"] is True
     assert second["decision"] == first["decision"]
     assert second_runtime.prompts == []
+
+
+def test_pending_owner_cognition_leaves_running_episode_for_durable_resume(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-owner-episode")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs before cognition completes")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={
+                "goal_id": "goal-owner",
+                "description": "Grow the real X audience",
+            },
+            mission_context={"mission_id": "mission-x"},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    assert episode.running_for("goal-owner") is True
+    assert episode.running_for("other-goal") is False

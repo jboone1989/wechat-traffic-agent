@@ -421,6 +421,40 @@ else:
     assert first_id.startswith("llmreq_")
 
 
+def test_legacy_unbounded_pending_resume_falls_back_instead_of_waiting_forever(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+assert sys.argv[1] == "get"
+request_id = sys.argv[2]
+print(json.dumps({
+  "status":"PENDING",
+  "request_id":request_id,
+  "created_at":1,
+  "updated_at":1,
+  "deadline_at":None,
+  "dispatch_timeout_seconds":0,
+  "response":None
+}))
+""",
+        encoding="utf-8",
+    )
+    fallback = _Fallback()
+    provider = LivingRuntimeChatGPTProvider(
+        fallback=fallback,
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+    )
+
+    with resume_next_durable_cognition("llmreq-legacy-unbounded"):
+        result = asyncio.run(provider.complete("resume old request"))
+
+    assert result == "fallback:resume old request"
+    assert fallback.complete_calls == 1
+
+
 def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
     fallback = _Fallback()
     marker = tmp_path / ".livingruntime" / "ferro-chatgpt-provider.enabled"
@@ -510,3 +544,5 @@ os.kill(os.getpid(), signal.SIGTERM)
 
     assert caught is not None
     assert caught.request_id == "llmreq-existing"
+
+
