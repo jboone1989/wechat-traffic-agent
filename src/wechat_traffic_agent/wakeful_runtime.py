@@ -1563,6 +1563,7 @@ class ContentWakefulRuntime:
         *,
         request_id: str,
         task: str = "CONTENT_COGNITION",
+        relevant_refs: tuple[str, ...] = (),
         delay_seconds: int = 60,
     ) -> dict:
         """Re-enter one suspended wakeful task without creating new cognition."""
@@ -1584,7 +1585,19 @@ class ContentWakefulRuntime:
             ),
             None,
         )
-        relevant_refs = (f"cognition-request:{request_id}",)
+        relevant_refs = tuple(
+            dict.fromkeys(
+                (
+                    *(
+                        str(ref)
+                        for ref in relevant_refs
+                        if str(ref).strip()
+                        and not str(ref).startswith("cognition-request:")
+                    ),
+                    f"cognition-request:{request_id}",
+                )
+            )
+        )
         if existing is not None:
             at = min(at, existing.at)
             # A durable wake represents exactly one suspended cognition.

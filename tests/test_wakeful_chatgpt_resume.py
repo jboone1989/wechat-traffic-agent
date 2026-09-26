@@ -16,8 +16,18 @@ class _Wakeful:
     def emit_prediction_due(self, *, prediction_ref, observed_at):
         return None
 
-    def schedule_chatgpt_resume(self, now, *, request_id, task="CONTENT_COGNITION", delay_seconds=60):
+    def schedule_chatgpt_resume(
+        self,
+        now,
+        *,
+        request_id,
+        task="CONTENT_COGNITION",
+        relevant_refs=(),
+        delay_seconds=60,
+    ):
         row = {"request_id": request_id, "task": task}
+        if relevant_refs:
+            row["relevant_refs"] = tuple(relevant_refs)
         self.scheduled.append(row)
         return {"status": "SCHEDULED", **row}
 
@@ -60,6 +70,31 @@ def test_verify_prediction_pending_suspends_instead_of_killing_process(tmp_path)
     assert wakeful.scheduled == [{
         "request_id": "llmreq-verify",
         "task": "VERIFY_PREDICTION",
+    }]
+
+
+def test_pending_autonomous_task_preserves_goal_provenance_for_resume(tmp_path):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=_PendingLoop(),
+    )
+
+    result = runner.run(
+        "VERIFY_PREDICTION",
+        now=datetime.now(timezone.utc),
+        relevant_refs=("autonomous-goal:goal-42", "prediction:abc"),
+    )
+
+    assert result["status"] == "WAITING_FOR_CHATGPT"
+    assert wakeful.scheduled == [{
+        "request_id": "llmreq-verify",
+        "task": "VERIFY_PREDICTION",
+        "relevant_refs": (
+            "autonomous-goal:goal-42",
+            "prediction:abc",
+        ),
     }]
 
 

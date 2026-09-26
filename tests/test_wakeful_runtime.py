@@ -546,6 +546,27 @@ def test_chatgpt_resume_replaces_stale_request_ref_without_losing_provenance(
     )
 
 
+def test_chatgpt_resume_preserves_autonomous_goal_identity(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_resource",
+        task="RESOURCE_REVIEW",
+        relevant_refs=("autonomous-goal:goal-42", "mission:test"),
+    )
+
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:RESOURCE_REVIEW"
+    )
+    assert wake.relevant_refs == (
+        "autonomous-goal:goal-42",
+        "mission:test",
+        "cognition-request:llmreq_resource",
+    )
+
+
 
 def test_chatgpt_resume_replaces_stale_cognition_pointer(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)

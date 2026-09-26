@@ -239,6 +239,7 @@ class WakefulContentTaskRunner:
                         now,
                         request_id=exc.request_id,
                         task=task,
+                        relevant_refs=relevant_refs,
                     )
                 except Exception as schedule_exc:  # noqa: BLE001
                     result["chatgpt_resume"] = self._error(schedule_exc)
