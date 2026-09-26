@@ -19,6 +19,8 @@ from typing import Any, Iterable, Mapping
 MOTOR_SCHEMA = "ferro-neural-motor.v1"
 MOTOR_UNIT_COUNT = 32
 MAX_MOTOR_UNIT_COUNT = 96
+REINFORCEMENT_SEMANTICS_VERSION = 2
+INTERNAL_ONLY_ACTIONS = frozenset({"NEURAL_PLAY", "NEURAL_DREAM"})
 DEFAULT_ACTIONS = (
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
@@ -82,9 +84,40 @@ class NeuralMotorCortex:
     def _load(self) -> dict[str, Any]:
         payload = _read_json(self.path)
         if payload.get("schema_version") == MOTOR_SCHEMA:
+            version = int(payload.get("reinforcement_semantics_version") or 0)
+            if version < REINFORCEMENT_SEMANTICS_VERSION:
+                units = payload.get("units")
+                if isinstance(units, dict):
+                    for unit in units.values():
+                        if not isinstance(unit, dict):
+                            continue
+                        associations = unit.get("associations")
+                        if isinstance(associations, dict):
+                            for action in INTERNAL_ONLY_ACTIONS:
+                                raw = associations.get(action)
+                                if not isinstance(raw, dict):
+                                    continue
+                                raw["world_trials"] = 0
+                                raw["world_reward_sum"] = 0.0
+                                raw["world_mean_reward"] = 0.0
+                        if str(unit.get("meaning") or "") in INTERNAL_ONLY_ACTIONS:
+                            unit["meaning"] = None
+                            unit["state"] = "LEARNING"
+                            unit.pop("meaning_acquired_at", None)
+                    payload["habit_count"] = sum(
+                        1
+                        for unit in units.values()
+                        if isinstance(unit, dict)
+                        and str(unit.get("state") or "") == "HABIT"
+                    )
+                payload["reinforcement_semantics_version"] = (
+                    REINFORCEMENT_SEMANTICS_VERSION
+                )
+                _write_json(self.path, payload)
             return payload
         return {
             "schema_version": MOTOR_SCHEMA,
+            "reinforcement_semantics_version": REINFORCEMENT_SEMANTICS_VERSION,
             "updated_at": None,
             "decision_seq": 0,
             "units": {
@@ -182,6 +215,8 @@ class NeuralMotorCortex:
         candidates = []
         for action, raw in associations.items():
             if action not in self.allowed_actions or not isinstance(raw, Mapping):
+                continue
+            if action in INTERNAL_ONLY_ACTIONS:
                 continue
             trials = int(raw.get("world_trials") or 0)
             mean = self._world_association_mean(raw)
@@ -326,11 +361,20 @@ class NeuralMotorCortex:
         """Evaluate motor reinforcement from outcomes instead of return-code success."""
         task = str(task or "")
         status = str(result.get("status") or "UNKNOWN").upper()
+        internal = task in INTERNAL_ONLY_ACTIONS
 
         explicit = result.get("world_utility")
         if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+            reward = _clamp(float(explicit))
+            if internal:
+                return {
+                    "reward": reward * 0.25,
+                    "source": "INTERNAL_WORLD_UTILITY",
+                    "world_grounded": False,
+                    "status": status,
+                }
             return {
-                "reward": _clamp(float(explicit)),
+                "reward": reward,
                 "source": "WORLD_UTILITY",
                 "world_grounded": True,
                 "status": status,
@@ -338,7 +382,6 @@ class NeuralMotorCortex:
 
         task_reward = result.get("reward")
         if isinstance(task_reward, (int, float)) and not isinstance(task_reward, bool):
-            internal = task in {"NEURAL_PLAY", "NEURAL_DREAM"}
             reward = _clamp(float(task_reward))
             if internal:
                 reward *= 0.25
@@ -353,7 +396,7 @@ class NeuralMotorCortex:
             return {"reward": -0.85, "source": "EXECUTION_FAILURE", "world_grounded": False, "status": status}
         if status in {"DISABLED", "NOOP", "ALREADY_PROCESSED"}:
             return {"reward": -0.10, "source": "NO_EFFECT", "world_grounded": False, "status": status}
-        if task in {"NEURAL_PLAY", "NEURAL_DREAM"} and status in POSITIVE_STATUSES:
+        if internal and status in POSITIVE_STATUSES:
             return {"reward": 0.0, "source": "INTERNAL_SUCCESS_ONLY", "world_grounded": False, "status": status}
         if status in POSITIVE_STATUSES:
             return {"reward": 0.15, "source": "EXECUTION_SUCCESS_ONLY", "world_grounded": False, "status": status}
@@ -443,7 +486,8 @@ class NeuralMotorCortex:
         unit["associations"] = associations
 
         if (
-            world_trials >= self.HABIT_MIN_TRIALS
+            action not in INTERNAL_ONLY_ACTIONS
+            and world_trials >= self.HABIT_MIN_TRIALS
             and world_mean_reward >= self.HABIT_MEAN_REWARD
         ):
             unit["state"] = "HABIT"

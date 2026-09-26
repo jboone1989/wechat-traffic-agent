@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from wechat_traffic_agent.neural_motor import NeuralMotorCortex, MOTOR_UNIT_COUNT
@@ -147,6 +148,78 @@ def test_internal_task_reward_never_creates_a_motor_habit(tmp_path: Path):
     assert association["trials"] >= cortex.HABIT_MIN_TRIALS
     assert association["world_trials"] == 0
     assert association["world_mean_reward"] == 0.0
+
+
+def test_internal_world_utility_is_not_world_reinforcement(tmp_path: Path):
+    cortex = NeuralMotorCortex(
+        tmp_path,
+        substrate=FakeSubstrate(),
+        allowed_actions=("NEURAL_PLAY",),
+    )
+    latest = None
+    for _ in range(cortex.HABIT_MIN_TRIALS + 2):
+        decision = cortex.select(neural_life=life(), now=NOW)
+        latest = cortex.observe_outcome(
+            task="NEURAL_PLAY",
+            result={
+                "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM",
+                "world_utility": 0.9,
+            },
+            decision_id=decision["decision_id"],
+            observed_at=NOW,
+        )
+        assert latest is not None
+        assert latest["reward_source"] == "INTERNAL_WORLD_UTILITY"
+        assert latest["world_grounded"] is False
+
+    assert latest is not None
+    assert latest["association"]["world_trials"] == 0
+    assert cortex.projection()["habit_count"] == 0
+
+
+def test_load_scrubs_legacy_internal_world_reinforcement(tmp_path: Path):
+    cortex = NeuralMotorCortex(
+        tmp_path,
+        substrate=FakeSubstrate(),
+        allowed_actions=("NEURAL_PLAY", "OBSERVE_WORLD"),
+    )
+    motor_id = next(iter(cortex.state["units"]))
+    unit = cortex.state["units"][motor_id]
+    unit["state"] = "HABIT"
+    unit["meaning"] = "NEURAL_PLAY"
+    unit["meaning_acquired_at"] = NOW.isoformat()
+    unit["associations"]["NEURAL_PLAY"] = {
+        "action": "NEURAL_PLAY",
+        "trials": 300,
+        "reward_sum": 180.0,
+        "mean_reward": 0.6,
+        "world_trials": 200,
+        "world_reward_sum": 160.0,
+        "world_mean_reward": 0.8,
+    }
+    cortex.state["habit_count"] = 1
+    cortex.state["reinforcement_semantics_version"] = 1
+    cortex.path.parent.mkdir(parents=True, exist_ok=True)
+    cortex.path.write_text(
+        json.dumps(cortex.state, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    reloaded = NeuralMotorCortex(
+        tmp_path,
+        substrate=FakeSubstrate(),
+        allowed_actions=("NEURAL_PLAY", "OBSERVE_WORLD"),
+    )
+    migrated = reloaded.state["units"][motor_id]
+    association = migrated["associations"]["NEURAL_PLAY"]
+    assert association["world_trials"] == 0
+    assert association["world_reward_sum"] == 0.0
+    assert association["world_mean_reward"] == 0.0
+    assert migrated["state"] == "LEARNING"
+    assert migrated["meaning"] is None
+    assert reloaded.state["habit_count"] == 0
+    decision = reloaded.select(neural_life=life(), now=NOW)
+    assert decision["decision_kind"] == "EXPLORATION"
 
 
 def test_legacy_habit_without_world_reinforcement_demotes_on_next_outcome(
