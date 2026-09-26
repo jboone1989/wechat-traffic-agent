@@ -94,6 +94,12 @@ _OPTIONAL_INTERNAL_TASKS = frozenset({
     "NEURAL_EVOLUTION_CONSOLIDATION",
 })
 
+_OWNER_CONTINUATION_EXEMPT_TASKS = frozenset({
+    "RESOURCE_REVIEW",
+    "NEURAL_INTEROCEPTION",
+    "CHECK_OUTCOMES",
+})
+
 
 class ContentWakefulRuntime:
     def __init__(self, *, state_root: Path, content_interval_hours: int = 6, watchdog_seconds: int = 1800) -> None:
@@ -1426,6 +1432,26 @@ class ContentWakefulRuntime:
             str(ref).startswith("cognition-request:")
             for ref in wake.relevant_refs
         )
+        now = self.core.clock()
+        owner_continuation_due = any(
+            plan.at <= now
+            and self._is_owner_goal_cognition_wake(
+                plan,
+                active_user_goals=active_user_goals,
+            )
+            and any(
+                str(ref).startswith("cognition-request:")
+                for ref in plan.relevant_refs
+            )
+            for plan in self.core.snapshot().pending_plans
+        )
+        current_is_owner_continuation = owner_goal_wake and wake_has_resume_ref
+        if (
+            owner_continuation_due
+            and not current_is_owner_continuation
+            and wake.task not in _OWNER_CONTINUATION_EXEMPT_TASKS
+        ):
+            return 30.0
         if wake_has_resume_ref:
             # This is continuation of a transaction that already passed
             # admission. Re-throttling each LLM phase can indefinitely stretch
@@ -1440,7 +1466,7 @@ class ContentWakefulRuntime:
             # Explicit owner work bypasses resource-pressure admission, but it
             # cannot violate the durable cognition single-flight invariant.
             return None
-        return self.resource_regulator.defer_seconds(wake.task, self.core.clock())
+        return self.resource_regulator.defer_seconds(wake.task, now)
 
     def schedule_goal_followup(
         self,

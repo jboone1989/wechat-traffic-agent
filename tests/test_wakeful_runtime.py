@@ -627,6 +627,78 @@ def test_owner_goal_cognition_respects_existing_chatgpt_single_flight(
     assert runtime._plan_admission_delay(owner) == 60.0
 
 
+def test_due_owner_continuation_preempts_older_nonessential_wake(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime,
+        "_active_user_goal_ids",
+        lambda: {"goal-owner"},
+    )
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CHECK_X",
+        at=NOW - timedelta(minutes=5),
+        reason="older social check",
+        task="CHECK_X",
+    ))
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW - timedelta(seconds=1),
+        reason="resume durable content cognition after ChatGPT response",
+        task="CONTENT_COGNITION",
+        relevant_refs=(
+            "goal-owner",
+            "cognition-request:llmreq_owner_resume",
+        ),
+    ))
+
+    ready = runtime.core.pop_ready()
+
+    assert ready is not None
+    assert ready.task == "CONTENT_COGNITION"
+    assert "goal-owner" in ready.relevant_refs
+    deferred = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.task == "CHECK_X"
+    )
+    assert deferred.at == NOW + timedelta(seconds=30)
+
+
+def test_due_owner_continuation_does_not_preempt_survival_lane(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime,
+        "_active_user_goal_ids",
+        lambda: {"goal-owner"},
+    )
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:NEURAL_INTEROCEPTION",
+        at=NOW - timedelta(minutes=5),
+        reason="sense body state",
+        task="NEURAL_INTEROCEPTION",
+    ))
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW - timedelta(seconds=1),
+        reason="resume durable content cognition after ChatGPT response",
+        task="CONTENT_COGNITION",
+        relevant_refs=(
+            "goal-owner",
+            "cognition-request:llmreq_owner_resume",
+        ),
+    ))
+
+    ready = runtime.core.pop_ready()
+
+    assert ready is not None
+    assert ready.task == "NEURAL_INTEROCEPTION"
+
+
 def test_chatgpt_resume_replaces_stale_request_ref_without_losing_provenance(
     tmp_path,
 ):
