@@ -964,7 +964,18 @@ class ContentWakefulRuntime:
         observed_at: datetime | None = None,
     ) -> dict | None:
         if not goal_id:
-            return None
+            projection = self.autonomous_life.projection()
+            matches = [
+                row
+                for row in projection.get("active_goals") or ()
+                if isinstance(row, dict)
+                and str(row.get("task") or "") == str(task)
+            ]
+            if len(matches) != 1:
+                return None
+            goal_id = str(matches[0].get("goal_id") or "").strip()
+            if not goal_id:
+                return None
         if (
             isinstance(result, dict)
             and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"

@@ -156,6 +156,39 @@ def test_autonomous_goal_ok_without_world_effect_is_only_executed(tmp_path):
     assert settled["drive_feedback"].get("last_satisfied_at") is None
 
 
+def test_matching_regular_task_settles_unique_active_autonomous_goal(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:regular-resource",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+
+    settled = runtime.observe_autonomous_goal_outcome(
+        task="RESOURCE_REVIEW",
+        result={"status": "OK", "world_utility": 0.4},
+        goal_id=None,
+        observed_at=NOW + timedelta(seconds=30),
+    )
+
+    assert settled is not None
+    assert settled["goal_id"] == goal_id
+    assert settled["status"] == "SATISFIED"
+    assert settled["drive_feedback"]["last_outcome_task"] == "RESOURCE_REVIEW"
+
+
 def test_chatgpt_only_cognition_ignores_legacy_api_pool_pressure(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
