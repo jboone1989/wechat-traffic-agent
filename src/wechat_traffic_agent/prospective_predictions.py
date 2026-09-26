@@ -440,6 +440,54 @@ class ProspectivePredictionLedger:
         _atomic_json(path, payload)
         return payload
 
+    def defer_verification(
+        self,
+        prediction_id: str,
+        *,
+        deferred_at: datetime,
+        delay: timedelta,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Durably postpone verification without counting it as an error."""
+        if prediction_id not in self._records:
+            raise ValueError("unknown prediction_id")
+        deferred = _aware(deferred_at, "prediction verification deferred_at")
+        if delay.total_seconds() <= 0:
+            raise ValueError("prediction verification delay must be positive")
+        path = self._verification_retry_path(prediction_id)
+        prior: dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    prior = loaded
+            except (OSError, ValueError, json.JSONDecodeError):
+                prior = {}
+        retry_after = deferred + delay
+        prior_retry_raw = prior.get("retry_after")
+        if prior_retry_raw:
+            try:
+                prior_retry = _aware(
+                    datetime.fromisoformat(
+                        str(prior_retry_raw).replace("Z", "+00:00")
+                    ),
+                    "prediction verification prior retry_after",
+                )
+                retry_after = max(retry_after, prior_retry)
+            except (TypeError, ValueError):
+                pass
+        payload = {
+            "schema_version": "content-prediction-verification-retry.v1",
+            "prediction_id": prediction_id,
+            "attempted_at": deferred.isoformat(),
+            "retry_after": retry_after.isoformat(),
+            "error_type": None,
+            "consecutive_errors": int(prior.get("consecutive_errors") or 0),
+            "deferred_reason": str(reason or "POLICY_DEFERRED")[:160],
+        }
+        _atomic_json(path, payload)
+        return payload
+
     def verification_retry_after(self, prediction_id: str) -> datetime | None:
         path = self._verification_retry_path(prediction_id)
         if not path.exists():

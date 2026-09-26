@@ -68,21 +68,97 @@ def test_select_evidence_context_stays_below_chatgpt_message_budget():
         "evidence_refs": [huge, huge],
         "raw_payload": huge,
     } for index in range(30)]
+    traffic_topics = [{
+        "topic": f"topic-{index}",
+        "article_count": index,
+        "exposure_status": "UNKNOWN",
+        "search_rows": index,
+        "impressions": index * 10,
+        "clicks": index,
+        "ctr": 0.01,
+        "mean_pageviews_24h": float(index),
+        "trend_hits": index % 3,
+        "priority_score": index / 100.0,
+        "irrelevant_blob": huge,
+    } for index in range(200)]
+    mind_plan = {
+        "available_topics": [f"catalog-{index}-{huge}" for index in range(1000)],
+        "required_topic": "remote-agent-security",
+        "external_mission_id": "mission-1",
+        "owner_goal_id": "goal-1",
+        "goal": {
+            "goal_id": "external-mission-discovery:1",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Investigate safe remote agent execution.",
+            "confidence": 1.0,
+            "expected_value": 1.0,
+            "interest_refs": ["remote-agent-security"],
+            "inquiry_refs": ["inquiry-1"],
+            "value_refs": ["mission-1"],
+            "giant": huge,
+        },
+        "mission_discovery": {
+            "topic": "remote-agent-security",
+            "search_query": "remote agent least privilege",
+            "reader_need": "Builders need bounded command authorization.",
+            "rationale": "Use current evidence about command approval.",
+            "giant": huge,
+        },
+        "world_observations": [huge] * 100,
+    }
+    mission = {
+        "status": "ACTIVE",
+        "mission_id": "mission-1",
+        "metric": "x.followers",
+        "current": 1800,
+        "target": 5000,
+        "trajectory": "BEHIND",
+        "roadmap_step": {
+            "step_id": "step-1",
+            "title": "Community-relevant formats",
+            "status": "RUNNING",
+            "giant": huge,
+        },
+        "active_experiment": {
+            "experiment_id": "exp-1",
+            "status": "PROPOSED",
+            "strategy": "Publish one evidence-backed post.",
+            "expected_effect": "Measure a bounded follower lift.",
+            "risk_notes": [huge] * 50,
+        },
+        "recent_experiments": [{"giant": huge}] * 50,
+        "constraints": [huge] * 50,
+    }
     context = _select_evidence_decision_context(
         evidence=evidence,
         snapshot=snapshot,
-        traffic_payload={"selected_topic": "reliability", "note": huge[:8000]},
+        traffic_payload={
+            "selected_topic": "remote-agent-security",
+            "selection_authority": "EXTERNAL_MISSION",
+            "search_data_status": "NO_DATA",
+            "pageview_data_status": "AVAILABLE",
+            "topics": traffic_topics,
+            "interpretation_rules": [huge] * 50,
+        },
         previous_titles=[huge for _ in range(200)],
-        mind_plan={"goal": {"description": huge[:8000]}},
-        x_mission_context={"status": "ACTIVE", "strategy": huge[:8000]},
+        mind_plan=mind_plan,
+        x_mission_context=mission,
     )
     encoded = json.dumps(context, ensure_ascii=False).encode("utf-8")
 
-    assert len(encoded) < 120 * 1024
+    assert len(encoded) < 50 * 1024
     assert len(context["evidence"]) == 16
-    assert len(context["website"]["articles"]) == 32
-    assert len(context["previous_titles"]) == 50
+    assert len(context["website"]["articles"]) == 24
+    assert len(context["previous_titles"]) == 32
+    assert len(context["traffic_context"]["topics"]) == 12
+    assert context["traffic_context"]["topics"][0]["topic"] == "topic-199"
+    assert context["mind_plan"]["required_topic"] == "remote-agent-security"
+    assert context["mind_plan"]["goal"]["goal_id"] == "external-mission-discovery:1"
+    assert context["x_growth_mission"]["active_experiment"]["experiment_id"] == "exp-1"
+    assert "available_topics" not in context["mind_plan"]
+    assert "recent_experiments" not in context["x_growth_mission"]
     assert "raw_payload" not in encoded.decode("utf-8")
+    assert "irrelevant_blob" not in encoded.decode("utf-8")
 
 
 def test_writing_experience_projection_drops_large_cycle_payloads():

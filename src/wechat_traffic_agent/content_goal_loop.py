@@ -354,6 +354,17 @@ def _candidate_available_for_pool(inbox, row):
     return not inbox.contains(_candidate_fingerprint(row))
 
 
+def _allow_unconstrained_output_fallback(*, goal_active, goal_origin, owner_goal):
+    """Do not abandon explicit owner/external goals merely to fill an output slot."""
+    if not goal_active:
+        return False
+    if str(goal_origin or "").upper() == "EXTERNAL_MISSION":
+        return False
+    if isinstance(owner_goal, dict) and str(owner_goal.get("goal_id") or "").strip():
+        return False
+    return True
+
+
 def _compact_website_decision_view(snapshot, *, article_limit=80):
     """Bound Website context for semantic selection without dropping local validation data."""
     if not isinstance(snapshot, dict):
@@ -371,9 +382,9 @@ def _compact_website_decision_view(snapshot, *, article_limit=80):
         visible_ids.add(artifact_id)
         articles.append({
             "artifact_id": artifact_id,
-            "title": str(artifact.get("title") or "")[:160],
-            "summary": str(artifact.get("summary") or "")[:360],
-            "tags": list(artifact.get("tags") or ())[:12],
+            "title": str(artifact.get("title") or "")[:120],
+            "summary": str(artifact.get("summary") or "")[:220],
+            "tags": [str(tag)[:80] for tag in list(artifact.get("tags") or ())[:8]],
         })
     topics = {}
     for topic, artifact_ids in dict(snapshot.get("topics") or {}).items():
@@ -399,20 +410,20 @@ def _compact_evidence_decision_view(rows, *, row_limit=8):
         if not isinstance(row, dict):
             continue
         compact.append({
-            "evidence_id": str(row.get("evidence_id") or "")[:240],
-            "source_kind": str(row.get("source_kind") or "")[:80],
-            "source": str(row.get("source") or "")[:300],
-            "title": str(row.get("title") or "")[:300],
-            "summary": str(row.get("summary") or "")[:1200],
-            "url": str(row.get("url") or "")[:600],
-            "observed_at": str(row.get("observed_at") or "")[:80],
-            "published_at": str(row.get("published_at") or "")[:80],
-            "search_query": str(row.get("search_query") or "")[:300],
+            "evidence_id": str(row.get("evidence_id") or "")[:160],
+            "source_kind": str(row.get("source_kind") or "")[:60],
+            "source": str(row.get("source") or "")[:160],
+            "title": str(row.get("title") or "")[:180],
+            "summary": str(row.get("summary") or "")[:450],
+            "url": str(row.get("url") or "")[:300],
+            "observed_at": str(row.get("observed_at") or "")[:48],
+            "published_at": str(row.get("published_at") or "")[:48],
+            "search_query": str(row.get("search_query") or "")[:180],
             "search_rank": row.get("search_rank"),
-            "source_revision": str(row.get("source_revision") or "")[:240],
+            "source_revision": str(row.get("source_revision") or "")[:120],
             "evidence_refs": [
-                str(value)[:300]
-                for value in list(row.get("evidence_refs") or ())[:6]
+                str(value)[:120]
+                for value in list(row.get("evidence_refs") or ())[:3]
             ],
         })
     return compact
@@ -540,10 +551,10 @@ def _select_evidence_decision_context(
     """Project selection context below the durable cognition per-message budget."""
     return {
         "evidence": _compact_evidence_decision_view(evidence),
-        "website": _compact_website_decision_view(snapshot, article_limit=32),
+        "website": _compact_website_decision_view(snapshot, article_limit=24),
         "traffic_context": _compact_selection_traffic(traffic_payload),
         "previous_titles": [
-            str(value)[:200] for value in list(previous_titles or ())[-50:]
+            str(value)[:160] for value in list(previous_titles or ())[-32:]
         ],
         "mind_plan": _compact_selection_mind_plan(mind_plan),
         "x_growth_mission": _compact_selection_mission(x_mission_context),
@@ -1536,7 +1547,15 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                            status='completed')
 
         evidence = exploration['items']
-        if not evidence and goal_active and evidence_pool.get('items'):
+        if (
+            not evidence
+            and evidence_pool.get('items')
+            and _allow_unconstrained_output_fallback(
+                goal_active=goal_active,
+                goal_origin=goal_origin,
+                owner_goal=owner_goal,
+            )
+        ):
             # Output-first fallback: persist that the endogenous goal had no match, then use the
             # available evidence pool rather than wasting the entire production slot. The model
             # still has to bind the article to a real site topic and real evidence below.

@@ -190,3 +190,28 @@ def test_settlement_error_records_durable_verification_retry(tmp_path):
         (tmp_path / "content" / "predictions" / "verification_retries").glob("*.json")
     )
     assert len(retry_files) == 1
+
+
+def test_policy_defer_preserves_error_count_and_durably_moves_retry(tmp_path):
+    ledger = ProspectivePredictionLedger(tmp_path)
+    row = _record(ledger)
+    deferred = NOW + timedelta(days=1, hours=2)
+
+    payload = ledger.defer_verification(
+        row.prediction_id,
+        deferred_at=deferred,
+        delay=timedelta(minutes=45),
+        reason="OWNER_MISSION_PRIORITY",
+    )
+
+    assert payload["error_type"] is None
+    assert payload["consecutive_errors"] == 0
+    assert payload["deferred_reason"] == "OWNER_MISSION_PRIORITY"
+    assert ledger.verification_retry_after(row.prediction_id) == (
+        deferred + timedelta(minutes=45)
+    )
+
+    restarted = ProspectivePredictionLedger(tmp_path)
+    assert restarted.verification_retry_after(row.prediction_id) == (
+        deferred + timedelta(minutes=45)
+    )
