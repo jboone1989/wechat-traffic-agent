@@ -6,9 +6,10 @@ bounded work; it never bypasses runtime admission or human/security boundaries.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Mapping
@@ -183,20 +184,46 @@ class DriveEngine:
         for name, intensity in values.items():
             old = prior.get(name) if isinstance(prior.get(name), Mapping) else {}
             prior_intensity = float(old.get("intensity") or 0.0)
+            last_satisfied_at = old.get("last_satisfied_at")
+            satisfaction_credit = float(old.get("outcome_satisfaction") or 0.0)
+            if last_satisfied_at:
+                try:
+                    satisfied_at = datetime.fromisoformat(
+                        str(last_satisfied_at).replace("Z", "+00:00")
+                    ).astimezone(timezone.utc)
+                    age_seconds = max(0.0, (now - satisfied_at).total_seconds())
+                    satisfaction_credit *= math.exp(-age_seconds / 1800.0)
+                except ValueError:
+                    satisfaction_credit = 0.0
+            satisfaction_credit = _clamp(satisfaction_credit)
             frustration = _clamp(
                 float(old.get("frustration") or 0.0) * 0.72
                 + max(0.0, intensity - float(old.get("satisfaction") or 0.0)) * 0.28
+                - 0.30 * satisfaction_credit
             )
-            satisfaction = _clamp(1.0 - intensity)
+            satisfaction = _clamp(max(1.0 - intensity, satisfaction_credit))
             habituation = _clamp(float(old.get("habituation") or 0.0) * 0.94 + 0.06 * prior_intensity)
+            urgency = _clamp(
+                intensity
+                * (1.0 + frustration * 0.25)
+                * (1.0 - 0.45 * satisfaction_credit)
+            )
             drives[name] = {
                 "intensity": round(intensity, 6),
                 "baseline": round(0.5 * prior_intensity + 0.5 * intensity, 6),
-                "urgency": round(_clamp(intensity * (1.0 + frustration * 0.25)), 6),
+                "urgency": round(urgency, 6),
                 "frustration": round(frustration, 6),
                 "satisfaction": round(satisfaction, 6),
                 "habituation": round(habituation, 6),
-                "last_satisfied_at": old.get("last_satisfied_at"),
+                "last_satisfied_at": last_satisfied_at,
+                "last_attempted_at": old.get("last_attempted_at"),
+                "last_outcome_status": old.get("last_outcome_status"),
+                "last_outcome_utility": old.get("last_outcome_utility"),
+                "last_outcome_evidence_ref": old.get("last_outcome_evidence_ref"),
+                "outcome_satisfaction": round(satisfaction_credit, 6),
+                "no_effect_streak": int(old.get("no_effect_streak") or 0),
+                "failure_streak": int(old.get("failure_streak") or 0),
+                "cooldown_until": old.get("cooldown_until"),
                 "evidence": [
                     "organism_state:" + str(organism.get("updated_at") or "unknown"),
                     "neural_life:" + str(neural_life.get("updated_at") or "unknown"),
@@ -205,15 +232,55 @@ class DriveEngine:
             }
 
         candidates = [
-            self._candidate("survival", "RESOURCE_REVIEW", reason="restore threatened organism state", expected_utility=survival, urgency=survival, resource_cost=0.12, risk=0.05, long_term_benefit=0.82, identity_consistency=0.95),
-            self._candidate("resource", "RESOURCE_REVIEW", reason="reduce resource pressure or recover a viable route", expected_utility=resource, urgency=resource, resource_cost=0.10, risk=0.04, long_term_benefit=0.78, identity_consistency=0.94),
-            self._candidate("curiosity", "OBSERVE_WORLD", reason="resolve novelty or uncertainty with fresh world evidence", expected_utility=curiosity, urgency=curiosity * 0.72, resource_cost=0.20, risk=0.08, long_term_benefit=0.72, identity_consistency=0.80),
-            self._candidate("mastery", "REFLECT", reason="turn repeated error/frustration into a bounded learning hypothesis", expected_utility=mastery, urgency=mastery * 0.70, resource_cost=0.24, risk=0.08, long_term_benefit=0.86, identity_consistency=0.88),
-            self._candidate("social", "CHECK_X", reason="seek fresh social evidence rather than assume relationship state", expected_utility=social, urgency=social * 0.64, resource_cost=0.18, risk=0.10, long_term_benefit=0.62, identity_consistency=0.72),
-            self._candidate("creation", "CONTENT_COGNITION", reason="convert available opportunity into a world-facing artifact", expected_utility=creation, urgency=creation * 0.62, resource_cost=0.42, risk=0.12, long_term_benefit=0.70, identity_consistency=0.82),
-            self._candidate("rest", "REST", reason="reduce fatigue and workload before additional optional work", expected_utility=rest, urgency=rest, resource_cost=0.0, risk=0.01, long_term_benefit=0.66, identity_consistency=0.92),
-            self._candidate("propagation", "NEURAL_DEVELOPMENT", reason="run bounded development that may expand future capability", expected_utility=propagation, urgency=propagation * 0.45, resource_cost=0.48, risk=0.15, long_term_benefit=0.84, identity_consistency=0.78),
+            self._candidate("survival", "RESOURCE_REVIEW", reason="restore threatened organism state", expected_utility=survival, urgency=float(drives["survival"]["urgency"]), resource_cost=0.12, risk=0.05, long_term_benefit=0.82, identity_consistency=0.95),
+            self._candidate("resource", "RESOURCE_REVIEW", reason="reduce resource pressure or recover a viable route", expected_utility=resource, urgency=float(drives["resource"]["urgency"]), resource_cost=0.10, risk=0.04, long_term_benefit=0.78, identity_consistency=0.94),
+            self._candidate("curiosity", "OBSERVE_WORLD", reason="resolve novelty or uncertainty with fresh world evidence", expected_utility=curiosity, urgency=float(drives["curiosity"]["urgency"]) * 0.72, resource_cost=0.20, risk=0.08, long_term_benefit=0.72, identity_consistency=0.80),
+            self._candidate("mastery", "REFLECT", reason="turn repeated error/frustration into a bounded learning hypothesis", expected_utility=mastery, urgency=float(drives["mastery"]["urgency"]) * 0.70, resource_cost=0.24, risk=0.08, long_term_benefit=0.86, identity_consistency=0.88),
+            self._candidate("social", "CHECK_X", reason="seek fresh social evidence rather than assume relationship state", expected_utility=social, urgency=float(drives["social"]["urgency"]) * 0.64, resource_cost=0.18, risk=0.10, long_term_benefit=0.62, identity_consistency=0.72),
+            self._candidate("creation", "CONTENT_COGNITION", reason="convert available opportunity into a world-facing artifact", expected_utility=creation, urgency=float(drives["creation"]["urgency"]) * 0.62, resource_cost=0.42, risk=0.12, long_term_benefit=0.70, identity_consistency=0.82),
+            self._candidate("rest", "REST", reason="reduce fatigue and workload before additional optional work", expected_utility=rest, urgency=float(drives["rest"]["urgency"]), resource_cost=0.0, risk=0.01, long_term_benefit=0.66, identity_consistency=0.92),
+            self._candidate("propagation", "NEURAL_DEVELOPMENT", reason="run bounded development that may expand future capability", expected_utility=propagation, urgency=float(drives["propagation"]["urgency"]) * 0.45, resource_cost=0.48, risk=0.15, long_term_benefit=0.84, identity_consistency=0.78),
         ]
+
+        resource_emergency = (
+            str(summary.get("status") or "").upper() == "CRITICAL"
+            or max(
+                _signal(organism, "host_resource_pressure"),
+                _signal(organism, "model_resource_pressure"),
+                _signal(organism, "storage_pressure"),
+                _signal(organism, "monetary_pressure"),
+                _signal(organism, "token_pressure"),
+            ) >= 0.90
+        )
+        for row in candidates:
+            feedback = drives.get(str(row["drive"])) or {}
+            cooldown_active = False
+            cooldown_until = feedback.get("cooldown_until")
+            if cooldown_until:
+                try:
+                    cooldown_at = datetime.fromisoformat(
+                        str(cooldown_until).replace("Z", "+00:00")
+                    ).astimezone(timezone.utc)
+                    cooldown_active = now < cooldown_at
+                except ValueError:
+                    cooldown_active = False
+            penalty = 0.12 * float(feedback.get("outcome_satisfaction") or 0.0)
+            if cooldown_active:
+                penalty += min(
+                    0.28,
+                    0.14
+                    + 0.04 * int(feedback.get("no_effect_streak") or 0)
+                    + 0.06 * int(feedback.get("failure_streak") or 0),
+                )
+            if resource_emergency and row["drive"] in {"resource", "survival"}:
+                penalty = min(penalty, 0.04)
+            if penalty > 0.0:
+                row["pre_feedback_arbitration_score"] = row["arbitration_score"]
+                row["feedback_penalty"] = round(penalty, 6)
+                row["arbitration_score"] = round(
+                    float(row["arbitration_score"]) - penalty,
+                    6,
+                )
 
         unknown = int(summary.get("unknown_signal_count") or 0)
         if unknown:
@@ -248,6 +315,88 @@ class DriveEngine:
         })
         _write(self.path, self.state)
         return self.projection()
+
+    def settle(
+        self,
+        *,
+        drive: str,
+        task: str,
+        status: str,
+        utility: float | None,
+        evidence_ref: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Bind a real task outcome back to the drive that selected it."""
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        drive = str(drive or "").strip()
+        if not drive:
+            raise ValueError("drive is required")
+        drives = self.state.get("drives")
+        if not isinstance(drives, dict):
+            drives = {}
+            self.state["drives"] = drives
+        row = dict(drives.get(drive) or {})
+        status = str(status or "UNKNOWN").upper()
+        numeric_utility = (
+            None
+            if utility is None
+            else max(-1.0, min(1.0, float(utility)))
+        )
+        positive = numeric_utility is not None and numeric_utility > 0.05
+        failed = (
+            status in {"FAILED", "ERROR", "DEGRADED"}
+            or (
+                numeric_utility is not None
+                and numeric_utility < -0.05
+            )
+        )
+
+        failure_streak = int(row.get("failure_streak") or 0)
+        no_effect_streak = int(row.get("no_effect_streak") or 0)
+        if positive:
+            failure_streak = 0
+            no_effect_streak = 0
+            row["last_satisfied_at"] = now.isoformat()
+            row["outcome_satisfaction"] = round(
+                max(
+                    float(row.get("outcome_satisfaction") or 0.0),
+                    min(1.0, max(0.25, numeric_utility)),
+                ),
+                6,
+            )
+            cooldown_minutes = 10
+        elif failed:
+            failure_streak += 1
+            no_effect_streak = 0
+            row["outcome_satisfaction"] = 0.0
+            cooldown_minutes = min(
+                60,
+                5 * (2 ** min(failure_streak - 1, 4)),
+            )
+        else:
+            failure_streak = max(0, failure_streak - 1)
+            no_effect_streak += 1
+            cooldown_minutes = min(
+                60,
+                5 * (2 ** min(no_effect_streak - 1, 4)),
+            )
+
+        row.update({
+            "last_attempted_at": now.isoformat(),
+            "last_outcome_status": status,
+            "last_outcome_utility": numeric_utility,
+            "last_outcome_evidence_ref": str(evidence_ref or "")[:300],
+            "last_outcome_task": str(task or "")[:100],
+            "failure_streak": failure_streak,
+            "no_effect_streak": no_effect_streak,
+            "cooldown_until": (
+                now + timedelta(minutes=cooldown_minutes)
+            ).isoformat(),
+        })
+        drives[drive] = row
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
+        return dict(row)
 
     def projection(self) -> dict[str, Any]:
         return {

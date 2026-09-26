@@ -78,6 +78,22 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "NEURAL_EVOLUTION_CONSOLIDATION",
 })
 
+_CHATGPT_COGNITIVE_TASKS = frozenset({
+    "CONTENT_COGNITION",
+    "VERIFY_PREDICTION",
+    "OBSERVE_WORLD",
+    "REFLECT",
+})
+
+_OPTIONAL_INTERNAL_TASKS = frozenset({
+    "NEURAL_PLAY",
+    "NEURAL_DREAM",
+    "NEURAL_TRANSFER",
+    "NEURAL_DEVELOPMENT",
+    "NEURAL_DEVELOPMENT_TRANSFER",
+    "NEURAL_EVOLUTION_CONSOLIDATION",
+})
+
 
 class ContentWakefulRuntime:
     def __init__(self, *, state_root: Path, content_interval_hours: int = 6, watchdog_seconds: int = 1800) -> None:
@@ -603,11 +619,17 @@ class ContentWakefulRuntime:
         )
         intention = (projection.get("intention") or {}).get("name")
         pressure = self.resource_regulator.pressure(now)
-        motor = (
-            self.neural_motor.select(neural_life=projection, now=now)
-            if intention != "REST" and pressure not in {"CONSERVE", "CRITICAL", "UNKNOWN"}
-            else {"status": "INHIBITED", "task": None}
-        )
+        if self.pending_chatgpt_request_ids():
+            motor = {
+                "status": "INHIBITED_WAITING_FOR_CHATGPT",
+                "task": None,
+            }
+        else:
+            motor = (
+                self.neural_motor.select(neural_life=projection, now=now)
+                if intention != "REST" and pressure not in {"CONSERVE", "CRITICAL", "UNKNOWN"}
+                else {"status": "INHIBITED", "task": None}
+            )
         motor_task = str(motor.get("task") or "")
         if motor_task:
             target_at = now + timedelta(seconds=5)
@@ -952,22 +974,69 @@ class ContentWakefulRuntime:
         status = str((result or {}).get("status") or "UNKNOWN").upper() if isinstance(result, dict) else "UNKNOWN"
         canonical = json.dumps(result if isinstance(result, dict) else {"status": status}, ensure_ascii=False, sort_keys=True, default=str)
         evidence_ref = "task-result:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
-        terminal = "FAILED" if status in {"ERROR", "DEGRADED", "FAILED"} else "EXECUTED"
+
+        def world_utility(value, depth: int = 0) -> float | None:
+            if depth > 4 or not isinstance(value, dict):
+                return None
+            direct = value.get("world_utility")
+            if isinstance(direct, (int, float)) and not isinstance(direct, bool):
+                return max(-1.0, min(1.0, float(direct)))
+            for nested in value.values():
+                if isinstance(nested, dict):
+                    found = world_utility(nested, depth + 1)
+                    if found is not None:
+                        return found
+            return None
+
+        utility = world_utility(result) if isinstance(result, dict) else None
+        if status in {"ERROR", "DEGRADED", "FAILED"} or (
+            utility is not None and utility < -0.05
+        ):
+            terminal = "FAILED"
+        elif utility is not None and utility > 0.05:
+            terminal = "SATISFIED"
+        else:
+            terminal = "EXECUTED"
         closed = self.autonomous_life.close_goal(
             goal_id=str(goal_id),
             status=terminal,
             evidence_ref=evidence_ref,
             now=observed_at,
         )
+        drive_feedback = self.drive_system.settle(
+            drive=str(closed.get("drive") or ""),
+            task=task,
+            status=terminal,
+            utility=utility,
+            evidence_ref=evidence_ref,
+            now=observed_at,
+        )
+        if terminal == "SATISFIED":
+            history_kind = "AUTONOMOUS_GOAL_SATISFIED"
+            history_outcome = 1.0
+        elif terminal == "FAILED":
+            history_kind = "AUTONOMOUS_GOAL_FAILED"
+            history_outcome = -1.0
+        else:
+            history_kind = "AUTONOMOUS_GOAL_EXECUTED_NO_EFFECT"
+            history_outcome = 0.0
         self.developmental_history.record(
-            kind="AUTONOMOUS_GOAL_FAILED" if terminal == "FAILED" else "AUTONOMOUS_GOAL_EXECUTED",
+            kind=history_kind,
             domain=f"autonomous:{str(task).lower()}",
-            outcome=-1.0 if terminal == "FAILED" else 0.0,
+            outcome=history_outcome,
             evidence_refs=(str(goal_id), evidence_ref),
             now=observed_at,
-            metadata={"task_status": status},
+            metadata={
+                "task_status": status,
+                "terminal_status": terminal,
+                "world_utility": utility,
+            },
         )
-        return closed
+        return {
+            **closed,
+            "world_utility": utility,
+            "drive_feedback": drive_feedback,
+        }
 
     def run_neural_transfer(self, now: datetime | None = None, *, training_steps: int = 12) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -1289,13 +1358,37 @@ class ContentWakefulRuntime:
             or wake.reason == "reconsider priorities after owner activated a goal"
         )
 
+    def pending_chatgpt_request_ids(self) -> tuple[str, ...]:
+        request_ids: list[str] = []
+        for wake in self.core.snapshot().pending_plans:
+            for ref in wake.relevant_refs:
+                text = str(ref)
+                if not text.startswith("cognition-request:"):
+                    continue
+                request_id = text.split(":", 1)[1].strip()
+                if request_id:
+                    request_ids.append(request_id)
+        return tuple(dict.fromkeys(request_ids))
+
     def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
         active_user_goals = self._active_user_goal_ids()
         owner_goal_wake = self._is_owner_goal_cognition_wake(
             wake,
             active_user_goals=active_user_goals,
         )
+        pending_chatgpt = self.pending_chatgpt_request_ids()
+        wake_has_resume_ref = any(
+            str(ref).startswith("cognition-request:")
+            for ref in wake.relevant_refs
+        )
+        if pending_chatgpt and not wake_has_resume_ref:
+            if wake.task in _CHATGPT_COGNITIVE_TASKS:
+                return 60.0
+            if wake.task in _OPTIONAL_INTERNAL_TASKS:
+                return 60.0
         if owner_goal_wake:
+            # Explicit owner work bypasses resource-pressure admission, but it
+            # cannot violate the durable cognition single-flight invariant.
             return None
         return self.resource_regulator.defer_seconds(wake.task, self.core.clock())
 

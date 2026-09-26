@@ -194,6 +194,132 @@ def test_drive_engine_is_neural_and_homeostatic_but_cannot_bypass_admission(tmp_
     assert result["model_generated_desire"] is False
 
 
+def test_drive_no_effect_outcome_creates_attempt_fatigue(tmp_path):
+    _policies(tmp_path)
+    organism = OrganismStateService(tmp_path).refresh(
+        now=NOW,
+        neural_life=_neural(),
+        resource_pressure="NORMAL",
+        pending_plan_count=0,
+        last_cognition_at=NOW,
+        last_action_at=NOW,
+    )
+    engine = DriveEngine(tmp_path)
+    engine.refresh(
+        now=NOW,
+        organism=organism,
+        neural_life=_neural(),
+        personality=_personality(),
+    )
+    settled = engine.settle(
+        drive="resource",
+        task="RESOURCE_REVIEW",
+        status="EXECUTED",
+        utility=0.0,
+        evidence_ref="task-result:no-effect",
+        now=NOW,
+    )
+    assert settled["no_effect_streak"] == 1
+    assert settled["failure_streak"] == 0
+    assert settled["cooldown_until"] is not None
+
+    refreshed = engine.refresh(
+        now=NOW + timedelta(minutes=1),
+        organism=organism,
+        neural_life=_neural(NOW + timedelta(minutes=1)),
+        personality=_personality(NOW + timedelta(minutes=1)),
+    )
+    candidate = next(
+        row for row in refreshed["last_decision"]["candidates"]
+        if row["drive"] == "resource"
+    )
+    assert candidate["feedback_penalty"] >= 0.14
+    assert (
+        candidate["arbitration_score"]
+        < candidate["pre_feedback_arbitration_score"]
+    )
+
+
+def test_positive_world_utility_satisfies_and_cools_drive(tmp_path):
+    _policies(tmp_path)
+    organism = OrganismStateService(tmp_path).refresh(
+        now=NOW,
+        neural_life=_neural(),
+        resource_pressure="NORMAL",
+        pending_plan_count=0,
+        last_cognition_at=NOW,
+        last_action_at=NOW,
+    )
+    engine = DriveEngine(tmp_path)
+    engine.refresh(
+        now=NOW,
+        organism=organism,
+        neural_life=_neural(),
+        personality=_personality(),
+    )
+    settled = engine.settle(
+        drive="curiosity",
+        task="OBSERVE_WORLD",
+        status="SATISFIED",
+        utility=0.6,
+        evidence_ref="world:evidence",
+        now=NOW,
+    )
+    assert settled["last_satisfied_at"] == NOW.isoformat()
+    assert settled["outcome_satisfaction"] >= 0.6
+    assert settled["no_effect_streak"] == 0
+
+    refreshed = engine.refresh(
+        now=NOW + timedelta(minutes=1),
+        organism=organism,
+        neural_life=_neural(NOW + timedelta(minutes=1)),
+        personality=_personality(NOW + timedelta(minutes=1)),
+    )
+    curiosity = refreshed["drives"]["curiosity"]
+    assert curiosity["outcome_satisfaction"] > 0.0
+    assert curiosity["urgency"] < curiosity["intensity"]
+
+
+def test_resource_emergency_caps_feedback_backoff(tmp_path):
+    _policies(tmp_path)
+    organism = OrganismStateService(tmp_path).refresh(
+        now=NOW,
+        neural_life=_neural(),
+        resource_pressure="NORMAL",
+        pending_plan_count=0,
+        last_cognition_at=NOW,
+        last_action_at=NOW,
+    )
+    organism["summary"]["status"] = "CRITICAL"
+    organism["signals"]["host_resource_pressure"]["value"] = 0.95
+    engine = DriveEngine(tmp_path)
+    engine.refresh(
+        now=NOW,
+        organism=organism,
+        neural_life=_neural(),
+        personality=_personality(),
+    )
+    engine.settle(
+        drive="resource",
+        task="RESOURCE_REVIEW",
+        status="FAILED",
+        utility=-0.4,
+        evidence_ref="resource:failed",
+        now=NOW,
+    )
+    refreshed = engine.refresh(
+        now=NOW + timedelta(minutes=1),
+        organism=organism,
+        neural_life=_neural(NOW + timedelta(minutes=1)),
+        personality=_personality(NOW + timedelta(minutes=1)),
+    )
+    candidate = next(
+        row for row in refreshed["last_decision"]["candidates"]
+        if row["drive"] == "resource"
+    )
+    assert candidate["feedback_penalty"] <= 0.04
+
+
 def test_development_history_is_path_dependent_and_opens_mastery_need(tmp_path):
     history = DevelopmentalHistory(tmp_path)
     for index in range(3):

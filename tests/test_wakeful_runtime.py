@@ -86,6 +86,76 @@ def test_content_cognition_is_scheduled_by_semantic_interval(tmp_path):
     assert wake.at == NOW + timedelta(hours=6)
 
 
+def test_autonomous_goal_requires_positive_world_utility_to_be_satisfied(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:resource-test",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+
+    settled = runtime.observe_autonomous_goal_outcome(
+        task="RESOURCE_REVIEW",
+        result={"status": "OK", "world_utility": 0.65},
+        goal_id=goal_id,
+        observed_at=NOW + timedelta(seconds=30),
+    )
+
+    assert settled is not None
+    assert settled["status"] == "SATISFIED"
+    assert settled["world_utility"] == 0.65
+    feedback = settled["drive_feedback"]
+    assert feedback["last_satisfied_at"] == (
+        NOW + timedelta(seconds=30)
+    ).isoformat()
+    assert feedback["outcome_satisfaction"] >= 0.65
+
+
+def test_autonomous_goal_ok_without_world_effect_is_only_executed(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    scheduled = runtime.autonomous_life.tick(
+        now=NOW,
+        organism={"updated_at": NOW.isoformat()},
+        drives={
+            "last_decision": {
+                "decision_id": "drive-decision:no-effect",
+                "winner": {
+                    "drive": "resource",
+                    "task": "RESOURCE_REVIEW",
+                    "reason": "reduce resource pressure",
+                    "arbitration_score": 0.8,
+                },
+            }
+        },
+        developmental_history={"open_developmental_needs": []},
+    )
+    goal_id = scheduled["goal"]["goal_id"]
+
+    settled = runtime.observe_autonomous_goal_outcome(
+        task="RESOURCE_REVIEW",
+        result={"status": "OK", "world_utility": 0.0},
+        goal_id=goal_id,
+        observed_at=NOW + timedelta(seconds=30),
+    )
+
+    assert settled is not None
+    assert settled["status"] == "EXECUTED"
+    assert settled["drive_feedback"]["no_effect_streak"] == 1
+    assert settled["drive_feedback"].get("last_satisfied_at") is None
+
+
 def test_chatgpt_only_cognition_ignores_legacy_api_pool_pressure(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
@@ -358,6 +428,80 @@ def test_pending_chatgpt_prediction_verification_is_single_flight(tmp_path):
         row.wake_id.startswith("wake:prediction:")
         for row in pending
     )
+
+
+def test_pending_chatgpt_request_defers_new_cognition_and_optional_internal_work(
+    tmp_path,
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_pending",
+        task="VERIFY_PREDICTION",
+    )
+
+    assert runtime.pending_chatgpt_request_ids() == ("llmreq_pending",)
+    verify = PlannedWake(
+        wake_id="wake:prediction:new",
+        at=NOW,
+        reason="verify another prediction",
+        task="VERIFY_PREDICTION",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="optional internal play",
+        task="NEURAL_PLAY",
+    )
+    assert runtime._plan_admission_delay(verify) == 60.0
+    assert runtime._plan_admission_delay(play) == 60.0
+
+
+def test_pending_chatgpt_request_inhibits_new_neural_motor_selection(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_pending",
+        task="VERIFY_PREDICTION",
+    )
+
+    def forbidden_select(*args, **kwargs):
+        raise AssertionError("neural motor must not select optional work")
+
+    monkeypatch.setattr(runtime.neural_motor, "select", forbidden_select)
+    runtime.refresh_neural_life(NOW)
+
+    assert not any(
+        wake.wake_id.startswith("motor:")
+        for wake in runtime.core.snapshot().pending_plans
+    )
+
+
+def test_owner_goal_cognition_respects_existing_chatgpt_single_flight(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_pending",
+        task="VERIFY_PREDICTION",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_active_user_goal_ids",
+        lambda: {"goal-owner"},
+    )
+    owner = PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW,
+        reason="reconsider priorities after owner activated a goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal-owner",),
+    )
+
+    assert runtime._plan_admission_delay(owner) == 60.0
 
 
 def test_chatgpt_resume_replaces_stale_request_ref_without_losing_provenance(

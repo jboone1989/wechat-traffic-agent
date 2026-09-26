@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 import json
 import math
@@ -1065,6 +1065,35 @@ class WakefulContentTaskRunner:
         if self.continuous_loop is None:
             return {"task": "VERIFY_PREDICTION", "status": "DISABLED"}
         ledger = getattr(self.continuous_loop, "predictions", None)
+        owner_goal = self._active_owner_goal_context()
+        if (
+            owner_goal is not None
+            and str(owner_goal.get("origin") or "") == "EXTERNAL_MISSION"
+            and ledger is not None
+            and callable(getattr(ledger, "due", None))
+            and callable(getattr(ledger, "defer_verification", None))
+        ):
+            due = tuple(ledger.due(now))
+            if due:
+                deferred = [
+                    ledger.defer_verification(
+                        prediction.prediction_id,
+                        deferred_at=now,
+                        delay=timedelta(minutes=15),
+                        reason="OWNER_EXTERNAL_MISSION_PRIORITY",
+                    )
+                    for prediction in due
+                ]
+                sync = getattr(self.wakeful, "sync_prediction_wakes", None)
+                if callable(sync):
+                    sync(now)
+                return {
+                    "task": "VERIFY_PREDICTION",
+                    "status": "OWNER_MISSION_DEFERRED",
+                    "owner_goal_id": str(owner_goal.get("goal_id") or ""),
+                    "deferred_count": len(deferred),
+                    "retry_after": deferred[0].get("retry_after"),
+                }
         try:
             if ledger is not None and callable(getattr(ledger, "due", None)):
                 for prediction in ledger.due(now):
