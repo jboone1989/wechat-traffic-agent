@@ -503,24 +503,17 @@ class ContentMind:
             actual = float(row.get("actual_pageviews"))
             if any(not 0.0 <= value <= 1.0 for value in (error, reliability)) or min(expected, actual) < 0:
                 raise ValueError("action prediction outcome scores are invalid")
-            event_id = f"content-action-outcome:{prediction_id}:{window}"
-            if event_id in self._observed_event_ids:
-                duplicates += 1
-                continue
             brain_prediction_id = f"{prediction_id}:{window}"
             observed_at = datetime.fromisoformat(
                 str(row.get("observed_at")).replace("Z", "+00:00")
             )
             if observed_at.tzinfo is None or observed_at.utcoffset() is None:
                 raise ValueError("action prediction outcome observed_at must be timezone-aware")
-            result = self.session.settle_prediction(
-                prediction_id=brain_prediction_id,
-                outcome_id=f"content-outcome:{publication_id}:{window}",
-                observed=actual, observed_at=str(row.get("observed_at")), evidence_refs=refs,
-                maturity=str(row.get("maturity")), reliability=reliability,
-                learning_authority=(str(row.get("maturity")) == "MATURE"),
-                metric=content_error, inquiry_threshold=ERROR_INQUIRY_THRESHOLD[window],
-            )
+            # Reconcile the delayed world-learning ledger even when the
+            # canonical prediction outcome was already observed.  A crash can
+            # persist the canonical settlement before this supplemental
+            # ledger, and treating the replay as a pure duplicate would leave
+            # world_learning.due() true forever.
             world_action = self.world_learning.find_by_metadata(
                 "brain_prediction_id", brain_prediction_id
             )
@@ -537,6 +530,18 @@ class ContentMind:
                     ),
                     causal_factors={},
                 )
+            event_id = f"content-action-outcome:{prediction_id}:{window}"
+            if event_id in self._observed_event_ids:
+                duplicates += 1
+                continue
+            result = self.session.settle_prediction(
+                prediction_id=brain_prediction_id,
+                outcome_id=f"content-outcome:{publication_id}:{window}",
+                observed=actual, observed_at=str(row.get("observed_at")), evidence_refs=refs,
+                maturity=str(row.get("maturity")), reliability=reliability,
+                learning_authority=(str(row.get("maturity")) == "MATURE"),
+                metric=content_error, inquiry_threshold=ERROR_INQUIRY_THRESHOLD[window],
+            )
             core_error = float(result["normalized_error"])
             if abs(core_error - error) > 1e-9:
                 raise ValueError("Content and VirtualBrain prediction-error calculations diverged")

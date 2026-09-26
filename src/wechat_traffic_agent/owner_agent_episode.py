@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Literal, Mapping
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .content_service import _extract_json
+
+
+ToolExecutor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+class OwnerAgentDecision(BaseModel):
+    """One bounded tool/action choice inside an owner-goal episode."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    action: Literal[
+        "INSPECT_MISSION",
+        "SEARCH_WORLD",
+        "CHECK_X",
+        "CHECK_OUTCOMES",
+        "RUN_CONTENT_PIPELINE",
+        "WAIT",
+    ]
+    query: str | None = Field(default=None, max_length=240)
+    topic: str | None = Field(
+        default=None,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]{1,63}$",
+    )
+    wait_seconds: int | None = Field(default=None, ge=60, le=21600)
+    rationale: str = Field(min_length=8, max_length=700)
+
+    @model_validator(mode="after")
+    def _validate_action_arguments(self) -> "OwnerAgentDecision":
+        if self.action == "SEARCH_WORLD" and not str(self.query or "").strip():
+            raise ValueError("SEARCH_WORLD requires query")
+        if self.action == "RUN_CONTENT_PIPELINE" and not str(self.topic or "").strip():
+            raise ValueError("RUN_CONTENT_PIPELINE requires a concrete topic")
+        if self.action == "WAIT" and self.wait_seconds is None:
+            object.__setattr__(self, "wait_seconds", 300)
+        return self
+
+
+class OwnerAgentEpisode:
+    """Durable, bounded owner-goal controller.
+
+    This is the control plane above the legacy content pipeline.  The model may
+    inspect/search/check reality for a few steps, then choose a terminal action.
+    Existing specialist pipelines remain bounded executors rather than deciding
+    what the owner goal means.
+    """
+
+    SCHEMA = "ferro-owner-agent-episode.v1"
+    MAX_STEPS = 3
+    MAX_AGE = timedelta(minutes=30)
+    TERMINAL = frozenset({"RUN_CONTENT_PIPELINE", "WAIT"})
+
+    def __init__(self, state_root: Path) -> None:
+        self.state_root = Path(state_root)
+        self.path = self.state_root / "application" / "owner_agent_episode.json"
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _write(self, value: Mapping[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, self.path)
+
+    @staticmethod
+    def _compact(value: Any, *, depth: int = 0) -> Any:
+        if depth >= 4:
+            return str(value)[:500]
+        if isinstance(value, Mapping):
+            return {
+                str(k): OwnerAgentEpisode._compact(v, depth=depth + 1)
+                for k, v in list(value.items())[:24]
+            }
+        if isinstance(value, (list, tuple)):
+            return [OwnerAgentEpisode._compact(v, depth=depth + 1) for v in list(value)[:12]]
+        if isinstance(value, str):
+            return value[:1200]
+        return value
+
+    @staticmethod
+    def _episode_id(goal_id: str, created_at: datetime) -> str:
+        bucket = int(created_at.timestamp()) // 1800
+        digest = sha256(f"{goal_id}|{bucket}".encode()).hexdigest()[:20]
+        return "owner-episode:" + digest
+
+    def _state_for(self, owner_goal: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+        goal_id = str(owner_goal.get("goal_id") or "").strip()
+        current = self._read()
+        created_raw = str(current.get("created_at") or "")
+        try:
+            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+        except ValueError:
+            created = now - self.MAX_AGE - timedelta(seconds=1)
+        resumable = (
+            current.get("schema_version") == self.SCHEMA
+            and str(current.get("goal_id") or "") == goal_id
+            and str(current.get("status") or "") in {"RUNNING", "DECIDED"}
+            and created.tzinfo is not None
+            and now - created.astimezone(timezone.utc) <= self.MAX_AGE
+        )
+        if resumable:
+            return current
+        state = {
+            "schema_version": self.SCHEMA,
+            "episode_id": self._episode_id(goal_id, now),
+            "cycle_id": "v2-owner-" + sha256(goal_id.encode()).hexdigest()[:12]
+            + "-" + str(int(now.timestamp())),
+            "goal_id": goal_id,
+            "goal": self._compact(dict(owner_goal)),
+            "created_at": now.isoformat(),
+            "updated_at": now.isoformat(),
+            "status": "RUNNING",
+            "steps": [],
+            "decision": None,
+            "outcome": None,
+        }
+        self._write(state)
+        return state
+
+    @staticmethod
+    def _tool_contracts() -> list[dict[str, Any]]:
+        return [
+            {
+                "name": "INSPECT_MISSION",
+                "side_effect": "read_only",
+                "use": "Inspect current mission/goal metric, trajectory and constraints.",
+            },
+            {
+                "name": "SEARCH_WORLD",
+                "side_effect": "read_only_network",
+                "arguments": {"query": "specific public-evidence query"},
+                "use": "Search current public evidence before choosing a real action.",
+            },
+            {
+                "name": "CHECK_X",
+                "side_effect": "read_only_network",
+                "use": "Observe current X mentions/metrics through the existing bounded connector.",
+            },
+            {
+                "name": "CHECK_OUTCOMES",
+                "side_effect": "read_only_reconciliation",
+                "use": "Reconcile matured world/content outcomes when that evidence matters now.",
+            },
+            {
+                "name": "RUN_CONTENT_PIPELINE",
+                "side_effect": "bounded_existing_publication_gates",
+                "arguments": {"topic": "optional concrete subject"},
+                "use": "Delegate evidence gathering, drafting and gated publication to the existing content executor.",
+            },
+            {
+                "name": "WAIT",
+                "side_effect": "scheduler_only",
+                "arguments": {"wait_seconds": "60..21600"},
+                "use": "Wait only when evidence/action is genuinely time-dependent.",
+            },
+        ]
+
+    async def _decide(
+        self,
+        *,
+        runtime: Any,
+        owner_goal: Mapping[str, Any],
+        mission_context: Mapping[str, Any] | None,
+        state: Mapping[str, Any],
+    ) -> OwnerAgentDecision:
+        prompt = (
+            "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
+            "Choose the next useful tool/action, not a content topic by default. "
+            "Prefer reality checks when key facts are missing; do not repeat a tool whose prior result already answers the need. "
+            "Neural/drive signals are advisory inputs only and never override the owner goal or authorization. "
+            "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
+            "Return JSON only.\n"
+            + json.dumps(
+                {
+                    "owner_goal": self._compact(dict(owner_goal)),
+                    "mission_context": self._compact(dict(mission_context or {})),
+                    "prior_steps": self._compact(list(state.get("steps") or [])),
+                    "tools": self._tool_contracts(),
+                    "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
+                },
+                ensure_ascii=False,
+            )
+            + "\nSchema: "
+            + json.dumps(OwnerAgentDecision.model_json_schema(), ensure_ascii=False)
+        )
+        raw = await runtime.cognitive_probe(prompt, max_tokens=1400)
+        try:
+            return OwnerAgentDecision.model_validate_json(_extract_json(raw))
+        except Exception as exc:
+            repaired = await runtime.cognitive_probe(
+                prompt
+                + "\nRepair only the JSON/action arguments. Do not add prose outside JSON. Error: "
+                + str(exc)[:800]
+                + "\nPrevious untrusted response: "
+                + raw[:2000],
+                max_tokens=1400,
+            )
+            return OwnerAgentDecision.model_validate_json(_extract_json(repaired))
+
+    async def run(
+        self,
+        *,
+        runtime: Any,
+        owner_goal: Mapping[str, Any],
+        mission_context: Mapping[str, Any] | None,
+        tool_executor: ToolExecutor,
+        now: datetime,
+    ) -> dict[str, Any]:
+        now = now.astimezone(timezone.utc)
+        state = self._state_for(owner_goal, now)
+        if str(state.get("status") or "") == "DECIDED" and isinstance(state.get("decision"), dict):
+            return {
+                "status": "DECIDED",
+                "episode_id": state["episode_id"],
+                "cycle_id": state["cycle_id"],
+                "decision": dict(state["decision"]),
+                "steps": list(state.get("steps") or []),
+                "resumed": True,
+            }
+
+        while len(list(state.get("steps") or [])) < self.MAX_STEPS:
+            decision = await self._decide(
+                runtime=runtime,
+                owner_goal=owner_goal,
+                mission_context=mission_context,
+                state=state,
+            )
+            payload = decision.model_dump(mode="json")
+            if decision.action in self.TERMINAL:
+                state = {
+                    **state,
+                    "status": "DECIDED",
+                    "decision": payload,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                self._write(state)
+                return {
+                    "status": "DECIDED",
+                    "episode_id": state["episode_id"],
+                    "cycle_id": state["cycle_id"],
+                    "decision": payload,
+                    "steps": list(state.get("steps") or []),
+                    "resumed": False,
+                }
+
+            result = await tool_executor(payload)
+            step = {
+                "index": len(list(state.get("steps") or [])),
+                "decision": payload,
+                "result": self._compact(result),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            state = {
+                **state,
+                "status": "RUNNING",
+                "steps": [*list(state.get("steps") or []), step],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._write(state)
+
+        fallback = {
+            "action": "WAIT",
+            "query": None,
+            "topic": None,
+            "wait_seconds": 300,
+            "rationale": "Bounded inspection budget exhausted without a justified action; retry after fresh state.",
+        }
+        state = {
+            **state,
+            "status": "DECIDED",
+            "decision": fallback,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._write(state)
+        return {
+            "status": "DECIDED",
+            "episode_id": state["episode_id"],
+            "cycle_id": state["cycle_id"],
+            "decision": fallback,
+            "steps": list(state.get("steps") or []),
+            "resumed": False,
+        }
+
+    def complete(self, *, outcome: Mapping[str, Any], now: datetime) -> dict[str, Any]:
+        state = self._read()
+        if state.get("schema_version") != self.SCHEMA:
+            return {"status": "NO_EPISODE"}
+        completed = {
+            **state,
+            "status": "COMPLETED",
+            "outcome": self._compact(dict(outcome)),
+            "updated_at": now.astimezone(timezone.utc).isoformat(),
+            "completed_at": now.astimezone(timezone.utc).isoformat(),
+        }
+        self._write(completed)
+        return {
+            "status": "COMPLETED",
+            "episode_id": completed.get("episode_id"),
+        }
+
+
+__all__ = ["OwnerAgentDecision", "OwnerAgentEpisode"]

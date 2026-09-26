@@ -88,7 +88,7 @@ class LivingRuntimeChatGPTProvider:
         enabled: bool,
         agent_id: str = "ferro",
         timeout_seconds: float = 900.0,
-        dispatch_grace_seconds: float = 900.0,
+        dispatch_grace_seconds: float = 60.0,
         foreground_wait_seconds: float = 5.0,
         durable_dispatch: bool = True,
     ) -> None:
@@ -147,7 +147,7 @@ class LivingRuntimeChatGPTProvider:
                 "LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS must be numeric"
             ) from exc
         raw_dispatch_grace = str(
-            os.environ.get("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS") or "900"
+            os.environ.get("LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS") or "60"
         ).strip()
         try:
             dispatch_grace = float(raw_dispatch_grace)
@@ -299,13 +299,17 @@ class LivingRuntimeChatGPTProvider:
             1,
             min(int(math.ceil(effective_timeout)), 900),
         )
-        dispatch_timeout_seconds = (
-            0
-            if self.durable_dispatch
-            else max(
-                1,
-                min(int(math.ceil(self.dispatch_grace_seconds)), cli_timeout_seconds),
-            )
+        # Durable means the request survives the short foreground wait; it must
+        # not mean "wait forever for a ChatGPT session to exist". A finite
+        # dispatch deadline keeps resume semantics while turning a missing
+        # watcher into bounded provider failure/recovery instead of a frozen
+        # owner task.
+        dispatch_timeout_seconds = max(
+            1,
+            min(
+                int(math.ceil(self.dispatch_grace_seconds)),
+                cli_timeout_seconds,
+            ),
         )
         payload = {
             "request_id": request_id,
@@ -412,6 +416,14 @@ class LivingRuntimeChatGPTProvider:
                 "LivingRuntime cognition request did not complete"
             )
         result_status = str(result.get("status") or "").upper()
+        if (
+            resume_existing
+            and result_status == "PENDING"
+            and result.get("deadline_at") is None
+        ):
+            raise LivingRuntimeChatGPTProviderError(
+                "legacy unbounded cognition request has no dispatch deadline"
+            )
         if resume_existing and result_status in {"PENDING", "DISPATCHED"}:
             # Durable resume is a state check, not another blocking wait. The
             # exact request remains authoritative and will be retried by the

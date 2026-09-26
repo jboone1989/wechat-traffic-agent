@@ -229,6 +229,10 @@ class ContentWakefulRuntime:
         from .neural_organ_handoff import NeuralOrganHandoff
         self.neural_organ_handoff = NeuralOrganHandoff(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
+        # Process-local edge detector for matured delayed-learning work.  The
+        # hourly CHECK_OUTCOMES cadence is the liveness fallback; this signature
+        # only grants one fast follow-up when the due set actually changes.
+        self._world_learning_due_signature: tuple[tuple[str, str, str], ...] = ()
 
     def _enqueue_external_wake(self, wake: PlannedWake) -> Path:
         """Persist an additive wake intent that survives cross-process state races."""
@@ -575,6 +579,20 @@ class ContentWakefulRuntime:
             "last_cognition_at": snap.last_cognition_at.isoformat() if snap.last_cognition_at else None,
         }
         projection = self.neural_life.update(now=now, wakeful=wakeful)
+        owner_control_active = bool(self._active_user_goal_ids())
+        if owner_control_active:
+            # Neural/developmental systems remain sensors and learners while an
+            # explicit owner goal is active; they do not own the control plane.
+            # Their durable internal state is preserved and their wakes can be
+            # regenerated after owner work closes.
+            for planned in tuple(self.core.snapshot().pending_plans):
+                if (
+                    planned.task in _OPTIONAL_INTERNAL_TASKS
+                    or planned.wake_id.startswith(
+                        ("neural:", "motor:", "autonomous:", "dream-insight:")
+                    )
+                ):
+                    self.core.cancel(planned.wake_id)
 
         if self.neural_life.should_stimulate(now):
             substrate = getattr(self.core.reflex, "substrate", None)
@@ -652,7 +670,7 @@ class ContentWakefulRuntime:
                 ), enqueue=False)
 
         recommendation = self.neural_life.authority_recommendation(now)
-        if recommendation is not None:
+        if recommendation is not None and not owner_control_active:
             task = str(recommendation["task"])
             if task == "CHECK_X" and os.environ.get("CONTENT_X_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
                 task = "CONTENT_COGNITION"
@@ -685,7 +703,12 @@ class ContentWakefulRuntime:
         )
         intention = (projection.get("intention") or {}).get("name")
         pressure = self.resource_regulator.pressure(now)
-        if self.pending_chatgpt_request_ids():
+        if owner_control_active:
+            motor = {
+                "status": "INHIBITED_OWNER_GOAL_CONTROL",
+                "task": None,
+            }
+        elif self.pending_chatgpt_request_ids():
             motor = {
                 "status": "INHIBITED_WAITING_FOR_CHATGPT",
                 "task": None,
@@ -774,7 +797,11 @@ class ContentWakefulRuntime:
                 ), enqueue=False)
 
         candidate_world = self.developmental_agency.next_candidate_world()
-        if candidate_world is not None and int(candidate_world.get("trial_count") or 0) == 0:
+        if (
+            not owner_control_active
+            and candidate_world is not None
+            and int(candidate_world.get("trial_count") or 0) == 0
+        ):
             target_at = now + timedelta(seconds=10)
             if not any(
                 wake.task == "NEURAL_DEVELOPMENT" and wake.at <= target_at
@@ -792,7 +819,11 @@ class ContentWakefulRuntime:
                     ),
                     preemptible=True,
                 ))
-        elif candidate_world is not None and self.developmental_world_transfer.pending() is None:
+        elif (
+            not owner_control_active
+            and candidate_world is not None
+            and self.developmental_world_transfer.pending() is None
+        ):
             evaluation = (
                 self.developmental_world_transfer.projection()
                 .get("worlds", {})
@@ -822,7 +853,7 @@ class ContentWakefulRuntime:
 
         evolution = self.open_ended_evolution.refresh(now=now)
         consolidation = self.open_ended_evolution.next_consolidation()
-        if consolidation is not None:
+        if consolidation is not None and not owner_control_active:
             target_at = now + timedelta(seconds=10)
             if not any(
                 wake.task == "NEURAL_EVOLUTION_CONSOLIDATION"
@@ -878,16 +909,29 @@ class ContentWakefulRuntime:
         # Durable active goals remain obligations across process restarts.
         # Rebuild missing scheduler wakes even when autonomous_life.tick()
         # returned COOLDOWN rather than a newly-created goal this cycle.
-        self._ensure_autonomous_goal_wakes(now)
-        if closure.get("world_learning_due") and not any(
-            wake.task == "CHECK_OUTCOMES" and wake.at <= now + timedelta(minutes=5)
-            for wake in self.core.snapshot().pending_plans
-        ):
-            self.core.schedule(PlannedWake(
-                wake_id="content:CHECK_OUTCOMES", at=now + timedelta(seconds=10),
-                reason="settle matured delayed world-learning outcomes",
-                task="CHECK_OUTCOMES", preemptible=False,
-            ))
+        if not owner_control_active:
+            self._ensure_autonomous_goal_wakes(now)
+        due_rows = self.world_learning.due(now)
+        due_signature = tuple(
+            (
+                str(row.get("action_id") or ""),
+                str(row.get("window") or ""),
+                str(row.get("due_at") or ""),
+            )
+            for row in due_rows
+        )
+        if due_signature and due_signature != self._world_learning_due_signature:
+            if not any(
+                wake.task == "CHECK_OUTCOMES"
+                and wake.at <= now + timedelta(minutes=5)
+                for wake in self.core.snapshot().pending_plans
+            ):
+                self.core.schedule(PlannedWake(
+                    wake_id="content:CHECK_OUTCOMES", at=now + timedelta(seconds=10),
+                    reason="settle newly matured delayed world-learning outcomes",
+                    task="CHECK_OUTCOMES", preemptible=False,
+                ))
+        self._world_learning_due_signature = due_signature
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()

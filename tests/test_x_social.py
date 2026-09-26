@@ -101,6 +101,28 @@ def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_pa
     assert history[-1]["lineage"]["adopted"] is False
 
 
+def test_read_only_x_observation_never_replies_or_bookmarks(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    runtime = _Runtime()
+    model = _ModelRuntime([{
+        "action": "REPLY", "category": "EVIDENCE", "valuable_evidence": True,
+        "summary": "The mention is relevant enough to inspect without writing to X.",
+        "reply_text": "This reply must not be sent in read-only observation mode.",
+        "rationale": "Owner control requested observation only, so no remote write is authorized.",
+    }])
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="https://example.com",
+    )
+
+    result = asyncio.run(loop.observe(now=NOW, allow_remote_actions=False))
+
+    assert result["status"] == "OK"
+    assert not any(capability in {"x.reply", "x.bookmark"} for capability, _ in runtime.calls)
+
+
 def test_credits_depleted_is_public_status_not_fake_social_success(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("CONTENT_X_WRITES_ENABLED", raising=False)
     monkeypatch.delenv("CONTENT_TINYFISH_X_ENABLED", raising=False)

@@ -157,6 +157,60 @@ def test_action_prediction_settles_early_feedback_and_opens_learning_inquiry(tmp
     assert replay["mind"]["duplicates"] == 1
 
 
+def test_duplicate_canonical_outcome_repairs_missing_world_learning_settlement(tmp_path):
+    state = tmp_path / "state"
+    topic = "crypto-market"
+    profile = next(item for item in PROFILES if item.name == "evidence-brief")
+    cycle = "v2-repair-world-learning"
+    cycle_root, strategy_id = _publication(
+        state, cycle=cycle, revision="f" * 64, topic=topic, profile=profile,
+        published_at=NOW + timedelta(minutes=1),
+    )
+    forecasts = forecast_strategy_candidates(
+        state_root=state, account=ACCOUNT, topic=topic, as_of=NOW,
+    )
+    bind_action_prediction(
+        cycle_root / "action_prediction.json", cycle=cycle, topic=topic,
+        strategy_id=strategy_id, selected_profile_name=profile.name,
+        created_at=NOW, candidate_forecasts=forecasts,
+    )
+    _evidence(
+        state, revision="f" * 64, topic=topic, window_hours=1, value=7,
+        observed_at=NOW + timedelta(hours=1, minutes=5),
+    )
+    mind = ContentMind(root=state, subject_id="content-agent")
+    first = settle_action_predictions(
+        state_root=state, account=ACCOUNT, as_of=NOW + timedelta(hours=2), mind=mind,
+    )
+    assert first["recorded"][0]["window"] == "1h"
+
+    # Simulate the crash window that motivated the production busy loop:
+    # canonical outcome persisted, supplemental world-learning settlement lost.
+    path = state / "application" / "world_learning.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    action = next(
+        row for row in payload["actions"].values()
+        if str(row["metadata"]["brain_prediction_id"]).endswith(":1h")
+    )
+    action["settlements"]["1h"].update({
+        "status": "PENDING", "observed_at": None, "actual_utility": None,
+        "prediction_error": None, "counterfactual": None,
+        "evidence_refs": [], "learning_signal": None,
+    })
+    action["status"] = "OPEN"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    restarted = ContentMind(root=state, subject_id="content-agent")
+    replay = settle_action_predictions(
+        state_root=state, account=ACCOUNT, as_of=NOW + timedelta(hours=2), mind=restarted,
+    )
+    assert replay["mind"]["duplicates"] == 1
+    repaired = restarted.world_learning.find_by_metadata(
+        "brain_prediction_id", str(action["metadata"]["brain_prediction_id"])
+    )
+    assert repaired["settlements"]["1h"]["status"] == "SETTLED"
+
+
 def test_multi_horizon_feedback_stays_separate_and_24h_is_mature(tmp_path):
     state = tmp_path / "state"
     topic = "model-evaluation"

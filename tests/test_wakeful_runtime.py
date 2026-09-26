@@ -1611,3 +1611,35 @@ def test_prediction_verification_error_defers_same_prediction_for_one_hour(tmp_p
     )
     assert wake.at == NOW + timedelta(hours=1)
     assert wake.relevant_refs == (prediction.prediction_id,)
+
+
+def test_unchanged_world_learning_due_set_does_not_self_reschedule_every_refresh(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.world_learning.commit(
+        action_kind="TEST",
+        prediction="A delayed outcome should eventually be observed.",
+        expected_utility=0.5,
+        confidence=0.5,
+        evidence_refs=("test:evidence",),
+        now=NOW,
+        windows=(("10m", timedelta(seconds=-1)),),
+    )
+
+    runtime.refresh_neural_life(NOW)
+    first = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CHECK_OUTCOMES"
+    )
+    assert first.at == NOW + timedelta(seconds=10)
+
+    # Simulate the fast check being consumed without new evidence. The same
+    # unresolved due set must fall back to the normal cadence, not recreate the
+    # ten-second wake on every neural refresh.
+    runtime.core.cancel("content:CHECK_OUTCOMES")
+    runtime.refresh_neural_life(NOW + timedelta(seconds=20))
+
+    assert not any(
+        row.wake_id == "content:CHECK_OUTCOMES"
+        and row.at <= NOW + timedelta(minutes=5)
+        for row in runtime.core.snapshot().pending_plans
+    )

@@ -152,7 +152,7 @@ print(json.dumps({
 
     assert json.loads(result) == {
         "payload_timeout": 97,
-        "dispatch_timeout": 0,
+        "dispatch_timeout": 60,
         "wait_timeout": 5,
     }
 
@@ -281,7 +281,7 @@ def test_default_remote_budget_allows_chatgpt_watcher_round_trip(tmp_path, monke
     )
 
     assert provider.timeout_seconds == 900.0
-    assert provider.dispatch_grace_seconds == 900.0
+    assert provider.dispatch_grace_seconds == 60.0
 
 
 def test_remote_dispatch_grace_is_configurable_and_bounded(tmp_path, monkeypatch):
@@ -323,7 +323,34 @@ print(json.dumps({
         provider.complete("short", _reserve_timeout_seconds=10)
     )
 
-    assert json.loads(result) == {"timeout": 7, "dispatch": 0}
+    assert json.loads(result) == {"timeout": 7, "dispatch": 7}
+
+
+def test_durable_dispatch_is_bounded_even_when_enabled(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+print(json.dumps({
+  "status":"COMPLETED","request_id":"llmreq_bounded_durable","created_at":1,"finished_at":2,
+  "response":{"text":json.dumps({"dispatch":payload["dispatch_timeout_seconds"]}),
+  "provider":"livingruntime-chatgpt","model":"test","session_id":"s","sha256":"x","completed_at":2}
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+        dispatch_grace_seconds=17,
+        durable_dispatch=True,
+    )
+
+    result = asyncio.run(provider.complete("bounded durable dispatch"))
+
+    assert json.loads(result) == {"dispatch": 17}
 
 
 def test_remote_can_opt_out_of_durable_dispatch_and_use_bounded_grace(tmp_path):

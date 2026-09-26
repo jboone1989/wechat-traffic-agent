@@ -222,7 +222,7 @@ class XAutonomyLoop:
             now=now,
         )
 
-    async def observe(self, *, now: datetime) -> dict[str, Any]:
+    async def observe(self, *, now: datetime, allow_remote_actions: bool = True) -> dict[str, Any]:
         cycle = "x-observe-" + str(int(now.timestamp()))
         try:
             me, identity_receipt = self._identity(now=now)
@@ -287,7 +287,7 @@ class XAutonomyLoop:
         for row in fresh[:10]:
             post_id = row["evidence_id"].removeprefix("x-post:")
             await self._handle_mention(row=row, post_id=post_id, me=me, cycle=cycle, now=now,
-                                       allow_remote_actions=not browser_fallback)
+                                       allow_remote_actions=allow_remote_actions and not browser_fallback)
             seen.add(post_id)
             handled += 1
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})

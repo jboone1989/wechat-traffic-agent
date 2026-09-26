@@ -138,3 +138,53 @@ def test_cognition_snapshot_unifies_current_harness_state():
     assert context["neural_state"]["life"]["affect"]["curiosity"] == 0.7
     assert "history" not in context["neural_state"]["life"]
     assert "irrelevant_bulk" not in context["mind"]["latest_plan"]
+
+
+def test_owner_episode_context_filters_noise_and_demotes_neural_control():
+    mission = SimpleNamespace(
+        mission_id="mission-x",
+        goal_id="goal-owner",
+        description="Grow the real X audience for LivingRuntime Remote",
+        metric="followers",
+        baseline=1800,
+        target=5000,
+        direction=SimpleNamespace(value="INCREASE"),
+        status=SimpleNamespace(value="ACTIVE"),
+        deadline=None,
+        constraints=(),
+    )
+
+    class Missions:
+        experiments = []
+
+        def active(self):
+            return [mission]
+
+        def progress(self, _mission_id, _now):
+            return SimpleNamespace(
+                current_value=1810,
+                trajectory="BEHIND",
+                pressure=0.8,
+            )
+
+    domain = _DomainRuntime()
+    domain.missions = Missions()
+    domain.external_missions = [mission]
+    app = _application()
+    app.domain_runtime = domain
+
+    context = build_ferro_cognition_context(
+        application=app,
+        mind=_Mind(),
+        wakeful=_Wakeful(),
+        prompt="OWNER_AGENT_EPISODE: grow LivingRuntime Remote on X",
+    )
+
+    assert {row["goal_id"] for row in context["current_intent"]} == {"goal-owner"}
+    assert {row["kind"] for row in context["current_intent"]} == {"GOAL"}
+    assert [row["mission_id"] for row in context["missions"]["active"]] == ["mission-x"]
+    assert len(context["mind"]["interests"]) <= 3
+    assert len(context["mind"]["open_inquiries"]) <= 3
+    assert context["neural_state"]["control_signals"] == []
+    assert context["neural_state"]["feedback"] == []
+    assert context["neural_state"]["control_authority"] == "ADVISORY_SIGNAL_ONLY"

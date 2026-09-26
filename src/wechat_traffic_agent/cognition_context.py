@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import re
 from typing import Any, Mapping
 
 from .memory_self import ProspectiveSelfMemoryService
@@ -13,6 +15,33 @@ def _enum(value: Any) -> str:
 def _clip(value: Any, limit: int = 1200) -> str:
     text = str(value or "")
     return text if len(text) <= limit else text[: limit - 14] + "...[truncated]"
+
+
+def _terms(value: Any) -> set[str]:
+    return {
+        token.lower()
+        for token in re.findall(
+            r"[A-Za-z0-9][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}",
+            str(value or ""),
+        )
+    }
+
+
+def _relevant_rows(rows: list[Any], query: str, *, limit: int) -> list[Any]:
+    if not rows:
+        return []
+    wanted = _terms(query)
+    scored: list[tuple[int, int, Any]] = []
+    for index, row in enumerate(rows):
+        haystack = (
+            json.dumps(row, ensure_ascii=False, default=str)
+            if isinstance(row, Mapping)
+            else str(row)
+        )
+        scored.append((len(wanted & _terms(haystack)), index, row))
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    selected = [row for score, _index, row in scored if score > 0][:limit]
+    return selected or list(rows[-limit:])
 
 
 def _iso(value: Any) -> str | None:
@@ -119,6 +148,7 @@ def build_ferro_cognition_context(
     application: Any,
     mind: Any,
     wakeful: Any,
+    prompt: str = "",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the one current Ferro snapshot presented to every LLM cognition call.
@@ -131,6 +161,15 @@ def build_ferro_cognition_context(
     packet = ProspectiveSelfMemoryService.snapshot_from_runtime(application, mind)
     projection = mind.public_projection()
     wake = wakeful.public_snapshot()
+    owner_mode = str(prompt).lstrip().startswith("OWNER_AGENT_EPISODE")
+    mission_state = (
+        _mission_state(domain_runtime, now)
+        if (domain_runtime := getattr(application, "domain_runtime", None)) is not None
+        else {"active": [], "recent_experiments": []}
+    )
+    query_context = " ".join(
+        [str(prompt), *[str(row.get("description") or "") for row in mission_state.get("active") or []]]
+    )
 
     neural_life = wake.get("neural_life") if isinstance(wake, Mapping) else {}
     if not isinstance(neural_life, Mapping):
@@ -142,7 +181,6 @@ def build_ferro_cognition_context(
     }
 
     app_runtime = getattr(application, "runtime", None)
-    domain_runtime = getattr(application, "domain_runtime", None)
     app_caps = (
         list(app_runtime.available_capabilities())
         if app_runtime is not None and callable(getattr(app_runtime, "available_capabilities", None))
@@ -158,13 +196,36 @@ def build_ferro_cognition_context(
     manifest_caps = list(getattr(manifest, "capabilities", ()) or ())
     capabilities = sorted(set(str(item) for item in [*app_caps, *domain_caps, *manifest_caps] if str(item).strip()))
 
+    intents = list(packet.current_intent)
+    if owner_mode and mission_state.get("active"):
+        owner_goal_ids = {
+            str(row.get("goal_id") or "")
+            for row in mission_state["active"]
+            if str(row.get("goal_id") or "")
+        }
+        scoped_intents = []
+        for row in intents:
+            if str(row.get("goal_id") or "") not in owner_goal_ids:
+                continue
+            item = dict(row)
+            kind = str(item.get("kind") or "")
+            if kind == "GOAL":
+                item["authority"] = "OWNER_OBJECTIVE"
+            else:
+                continue
+            scoped_intents.append(item)
+        intents = scoped_intents
+        # Keep one owner objective in current_intent. The bound mission is
+        # already present in missions.active with metric/trajectory/constraints;
+        # repeating it here makes one objective look like competing intents.
+
     mind_section = {
         "mind_schema": projection.get("mind_schema"),
         "mind_tick": projection.get("mind_tick"),
-        "interests": list(projection.get("interests") or [])[:8],
-        "open_inquiries": list(projection.get("open_inquiries") or [])[:8],
-        "beliefs": list(projection.get("beliefs") or [])[:8],
-        "recent_belief_changes": list(projection.get("recent_belief_changes") or [])[-8:],
+        "interests": _relevant_rows(list(projection.get("interests") or []), query_context, limit=3 if owner_mode else 6),
+        "open_inquiries": _relevant_rows(list(projection.get("open_inquiries") or []), query_context, limit=3 if owner_mode else 6),
+        "beliefs": _relevant_rows(list(projection.get("beliefs") or []), query_context, limit=3 if owner_mode else 6),
+        "recent_belief_changes": _relevant_rows(list(projection.get("recent_belief_changes") or []), query_context, limit=3 if owner_mode else 6),
         "latest_plan": _compact_latest_plan(projection.get("latest_plan")),
         "strategy_learning": {
             "outcome_count": int(
@@ -187,10 +248,10 @@ def build_ferro_cognition_context(
             "mind_tick": int(projection.get("mind_tick") or 0),
             "agent_runtime_cycle_is_host_internal": True,
         },
-        "current_intent": list(packet.current_intent),
-        "missions": _mission_state(domain_runtime, now) if domain_runtime is not None else {},
+        "current_intent": intents[:4] if owner_mode else intents[:8],
+        "missions": mission_state,
         "mind": mind_section,
-        "recent_experience": _recent_life_experience(mind),
+        "recent_experience": _relevant_rows(_recent_life_experience(mind), query_context, limit=4 if owner_mode else 8),
         "resources": dict(packet.current_resources),
         "capabilities": {
             "available": capabilities,
@@ -209,8 +270,9 @@ def build_ferro_cognition_context(
         },
         "neural_state": {
             "life": compact_neural_life,
-            "control_signals": list(wake.get("neural_control_signals") or [])[-8:],
-            "feedback": list(wake.get("neural_feedback") or [])[-8:],
+            "control_signals": [] if owner_mode else list(wake.get("neural_control_signals") or [])[-6:],
+            "feedback": [] if owner_mode else list(wake.get("neural_feedback") or [])[-6:],
+            "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
     }
 
@@ -225,6 +287,7 @@ def bind_ferro_cognition_context(*, application: Any, mind: Any, wakeful: Any) -
             application=application,
             mind=mind,
             wakeful=wakeful,
+            prompt=_prompt,
         ),
         replace_runtime_state=True,
     )

@@ -957,20 +957,54 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 mind_plan = self.mind.plan_for_cycle(cycle=cycle, available_topics=snapshot['topics'])
             if getattr(self, '_focus_topic', None):
                 endogenous_goal = mind_plan.get('goal')
-                mind_plan = {
-                    **mind_plan,
-                    'endogenous_goal': endogenous_goal,
-                    'bootstrap_focus': self._focus_topic,
-                    'goal': {
+                if owner_goal is not None:
+                    focused_goal = {
+                        'goal_id': str(owner_goal.get('goal_id') or ''),
+                        'origin': str(owner_goal.get('origin') or 'USER'),
+                        'description': str(owner_goal.get('description') or '')[:2400],
+                        'confidence': 1.0,
+                        'expected_value': 1.0,
+                        'interest_refs': [self._focus_topic],
+                        'inquiry_refs': [str(owner_goal.get('goal_id') or '')],
+                        'value_refs': [
+                            str((mission_context or {}).get('mission_id') or '')
+                        ],
+                    }
+                    focus_kind = 'OWNER_AGENT_FOCUS'
+                else:
+                    focused_goal = {
                         'goal_id': 'bootstrap-focus:' + self._focus_topic,
                         'origin': 'BOOTSTRAP_FOCUS',
                         'description': 'Bootstrap one useful piece around ' + self._focus_topic + ' while preserving the autonomous goal for later cycles.',
                         'confidence': 1.0, 'expected_value': 1.0,
                         'interest_refs': [self._focus_topic], 'inquiry_refs': [], 'value_refs': [],
-                    },
+                    }
+                    focus_kind = 'BOOTSTRAP_FOCUS'
+                mind_plan = {
+                    **mind_plan,
+                    'endogenous_goal': endogenous_goal,
+                    'bootstrap_focus': self._focus_topic,
+                    'focus_kind': focus_kind,
+                    'owner_goal_id': (
+                        str(owner_goal.get('goal_id') or '')
+                        if owner_goal is not None else None
+                    ),
+                    'external_mission_id': (
+                        str((mission_context or {}).get('mission_id') or '')
+                        if owner_goal is not None else None
+                    ),
+                    'goal': focused_goal,
                     'required_topic': self._focus_topic,
                 }
-                _put(folder / 'bootstrap_focus.json', {'topic': self._focus_topic, 'endogenous_goal': endogenous_goal})
+                _put(folder / 'bootstrap_focus.json', {
+                    'topic': self._focus_topic,
+                    'endogenous_goal': endogenous_goal,
+                    'focus_kind': focus_kind,
+                    'owner_goal_id': (
+                        str(owner_goal.get('goal_id') or '')
+                        if owner_goal is not None else None
+                    ),
+                })
 
             # N9: dreams are neural replay first; only here may the rational
             # language layer verbalize an already-formed preconcept. A strong,

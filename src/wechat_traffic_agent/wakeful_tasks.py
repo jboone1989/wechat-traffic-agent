@@ -39,6 +39,10 @@ class WakefulContentTaskRunner:
                 evolution_runtime=evolution_runtime,
                 capability_runtime=capability_runtime,
             )
+        if state_root is not None and getattr(self, "owner_agent_episode", None) is None:
+            from .owner_agent_episode import OwnerAgentEpisode
+
+            self.owner_agent_episode = OwnerAgentEpisode(Path(state_root))
         if (
             state_root is not None
             and components.get("repair_planner_runtime") is not None
@@ -1835,6 +1839,139 @@ class WakefulContentTaskRunner:
             "created_at": str(getattr(goal, "created_at", "") or ""),
         }
 
+    def _owner_agent_mission_context(
+        self,
+        owner_goal: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
+        goal_id = str(owner_goal.get("goal_id") or "")
+        for mission in list(getattr(runtime, "external_missions", ()) or ()):
+            if str(getattr(mission, "goal_id", "") or "") != goal_id:
+                continue
+            status = str(
+                getattr(
+                    getattr(mission, "status", None),
+                    "value",
+                    getattr(mission, "status", ""),
+                )
+            )
+            if status != "ACTIVE":
+                continue
+            current = trajectory = pressure = None
+            controller = getattr(runtime, "missions", None)
+            if controller is not None:
+                try:
+                    progress = controller.progress(
+                        str(getattr(mission, "mission_id")),
+                        now,
+                    )
+                    current = getattr(progress, "current_value", None)
+                    trajectory = getattr(progress, "trajectory", None)
+                    pressure = getattr(progress, "pressure", None)
+                except Exception:
+                    pass
+            return {
+                "mission_id": str(getattr(mission, "mission_id", "") or ""),
+                "goal_id": goal_id,
+                "description": str(getattr(mission, "description", "") or "")[:1200],
+                "metric": str(getattr(mission, "metric", "") or ""),
+                "baseline": getattr(mission, "baseline", None),
+                "target": getattr(mission, "target", None),
+                "current": current,
+                "trajectory": trajectory,
+                "pressure": pressure,
+                "deadline": (
+                    getattr(mission, "deadline").isoformat()
+                    if hasattr(getattr(mission, "deadline", None), "isoformat")
+                    else None
+                ),
+                "constraints": [
+                    str(item)[:500]
+                    for item in list(getattr(mission, "constraints", ()) or ())[:8]
+                ],
+            }
+        return {}
+
+    def _owner_agent_control(
+        self,
+        *,
+        owner_goal: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        episode = getattr(self, "owner_agent_episode", None)
+        runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
+        if episode is None or runtime is None:
+            return {"status": "UNAVAILABLE"}
+        mission_context = self._owner_agent_mission_context(owner_goal, now)
+
+        async def execute_tool(decision: dict[str, Any]) -> dict[str, Any]:
+            action = str(decision.get("action") or "")
+            if action == "INSPECT_MISSION":
+                return {
+                    "status": "OK",
+                    "mission": mission_context,
+                    "owner_goal": owner_goal,
+                }
+            if action == "SEARCH_WORLD":
+                query = str(decision.get("query") or "").strip()
+                feed = getattr(
+                    getattr(self, "continuous_loop", None),
+                    "world_feed",
+                    None,
+                )
+                searcher = getattr(feed, "web_searcher", None)
+                if not query or not callable(searcher):
+                    return {"status": "UNAVAILABLE", "query": query}
+                try:
+                    found = await searcher(query, now)
+                except Exception as exc:
+                    return {
+                        "status": "ERROR",
+                        "query": query,
+                        "error_type": type(exc).__name__,
+                        "message": str(exc)[:300],
+                    }
+                rows = []
+                for item in list(found or ())[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    rows.append({
+                        key: item.get(key)
+                        for key in (
+                            "evidence_id", "source", "title", "summary",
+                            "url", "published_at", "observed_at",
+                        )
+                        if item.get(key) is not None
+                    })
+                return {"status": "OK", "query": query, "items": rows}
+            if action == "CHECK_X":
+                loop = getattr(self, "x_loop", None)
+                if loop is None:
+                    return {"status": "DISABLED"}
+                try:
+                    result = await loop.observe(now=now, allow_remote_actions=False)
+                    self.wakeful.emit_x_mentions(
+                        count=int(result.get("new_mentions") or 0),
+                        observed_at=now,
+                    )
+                    return {"status": "OK", "x_social_observation": result}
+                except Exception as exc:
+                    return {"status": "DEGRADED", **self._error(exc)}
+            if action == "CHECK_OUTCOMES":
+                return self._outcomes(now)
+            return {"status": "UNSUPPORTED", "action": action}
+
+        return self._run_async(
+            episode.run(
+                runtime=runtime,
+                owner_goal=owner_goal,
+                mission_context=mission_context,
+                tool_executor=execute_tool,
+                now=now,
+            )
+        )
+
     def _content(
         self,
         now: datetime,
@@ -1846,6 +1983,53 @@ class WakefulContentTaskRunner:
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
         if result is None or not result.generation_ready:
             return rows
+        owner_goal = self._active_owner_goal_context()
+        owner_directed_cycle_id: str | None = None
+        owner_episode_active = False
+        has_durable_resume = any(
+            str(ref).startswith("cognition-request:")
+            for ref in relevant_refs
+        )
+        if (
+            owner_goal is not None
+            and focus_topic is None
+            and not has_durable_resume
+        ):
+            control = self._owner_agent_control(owner_goal=owner_goal, now=now)
+            rows["owner_agent_episode"] = control
+            if str(control.get("status") or "") == "DECIDED":
+                decision = (
+                    control.get("decision")
+                    if isinstance(control.get("decision"), dict)
+                    else {}
+                )
+                action = str(decision.get("action") or "")
+                owner_episode_active = True
+                owner_directed_cycle_id = str(
+                    control.get("cycle_id") or ""
+                ).strip() or None
+                if action == "WAIT":
+                    wait_seconds = int(decision.get("wait_seconds") or 300)
+                    schedule = getattr(self.wakeful, "schedule_goal_followup", None)
+                    if callable(schedule):
+                        schedule(
+                            now,
+                            seconds=max(60, min(wait_seconds, 21600)),
+                            relevant_refs=(str(owner_goal.get("goal_id") or ""),),
+                        )
+                    complete = getattr(self.owner_agent_episode, "complete", None)
+                    if callable(complete):
+                        rows["owner_agent_episode_completion"] = complete(
+                            outcome={
+                                "status": "WAIT_SCHEDULED",
+                                "wait_seconds": wait_seconds,
+                            },
+                            now=now,
+                        )
+                    rows["status"] = "OWNER_AGENT_WAITING"
+                    return rows
+                if action == "RUN_CONTENT_PIPELINE":
+                    focus_topic = str(decision.get("topic") or "").strip() or None
         if self.web_worker is not None:
             try:
                 rows["web_editorial"] = self._run_async(self.web_worker.run_once(now=now))
@@ -1879,10 +2063,14 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         pending_chatgpt = (
             self._pending_chatgpt_cycle()
-            if focus_topic is None
+            if focus_topic is None and not owner_episode_active
             else None
         )
-        focus_cycle_id = f"v2-bootstrap-{int(now.timestamp())}" if focus_topic else None
+        focus_cycle_id = (
+            owner_directed_cycle_id
+            if owner_episode_active and focus_topic
+            else f"v2-bootstrap-{int(now.timestamp())}" if focus_topic else None
+        )
         directed_cycle_id = (
             str(pending_chatgpt["cycle"])
             if pending_chatgpt is not None
@@ -2015,7 +2203,6 @@ class WakefulContentTaskRunner:
             rows["continuous_content"] = {"status": "RESOURCE_DEFERRED", "cycle": cycle_id, "resource_decision": decision}
             rows["status"] = "DEFERRED"
             return rows
-        owner_goal = self._active_owner_goal_context()
         if owner_goal is not None:
             rows["owner_goal_context"] = {
                 "goal_id": owner_goal["goal_id"],
@@ -2237,6 +2424,13 @@ class WakefulContentTaskRunner:
                             "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
                         }
                         self.wakeful.mark_cognition(now)
+            if owner_episode_active:
+                complete = getattr(self.owner_agent_episode, "complete", None)
+                if callable(complete):
+                    rows["owner_agent_episode_completion"] = complete(
+                        outcome=continuous,
+                        now=now,
+                    )
             return rows
         self._run_social_stage(rows=rows, continuous=continuous, now=now)
         followup_identity = None
@@ -2292,6 +2486,13 @@ class WakefulContentTaskRunner:
                         or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"
                     ),
                 }
+        if owner_episode_active:
+            complete = getattr(self.owner_agent_episode, "complete", None)
+            if callable(complete):
+                rows["owner_agent_episode_completion"] = complete(
+                    outcome=continuous,
+                    now=now,
+                )
         self.wakeful.mark_cognition(now)
         return rows
 
