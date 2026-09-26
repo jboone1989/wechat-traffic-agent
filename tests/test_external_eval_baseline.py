@@ -14,9 +14,11 @@ from wechat_traffic_agent.external_eval_baseline import (
 class FakeProvider:
     def __init__(self):
         self.prompts = []
+        self.calls = []
 
     async def complete(self, prompt, **kwargs):
         self.prompts.append(prompt)
+        self.calls.append((prompt, kwargs))
         if "AVAILABLE TOOLS" in prompt:
             return '{"kind":"tool","tool_name":"shell","arguments":{"command":"echo hi"}}'
         if "AVAILABLE ACTIONS" in prompt:
@@ -57,6 +59,24 @@ def test_raw_baseline_does_not_carry_episode_history(tmp_path):
     ))
     assert "recent_episode_turns" not in c.provider.prompts[-1]
     assert "first" not in c.provider.prompts[-1]
+
+
+def test_durable_baseline_does_not_shorten_queue_lifetime(tmp_path):
+    class DurableProvider(FakeProvider):
+        durable_dispatch = True
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = DurableProvider()
+    c = ExternalEvalBaselineContestant(
+        state_root=tmp_path,
+        provider=provider,
+        mode="raw",
+    )
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-2")
+    asyncio.run(c.respond(observation="inspect", instruction="solve"))
+    kwargs = provider.calls[-1][1]
+    assert "_attempt_timeout_seconds" not in kwargs
+    assert "_reserve_timeout_seconds" not in kwargs
 
 
 def test_basic_baseline_carries_bounded_episode_history(tmp_path):

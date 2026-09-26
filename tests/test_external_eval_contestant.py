@@ -59,6 +59,21 @@ def test_external_eval_provider_budget_stays_below_outer_watchdog(tmp_path):
     ) < 90
 
 
+def test_durable_external_eval_does_not_shorten_queue_lifetime(tmp_path):
+    class DurableProvider(FakeProvider):
+        durable_dispatch = True
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = DurableProvider()
+    c = FerroExternalEvalContestant(state_root=tmp_path, provider=provider)
+    c.begin_episode(benchmark_id="agentbench", episode_id="os-2")
+    asyncio.run(c.respond(observation="inspect", instruction="solve"))
+
+    kwargs = provider.calls[-1][1]
+    assert "_attempt_timeout_seconds" not in kwargs
+    assert "_reserve_timeout_seconds" not in kwargs
+
+
 def test_choice_turn_rejects_unavailable_action(tmp_path):
     class BadProvider(FakeProvider):
         async def complete(self, prompt, **kwargs):

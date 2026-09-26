@@ -99,18 +99,19 @@ class ExternalEvalBaselineContestant:
                     + prior
                 )
                 response_mode = "external-eval-baseline-json-repair"
-            return await self.provider.complete(
-                request_prompt,
-                max_tokens=max_tokens,
-                temperature=0.0,
-                system=_EXTERNAL_BASELINE_SYSTEM,
-                _audit_scope="external-benchmark-evaluation",
-                _audit_response_mode=response_mode,
-                _routing_task_class="reasoning",
-                _minimum_quality=0.75,
-                _attempt_timeout_seconds=20,
-                _reserve_timeout_seconds=40,
-            )
+            kwargs = {
+                "max_tokens": max_tokens,
+                "temperature": 0.0,
+                "system": _EXTERNAL_BASELINE_SYSTEM,
+                "_audit_scope": "external-benchmark-evaluation",
+                "_audit_response_mode": response_mode,
+                "_routing_task_class": "reasoning",
+                "_minimum_quality": 0.75,
+            }
+            if not bool(getattr(self.provider, "durable_dispatch", False)):
+                kwargs["_attempt_timeout_seconds"] = 20
+                kwargs["_reserve_timeout_seconds"] = 40
+            return await self.provider.complete(request_prompt, **kwargs)
 
         raw = await request()
         try:
