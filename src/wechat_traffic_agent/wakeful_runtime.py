@@ -1426,6 +1426,11 @@ class ContentWakefulRuntime:
             str(ref).startswith("cognition-request:")
             for ref in wake.relevant_refs
         )
+        if wake_has_resume_ref:
+            # This is continuation of a transaction that already passed
+            # admission. Re-throttling each LLM phase can indefinitely stretch
+            # one owner/autonomous task and is not new resource admission.
+            return None
         if pending_chatgpt and not wake_has_resume_ref:
             if wake.task in _CHATGPT_COGNITIVE_TASKS:
                 return 60.0

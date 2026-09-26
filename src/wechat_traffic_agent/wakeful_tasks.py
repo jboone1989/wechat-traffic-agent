@@ -180,7 +180,7 @@ class WakefulContentTaskRunner:
             with resume_context:
                 self._raise_if_stopping()
                 regulator = getattr(self, "resource_regulator", None)
-                if regulator is not None:
+                if regulator is not None and not resume_request_id:
                     owner_authorized = (
                         task == "CONTENT_COGNITION"
                         and self._active_owner_goal_context() is not None
@@ -223,7 +223,11 @@ class WakefulContentTaskRunner:
                 if task == "VERIFY_PREDICTION":
                     return self._verify_prediction(now)
                 if task == "CONTENT_COGNITION":
-                    return self._content(now, focus_topic=focus_topic)
+                    return self._content(
+                        now,
+                        focus_topic=focus_topic,
+                        relevant_refs=relevant_refs,
+                    )
                 return {"status": "NOOP", "task": task}
         except LivingRuntimeChatGPTPendingError as exc:
             result: dict[str, Any] = {
@@ -1789,7 +1793,13 @@ class WakefulContentTaskRunner:
             "created_at": str(getattr(goal, "created_at", "") or ""),
         }
 
-    def _content(self, now: datetime, *, focus_topic: str | None) -> dict[str, Any]:
+    def _content(
+        self,
+        now: datetime,
+        *,
+        focus_topic: str | None,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
         if result is None or not result.generation_ready:
@@ -1980,6 +1990,16 @@ class WakefulContentTaskRunner:
         if str(continuous.get("status") or "").upper() == "WAITING_FOR_CHATGPT":
             rows["status"] = "WAITING_FOR_CHATGPT"
             request_id = str(continuous.get("request_id") or "").strip()
+            resume_refs = tuple(relevant_refs)
+            owner_goal_id = (
+                str(owner_goal.get("goal_id") or "").strip()
+                if isinstance(owner_goal, dict)
+                else ""
+            )
+            if owner_goal_id:
+                resume_refs = tuple(
+                    dict.fromkeys((*resume_refs, owner_goal_id))
+                )
             schedule_resume = getattr(
                 self.wakeful, "schedule_chatgpt_resume", None
             )
@@ -1988,6 +2008,8 @@ class WakefulContentTaskRunner:
                     rows["chatgpt_resume"] = schedule_resume(
                         now,
                         request_id=request_id,
+                        task="CONTENT_COGNITION",
+                        relevant_refs=resume_refs,
                     )
                 except Exception as exc:  # noqa: BLE001
                     rows["chatgpt_resume"] = self._error(exc)

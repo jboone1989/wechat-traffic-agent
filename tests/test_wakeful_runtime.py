@@ -564,6 +564,22 @@ def test_pending_chatgpt_request_defers_new_cognition_and_optional_internal_work
     assert runtime._plan_admission_delay(play) == 60.0
 
 
+def test_exact_chatgpt_resume_is_not_rethrottled_by_resource_admission(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    resume = PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW,
+        reason="resume durable content cognition",
+        task="CONTENT_COGNITION",
+        relevant_refs=(
+            "goal-owner",
+            "cognition-request:llmreq_resume",
+        ),
+    )
+
+    assert runtime._plan_admission_delay(resume) is None
+
+
 def test_pending_chatgpt_request_inhibits_new_neural_motor_selection(
     monkeypatch, tmp_path
 ):

@@ -107,7 +107,7 @@ def test_pending_content_injects_active_owner_goal_into_resume_provenance(
         wakeful=wakeful,
     )
 
-    def pending_content(now, *, focus_topic=None):
+    def pending_content(now, *, focus_topic=None, relevant_refs=()):
         raise LivingRuntimeChatGPTPendingError("llmreq-owner-content")
 
     monkeypatch.setattr(runner, "_content", pending_content)
@@ -132,6 +132,76 @@ def test_pending_content_injects_active_owner_goal_into_resume_provenance(
         "request_id": "llmreq-owner-content",
         "task": "CONTENT_COGNITION",
         "relevant_refs": ("cycle:v2-owner", "goal-owner"),
+    }]
+
+
+class _GenerationReady:
+    generation_ready = True
+
+
+class _WaitingContentLoop:
+    def preflight(self, *, now, cycle_id=None):
+        return {
+            "cycle": cycle_id or "v2-1790416800",
+            "status": "READY",
+        }
+
+    async def run_once(self, **kwargs):
+        return {
+            "status": "WAITING_FOR_CHATGPT",
+            "request_id": "llmreq-inner-content",
+            "cycle": kwargs.get("cycle_id") or "v2-1790416800",
+        }
+
+
+class _NoCostEconomy:
+    def begin_cycle(self, *, now, cycle):
+        return {
+            "status": "DECIDED",
+            "decision": "NO_RESOURCE_ACTION",
+            "cycle": cycle,
+        }
+
+
+def test_internal_content_wait_preserves_owner_and_wake_provenance(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=_WaitingContentLoop(),
+        resource_economy=_NoCostEconomy(),
+        web_worker=None,
+        gsc_collector=None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runtime_tick",
+        lambda now: (_GenerationReady(), {"application": {}}),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+            "priority": 0.9,
+        },
+    )
+
+    result = runner._content(
+        datetime.now(timezone.utc),
+        focus_topic="owner-test",
+        relevant_refs=("mission:test", "goal-owner"),
+    )
+
+    assert result["status"] == "WAITING_FOR_CHATGPT"
+    assert wakeful.scheduled == [{
+        "request_id": "llmreq-inner-content",
+        "task": "CONTENT_COGNITION",
+        "relevant_refs": ("mission:test", "goal-owner"),
     }]
 
 
@@ -167,6 +237,39 @@ def test_wake_request_ref_resumes_exact_request_for_next_cognition_only(
     assert result["status"] == "OK"
     assert result["prediction_verification"] == {"verified": 1}
     assert seen == ["llmreq-original"]
+
+
+class _ResumeMustNotClaimResources:
+    def claim(self, *args, **kwargs):
+        raise AssertionError("durable resume must not re-run resource admission")
+
+
+def test_exact_resume_skips_task_runner_resource_claim(monkeypatch, tmp_path):
+    @contextmanager
+    def fake_resume(request_id):
+        yield
+
+    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_module
+
+    monkeypatch.setattr(
+        chatgpt_module,
+        "resume_next_durable_cognition",
+        fake_resume,
+    )
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+        continuous_loop=_CompletedLoop(),
+        resource_regulator=_ResumeMustNotClaimResources(),
+    )
+
+    result = runner.run(
+        "VERIFY_PREDICTION",
+        now=datetime.now(timezone.utc),
+        relevant_refs=("cognition-request:llmreq-original",),
+    )
+
+    assert result["status"] == "OK"
 
 
 def test_wake_request_ref_uses_latest_cognition_pointer(
