@@ -30,12 +30,15 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 DOMAINS = ("STORAGE", "COMPUTE", "HOSTING", "REMOTE_MACHINE", "SERVICE")
 OPEN_NEED_STATES = {"PENDING", "APPROVED", "AWAITING_RESOURCE"}
 AUTONOMOUS_RETRY_ACTIONS = {
+    "RECLAIM_TRANSIENT_STORAGE",
+    "DEEP_RECLAIM_STORAGE",
     "PROVISION_REMOTE_RECEIVER",
     "RESTORE_SERVICE_REPLICA",
     "ENSURE_SERVICE_REPLICA",
     "OFFLOAD_NON_CORE_SERVICE",
 }
 AUTONOMOUS_RETRY_SECONDS = (300, 900, 3600, 21600)
+STORAGE_RECLAIM_MIN_RETRY_SECONDS = 300
 
 SERVICE_PLACEMENT_DEFAULTS: dict[str, dict[str, Any]] = {
     "content-agent-core": {
@@ -464,10 +467,20 @@ class SurvivalResourceManager:
             action = str(row.get("action") or "")
             if action == "RECLAIM_TRANSIENT_STORAGE":
                 result = self.storage_lifecycle.reclaim(now=now, deep=False)
-                row["status"] = "EXECUTED"
+                if self._storage_reclaim_had_effect(result):
+                    row["status"] = "EXECUTED"
+                else:
+                    result["status"] = "NO_EFFECT"
+                    result["reason"] = "no reclaimable storage changed"
+                    row["status"] = "AWAITING_RESOURCE"
             elif action == "DEEP_RECLAIM_STORAGE":
                 result = self.storage_lifecycle.reclaim(now=now, deep=True)
-                row["status"] = "EXECUTED"
+                if self._storage_reclaim_had_effect(result):
+                    row["status"] = "EXECUTED"
+                else:
+                    result["status"] = "NO_EFFECT"
+                    result["reason"] = "no reclaimable storage changed"
+                    row["status"] = "AWAITING_RESOURCE"
             elif action == "APPLY_CONSERVATION_POLICY":
                 result = {"status": "APPLIED", "mode": "CONSERVE"}
                 row["status"] = "EXECUTED"
@@ -517,6 +530,33 @@ class SurvivalResourceManager:
             results.append(result)
         _atomic_json(self.needs_path, rows)
         return {"status": "OK", "results": results}
+
+    @staticmethod
+    def _storage_reclaim_had_effect(result: dict[str, Any]) -> bool:
+        """Only count storage changes attributable to this reclaim action."""
+        return any(
+            int(result.get(key) or 0) > 0
+            for key in (
+                "deleted_count",
+                "deleted_tmp_files",
+                "reclaimed_bytes_estimated",
+            )
+        )
+
+    @staticmethod
+    def _recent_storage_action(row: dict[str, Any], now: datetime) -> bool:
+        raw = str(row.get("last_action_at") or "").strip()
+        if not raw:
+            return False
+        try:
+            instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            instant = instant.replace(tzinfo=timezone.utc)
+        return (
+            now.astimezone(timezone.utc) - instant.astimezone(timezone.utc)
+        ).total_seconds() < STORAGE_RECLAIM_MIN_RETRY_SECONDS
 
     def bootstrap_ssh_host(
         self, *, host: str, port: int, username: str, password: str,
@@ -2323,6 +2363,14 @@ class SurvivalResourceManager:
                 existing["reason"] = reason
                 status = str(existing.get("status") or "")
                 if status in {"EXECUTED", "SATISFIED"}:
+                    if (
+                        action in {
+                            "RECLAIM_TRANSIENT_STORAGE",
+                            "DEEP_RECLAIM_STORAGE",
+                        }
+                        and self._recent_storage_action(existing, now)
+                    ):
+                        continue
                     existing["status"] = "APPROVED" if autonomous else "PENDING"
                     existing["authorization"] = (
                         "AUTONOMOUS_SAFE_POLICY" if autonomous else "OPERATOR_REQUIRED"

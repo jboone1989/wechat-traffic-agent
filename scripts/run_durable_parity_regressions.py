@@ -15,6 +15,8 @@ TESTS = [
     "tests/test_wakeful_chatgpt_resume.py",
     "tests/test_wakeful_runtime.py",
     "tests/test_organism_closure.py",
+    "tests/test_storage_reclaim_backoff.py",
+    "tests/test_storage_pressure_modes.py",
     "tests/test_neural_motor.py",
     "tests/test_prospective_predictions.py",
     "tests/test_x_growth_mission.py",
@@ -23,6 +25,9 @@ TESTS = [
     "tests/test_owner_prompt_budget.py",
     "tests/test_operator_private_chat.py",
     "tests/test_awe_production_contestant.py",
+    "tests/test_survival_resources.py",
+    "tests/test_survival_storage_reclaim.py",
+    "tests/test_storage_lifecycle.py",
     "tests/test_live_agent.py",
 ]
 
