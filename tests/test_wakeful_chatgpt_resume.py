@@ -467,3 +467,42 @@ def test_owner_context_uses_active_operator_external_mission_without_proposal(tm
     assert context is not None
     assert context["goal_id"] == "goal-owner-runtime"
     assert context["origin"] == "EXTERNAL_MISSION"
+
+
+
+class _OwnerMissionNoDuePredictions(_OwnerMissionPredictions):
+    def due(self, now):
+        return ()
+
+
+def test_owner_external_mission_defers_prediction_task_even_without_due_rows(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    loop = _ShouldNotVerifyLoop()
+    loop.predictions = _OwnerMissionNoDuePredictions()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=loop,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Run the real owner mission",
+        },
+    )
+
+    result = runner.run(
+        "VERIFY_PREDICTION",
+        now=datetime.now(timezone.utc),
+    )
+
+    assert result["status"] == "OWNER_MISSION_DEFERRED"
+    assert result["owner_goal_id"] == "goal-owner"
+    assert result["deferred_count"] == 0
+    assert result["retry_after"] is None
+    assert loop.called is False
