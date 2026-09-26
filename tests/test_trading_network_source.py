@@ -12,6 +12,7 @@ from wechat_traffic_agent.sources.trading_network import (
     TRADING_RESEARCH_ARTIFACT_TYPE,
     TRADING_RESEARCH_MEDIA_TYPE,
     TradingResearchNetworkSource,
+    TradingResearchProviderUnavailable,
 )
 
 
@@ -97,6 +98,18 @@ class _Network:
     async def submit_acceptance(self, acceptance):
         self.acceptances.append(dict(acceptance))
         return {"stored": True, "object_hash": "sha256:acceptance"}
+
+
+class _EmptyNetwork(_Network):
+    async def discover_with_context(self, capability, *, version=None, max_results=10):
+        self.discovered.append((capability, version, max_results))
+        return SimpleNamespace(agents=[])
+
+
+def test_network_source_reports_missing_optional_provider_distinctly():
+    network = _EmptyNetwork(_task())
+    with pytest.raises(TradingResearchProviderUnavailable):
+        asyncio.run(TradingResearchNetworkSource(network).fetch_topics())
 
 
 def _task(body=None):

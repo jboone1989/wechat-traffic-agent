@@ -28,6 +28,8 @@ TESTS = [
     "tests/test_survival_resources.py",
     "tests/test_survival_storage_reclaim.py",
     "tests/test_storage_lifecycle.py",
+    "tests/test_trading_network_source.py",
+    "tests/test_trading_draft_worker.py",
     "tests/test_live_agent.py",
 ]
 

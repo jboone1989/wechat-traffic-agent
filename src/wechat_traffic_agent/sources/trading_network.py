@@ -74,6 +74,10 @@ class TradingResearchEnvelope(BaseModel):
 ArtifactLoader = Callable[[dict[str, Any]], Awaitable[bytes]]
 
 
+class TradingResearchProviderUnavailable(RuntimeError):
+    """No optional Trading public-research provider is currently discoverable."""
+
+
 class TradingResearchNetworkSource:
     """Discover Trading via Agent Network and materialize public research artifacts."""
 
@@ -104,7 +108,9 @@ class TradingResearchNetworkSource:
         )
         agents = list(getattr(discovery, "agents", None) or [])
         if not agents:
-            raise RuntimeError("Agent Network returned no Trading public research provider")
+            raise TradingResearchProviderUnavailable(
+                "Agent Network returned no Trading public research provider"
+            )
         agent = agents[0]
         provider_id = str(getattr(agent, "agent_id", "") or "")
         if not provider_id:

@@ -11,7 +11,10 @@ from .content_artifact import ContentKind
 from .content_service import ContentAgent
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord, topic_set_fingerprint
 from .models import AudienceProfile, ContentObjective
-from .sources.trading_network import TradingResearchNetworkSource
+from .sources.trading_network import (
+    TradingResearchNetworkSource,
+    TradingResearchProviderUnavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -50,7 +53,15 @@ class TradingResearchDraftWorker:
         if generated_at.tzinfo is None or generated_at.utcoffset() is None:
             raise ValueError("draft generation timestamp must be timezone-aware")
         network = _network_client(self.state_root)
-        topics = await TradingResearchNetworkSource(network).fetch_topics(limit=self.topic_limit)
+        try:
+            topics = await TradingResearchNetworkSource(network).fetch_topics(
+                limit=self.topic_limit
+            )
+        except TradingResearchProviderUnavailable:
+            return TradingDraftResult(
+                status="NO_RESEARCH_PROVIDER",
+                topic_count=0,
+            )
         if not topics:
             return TradingDraftResult(status="NO_RESEARCH", topic_count=0)
 

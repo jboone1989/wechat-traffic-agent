@@ -8,6 +8,9 @@ from pydantic import ValidationError
 
 from wechat_traffic_agent.models import TopicSignal
 from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker
+from wechat_traffic_agent.sources.trading_network import (
+    TradingResearchProviderUnavailable,
+)
 
 
 class _Runtime:
@@ -57,6 +60,32 @@ class _Source:
             ),
             observed_at=datetime(2026, 9, 14, tzinfo=timezone.utc),
         )]
+
+
+class _NoProviderSource:
+    def __init__(self, _network):
+        pass
+
+    async def fetch_topics(self, *, limit: int):
+        raise TradingResearchProviderUnavailable("no optional provider")
+
+
+def test_worker_treats_missing_optional_trading_provider_as_no_research(
+    monkeypatch, tmp_path
+):
+    import wechat_traffic_agent.trading_draft_worker as module
+
+    monkeypatch.setattr(module, "_network_client", lambda _root: object())
+    monkeypatch.setattr(module, "TradingResearchNetworkSource", _NoProviderSource)
+    runtime = _Runtime()
+    worker = TradingResearchDraftWorker(runtime=runtime, state_root=tmp_path)
+
+    result = asyncio.run(worker.run_once())
+
+    assert result.status == "NO_RESEARCH_PROVIDER"
+    assert result.topic_count == 0
+    assert runtime.calls == 0
+    assert runtime.persisted == 0
 
 
 def test_outbound_network_client_reopens_split_identity_secret(monkeypatch, tmp_path):
