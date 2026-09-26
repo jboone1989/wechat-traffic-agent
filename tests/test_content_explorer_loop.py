@@ -9,7 +9,7 @@ from wechat_traffic_agent.content_goal_loop import (
     _market_expression_instruction, _market_companion_evidence,
     _market_expression_fingerprint, _candidate_available_for_pool,
     _normalize_mission_discovery, _compact_website_decision_view,
-    _compact_writing_experience,
+    _compact_writing_experience, _select_evidence_decision_context,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -42,6 +42,47 @@ def test_website_decision_view_drops_full_article_bodies_and_stays_bounded():
     assert compact["article_count"] == 40
     assert compact["articles"][-1]["artifact_id"] == "a39"
     assert len(compact["topics"]["reliability"]) == 24
+
+
+def test_select_evidence_context_stays_below_chatgpt_message_budget():
+    huge = "x" * 20000
+    snapshot = {
+        "articles": [{
+            "artifact": {
+                "artifact_id": f"a{index}",
+                "title": f"Article {index} " + huge,
+                "summary": huge,
+                "tags": ["reliability"],
+                "sections": [{"heading": "Body", "paragraphs": [huge]}],
+            }
+        } for index in range(120)],
+        "topics": {"reliability": [f"a{index}" for index in range(120)]},
+    }
+    evidence = [{
+        "evidence_id": f"e{index}",
+        "source_kind": "web-search",
+        "source": "example",
+        "title": "Evidence " + huge,
+        "summary": huge,
+        "url": "https://example.org/" + ("u" * 5000),
+        "evidence_refs": [huge, huge],
+        "raw_payload": huge,
+    } for index in range(30)]
+    context = _select_evidence_decision_context(
+        evidence=evidence,
+        snapshot=snapshot,
+        traffic_payload={"selected_topic": "reliability", "note": huge[:8000]},
+        previous_titles=[huge for _ in range(200)],
+        mind_plan={"goal": {"description": huge[:8000]}},
+        x_mission_context={"status": "ACTIVE", "strategy": huge[:8000]},
+    )
+    encoded = json.dumps(context, ensure_ascii=False).encode("utf-8")
+
+    assert len(encoded) < 120 * 1024
+    assert len(context["evidence"]) == 16
+    assert len(context["website"]["articles"]) == 32
+    assert len(context["previous_titles"]) == 50
+    assert "raw_payload" not in encoded.decode("utf-8")
 
 
 def test_writing_experience_projection_drops_large_cycle_payloads():
