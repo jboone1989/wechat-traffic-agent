@@ -1093,6 +1093,11 @@ def test_owner_search_seed_becomes_first_evidence_pool_and_persists_for_resume(t
         publisher=publisher, explorer=explorer,
     )
     seed = dict(CryptoMissionExplorer.row)
+    seed.pop("source_revision", None)
+    seed["evidence_refs"] = [
+        "capability-receipt:v1:owner-seed",
+        "web-content-sha256:owner-seed-content",
+    ]
     result = asyncio.run(worker.run_once(
         now=NOW,
         cycle_id="v2-owner-seed-1789491603",
@@ -1112,8 +1117,14 @@ def test_owner_search_seed_becomes_first_evidence_pool_and_persists_for_resume(t
     candidates = json.loads((cycle / "evidence_candidates.json").read_text())
     assert persisted_seed["source"] == "OWNER_AGENT_EPISODE_SEARCH_WORLD"
     assert [row["evidence_id"] for row in persisted_seed["items"]] == ["crypto-market-1"]
+    assert persisted_seed["items"][0]["source_revision"] == (
+        "web-content-sha256:owner-seed-content"
+    )
     assert candidates["seed_source"] == "OWNER_AGENT_EPISODE_SEARCH_WORLD"
     assert [row["evidence_id"] for row in candidates["items"]] == ["crypto-market-1"]
+    assert candidates["items"][0]["source_revision"] == (
+        "web-content-sha256:owner-seed-content"
+    )
 
 
 class CatalystCryptoExplorer(CryptoMissionExplorer):

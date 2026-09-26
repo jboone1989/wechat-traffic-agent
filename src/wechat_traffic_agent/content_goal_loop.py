@@ -409,6 +409,43 @@ def _candidate_available_for_pool(inbox, row):
         return True
     return not inbox.contains(_candidate_fingerprint(row))
 
+def _normalize_owner_seed_candidate(row, *, now):
+    """Adapt controller search evidence to the canonical content-candidate schema."""
+    item = dict(row or {})
+    evidence_id = str(item.get("evidence_id") or "").strip()
+    if not evidence_id:
+        raise ValueError("owner seed evidence requires evidence_id")
+    refs = [
+        str(ref)
+        for ref in list(item.get("evidence_refs") or ())
+        if str(ref).strip()
+    ]
+    revision = str(item.get("source_revision") or "").strip()
+    if not revision:
+        revision = next(
+            (
+                ref
+                for ref in refs
+                if ref.startswith("web-content-sha256:")
+                or ref.startswith("web-url-sha256:")
+            ),
+            evidence_id,
+        )
+    item.update({
+        "evidence_id": evidence_id,
+        "source_kind": str(item.get("source_kind") or "web-search"),
+        "source": str(item.get("source") or "owner-agent:search-world"),
+        "source_revision": revision[:200],
+        "observed_at": str(item.get("observed_at") or now.isoformat()),
+        "evidence_refs": refs or [evidence_id],
+    })
+    item.setdefault("published_at", None)
+    item.setdefault("publisher_feed", None)
+    item.setdefault("search_query", None)
+    item.setdefault("search_rank", None)
+    item.setdefault("learning_kind", "WORLD_EVENT")
+    return item
+
 
 def _allow_unconstrained_output_fallback(*, goal_active, goal_origin, owner_goal):
     """Do not abandon explicit owner/external goals merely to fill an output slot."""
@@ -892,7 +929,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             )
         else:
             owner_seed_items = [
-                dict(row)
+                _normalize_owner_seed_candidate(row, now=now)
                 for row in list(getattr(self, '_seed_evidence', ()) or ())[:8]
                 if isinstance(row, dict)
                 and str(row.get('evidence_id') or '').strip()
@@ -909,10 +946,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if owner_seed_items:
                 _put(owner_seed_path, owner_seed_payload)
         owner_seed_items = [
-            row
+            _normalize_owner_seed_candidate(row, now=now)
             for row in list(owner_seed_payload.get('items') or ())
             if isinstance(row, dict)
         ]
+        if owner_seed_items and owner_seed_payload.get('items') != owner_seed_items:
+            owner_seed_payload = {
+                **owner_seed_payload,
+                'items': owner_seed_items,
+            }
+            _put(owner_seed_path, owner_seed_payload)
 
         world_payload = None
         prefetched_evidence_pool = None
