@@ -162,6 +162,7 @@ class WakefulContentTaskRunner:
     ) -> dict[str, Any]:
         from .livingruntime_chatgpt import (
             LivingRuntimeChatGPTPendingError,
+            LivingRuntimeChatGPTProviderError,
             resume_next_durable_cognition,
         )
 
@@ -263,6 +264,33 @@ class WakefulContentTaskRunner:
                     )
                 except Exception as schedule_exc:  # noqa: BLE001
                     result["chatgpt_resume"] = self._error(schedule_exc)
+            return result
+        except LivingRuntimeChatGPTProviderError as exc:
+            # A bounded ChatGPT dispatch/response timeout is an expected
+            # provider-availability state, not a process-fatal error. Keep any
+            # durable owner episode checkpoint intact and re-enter cognition
+            # later instead of letting the exception escape to systemd.
+            result = {
+                "task": task,
+                "status": "CHATGPT_UNAVAILABLE",
+                "retryable": True,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+            if task == "CONTENT_COGNITION":
+                schedule_recovery = getattr(
+                    self.wakeful,
+                    "schedule_provider_recovery",
+                    None,
+                )
+                if callable(schedule_recovery):
+                    try:
+                        result["provider_recovery"] = schedule_recovery(
+                            now,
+                            default_seconds=300,
+                        )
+                    except Exception as schedule_exc:  # noqa: BLE001
+                        result["provider_recovery"] = self._error(schedule_exc)
             return result
         except _ShutdownRequested:
             return {

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from wechat_traffic_agent.livingruntime_chatgpt import (
     LivingRuntimeChatGPTPendingError,
+    LivingRuntimeChatGPTProviderError,
 )
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
@@ -134,6 +135,42 @@ def test_pending_content_injects_active_owner_goal_into_resume_provenance(
         "task": "CONTENT_COGNITION",
         "relevant_refs": ("cycle:v2-owner", "goal-owner"),
     }]
+
+
+def test_content_provider_timeout_is_task_failure_not_process_failure(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    recoveries = []
+
+    def schedule_provider_recovery(now, *, default_seconds=300):
+        recoveries.append((now, default_seconds))
+        return {
+            "status": "SCHEDULED",
+            "retry_seconds": default_seconds,
+        }
+
+    wakeful.schedule_provider_recovery = schedule_provider_recovery
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+    )
+
+    def unavailable_content(now, *, focus_topic=None, relevant_refs=()):
+        raise LivingRuntimeChatGPTProviderError(
+            "LivingRuntime cognition request timed out"
+        )
+
+    monkeypatch.setattr(runner, "_content", unavailable_content)
+    now = datetime.now(timezone.utc)
+
+    result = runner.run("CONTENT_COGNITION", now=now)
+
+    assert result["status"] == "CHATGPT_UNAVAILABLE"
+    assert result["retryable"] is True
+    assert result["error_type"] == "LivingRuntimeChatGPTProviderError"
+    assert result["provider_recovery"]["status"] == "SCHEDULED"
+    assert recoveries == [(now, 300)]
 
 
 class _GenerationReady:
