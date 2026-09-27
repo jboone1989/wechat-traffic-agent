@@ -62,8 +62,11 @@ def test_one_shot_task_cli_is_bounded_and_uses_normal_runner():
     assert 'if args.once and args.task:' in text
     assert 'reason_task = args.task or "CONTENT_COGNITION"' in text
     assert 'if args.once or args.task:' in text
-    assert "task_runner.run(task, now=now" in text
+    assert "task_runner.run(" in text
+    assert "relevant_refs=" in text
     assert "observe_development_transfer_outcome" in text
+    assert "_LOCAL_NEURAL_TASKS" in text
+    assert "allow_missing_required_capabilities=" in text
 
 
 def test_heartbeat_records_failure_when_startup_raises(tmp_path, monkeypatch):

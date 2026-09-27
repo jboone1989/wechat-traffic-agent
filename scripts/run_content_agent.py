@@ -59,6 +59,16 @@ _ONE_SHOT_TASKS = (
     "NEURAL_EVOLUTION_CONSOLIDATION",
 )
 
+_LOCAL_NEURAL_TASKS = frozenset({
+    "NEURAL_INTEROCEPTION",
+    "NEURAL_PLAY",
+    "NEURAL_DREAM",
+    "NEURAL_TRANSFER",
+    "NEURAL_DEVELOPMENT",
+    "NEURAL_DEVELOPMENT_TRANSFER",
+    "NEURAL_EVOLUTION_CONSOLIDATION",
+})
+
 _DOMAIN_EXPERIENCE_TASKS = frozenset({
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
@@ -392,7 +402,13 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                 "error_type": type(exc).__name__,
             }
         }, sort_keys=True), file=sys.stderr)
-    app = build_content_application(root=state_root, manifest_path=ROOT / "agent.yaml")
+    app = build_content_application(
+        root=state_root,
+        manifest_path=ROOT / "agent.yaml",
+        allow_missing_required_capabilities=(
+            bool(args.task) and str(args.task) in _LOCAL_NEURAL_TASKS
+        ),
+    )
     from wechat_traffic_agent.content_mind import ContentMind
     from wechat_traffic_agent.resource_economy import ContentResourceEconomy
     from wechat_traffic_agent.human_assistance import HumanAssistanceService, operator_notifier
