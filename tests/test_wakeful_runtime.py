@@ -1874,12 +1874,22 @@ def test_neural_refresh_schedules_due_architecture_revalidation_without_active_w
             "last_transfer_evaluation_at": (
                 NOW - timedelta(days=1)
             ).isoformat(),
-        }
+        },
+        "WORLD_0218": {
+            "world_id": "WORLD_0218",
+            "status": "CANDIDATE",
+            "need_id": "development-need:new",
+            "proposal_id": "development-proposal:new",
+            "target_task": "REFLECT",
+            "trial_count": 0,
+        },
     }
     monkeypatch.setattr(
         runtime.developmental_agency,
         "next_candidate_world",
-        lambda: None,
+        lambda: dict(
+            runtime.developmental_agency.state["worlds"]["WORLD_0218"]
+        ),
     )
     monkeypatch.setattr(
         runtime.developmental_architecture,
@@ -1907,6 +1917,10 @@ def test_neural_refresh_schedules_due_architecture_revalidation_without_active_w
         "development-proposal:legacy",
         "WORLD_0216",
         "architecture-post-selection-revalidation",
+    )
+    assert not any(
+        row.task == "NEURAL_DEVELOPMENT"
+        for row in runtime.core.snapshot().pending_plans
     )
 
 

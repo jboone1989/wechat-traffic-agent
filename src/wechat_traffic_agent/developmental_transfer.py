@@ -169,12 +169,16 @@ class DevelopmentalWorldTransferLab:
         if world_id:
             row = worlds.get(str(world_id).upper())
             return dict(row) if isinstance(row, Mapping) else None
-        candidate = self.agency.next_candidate_world()
-        if isinstance(candidate, Mapping):
-            return dict(candidate)
+        # Post-selection architecture revalidation must use an already-adopted
+        # stable world before any new developmental-world intervention. Mixing
+        # an incumbent-vs-baseline phenotype comparison into a fresh TREATMENT
+        # world would confound the causal effect of the architecture itself.
         revalidation = self.architecture_revalidation_candidate(now=now)
         if revalidation is not None:
             return revalidation
+        candidate = self.agency.next_candidate_world()
+        if isinstance(candidate, Mapping):
+            return dict(candidate)
         return None
 
     def architecture_revalidation_candidate(

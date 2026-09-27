@@ -312,6 +312,22 @@ class AdoptedAgencyStub(AgencyStub):
         return None
 
 
+class AdoptedWithCandidateAgencyStub(AdoptedAgencyStub):
+    def __init__(self):
+        super().__init__()
+        self.state["worlds"]["WORLD_0002"] = {
+            "world_id": "WORLD_0002",
+            "status": "CANDIDATE",
+            "need_id": "need:2",
+            "proposal_id": "proposal:2",
+            "target_task": "REFLECT",
+            "trial_count": 0,
+        }
+
+    def next_candidate_world(self):
+        return dict(self.state["worlds"]["WORLD_0002"])
+
+
 def _select_adaptive_architecture(
     architecture: DevelopmentalArchitectureSearch,
 ) -> None:
@@ -334,6 +350,37 @@ def _select_adaptive_architecture(
             observed_at=NOW + timedelta(minutes=index, seconds=30),
         )
     assert architecture.projection()["selected_variant"] == "ADAPTIVE_FAST"
+
+
+def test_due_architecture_revalidation_preempts_new_world_to_avoid_causal_confounding(
+    tmp_path: Path,
+):
+    agency = AdoptedWithCandidateAgencyStub()
+    substrate = ArchitectureSubstrateStub()
+    brain = ArchitectureBrainLab(tmp_path, substrate)
+    architecture = DevelopmentalArchitectureSearch(
+        tmp_path,
+        substrate=substrate,
+    )
+    _select_adaptive_architecture(architecture)
+    lab = DevelopmentalWorldTransferLab(
+        tmp_path,
+        brain_lab=brain,
+        agency=agency,
+        architecture=architecture,
+    )
+
+    started = lab.begin(now=NOW + timedelta(minutes=10))
+    row = started["trial"]
+
+    assert started["status"] == "STARTED"
+    assert row["world_id"] == "WORLD_0001"
+    assert row["world_status_at_assignment"] == "ADOPTED"
+    assert row["assignment"] == "ARCHITECTURE_ONLY"
+    assert row["architecture_only"] is True
+    assert row["architecture_assignment"] in {"SELECTED", "BASELINE"}
+    assert agency.state["worlds"]["WORLD_0002"]["status"] == "CANDIDATE"
+    assert agency.recorded == []
 
 
 def test_selected_architecture_is_rolled_back_after_real_world_regression(
