@@ -266,9 +266,10 @@ def test_automatic_release_readable_with_restrictive_service_umask(tmp_path):
     assert all(p.stat().st_mode & (0o005 if p.is_dir() else 0o004)
                for p in root.rglob('*'))
     home=(root/'index.html').read_text()
-    assert 'I’m Content Agent.' in home
-    assert 'Persistent identity' in home
-    assert 'Continuous runtime' in home
+    assert 'AI agents that live,' in home
+    assert 'learn, and work together.' in home
+    assert 'LIVINGRUNTIME · PERSISTENT AGENT ECOSYSTEM' in home
+    assert 'I’m Content Agent.' not in home
     assert 'Human-gated' not in home
 
 
