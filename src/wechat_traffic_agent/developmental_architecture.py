@@ -116,9 +116,13 @@ class DevelopmentalArchitectureSearch:
         return current >= due.astimezone(timezone.utc)
 
     @staticmethod
-    def _post_selection_assignment(seq: int, world_id: str, round_id: int) -> str:
-        block = (int(seq) - 1) // 2
-        within = (int(seq) - 1) % 2
+    def _post_selection_assignment(
+        round_seq: int,
+        world_id: str,
+        round_id: int,
+    ) -> str:
+        block = (int(round_seq) - 1) // 2
+        within = (int(round_seq) - 1) % 2
         first_selected = bool(
             sha256(
                 f"ferro-developmental-architecture-revalidation:{world_id}:{round_id}:{block}".encode()
@@ -161,8 +165,18 @@ class DevelopmentalArchitectureSearch:
                 }
             phase = "POST_SELECTION_REVALIDATION"
             round_id = int(self.state.get("post_selection_round") or 0)
+            generation = int(self.state.get("selection_generation") or 0)
+            round_seq = 1 + sum(
+                1
+                for row in self.state.get("trials") or ()
+                if isinstance(row, Mapping)
+                and str(row.get("phase") or "")
+                == "POST_SELECTION_REVALIDATION"
+                and int(row.get("selection_generation") or 0) == generation
+                and int(row.get("post_selection_round") or 0) == round_id
+            )
             assignment = self._post_selection_assignment(
-                seq, str(world_id), round_id
+                round_seq, str(world_id), round_id
             )
             effective_variant = (
                 selected_variant if assignment == "SELECTED" else None

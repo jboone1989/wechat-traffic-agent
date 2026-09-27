@@ -219,3 +219,51 @@ def test_real_world_reject_preserves_weakness_and_records_counterevidence(tmp_pa
     belief = runtime.self_model.projection()["capability_beliefs"]["motor:check_x"]
     assert belief["failures"] == 1
     assert belief["counter_evidence_count"] == 1
+
+
+def test_architecture_only_revalidation_does_not_replay_world_adoption_feedback(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.developmental_world_transfer = _TransferResult({
+        "trial_id": "development-transfer:world_0001:000009",
+        "world_id": "WORLD_0001",
+        "need_id": "development-need:old",
+        "proposal_id": "development-proposal:old",
+        "target_task": "CHECK_X",
+        "assignment": "ARCHITECTURE_ONLY",
+        "status": "SETTLED",
+        "world_evaluation": {
+            "world_id": "WORLD_0001",
+            "causal_claim_ready": True,
+            "decision": "ADOPT",
+            "estimated_real_world_effect": 0.3,
+        },
+        "architecture_evaluation": {
+            "trial_id": "architecture:000009",
+            "evaluation": {
+                "status": "ROLLED_BACK",
+                "decision": "ROLLBACK",
+                "ready": True,
+                "selection_generation": 1,
+                "post_selection_round": 0,
+                "effect_selected_minus_baseline": -0.2,
+            },
+        },
+    })
+    monkeypatch.setattr(runtime.open_ended_evolution, "refresh", lambda now: {})
+
+    settled = runtime.observe_development_transfer_outcome(
+        task="CHECK_X",
+        result={"status": "OK", "world_utility": 0.2},
+        trial_id="development-transfer:world_0001:000009",
+        observed_at=NOW + timedelta(hours=2),
+    )
+
+    assert settled is not None
+    assert "rsi_feedback" not in settled
+    assert settled["architecture_rsi_feedback"]["decision"] == "ROLLBACK"
+    events = runtime.developmental_history.state["events"]
+    assert events[-1]["kind"] == "SELF_ARCHITECTURE_ROLLED_BACK"
+    assert runtime.self_model.projection()["capability_beliefs"] == {}

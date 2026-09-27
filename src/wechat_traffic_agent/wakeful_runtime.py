@@ -1574,9 +1574,11 @@ class ContentWakefulRuntime:
                 else {}
             )
             decision = str(evaluation.get("decision") or "")
-            if bool(evaluation.get("causal_claim_ready")) and decision in {
-                "ADOPT", "REJECT", "REVISE",
-            }:
+            if (
+                str(settled.get("assignment") or "") != "ARCHITECTURE_ONLY"
+                and bool(evaluation.get("causal_claim_ready"))
+                and decision in {"ADOPT", "REJECT", "REVISE"}
+            ):
                 need_id = str(settled.get("need_id") or "")
                 agency_need = (
                     dict((self.developmental_agency.state.get("needs") or {}).get(need_id) or {})
@@ -1666,6 +1668,86 @@ class ContentWakefulRuntime:
                         "capability_updated": capability_update is not None,
                         "decision": decision,
                         "evidence_ref": evidence_ref,
+                    },
+                }
+            architecture_settlement = (
+                settled.get("architecture_evaluation")
+                if isinstance(settled.get("architecture_evaluation"), dict)
+                else {}
+            )
+            architecture_evaluation = (
+                architecture_settlement.get("evaluation")
+                if isinstance(
+                    architecture_settlement.get("evaluation"),
+                    dict,
+                )
+                else {}
+            )
+            architecture_decision = str(
+                architecture_evaluation.get("decision") or ""
+            )
+            if (
+                bool(architecture_evaluation.get("ready"))
+                and architecture_decision in {"RETAIN", "ROLLBACK"}
+            ):
+                effect_raw = architecture_evaluation.get(
+                    "effect_selected_minus_baseline"
+                )
+                effect = (
+                    max(-1.0, min(1.0, float(effect_raw)))
+                    if isinstance(effect_raw, (int, float))
+                    and not isinstance(effect_raw, bool)
+                    else 0.0
+                )
+                architecture_ref = (
+                    "developmental-architecture-decision:"
+                    + hashlib.sha256(
+                        "|".join((
+                            str(trial_id or ""),
+                            str(architecture_settlement.get("trial_id") or ""),
+                            architecture_decision,
+                            str(effect),
+                        )).encode("utf-8")
+                    ).hexdigest()[:24]
+                )
+                architecture_event = self.developmental_history.record(
+                    kind=(
+                        "SELF_ARCHITECTURE_RETAINED"
+                        if architecture_decision == "RETAIN"
+                        else "SELF_ARCHITECTURE_ROLLED_BACK"
+                    ),
+                    domain="developmental_architecture",
+                    outcome=effect,
+                    evidence_refs=tuple(
+                        ref
+                        for ref in (
+                            architecture_ref,
+                            str(trial_id or ""),
+                            str(architecture_settlement.get("trial_id") or ""),
+                            str(settled.get("world_id") or ""),
+                        )
+                        if ref
+                    ),
+                    now=observed_at,
+                    metadata={
+                        "decision": architecture_decision,
+                        "effect_selected_minus_baseline": effect,
+                        "selection_generation": architecture_evaluation.get(
+                            "selection_generation"
+                        ),
+                        "post_selection_round": architecture_evaluation.get(
+                            "post_selection_round"
+                        ),
+                        "causal_source": "POST_SELECTION_REAL_TARGET_OUTCOMES",
+                    },
+                )
+                settled = {
+                    **dict(settled),
+                    "architecture_rsi_feedback": {
+                        "decision": architecture_decision,
+                        "history_event_id": architecture_event.get("event_id"),
+                        "evidence_ref": architecture_ref,
+                        "effect_selected_minus_baseline": effect,
                     },
                 }
             self.open_ended_evolution.refresh(now=observed_at)

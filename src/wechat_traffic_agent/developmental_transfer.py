@@ -159,7 +159,12 @@ class DevelopmentalWorldTransferLab:
             _write(self.path, self.state)
         return None
 
-    def _world(self, world_id: str | None = None) -> dict[str, Any] | None:
+    def _world(
+        self,
+        world_id: str | None = None,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
         worlds = self.agency.state.get("worlds") or {}
         if world_id:
             row = worlds.get(str(world_id).upper())
@@ -167,7 +172,10 @@ class DevelopmentalWorldTransferLab:
         candidate = self.agency.next_candidate_world()
         if isinstance(candidate, Mapping):
             return dict(candidate)
-        if self.architecture is not None and self.architecture.needs_evidence():
+        if (
+            self.architecture is not None
+            and self.architecture.needs_evidence(now)
+        ):
             adopted = [
                 dict(row)
                 for row in worlds.values()
@@ -197,14 +205,14 @@ class DevelopmentalWorldTransferLab:
         pending = self.pending(now=now)
         if pending is not None:
             return {"status": "PENDING_EXISTS", "trial": pending}
-        world = self._world(world_id)
+        world = self._world(world_id, now=now)
         if world is None:
             return {"status": "NO_ELIGIBLE_WORLD", "trial": None}
         world_status = str(world.get("status") or "")
         architecture_only = bool(
             world_status == "ADOPTED"
             and self.architecture is not None
-            and self.architecture.needs_evidence()
+            and self.architecture.needs_evidence(now)
         )
         if world_status not in {"CANDIDATE", "EXPERIMENTING"} and not architecture_only:
             return {"status": "WORLD_NOT_EXPERIMENTING", "trial": None}
