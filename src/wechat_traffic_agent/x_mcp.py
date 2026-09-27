@@ -54,6 +54,14 @@ def x_writes_enabled() -> bool:
     return os.environ.get("CONTENT_X_WRITES_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def x_publication_enabled() -> bool:
+    """Allow bounded original post/thread publication without social-interaction writes."""
+    return x_writes_enabled() or (
+        os.environ.get("CONTENT_X_PUBLICATION_ENABLED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+
+
 class XMcpError(RuntimeError):
     pass
 class XMcpClient:
@@ -403,10 +411,17 @@ class XCapabilityProvider:
 
     def manifest(self) -> dict[str, Any]:
         rows = [_capability_row(capability_id, side_effect="READ_ONLY") for capability_id in READ_CAPABILITIES]
+        if x_publication_enabled():
+            rows.extend(
+                _capability_row(capability_id, side_effect="EXTERNAL_SIDE_EFFECT", permission=permission)
+                for capability_id, (_transport, _target, permission) in WRITE_CAPABILITIES.items()
+                if permission == "social.publish"
+            )
         if x_writes_enabled():
             rows.extend(
                 _capability_row(capability_id, side_effect="EXTERNAL_SIDE_EFFECT", permission=permission)
                 for capability_id, (_transport, _target, permission) in WRITE_CAPABILITIES.items()
+                if permission != "social.publish"
             )
         return {
             "provider": PROVIDER_ID,
@@ -436,9 +451,14 @@ class XCapabilityProvider:
                 tool = READ_CAPABILITIES[capability_id]
                 result = self.client.call_tool(tool, self._read_defaults(capability_id, args), capability_id=capability_id)
             elif capability_id in WRITE_CAPABILITIES:
-                if not x_writes_enabled():
+                transport, target, permission = WRITE_CAPABILITIES[capability_id]
+                enabled = (
+                    x_publication_enabled()
+                    if permission == "social.publish"
+                    else x_writes_enabled()
+                )
+                if not enabled:
                     return {"ok": False, "status": "WRITE_DISABLED", "capability_id": capability_id}
-                transport, target, _permission = WRITE_CAPABILITIES[capability_id]
                 if transport == "mcp":
                     result = self.client.call_tool(target, args, capability_id=capability_id)
                     result["transport"] = "official-x-mcp"
@@ -456,5 +476,6 @@ class XCapabilityProvider:
 
 __all__ = [
     "BLOCKED_TOOL_NAMES", "PROVIDER_ID", "READ_CAPABILITIES", "WRITE_CAPABILITIES",
-    "XCapabilityProvider", "XMcpClient", "XMcpError", "XurlCommandClient", "x_enabled", "x_writes_enabled",
+    "XCapabilityProvider", "XMcpClient", "XMcpError", "XurlCommandClient",
+    "x_enabled", "x_publication_enabled", "x_writes_enabled",
 ]

@@ -44,6 +44,28 @@ def test_read_capabilities_match_real_hosted_xmcp_names(monkeypatch):
     assert not (set(WRITE_CAPABILITIES) & ids)
 
 
+def test_publication_only_mode_exposes_post_and_reply_but_not_social_interactions(monkeypatch):
+    monkeypatch.delenv("CONTENT_X_WRITES_ENABLED", raising=False)
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    mcp, xurl = _Mcp(), _Xurl()
+    provider = XCapabilityProvider(mcp, xurl)
+
+    ids = {row["capability_id"] for row in provider.manifest()["capabilities"]}
+    assert {"x.post", "x.reply"} <= ids
+    assert not ({"x.bookmark", "x.like", "x.repost", "x.follow"} & ids)
+
+    post = provider.invoke("x.post", {"text": "bounded publication"})
+    reply = provider.invoke("x.reply", {"post_id": "9", "text": "thread follow-up"})
+    bookmark = provider.invoke("x.bookmark", {"user_id": "u1", "post_id": "9"})
+
+    assert post["ok"] is True
+    assert reply["ok"] is True
+    assert bookmark["ok"] is False
+    assert bookmark["status"] == "WRITE_DISABLED"
+    assert [row[0] for row in xurl.calls] == ["x.post", "x.reply"]
+    assert mcp.calls == []
+
+
 def test_write_surface_is_explicit_and_destructive_actions_absent(monkeypatch):
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
     manifest = XCapabilityProvider(_Mcp(), _Xurl()).manifest()

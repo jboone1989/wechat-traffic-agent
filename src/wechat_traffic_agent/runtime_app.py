@@ -317,14 +317,18 @@ def build_content_application(
     subject = Subject.bootstrap(
         root / "application" / "subject", subject_id=SUBJECT_ID, trusted_runtime_key=key
     )
-    from .x_mcp import XCapabilityProvider, x_enabled, x_writes_enabled
+    from .x_mcp import XCapabilityProvider, x_enabled, x_publication_enabled, x_writes_enabled
     from .pi_remote_repair import configured_pi_remote_repair_provider
     x_active = x_enabled()
-    x_write_active = x_active and x_writes_enabled()
+    x_publish_active = x_active and x_publication_enabled()
+    x_interact_active = x_active and x_writes_enabled()
+    x_write_active = x_publish_active or x_interact_active
     repair_provider = configured_pi_remote_repair_provider()
     allowed_permissions = set()
-    if x_write_active:
-        allowed_permissions.update({"social.publish", "social.interact"})
+    if x_publish_active:
+        allowed_permissions.add("social.publish")
+    if x_interact_active:
+        allowed_permissions.add("social.interact")
     if repair_provider is not None:
         allowed_permissions.add("repair.request")
     side_effect_ceiling = (

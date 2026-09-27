@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from .content_loop import ReceiptRuntime, _structured
 from .public_activity import emit_public_activity
 from .sources.runtime_x import first_post_id, first_user, normalize_posts
-from .x_mcp import x_writes_enabled
+from .x_mcp import x_publication_enabled, x_writes_enabled
 from .public_persona import public_persona_projection, record_public_interaction
 from .x_growth_mission import follower_count_from_user, x_growth_mission_context
 
@@ -375,7 +375,7 @@ class XAutonomyLoop:
             "mind_plan": plan, "artifact": artifact, "publication": publication,
         }
     async def after_content_cycle(self, *, result: dict[str, Any], now: datetime) -> dict[str, Any]:
-        if not x_writes_enabled():
+        if not x_publication_enabled():
             return {"status": "WRITE_DISABLED"}
         folder, context = self._cycle_context(result)
         if folder is None:
