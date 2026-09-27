@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .world_learning import WorldLearningLedger
+from .game_intelligence import GameIntelligence
 
 SCHEMA = "ferro-screeps-training.v2"
 EPISODE_SCHEMA = "ferro-screeps-episode.v2"
@@ -128,6 +129,15 @@ class ScreepsResearcher:
                 "rejection_count": 0,
                 "harness_failures": [],
             }
+        self.game_intelligence = GameIntelligence(self.state_root)
+        self.game_intelligence.register_population(
+            "SCREEPS",
+            {
+                str(strategy_id): dict(params)
+                for strategy_id, params in (self.state.get("strategies") or {}).items()
+                if isinstance(params, Mapping)
+            },
+        )
 
     def strategy(self, strategy_id: str | None = None) -> dict[str, Any]:
         strategy_id = strategy_id or str(self.state.get("incumbent_strategy_id") or "balanced-v1")
@@ -161,7 +171,29 @@ class ScreepsResearcher:
             return {**self.strategy(strategy_id), "research_arm": "EXPLORATION", "trial_id": None}
 
         incumbent = str(self.state.get("incumbent_strategy_id") or "balanced-v1")
-        return {**self.strategy(incumbent), "research_arm": "INCUMBENT", "trial_id": None}
+        neural = _read(self.state_root / "application" / "neural_life.json")
+        temperament = self.game_intelligence.temperament_from_neural_state(neural)
+        strategies = {
+            str(strategy_id): dict(params)
+            for strategy_id, params in (self.state.get("strategies") or {}).items()
+            if isinstance(params, Mapping)
+        }
+        selected = self.game_intelligence.choose_strategy_for_temperament(
+            strategies,
+            environment="SCREEPS",
+            temperament=temperament,
+            seed=seed,
+        ) or incumbent
+        self.game_intelligence.note_temperament(
+            temperament,
+            context=f"SCREEPS:{selected}",
+        )
+        return {
+            **self.strategy(selected),
+            "research_arm": "INCUMBENT" if selected == incumbent else "TEMPERAMENT",
+            "trial_id": None,
+            "temperament": temperament,
+        }
 
     def begin_episode(
         self,
@@ -324,10 +356,42 @@ class ScreepsResearcher:
             }
         )
         self.state["episodes"] = episodes[-MAX_EPISODES:]
+        self.game_intelligence.record_episode(
+            environment="SCREEPS",
+            episode_id=episode_id,
+            reward=reward,
+            strategy_id=outcome.strategy_id,
+            opponent_id=outcome.opponent_id,
+            success=float(factors.get("match_outcome") or 0.0) > 0.0,
+            metrics=dict(metrics),
+            causal_factors=factors,
+            evidence_ref=evidence_ref,
+            observed_at=now,
+            source="SCREEPS_MATCH",
+        )
+        opponent_strategy_id = outcome.opponent_id.removeprefix("screeps-opponent:")
+        population_members = self.game_intelligence.population_summary("SCREEPS").get("members") or {}
+        if outcome.strategy_id in population_members and opponent_strategy_id in population_members:
+            self.game_intelligence.record_self_play_match(
+                environment="SCREEPS",
+                left=outcome.strategy_id,
+                right=opponent_strategy_id,
+                left_reward=reward,
+                episode_id=episode_id,
+                observed_at=now,
+            )
         open_trials.pop(episode_id, None)
         self.state["open_trials"] = open_trials
         self._record_trial_result(outcome)
         self._maybe_start_challenger(now)
+        self.game_intelligence.register_population(
+            "SCREEPS",
+            {
+                str(strategy_id): dict(params)
+                for strategy_id, params in (self.state.get("strategies") or {}).items()
+                if isinstance(params, Mapping)
+            },
+        )
         self._persist(now)
         return outcome
 
@@ -536,6 +600,49 @@ class ScreepsResearcher:
             "evidence_ref": outcome.evidence_ref,
         }
 
+    def choose_population_opponent(
+        self,
+        strategy_id: str,
+        *,
+        seed: int = 0,
+        candidates: tuple[str, ...] | None = None,
+    ) -> str:
+        selected = self.game_intelligence.select_population_opponent(
+            "SCREEPS",
+            strategy_id=strategy_id,
+            candidates=candidates,
+            seed=seed,
+        )
+        if selected is None:
+            fallback = [
+                str(value)
+                for value in (candidates or tuple((self.state.get("strategies") or {}).keys()))
+                if str(value) != str(strategy_id)
+            ]
+            if not fallback:
+                raise ValueError("Screeps self-play requires at least two strategies")
+            selected = sorted(fallback)[abs(int(seed)) % len(fallback)]
+        self.strategy(selected)
+        return selected
+
+    def plan_self_play(self, *, seed: int = 0) -> dict[str, Any]:
+        pair = self.game_intelligence.select_self_play_pair("SCREEPS", seed=seed)
+        if pair is None:
+            return {"status": "INSUFFICIENT_POPULATION"}
+        left, right = pair
+        return {
+            "status": "READY",
+            "left": self.strategy(left),
+            "right": self.strategy(right),
+            "evidence_required": "MEASURED_MATCH_OUTCOME",
+        }
+
+    def evaluate_transfer_from(self, source_environment: str) -> dict[str, Any]:
+        return self.game_intelligence.evaluate_transfer(
+            source_environment=source_environment,
+            target_environment="SCREEPS",
+        )
+
     def projection(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA,
@@ -551,6 +658,8 @@ class ScreepsResearcher:
             "prospective_trial": self.state.get("prospective_trial"),
             "function_success_is_reward": False,
             "prospective_validation_required": True,
+            "game_intelligence": self.game_intelligence.projection(),
+            "self_play_population": self.game_intelligence.population_summary("SCREEPS"),
         }
 
     def _persist(self, now: datetime | None = None) -> None:

@@ -262,3 +262,26 @@ def test_ferro_born_world_runs_on_same_substrate_with_unsemantic_actions(tmp_pat
     assert world["steps"] == 8
     assert set(projection["environments"]["WORLD_0001"]["last_action"]).issubset(set("A0123"))
     assert projection["available_environments"][-1] == "WORLD_0001"
+
+
+def test_accelerated_arena_trains_multiple_worlds_and_records_transfer(tmp_path: Path):
+    substrate = FakeSubstrate()
+    lab = FerroBrainLab(tmp_path, substrate=substrate)
+
+    result = lab.run_accelerated_arena(
+        environments=("MAZE", "FORAGING"),
+        sessions_per_environment=2,
+        base_steps=8,
+        now=NOW,
+    )
+
+    assert result["mode"] == "HEADLESS_ACCELERATED_ARENA"
+    assert result["session_count"] == 4
+    assert result["total_steps"] >= 32
+    assert len(result["transfer_evaluations"]) == 1
+    game = lab.projection()["game_intelligence"]
+    assert game["accelerated_batch_count"] == 1
+    assert game["episode_count"] == 4
+    assert game["transition_count"] >= 32
+    assert game["macro_skill_count"] >= 1
+    assert game["macro_execution_count"] >= 1

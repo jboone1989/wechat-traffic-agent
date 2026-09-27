@@ -356,10 +356,21 @@ class WakefulContentTaskRunner:
         }
 
     def _neural_play(self, now: datetime) -> dict[str, Any]:
+        # Keep one normal embodied session for organ-handoff semantics, then use
+        # the already-admitted resource window for a bounded headless arena.
         result = self.wakeful.run_brain_lab(now, steps=12)
+        arena = None
+        brain_lab = getattr(self.wakeful, "brain_lab", None)
+        if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
+            arena = brain_lab.run_accelerated_arena(
+                sessions_per_environment=2,
+                base_steps=24,
+                now=now,
+            )
         return {
             "task": "NEURAL_PLAY",
             **result,
+            "accelerated_arena": arena,
         }
 
     def _neural_dream(self, now: datetime) -> dict[str, Any]:

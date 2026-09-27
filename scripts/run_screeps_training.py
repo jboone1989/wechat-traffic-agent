@@ -35,7 +35,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-load-1m", type=float, default=1.75)
     parser.add_argument("--match-timeout-seconds", type=int, default=240)
     parser.add_argument("--public-live-path", type=Path, default=None)
-    parser.add_argument("--opponents", default=",".join(DEFAULT_OPPONENTS))
+    parser.add_argument(
+        "--opponents",
+        default="auto",
+        help="comma-separated population members, or 'auto' for least-tested self-play",
+    )
     return parser
 
 
@@ -164,12 +168,16 @@ def main() -> int:
     if not module.exists():
         raise RuntimeError(f"Screeps test server dependency missing: {module}")
 
-    opponents = tuple(
-        item.strip()
-        for item in str(args.opponents).split(",")
-        if item.strip()
+    opponents = (
+        ()
+        if str(args.opponents).strip().lower() == "auto"
+        else tuple(
+            item.strip()
+            for item in str(args.opponents).split(",")
+            if item.strip()
+        )
     )
-    if not opponents:
+    if str(args.opponents).strip().lower() != "auto" and not opponents:
         raise ValueError("at least one opponent strategy is required")
 
     researcher = ScreepsResearcher(args.state_root)
@@ -210,7 +218,11 @@ def main() -> int:
 
         seed = base_seed + index
         choice = researcher.choose_strategy(seed=seed)
-        opponent_id = opponents[seed % len(opponents)]
+        opponent_id = researcher.choose_population_opponent(
+            str(choice["strategy_id"]),
+            seed=seed,
+            candidates=opponents or None,
+        )
         opponent = researcher.strategy(opponent_id)
         trial = researcher.begin_episode(
             strategy_id=str(choice["strategy_id"]),

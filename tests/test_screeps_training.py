@@ -231,3 +231,39 @@ def test_challenger_needs_prospective_matches_before_promotion(tmp_path):
     assert final["incumbent_strategy_id"] == challenger_id
     assert final["promotion_count"] == 1
     assert final["generation"] == 1
+
+
+def test_screeps_real_match_updates_self_play_population(tmp_path):
+    engine = ScreepsResearcher(tmp_path)
+    trial = engine.begin_episode(
+        strategy_id="balanced-v1",
+        opponent_id="screeps-opponent:raider-v1",
+        seed=77,
+        now=NOW,
+    )
+    _settle(
+        engine,
+        trial,
+        _good_metrics(match_outcome=1, hostile_creeps_destroyed=5, own_creeps_lost=0),
+        index=77,
+    )
+
+    population = engine.projection()["self_play_population"]
+    assert population["match_count"] == 1
+    assert population["members"]["balanced-v1"]["wins"] == 1
+    assert population["members"]["raider-v1"]["losses"] == 1
+
+
+def test_screeps_population_opponent_rotates_toward_untested_member(tmp_path):
+    engine = ScreepsResearcher(tmp_path)
+    first = engine.choose_population_opponent("balanced-v1", seed=3)
+    trial = engine.begin_episode(
+        strategy_id="balanced-v1",
+        opponent_id=f"screeps-opponent:{first}",
+        seed=3,
+        now=NOW,
+    )
+    _settle(engine, trial, _good_metrics(match_outcome=1), index=3)
+
+    second = engine.choose_population_opponent("balanced-v1", seed=3)
+    assert second != first

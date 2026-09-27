@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
+from .game_intelligence import GameIntelligence
+
 
 def _clip(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(value)))
@@ -34,6 +36,7 @@ class FerroBrainLab:
         self.substrate = substrate
         self.path = self.state_root / "application" / "brain_lab.json"
         self.state = self._load()
+        self.game_intelligence = GameIntelligence(self.state_root)
 
     def _default_env(self, name: str) -> dict[str, Any]:
         if name == "PONG":
@@ -81,6 +84,7 @@ class FerroBrainLab:
         for name in self.ENVIRONMENTS:
             raw.setdefault("environments", {}).setdefault(name, self._default_env(name))
         raw.setdefault("policies", {})
+        raw.setdefault("skill_execution", {})
         return raw
 
     def _write(self) -> None:
@@ -133,10 +137,144 @@ class FerroBrainLab:
             for channel, value in sorted(currents.items())
         )[:512]
 
+    def _temperament(self) -> dict[str, float]:
+        try:
+            raw = json.loads(
+                (self.state_root / "application" / "neural_life.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            raw = {}
+        return self.game_intelligence.temperament_from_neural_state(raw)
+
+    @staticmethod
+    def _experience_state_key(name: str, env: Mapping[str, Any]) -> str:
+        if name == "PONG":
+            return (
+                f"ball:{round(float(env.get('ball_x') or 0.0),1)},"
+                f"{round(float(env.get('ball_y') or 0.0),1)}:"
+                f"paddle:{round(float(env.get('paddle_y') or 0.0),1)}"
+            )
+        if name == "MAZE":
+            return f"{int(env.get('x') or 0)},{int(env.get('y') or 0)}"
+        if name == "FORAGING":
+            return (
+                f"p:{round(float(env.get('x') or 0.0),1)},"
+                f"{round(float(env.get('y') or 0.0),1)}:"
+                f"f:{round(float(env.get('food_x') or 0.0),1)},"
+                f"{round(float(env.get('food_y') or 0.0),1)}:"
+                f"e:{round(float(env.get('energy') or 0.0),1)}"
+            )
+        if name == "ROVER":
+            return (
+                f"h:{round(float(env.get('heading_error') or 0.0),1)}:"
+                f"p:{round(float(env.get('progress') or 0.0),1)}"
+            )
+        compact = {
+            key: value
+            for key, value in env.items()
+            if key in {"episode_step", "last_target_action", "last_action"}
+        }
+        return json.dumps(compact, sort_keys=True, separators=(",", ":"))[:256]
+
     def _policy_row(self, name: str) -> dict[str, Any]:
         return self.state.setdefault("policies", {}).setdefault(
             name, {"states": {}, "updates": 0, "explorations": 0}
         )
+
+    def _macro_choice(
+        self,
+        *,
+        name: str,
+        options: tuple[tuple[str, str], ...],
+        event_id: str,
+    ) -> tuple[str, str] | None:
+        option_map = {str(action): str(channel) for action, channel in options}
+        executions = self.state.setdefault("skill_execution", {})
+        active = dict(executions.get(name) or {})
+        queue = [str(value) for value in active.get("queue") or ()]
+        while queue:
+            action = queue.pop(0)
+            if action not in option_map:
+                continue
+            active["queue"] = queue
+            active["last_action"] = action
+            executions[name] = active
+            return action, option_map[action]
+        if active:
+            executions.pop(name, None)
+
+        # Macro use is deliberately bounded. Offline discovery can only propose
+        # a sequence; repeated real executions must validate it.
+        if self._phase(f"macro-execute:{event_id}") >= 0.14:
+            return None
+        macro = self.game_intelligence.choose_macro_skill(
+            name,
+            valid_actions=tuple(option_map),
+            seed=int(self._phase(f"macro-seed:{event_id}") * 1_000_000),
+        )
+        if macro is None:
+            return None
+        actions = [str(value) for value in macro.get("actions") or ()]
+        if not actions or actions[0] not in option_map:
+            return None
+        execution_id = (
+            f"macro-execution:{name.lower()}:"
+            + sha256(f"{event_id}:{macro['skill_id']}".encode()).hexdigest()[:16]
+        )
+        executions[name] = {
+            "execution_id": execution_id,
+            "skill_id": str(macro["skill_id"]),
+            "actions": actions,
+            "queue": actions[1:],
+            "reward_sum": 0.0,
+            "steps": 0,
+            "started_event_id": event_id,
+            "last_action": actions[0],
+        }
+        return actions[0], option_map[actions[0]]
+
+    def _settle_macro_step(
+        self,
+        *,
+        name: str,
+        reward: float,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        executions = self.state.setdefault("skill_execution", {})
+        active = dict(executions.get(name) or {})
+        if not active:
+            return None
+        active["reward_sum"] = round(
+            float(active.get("reward_sum") or 0.0) + float(reward), 6
+        )
+        active["steps"] = int(active.get("steps") or 0) + 1
+        executions[name] = active
+        if active.get("queue"):
+            return {
+                "status": "MACRO_RUNNING",
+                "skill_id": active.get("skill_id"),
+                "execution_id": active.get("execution_id"),
+                "steps": active["steps"],
+            }
+        executions.pop(name, None)
+        result = self.game_intelligence.record_macro_execution(
+            environment=name,
+            skill_id=str(active.get("skill_id") or ""),
+            execution_id=str(active.get("execution_id") or ""),
+            actions=tuple(str(value) for value in active.get("actions") or ()),
+            reward=float(active.get("reward_sum") or 0.0),
+            observed_at=now,
+        )
+        return {
+            "status": "MACRO_SETTLED",
+            "skill_id": active.get("skill_id"),
+            "execution_id": active.get("execution_id"),
+            "steps": active["steps"],
+            "reward": active["reward_sum"],
+            "prospectively_validated": result.get("prospectively_validated"),
+        }
 
     def _choose(
         self,
@@ -149,6 +287,13 @@ class FerroBrainLab:
     ) -> tuple[str, str]:
         if not options:
             raise ValueError("brain-lab action set cannot be empty")
+        macro_choice = self._macro_choice(
+            name=name,
+            options=options,
+            event_id=event_id,
+        )
+        if macro_choice is not None:
+            return macro_choice
         policy = self._policy_row(name)
         values = policy.setdefault("states", {}).setdefault(state_key, {})
         raw = [float(delta.get(channel) or 0.0) for _, channel in options]
@@ -157,9 +302,18 @@ class FerroBrainLab:
         scored = []
         for index, (action, channel) in enumerate(options):
             q = max(-1.0, min(1.0, float(values.get(action) or 0.0)))
-            score = 0.35 * neural[index] + 0.65 * ((q + 1.0) / 2.0)
+            prediction = self.game_intelligence.predict(
+                environment=name,
+                state_key=state_key,
+                skill_id=f"{name}:{action}",
+            )
+            expected = prediction.get("expected_reward")
+            world_score = 0.5 if expected is None else (max(-1.0, min(1.0, float(expected))) + 1.0) / 2.0
+            score = 0.25 * neural[index] + 0.50 * ((q + 1.0) / 2.0) + 0.25 * world_score
             scored.append((score, action, channel))
-        if self._phase(f"policy-explore:{event_id}") < 0.08 and len(options) > 1:
+        temperament = self._temperament()
+        explore_rate = max(0.04, min(0.24, 0.06 + 0.18 * float(temperament.get("exploration") or 0.0)))
+        if self._phase(f"policy-explore:{event_id}") < explore_rate and len(options) > 1:
             pick = int(self._phase(f"policy-pick:{event_id}") * len(options)) % len(options)
             policy["explorations"] = int(policy.get("explorations") or 0) + 1
             return options[pick]
@@ -468,6 +622,7 @@ class FerroBrainLab:
                 name, self._generated_default(generated[name])
             )
         env = dict(self.state["environments"][name])
+        before_env = dict(env)
         env["step"] = int(env.get("step") or 0) + 1
         event_id = f"brain-lab:{name.lower()}:{int(env.get('episode') or 0)}:{int(env['step'])}"
         if name == "PONG":
@@ -487,6 +642,11 @@ class FerroBrainLab:
                 event_id=event_id,
             )
         feedback = self._reward(event_id=event_id, action_channel=action_channel, reward=reward, now=now)
+        macro_execution = self._settle_macro_step(
+            name=name,
+            reward=float(reward),
+            now=now,
+        )
         env["last_reward"] = round(float(reward), 6)
         env["reward_sum"] = round(float(env.get("reward_sum") or 0.0) + float(reward), 6)
         self.state["environments"][name] = env
@@ -502,11 +662,26 @@ class FerroBrainLab:
             "active_neurons": int(burst.get("active_neurons") or 0),
             "changed_synapses": int(feedback.get("changed_synapse_count") or 0),
             "action_channel": action_channel,
+            "macro_execution": macro_execution,
         }
+        row["state_key"] = self._experience_state_key(name, before_env)
+        row["next_state_key"] = self._experience_state_key(name, env)
         recent = list(self.state.get("recent") or ())
         recent.append(row)
         self.state["recent"] = recent[-self.MAX_RECENT:]
         self._write()
+        self.game_intelligence.record_transition(
+            environment=name,
+            episode_id=f"brain-lab:{name.lower()}:{int(before_env.get('episode') or 0)}",
+            state_key=str(row["state_key"]),
+            action=str(row.get("action") or ""),
+            reward=float(row.get("reward") or 0.0),
+            next_state_key=str(row["next_state_key"]),
+            skill_id=f"{name}:{row.get('action')}",
+            success=(True if float(row.get("reward") or 0.0) >= 0.9 else None),
+            observed_at=now,
+            source="BRAIN_LAB",
+        )
         return row
 
     def run_session(self, *, environment: str | None = None, steps: int = 12, now: datetime | None = None) -> dict[str, Any]:
@@ -519,15 +694,80 @@ class FerroBrainLab:
         self.state["total_sessions"] = int(self.state.get("total_sessions") or 0) + 1
         self.state["updated_at"] = now.isoformat()
         self._write()
+        session_reward = round(sum(float(row["reward"]) for row in rows), 6)
+        session_id = f"brain-session:{str(environment).lower()}:{int(self.state['total_sessions'])}"
+        self.game_intelligence.record_episode(
+            environment=str(environment).upper(),
+            episode_id=session_id,
+            reward=max(-1.0, min(1.0, session_reward)),
+            success=session_reward > 0.0,
+            metrics={"steps": len(rows), "raw_reward": session_reward},
+            evidence_ref=rows[-1].get("event_id"),
+            observed_at=now,
+            source="BRAIN_LAB_SESSION",
+        )
+        self.game_intelligence.discover_macro_skills(str(environment).upper(), min_support=3)
         return {
             "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM" if self.substrate is not None else "CONNECTOME_UNAVAILABLE",
             "environment": str(environment).upper(),
             "steps": len(rows),
-            "reward": round(sum(float(row["reward"]) for row in rows), 6),
+            "reward": session_reward,
             "changed_synapses": sum(int(row["changed_synapses"]) for row in rows),
             "latest": rows[-1],
             "projection": self.projection(),
         }
+
+    def run_accelerated_arena(
+        self,
+        *,
+        environments: tuple[str, ...] | None = None,
+        sessions_per_environment: int = 4,
+        base_steps: int = 32,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Run many headless sessions in one wake instead of scheduler-paced play."""
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        names = tuple(str(value).upper() for value in (environments or self.ENVIRONMENTS))
+        sessions = max(1, min(32, int(sessions_per_environment)))
+        results: list[dict[str, Any]] = []
+        total_steps = 0
+        for name in names:
+            plan = self.game_intelligence.training_plan(name, base_steps=base_steps)
+            for _ in range(sessions):
+                row = self.run_session(
+                    environment=name,
+                    steps=int(plan["steps"]),
+                    now=now,
+                )
+                total_steps += int(row["steps"])
+                results.append({
+                    "environment": name,
+                    "reward": row["reward"],
+                    "steps": row["steps"],
+                    "curriculum_level": int(
+                        self.game_intelligence.curriculum(name).get("level") or 1
+                    ),
+                })
+        transfers: list[dict[str, Any]] = []
+        for index, source in enumerate(names):
+            for target in names[index + 1:]:
+                transfers.append(
+                    self.game_intelligence.evaluate_transfer(
+                        source_environment=source,
+                        target_environment=target,
+                        now=now,
+                    )
+                )
+        payload = {
+            "mode": "HEADLESS_ACCELERATED_ARENA",
+            "environment_count": len(names),
+            "session_count": len(results),
+            "total_steps": total_steps,
+            "results": results[-64:],
+            "transfer_evaluations": transfers[-24:],
+        }
+        self.game_intelligence.record_accelerated_batch(payload, now=now)
+        return payload
 
     def projection(self) -> dict[str, Any]:
         generated = self._generated_specs()
@@ -579,7 +819,8 @@ class FerroBrainLab:
                 for name in names
             },
             "recent": [dict(row) for row in (self.state.get("recent") or [])[-24:]],
-            "learning_rule": "connectome action prior + persistent state-action reward learning + provenance-linked recurrent feedback",
+            "learning_rule": "connectome action prior + persistent state-action reward learning + empirical world model + provenance-linked recurrent feedback",
+            "game_intelligence": self.game_intelligence.projection(),
         }
 
 
