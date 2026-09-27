@@ -152,6 +152,69 @@ def test_malformed_model_json_failure_gets_fail_closed_repair_proposal(tmp_path)
     ]
 
 
+def test_content_composition_json_failure_gets_structured_output_repair_proposal(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+
+    result = service.ingest_failure(
+        {
+            "status": "ERROR",
+            "cycle": "v2-compose-json",
+            "error_type": "ValueError",
+            "message": "backend did not return a JSON object",
+            "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+        },
+        now=NOW,
+    )
+
+    assert result["problem_status"] == "REPAIR_PROPOSED"
+    assert result["repair_proposal"]["repair_kind"] == (
+        "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION"
+    )
+    assert result["repair_proposal"]["target_files"] == [
+        "src/wechat_traffic_agent/content_service.py"
+    ]
+
+
+def test_review_enriches_existing_composition_json_problem(tmp_path):
+    repair_runtime = RepairCapabilityRuntime()
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+        capability_runtime=repair_runtime,
+    )
+    problem = tmp_path / "application/self_maintenance/problems/compose.json"
+    problem.parent.mkdir(parents=True)
+    problem.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:compose",
+        "status": "DIAGNOSING",
+        "symptom": "backend did not return a JSON object",
+        "error_type": "ValueError",
+        "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+        "occurrences": 1,
+        "cycles": ["v2-compose-json"],
+        "last_seen_at": NOW.isoformat(),
+        "repair_proposal": None,
+    }))
+
+    review = service.review()
+
+    assert review["repair_proposed_count"] == 1
+    updated = json.loads(problem.read_text())
+    assert updated["repair_proposal"]["repair_kind"] == (
+        "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION"
+    )
+    assert updated["status"] == "REPAIR_REQUESTED"
+    assert updated["repair_request"]["requestId"] == "repair-123"
+    assert len(repair_runtime.calls) == 1
+    capability, payload = repair_runtime.calls[0]
+    assert capability == "REQUEST_CODE_REPAIR"
+    assert payload["targetFiles"] == ["src/wechat_traffic_agent/content_service.py"]
+
+
 def test_review_enriches_historical_known_problem_with_new_repair_knowledge(tmp_path):
     service = SelfMaintenanceService(
         state_root=tmp_path,

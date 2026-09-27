@@ -497,6 +497,29 @@ class SelfMaintenanceService:
             case.record_remediation(
                 "Bind only supplied evidence, preserve authoritative topic constraints and title de-duplication, and record that model selection failed."
             )
+        elif _KNOWN_MODEL_JSON_ERROR in message and "content_service.py:compose" in failure_site:
+            contract_observation = case.observe(
+                statement="Content composition requested a schema-shaped artifact through a text-only cognition response.",
+                scope="content-cognition-contract",
+                kind=ObservationKind.FAILURE,
+                evidence_refs=evidence_refs,
+                now=now,
+            )
+            hypothesis = case.hypothesize(
+                statement="The content composer relies on prompt compliance for JSON even though the advisory backend supports structured output.",
+                scope="content-cognition-contract",
+                predicts="The failed request is dispatched as text and compose then fails while extracting a JSON object.",
+                falsifier="The failed composition request was already constrained by the generated-content JSON schema.",
+            )
+            case.support(hypothesis.hypothesis_id, [contract_observation.observation_id])
+            case.conclude(
+                hypothesis.hypothesis_id,
+                summary="Content composition should bind its existing Pydantic schema into the cognition request instead of parsing unconstrained text.",
+                now=now,
+            )
+            case.record_remediation(
+                "Request structured output using the generated-content schema for both initial composition and its one bounded repair attempt."
+            )
         elif _KNOWN_RECOVERY_INPUT_CHANGE in message:
             contract_observation = case.observe(
                 statement="A persisted model receipt no longer matches the phase input after runtime code changed.",
@@ -550,6 +573,14 @@ class SelfMaintenanceService:
             verification = [
                 "two malformed SELECT_EVIDENCE responses bind only supplied evidence",
                 "fallback keeps authoritative topic constraints and title de-duplication",
+                "full content regression before release",
+            ]
+        elif _KNOWN_MODEL_JSON_ERROR in message and "content_service.py:compose" in failure_site:
+            target_file = "src/wechat_traffic_agent/content_service.py"
+            repair_kind = "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION"
+            verification = [
+                "content composition request carries the generated-content JSON schema",
+                "invented source URLs remain rejected after structured generation",
                 "full content regression before release",
             ]
         elif _KNOWN_RECOVERY_INPUT_CHANGE in message:
@@ -723,6 +754,7 @@ class SelfMaintenanceService:
         folder = self.root / "problems"
         enriched = 0
         scanned = 0
+        repair_requested = 0
         for path in sorted(folder.glob("*.json")) if folder.exists() else ():
             scanned += 1
             try:
@@ -751,7 +783,16 @@ class SelfMaintenanceService:
             latest = self.root / "latest.json"
             if str(payload.get("last_seen_at") or "") >= str(_read_last_seen(latest)):
                 _atomic_json(latest, payload)
-        return {"scanned": scanned, "enriched": enriched}
+            receipt = self.request_code_repair(str(payload.get("problem_id") or ""))
+            if str(receipt.get("status") or "") in {
+                "REQUESTED", "RECEIVED", "ACCEPTED"
+            }:
+                repair_requested += 1
+        return {
+            "scanned": scanned,
+            "enriched": enriched,
+            "repair_requested": repair_requested,
+        }
 
     def review(self) -> dict[str, Any]:
         self.refresh_known_proposals()
