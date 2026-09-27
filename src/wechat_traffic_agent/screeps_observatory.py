@@ -41,6 +41,16 @@ class ScreepsObservatory:
         researcher = ScreepsResearcher(self.state_root)
         research = researcher.projection()
         episode_id = str(live.get("episode_id") or "")
+        displaying_latest_replay = False
+        if not episode_id:
+            episodes = [
+                row
+                for row in (researcher.state.get("episodes") or ())
+                if isinstance(row, Mapping) and row.get("episode_id")
+            ]
+            if episodes:
+                episode_id = str(episodes[-1]["episode_id"])
+                displaying_latest_replay = True
         replay: dict[str, Any] = {}
         if episode_id:
             safe_id = episode_id.replace(":", "-")
@@ -75,6 +85,7 @@ class ScreepsObservatory:
             "status": status,
             "playing": status == "RUNNING",
             "episode_id": episode_id or None,
+            "displaying_latest_replay": displaying_latest_replay,
             "observed_at": live.get("observed_at"),
             "age_seconds": _age_seconds(live.get("observed_at")),
             "tick": live.get("tick") or (frame or {}).get("tick"),
