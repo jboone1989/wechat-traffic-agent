@@ -260,3 +260,52 @@ def test_concurrent_instances_merge_experience_instead_of_overwriting(tmp_path):
     ids = {row["episode_id"] for row in restored.state["episodes"]}
     assert ids == {"concurrent:maze", "concurrent:foraging"}
     assert restored.projection()["transition_count"] == 2
+
+
+def test_graduation_requires_broad_real_game_evidence(tmp_path):
+    engine = GameIntelligence(tmp_path)
+    base = ("PONG", "MAZE", "FORAGING", "ROVER")
+    engine.state["episodes"] = [
+        {"environment": env, "episode_id": f"{env}:{index}", "reward": 0.1}
+        for env in base
+        for index in range(40)
+    ]
+    engine.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:{index // 20}",
+            "state_key": str(index),
+            "action": "RIGHT",
+            "reward": 0.01,
+            "next_state_key": str(index + 1),
+        }
+        for env in base
+        for index in range(750)
+    ]
+    engine.state["skills"] = {
+        "macro:maze:a": {"kind": "MACRO", "prospectively_validated": True},
+        "macro:foraging:b": {"kind": "MACRO", "prospectively_validated": True},
+    }
+    engine.state["transfer_evaluations"] = [
+        {"interpretation": "MEASURED_CROSS_GAME_REUSE"} for _ in range(3)
+    ]
+    engine.state["population"] = {
+        "SCREEPS": {
+            "matches": [{"episode_id": f"s:{i}"} for i in range(50)],
+            "members": {
+                name: {
+                    "games": 5,
+                    "wins": 2,
+                    "losses": 3,
+                    "reward_sum": 0.0,
+                    "params": {},
+                }
+                for name in ("a", "b", "c", "d")
+            },
+        }
+    }
+
+    status = engine.graduation_status()
+    assert status["graduated"] is True
+    assert status["progress"] == 1.0
+    assert status["next_stage"] == "HARDER_OPEN_WORLD_CURRICULUM"

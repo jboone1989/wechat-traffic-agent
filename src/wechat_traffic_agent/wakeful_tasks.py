@@ -360,17 +360,20 @@ class WakefulContentTaskRunner:
         # the already-admitted resource window for a bounded headless arena.
         result = self.wakeful.run_brain_lab(now, steps=12)
         arena = None
+        graduation = None
         brain_lab = getattr(self.wakeful, "brain_lab", None)
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
+            graduation = brain_lab.game_intelligence.graduation_status()
             arena = brain_lab.run_accelerated_arena(
-                sessions_per_environment=2,
-                base_steps=24,
+                sessions_per_environment=1 if graduation.get("graduated") else 4,
+                base_steps=24 if graduation.get("graduated") else 32,
                 now=now,
             )
         return {
             "task": "NEURAL_PLAY",
             **result,
             "accelerated_arena": arena,
+            "graduation": graduation,
         }
 
     def _neural_dream(self, now: datetime) -> dict[str, Any]:

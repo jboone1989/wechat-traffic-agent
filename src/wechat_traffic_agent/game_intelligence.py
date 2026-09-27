@@ -1015,6 +1015,75 @@ class GameIntelligence:
         self.state["accelerated_batches"] = rows[-128:]
         self._persist(now)
 
+    def graduation_status(self) -> dict[str, Any]:
+        """Measure whether the current game curriculum has enough real evidence."""
+        base_environments = ("PONG", "MAZE", "FORAGING", "ROVER")
+        episode_counts = {name: 0 for name in base_environments}
+        transition_counts = {name: 0 for name in base_environments}
+        for row in self.state.get("episodes") or ():
+            if isinstance(row, Mapping):
+                env = str(row.get("environment") or "").upper()
+                if env in episode_counts:
+                    episode_counts[env] += 1
+        for row in self.state.get("transitions") or ():
+            if isinstance(row, Mapping):
+                env = str(row.get("environment") or "").upper()
+                if env in transition_counts:
+                    transition_counts[env] += 1
+
+        population = self.population_summary("SCREEPS")
+        members = population.get("members") or {}
+        population_min_games = (
+            min(int(row.get("games") or 0) for row in members.values())
+            if members else 0
+        )
+        validated_macro_skills = sum(
+            1
+            for row in (self.state.get("skills") or {}).values()
+            if isinstance(row, Mapping)
+            and row.get("kind") == "MACRO"
+            and bool(row.get("prospectively_validated"))
+        )
+        measured_transfers = sum(
+            1
+            for row in self.state.get("transfer_evaluations") or ()
+            if isinstance(row, Mapping)
+            and row.get("interpretation") == "MEASURED_CROSS_GAME_REUSE"
+        )
+        checks = {
+            **{
+                f"{name.lower()}_episodes": episode_counts[name] >= 40
+                for name in base_environments
+            },
+            **{
+                f"{name.lower()}_transitions": transition_counts[name] >= 750
+                for name in base_environments
+            },
+            "screeps_matches": int(population.get("match_count") or 0) >= 50,
+            "population_coverage": len(members) >= 4 and population_min_games >= 5,
+            "validated_macro_skills": validated_macro_skills >= 2,
+            "measured_cross_game_transfers": measured_transfers >= 3,
+        }
+        completed = sum(1 for value in checks.values() if value)
+        return {
+            "stage": "FOUNDATION_GAMES_V1",
+            "graduated": all(checks.values()),
+            "completed_requirements": completed,
+            "total_requirements": len(checks),
+            "progress": round(completed / len(checks), 6),
+            "checks": checks,
+            "evidence": {
+                "episodes": episode_counts,
+                "transitions": transition_counts,
+                "screeps_matches": int(population.get("match_count") or 0),
+                "population_member_count": len(members),
+                "population_min_games": population_min_games,
+                "validated_macro_skills": validated_macro_skills,
+                "measured_cross_game_transfers": measured_transfers,
+            },
+            "next_stage": "HARDER_OPEN_WORLD_CURRICULUM",
+        }
+
     def projection(self) -> dict[str, Any]:
         macro = [
             dict(row) for row in (self.state.get("skills") or {}).values()
@@ -1048,6 +1117,7 @@ class GameIntelligence:
                 if isinstance(row, Mapping)
             ],
             "accelerated_batch_count": len(self.state.get("accelerated_batches") or ()),
+            "graduation": self.graduation_status(),
             "reward_authority": "MEASURED_GAME_WORLD_ONLY",
             "offline_replay_can_promote": False,
         }
