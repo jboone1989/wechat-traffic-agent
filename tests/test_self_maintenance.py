@@ -176,6 +176,7 @@ def test_content_composition_json_failure_gets_structured_output_repair_proposal
     assert result["repair_proposal"]["target_files"] == [
         "src/wechat_traffic_agent/content_service.py"
     ]
+    assert result["repair_proposal"]["focused_tests"] == ["tests/test_content_agent.py"]
 
 
 def test_review_enriches_existing_composition_json_problem(tmp_path):
@@ -214,6 +215,58 @@ def test_review_enriches_existing_composition_json_problem(tmp_path):
     capability, payload = repair_runtime.calls[0]
     assert capability == "REQUEST_CODE_REPAIR"
     assert payload["targetFiles"] == ["src/wechat_traffic_agent/content_service.py"]
+    assert payload["failedTests"] == ["tests/test_content_agent.py"]
+
+
+def test_review_versions_old_composition_proposal_and_supersedes_unexecutable_request(
+    tmp_path,
+):
+    repair_runtime = RepairCapabilityRuntime()
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+        capability_runtime=repair_runtime,
+    )
+    problem = tmp_path / "application/self_maintenance/problems/compose-old.json"
+    problem.parent.mkdir(parents=True)
+    problem.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:compose-old",
+        "status": "REPAIR_REQUESTED",
+        "symptom": "backend did not return a JSON object",
+        "error_type": "ValueError",
+        "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+        "last_seen_at": NOW.isoformat(),
+        "cycles": ["v2-compose-old"],
+        "repair_proposal": {
+            "proposal_id": "repair-proposal:old",
+            "status": "REPAIR_REQUESTED",
+            "repair_kind": "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION",
+            "target_files": ["src/wechat_traffic_agent/content_service.py"],
+            "verification": ["old prose-only verification"],
+            "risk": "LOW",
+            "reversible": True,
+            "source_cycle": "v2-compose-old",
+        },
+        "repair_request": {
+            "status": "RECEIVED",
+            "requestId": "old-request-id",
+            "idempotency_key": "self-problem:compose-old:repair-proposal:old",
+        },
+    }))
+
+    review = service.review()
+
+    assert review["repair_requested_count"] == 1
+    stored = json.loads(problem.read_text())
+    assert stored["repair_proposal"]["proposal_id"] != "repair-proposal:old"
+    assert stored["repair_proposal"]["focused_tests"] == ["tests/test_content_agent.py"]
+    assert stored["repair_request"]["requestId"] == "repair-123"
+    assert stored["repair_request"]["idempotency_key"].endswith(
+        stored["repair_proposal"]["proposal_id"]
+    )
+    assert stored["superseded_repair_requests"][-1]["requestId"] == "old-request-id"
+    assert stored["superseded_repair_proposals"][-1]["proposal_id"] == "repair-proposal:old"
 
 
 def test_review_enriches_historical_known_problem_with_new_repair_knowledge(tmp_path):

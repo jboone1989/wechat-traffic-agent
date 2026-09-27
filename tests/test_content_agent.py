@@ -76,6 +76,11 @@ def test_content_agent_composes_channel_neutral_artifact(tmp_path):
     assert request.policy == ExecutionPolicy.advisory()
     assert "general Content Agent" in request.task
     assert "Do not write for a specific publishing platform" in request.task
+    assert request.output_schema is not None
+    assert request.output_schema["type"] == "object"
+    assert set(request.output_schema["required"]) == {
+        "title", "summary", "sections", "topic"
+    }
 
 
 def test_content_agent_preserves_upstream_network_evidence(tmp_path):

@@ -334,26 +334,53 @@ class SelfMaintenanceService:
             return {"status": "PROBLEM_UNREADABLE"}
         if not isinstance(problem, dict):
             return {"status": "PROBLEM_UNREADABLE"}
-        prior = problem.get("repair_request")
-        if isinstance(prior, dict) and (prior.get("request_id") or prior.get("requestId") or prior.get("job_id") or prior.get("jobId")):
-            return dict(prior)
         proposal = problem.get("repair_proposal")
         if not isinstance(proposal, dict) or str(proposal.get("risk") or "").upper() != "LOW":
             return {"status": "NOT_ELIGIBLE"}
+        idempotency_key = (
+            f"{problem_id}:{proposal.get('proposal_id') or 'proposal'}"
+        )
+        prior = problem.get("repair_request")
+        if isinstance(prior, dict) and (
+            prior.get("request_id")
+            or prior.get("requestId")
+            or prior.get("job_id")
+            or prior.get("jobId")
+        ):
+            if str(prior.get("idempotency_key") or "") == idempotency_key:
+                return dict(prior)
+            superseded = [
+                dict(item)
+                for item in problem.get("superseded_repair_requests") or ()
+                if isinstance(item, dict)
+            ]
+            superseded.append(dict(prior))
+            problem["superseded_repair_requests"] = superseded[-8:]
         refs = [
             RepairEvidenceRef(type="FerroEvidence", id=str(ref))
             for ref in (problem.get("evidence_refs") or [])[:32]
             if str(ref).strip()
         ]
-        failed_tests = []
+        failed_tests = [
+            str(item)
+            for item in proposal.get("focused_tests") or ()
+            if str(item).strip()
+        ][:32]
         trial = problem.get("repair_trial")
         if isinstance(trial, dict):
-            failed_tests = [str(item) for item in trial.get("failed_tests") or [] if str(item).strip()][:32]
+            failed_tests = list(dict.fromkeys([
+                *failed_tests,
+                *(
+                    str(item)
+                    for item in trial.get("failed_tests") or ()
+                    if str(item).strip()
+                ),
+            ]))[:32]
         impact = str(problem.get("observed_world_impact") or "").strip()
         if not impact:
             impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
         request = RepairRequest(
-            idempotency_key=f"{problem_id}:{proposal.get('proposal_id') or 'proposal'}",
+            idempotency_key=idempotency_key,
             source_problem_id=problem_id,
             symptom=str(problem.get("symptom") or problem.get("error_type") or "unknown failure"),
             failure_site=str(problem.get("failure_site") or "unknown"),
@@ -551,6 +578,7 @@ class SelfMaintenanceService:
     ) -> dict[str, Any] | None:
         if error_type != "ValueError":
             return None
+        focused_tests: list[str] = []
         if _KNOWN_COGNITION_ERROR in message:
             target_file = "src/wechat_traffic_agent/content_goal_loop.py"
             repair_kind = "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW"
@@ -583,6 +611,7 @@ class SelfMaintenanceService:
                 "invented source URLs remain rejected after structured generation",
                 "full content regression before release",
             ]
+            focused_tests = ["tests/test_content_agent.py"]
         elif _KNOWN_RECOVERY_INPUT_CHANGE in message:
             target_file = "src/wechat_traffic_agent/content_loop.py"
             repair_kind = "INVALIDATE_STALE_MODEL_RECOVERY_INPUT_CHANGE"
@@ -593,10 +622,15 @@ class SelfMaintenanceService:
             ]
         else:
             return None
+        proposal_identity = f"{error_type}\0{message}\0{target_file}"
+        if repair_kind == "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION":
+            # v2 adds an authoritative failed-test contract required by the Pi
+            # repair worker. Keep the old request immutable and supersede it.
+            proposal_identity += "\0structured-output-contract-v2"
         proposal_id = "repair-proposal:" + sha256(
-            f"{error_type}\0{message}\0{target_file}".encode("utf-8")
+            proposal_identity.encode("utf-8")
         ).hexdigest()[:24]
-        return {
+        proposal = {
             "schema_version": "repair-proposal.v1",
             "proposal_id": proposal_id,
             "status": "PROPOSED",
@@ -607,6 +641,9 @@ class SelfMaintenanceService:
             "reversible": True,
             "source_cycle": cycle,
         }
+        if focused_tests:
+            proposal["focused_tests"] = focused_tests
+        return proposal
 
     def _observe_evolution(self, problem: dict[str, Any]) -> dict[str, Any]:
         runtime = self.evolution_runtime
@@ -769,16 +806,31 @@ class SelfMaintenanceService:
             }:
                 continue
             proposal = payload.get("repair_proposal")
-            if not isinstance(proposal, dict):
+            refresh_existing = (
+                isinstance(proposal, dict)
+                and str(proposal.get("repair_kind") or "")
+                == "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION"
+                and not proposal.get("focused_tests")
+            )
+            if not isinstance(proposal, dict) or refresh_existing:
                 cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
-                proposal = self._proposal_for(
+                refreshed = self._proposal_for(
                     error_type=str(payload.get("error_type") or ""),
                     message=str(payload.get("symptom") or ""),
                     cycle=cycles[-1] if cycles else "unknown",
                     failure_site=str(payload.get("failure_site") or "unknown"),
                 )
-                if proposal is None:
+                if refreshed is None:
                     continue
+                if isinstance(proposal, dict) and refresh_existing:
+                    history = [
+                        dict(item)
+                        for item in payload.get("superseded_repair_proposals") or ()
+                        if isinstance(item, dict)
+                    ]
+                    history.append(dict(proposal))
+                    payload["superseded_repair_proposals"] = history[-8:]
+                proposal = refreshed
                 payload["repair_proposal"] = proposal
                 payload["status"] = "REPAIR_PROPOSED"
                 _atomic_json(path, payload)
@@ -790,14 +842,19 @@ class SelfMaintenanceService:
                 continue
             prior = payload.get("repair_request")
             if isinstance(prior, dict):
-                if any(
+                durable_prior = any(
                     prior.get(key)
                     for key in ("request_id", "requestId", "job_id", "jobId")
-                ):
+                )
+                expected_key = (
+                    f"{payload.get('problem_id')}:"
+                    f"{proposal.get('proposal_id') or 'proposal'}"
+                )
+                if durable_prior and str(prior.get("idempotency_key") or "") == expected_key:
                     continue
                 if str(prior.get("status") or "") not in {
-                    "", "CAPABILITY_UNAVAILABLE", "REQUEST_FAILED"
-                }:
+                    "", "CAPABILITY_UNAVAILABLE", "REQUEST_FAILED", "RECEIVED"
+                } and durable_prior:
                     continue
             problem_id = str(payload.get("problem_id") or "")
             if problem_id:
