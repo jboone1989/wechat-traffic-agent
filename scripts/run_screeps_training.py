@@ -188,18 +188,23 @@ def main() -> int:
         snapshot = _resource_snapshot(args.lab_root)
         admission = _resource_admission(snapshot, args)
         if not admission["allowed"]:
-            write_live({
+            research_summary = researcher.projection()
+            live = _read_json(live_path)
+            live.update({
                 "schema_version": "ferro-screeps-live.v1",
-                "status": "RESOURCE_DEFERRED",
-                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "scheduler_status": "RESOURCE_DEFERRED",
+                "scheduler_observed_at": datetime.now(timezone.utc).isoformat(),
                 "resource_admission": admission,
-                "research_summary": researcher.projection(),
+                "research_summary": research_summary,
             })
+            if not live.get("status"):
+                live["status"] = "IDLE"
+            write_live(live)
             print(json.dumps({
                 "status": "RESOURCE_DEFERRED",
                 "completed_episodes": len(results),
                 "resource_admission": admission,
-                "research": researcher.projection(),
+                "research": research_summary,
             }, ensure_ascii=False, sort_keys=True))
             return 75
 

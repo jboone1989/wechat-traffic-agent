@@ -4,3 +4,5 @@ def test_static_screeps_feed_url():
  assert "fetch('/screeps/live.json'" in html
  assert "rawResearch.arm" in html
  assert "reward pending" in html
+ assert "scheduler_status" in html
+ assert "'LIVE'" in html
