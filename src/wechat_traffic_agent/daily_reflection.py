@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -56,6 +57,145 @@ class DailyReflectionService:
         if local_now.hour < _hour():
             return {"status": "NOT_DUE", "target_date": target.isoformat()}
         return self.generate(target_date=target, now=now)
+
+    async def reflect_now(
+        self,
+        now: datetime,
+        *,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Perform one bounded, event/heartbeat-driven internal reflection."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("reflection timestamp requires timezone")
+        probe = getattr(self.runtime, "cognitive_probe", None)
+        if not callable(probe):
+            return {"status": "COGNITION_UNAVAILABLE"}
+
+        refs = tuple(
+            dict.fromkeys(
+                str(ref).strip()
+                for ref in relevant_refs
+                if str(ref).strip()
+                and not str(ref).startswith("cognition-request:")
+            )
+        )
+        trigger_ref = next(
+            (ref for ref in refs if ref.startswith("reflection-trigger:")),
+            "",
+        )
+        if not trigger_ref:
+            # Manual/legacy REFLECT calls may not carry a trigger ref. A
+            # quarter-hour bucket is stable across ordinary durable resumes.
+            bucket = int(now.astimezone(timezone.utc).timestamp()) // 900
+            trigger_ref = f"reflection-trigger:legacy:{bucket}"
+        reflection_id = hashlib.sha256(trigger_ref.encode("utf-8")).hexdigest()[:20]
+        root = self.state_root / "application" / "reflections"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{reflection_id}.json"
+        if path.exists():
+            row = json.loads(path.read_text(encoding="utf-8"))
+            return {"status": "ALREADY_REFLECTED", **row}
+
+        context = self._continuous_context(now, refs)
+        text = self._validate_cognitive_reflection(
+            await probe(
+                self._continuous_prompt(now, trigger_ref, context),
+                max_tokens=1400,
+            )
+        )
+        memory_writeback = self._record_continuous_reflection(
+            reflection_id=reflection_id,
+            trigger_ref=trigger_ref,
+            text=text,
+            refs=refs,
+        )
+        row = {
+            "schema_version": "content-continuous-reflection.v1",
+            "reflection_id": reflection_id,
+            "trigger_ref": trigger_ref,
+            "reflected_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "relevant_refs": list(refs),
+            "reflection_text": text,
+            "memory_writeback": memory_writeback,
+        }
+        self._write(path, row)
+        return {"status": "REFLECTED", **row}
+
+    def _continuous_context(
+        self,
+        now: datetime,
+        refs: tuple[str, ...],
+    ) -> dict[str, Any]:
+        snapshot = self.mind.session.snapshot()
+        cycles: list[dict[str, Any]] = []
+        cycle_root = self.state_root / "content" / "continuous" / "cycles"
+        candidates = (
+            sorted(cycle_root.glob("*/result.json"), key=lambda p: p.parent.name)[-12:]
+            if cycle_root.exists()
+            else []
+        )
+        for path in candidates:
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            plan = row.get("mind_plan") if isinstance(row.get("mind_plan"), dict) else {}
+            cognition = row.get("cognition") if isinstance(row.get("cognition"), dict) else {}
+            cycles.append({
+                "cycle": path.parent.name,
+                "status": row.get("status"),
+                "topic": plan.get("required_topic"),
+                "cognition_state": cognition.get("cognition_state"),
+                "error_type": row.get("error_type"),
+                "model_calls": (row.get("mind_experience") or {}).get("model_calls")
+                if isinstance(row.get("mind_experience"), dict)
+                else None,
+            })
+        prior: list[dict[str, Any]] = []
+        journal = self.state_root / "application" / "reflections"
+        for path in sorted(journal.glob("*.json"))[-3:] if journal.exists() else ():
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(row, dict):
+                prior.append({
+                    "reflected_at": row.get("reflected_at"),
+                    "trigger_ref": row.get("trigger_ref"),
+                    "reflection_text": str(row.get("reflection_text") or "")[:1200],
+                })
+        return {
+            "as_of": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "trigger_refs": list(refs),
+            "mind": self._mind_context(snapshot),
+            "recent_cycles": cycles,
+            "recent_reflections": prior,
+        }
+
+    @staticmethod
+    def _continuous_prompt(
+        now: datetime,
+        trigger_ref: str,
+        context: dict[str, Any],
+    ) -> str:
+        evidence = json.dumps(
+            context,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return (
+            "你是 Ferro，正在进行一次持续的、事件驱动的自我反思，而不是写日报。"
+            "只依据给定证据思考：刚刚发生了什么；它是否改变了你的判断、目标优先级、"
+            "对自己能力边界的认识或下一步策略；是否存在重复犯错、回避证据、空转或过度自信。"
+            "如果没有值得改变的地方，也要明确说没有，不要强行制造成长。"
+            "用自然中文第一人称写一段具体的内部反思，不要固定标题，不要模板句式，不要 JSON。\n\n"
+            f"触发：{trigger_ref}\n"
+            f"时间：{now.astimezone(timezone.utc).isoformat()}\n"
+            f"证据：{evidence}"
+        )
 
     async def maybe_generate_cognitive(self, now: datetime) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
@@ -328,6 +468,31 @@ class DailyReflectionService:
                     for value in facts.get("evidence_cycle_ids") or ()
                     if str(value)
                 ),
+            )
+        except Exception as exc:
+            return {
+                "status": "ERROR",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:300],
+            }
+
+    def _record_continuous_reflection(
+        self,
+        *,
+        reflection_id: str,
+        trigger_ref: str,
+        text: str,
+        refs: tuple[str, ...],
+    ) -> dict[str, Any]:
+        record = getattr(self.mind, "record_reflection_event", None)
+        if not callable(record):
+            return {"status": "UNAVAILABLE"}
+        try:
+            return record(
+                reflection_id=reflection_id,
+                reflection_text=text,
+                trigger_ref=trigger_ref,
+                evidence_refs=refs,
             )
         except Exception as exc:
             return {

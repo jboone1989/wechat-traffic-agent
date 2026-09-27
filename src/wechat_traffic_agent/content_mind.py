@@ -169,6 +169,54 @@ class ContentMind:
         self._persist()
         return {"status": "RECORDED", "event_id": event_id}
 
+    def record_reflection_event(
+        self,
+        *,
+        reflection_id: str,
+        reflection_text: str,
+        trigger_ref: str,
+        evidence_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Persist one ongoing self-reflection as autobiographical experience."""
+        reflection_id = str(reflection_id or "").strip()
+        text = str(reflection_text or "").strip()
+        trigger_ref = str(trigger_ref or "").strip()
+        if not reflection_id or not text or not trigger_ref:
+            raise ValueError("reflection event requires identity, trigger and text")
+        event_id = f"reflection:{reflection_id}"
+        if event_id in self._observed_event_ids:
+            return {"status": "ALREADY_RECORDED", "event_id": event_id}
+        refs = list(dict.fromkeys(
+            [
+                trigger_ref,
+                *(
+                    str(ref).strip()
+                    for ref in evidence_refs
+                    if str(ref).strip()
+                ),
+            ]
+        ))[:64]
+        self.session.ingest_life_experience(
+            {
+                "event_id": event_id,
+                "tick": int(self.session.tick),
+                "summary": text[:1800],
+                "evidence_refs": refs,
+                "significance": 0.6,
+                "source": "continuous-self-reflection",
+                "confidence": 1.0,
+                "outcome": 0.5,
+                "domain": "self-reflection",
+                "identity_relevance": 0.9,
+                "emotional_intensity": 0.15,
+            },
+            authority_id=AUTHORITY_ID,
+        )
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._persist()
+        return {"status": "RECORDED", "event_id": event_id}
+
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
         mapped = self._inquiry_topics.get(str(inquiry_id))
         if isinstance(mapped, str) and mapped.strip():

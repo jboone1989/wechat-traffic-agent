@@ -92,6 +92,42 @@ def test_daily_reflection_uses_real_cognition_and_writes_back_memory(tmp_path):
     assert "Evidence packet:" in runtime.prompts[0][0]
 
 
+def test_continuous_reflection_runs_per_trigger_and_is_idempotent(tmp_path):
+    _cycle(
+        tmp_path,
+        1789531200,
+        "ERROR",
+        topic="durable-cognition",
+        calls=2,
+        cognition="BELIEF_CHANGED",
+        error_type="TimeoutError",
+    )
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    runtime = FakeRuntime()
+    service = DailyReflectionService(
+        state_root=tmp_path,
+        mind=mind,
+        runtime=runtime,
+        notifier=WeComNotifier(webhook_url=None),
+    )
+    now = datetime(2026, 9, 17, 1, 15, tzinfo=timezone.utc)
+    refs = (
+        "task-result:VERIFY_PREDICTION:VERIFIED",
+        "reflection-trigger:event:test-verified",
+    )
+
+    first = asyncio.run(service.reflect_now(now, relevant_refs=refs))
+    second = asyncio.run(service.reflect_now(now, relevant_refs=refs))
+
+    assert first["status"] == "REFLECTED"
+    assert first["memory_writeback"]["status"] == "RECORDED"
+    assert second["status"] == "ALREADY_REFLECTED"
+    assert len(runtime.prompts) == 1
+    assert runtime.prompts[0][1] == 1400
+    assert "持续的、事件驱动的自我反思" in runtime.prompts[0][0]
+    assert list((tmp_path / "application/reflections").glob("*.json"))
+
+
 def test_daily_reflection_sends_once_when_private_notifier_is_configured(tmp_path):
     _cycle(tmp_path, 1789531200, "PUBLISHED", calls=2)
     mind = ContentMind(root=tmp_path, subject_id="content-agent")

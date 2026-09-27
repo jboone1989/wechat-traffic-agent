@@ -1263,6 +1263,59 @@ def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
     assert payload["at"] == (now + timedelta(seconds=30)).isoformat()
 
 
+def test_reflect_has_periodic_heartbeat_instead_of_daily_only(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_REFLECTION_INTERVAL_MINUTES", "45")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.schedule_next("REFLECT", NOW)
+
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:REFLECT"
+    )
+    assert wake.at == NOW + timedelta(minutes=45)
+    assert wake.task == "REFLECT"
+    assert any(
+        ref.startswith("reflection-trigger:periodic:")
+        for ref in wake.relevant_refs
+    )
+
+
+def test_meaningful_outcome_schedules_near_term_reflection(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    result = runtime.schedule_reflection_from_outcome(
+        "VERIFY_PREDICTION",
+        {
+            "status": "OK",
+            "verification": {"status": "VERIFIED"},
+        },
+        NOW,
+    )
+
+    assert result["status"] == "SCHEDULED"
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:REFLECT"
+    )
+    assert wake.at == NOW + timedelta(seconds=60)
+    assert "task-result:VERIFY_PREDICTION:OK" in wake.relevant_refs
+    assert any(
+        ref.startswith("reflection-trigger:event:")
+        for ref in wake.relevant_refs
+    )
+
+
+def test_routine_outcome_does_not_force_reflection(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    result = runtime.schedule_reflection_from_outcome(
+        "RESOURCE_REVIEW",
+        {"status": "OK"},
+        NOW,
+    )
+    assert result["status"] == "NOT_SALIENT"
+
+
 def test_schedule_provider_recovery_uses_earliest_runtime_cooldown(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     now = datetime(2026, 9, 24, 7, 20, 0, tzinfo=timezone.utc)

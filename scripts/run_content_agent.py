@@ -763,6 +763,23 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                     maintenance.ingest_task_outcome(task, task_result, now=now)
                 except Exception:
                     pass  # Diagnosis cannot hide a completed task result.
+            try:
+                reflection_schedule = wakeful_runtime.schedule_reflection_from_outcome(
+                    task,
+                    task_result,
+                    now,
+                )
+                if reflection_schedule.get("status") == "SCHEDULED":
+                    print(json.dumps({
+                        "reflection_followup": reflection_schedule,
+                    }, ensure_ascii=False, sort_keys=True))
+            except Exception as exc:
+                print(json.dumps({
+                    "reflection_followup": {
+                        "status": "DEGRADED",
+                        "error_type": type(exc).__name__,
+                    }
+                }, sort_keys=True), file=sys.stderr)
             print(json.dumps({
                 "wake_reason": wake_reason.__dict__ if wake_reason else {"kind": "ONCE"},
                 "task_result": _task_result_for_log(task_result),

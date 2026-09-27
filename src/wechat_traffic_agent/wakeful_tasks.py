@@ -244,7 +244,10 @@ class WakefulContentTaskRunner:
                 if task == "RESOURCE_REVIEW":
                     return self._resource(now)
                 if task == "REFLECT":
-                    return self._reflect(now)
+                    return self._reflect(
+                        now,
+                        relevant_refs=relevant_refs,
+                    )
                 if task == "CHECK_X":
                     return self._x(now)
                 if task == "CHECK_OUTCOMES":
@@ -763,10 +766,30 @@ class WakefulContentTaskRunner:
             schedule(now, seconds=min(retry_values or [900]))
         return result
 
-    def _reflect(self, now: datetime) -> dict[str, Any]:
+    def _reflect(
+        self,
+        now: datetime,
+        *,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
         from .livingruntime_chatgpt import LivingRuntimeChatGPTProviderError
 
         rows: dict[str, Any] = {"task": "REFLECT", "status": "OK"}
+        continuous = getattr(self.daily_reflection, "reflect_now", None)
+        if callable(continuous):
+            try:
+                rows["continuous_reflection"] = self._run_async(
+                    continuous(now, relevant_refs=relevant_refs)
+                )
+            except LivingRuntimeChatGPTProviderError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                rows["continuous_reflection"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        else:
+            rows["continuous_reflection"] = {
+                "status": "CAPABILITY_UNAVAILABLE",
+            }
         try:
             cognitive = getattr(
                 self.daily_reflection,

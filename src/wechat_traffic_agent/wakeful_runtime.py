@@ -470,8 +470,14 @@ class ContentWakefulRuntime:
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
         for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "NEURAL_TRANSFER", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
             if task not in existing:
+                refs = (
+                    (f"reflection-trigger:startup:{int(now.timestamp())}",)
+                    if task == "REFLECT"
+                    else ()
+                )
                 self.core.schedule(PlannedWake(
                     wake_id=f"content:{task}", at=now, reason=self._reason(task), task=task,
+                    relevant_refs=refs,
                 ))
         if os.environ.get("CONTENT_X_ENABLED", "").lower() in {"1", "true", "yes", "on"} and "CHECK_X" not in existing:
             self.core.schedule(PlannedWake(
@@ -522,10 +528,14 @@ class ContentWakefulRuntime:
             ))
 
     def schedule_next(self, task: str, now: datetime) -> None:
+        relevant_refs: tuple[str, ...] = ()
         if task == "CONTENT_COGNITION":
             at = now + timedelta(hours=self.content_interval_hours)
         elif task == "REFLECT":
-            at = self._next_reflection(now)
+            at = now + timedelta(minutes=self._reflection_interval_minutes())
+            relevant_refs = (
+                f"reflection-trigger:periodic:{int(at.timestamp())}",
+            )
         else:
             seconds = _DEFAULT_INTERVALS.get(task)
             if seconds is None:
@@ -547,6 +557,7 @@ class ContentWakefulRuntime:
             return
         self.core.schedule(PlannedWake(
             wake_id=wake_id, at=at, reason=self._reason(task), task=task,
+            relevant_refs=relevant_refs,
         ))
 
     def _expire_unsettled_actions(self, now: datetime) -> None:
@@ -1800,50 +1811,144 @@ class ContentWakefulRuntime:
             "retry_seconds": delay,
         }
 
-    def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
-        delay = max(30, min(int(seconds), 900))
+    def schedule_reflection(
+        self,
+        now: datetime,
+        *,
+        seconds: int = 60,
+        reason: str = "reflect on recent experience",
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict:
+        """Schedule one bounded reflection without postponing earlier reflection."""
+        now = now.astimezone(timezone.utc)
+        delay = max(5, min(int(seconds), 3600))
         at = now + timedelta(seconds=delay)
+        refs = tuple(dict.fromkeys(
+            str(ref).strip()
+            for ref in relevant_refs
+            if str(ref).strip()
+            and not str(ref).startswith("cognition-request:")
+        ))
+        if not any(ref.startswith("reflection-trigger:") for ref in refs):
+            digest = hashlib.sha256(
+                (
+                    str(reason)
+                    + "\0"
+                    + now.replace(microsecond=0).isoformat()
+                    + "\0"
+                    + "\0".join(refs)
+                ).encode("utf-8")
+            ).hexdigest()[:20]
+            refs = (*refs, f"reflection-trigger:event:{digest}")
         wake_id = "content:REFLECT"
         existing = next(
-            (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
+            (
+                wake
+                for wake in self.core.snapshot().pending_plans
+                if wake.wake_id == wake_id
+            ),
             None,
         )
-        if existing is not None and existing.at <= at:
-            return
+        if existing is not None:
+            combined_refs = tuple(dict.fromkeys((*existing.relevant_refs, *refs)))
+            at = min(existing.at, at)
+            if at == existing.at and combined_refs == existing.relevant_refs:
+                return {
+                    "status": "EARLIER_REFLECTION_ALREADY_SCHEDULED",
+                    "at": existing.at.isoformat(),
+                    "relevant_refs": list(existing.relevant_refs),
+                }
+            self.core.cancel(wake_id)
+            refs = combined_refs
         wake = PlannedWake(
             wake_id=wake_id,
             at=at,
-            reason="diagnose production failure and form bounded self-repair hypothesis",
+            reason=str(reason)[:300],
             task="REFLECT",
+            relevant_refs=refs,
+            preemptible=True,
         )
-        # The request spool is authoritative across processes. Direct scheduling
-        # keeps in-process callers immediate; an external caller cannot lose the
-        # wake if the live runtime persists its own state concurrently.
         self._enqueue_external_wake(wake)
         self.core.schedule(wake)
+        return {
+            "status": "SCHEDULED",
+            "at": at.isoformat(),
+            "relevant_refs": list(refs),
+        }
+
+    def schedule_reflection_from_outcome(
+        self,
+        task: str,
+        result: dict,
+        now: datetime,
+    ) -> dict:
+        """Turn meaningful experience into near-term introspection."""
+        task = str(task or "").strip().upper()
+        if task in {"", "REFLECT", "EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}:
+            return {"status": "NOT_SALIENT"}
+        primary = str((result or {}).get("status") or "UNKNOWN").upper()
+        if primary == "WAITING_FOR_CHATGPT":
+            return {"status": "WAITING_COGNITION"}
+
+        values: set[str] = set()
+        def collect(value, depth: int = 0) -> None:
+            if depth > 4:
+                return
+            if isinstance(value, dict):
+                for item in value.values():
+                    collect(item, depth + 1)
+            elif isinstance(value, (list, tuple)):
+                for item in list(value)[:32]:
+                    collect(item, depth + 1)
+            elif isinstance(value, str):
+                values.add(value.strip().upper())
+
+        collect(result)
+        urgent = primary in {
+            "ERROR",
+            "DEGRADED",
+            "FAILED",
+            "CHATGPT_UNAVAILABLE",
+        }
+        meaningful = bool(values & {
+            "BELIEF_CHANGED",
+            "PUBLISHED",
+            "SETTLED",
+            "VERIFIED",
+            "REJECTED",
+            "ADOPTED",
+            "EVOLVED",
+            "SATISFIED",
+            "MISSION_COMPLETED",
+            "GOAL_COMPLETED",
+        })
+        if not urgent and not meaningful:
+            return {"status": "NOT_SALIENT"}
+        return self.schedule_reflection(
+            now,
+            seconds=30 if urgent else 60,
+            reason=f"reflect on {task.lower()} outcome {primary.lower()}",
+            relevant_refs=(f"task-result:{task}:{primary}",),
+        )
+
+    def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
+        self.schedule_reflection(
+            now,
+            seconds=seconds,
+            reason="diagnose production failure and form bounded self-repair hypothesis",
+            relevant_refs=("self-maintenance:production-failure",),
+        )
 
     def schedule_windfall_reflection(
         self, now: datetime, *, seconds: int = 60
     ) -> None:
         """Spend a newly verified high-capability free window on bounded reflection."""
-        delay = max(30, min(int(seconds), 900))
-        at = now + timedelta(seconds=delay)
-        wake_id = "content:REFLECT"
-        existing = next(
-            (
-                wake for wake in self.core.snapshot().pending_plans
-                if wake.wake_id == wake_id
-            ),
-            None,
-        )
-        if existing is not None and existing.at <= at:
-            return
-        self.core.schedule(PlannedWake(
-            wake_id=wake_id,
-            at=at,
+        self.schedule_reflection(
+            now,
+            seconds=seconds,
             reason="consume verified high-capability free LLM windfall on self-improvement",
-            task="REFLECT",
-        ))
+            relevant_refs=("reflection-context:free-model-windfall",),
+        )
 
     def _next_action_outcome_due(self, now: datetime) -> datetime | None:
         """Return the next prospective action-outcome maturity after ``now``.
@@ -2093,7 +2198,7 @@ class ContentWakefulRuntime:
             "CHECK_OUTCOMES": "review matured website outcomes",
             "CONTENT_COGNITION": "run the next due content cognition cycle",
             "CHECK_X": "check X for new social evidence",
-            "REFLECT": "daily reflection",
+            "REFLECT": "periodic or event-driven self-reflection",
             "NEURAL_INTEROCEPTION": "sense body state and update endogenous drives",
             "NEURAL_PLAY": "develop the production nervous system through a sensorimotor world",
             "NEURAL_DREAM": "replay and recombine salient experience in the production nervous system",
@@ -2104,14 +2209,13 @@ class ContentWakefulRuntime:
         }.get(task, task.lower().replace("_", " "))
 
     @staticmethod
-    def _next_reflection(now: datetime) -> datetime:
-        tz = ZoneInfo(str(os.environ.get("CONTENT_REFLECTION_TIMEZONE") or "Asia/Shanghai"))
-        hour = int(os.environ.get("CONTENT_DAILY_REFLECTION_HOUR", "8"))
-        local = now.astimezone(tz)
-        candidate = local.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if candidate <= local:
-            candidate += timedelta(days=1)
-        return candidate.astimezone(timezone.utc)
+    def _reflection_interval_minutes() -> int:
+        value = int(os.environ.get("CONTENT_REFLECTION_INTERVAL_MINUTES", "45"))
+        if not 10 <= value <= 360:
+            raise ValueError(
+                "CONTENT_REFLECTION_INTERVAL_MINUTES must be 10..360"
+            )
+        return value
 
 
 __all__ = ["ContentWakefulRuntime", "WakefulState"]
