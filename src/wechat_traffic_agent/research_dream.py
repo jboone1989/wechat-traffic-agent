@@ -41,6 +41,7 @@ MAX_DREAMS = 64
 MAX_PROMOTIONS_PER_REPLAY_POOL = 3
 MIN_ONLINE_SAMPLES_PER_ARM = 2
 ONLINE_TRIAL_MAX_DAYS = 14
+TRIAL_SINGLE_CANDIDATE_MAX_WAIT_SECONDS = 600
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -461,6 +462,8 @@ class ResearchDreamEngine:
         if not isinstance(trial, Mapping) or str(trial.get("status") or "") != "ACTIVE":
             return dict(trial) if isinstance(trial, Mapping) else None
         row = dict(trial)
+        row.setdefault("dispatch_count", 0)
+        row.setdefault("selection_rounds", [])
         started_at = _aware(row.get("started_at"))
         if started_at is None:
             row["status"] = "INVALID"
@@ -607,22 +610,11 @@ class ResearchDreamEngine:
             for name in POLICY_KEYS
         )
 
-    def rank_problem_rows(
-        self,
+    @staticmethod
+    def _prepare_problem_rows(
         rows: Iterable[Mapping[str, Any]],
-        *,
-        now: datetime | None = None,
     ) -> list[dict[str, Any]]:
-        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        raw = _read(self.path)
-        if raw.get("schema_version") == SCHEMA:
-            self.state = raw
-        trial = self._refresh_prospective_trial(now=now)
         values = [dict(row) for row in rows]
-        if not values:
-            _write(self.path, self.state)
-            return []
-        # Repair candidates do not carry replay-only known_recipe explicitly.
         for row in values:
             proposal = row.get("repair_proposal")
             repair_kind = (
@@ -633,60 +625,225 @@ class ResearchDreamEngine:
                 repair_kind and repair_kind != "GENERATED_BOUNDED_EDIT"
             )
             row.setdefault("observed_at", row.get("last_seen_at"))
+        return values
+
+    def _rank_with_policy(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        policy: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        values = self._prepare_problem_rows(rows)
+        if not values:
+            return []
         features = self._features(values)
-        incumbent_weights = (
-            self.state.get("incumbent_policy", {}).get("weights")
-            if isinstance(self.state.get("incumbent_policy"), Mapping)
-            else None
-        ) or _default_policy()["weights"]
-        active_trial = (
-            dict(trial)
-            if isinstance(trial, Mapping) and trial.get("status") == "ACTIVE"
-            else None
-        )
-        assignments = dict((active_trial or {}).get("assignments") or {})
-        trial_id = str((active_trial or {}).get("trial_id") or "")
-        challenger_weights = dict(
-            (active_trial or {}).get("challenger_policy", {}).get("weights") or {}
-        )
-        trial_started = _aware((active_trial or {}).get("started_at"))
-
-        def weights_for(row: dict[str, Any]) -> Mapping[str, float]:
-            if not active_trial or trial_started is None:
-                return incumbent_weights
-            problem_id = str(row.get("problem_id") or "")
-            seen_at = _aware(row.get("last_seen_at"))
-            # Only future problems are legitimate prospective evidence.  Older
-            # backlog remains under the incumbent so replay labels cannot leak
-            # into the live trial.
-            if not problem_id or seen_at is None or seen_at < trial_started:
-                return incumbent_weights
-            arm = assignments.get(problem_id)
-            if arm not in {"BASELINE", "CANDIDATE"}:
-                arm = self._trial_arm(problem_id, trial_id)
-                assignments[problem_id] = arm
-            row["research_trial_arm"] = arm
-            row["research_trial_id"] = trial_id
-            return challenger_weights if arm == "CANDIDATE" else incumbent_weights
-
+        weights = policy.get("weights") if isinstance(policy, Mapping) else None
         values.sort(
             key=lambda row: (
                 self._priority(
                     row,
                     features=features,
-                    weights=weights_for(row),
+                    weights=weights or _default_policy()["weights"],
                 ),
                 str(row.get("last_seen_at") or ""),
                 str(row.get("problem_id") or ""),
             ),
             reverse=True,
         )
-        if active_trial is not None:
-            active_trial["assignments"] = assignments
-            self.state["prospective_trial"] = active_trial
+        return values
+
+    def rank_problem_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Rank by the validated incumbent only; never assign trial arms here."""
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        self._refresh_prospective_trial(now=now)
+        incumbent = (
+            dict(self.state.get("incumbent_policy"))
+            if isinstance(self.state.get("incumbent_policy"), Mapping)
+            else _default_policy()
+        )
+        values = self._rank_with_policy(rows, incumbent)
         self.state["updated_at"] = now.isoformat()
         _write(self.path, self.state)
         return values
+
+    def select_problem_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        now: datetime | None = None,
+        legacy_budget: int = 4,
+    ) -> list[dict[str, Any]]:
+        """Spend real repair slots under incumbent/challenger selection policy.
+
+        Offline replay only proposes a challenger.  During an active
+        prospective trial, baseline and candidate alternate one scarce repair
+        slot over the same pool of future LOW-risk problems.  Only the problem
+        that actually receives a slot is assigned to an arm and can contribute
+        outcome evidence.
+        """
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        trial = self._refresh_prospective_trial(now=now)
+        values = self._prepare_problem_rows(rows)
+        incumbent = (
+            dict(self.state.get("incumbent_policy"))
+            if isinstance(self.state.get("incumbent_policy"), Mapping)
+            else _default_policy()
+        )
+        active = (
+            dict(trial)
+            if isinstance(trial, Mapping) and str(trial.get("status") or "") == "ACTIVE"
+            else None
+        )
+        if not values:
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return []
+        if active is None:
+            selected = self._rank_with_policy(values, incumbent)[: max(1, int(legacy_budget))]
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return selected
+
+        started_at = _aware(active.get("started_at"))
+        if started_at is None:
+            selected = self._rank_with_policy(values, incumbent)[: max(1, int(legacy_budget))]
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return selected
+
+        assignments = {
+            str(key): str(value)
+            for key, value in (active.get("assignments") or {}).items()
+            if str(key) and str(value) in {"BASELINE", "CANDIDATE"}
+        }
+        results = {
+            str(key): dict(value)
+            for key, value in (active.get("results") or {}).items()
+            if str(key) and isinstance(value, Mapping)
+        }
+        # A selected problem whose repair transport was temporarily unavailable
+        # keeps its arm identity and is retried before opening another slot.
+        unresolved_selected = [
+            row for row in values
+            if str(row.get("problem_id") or "") in assignments
+            and str(row.get("problem_id") or "") not in results
+        ]
+        if unresolved_selected:
+            selected = sorted(
+                unresolved_selected,
+                key=lambda row: (
+                    str(row.get("last_seen_at") or ""),
+                    str(row.get("problem_id") or ""),
+                ),
+                reverse=True,
+            )[:1]
+            for row in selected:
+                pid = str(row.get("problem_id") or "")
+                row["research_trial_arm"] = assignments.get(pid)
+                row["research_trial_id"] = active.get("trial_id")
+                row["research_trial_retry"] = True
+            self.state["prospective_trial"] = active
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return selected
+
+        old_backlog: list[dict[str, Any]] = []
+        future: list[dict[str, Any]] = []
+        for row in values:
+            problem_id = str(row.get("problem_id") or "")
+            seen_at = _aware(row.get("last_seen_at"))
+            if not problem_id or seen_at is None or seen_at < started_at:
+                old_backlog.append(row)
+            elif problem_id not in assignments:
+                future.append(row)
+
+        if not future:
+            selected = self._rank_with_policy(old_backlog, incumbent)[: max(1, int(legacy_budget))]
+            self.state["prospective_trial"] = active
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return selected
+
+        if len(future) == 1:
+            only = future[0]
+            seen_at = _aware(only.get("last_seen_at")) or now
+            if (now - seen_at).total_seconds() < TRIAL_SINGLE_CANDIDATE_MAX_WAIT_SECONDS:
+                active["queued_single_problem_id"] = only.get("problem_id")
+                active["queued_single_since"] = seen_at.isoformat()
+                self.state["prospective_trial"] = active
+                self.state["updated_at"] = now.isoformat()
+                _write(self.path, self.state)
+                return []
+            # Do not hold a repair hostage for experimental pairing.  Dispatch
+            # via incumbent after the wait bound, but do not count it as trial
+            # evidence.
+            selected = self._rank_with_policy(future, incumbent)[:1]
+            selected[0]["research_trial_arm"] = "UNCOUNTED_INCUMBENT_FALLBACK"
+            selected[0]["research_trial_id"] = active.get("trial_id")
+            rounds = list(active.get("selection_rounds") or ())
+            rounds.append({
+                "round": int(active.get("dispatch_count") or 0),
+                "selected_at": now.isoformat(),
+                "arm": "UNCOUNTED",
+                "policy_id": incumbent.get("policy_id"),
+                "candidate_problem_ids": [str(only.get("problem_id") or "")],
+                "selected_problem_id": str(selected[0].get("problem_id") or ""),
+                "reason": "SINGLE_CANDIDATE_WAIT_EXPIRED",
+            })
+            active["selection_rounds"] = rounds[-64:]
+            active.pop("queued_single_problem_id", None)
+            active.pop("queued_single_since", None)
+            self.state["prospective_trial"] = active
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return selected
+
+        dispatch_count = int(active.get("dispatch_count") or 0)
+        arm = "BASELINE" if dispatch_count % 2 == 0 else "CANDIDATE"
+        policy = (
+            dict(active.get("baseline_policy") or incumbent)
+            if arm == "BASELINE"
+            else dict(active.get("challenger_policy") or incumbent)
+        )
+        ranked = self._rank_with_policy(future, policy)
+        selected = ranked[:1]
+        if not selected:
+            return []
+        problem_id = str(selected[0].get("problem_id") or "")
+        assignments[problem_id] = arm
+        selected[0]["research_trial_arm"] = arm
+        selected[0]["research_trial_id"] = active.get("trial_id")
+        rounds = list(active.get("selection_rounds") or ())
+        rounds.append({
+            "round": dispatch_count + 1,
+            "selected_at": now.isoformat(),
+            "arm": arm,
+            "policy_id": policy.get("policy_id"),
+            "candidate_problem_ids": [
+                str(row.get("problem_id") or "") for row in future
+            ],
+            "selected_problem_id": problem_id,
+            "reason": "PROSPECTIVE_REPAIR_SLOT",
+        })
+        active["assignments"] = assignments
+        active["dispatch_count"] = dispatch_count + 1
+        active["selection_rounds"] = rounds[-64:]
+        active.pop("queued_single_problem_id", None)
+        active.pop("queued_single_since", None)
+        self.state["prospective_trial"] = active
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
+        return selected
 
     @staticmethod
     def _mutations(incumbent: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -307,15 +307,39 @@ class SelfMaintenanceService:
         _atomic_json(path, payload)
         _atomic_json(self.root / "latest.json", payload)
         evolution = self._observe_evolution(payload)
-        repair_request = self.request_code_repair(problem_id) if proposal is not None else {
-            "status": "NOT_ELIGIBLE",
-        }
+        research_dispatch: dict[str, Any] | None = None
+        if proposal is not None:
+            # Repair authority is unchanged, but scarce LOW-risk repair slots
+            # are allocated by the validated Researcher policy.  Outside a
+            # prospective trial this preserves legacy recency-first behavior;
+            # during a trial it makes baseline/challenger selection causal.
+            research_dispatch = self.refresh_known_proposals(now=now)
+            try:
+                refreshed_problem = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                refreshed_problem = {}
+            stored_request = (
+                refreshed_problem.get("repair_request")
+                if isinstance(refreshed_problem, dict)
+                else None
+            )
+            if isinstance(stored_request, dict):
+                repair_request = dict(stored_request)
+            else:
+                repair_request = {
+                    "status": "QUEUED_FOR_RESEARCHER_SELECTION",
+                    "research_policy_id": research_dispatch.get("research_policy_id"),
+                    "prospective_trial_id": research_dispatch.get("prospective_trial_id"),
+                }
+        else:
+            repair_request = {"status": "NOT_ELIGIBLE"}
         return {
             "status": "RECORDED",
             "problem_id": problem_id,
             "problem_status": status,
             "repair_proposal": proposal,
             "repair_request": repair_request,
+            "research_dispatch": research_dispatch,
             "evolution": evolution,
         }
 
@@ -787,7 +811,12 @@ class SelfMaintenanceService:
             "archived_duplicates": archived,
         }
 
-    def refresh_known_proposals(self) -> dict[str, int]:
+    def refresh_known_proposals(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         folder = self.root / "problems"
         enriched = 0
         scanned = 0
@@ -865,26 +894,36 @@ class SelfMaintenanceService:
         # replay-promoted policy may later reorder only already-authorized
         # LOW-risk candidates.  It cannot widen repair authority.
         research_policy_id = None
+        prospective_trial_id = None
+        selected_problem_ids: list[str] = []
         try:
             from .research_dream import ResearchDreamEngine
             research_engine = ResearchDreamEngine(self.state_root)
-            ranked_candidates = research_engine.rank_problem_rows(
-                repair_candidates
+            selected_candidates = research_engine.select_problem_rows(
+                repair_candidates,
+                now=now,
+                legacy_budget=4,
             )
+            projection = research_engine.projection()
             research_policy_id = (
-                research_engine.projection()
-                .get("incumbent_policy", {}).get("policy_id")
+                projection.get("incumbent_policy", {}).get("policy_id")
+            )
+            prospective_trial_id = (
+                (projection.get("prospective_trial") or {}).get("trial_id")
+                if isinstance(projection.get("prospective_trial"), dict)
+                else None
             )
         except Exception:
-            ranked_candidates = sorted(
+            selected_candidates = sorted(
                 repair_candidates,
                 key=lambda row: str(row.get("last_seen_at") or ""),
                 reverse=True,
-            )
-        for candidate in ranked_candidates[:4]:
+            )[:4]
+        for candidate in selected_candidates:
             problem_id = str(candidate.get("problem_id") or "")
             if not problem_id:
                 continue
+            selected_problem_ids.append(problem_id)
             receipt = self.request_code_repair(problem_id)
             if str(receipt.get("status") or "") in {
                 "REQUESTED", "RECEIVED", "ACCEPTED"
@@ -896,6 +935,8 @@ class SelfMaintenanceService:
             "repair_candidate_count": len(repair_candidates),
             "repair_requested": repair_requested,
             "research_policy_id": research_policy_id,
+            "prospective_trial_id": prospective_trial_id,
+            "selected_problem_ids": selected_problem_ids,
         }
 
     def review(self) -> dict[str, Any]:

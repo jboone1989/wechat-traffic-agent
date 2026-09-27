@@ -245,35 +245,31 @@ def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
     trial_id = trial_state["trial_id"]
     challenger_id = trial_state["challenger_policy"]["policy_id"]
 
-    future_rows = []
-    arm_ids = {"BASELINE": [], "CANDIDATE": []}
-    index = 0
-    while min(len(arm_ids["BASELINE"]), len(arm_ids["CANDIDATE"])) < 2:
-        problem_id = f"self-problem:future-{index}"
-        arm = engine._trial_arm(problem_id, trial_id)
-        if len(arm_ids[arm]) < 2:
-            arm_ids[arm].append(problem_id)
-            future_rows.append({
-                "problem_id": problem_id,
-                "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
-                "occurrences": 1,
-                "error_type": "ValueError",
-                "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
-                "repair_proposal": {
-                    "repair_kind": "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION",
-                    "risk": "LOW",
-                },
-            })
-        index += 1
-
-    ResearchDreamEngine(tmp_path).rank_problem_rows(
-        future_rows,
-        now=NOW + timedelta(minutes=1),
-    )
-    assigned = ResearchDreamEngine(tmp_path).projection()["prospective_trial"]["assignments"]
-    assert {assigned[pid] for pid in assigned} == {"BASELINE", "CANDIDATE"}
-
-    for problem_id, arm in assigned.items():
+    remaining = [
+        {
+            "problem_id": f"self-problem:future-{index}",
+            "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
+            "occurrences": index + 1,
+            "error_type": "ValueError",
+            "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+            "repair_proposal": {
+                "repair_kind": "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION",
+                "risk": "LOW",
+            },
+        }
+        for index in range(6)
+    ]
+    selected_arms = []
+    for index in range(4):
+        selector = ResearchDreamEngine(tmp_path)
+        chosen = selector.select_problem_rows(
+            remaining,
+            now=NOW + timedelta(minutes=index + 1),
+        )
+        assert len(chosen) == 1
+        problem_id = chosen[0]["problem_id"]
+        arm = chosen[0]["research_trial_arm"]
+        selected_arms.append(arm)
         safe = problem_id.replace(":", "-")
         _put(
             tmp_path / "application/self_maintenance/repair_trials" / f"{safe}.json",
@@ -285,12 +281,18 @@ def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
                     if arm == "CANDIDATE"
                     else "CANDIDATE_COMMITTED"
                 ),
-                "observed_at": (NOW + timedelta(minutes=2)).isoformat(),
+                "observed_at": (
+                    NOW + timedelta(minutes=index + 1, seconds=30)
+                ).isoformat(),
             },
         )
+        remaining = [
+            row for row in remaining if row["problem_id"] != problem_id
+        ]
+    assert selected_arms == ["BASELINE", "CANDIDATE", "BASELINE", "CANDIDATE"]
 
     settled = ResearchDreamEngine(tmp_path).dream(
-        now=NOW + timedelta(minutes=3)
+        now=NOW + timedelta(minutes=6)
     )
     projection = ResearchDreamEngine(tmp_path).projection()
     assert projection["prospective_trial"]["status"] == "PROMOTED"
@@ -383,28 +385,28 @@ def test_researcher_kills_challenger_after_online_regression(tmp_path):
     trial = engine.projection()["prospective_trial"]
     trial_id = trial["trial_id"]
 
-    future_rows = []
-    arm_ids = {"BASELINE": [], "CANDIDATE": []}
-    index = 0
-    while min(len(arm_ids["BASELINE"]), len(arm_ids["CANDIDATE"])) < 2:
-        problem_id = f"self-problem:regression-{index}"
-        arm = engine._trial_arm(problem_id, trial_id)
-        if len(arm_ids[arm]) < 2:
-            arm_ids[arm].append(problem_id)
-            future_rows.append({
-                "problem_id": problem_id,
-                "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
-                "occurrences": 1,
-                "error_type": "ValueError",
-                "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
-                "repair_proposal": {"repair_kind": "KNOWN_RECIPE", "risk": "LOW"},
-            })
-        index += 1
-    ResearchDreamEngine(tmp_path).rank_problem_rows(
-        future_rows, now=NOW + timedelta(minutes=1)
-    )
-    assigned = ResearchDreamEngine(tmp_path).projection()["prospective_trial"]["assignments"]
-    for problem_id, arm in assigned.items():
+    remaining = [
+        {
+            "problem_id": f"self-problem:regression-{index}",
+            "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
+            "occurrences": index + 1,
+            "error_type": "ValueError",
+            "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+            "repair_proposal": {"repair_kind": "KNOWN_RECIPE", "risk": "LOW"},
+        }
+        for index in range(6)
+    ]
+    selected_arms = []
+    for index in range(4):
+        selector = ResearchDreamEngine(tmp_path)
+        chosen = selector.select_problem_rows(
+            remaining,
+            now=NOW + timedelta(minutes=index + 1),
+        )
+        assert len(chosen) == 1
+        problem_id = chosen[0]["problem_id"]
+        arm = chosen[0]["research_trial_arm"]
+        selected_arms.append(arm)
         safe = problem_id.replace(":", "-")
         _put(
             tmp_path / "application/self_maintenance/repair_trials" / f"{safe}.json",
@@ -416,11 +418,17 @@ def test_researcher_kills_challenger_after_online_regression(tmp_path):
                     if arm == "CANDIDATE"
                     else "ADOPTED_VERIFIED"
                 ),
-                "observed_at": (NOW + timedelta(minutes=2)).isoformat(),
+                "observed_at": (
+                    NOW + timedelta(minutes=index + 1, seconds=30)
+                ).isoformat(),
             },
         )
+        remaining = [
+            row for row in remaining if row["problem_id"] != problem_id
+        ]
+    assert selected_arms == ["BASELINE", "CANDIDATE", "BASELINE", "CANDIDATE"]
 
-    ResearchDreamEngine(tmp_path).dream(now=NOW + timedelta(minutes=3))
+    ResearchDreamEngine(tmp_path).dream(now=NOW + timedelta(minutes=6))
     projection = ResearchDreamEngine(tmp_path).projection()
     assert projection["prospective_trial"]["status"] == "REJECTED"
     assert projection["prospective_trial"]["decision"] == (
