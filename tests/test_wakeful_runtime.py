@@ -741,6 +741,39 @@ def test_pending_chatgpt_request_inhibits_new_neural_motor_selection(
     )
 
 
+def test_owner_goal_keeps_bounded_neural_learning_but_cancels_motor_control(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(
+        runtime,
+        "_active_user_goal_ids",
+        lambda: {"goal-owner"},
+    )
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="bounded sensorimotor learning",
+        task="NEURAL_PLAY",
+    ))
+    runtime.core.schedule(PlannedWake(
+        wake_id="motor:decision-1",
+        at=NOW,
+        reason="autonomous external motor action",
+        task="CHECK_X",
+        relevant_refs=("motor-decision:decision-1",),
+    ))
+
+    runtime.refresh_neural_life(NOW)
+
+    pending = {
+        wake.wake_id: wake
+        for wake in runtime.core.snapshot().pending_plans
+    }
+    assert "content:NEURAL_PLAY" in pending
+    assert "motor:decision-1" not in pending
+
+
 def test_owner_goal_cognition_respects_existing_chatgpt_single_flight(
     monkeypatch, tmp_path
 ):

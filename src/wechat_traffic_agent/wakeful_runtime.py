@@ -607,14 +607,16 @@ class ContentWakefulRuntime:
         projection = self.neural_life.update(now=now, wakeful=wakeful)
         owner_control_active = bool(self._active_user_goal_ids())
         if owner_control_active:
-            # Neural/developmental systems remain sensors and learners while an
-            # explicit owner goal is active; they do not own the control plane.
-            # Their durable internal state is preserved and their wakes can be
-            # regenerated after owner work closes.
+            # Neural/developmental systems remain sensors and bounded learners
+            # while an explicit owner goal is active; only their autonomous
+            # external-control wakes are suppressed.  Cancelling canonical
+            # content:NEURAL_* learning tasks here made play/dream/transfer
+            # disappear for the entire lifetime of a long-running user goal,
+            # contradicting the intended sensor/learner role and bypassing the
+            # admission layer's bounded-starvation policy.
             for planned in tuple(self.core.snapshot().pending_plans):
                 if (
-                    planned.task in _OPTIONAL_INTERNAL_TASKS
-                    or planned.wake_id.startswith(
+                    planned.wake_id.startswith(
                         ("neural:", "motor:", "autonomous:", "dream-insight:")
                     )
                 ):
