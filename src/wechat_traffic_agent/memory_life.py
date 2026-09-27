@@ -41,6 +41,30 @@ class MemoryLifeRuntime:
                 if str(event_id).strip():
                     self._life_event_episode_ids[str(event_id)] = str(row["memory_id"])
 
+    @staticmethod
+    def _stable_life_classification(
+        event_id: str,
+        *,
+        raw_source: str,
+        raw_domain: str,
+    ) -> tuple[str, str]:
+        """Recover semantic class from durable event identity when session strips metadata."""
+        if event_id.startswith("daily-reflection:"):
+            return "daily-self-reflection", "self-reflection"
+        if event_id.startswith("reflection:"):
+            return "continuous-self-reflection", "self-reflection"
+        if event_id.startswith("world-attention:"):
+            return "world-feed-attention", "crypto-finance-world"
+        if event_id.startswith("prediction-outcome:"):
+            return "prospective-world-outcome", "crypto-finance-world"
+        if event_id.startswith("content-action-outcome:"):
+            return "content-action-prediction-outcome", "content-prediction"
+        if event_id.startswith("content-strategy-outcome:"):
+            return "website-audience-outcome", "content-audience"
+        if event_id.startswith("content-process:"):
+            return "content-process", "content-process"
+        return raw_source, raw_domain
+
     def observe_life_event(
         self,
         event: Mapping[str, Any],
@@ -52,25 +76,37 @@ class MemoryLifeRuntime:
         summary = str(event.get("summary") or "").strip()
         if not event_id or not summary:
             return {"status": "SKIPPED", "reason": "missing_event_identity"}
+        raw_source = str(event.get("source") or "virtualbrain").strip()
+        raw_domain = str(event.get("domain") or "unknown").strip()
+        source, domain = self._stable_life_classification(
+            event_id,
+            raw_source=raw_source,
+            raw_domain=raw_domain,
+        )
         existing_id = self._life_event_episode_ids.get(event_id)
         if existing_id:
-            return {"status": "ALREADY_RECORDED", "episode_id": existing_id, "knowledge_memory_ids": []}
+            existing = self.store.get_memory(existing_id)
+            topics = set(str(item) for item in (existing or {}).get("topics") or [])
+            needs_reflection_reclassification = (
+                domain == "self-reflection"
+                and "virtualbrain-life:unknown" in topics
+                and "virtualbrain-life:self-reflection" not in topics
+            )
+            if not needs_reflection_reclassification:
+                return {
+                    "status": "ALREADY_RECORDED",
+                    "episode_id": existing_id,
+                    "knowledge_memory_ids": [],
+                }
+            self.store.transition_memory(
+                existing_id,
+                status="ARCHIVED",
+                event_type="MEMORY_RECLASSIFIED",
+            )
+            self._life_event_episode_ids.pop(event_id, None)
         refs = list(dict.fromkeys(
             str(item).strip() for item in event.get("evidence_refs") or () if str(item).strip()
         )) or [event_id]
-        raw_source = str(event.get("source") or "virtualbrain").strip()
-        source = raw_source
-        domain = str(event.get("domain") or "unknown").strip()
-        if event_id.startswith("world-attention:"):
-            source, domain = "world-feed-attention", "crypto-finance-world"
-        elif event_id.startswith("prediction-outcome:"):
-            source, domain = "prospective-world-outcome", "crypto-finance-world"
-        elif event_id.startswith("content-action-outcome:"):
-            source, domain = "content-action-prediction-outcome", "content-prediction"
-        elif event_id.startswith("content-strategy-outcome:"):
-            source, domain = "website-audience-outcome", "content-audience"
-        elif event_id.startswith("content-process:"):
-            source, domain = "content-process", "content-process"
         context_topic = str(topic or event.get("topic") or "").strip()
         memory_topic = "virtualbrain-life:" + domain + ((":" + context_topic) if context_topic else "")
         lesson = ""

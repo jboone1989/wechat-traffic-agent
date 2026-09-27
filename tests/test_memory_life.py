@@ -120,6 +120,79 @@ def test_virtualbrain_life_events_form_idempotent_noncausal_episodes_and_knowled
     assert "calibrated against observed evidence" in knowledge["text"]
 
 
+def test_reflection_identity_recovers_domain_when_session_strips_metadata(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    result = life.observe_life_event({
+        "event_id": "reflection:abc123",
+        "summary": "I should judge progress by verified external outcomes.",
+        "evidence_refs": ["cycle:1"],
+        "source": "session",
+        "domain": None,
+        "outcome": 0.5,
+        "significance": 0.8,
+    })
+
+    episode = life.store.get_memory(result["episode_id"])
+    assert episode is not None
+    assert "virtualbrain-life:self-reflection" in episode["topics"]
+    attributes = episode["payload"]["attributes"]
+    assert attributes["source"] == "continuous-self-reflection"
+    assert attributes["domain"] == "self-reflection"
+    assert attributes["raw_authority_source"] == "session"
+
+
+def test_daily_reflection_identity_recovers_self_reflection_domain(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    result = life.observe_life_event({
+        "event_id": "daily-reflection:2026-09-26",
+        "summary": "Daily consolidation should preserve the strongest verified lessons.",
+        "evidence_refs": ["cycle:1"],
+        "source": "session",
+        "domain": None,
+    })
+    episode = life.store.get_memory(result["episode_id"])
+    assert episode is not None
+    assert "virtualbrain-life:self-reflection" in episode["topics"]
+    assert episode["payload"]["attributes"]["source"] == "daily-self-reflection"
+
+
+def test_existing_unknown_reflection_is_archived_and_reclassified(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    old = life.episodes.consolidate(
+        [{
+            "event_id": "reflection:legacy",
+            "actor": "ferro",
+            "text": "A reflection survived, but its domain metadata was stripped.",
+        }],
+        goal="preserve lived experience in unknown",
+        outcome="0.5",
+        evidence_refs=["reflection:legacy"],
+        attributes={
+            "experience_kind": "VIRTUALBRAIN_AUTOBIOGRAPHICAL_EVENT",
+            "source": "session",
+            "domain": "unknown",
+        },
+        topics=["virtualbrain-life:unknown", "virtualbrain-life"],
+    )
+    life._life_event_episode_ids["reflection:legacy"] = old.memory_id
+
+    result = life.observe_life_event({
+        "event_id": "reflection:legacy",
+        "summary": "A reflection survived, but its domain metadata was stripped.",
+        "evidence_refs": ["reflection:legacy"],
+        "source": "session",
+        "domain": None,
+    })
+
+    assert result["status"] == "RECORDED"
+    assert result["episode_id"] != old.memory_id
+    archived = life.store.get_memory(old.memory_id)
+    assert archived is not None and archived["status"] == "ARCHIVED"
+    active = life.store.get_memory(result["episode_id"])
+    assert active is not None
+    assert "virtualbrain-life:self-reflection" in active["topics"]
+
+
 def test_virtualbrain_life_history_backfill_is_bounded_and_idempotent(tmp_path):
     life = MemoryLifeRuntime(tmp_path)
     events = [{
