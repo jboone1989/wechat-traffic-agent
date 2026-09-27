@@ -1,7 +1,7 @@
 """Autonomous X observation, expression and autobiographical lineage."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -164,6 +164,61 @@ class XAutonomyLoop:
     @property
     def status_path(self) -> Path:
         return self.root / "status.json"
+
+    @property
+    def publication_blocker_path(self) -> Path:
+        return self.root / "publication_blocker.json"
+
+    def _active_publication_blocker(self, *, now: datetime) -> dict[str, Any] | None:
+        row = _read_json(self.publication_blocker_path)
+        if str(row.get("status") or "") != "ACTIVE":
+            return None
+        raw = str(row.get("retry_after") or "")
+        try:
+            retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if retry_after.tzinfo is None:
+            return None
+        if now.astimezone(timezone.utc) >= retry_after.astimezone(timezone.utc):
+            return None
+        return row
+
+    def _record_publication_blocker(
+        self,
+        *,
+        now: datetime,
+        status: str,
+        detail: str,
+        receipt_id: str | None,
+    ) -> dict[str, Any]:
+        prior = _read_json(self.publication_blocker_path)
+        first_seen = prior.get("first_seen_at") or now.isoformat()
+        row = {
+            "schema_version": "content-agent-x-publication-blocker.v1",
+            "status": "ACTIVE",
+            "blocker": str(status),
+            "resource": "X_API_CREDITS",
+            "required_action": "ADD_X_API_CREDITS",
+            "first_seen_at": first_seen,
+            "last_seen_at": now.isoformat(),
+            "retry_after": (now + timedelta(hours=6)).isoformat(),
+            "receipt_id": receipt_id,
+            "detail": str(detail)[:400],
+        }
+        _write_json(self.publication_blocker_path, row)
+        return row
+
+    def _clear_publication_blocker(self, *, now: datetime, receipt_id: str | None) -> None:
+        if not self.publication_blocker_path.exists():
+            return
+        prior = _read_json(self.publication_blocker_path)
+        _write_json(self.publication_blocker_path, {
+            **prior,
+            "status": "CLEARED",
+            "cleared_at": now.isoformat(),
+            "clearing_receipt_id": receipt_id,
+        })
 
     def _write_status(self, *, now: datetime, status: str, detail: str = "") -> None:
         _write_json(self.status_path, {
@@ -399,6 +454,14 @@ class XAutonomyLoop:
             or not cognition.get("worth_saying")
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
+        blocker = self._active_publication_blocker(now=now)
+        if blocker is not None:
+            return {
+                "status": "X_RESOURCE_BLOCKED",
+                "cycle": cycle,
+                "blocker": blocker,
+                "retry_after": blocker.get("retry_after"),
+            }
         if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
         context["x_mission_binding"] = mission_binding
@@ -450,8 +513,28 @@ class XAutonomyLoop:
                     }
         post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
         if not post.payload.get("ok"):
-            return {"status": str(post.payload.get("status") or "X_POST_FAILED"), "cycle": cycle,
-                    "receipt_id": post.receipt_id, "detail": str(post.payload.get("detail") or "")[:300]}
+            post_status = str(post.payload.get("status") or "X_POST_FAILED")
+            detail = str(post.payload.get("detail") or "")[:300]
+            if post_status == "X_CREDITS_DEPLETED":
+                blocker = self._record_publication_blocker(
+                    now=now,
+                    status=post_status,
+                    detail=detail,
+                    receipt_id=post.receipt_id,
+                )
+                self._write_status(now=now, status=post_status, detail=detail)
+                return {
+                    "status": post_status,
+                    "cycle": cycle,
+                    "receipt_id": post.receipt_id,
+                    "detail": detail,
+                    "blocker": blocker,
+                    "retry_after": blocker["retry_after"],
+                }
+            return {
+                "status": post_status, "cycle": cycle,
+                "receipt_id": post.receipt_id, "detail": detail,
+            }
         post_id = first_post_id(post.payload.get("data"))
         if not post_id:
             return {"status": "X_POST_ID_MISSING", "cycle": cycle, "receipt_id": post.receipt_id}
@@ -472,6 +555,7 @@ class XAutonomyLoop:
                     "error_type": type(exc).__name__,
                     "message": str(exc)[:300],
                 }
+        self._clear_publication_blocker(now=now, receipt_id=post.receipt_id)
         handle = str(me.get("username") or "").lstrip("@")
         url = f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
         worldview = context.get("worldview") or {}

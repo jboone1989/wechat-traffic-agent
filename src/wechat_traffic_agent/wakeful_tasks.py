@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import nullcontext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import math
@@ -1746,6 +1746,27 @@ class WakefulContentTaskRunner:
             )[:200]
         except OSError:
             return None
+        blocker = {}
+        try:
+            blocker = json.loads(
+                (
+                    Path(state_root)
+                    / "content"
+                    / "x"
+                    / "publication_blocker.json"
+                ).read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, json.JSONDecodeError):
+            blocker = {}
+        blocker_active = False
+        if isinstance(blocker, dict) and str(blocker.get("status") or "") == "ACTIVE":
+            try:
+                retry_after = datetime.fromisoformat(
+                    str(blocker.get("retry_after") or "").replace("Z", "+00:00")
+                )
+                blocker_active = retry_after.tzinfo is not None and datetime.now(timezone.utc) < retry_after.astimezone(timezone.utc)
+            except ValueError:
+                blocker_active = False
         published_candidate: dict[str, Any] | None = None
         for folder in folders:
             result_path = folder / "result.json"
@@ -1795,9 +1816,18 @@ class WakefulContentTaskRunner:
                     )
                 except (OSError, ValueError, json.JSONDecodeError):
                     x_receipt = {}
-                if str(x_receipt.get("status") or "") in {
+                x_status = str(x_receipt.get("status") or "")
+                if x_status in {
                     "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "HELD_BY_X_SAFETY"
                 }:
+                    continue
+                if blocker_active and x_status in {
+                    "X_CREDITS_DEPLETED",
+                    "X_RESOURCE_BLOCKED",
+                }:
+                    # A known external resource outage is not unfinished
+                    # cognition.  Wait for the bounded retry window instead of
+                    # burning another model turn and X API request every cycle.
                     continue
                 return {
                     "cycle": str(result.get("cycle") or folder.name),

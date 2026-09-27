@@ -85,6 +85,11 @@ def x_growth_mission_context(state_root: Path) -> dict[str, Any]:
             "generation_authority": "NONE",
             "publication_authority": False,
         }
+    blocker = _read_json(
+        Path(state_root) / "content" / "x" / "publication_blocker.json"
+    )
+    if blocker:
+        payload = {**payload, "execution_blocker": blocker}
     return payload
 
 
@@ -1630,6 +1635,12 @@ class XGrowthMissionCoordinator:
             "publication_authority": False,
             "causal_claim": False,
             "policy_mode": "OFFICIAL_X_API_ONLY",
+            "execution_blocker": (
+                _read_json(
+                    self.state_root / "content" / "x" / "publication_blocker.json"
+                )
+                or None
+            ),
         }
         _write_json(self.path, payload)
         return payload

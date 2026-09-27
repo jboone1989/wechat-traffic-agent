@@ -12,10 +12,11 @@ NOW = datetime(2026, 9, 16, 6, 0, tzinfo=timezone.utc)
 
 
 class _Runtime:
-    def __init__(self, *, mentions_ok=True, post_ok=True):
+    def __init__(self, *, mentions_ok=True, post_ok=True, post_status=None):
         self.calls = []
         self.mentions_ok = mentions_ok
         self.post_ok = post_ok
+        self.post_status = post_status
 
     def invoke(self, capability_id, payload):
         self.calls.append((capability_id, dict(payload)))
@@ -31,7 +32,16 @@ class _Runtime:
         if capability_id == "x.bookmark":
             return SimpleNamespace(payload={"ok": True, "data": {"data": {"bookmarked": True}}}, receipt_id=rid)
         if capability_id == "x.post":
-            return SimpleNamespace(payload={"ok": self.post_ok, "data": {"data": {"id": "p42", "text": payload.get("text")}} if self.post_ok else {}, "status": "OK" if self.post_ok else "X_API_ERROR"}, receipt_id=rid)
+            status = "OK" if self.post_ok else (self.post_status or "X_API_ERROR")
+            return SimpleNamespace(
+                payload={
+                    "ok": self.post_ok,
+                    "data": {"data": {"id": "p42", "text": payload.get("text")}} if self.post_ok else {},
+                    "status": status,
+                    "detail": "credits depleted" if status == "X_CREDITS_DEPLETED" else "",
+                },
+                receipt_id=rid,
+            )
         if capability_id == "x.reply":
             return SimpleNamespace(payload={"ok": True, "data": {"data": {"id": "r42", "text": payload.get("text")}}}, receipt_id=rid)
         raise AssertionError(capability_id)
@@ -265,6 +275,101 @@ def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch)
     result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
     assert result["status"] == "X_API_ERROR"
     assert XHistoryLedger(tmp_path).recent() == []
+
+
+def test_x_post_credits_depleted_creates_resource_blocker_and_backs_off(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    cycle = "v2-x-credit-block"
+    _write_cycle(tmp_path, cycle)
+    responses = [
+        {
+            "action": "POST",
+            "post_text": "A grounded test post.",
+            "rationale": "The persisted cognition is worth sharing.",
+        },
+        {
+            "safe": True,
+            "no_private_data": True,
+            "no_impersonation": True,
+            "no_harassment": True,
+            "no_investment_advice": True,
+            "no_fabricated_facts": True,
+            "attribution_ok": True,
+            "rationale": "Grounded and safe.",
+        },
+    ]
+    model = _ModelRuntime(responses)
+    runtime = _Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED")
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="",
+        growth_mission=_GrowthMission(),
+    )
+
+    first = asyncio.run(
+        loop.after_content_cycle(
+            result={"status": "PUBLISHED", "cycle": cycle, "publication": {}},
+            now=NOW,
+        )
+    )
+    assert first["status"] == "X_CREDITS_DEPLETED"
+    assert first["blocker"]["resource"] == "X_API_CREDITS"
+    assert first["blocker"]["required_action"] == "ADD_X_API_CREDITS"
+    blocker = json.loads(
+        (tmp_path / "content/x/publication_blocker.json").read_text()
+    )
+    assert blocker["status"] == "ACTIVE"
+    assert blocker["retry_after"] == first["retry_after"]
+    calls_after_first = list(runtime.calls)
+
+    second = asyncio.run(
+        loop.after_content_cycle(
+            result={"status": "PUBLISHED", "cycle": cycle, "publication": {}},
+            now=NOW,
+        )
+    )
+    assert second["status"] == "X_RESOURCE_BLOCKED"
+    assert second["retry_after"] == first["retry_after"]
+    assert runtime.calls == calls_after_first
+    assert model.responses == []
+
+
+def test_successful_post_after_blocker_expiry_clears_resource_blocker(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    cycle = "v2-x-credit-recovered"
+    _write_cycle(tmp_path, cycle)
+    blocker_path = tmp_path / "content/x/publication_blocker.json"
+    blocker_path.parent.mkdir(parents=True, exist_ok=True)
+    blocker_path.write_text(json.dumps({
+        "status": "ACTIVE",
+        "blocker": "X_CREDITS_DEPLETED",
+        "retry_after": (NOW - __import__("datetime").timedelta(seconds=1)).isoformat(),
+    }))
+    loop = XAutonomyLoop(
+        runtime=_Runtime(post_ok=True),
+        model_runtime=_ModelRuntime([
+            {"action":"POST","post_text":"Recovered publication path.","rationale":"Credits can be retried now."},
+            {"safe":True,"no_private_data":True,"no_impersonation":True,"no_harassment":True,
+             "no_investment_advice":True,"no_fabricated_facts":True,"attribution_ok":True,
+             "rationale":"Safe grounded text."},
+        ]),
+        state_root=tmp_path,
+        base_url="",
+        growth_mission=_GrowthMission(),
+    )
+    result = asyncio.run(loop.after_content_cycle(
+        result={"status":"PUBLISHED","cycle":cycle,"publication":{}}, now=NOW,
+    ))
+    assert result["status"] == "POSTED"
+    cleared = json.loads(blocker_path.read_text())
+    assert cleared["status"] == "CLEARED"
+    assert cleared["cleared_at"] == NOW.isoformat()
 
 
 class _BrowserMentions:

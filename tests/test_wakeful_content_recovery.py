@@ -892,6 +892,48 @@ def test_social_backlog_recovers_x_admitted_held_mission_cycle(tmp_path):
     assert runner._social_stage_backlog_candidate() is None
 
 
+def test_x_credit_blocker_suppresses_repeated_mission_backlog_replay(tmp_path):
+    state_root = tmp_path / "state"
+    cycle = "v2-held-x-credit-blocked"
+    folder = state_root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "result.json").write_text(
+        json.dumps({"status": "HELD_BY_CHECKS", "cycle": cycle}) + "\n",
+        encoding="utf-8",
+    )
+    (folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+    (folder / "x_social_expression.json").write_text(
+        json.dumps({"status": "X_CREDITS_DEPLETED"}) + "\n",
+        encoding="utf-8",
+    )
+    blocker = state_root / "content" / "x" / "publication_blocker.json"
+    blocker.parent.mkdir(parents=True, exist_ok=True)
+    blocker.write_text(
+        json.dumps({
+            "status": "ACTIVE",
+            "blocker": "X_CREDITS_DEPLETED",
+            "retry_after": "2099-01-01T00:00:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    class Growth:
+        def publication_binding(self, *, cycle):
+            return {
+                "status": "BOUND_X_EXPRESSION",
+                "bound": True,
+                "cycle": cycle,
+            }
+
+    class XLoop:
+        growth_mission = Growth()
+
+    runner = WakefulContentTaskRunner(state_root=state_root, x_loop=XLoop())
+    assert runner._social_stage_backlog_candidate() is None
+
+
 def test_x_mission_backlog_preempts_newer_generic_social_gap(tmp_path):
     state_root = tmp_path / "state"
     held_cycle = "v2-held-x-priority"
