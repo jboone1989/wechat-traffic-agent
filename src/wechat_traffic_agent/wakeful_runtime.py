@@ -954,6 +954,7 @@ class ContentWakefulRuntime:
             neural_life=projection,
             neural_transfer=self.neural_transfer.projection(),
             neural_motor=self.neural_motor.projection(),
+            developmental_history=self.developmental_history.projection(),
         )
         for need in agency.get("needs") or ():
             if need.get("status") != "ACTIVE":
@@ -1567,6 +1568,106 @@ class ContentWakefulRuntime:
             observed_at=observed_at,
         )
         if settled is not None:
+            evaluation = (
+                settled.get("world_evaluation")
+                if isinstance(settled.get("world_evaluation"), dict)
+                else {}
+            )
+            decision = str(evaluation.get("decision") or "")
+            if bool(evaluation.get("causal_claim_ready")) and decision in {
+                "ADOPT", "REJECT", "REVISE",
+            }:
+                need_id = str(settled.get("need_id") or "")
+                agency_need = (
+                    dict((self.developmental_agency.state.get("needs") or {}).get(need_id) or {})
+                    if need_id
+                    else {}
+                )
+                source_transition_id = str(
+                    agency_need.get("source_transition_id") or ""
+                )
+                target_task = str(settled.get("target_task") or task or "")
+                capability = str(
+                    agency_need.get("capability") or target_task.lower()
+                ).strip().lower()
+                world_id = str(settled.get("world_id") or "")
+                proposal_id = str(settled.get("proposal_id") or "")
+                effect_raw = evaluation.get("estimated_real_world_effect")
+                effect = (
+                    max(-1.0, min(1.0, float(effect_raw)))
+                    if isinstance(effect_raw, (int, float))
+                    and not isinstance(effect_raw, bool)
+                    else 0.0
+                )
+                evidence_ref = (
+                    "development-transfer-decision:"
+                    + hashlib.sha256(
+                        "|".join((
+                            str(trial_id or ""),
+                            world_id,
+                            need_id,
+                            decision,
+                            str(effect),
+                        )).encode("utf-8")
+                    ).hexdigest()[:24]
+                )
+                event = self.developmental_history.record(
+                    kind={
+                        "ADOPT": "SELF_IMPROVEMENT_ADOPTED",
+                        "REJECT": "SELF_IMPROVEMENT_REJECTED",
+                        "REVISE": "SELF_IMPROVEMENT_REVISION_REQUIRED",
+                    }[decision],
+                    domain=capability or f"development:{target_task.lower()}",
+                    outcome=effect,
+                    evidence_refs=tuple(
+                        ref
+                        for ref in (
+                            evidence_ref,
+                            str(trial_id or ""),
+                            world_id,
+                            need_id,
+                            proposal_id,
+                        )
+                        if ref
+                    ),
+                    now=observed_at,
+                    metadata={
+                        "decision": decision,
+                        "estimated_real_world_effect": effect,
+                        "causal_claim_ready": True,
+                        "target_task": target_task,
+                        "source_transition_id": source_transition_id or None,
+                    },
+                )
+                resolved_transition = None
+                if decision == "ADOPT" and source_transition_id:
+                    resolved_transition = self.developmental_history.resolve_transition(
+                        transition_id=source_transition_id,
+                        evidence_ref=evidence_ref,
+                        now=observed_at,
+                        reason="causal real-world developmental transfer improved the target task",
+                    )
+                capability_update = None
+                if decision in {"ADOPT", "REJECT"} and capability:
+                    capability_update = self.self_model.observe_capability(
+                        capability=capability,
+                        success=decision == "ADOPT",
+                        evidence_ref=evidence_ref,
+                        now=observed_at,
+                        weight=max(0.25, abs(effect)),
+                    )
+                settled = {
+                    **dict(settled),
+                    "rsi_feedback": {
+                        "history_event_id": event.get("event_id"),
+                        "source_transition_id": source_transition_id or None,
+                        "source_transition_resolved": bool(resolved_transition),
+                        "capability": capability or None,
+                        "capability_updated": capability_update is not None,
+                        "decision": decision,
+                        "evidence_ref": evidence_ref,
+                    },
+                }
             self.open_ended_evolution.refresh(now=observed_at)
         return settled
 

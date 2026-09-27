@@ -108,6 +108,104 @@ class DevelopmentalAgency:
         channels = TARGET_CHANNELS.get(str(target_task or ""), ("curiosity", "error_recovery"))
         return tuple(channel for channel in channels if channel in NEURAL_CHANNELS)
 
+    @staticmethod
+    def _task_for_developmental_domain(domain: str | None) -> str:
+        raw = str(domain or "").strip()
+        candidate = raw.rsplit(":", 1)[-1].upper() if raw else ""
+        return candidate if candidate in TARGET_CHANNELS else "REFLECT"
+
+    def _developmental_history_observations(
+        self,
+        *,
+        developmental_history: Mapping[str, Any],
+        observed_at: datetime,
+    ) -> list[dict[str, Any]]:
+        open_rows = [
+            dict(row)
+            for row in developmental_history.get("open_developmental_needs") or ()
+            if isinstance(row, Mapping)
+            and str(row.get("kind") or "") == "MASTERY_NEED"
+            and str(row.get("transition_id") or "")
+        ]
+        domains = (
+            developmental_history.get("domains")
+            if isinstance(developmental_history.get("domains"), Mapping)
+            else {}
+        )
+        observations: list[dict[str, Any]] = []
+        open_transition_ids: set[str] = set()
+        for row in open_rows:
+            transition_id = str(row.get("transition_id") or "")
+            open_transition_ids.add(transition_id)
+            domain = str(row.get("domain") or "")
+            stats = domains.get(domain) if isinstance(domains.get(domain), Mapping) else {}
+            attempts = max(1, int(stats.get("attempts") or 0))
+            failures = max(0, int(stats.get("failures") or 0))
+            successes = max(0, int(stats.get("successes") or 0))
+            competence = _clip(float(stats.get("competence") or 0.0))
+            failure_ratio = _clip(failures / attempts)
+            severity = _clip(max(1.0 - competence, failure_ratio))
+            evidence_strength = _clip(failures / max(3.0, float(attempts)))
+            target = self._task_for_developmental_domain(domain)
+            observations.append({
+                "key": f"mastery-transition:{transition_id}",
+                "kind": "EVIDENCE_BOUND_MASTERY_NEED",
+                "status": "ACTIVE",
+                "capability": domain or target.lower(),
+                "target_task": target,
+                "source_environment": None,
+                "source_transition_id": transition_id,
+                "severity": severity,
+                "evidence_strength": evidence_strength,
+                "neural_pressure": _clip(
+                    0.55 * severity + 0.45 * max(0.25, evidence_strength)
+                ),
+                "pressure_channels": list(self._channels_for_target(target)),
+                "evidence": {
+                    "kind": "DEVELOPMENTAL_MASTERY_NEED",
+                    "observed_at": str(row.get("observed_at") or observed_at.isoformat()),
+                    "transition_id": transition_id,
+                    "trigger_event_id": row.get("trigger_event_id"),
+                    "domain": domain,
+                    "attempts": attempts,
+                    "successes": successes,
+                    "failures": failures,
+                    "competence": round(competence, 6),
+                },
+            })
+
+        # When the originating developmental transition disappears from the
+        # open set, close the mirrored agency need as well. This keeps one
+        # durable weakness lifecycle instead of two diverging ledgers.
+        for prior in (self.state.get("needs") or {}).values():
+            if not isinstance(prior, Mapping):
+                continue
+            key = str(prior.get("key") or "")
+            if not key.startswith("mastery-transition:"):
+                continue
+            transition_id = str(prior.get("source_transition_id") or key.split(":", 1)[1])
+            if transition_id in open_transition_ids or prior.get("status") == "RESOLVED":
+                continue
+            observations.append({
+                "key": key,
+                "kind": str(prior.get("kind") or "EVIDENCE_BOUND_MASTERY_NEED"),
+                "status": "RESOLVED",
+                "capability": prior.get("capability"),
+                "target_task": prior.get("target_task") or "REFLECT",
+                "source_environment": prior.get("source_environment"),
+                "source_transition_id": transition_id,
+                "severity": 0.0,
+                "evidence_strength": float(prior.get("evidence_strength") or 0.0),
+                "neural_pressure": 0.0,
+                "pressure_channels": list(prior.get("pressure_channels") or ()),
+                "evidence": {
+                    "kind": "DEVELOPMENTAL_MASTERY_NEED_RESOLVED",
+                    "transition_id": transition_id,
+                    "resolution_source": "developmental_history",
+                },
+            })
+        return observations
+
     def _transfer_evidence_refs(self, source: str, target: str) -> list[str]:
         raw = _read(self.state_root / "application" / "neural_transfer.json")
         refs = []
@@ -357,6 +455,7 @@ class DevelopmentalAgency:
             "capability": observation.get("capability"),
             "target_task": observation.get("target_task"),
             "source_environment": observation.get("source_environment"),
+            "source_transition_id": observation.get("source_transition_id"),
             "severity": round(float(observation.get("severity") or 0.0), 6),
             "evidence_strength": round(float(observation.get("evidence_strength") or 0.0), 6),
             "neural_pressure": round(float(observation.get("neural_pressure") or 0.0), 6),
@@ -588,6 +687,20 @@ class DevelopmentalAgency:
             proposals[proposal_id] = proposal
             self.state["proposals"] = proposals
 
+        needs = dict(self.state.get("needs") or {})
+        need_id = str(row.get("need_id") or "")
+        need = dict(needs.get(need_id) or {})
+        if need and decision == "ADOPT":
+            need.update({
+                "status": "RESOLVED",
+                "resolved_at": observed_at.isoformat(),
+                "resolution": "REAL_WORLD_TRANSFER_ADOPT",
+                "resolution_world_id": key,
+                "resolution_effect": evaluation.get("estimated_real_world_effect"),
+            })
+            needs[need_id] = need
+            self.state["needs"] = needs
+
         self.state["updated_at"] = observed_at.isoformat()
         _write(self.path, self.state)
         return dict(row)
@@ -622,6 +735,7 @@ class DevelopmentalAgency:
         neural_life: Mapping[str, Any],
         neural_transfer: Mapping[str, Any],
         neural_motor: Mapping[str, Any],
+        developmental_history: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         observations = []
@@ -638,6 +752,11 @@ class DevelopmentalAgency:
             neural_motor=neural_motor,
             observed_at=now,
         ))
+        if isinstance(developmental_history, Mapping):
+            observations.extend(self._developmental_history_observations(
+                developmental_history=developmental_history,
+                observed_at=now,
+            ))
 
         touched = []
         for observation in observations:

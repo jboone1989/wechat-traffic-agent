@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -310,6 +310,121 @@ class AdoptedAgencyStub(AgencyStub):
 
     def next_candidate_world(self):
         return None
+
+
+def _select_adaptive_architecture(
+    architecture: DevelopmentalArchitectureSearch,
+) -> None:
+    for index in range(8):
+        assigned = architecture.assign(
+            world_id="WORLD_0001",
+            source_trial_id=f"source-initial-{index}",
+            now=NOW + timedelta(minutes=index),
+        )
+        trial = assigned["trial"]
+        utility = (
+            0.8
+            if trial["assignment"] == "ADAPTIVE_FAST"
+            else 0.4
+        )
+        architecture.settle(
+            trial_id=trial["trial_id"],
+            utility=utility,
+            target_status="OK",
+            observed_at=NOW + timedelta(minutes=index, seconds=30),
+        )
+    assert architecture.projection()["selected_variant"] == "ADAPTIVE_FAST"
+
+
+def test_selected_architecture_is_rolled_back_after_real_world_regression(
+    tmp_path: Path,
+):
+    substrate = ArchitectureSubstrateStub()
+    architecture = DevelopmentalArchitectureSearch(
+        tmp_path,
+        substrate=substrate,
+    )
+    _select_adaptive_architecture(architecture)
+    assert substrate._ferro_architecture_variant == "ADAPTIVE_FAST"
+    assert architecture.needs_evidence(NOW + timedelta(minutes=10)) is True
+
+    seen = set()
+    final = None
+    for index in range(6):
+        assigned = architecture.assign(
+            world_id="WORLD_0001",
+            source_trial_id=f"source-revalidate-{index}",
+            now=NOW + timedelta(minutes=10 + index),
+        )
+        trial = assigned["trial"]
+        assert trial["phase"] == "POST_SELECTION_REVALIDATION"
+        seen.add(trial["assignment"])
+        with architecture.trial_overlay(trial["trial_id"]):
+            effective = substrate._gene("birth_threshold_scale")
+            if trial["assignment"] == "SELECTED":
+                assert effective == 0.9
+                utility = 0.2
+            else:
+                assert trial["assignment"] == "BASELINE"
+                assert effective == 1.0
+                utility = 0.7
+        final = architecture.settle(
+            trial_id=trial["trial_id"],
+            utility=utility,
+            target_status="OK",
+            observed_at=NOW + timedelta(minutes=10 + index, seconds=30),
+        )
+
+    assert seen == {"SELECTED", "BASELINE"}
+    assert final is not None
+    assert final["evaluation"]["status"] == "ROLLED_BACK"
+    assert final["evaluation"]["decision"] == "ROLLBACK"
+    projection = architecture.projection()
+    assert projection["selected_variant"] is None
+    assert projection["search_epoch"] == 1
+    assert getattr(substrate, "_ferro_architecture_variant", None) is None
+    assert projection["selection_history"][-1]["action"] == (
+        "ROLLED_BACK_AFTER_REAL_WORLD_REGRESSION"
+    )
+
+
+def test_selected_architecture_is_retained_then_revalidated_again_later(
+    tmp_path: Path,
+):
+    substrate = ArchitectureSubstrateStub()
+    architecture = DevelopmentalArchitectureSearch(
+        tmp_path,
+        substrate=substrate,
+    )
+    _select_adaptive_architecture(architecture)
+
+    final = None
+    for index in range(6):
+        assigned = architecture.assign(
+            world_id="WORLD_0001",
+            source_trial_id=f"source-retain-{index}",
+            now=NOW + timedelta(minutes=10 + index),
+        )
+        trial = assigned["trial"]
+        utility = 0.75 if trial["assignment"] == "SELECTED" else 0.60
+        final = architecture.settle(
+            trial_id=trial["trial_id"],
+            utility=utility,
+            target_status="OK",
+            observed_at=NOW + timedelta(minutes=10 + index, seconds=30),
+        )
+
+    assert final is not None
+    assert final["evaluation"]["status"] == "RETAINED"
+    projection = architecture.projection()
+    assert projection["selected_variant"] == "ADAPTIVE_FAST"
+    assert projection["post_selection_round"] == 1
+    assert projection["selection_history"][-1]["action"] == (
+        "RETAINED_AFTER_REAL_WORLD_REVALIDATION"
+    )
+    retained_at = NOW + timedelta(minutes=15, seconds=30)
+    assert architecture.needs_evidence(retained_at + timedelta(days=1)) is False
+    assert architecture.needs_evidence(retained_at + timedelta(days=8)) is True
 
 
 def test_architecture_only_reuses_adopted_world_without_reopening_n29(tmp_path: Path):

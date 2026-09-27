@@ -154,7 +154,9 @@ class DevelopmentalHistory:
         transitions = list(self.state.get("transitions") or ())
         repeated_failure = int(row.get("failures") or 0) >= 3 and int(row.get("failures") or 0) > int(row.get("successes") or 0)
         if repeated_failure and not any(
-            item.get("domain") == domain and item.get("kind") == "MASTERY_NEED"
+            item.get("domain") == domain
+            and item.get("kind") == "MASTERY_NEED"
+            and item.get("status") == "OPEN"
             for item in transitions[-16:]
         ):
             transitions.append({
@@ -192,6 +194,51 @@ class DevelopmentalHistory:
         })
         _write(self.path, self.state)
         return event
+
+    def resolve_transition(
+        self,
+        *,
+        transition_id: str,
+        evidence_ref: str,
+        now: datetime | None = None,
+        reason: str = "evidence-bound improvement",
+    ) -> dict[str, Any] | None:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        transition_id = str(transition_id or "").strip()
+        evidence_ref = str(evidence_ref or "").strip()
+        if not transition_id or not evidence_ref:
+            raise ValueError("transition resolution requires transition_id and evidence_ref")
+        transitions = [
+            dict(row)
+            for row in self.state.get("transitions") or ()
+            if isinstance(row, Mapping)
+        ]
+        index = next(
+            (
+                idx
+                for idx in range(len(transitions) - 1, -1, -1)
+                if str(transitions[idx].get("transition_id") or "") == transition_id
+            ),
+            None,
+        )
+        if index is None:
+            return None
+        row = dict(transitions[index])
+        if row.get("status") == "RESOLVED":
+            return row
+        if row.get("status") != "OPEN":
+            return None
+        row.update({
+            "status": "RESOLVED",
+            "resolved_at": now.isoformat(),
+            "resolution_evidence_ref": evidence_ref,
+            "resolution_reason": str(reason or "evidence-bound improvement")[:300],
+        })
+        transitions[index] = row
+        self.state["transitions"] = transitions[-256:]
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
+        return dict(row)
 
     def projection(self) -> dict[str, Any]:
         domains = {
