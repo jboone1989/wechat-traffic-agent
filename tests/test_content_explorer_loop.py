@@ -273,7 +273,7 @@ def test_writing_experience_projection_drops_large_cycle_payloads():
 
 
 class V2Runtime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({"title": f"Explaining evidence question {self.number}",
@@ -399,7 +399,7 @@ class NewTopicExplorer:
 
 
 class NewTopicRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({
@@ -459,7 +459,7 @@ def test_virtualbrain_can_create_new_topic_and_website_materializes_it(tmp_path)
     assert (public_root / "topics" / "monetary-policy" / "index.html").exists()
 
 class BeliefRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("FORM_WORLDVIEW:"):
             self.calls.append(task)
             return json.dumps({
@@ -542,7 +542,7 @@ def test_selected_evidence_updates_persistent_mind_before_expression(tmp_path):
 
 
 class QuietBeliefRuntime(BeliefRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("FORM_WORLDVIEW:"):
             self.calls.append(task)
             return json.dumps({
@@ -608,7 +608,7 @@ def test_published_expression_is_grounded_in_persisted_agent_perspective(tmp_pat
 
 
 class NeutralExpressionRuntime(BeliefRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if "Create one original, useful web-ready content artifact" in task and "agent_expression_context" in task:
             self.calls.append(task)
             paragraph = " ".join([
@@ -640,7 +640,7 @@ class RepairMissingTechniqueRuntime(BeliefRuntime):
         super().__init__()
         self.compose_attempts = 0
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if (
             "Create one original, useful web-ready content artifact" in task
             and "agent_expression_context" in task
@@ -704,7 +704,7 @@ def test_missing_learned_technique_gets_one_bounded_draft_repair(tmp_path):
 
 
 class ShortThoughtRuntime(BeliefRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("DECIDE_EXPRESSION:"):
             self.calls.append(task)
             return json.dumps({
@@ -751,7 +751,7 @@ class RepairSilentBeliefRuntime(BeliefRuntime):
         super().__init__()
         self.expression_attempts = 0
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("DECIDE_EXPRESSION:"):
             self.calls.append(task)
             self.expression_attempts += 1
@@ -797,7 +797,7 @@ def test_persisted_worldview_change_cannot_disappear_into_none(tmp_path):
 
 
 class PredictiveBeliefRuntime(BeliefRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("PROPOSE_DATED_PREDICTION:"):
             self.calls.append(task)
             return json.dumps({
@@ -917,7 +917,7 @@ class MethodExpressionWorld:
 
 
 class MethodExpressionRuntime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("SELECT_EVIDENCE:"):
             return json.dumps({
@@ -1025,7 +1025,7 @@ def test_method_note_rebinds_to_observed_method_evidence_instead_of_unrelated_ou
 
 
 class CryptoMissionRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({
@@ -1285,7 +1285,7 @@ def test_market_expression_fingerprint_changes_only_when_catalyst_or_market_stat
 
 
 class OverstatedBeliefRuntime(QuietBeliefRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("DECIDE_EXPRESSION:"):
             self.calls.append(task)
             return json.dumps({
@@ -1312,7 +1312,7 @@ def test_unpersisted_belief_change_is_normalized_instead_of_failing_cycle(tmp_pa
 
 
 class InvalidEvidenceSelectionRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return "not-json"
@@ -1381,7 +1381,7 @@ def _write_active_x_mission(state_root: Path, *, hard_stop: bool = False):
 
 
 class MissionDiscoveryRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("MISSION_DISCOVERY:"):
             self.calls.append(task)
             return json.dumps({
@@ -1401,7 +1401,7 @@ class MissionDiscoveryRuntime(V2Runtime):
 
 
 class EndogenousMissionRuntime(MissionDiscoveryRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({
@@ -1650,7 +1650,7 @@ def test_mission_discovery_normalizes_human_topic_to_kebab_slug():
 
 
 class InterruptedMissionDiscoveryRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("MISSION_DISCOVERY:"):
             self.calls.append(task)
             raise ValueError("model call interrupted without receipt; skip this cycle")
@@ -1687,7 +1687,7 @@ class LLMProviderError(RuntimeError):
 
 
 class OwnerMissionLLMOutageRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("MISSION_DISCOVERY:"):
             self.calls.append(task)
             raise LLMProviderError("no viable LLM resource is currently available")
@@ -1785,7 +1785,7 @@ def test_owner_goal_mission_discovery_outage_fails_closed_before_generic_evidenc
 
 
 class UnknownEvidenceIdSelectionRuntime(V2Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({
@@ -1873,7 +1873,7 @@ def test_goal_loop_executes_mature_content_retry_skill_variant(tmp_path):
 
     original = runtime.cognitive_probe
     checks = []
-    async def fail_first_verifier_only(task, max_tokens):
+    async def fail_first_verifier_only(task, max_tokens, output_schema=None):
         raw = await original(task, max_tokens)
         if task.startswith("CHECK_ARTICLE:"):
             checks.append(task)
@@ -1916,7 +1916,7 @@ def test_goal_loop_executes_mature_content_retry_skill_variant(tmp_path):
 
 
 class OwnerBoundMissionRuntime(MissionDiscoveryRuntime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("MISSION_DISCOVERY:"):
             self.calls.append(task)
             assert "LivingRuntime Remote" in task

@@ -107,7 +107,7 @@ class GoalMind:
 
 
 class V2Runtime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
             self.calls.append(task)
             return json.dumps({

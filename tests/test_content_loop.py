@@ -19,7 +19,7 @@ class Runtime:
     agent_manifest = SimpleNamespace(agent_type='content-agent')
     def __init__(self, number=1, passes=True, badquote=False, provenance_ids=False):
         self.calls=[]; self.number=number; self.passes=passes; self.badquote=badquote; self.provenance_ids=provenance_ids
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith('LEARN_WRITING:'):
             return json.dumps({'techniques':[{'name':'Separate observations', 'instruction':'Separate facts from hypothetical interpretation.',
@@ -112,7 +112,7 @@ def test_same_news_next_window_does_not_call_model_again(tmp_path):
 
 def test_bad_model_response_bounded_persisted_no_retries_after_restart(tmp_path):
     runtime,worker,publisher=setup(tmp_path)
-    async def bad(task,max_tokens): runtime.calls.append(task);return '{"unexpected":null}'
+    async def bad(task, max_tokens, output_schema=None): runtime.calls.append(task);return '{"unexpected":null}'
     runtime.cognitive_probe=bad
     assert asyncio.run(worker.run_once(now=NOW))['status']=='ERROR'
     assert len(runtime.calls)==2 and worker.inbox.list_records()==()
@@ -122,10 +122,53 @@ def test_bad_model_response_bounded_persisted_no_retries_after_restart(tmp_path)
 
 def test_interrupted_model_call_is_not_repeated(tmp_path):
     runtime=Runtime(); receipts=ReceiptRuntime(runtime,tmp_path/'receipts')
-    async def crash(task,max_tokens): raise RuntimeError('simulated interruption')
+    async def crash(task, max_tokens, output_schema=None): raise RuntimeError('simulated interruption')
     runtime.cognitive_probe=crash
     with pytest.raises(RuntimeError): asyncio.run(receipts.cognitive_probe('task',100))
     with pytest.raises(ValueError,match='interrupted'): asyncio.run(ReceiptRuntime(Runtime(),tmp_path/'receipts').cognitive_probe('task',100))
+
+
+def test_receipt_runtime_forwards_schema_and_binds_it_to_phase_identity(tmp_path):
+    class StructuredRuntime(Runtime):
+        def __init__(self):
+            super().__init__()
+            self.schemas = []
+
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            self.schemas.append(output_schema)
+            return json.dumps({"ok": True})
+
+    runtime = StructuredRuntime()
+    receipts = ReceiptRuntime(runtime, tmp_path / "receipts")
+    schema_a = {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {"ok": {"type": "boolean"}},
+    }
+    schema_b = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "string"}},
+    }
+
+    assert json.loads(asyncio.run(
+        receipts.cognitive_probe("compose", 100, output_schema=schema_a)
+    )) == {"ok": True}
+    first = json.loads((tmp_path / "receipts" / "0.json").read_text())
+    assert runtime.schemas == [schema_a]
+    assert first["output_schema_sha256"] == digest(schema_a)
+
+    changed_runtime = StructuredRuntime()
+    changed = ReceiptRuntime(changed_runtime, tmp_path / "receipts")
+    assert json.loads(asyncio.run(
+        changed.cognitive_probe(
+            "compose", 100, output_schema=schema_b
+        )
+    )) == {"ok": True}
+    second = json.loads((tmp_path / "receipts" / "1.json").read_text())
+    assert changed_runtime.schemas == [schema_b]
+    assert second["output_schema_sha256"] == digest(schema_b)
+    assert second["request_sha256"] != first["request_sha256"]
 
 
 def test_receipt_recovery_can_skip_persisted_phase_only_by_exact_request_fingerprint(tmp_path):
@@ -191,7 +234,7 @@ def test_semantic_topic_mismatch_gets_one_bounded_repair(tmp_path, repaired):
     runtime,worker,publisher=setup(tmp_path)
     original=runtime.cognitive_probe
     selection_calls=[]
-    async def mismatch(task,max_tokens):
+    async def mismatch(task, max_tokens, output_schema=None):
         raw=await original(task,max_tokens)
         if task.startswith('SELECT_NEWS:'):
             selection_calls.append(task)
@@ -234,7 +277,7 @@ def test_selfcheck_reference_format_is_repaired_once_without_loosening_evidence(
     runtime,worker,publisher=setup(tmp_path)
     original=runtime.cognitive_probe
     checks=[]
-    async def response(task,max_tokens):
+    async def response(task, max_tokens, output_schema=None):
         raw=await original(task,max_tokens)
         if task.startswith('CHECK_ARTICLE:'):
             checks.append(task)
@@ -275,7 +318,7 @@ def test_virtualbrain_required_topic_changes_selection_behavior(tmp_path):
 
     worker.mind = Mind()
 
-    async def obey_goal(task, max_tokens):
+    async def obey_goal(task, max_tokens, output_schema=None):
         raw = await original(task, max_tokens)
         if task.startswith('SELECT_NEWS:'):
             selection_calls.append(task)

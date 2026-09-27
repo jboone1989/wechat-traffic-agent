@@ -69,7 +69,7 @@ class AssessmentRuntime:
         self.response = response
         self.calls = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         return json.dumps(self.response)
 
@@ -160,7 +160,7 @@ def test_check_history_rolls_oldest_entry_into_durable_archive_at_cap(tmp_path):
 
 
 class FailingAssessmentRuntime:
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         raise RuntimeError("provider unavailable")
 
 

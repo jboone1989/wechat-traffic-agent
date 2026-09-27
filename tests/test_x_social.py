@@ -88,7 +88,7 @@ class _ModelRuntime:
     def __init__(self, responses):
         self.responses = list(responses)
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         assert self.responses
         return json.dumps(self.responses.pop(0))
 

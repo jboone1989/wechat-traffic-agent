@@ -19,7 +19,7 @@ class Runtime:
     def __init__(self):
         self.calls = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("LEARN_WRITING:"):
             return json.dumps({
@@ -149,7 +149,7 @@ def test_real_search_demand_controls_topic_when_virtualbrain_has_no_goal(tmp_pat
     original = runtime.cognitive_probe
     selections = 0
 
-    async def traffic_selected(task, max_tokens):
+    async def traffic_selected(task, max_tokens, output_schema=None):
         nonlocal selections
         raw = await original(task, max_tokens)
         if task.startswith("SELECT_EVIDENCE:"):

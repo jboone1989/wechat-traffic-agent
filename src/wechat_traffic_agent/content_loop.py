@@ -168,17 +168,31 @@ def _receipt_phase_signature(task: str, max_tokens: int) -> str:
     return digest({"phase_key": phase_key, "max_tokens": int(max_tokens)})
 
 
+def _receipt_request_fingerprint(
+    task: str, max_tokens: int, output_schema: dict | None
+) -> str:
+    payload = {"task": task, "max_tokens": int(max_tokens)}
+    if output_schema is not None:
+        payload["output_schema"] = output_schema
+    return digest(payload)
+
+
 class ReceiptRuntime:
     """Persist each response and suspend safely while ChatGPT is unavailable."""
     def __init__(self, runtime, root):
         self.runtime, self.root, self.index = runtime, root, 0
         self.agent_manifest = runtime.agent_manifest
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         key = str(self.index); self.index += 1
         path, started = self.root / (key + '.json'), self.root / (key + '.started')
-        fingerprint = digest({'task': task, 'max_tokens': max_tokens})
+        fingerprint = _receipt_request_fingerprint(task, max_tokens, output_schema)
         phase_signature = _receipt_phase_signature(task, max_tokens)
+        if output_schema is not None:
+            phase_signature = digest({
+                "phase_signature": phase_signature,
+                "output_schema": output_schema,
+            })
         resume_request_id = None
         phase_id = digest({
             'receipt_root': str(self.root),
@@ -225,7 +239,7 @@ class ReceiptRuntime:
                     if candidate.stem.isdigit()
                 ]
                 self.index = (max(numeric_indices) + 1) if numeric_indices else self.index
-                return await self.cognitive_probe(task, max_tokens)
+                return await self.cognitive_probe(task, max_tokens, output_schema=output_schema)
             raise ValueError('model phase input changed during recovery')
         if started.exists():
             marker = json.loads(started.read_text(encoding='utf-8'))
@@ -260,6 +274,7 @@ class ReceiptRuntime:
                 raw = await self.runtime.cognitive_probe(
                     task,
                     max_tokens=max_tokens,
+                    output_schema=output_schema,
                 )
         except LivingRuntimeChatGPTPendingError as exc:
             _replace(started, {
@@ -275,6 +290,8 @@ class ReceiptRuntime:
             'phase_signature': phase_signature,
             'response': raw,
         }
+        if output_schema is not None:
+            receipt['output_schema_sha256'] = digest(output_schema)
         if resume_request_id:
             receipt.update({
                 'durable_request_id': resume_request_id,

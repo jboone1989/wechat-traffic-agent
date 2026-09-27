@@ -226,7 +226,7 @@ class _GoalRuntime:
         self.calls = []
         self.binding_seen_before_selection = False
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("LEARN_WRITING:"):
             return json.dumps({

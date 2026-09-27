@@ -15,7 +15,7 @@ class _PendingThenCompleteRuntime:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    async def cognitive_probe(self, task: str, *, max_tokens: int):
+    async def cognitive_probe(self, task: str, *, max_tokens: int, output_schema=None):
         self.calls.append(task)
         if len(self.calls) == 1:
             raise LivingRuntimeChatGPTPendingError("llmreq_durable_test")
@@ -76,7 +76,7 @@ def test_completed_durable_receipt_does_not_bleed_into_next_semantic_phase(tmp_p
         resumed.cognitive_probe("PREDICT: newer host context", 100)
     ) == "completed-response"
 
-    async def expression(task: str, *, max_tokens: int):
+    async def expression(task: str, *, max_tokens: int, output_schema=None):
         runtime.calls.append(task)
         return "expression-response"
 

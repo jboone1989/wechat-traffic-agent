@@ -22,7 +22,7 @@ class Runtime:
     def __init__(self, *responses):
         self.responses, self.calls = responses, []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         return self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
 

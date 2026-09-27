@@ -13,7 +13,7 @@ class Runtime:
     def __init__(self):
         self.calls = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("WORLD_SCAN_PLAN:"):
             return json.dumps({
@@ -75,7 +75,7 @@ def test_world_feed_discovery_failure_keeps_seed_reality(tmp_path: Path):
         raise RuntimeError("search unavailable")
 
     class SeedRuntime(Runtime):
-        async def cognitive_probe(self, task, max_tokens):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
             if task.startswith("WORLD_SCAN_PLAN:"):
                 return json.dumps({
                     "queries": ["crypto market news now"],
@@ -119,7 +119,7 @@ def test_bad_attention_item_does_not_erase_valid_observations(tmp_path: Path):
         return []
 
     class PartialRuntime(Runtime):
-        async def cognitive_probe(self, task, max_tokens):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
             if task.startswith("WORLD_SCAN_PLAN:"):
                 return json.dumps({
                     "queries": ["check current market evidence"],
@@ -158,7 +158,7 @@ def test_bad_attention_item_does_not_erase_valid_observations(tmp_path: Path):
 
 
 class SocialLearningRuntime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("WORLD_SCAN_PLAN:"):
             return json.dumps({
@@ -223,7 +223,7 @@ class RepairingScanRuntime(Runtime):
         super().__init__()
         self.scan_attempts = 0
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("WORLD_SCAN_PLAN:"):
             self.scan_attempts += 1
@@ -261,7 +261,7 @@ def test_world_scan_plan_normalizes_allowlist_and_repairs_once(tmp_path: Path):
 
 
 class PermanentlyBadScanRuntime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("WORLD_SCAN_PLAN:"):
             return json.dumps({"queries": [], "source_spaces": ["reddit"], "rationale": "bad"})
         if task.startswith("WORLD_ATTENTION:"):

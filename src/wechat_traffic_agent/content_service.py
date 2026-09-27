@@ -57,6 +57,7 @@ class ContentAgent:
         raw = await self.runtime.cognitive_probe(
             task,
             max_tokens=2400,
+            output_schema=_GeneratedContent.model_json_schema(),
         )
         try:
             draft = _GeneratedContent.model_validate_json(_extract_json(raw))
@@ -65,6 +66,7 @@ class ContentAgent:
             raw = await self.runtime.cognitive_probe(
                 _repair_task(task, raw, exc),
                 max_tokens=2400,
+                output_schema=_GeneratedContent.model_json_schema(),
             )
             draft = _GeneratedContent.model_validate_json(_extract_json(raw))
         topic_by_title = {item.title: item for item in topics}

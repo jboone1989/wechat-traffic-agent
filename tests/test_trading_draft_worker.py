@@ -20,7 +20,7 @@ class _Runtime:
         self.calls = 0
         self.persisted = 0
 
-    async def cognitive_probe(self, task: str, max_tokens: int) -> str:
+    async def cognitive_probe(self, task: str, max_tokens: int, output_schema=None) -> str:
         self.calls += 1
         assert "trading.cai.001" in task
         return json.dumps({
@@ -141,7 +141,7 @@ class _RepairRuntime(_Runtime):
         self.repair_succeeds = repair_succeeds
         self.tasks = []
 
-    async def cognitive_probe(self, task: str, max_tokens: int) -> str:
+    async def cognitive_probe(self, task: str, max_tokens: int, output_schema=None) -> str:
         self.tasks.append(task)
         payload = json.loads(await super().cognitive_probe(task, max_tokens))
         if self.calls == 1 or not self.repair_succeeds:

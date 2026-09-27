@@ -39,7 +39,7 @@ class PlannerRuntime:
         self.payload = payload
         self.calls: list[str] = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         return json.dumps(self.payload)
 
@@ -52,7 +52,7 @@ class FailingPlannerRuntime:
     def __init__(self):
         self.calls: list[str] = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         raise LLMProviderError("all eligible LLM resources failed without exposing provider responses")
 
@@ -485,7 +485,7 @@ class MalformedPlannerRuntime:
     def __init__(self):
         self.calls: list[str] = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         return "not-json"
 

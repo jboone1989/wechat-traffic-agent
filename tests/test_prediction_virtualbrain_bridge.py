@@ -37,7 +37,7 @@ def test_matured_prediction_updates_life_experience_and_same_worldview_claim(tmp
 
     class Runtime:
         def __init__(self): self.calls = []
-        async def cognitive_probe(self, task, max_tokens):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
             self.calls.append(task)
             if task.startswith("EVALUATE_DATED_PREDICTION:"):
                 return json.dumps({

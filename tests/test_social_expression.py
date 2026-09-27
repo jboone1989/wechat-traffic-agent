@@ -21,7 +21,7 @@ class Runtime:
         self.mode = mode
         self.calls = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("SOCIAL_EVIDENCE_PLAN"):
             if self.mode == "question_direct":
@@ -301,7 +301,7 @@ class WebSeekRuntime:
         self.calls = []
         self.invocations = []
 
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
         if task.startswith("SOCIAL_EVIDENCE_PLAN"):
             return json.dumps({
@@ -391,7 +391,7 @@ def test_crypto_question_seeks_market_structure_before_asking(tmp_path):
 
 
 class OverlongOKXRuntime(Runtime):
-    async def cognitive_probe(self, task, max_tokens):
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SOCIAL_EXPRESSION_DRAFT"):
             self.calls.append(task)
             return json.dumps({

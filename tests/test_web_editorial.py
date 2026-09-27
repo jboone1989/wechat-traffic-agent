@@ -30,7 +30,7 @@ def candidate(topic='rare',related=None):
 class Runtime:
     agent_manifest=SimpleNamespace(agent_type='content-agent')
     def __init__(self, external=False): self.calls=[];self.external=external
-    async def cognitive_probe(self,task,max_tokens):
+    async def cognitive_probe(self,task,max_tokens,output_schema=None):
         self.calls.append(task)
         if 'Propose up to five' in task:
             row=candidate()
@@ -114,7 +114,7 @@ def test_missing_external_evidence_stops_before_generation(tmp_path):
 def test_invalid_plan_repair_is_bounded_without_draft(tmp_path):
     artifacts,root=site(tmp_path)
     class Bad(Runtime):
-        async def cognitive_probe(self,task,max_tokens):
+        async def cognitive_probe(self,task,max_tokens,output_schema=None):
             self.calls.append(task)
             return json.dumps({'candidates':[candidate(related=['invented'])]})
     runtime=Bad();worker=WebEditorialWorker(runtime=runtime,state_root=tmp_path/'state',artifacts_path=artifacts,site_root=root,base_url='https://example.com')
