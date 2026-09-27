@@ -39,6 +39,8 @@ MIN_REPLAY_WORLDS = 4
 REPLAY_BUDGET = 4
 MAX_DREAMS = 64
 MAX_PROMOTIONS_PER_REPLAY_POOL = 3
+MIN_ONLINE_SAMPLES_PER_ARM = 2
+ONLINE_TRIAL_MAX_DAYS = 14
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -134,6 +136,8 @@ class ResearchDreamEngine:
                 "dreams": [],
                 "promotion_count": 0,
                 "reversion_count": 0,
+                "online_rejection_count": 0,
+                "prospective_trial": None,
                 "protected_invariants": list(PROTECTED_INVARIANTS),
                 "automatic_authority_expansion": False,
             }
@@ -196,6 +200,135 @@ class ResearchDreamEngine:
         return worlds
 
     @staticmethod
+    def _trial_arm(problem_id: str, trial_id: str) -> str:
+        digest = sha256(f"{trial_id}|{problem_id}".encode()).digest()
+        return "CANDIDATE" if digest[0] & 1 else "BASELINE"
+
+    def _repair_trial_outcome(
+        self,
+        problem_id: str,
+        *,
+        started_at: datetime,
+    ) -> dict[str, Any] | None:
+        safe = problem_id.replace(":", "-")
+        row = _read(
+            self.state_root
+            / "application"
+            / "self_maintenance"
+            / "repair_trials"
+            / f"{safe}.json"
+        )
+        if not row:
+            return None
+        observed = _aware(row.get("observed_at"))
+        if observed is None or observed < started_at:
+            return None
+        status = str(row.get("status") or "")
+        if not status:
+            return None
+        reward = _outcome_reward(status)
+        return {
+            "status": status,
+            "observed_at": observed.isoformat(),
+            "reward": reward,
+            "negative": reward < 0.0,
+            "evidence_ref": f"self-repair-trial:{safe}",
+        }
+
+    def _refresh_prospective_trial(
+        self,
+        *,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        trial = self.state.get("prospective_trial")
+        if not isinstance(trial, Mapping) or str(trial.get("status") or "") != "ACTIVE":
+            return dict(trial) if isinstance(trial, Mapping) else None
+        row = dict(trial)
+        started_at = _aware(row.get("started_at"))
+        if started_at is None:
+            row["status"] = "INVALID"
+            self.state["prospective_trial"] = row
+            return row
+        assignments = {
+            str(key): str(value)
+            for key, value in (row.get("assignments") or {}).items()
+            if str(key) and str(value) in {"BASELINE", "CANDIDATE"}
+        }
+        results = dict(row.get("results") or {})
+        for problem_id, arm in assignments.items():
+            if problem_id in results:
+                continue
+            outcome = self._repair_trial_outcome(
+                problem_id,
+                started_at=started_at,
+            )
+            if outcome is not None:
+                results[problem_id] = {"arm": arm, **outcome}
+        row["assignments"] = assignments
+        row["results"] = results
+
+        arm_rows: dict[str, list[dict[str, Any]]] = {"BASELINE": [], "CANDIDATE": []}
+        for result in results.values():
+            if isinstance(result, Mapping) and result.get("arm") in arm_rows:
+                arm_rows[str(result["arm"])].append(dict(result))
+        summary = {}
+        for arm, values in arm_rows.items():
+            rewards = [float(item.get("reward") or 0.0) for item in values]
+            summary[arm] = {
+                "count": len(values),
+                "mean_reward": (
+                    round(sum(rewards) / len(rewards), 6) if rewards else None
+                ),
+                "negative_count": sum(1 for value in rewards if value < 0.0),
+            }
+        row["arm_summary"] = summary
+
+        enough = all(
+            summary[arm]["count"] >= MIN_ONLINE_SAMPLES_PER_ARM
+            for arm in ("BASELINE", "CANDIDATE")
+        )
+        expired = (now - started_at).total_seconds() >= ONLINE_TRIAL_MAX_DAYS * 86400
+        if enough:
+            baseline = summary["BASELINE"]
+            candidate = summary["CANDIDATE"]
+            non_degrading = (
+                float(candidate["mean_reward"]) >= float(baseline["mean_reward"])
+                and int(candidate["negative_count"]) <= int(baseline["negative_count"])
+            )
+            if non_degrading:
+                challenger = dict(row.get("challenger_policy") or {})
+                generation = int(self.state.get("researcher_generation") or 0) + 1
+                challenger.update({
+                    "generation": generation,
+                    "origin": f"PROSPECTIVE_RESEARCH_TRIAL:{row.get('trial_id')}",
+                    "replay_promoted": True,
+                    "promoted_at": now.isoformat(),
+                    "promotion_evidence_ref": str(row.get("trial_id") or ""),
+                    "online_validation_required": False,
+                })
+                self.state["incumbent_policy"] = challenger
+                self.state["researcher_generation"] = generation
+                self.state["promotion_count"] = int(
+                    self.state.get("promotion_count") or 0
+                ) + 1
+                row["status"] = "PROMOTED"
+                row["decided_at"] = now.isoformat()
+                row["decision"] = "PROMOTE_AFTER_PROSPECTIVE_NON_DEGRADATION"
+            else:
+                row["status"] = "REJECTED"
+                row["decided_at"] = now.isoformat()
+                row["decision"] = "KILL_CHALLENGER_AFTER_PROSPECTIVE_REGRESSION"
+                self.state["online_rejection_count"] = int(
+                    self.state.get("online_rejection_count") or 0
+                ) + 1
+        elif expired:
+            row["status"] = "EXPIRED"
+            row["decided_at"] = now.isoformat()
+            row["decision"] = "KEEP_INCUMBENT_INSUFFICIENT_ONLINE_EVIDENCE"
+        self.state["prospective_trial"] = row
+        return row
+
+    @staticmethod
     def _features(rows: list[Mapping[str, Any]]) -> dict[str, dict[str, float]]:
         if not rows:
             return {}
@@ -250,10 +383,19 @@ class ResearchDreamEngine:
         )
 
     def rank_problem_rows(
-        self, rows: Iterable[Mapping[str, Any]]
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        now: datetime | None = None,
     ) -> list[dict[str, Any]]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        trial = self._refresh_prospective_trial(now=now)
         values = [dict(row) for row in rows]
         if not values:
+            _write(self.path, self.state)
             return []
         # Repair candidates do not carry replay-only known_recipe explicitly.
         for row in values:
@@ -267,19 +409,58 @@ class ResearchDreamEngine:
             )
             row.setdefault("observed_at", row.get("last_seen_at"))
         features = self._features(values)
-        weights = (
+        incumbent_weights = (
             self.state.get("incumbent_policy", {}).get("weights")
             if isinstance(self.state.get("incumbent_policy"), Mapping)
             else None
         ) or _default_policy()["weights"]
+        active_trial = (
+            dict(trial)
+            if isinstance(trial, Mapping) and trial.get("status") == "ACTIVE"
+            else None
+        )
+        assignments = dict((active_trial or {}).get("assignments") or {})
+        trial_id = str((active_trial or {}).get("trial_id") or "")
+        challenger_weights = dict(
+            (active_trial or {}).get("challenger_policy", {}).get("weights") or {}
+        )
+        trial_started = _aware((active_trial or {}).get("started_at"))
+
+        def weights_for(row: dict[str, Any]) -> Mapping[str, float]:
+            if not active_trial or trial_started is None:
+                return incumbent_weights
+            problem_id = str(row.get("problem_id") or "")
+            seen_at = _aware(row.get("last_seen_at"))
+            # Only future problems are legitimate prospective evidence.  Older
+            # backlog remains under the incumbent so replay labels cannot leak
+            # into the live trial.
+            if not problem_id or seen_at is None or seen_at < trial_started:
+                return incumbent_weights
+            arm = assignments.get(problem_id)
+            if arm not in {"BASELINE", "CANDIDATE"}:
+                arm = self._trial_arm(problem_id, trial_id)
+                assignments[problem_id] = arm
+            row["research_trial_arm"] = arm
+            row["research_trial_id"] = trial_id
+            return challenger_weights if arm == "CANDIDATE" else incumbent_weights
+
         values.sort(
             key=lambda row: (
-                self._priority(row, features=features, weights=weights),
+                self._priority(
+                    row,
+                    features=features,
+                    weights=weights_for(row),
+                ),
                 str(row.get("last_seen_at") or ""),
                 str(row.get("problem_id") or ""),
             ),
             reverse=True,
         )
+        if active_trial is not None:
+            active_trial["assignments"] = assignments
+            self.state["prospective_trial"] = active_trial
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
         return values
 
     @staticmethod
@@ -372,6 +553,15 @@ class ResearchDreamEngine:
         raw = _read(self.path)
         if raw.get("schema_version") == SCHEMA:
             self.state = raw
+        prior_trial = self.state.get("prospective_trial")
+        trial_was_active = (
+            isinstance(prior_trial, Mapping)
+            and str(prior_trial.get("status") or "") == "ACTIVE"
+        )
+        trial_state = self._refresh_prospective_trial(now=now)
+        trial_resolved_this_dream = bool(
+            trial_was_active and str((trial_state or {}).get("status") or "") != "ACTIVE"
+        )
         worlds = self.replay_worlds()
         if len(worlds) < MIN_REPLAY_WORLDS:
             return {
@@ -388,8 +578,12 @@ class ResearchDreamEngine:
             ).encode()
         ).hexdigest()
         same_pool = str(self.state.get("replay_pool_hash") or "") == pool_hash
-        pool_promotions = (
-            int(self.state.get("replay_pool_promotion_count") or 0)
+        pool_challengers = (
+            int(
+                self.state.get("replay_pool_challenger_count")
+                or self.state.get("replay_pool_promotion_count")
+                or 0
+            )
             if same_pool else 0
         )
         # Migration for dreams produced before replay_pool_hash existed: exact
@@ -404,9 +598,12 @@ class ResearchDreamEngine:
             ]
             if prior_same_pool:
                 same_pool = True
-                pool_promotions = sum(
+                pool_challengers = sum(
                     1 for row in prior_same_pool
-                    if row.get("decision") == "PROMOTE_RESEARCH_POLICY_BOUNDED"
+                    if row.get("decision") in {
+                        "PROMOTE_RESEARCH_POLICY_BOUNDED",
+                        "START_RESEARCH_POLICY_TRIAL",
+                    }
                 )
 
         incumbent = (
@@ -439,18 +636,51 @@ class ResearchDreamEngine:
             and winner_eval["negative_count"] <= incumbent_eval["negative_count"]
         )
         meaningful_gain = winner_eval["score"] >= incumbent_eval["score"] + 0.02
-        replay_budget_open = pool_promotions < MAX_PROMOTIONS_PER_REPLAY_POOL
-        promoted = bool(
+        replay_budget_open = pool_challengers < MAX_PROMOTIONS_PER_REPLAY_POOL
+        active_trial = (
+            dict(self.state.get("prospective_trial"))
+            if isinstance(self.state.get("prospective_trial"), Mapping)
+            and str(self.state.get("prospective_trial", {}).get("status") or "") == "ACTIVE"
+            else None
+        )
+        start_trial = bool(
             challenger
             and non_degrading
             and meaningful_gain
             and replay_budget_open
+            and active_trial is None
+            and not trial_resolved_this_dream
         )
 
         seq = int(self.state.get("dream_count") or 0) + 1
         dream_id = f"research-dream:{seq}"
         generation_before = int(self.state.get("researcher_generation") or 0)
-        generation_after = generation_before + (1 if promoted else 0)
+        generation_after = generation_before
+        prospective_trial = active_trial
+        if start_trial:
+            trial_id = "research-trial:" + sha256(
+                f"{dream_id}|{winner_eval['policy_id']}|{pool_hash}".encode()
+            ).hexdigest()[:20]
+            prospective_trial = {
+                "trial_id": trial_id,
+                "status": "ACTIVE",
+                "started_at": now.isoformat(),
+                "baseline_policy": incumbent,
+                "challenger_policy": {
+                    **winner_policy,
+                    "origin": f"RESEARCH_DREAM_REPLAY:{dream_id}",
+                    "replay_promoted": False,
+                    "online_validation_required": True,
+                },
+                "replay_dream_id": dream_id,
+                "replay_pool_hash": pool_hash,
+                "replay_incumbent_score": incumbent_eval["score"],
+                "replay_challenger_score": winner_eval["score"],
+                "minimum_samples_per_arm": MIN_ONLINE_SAMPLES_PER_ARM,
+                "assignments": {},
+                "results": {},
+            }
+            self.state["prospective_trial"] = prospective_trial
         dream = {
             "dream_id": dream_id,
             "dreamed_at": now.isoformat(),
@@ -465,19 +695,29 @@ class ResearchDreamEngine:
             "meaningful_gain": meaningful_gain,
             "replay_pool_hash": pool_hash,
             "same_replay_pool": same_pool,
-            "replay_pool_promotion_count_before": pool_promotions,
+            "replay_pool_challenger_count_before": pool_challengers,
             "replay_pool_promotion_limit": MAX_PROMOTIONS_PER_REPLAY_POOL,
             "decision": (
-                "PROMOTE_RESEARCH_POLICY_BOUNDED"
-                if promoted else (
+                "START_RESEARCH_POLICY_TRIAL"
+                if start_trial else (
+                    "WAIT_FOR_PROSPECTIVE_RESULTS"
+                    if active_trial is not None or trial_resolved_this_dream
+                    else (
                     "WAIT_FOR_NEW_REPLAY_WORLD"
                     if challenger and non_degrading and meaningful_gain and not replay_budget_open
                     else "KEEP_INCUMBENT"
+                    )
                 )
             ),
             "researcher_generation_before": generation_before,
             "researcher_generation_after": generation_after,
             "online_validation_required": True,
+            "prospective_trial_id": (
+                None if prospective_trial is None else prospective_trial.get("trial_id")
+            ),
+            "prospective_trial_status": (
+                None if prospective_trial is None else prospective_trial.get("status")
+            ),
             "causal_claim": False,
             "protected_invariants": list(PROTECTED_INVARIANTS),
         }
@@ -488,22 +728,10 @@ class ResearchDreamEngine:
         self.state["updated_at"] = now.isoformat()
         self.state["dreams"] = history[-MAX_DREAMS:]
         self.state["replay_pool_hash"] = pool_hash
-        self.state["replay_pool_promotion_count"] = pool_promotions + (1 if promoted else 0)
-        if promoted:
-            promoted_policy = {
-                **winner_policy,
-                "generation": generation_after,
-                "origin": f"RESEARCH_DREAM_REPLAY:{dream_id}",
-                "replay_promoted": True,
-                "promoted_at": now.isoformat(),
-                "promotion_evidence_ref": dream_id,
-                "online_validation_required": True,
-            }
-            old = list(self.state.get("incumbent_history") or ())
-            old.append(incumbent)
-            self.state["incumbent_history"] = old[-32:]
-            self.state["incumbent_policy"] = promoted_policy
-            self.state["promotion_count"] = int(self.state.get("promotion_count") or 0) + 1
+        self.state["replay_pool_challenger_count"] = (
+            pool_challengers + (1 if start_trial else 0)
+        )
+        self.state.pop("replay_pool_promotion_count", None)
         self.state.setdefault("incumbent_policy", incumbent)
         self.state.setdefault("promotion_count", 0)
         self.state.setdefault("reversion_count", 0)
@@ -535,10 +763,18 @@ class ResearchDreamEngine:
             ),
             "promotion_count": int(self.state.get("promotion_count") or 0),
             "reversion_count": int(self.state.get("reversion_count") or 0),
+            "online_rejection_count": int(
+                self.state.get("online_rejection_count") or 0
+            ),
+            "prospective_trial": (
+                dict(self.state["prospective_trial"])
+                if isinstance(self.state.get("prospective_trial"), Mapping)
+                else None
+            ),
             "latest_dream": dreams[-1] if dreams else None,
             "replay_pool_hash": self.state.get("replay_pool_hash"),
-            "replay_pool_promotion_count": int(
-                self.state.get("replay_pool_promotion_count") or 0
+            "replay_pool_challenger_count": int(
+                self.state.get("replay_pool_challenger_count") or 0
             ),
             "replay_pool_promotion_limit": MAX_PROMOTIONS_PER_REPLAY_POOL,
             "protected_invariants": list(PROTECTED_INVARIANTS),

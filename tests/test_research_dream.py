@@ -102,12 +102,16 @@ def test_research_dream_promotes_replay_winner_over_recency_incumbent(tmp_path):
     assert dream["replay_world_count"] == 6
     assert dream["winner"]["score"] >= dream["incumbent"]["score"]
     assert dream["winner"]["negative_count"] <= dream["incumbent"]["negative_count"]
-    assert dream["decision"] == "PROMOTE_RESEARCH_POLICY_BOUNDED"
+    assert dream["decision"] == "START_RESEARCH_POLICY_TRIAL"
     after = result["incumbent_policy"]
-    assert after["policy_id"] != before["policy_id"]
-    assert after["generation"] == 1
-    assert after["replay_promoted"] is True
-    assert engine.projection()["researcher_generation"] == 1
+    assert after["policy_id"] == before["policy_id"]
+    assert after["generation"] == 0
+    projection = engine.projection()
+    assert projection["researcher_generation"] == 0
+    trial = projection["prospective_trial"]
+    assert trial["status"] == "ACTIVE"
+    assert trial["challenger_policy"]["policy_id"] != before["policy_id"]
+    assert trial["challenger_policy"]["online_validation_required"] is True
     assert engine.projection()["protected_invariants"] == list(PROTECTED_INVARIANTS)
 
 
@@ -185,7 +189,7 @@ def test_promoted_research_policy_changes_only_candidate_order(tmp_path):
     assert all(row["repair_proposal"]["risk"] == "LOW" for row in ranked)
 
 
-def test_same_replay_pool_stops_promoting_until_new_world_arrives(tmp_path):
+def test_active_prospective_trial_blocks_more_same_pool_challengers(tmp_path):
     for suffix, age, status, kind in (
         ("old-a", 90, "ADOPTED_VERIFIED", "KNOWN_A"),
         ("old-b", 80, "ADOPTED_VERIFIED", "KNOWN_B"),
@@ -205,29 +209,95 @@ def test_same_replay_pool_stops_promoting_until_new_world_arrives(tmp_path):
 
     engine = ResearchDreamEngine(tmp_path)
     first = engine.dream(now=NOW)
-    assert first["dream"]["decision"] == "PROMOTE_RESEARCH_POLICY_BOUNDED"
-
-    # Force the incumbent back to the known-weaker baseline but preserve the
-    # exact replay pool identity and mark its offline generation budget spent.
-    state = engine.state
-    state["incumbent_policy"] = {
-        "policy_id": "research-policy:7644ebf510f2d3cafd5a",
-        "generation": 3,
-        "weights": {
-            "recency": 1.0, "recurrence": 0.0, "known_recipe": 0.0,
-            "diagnosability": 0.0, "diversity": 0.0,
-        },
-        "origin": "TEST_SPENT_POOL",
-        "replay_promoted": True,
-    }
-    state["researcher_generation"] = 3
-    state["replay_pool_promotion_count"] = 3
-    _put(engine.path, state)
+    assert first["dream"]["decision"] == "START_RESEARCH_POLICY_TRIAL"
+    first_trial = first["dream"]["prospective_trial_id"]
 
     blocked = ResearchDreamEngine(tmp_path).dream(now=NOW + timedelta(minutes=1))
-    assert blocked["dream"]["meaningful_gain"] is True
-    assert blocked["dream"]["decision"] == "WAIT_FOR_NEW_REPLAY_WORLD"
-    assert blocked["dream"]["researcher_generation_after"] == 3
+    assert blocked["dream"]["decision"] == "WAIT_FOR_PROSPECTIVE_RESULTS"
+    assert blocked["dream"]["prospective_trial_id"] == first_trial
+    assert blocked["dream"]["researcher_generation_after"] == 0
+    assert blocked["incumbent_policy"]["generation"] == 0
+
+
+def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
+    for suffix, age, status, kind in (
+        ("old-a", 90, "ADOPTED_VERIFIED", "KNOWN_A"),
+        ("old-b", 80, "ADOPTED_VERIFIED", "KNOWN_B"),
+        ("mid", 50, "CANDIDATE_COMMITTED", "KNOWN_C"),
+        ("bad-a", 3, "CAPABILITY_UNAVAILABLE", "GENERATED_BOUNDED_EDIT"),
+        ("bad-b", 2, "CAPABILITY_UNAVAILABLE", "GENERATED_BOUNDED_EDIT"),
+        ("bad-c", 1, "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED", "GENERATED_BOUNDED_EDIT"),
+    ):
+        _world(
+            tmp_path,
+            suffix=suffix,
+            age_minutes=age,
+            status=status,
+            occurrences=3 if status == "ADOPTED_VERIFIED" else 1,
+            repair_kind=kind,
+        )
+
+    engine = ResearchDreamEngine(tmp_path)
+    initial = engine.dream(now=NOW)
+    trial = initial["incumbent_policy"]
+    assert initial["dream"]["decision"] == "START_RESEARCH_POLICY_TRIAL"
+    trial_state = engine.projection()["prospective_trial"]
+    trial_id = trial_state["trial_id"]
+    challenger_id = trial_state["challenger_policy"]["policy_id"]
+
+    future_rows = []
+    arm_ids = {"BASELINE": [], "CANDIDATE": []}
+    index = 0
+    while min(len(arm_ids["BASELINE"]), len(arm_ids["CANDIDATE"])) < 2:
+        problem_id = f"self-problem:future-{index}"
+        arm = engine._trial_arm(problem_id, trial_id)
+        if len(arm_ids[arm]) < 2:
+            arm_ids[arm].append(problem_id)
+            future_rows.append({
+                "problem_id": problem_id,
+                "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
+                "occurrences": 1,
+                "error_type": "ValueError",
+                "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+                "repair_proposal": {
+                    "repair_kind": "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION",
+                    "risk": "LOW",
+                },
+            })
+        index += 1
+
+    ResearchDreamEngine(tmp_path).rank_problem_rows(
+        future_rows,
+        now=NOW + timedelta(minutes=1),
+    )
+    assigned = ResearchDreamEngine(tmp_path).projection()["prospective_trial"]["assignments"]
+    assert {assigned[pid] for pid in assigned} == {"BASELINE", "CANDIDATE"}
+
+    for problem_id, arm in assigned.items():
+        safe = problem_id.replace(":", "-")
+        _put(
+            tmp_path / "application/self_maintenance/repair_trials" / f"{safe}.json",
+            {
+                "schema_version": "self-repair-trial.v1",
+                "problem_id": problem_id,
+                "status": (
+                    "ADOPTED_VERIFIED"
+                    if arm == "CANDIDATE"
+                    else "CANDIDATE_COMMITTED"
+                ),
+                "observed_at": (NOW + timedelta(minutes=2)).isoformat(),
+            },
+        )
+
+    settled = ResearchDreamEngine(tmp_path).dream(
+        now=NOW + timedelta(minutes=3)
+    )
+    projection = ResearchDreamEngine(tmp_path).projection()
+    assert projection["prospective_trial"]["status"] == "PROMOTED"
+    assert projection["researcher_generation"] == 1
+    assert projection["incumbent_policy"]["policy_id"] == challenger_id
+    assert projection["incumbent_policy"]["online_validation_required"] is False
+    assert settled["dream"]["decision"] == "WAIT_FOR_PROSPECTIVE_RESULTS"
 
 
 def test_wakeful_public_snapshot_exposes_researcher_generation(tmp_path):
