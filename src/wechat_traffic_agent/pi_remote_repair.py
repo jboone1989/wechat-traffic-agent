@@ -18,6 +18,7 @@ class PiRemoteRepairProvider:
         self.node = str(node)
         self.timeout_seconds = min(30, max(1, int(timeout_seconds)))
         self.cli = self.root / "cli.js"
+        self.request_cli = self.root / "repair-request-cli.js"
         if not self.cli.is_file():
             raise ValueError("Pi Remote CLI is unavailable at the configured root")
 
@@ -57,13 +58,29 @@ class PiRemoteRepairProvider:
             "USER": os.environ.get("USER", ""),
             "PI_REMOTE_REPAIR_REQUEST_ONLY": "1",
         }
-        completed = subprocess.run(
-            [
+        if self.request_cli.is_file():
+            argv = [
+                self.node,
+                str(self.request_cli),
+                json.dumps(
+                    {"request": request_payload},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ]
+        else:
+            argv = [
                 self.node,
                 str(self.cli),
                 "repair-request",
-                json.dumps({"request": request_payload}, sort_keys=True, separators=(",", ":")),
-            ],
+                json.dumps(
+                    {"request": request_payload},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ]
+        completed = subprocess.run(
+            argv,
             cwd=self.root,
             check=False,
             shell=False,
