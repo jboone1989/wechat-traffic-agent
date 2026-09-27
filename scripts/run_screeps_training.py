@@ -84,6 +84,14 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _run_match(
     *,
     node: str,
@@ -163,6 +171,8 @@ def main() -> int:
         raise ValueError("at least one opponent strategy is required")
 
     researcher = ScreepsResearcher(args.state_root)
+    live_path = args.state_root / "application" / "screeps_live.json"
+    replay_root = args.state_root / "application" / "screeps_replays"
     base_seed = (
         int(args.seed) if args.seed is not None
         else int(researcher.projection().get("episode_count") or 0) + 1
@@ -172,6 +182,13 @@ def main() -> int:
         snapshot = _resource_snapshot(args.lab_root)
         admission = _resource_admission(snapshot, args)
         if not admission["allowed"]:
+            _write_json(live_path, {
+                "schema_version": "ferro-screeps-live.v1",
+                "status": "RESOURCE_DEFERRED",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "resource_admission": admission,
+                "research": researcher.projection(),
+            })
             print(json.dumps({
                 "status": "RESOURCE_DEFERRED",
                 "completed_episodes": len(results),
@@ -195,9 +212,14 @@ def main() -> int:
             now=datetime.now(timezone.utc),
         )
         episode_id = str(trial["episode_id"])
+        safe_id = episode_id.replace(":", "-")
+        replay_path = replay_root / f"{safe_id}.json"
         match_input = {
             "episode_id": episode_id,
             "lab_root": str(args.lab_root),
+            "live_path": str(live_path),
+            "replay_path": str(replay_path),
+            "frame_interval": 3,
             "ticks": max(20, min(1500, int(args.ticks))),
             "port": 22125 + (seed % 40),
             "ferro_room": "W0N1",
@@ -218,8 +240,14 @@ def main() -> int:
                     "soldier_target", "aggression", "reserve_energy",
                 }
             },
+            "research": {
+                "arm": choice.get("research_arm"),
+                "trial_id": choice.get("trial_id"),
+                "strategy_id": choice.get("strategy_id"),
+                "opponent_id": opponent_id,
+                "seed": seed,
+            },
         }
-        safe_id = episode_id.replace(":", "-")
         input_path = args.lab_root / "inputs" / f"{safe_id}.json"
         result_path = args.lab_root / "results" / f"{safe_id}.json"
         failure_path = args.lab_root / "failures" / f"{safe_id}.json"
@@ -246,6 +274,16 @@ def main() -> int:
                 reason=f"HARNESS_EXIT_{returncode}",
                 evidence_ref=f"screeps-harness-failure:{safe_id}",
             )
+            live = _read_json(live_path)
+            live.update({
+                "schema_version": "ferro-screeps-live.v1",
+                "status": "HARNESS_FAILED",
+                "episode_id": episode_id,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "error": f"HARNESS_EXIT_{returncode}",
+                "research": researcher.projection(),
+            })
+            _write_json(live_path, live)
             results.append({"status": "HARNESS_FAILED", **cancellation})
             continue
 
@@ -282,6 +320,28 @@ def main() -> int:
 
         _write_json(result_path, row)
         settled = researcher.settle_episode(row)
+        research = researcher.projection()
+        replay = _read_json(replay_path)
+        if replay:
+            replay.update({
+                "status": "FINISHED",
+                "reward": settled.reward,
+                "winner": row.get("winner"),
+                "settled_at": datetime.now(timezone.utc).isoformat(),
+                "research": research,
+            })
+            _write_json(replay_path, replay)
+        live = _read_json(live_path)
+        live.update({
+            "schema_version": "ferro-screeps-live.v1",
+            "status": "FINISHED",
+            "episode_id": settled.episode_id,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "winner": row.get("winner"),
+            "reward": settled.reward,
+            "research": research,
+        })
+        _write_json(live_path, live)
         results.append({
             "status": "SETTLED",
             "episode_id": settled.episode_id,

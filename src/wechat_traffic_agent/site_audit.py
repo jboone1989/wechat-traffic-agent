@@ -12,9 +12,11 @@ RUNTIME_INTERNAL_ROUTES = frozenset({
     "/live", "/live/",
     "/neural", "/neural/",
     "/brain", "/brain/",
+    "/screeps", "/screeps/",
     "/agents/ferro/live", "/agents/ferro/live/",
     "/agents/ferro/neural", "/agents/ferro/neural/",
     "/agents/ferro/brain", "/agents/ferro/brain/",
+    "/agents/ferro/screeps", "/agents/ferro/screeps/",
 })
 
 

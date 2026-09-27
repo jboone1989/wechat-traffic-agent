@@ -8,6 +8,14 @@ function readJson(file) {
   return JSON.parse(fs.readFileSync(file, "utf8"));
 }
 
+function writeJsonAtomic(file, payload) {
+  if (!file) return;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + ".tmp-" + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(payload) + "\n", "utf8");
+  fs.renameSync(tmp, file);
+}
+
 function numericStrategy(raw) {
   const n = (key, fallback) => {
     const value = Number(raw[key]);
@@ -131,6 +139,88 @@ function owned(objects, userId, type) {
   return objects.filter(o => o.type === type && String(o.user || "") === String(userId));
 }
 
+function tacticalState(objects, ferroId, opponentId, ferroRoom, opponentRoom) {
+  const ferroCreeps = owned(objects, ferroId, "creep");
+  const opponentCreeps = owned(objects, opponentId, "creep");
+  const ferroSoldiers = ferroCreeps.filter(o => String(o.name || "").startsWith("soldier"));
+  const opponentSoldiers = opponentCreeps.filter(o => String(o.name || "").startsWith("soldier"));
+  const ferroAlive = owned(objects, ferroId, "spawn").length > 0;
+  const opponentAlive = owned(objects, opponentId, "spawn").length > 0;
+  const ferroRaiders = ferroSoldiers.filter(o => String(o.room || "") === opponentRoom).length;
+  const opponentRaiders = opponentSoldiers.filter(o => String(o.room || "") === ferroRoom).length;
+  const clash = ferroSoldiers.some(f => opponentSoldiers.some(e =>
+    String(f.room || "") === String(e.room || "") &&
+    Math.max(
+      Math.abs(Number(f.x || 0) - Number(e.x || 0)),
+      Math.abs(Number(f.y || 0) - Number(e.y || 0))
+    ) <= 4
+  ));
+  let mode = "ECONOMY";
+  if (!ferroAlive) mode = "DEFEATED";
+  else if (!opponentAlive) mode = "WON";
+  else if (clash) mode = "CLASH";
+  else if (opponentRaiders > 0) mode = "DEFENDING";
+  else if (ferroRaiders > 0) mode = "ATTACKING";
+  else if (ferroSoldiers.length > 0) mode = "MOBILIZING";
+  const ferroEnergy = energyIn(objects, ferroId);
+  const opponentEnergy = energyIn(objects, opponentId);
+  const forceDelta = ferroCreeps.length - opponentCreeps.length;
+  const energyDelta = ferroEnergy - opponentEnergy;
+  const scoreDelta = energyDelta + forceDelta * 50
+    + (ferroSoldiers.length - opponentSoldiers.length) * 100;
+  return {
+    mode,
+    momentum: scoreDelta > 100 ? "FERRO" : scoreDelta < -100 ? "OPPONENT" : "EVEN",
+    force_delta: forceDelta,
+    energy_delta: energyDelta,
+    ferro_raiders: ferroRaiders,
+    opponent_raiders: opponentRaiders,
+    derived_from_world_state: true,
+  };
+}
+
+function compactFrame(tick, objects, ferroId, opponentId, ferroRoom, opponentRoom) {
+  const side = user => String(user || "") === String(ferroId)
+    ? "ferro"
+    : String(user || "") === String(opponentId) ? "opponent" : "neutral";
+  const compact = objects
+    .filter(o => ["creep", "spawn", "source", "controller", "extension", "tower"].includes(String(o.type || "")))
+    .slice(0, 160)
+    .map(o => ({
+      type: String(o.type || ""),
+      side: side(o.user),
+      room: String(o.room || ""),
+      x: Number(o.x || 0),
+      y: Number(o.y || 0),
+      name: String(o.name || "").slice(0, 64),
+      hits: Number.isFinite(Number(o.hits)) ? Number(o.hits) : null,
+      hits_max: Number.isFinite(Number(o.hitsMax)) ? Number(o.hitsMax) : null,
+      energy: o.store && Number.isFinite(Number(o.store.energy)) ? Number(o.store.energy) : null,
+      role: String(o.name || "").startsWith("soldier") ? "soldier"
+        : String(o.name || "").startsWith("worker") ? "worker" : null,
+    }));
+  const summary = userId => {
+    const creeps = owned(objects, userId, "creep");
+    const spawns = owned(objects, userId, "spawn");
+    return {
+      creeps: creeps.length,
+      soldiers: creeps.filter(o => String(o.name || "").startsWith("soldier")).length,
+      workers: creeps.filter(o => String(o.name || "").startsWith("worker")).length,
+      spawn_alive: spawns.length > 0,
+      energy: energyIn(objects, userId),
+    };
+  };
+  return {
+    tick: Number(tick || 0),
+    observed_at: new Date().toISOString(),
+    rooms: [ferroRoom, opponentRoom],
+    ferro: summary(ferroId),
+    opponent: summary(opponentId),
+    tactical: tacticalState(objects, ferroId, opponentId, ferroRoom, opponentRoom),
+    objects: compact,
+  };
+}
+
 function initialCounts(strategy) {
   const cfg = numericStrategy(strategy);
   return {
@@ -218,6 +308,11 @@ async function main() {
 
   const port = Number(input.port || 22125);
   const ticks = Math.max(20, Math.min(1500, Math.trunc(Number(input.ticks || 300))));
+  const frameInterval = Math.max(1, Math.min(25, Math.trunc(Number(input.frame_interval || 3))));
+  const livePath = input.live_path ? path.resolve(String(input.live_path)) : null;
+  const replayPath = input.replay_path ? path.resolve(String(input.replay_path)) : null;
+  const research = input.research && typeof input.research === "object" ? input.research : {};
+  const frames = [];
   const ferroStrategy = numericStrategy(input.strategy || {});
   const opponentStrategy = numericStrategy(input.opponent_strategy || {});
   const server = new ScreepsServer({ path: serverPath, logdir, port });
@@ -262,13 +357,49 @@ async function main() {
       ...(await server.world.roomObjects(ferroRoom)),
       ...(await server.world.roomObjects(opponentRoom)),
     ];
+    const publish = (frame, status, extra = {}) => {
+      const base = {
+        schema_version: "ferro-screeps-live.v1",
+        status,
+        episode_id: input.episode_id,
+        observed_at: new Date().toISOString(),
+        tick: frame.tick,
+        ticks_requested: ticks,
+        strategy: ferroStrategy,
+        opponent_strategy: opponentStrategy,
+        research,
+        frame,
+        frames_recorded: frames.length,
+        ...extra,
+      };
+      writeJsonAtomic(livePath, base);
+      writeJsonAtomic(replayPath, {
+        schema_version: "ferro-screeps-replay.v1",
+        episode_id: input.episode_id,
+        status,
+        ticks_requested: ticks,
+        strategy: ferroStrategy,
+        opponent_strategy: opponentStrategy,
+        research,
+        frames: frames.slice(-120),
+        ...extra,
+      });
+    };
+    let frame = compactFrame(await server.world.gameTime, lastObjects, ferro.id, opponent.id, ferroRoom, opponentRoom);
+    frames.push(frame);
+    publish(frame, "RUNNING");
     for (let i = 0; i < ticks; i += 1) {
       await server.tick();
-      if ((i + 1) % 25 === 0 || i + 1 === ticks) {
+      const step = i + 1;
+      if (step % frameInterval === 0 || step === ticks) {
         lastObjects = [
           ...(await server.world.roomObjects(ferroRoom)),
           ...(await server.world.roomObjects(opponentRoom)),
         ];
+        frame = compactFrame(await server.world.gameTime, lastObjects, ferro.id, opponent.id, ferroRoom, opponentRoom);
+        frames.push(frame);
+        if (frames.length > 120) frames.shift();
+        publish(frame, "RUNNING");
         if (owned(lastObjects, ferro.id, "spawn").length === 0 || owned(lastObjects, opponent.id, "spawn").length === 0) break;
       }
     }
@@ -299,6 +430,10 @@ async function main() {
     else if (!ferroAlive && opponentAlive) winner = "OPPONENT";
     else if (ferroEnergy + ferroCreeps.length * 50 > opponentEnergy + opponentCreeps.length * 50 + 50) winner = "FERRO";
     else if (opponentEnergy + opponentCreeps.length * 50 > ferroEnergy + ferroCreeps.length * 50 + 50) winner = "OPPONENT";
+
+    const finalFrame = compactFrame(await server.world.gameTime, lastObjects, ferro.id, opponent.id, ferroRoom, opponentRoom);
+    if (!frames.length || frames[frames.length - 1].tick !== finalFrame.tick) frames.push(finalFrame);
+    publish(finalFrame, "FINISHED", { winner });
 
     process.stdout.write(JSON.stringify({
       schema_version: "ferro-screeps-episode.v2",

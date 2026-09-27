@@ -15,6 +15,8 @@ from typing import Any
 from .public_activity import read_public_activity
 from .public_persona import classify_public_question, public_persona_projection, record_public_interaction
 from .channels.brain_lab_page import brain_lab_document
+from .channels.screeps_live_page import screeps_live_document
+from .screeps_observatory import ScreepsObservatory
 from .owner_cognition import build_owner_cognition_prompt, build_owner_private_context
 
 DEFAULT_HOST = "127.0.0.1"
@@ -993,6 +995,19 @@ class LiveAgentService:
 
         async def brain_lab_page(_request: Request):
             return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
+
+        async def screeps_page(_request: Request):
+            return HTMLResponse(public_document(screeps_live_document()), headers={"Cache-Control": "no-cache"})
+
+        async def screeps_status(request: Request):
+            include_frames = str(request.query_params.get("include") or "").strip().lower() in {
+                "frames", "replay", "all"
+            }
+            payload = await asyncio.to_thread(
+                ScreepsObservatory(self.state_root).snapshot,
+                include_frames=include_frames,
+            )
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def brain_lab_status(request: Request):
             view = str(request.query_params.get("view") or "").strip().lower()
@@ -3196,6 +3211,8 @@ class LiveAgentService:
             Route("/neural/", neural_life_page, methods=["GET"]),
             Route("/brain", brain_lab_page, methods=["GET"]),
             Route("/brain/", brain_lab_page, methods=["GET"]),
+            Route("/screeps", screeps_page, methods=["GET"]),
+            Route("/screeps/", screeps_page, methods=["GET"]),
             Route("/agents/ferro/live", live_page, methods=["GET"]),
             Route("/agents/ferro/live/", live_page, methods=["GET"]),
             Route("/agents/ferro/talk", talk_page, methods=["GET"]),
@@ -3204,7 +3221,10 @@ class LiveAgentService:
             Route("/agents/ferro/neural/", neural_life_page, methods=["GET"]),
             Route("/agents/ferro/brain", brain_lab_page, methods=["GET"]),
             Route("/agents/ferro/brain/", brain_lab_page, methods=["GET"]),
+            Route("/agents/ferro/screeps", screeps_page, methods=["GET"]),
+            Route("/agents/ferro/screeps/", screeps_page, methods=["GET"]),
             Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
+            Route("/api/agent/screeps", screeps_status, methods=["GET"]),
             Route("/api/agent/neural-telemetry", neural_telemetry_status, methods=["GET"]),
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
