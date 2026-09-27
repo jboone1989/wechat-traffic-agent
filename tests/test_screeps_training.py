@@ -274,7 +274,7 @@ def test_graduation_sprint_doubles_single_scheduled_episode(tmp_path):
 
     sprint = engine.planned_episode_count(1)
     assert sprint["mode"] == "GRADUATION_SPRINT"
-    assert sprint["planned_episodes"] == 2
+    assert sprint["planned_episodes"] == 3
     assert sprint["graduation"]["graduated"] is False
 
     engine.game_intelligence.graduation_status = lambda: {"graduated": True}

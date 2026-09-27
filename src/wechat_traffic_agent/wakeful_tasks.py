@@ -365,7 +365,7 @@ class WakefulContentTaskRunner:
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
             graduation = brain_lab.game_intelligence.graduation_status()
             arena = brain_lab.run_accelerated_arena(
-                sessions_per_environment=1 if graduation.get("graduated") else 4,
+                sessions_per_environment=1 if graduation.get("graduated") else 6,
                 base_steps=24 if graduation.get("graduated") else 32,
                 now=now,
             )

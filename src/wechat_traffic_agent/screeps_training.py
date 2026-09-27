@@ -607,7 +607,7 @@ class ScreepsResearcher:
             planned = requested_count
             mode = "MAINTENANCE"
         else:
-            planned = max(2, requested_count)
+            planned = max(3, requested_count)
             mode = "GRADUATION_SPRINT"
         return {
             "mode": mode,
