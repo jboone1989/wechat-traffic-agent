@@ -1,4 +1,4 @@
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-*/10 * * * * cd /home/ubuntu/ferro-screeps-current && nice -n 10 ionice -c3 /home/ubuntu/content-agent-venv-current/bin/python scripts/run_screeps_training.py --state-root /home/ubuntu/content-agent-state --lab-root /home/ubuntu/screeps-lab --episodes 1 --ticks 180 --min-free-memory-mib 900 --min-free-disk-gib 10 --max-load-1m 1.5 --match-timeout-seconds 240 --public-live-path /var/www/content-agent-live/screeps-live.json > /home/ubuntu/screeps-lab/last-cron.log 2>&1
+*/10 * * * * cd /home/ubuntu/ferro-screeps-current && /home/ubuntu/content-agent-venv-current/bin/python scripts/publish_screeps_static.py && nice -n 10 ionice -c3 /home/ubuntu/content-agent-venv-current/bin/python scripts/run_screeps_training.py --state-root /home/ubuntu/content-agent-state --lab-root /home/ubuntu/screeps-lab --episodes 1 --ticks 180 --min-free-memory-mib 900 --min-free-disk-gib 10 --max-load-1m 1.5 --match-timeout-seconds 240 --public-live-path /var/www/content-agent-live/screeps-live.json > /home/ubuntu/screeps-lab/last-cron.log 2>&1
