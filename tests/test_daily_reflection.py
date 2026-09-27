@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -13,6 +14,19 @@ class FakeNotifier:
     def send_text(self, text):
         self.messages.append(text)
         return {"status": "SENT"}
+
+
+class FakeRuntime:
+    def __init__(self):
+        self.prompts = []
+
+    async def cognitive_probe(self, prompt, max_tokens):
+        self.prompts.append((prompt, max_tokens))
+        return (
+            "昨天真正暴露的问题不是内容数量，而是认知链路的大量超时让行动没有形成外部结果。"
+            "我不能把一次 BELIEF_CHANGED 当成整体学习成功。今天优先验证认知恢复是否稳定，"
+            "然后只推进一个能产生可观测结果的实验，并在结果回来后再决定是否扩大。"
+        )
 
 
 def _cycle(root: Path, unix: int, status: str, *, topic="risk", calls=0, cognition=None, error_type=None):
@@ -46,6 +60,36 @@ def test_daily_reflection_uses_real_cycle_facts_and_marks_missing_resource_unkno
     assert result["facts"]["resource"]["status"] == "UNKNOWN"
     assert "不补写消费数字" in result["reflection_text"]
     assert result["delivery_status"] == "PENDING_CONFIGURATION"
+
+
+def test_daily_reflection_uses_real_cognition_and_writes_back_memory(tmp_path):
+    _cycle(
+        tmp_path,
+        1789531200,
+        "ERROR",
+        topic="durable-cognition",
+        calls=3,
+        cognition="BELIEF_CHANGED",
+        error_type="TimeoutError",
+    )
+    mind = ContentMind(root=tmp_path, subject_id="content-agent")
+    runtime = FakeRuntime()
+    service = DailyReflectionService(
+        state_root=tmp_path,
+        mind=mind,
+        runtime=runtime,
+        notifier=WeComNotifier(webhook_url=None),
+    )
+    result = asyncio.run(service.generate_cognitive(
+        target_date=date(2026, 9, 16),
+        now=datetime(2026, 9, 17, 1, tzinfo=timezone.utc),
+    ))
+    assert result["status"] == "GENERATED"
+    assert result["reflection_mode"] == "COGNITIVE"
+    assert "fallback" not in result["reflection_text"]
+    assert result["memory_writeback"]["status"] == "RECORDED"
+    assert runtime.prompts and runtime.prompts[0][1] == 1600
+    assert "Evidence packet:" in runtime.prompts[0][0]
 
 
 def test_daily_reflection_sends_once_when_private_notifier_is_configured(tmp_path):

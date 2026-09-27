@@ -241,8 +241,8 @@ def test_content_provider_timeout_is_task_failure_not_process_failure(
     wakeful = _Wakeful()
     recoveries = []
 
-    def schedule_provider_recovery(now, *, default_seconds=300):
-        recoveries.append((now, default_seconds))
+    def schedule_provider_recovery(now, *, default_seconds=300, task="CONTENT_COGNITION", relevant_refs=()):
+        recoveries.append((now, default_seconds, task, relevant_refs))
         return {
             "status": "SCHEDULED",
             "retry_seconds": default_seconds,
@@ -268,7 +268,48 @@ def test_content_provider_timeout_is_task_failure_not_process_failure(
     assert result["retryable"] is True
     assert result["error_type"] == "LivingRuntimeChatGPTProviderError"
     assert result["provider_recovery"]["status"] == "SCHEDULED"
-    assert recoveries == [(now, 300)]
+    assert recoveries == [(now, 300, "CONTENT_COGNITION", ())]
+
+
+def test_reflect_provider_timeout_retries_reflect_not_content(tmp_path):
+    wakeful = _Wakeful()
+    recoveries = []
+
+    def schedule_provider_recovery(
+        now,
+        *,
+        default_seconds=300,
+        task="CONTENT_COGNITION",
+        relevant_refs=(),
+    ):
+        recoveries.append((now, default_seconds, task, relevant_refs))
+        return {"status": "SCHEDULED", "retry_seconds": default_seconds}
+
+    class Daily:
+        async def maybe_generate_cognitive(self, now):
+            raise LivingRuntimeChatGPTProviderError(
+                "LivingRuntime cognition request timed out"
+            )
+
+    wakeful.schedule_provider_recovery = schedule_provider_recovery
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        daily_reflection=Daily(),
+    )
+    now = datetime.now(timezone.utc)
+
+    result = runner.run(
+        "REFLECT",
+        now=now,
+        relevant_refs=("reflection-date:2026-09-26",),
+    )
+
+    assert result["status"] == "CHATGPT_UNAVAILABLE"
+    assert result["provider_recovery"]["status"] == "SCHEDULED"
+    assert recoveries == [
+        (now, 300, "REFLECT", ("reflection-date:2026-09-26",))
+    ]
 
 
 class _GenerationReady:
@@ -701,8 +742,8 @@ def test_provider_timeout_releases_matching_owner_single_flight(
     recoveries = []
     cleared = []
 
-    def schedule_provider_recovery(now, *, default_seconds=300):
-        recoveries.append((now, default_seconds))
+    def schedule_provider_recovery(now, *, default_seconds=300, task="CONTENT_COGNITION", relevant_refs=()):
+        recoveries.append((now, default_seconds, task, relevant_refs))
         return {"status": "SCHEDULED", "retry_seconds": default_seconds}
 
     wakeful.schedule_provider_recovery = schedule_provider_recovery
@@ -736,4 +777,4 @@ def test_provider_timeout_releases_matching_owner_single_flight(
     assert cleared == [
         ("llmreq-owner-timeout", "LivingRuntimeChatGPTProviderError")
     ]
-    assert recoveries == [(now, 300)]
+    assert recoveries == [(now, 300, "CONTENT_COGNITION", ())]

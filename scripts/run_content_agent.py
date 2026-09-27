@@ -425,7 +425,12 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     )
     if evolution_backfill.get("recorded") or evolution_backfill.get("failed"):
         print(json.dumps({"human_assistance_evolution_backfill": evolution_backfill}, sort_keys=True))
-    daily_reflection = DailyReflectionService(state_root=state_root, mind=content_mind, notifier=private_notifier)
+    daily_reflection = DailyReflectionService(
+        state_root=state_root,
+        mind=content_mind,
+        runtime=app.domain_runtime,
+        notifier=private_notifier,
+    )
     from wechat_traffic_agent.self_maintenance import SelfMaintenanceService
     self_maintenance = SelfMaintenanceService(
         state_root=state_root,

@@ -125,6 +125,50 @@ class ContentMind:
         """Persist provider-neutral resource state after a governed external observation."""
         self._persist()
 
+    def record_daily_reflection(
+        self,
+        *,
+        target_date: str,
+        reflection_text: str,
+        evidence_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Persist a cognitive daily reflection into autobiographical memory.
+
+        Reflection is evidence about Ferro's own reasoning, not world truth, so
+        it updates longitudinal self-memory without directly asserting a
+        worldview claim.
+        """
+        target_date = str(target_date or "").strip()
+        text = str(reflection_text or "").strip()
+        if not target_date or not text:
+            raise ValueError("daily reflection requires target_date and text")
+        event_id = f"daily-reflection:{target_date}"
+        if event_id in self._observed_event_ids:
+            return {"status": "ALREADY_RECORDED", "event_id": event_id}
+        refs = list(dict.fromkeys(
+            str(ref).strip() for ref in evidence_refs if str(ref).strip()
+        ))[:64]
+        self.session.ingest_life_experience(
+            {
+                "event_id": event_id,
+                "tick": int(self.session.tick),
+                "summary": text[:1800],
+                "evidence_refs": refs,
+                "significance": 0.7,
+                "source": "daily-self-reflection",
+                "confidence": 1.0,
+                "outcome": 0.5,
+                "domain": "self-reflection",
+                "identity_relevance": 0.9,
+                "emotional_intensity": 0.15,
+            },
+            authority_id=AUTHORITY_ID,
+        )
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._persist()
+        return {"status": "RECORDED", "event_id": event_id}
+
     def _prior_inquiry_topic(self, inquiry_id: str) -> str | None:
         mapped = self._inquiry_topics.get(str(inquiry_id))
         if isinstance(mapped, str) and mapped.strip():

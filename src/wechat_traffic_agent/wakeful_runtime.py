@@ -1580,16 +1580,26 @@ class ContentWakefulRuntime:
         now: datetime,
         *,
         default_seconds: int = 300,
+        task: str = "CONTENT_COGNITION",
+        relevant_refs: tuple[str, ...] = (),
     ) -> dict:
-        """Retry content cognition when the earliest LLM cooldown can recover.
+        """Retry the failed cognition task when the earliest LLM cooldown can recover.
 
         Provider health is already durable runtime evidence.  Use its earliest
         future cooldown instead of letting a transient outage fall through to
-        the normal multi-hour content cadence.  The wake still re-enters the
-        ordinary resource/content/publication gates; it never calls a provider
-        or publisher directly.
+        the normal cadence. The retry re-enters the ordinary task boundary; it
+        never calls a provider or publisher directly.
         """
         now = now.astimezone(timezone.utc)
+        task = str(task or "").strip().upper()
+        if task not in _EXTERNAL_WAKE_TASKS:
+            raise ValueError(f"unsupported provider recovery task: {task}")
+        retry_refs = tuple(dict.fromkeys(
+            str(ref).strip()
+            for ref in relevant_refs
+            if str(ref).strip()
+            and not str(ref).startswith("cognition-request:")
+        ))
         delay = max(30, min(int(default_seconds), 1800))
         evidence_ref = None
         health_path = (
@@ -1678,7 +1688,7 @@ class ContentWakefulRuntime:
             pass
 
         at = now + timedelta(seconds=delay)
-        wake_id = "content:CONTENT_COGNITION"
+        wake_id = f"content:{task}"
         existing = next(
             (wake for wake in self.core.snapshot().pending_plans if wake.wake_id == wake_id),
             None,
@@ -1693,9 +1703,12 @@ class ContentWakefulRuntime:
         wake = PlannedWake(
             wake_id=wake_id,
             at=at,
-            reason="retry content cognition after temporary LLM provider outage",
-            task="CONTENT_COGNITION",
-            relevant_refs=((evidence_ref,) if evidence_ref else ()),
+            reason=f"retry {task.lower()} after temporary LLM provider outage",
+            task=task,
+            relevant_refs=tuple(dict.fromkeys((
+                *retry_refs,
+                *((evidence_ref,) if evidence_ref else ()),
+            ))),
             preemptible=True,
         )
         self._enqueue_external_wake(wake)

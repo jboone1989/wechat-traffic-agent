@@ -34,9 +34,17 @@ def _cycle_date(name: str, tz: ZoneInfo) -> date | None:
 
 
 class DailyReflectionService:
-    def __init__(self, *, state_root: Path, mind: Any, notifier: WeComNotifier | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        mind: Any,
+        runtime: Any | None = None,
+        notifier: WeComNotifier | None = None,
+    ) -> None:
         self.state_root = Path(state_root)
         self.mind = mind
+        self.runtime = runtime
         self.notifier = notifier or WeComNotifier()
         self.root = self.state_root / "application" / "daily_reflections"
 
@@ -48,6 +56,68 @@ class DailyReflectionService:
         if local_now.hour < _hour():
             return {"status": "NOT_DUE", "target_date": target.isoformat()}
         return self.generate(target_date=target, now=now)
+
+    async def maybe_generate_cognitive(self, now: datetime) -> dict[str, Any]:
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("daily reflection timestamp requires timezone")
+        local_now = now.astimezone(_timezone())
+        target = local_now.date() - timedelta(days=1)
+        if local_now.hour < _hour():
+            return {"status": "NOT_DUE", "target_date": target.isoformat()}
+        return await self.generate_cognitive(target_date=target, now=now)
+
+    async def generate_cognitive(
+        self,
+        *,
+        target_date: date,
+        now: datetime,
+    ) -> dict[str, Any]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.root / f"{target_date.isoformat()}.json"
+        if path.exists():
+            row = json.loads(path.read_text(encoding="utf-8"))
+            if row.get("delivery_status") != "SENT" and self.notifier.configured:
+                delivery = self.notifier.send_text(row["reflection_text"])
+                row["delivery_status"] = delivery["status"]
+                row["delivered_at"] = now.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+                self._write(path, row)
+            return {"status": "ALREADY_GENERATED", **row}
+
+        facts = self._facts(target_date)
+        probe = getattr(self.runtime, "cognitive_probe", None)
+        if not callable(probe):
+            return self.generate(target_date=target_date, now=now)
+
+        text = self._validate_cognitive_reflection(
+            await probe(
+                self._cognitive_prompt(target_date, facts, attempt_at=now),
+                max_tokens=1600,
+            )
+        )
+        memory_writeback = self._record_reflection(
+            target_date=target_date,
+            text=text,
+            facts=facts,
+        )
+        row = {
+            "schema_version": "content-daily-reflection.v2",
+            "target_date": target_date.isoformat(),
+            "timezone": _timezone().key,
+            "generated_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
+            "facts": facts,
+            "reflection_text": text,
+            "reflection_mode": "COGNITIVE",
+            "memory_writeback": memory_writeback,
+            "delivery_status": "PENDING_CONFIGURATION" if not self.notifier.configured else "PENDING",
+            "delivered_at": None,
+        }
+        if self.notifier.configured:
+            delivery = self.notifier.send_text(text)
+            row["delivery_status"] = delivery["status"]
+            row["delivered_at"] = row["generated_at"]
+        self._write(path, row)
+        (self.root / f"{target_date.isoformat()}.txt").write_text(text + "\n", encoding="utf-8")
+        return {"status": "GENERATED", **row}
 
     def generate(self, *, target_date: date, now: datetime) -> dict[str, Any]:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -70,6 +140,7 @@ class DailyReflectionService:
             "generated_at": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
             "facts": facts,
             "reflection_text": text,
+            "reflection_mode": "TEMPLATE_FALLBACK",
             "delivery_status": "PENDING_CONFIGURATION" if not self.notifier.configured else "PENDING",
             "delivered_at": None,
         }
@@ -156,7 +227,114 @@ class DailyReflectionService:
             "error_types": dict(sorted(errors.items())),
             "resource": resource_summary,
             "evidence_cycle_ids": [name for name, _ in cycles],
+            "mind_context": self._mind_context(snapshot),
         }
+
+    @staticmethod
+    def _compact(value: Any, *, depth: int = 0) -> Any:
+        if depth >= 3:
+            if isinstance(value, (dict, list, tuple)):
+                return f"<{type(value).__name__}>"
+            return str(value)[:240]
+        if isinstance(value, dict):
+            items = list(value.items())
+            return {
+                str(key)[:120]: DailyReflectionService._compact(item, depth=depth + 1)
+                for key, item in items[-12:]
+            }
+        if isinstance(value, (list, tuple)):
+            return [
+                DailyReflectionService._compact(item, depth=depth + 1)
+                for item in list(value)[-12:]
+            ]
+        if isinstance(value, str):
+            return value[:500]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return str(value)[:240]
+
+    @classmethod
+    def _mind_context(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
+        context: dict[str, Any] = {}
+        for key in (
+            "tick",
+            "autobiography",
+            "worldview",
+            "goals",
+            "interests",
+            "predictive_learning",
+            "resource_awareness",
+            "identity",
+        ):
+            if key in snapshot:
+                context[key] = cls._compact(snapshot[key])
+        return context
+
+    @staticmethod
+    def _cognitive_prompt(
+        target_date: date,
+        facts: dict[str, Any],
+        *,
+        attempt_at: datetime,
+    ) -> str:
+        evidence = json.dumps(
+            facts,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return (
+            "You are Ferro performing a genuine end-of-day self-reflection. "
+            "This is not a reporting template. Infer only from the supplied evidence. "
+            "Distinguish observed facts from interpretation, identify what actually changed "
+            "in your beliefs or strategy, name the most important failure or surprise, and "
+            "choose one or two concrete adjustments for the next day. Do not repeat fixed "
+            "headings or stock sentences just because prior reflections used them. "
+            "If the evidence is weak, say so explicitly. Write in natural Chinese, concise "
+            "but specific, as a first-person reflection suitable to send directly to the owner. "
+            "Do not output JSON or markdown fences.\n\n"
+            f"Reflection date: {target_date.isoformat()}\n"
+            f"Attempt timestamp: {attempt_at.astimezone(timezone.utc).isoformat()}\n"
+            f"Evidence packet: {evidence}"
+        )
+
+    @staticmethod
+    def _validate_cognitive_reflection(raw: Any) -> str:
+        text = str(raw or "").strip()
+        if text.startswith("```") and text.endswith("```"):
+            text = text[3:-3].strip()
+        if len(text) < 80:
+            raise ValueError("cognitive daily reflection is too short")
+        if len(text) > 8000:
+            text = text[:8000].rstrip()
+        return text
+
+    def _record_reflection(
+        self,
+        *,
+        target_date: date,
+        text: str,
+        facts: dict[str, Any],
+    ) -> dict[str, Any]:
+        record = getattr(self.mind, "record_daily_reflection", None)
+        if not callable(record):
+            return {"status": "UNAVAILABLE"}
+        try:
+            return record(
+                target_date=target_date.isoformat(),
+                reflection_text=text,
+                evidence_refs=tuple(
+                    str(value)
+                    for value in facts.get("evidence_cycle_ids") or ()
+                    if str(value)
+                ),
+            )
+        except Exception as exc:
+            return {
+                "status": "ERROR",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:300],
+            }
 
     @staticmethod
     def _render(target_date: date, facts: dict[str, Any]) -> str:
@@ -190,6 +368,7 @@ class DailyReflectionService:
         if not adjustment:
             adjustment.append("继续比较行动成本与真实外部结果，避免因为单日顺利就过度扩大调用")
         return (
+            "【证据摘要 fallback：未经过 Ferro 自主认知】\n\n"
             f"Ferro · {target_date.isoformat()} 日终反思\n\n"
             f"昨天我跑了 {facts['cycle_count']} 个内容周期：{published} 次发布，{held} 次被质量门拦住，"
             f"{cognition_only} 次只形成认知更新，{errors} 次出错。记录到的模型调用共 {calls} 次。\n\n"

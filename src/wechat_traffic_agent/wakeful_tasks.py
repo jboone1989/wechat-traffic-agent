@@ -314,19 +314,26 @@ class WakefulContentTaskRunner:
                             now=now,
                         )
                     )
-                schedule_recovery = getattr(
-                    self.wakeful,
-                    "schedule_provider_recovery",
-                    None,
-                )
-                if callable(schedule_recovery):
-                    try:
-                        result["provider_recovery"] = schedule_recovery(
-                            now,
-                            default_seconds=300,
-                        )
-                    except Exception as schedule_exc:  # noqa: BLE001
-                        result["provider_recovery"] = self._error(schedule_exc)
+            schedule_recovery = getattr(
+                self.wakeful,
+                "schedule_provider_recovery",
+                None,
+            )
+            if callable(schedule_recovery):
+                try:
+                    retry_refs = tuple(
+                        ref
+                        for ref in relevant_refs
+                        if not str(ref).startswith("cognition-request:")
+                    )
+                    result["provider_recovery"] = schedule_recovery(
+                        now,
+                        default_seconds=300,
+                        task=task,
+                        relevant_refs=retry_refs,
+                    )
+                except Exception as schedule_exc:  # noqa: BLE001
+                    result["provider_recovery"] = self._error(schedule_exc)
             return result
         except _ShutdownRequested:
             return {
@@ -757,9 +764,22 @@ class WakefulContentTaskRunner:
         return result
 
     def _reflect(self, now: datetime) -> dict[str, Any]:
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTProviderError
+
         rows: dict[str, Any] = {"task": "REFLECT", "status": "OK"}
         try:
-            rows["daily_reflection"] = self.daily_reflection.maybe_generate(now)
+            cognitive = getattr(
+                self.daily_reflection,
+                "maybe_generate_cognitive",
+                None,
+            )
+            rows["daily_reflection"] = (
+                self._run_async(cognitive(now))
+                if callable(cognitive)
+                else self.daily_reflection.maybe_generate(now)
+            )
+        except LivingRuntimeChatGPTProviderError:
+            raise
         except Exception as exc:  # noqa: BLE001
             rows["daily_reflection"] = self._error(exc)
             rows["status"] = "DEGRADED"
@@ -818,6 +838,8 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         try:
             rows["evolution_deliberation"] = self._evolution_deliberation(now)
+        except LivingRuntimeChatGPTProviderError:
+            raise
         except Exception as exc:  # noqa: BLE001
             rows["evolution_deliberation"] = self._error(exc)
             rows["status"] = "DEGRADED"

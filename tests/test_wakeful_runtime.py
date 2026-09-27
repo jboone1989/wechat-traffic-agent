@@ -1378,6 +1378,31 @@ def test_schedule_provider_recovery_prefers_runtime_proven_route(tmp_path):
     )
 
 
+def test_schedule_provider_recovery_retries_originating_task_and_drops_expired_request_ref(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    now = datetime(2026, 9, 24, 8, 27, 0, tzinfo=timezone.utc)
+
+    result = runtime.schedule_provider_recovery(
+        now,
+        default_seconds=60,
+        task="REFLECT",
+        relevant_refs=(
+            "cognition-request:llmreq-expired",
+            "reflection-date:2026-09-23",
+        ),
+    )
+
+    assert result["status"] == "SCHEDULED"
+    wake = next(
+        row
+        for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:REFLECT"
+    )
+    assert wake.task == "REFLECT"
+    assert "reflection-date:2026-09-23" in wake.relevant_refs
+    assert "cognition-request:llmreq-expired" not in wake.relevant_refs
+
+
 
 def test_brain_lab_uses_handoff_environment_and_settles_trial(tmp_path, monkeypatch):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
