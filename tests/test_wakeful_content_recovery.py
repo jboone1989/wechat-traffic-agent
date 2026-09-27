@@ -9,6 +9,16 @@ NOW = datetime(2026, 9, 19, 10, 0, tzinfo=timezone.utc)
 BASE_CYCLE = "v2-1789808400"
 
 
+async def _owner_pipeline_decision(task, max_tokens, output_schema=None):
+    return json.dumps({
+        "action": "RUN_CONTENT_PIPELINE",
+        "query": None,
+        "topic": "livingruntime-remote",
+        "wait_seconds": None,
+        "rationale": "Exercise the owner-directed content path in this test.",
+    })
+
+
 class Tick:
     generation_ready = True
 
@@ -102,7 +112,9 @@ class Loop:
             "result_path": str(path),
         }
 
-    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
+    async def run_once(
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+    ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {"status": self.result_status, "cycle": cycle}
@@ -118,7 +130,9 @@ class Loop:
 
 
 class MissionTimeoutLoop(Loop):
-    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
+    async def run_once(
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+    ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {
@@ -470,7 +484,9 @@ class MissionLoop(Loop):
     def __init__(self, state_root: Path, *, result_status: str = "COGNITION_ONLY"):
         super().__init__(state_root, result_status=result_status)
 
-    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
+    async def run_once(
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+    ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         payload = {
@@ -761,7 +777,9 @@ def test_legacy_mission_discovery_error_recovers_identity_from_active_mission(tm
 
 
 class AlreadyProcessedPublishedLoop(Loop):
-    async def run_once(self, *, now, cycle_id, focus_topic, owner_goal=None):
+    async def run_once(
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+    ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
         return {
@@ -1077,13 +1095,14 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     loop.owner_goals = []
     original = loop.run_once
 
-    async def capture(*, now, cycle_id, focus_topic, owner_goal=None):
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None):
         loop.owner_goals.append(owner_goal)
         return await original(
             now=now,
             cycle_id=cycle_id,
             focus_topic=focus_topic,
             owner_goal=owner_goal,
+            seed_evidence=seed_evidence,
         )
 
     loop.run_once = capture
@@ -1106,7 +1125,10 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
         status=SimpleNamespace(value="ACTIVE"),
     )
     app = App()
-    app.domain_runtime = SimpleNamespace(active_goals=[older, owner_goal])
+    app.domain_runtime = SimpleNamespace(
+        active_goals=[older, owner_goal],
+        cognitive_probe=_owner_pipeline_decision,
+    )
 
     class BlockingRegulator:
         def __init__(self):
@@ -1171,13 +1193,14 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
     loop.owner_goals = []
     original = loop.run_once
 
-    async def capture(*, now, cycle_id, focus_topic, owner_goal=None):
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None):
         loop.owner_goals.append(owner_goal)
         return await original(
             now=now,
             cycle_id=cycle_id,
             focus_topic=focus_topic,
             owner_goal=owner_goal,
+            seed_evidence=seed_evidence,
         )
 
     loop.run_once = capture
@@ -1193,7 +1216,10 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
         status=SimpleNamespace(value="ACTIVE"),
     )
     app = App()
-    app.domain_runtime = SimpleNamespace(active_goals=[external_goal])
+    app.domain_runtime = SimpleNamespace(
+        active_goals=[external_goal],
+        cognitive_probe=_owner_pipeline_decision,
+    )
 
     class BlockingRegulator:
         def __init__(self):

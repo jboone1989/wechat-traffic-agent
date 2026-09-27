@@ -51,17 +51,19 @@ class RecordingReader:
         return "ok"
 
 
-@pytest.mark.asyncio
-async def test_router_dispatches_by_platform_with_default_fallback() -> None:
+def test_router_dispatches_by_platform_with_default_fallback() -> None:
     bili = RecordingReader("bili")
     generic = RecordingReader("generic")
     router = ReaderRouter(default=generic, routes={"bilibili": bili})
 
-    assert await router.read("u", platform="bilibili") == "ok"
-    assert await router.comments("c", platform="bilibili") == "ok"
-    assert await router.author("a", platform="bilibili") == "ok"
-    assert await router.engagement("e", platform="bilibili") == "ok"
-    assert await router.read("u2", platform="zhihu") == "ok"
+    async def exercise() -> None:
+        assert await router.read("u", platform="bilibili") == "ok"
+        assert await router.comments("c", platform="bilibili") == "ok"
+        assert await router.author("a", platform="bilibili") == "ok"
+        assert await router.engagement("e", platform="bilibili") == "ok"
+        assert await router.read("u2", platform="zhihu") == "ok"
+
+    asyncio.run(exercise())
 
     assert {method for method, _, _ in bili.seen} == {
         "read",

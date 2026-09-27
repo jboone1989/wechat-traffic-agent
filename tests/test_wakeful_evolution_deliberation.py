@@ -179,7 +179,10 @@ def test_daily_reflection_failure_does_not_block_evolution_deliberation(tmp_path
     assert len(backend.requests) == 1
 
 
-def test_windfall_creates_high_value_hypothesis_even_without_open_need(tmp_path):
+def test_windfall_creates_high_value_hypothesis_even_without_open_need(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
     backend = FixtureAgentBackend(_proposal_json("capability replacement audit"))
     rt = _runtime(tmp_path, backend)
     runner = WakefulContentTaskRunner(
