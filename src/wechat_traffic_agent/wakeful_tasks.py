@@ -1746,6 +1746,7 @@ class WakefulContentTaskRunner:
             )[:200]
         except OSError:
             return None
+        published_candidate: dict[str, Any] | None = None
         for folder in folders:
             result_path = folder / "result.json"
             try:
@@ -1815,16 +1816,20 @@ class WakefulContentTaskRunner:
             )
             if social_status in {"DRAFT_READY", "SKIPPED"}:
                 continue
-            return {
-                "cycle": str(result.get("cycle") or folder.name),
-                "result": result,
-                "reason": (
-                    "MISSING_SOCIAL_DRAFT"
-                    if not social_path.exists()
-                    else f"SOCIAL_DRAFT_{social_status or 'INVALID'}"
-                ),
-            }
-        return None
+            if published_candidate is None:
+                published_candidate = {
+                    "cycle": str(result.get("cycle") or folder.name),
+                    "result": result,
+                    "reason": (
+                        "MISSING_SOCIAL_DRAFT"
+                        if not social_path.exists()
+                        else f"SOCIAL_DRAFT_{social_status or 'INVALID'}"
+                    ),
+                }
+            # Keep scanning: a mission-bound X-only expression backlog is a
+            # stalled external commitment and takes precedence over generic
+            # social drafting.
+        return published_candidate
 
     def _run_social_stage(
         self,
@@ -2277,21 +2282,20 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         if self.continuous_loop is None:
             return rows
-        if focus_topic is None:
-            backlog = self._social_stage_backlog_candidate()
-            if backlog is not None:
-                replay_rows: dict[str, Any] = {"status": "OK"}
-                self._run_social_stage(
-                    rows=replay_rows,
-                    continuous=dict(backlog["result"]),
-                    now=now,
-                )
-                rows["social_stage_backlog_recovery"] = {
-                    "status": "REPLAYED",
-                    "cycle": str(backlog["cycle"]),
-                    "reason": str(backlog["reason"]),
-                    "results": replay_rows,
-                }
+        backlog = self._social_stage_backlog_candidate()
+        if backlog is not None:
+            replay_rows: dict[str, Any] = {"status": "OK"}
+            self._run_social_stage(
+                rows=replay_rows,
+                continuous=dict(backlog["result"]),
+                now=now,
+            )
+            rows["social_stage_backlog_recovery"] = {
+                "status": "REPLAYED",
+                "cycle": str(backlog["cycle"]),
+                "reason": str(backlog["reason"]),
+                "results": replay_rows,
+            }
         # Strategy selection consumes traffic context, so refresh GSC immediately before it.
         # This preserves the pre-Wakeful ordering contract without restoring a monolithic poll loop.
         if self.gsc_collector is not None:

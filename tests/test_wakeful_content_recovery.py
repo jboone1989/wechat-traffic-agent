@@ -892,6 +892,112 @@ def test_social_backlog_recovers_x_admitted_held_mission_cycle(tmp_path):
     assert runner._social_stage_backlog_candidate() is None
 
 
+def test_x_mission_backlog_preempts_newer_generic_social_gap(tmp_path):
+    state_root = tmp_path / "state"
+    held_cycle = "v2-held-x-priority"
+    held_folder = state_root / "content" / "continuous" / "cycles" / held_cycle
+    held_folder.mkdir(parents=True, exist_ok=True)
+    held = {"status": "HELD_BY_CHECKS", "cycle": held_cycle}
+    (held_folder / "result.json").write_text(json.dumps(held) + "\n", encoding="utf-8")
+    (held_folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+
+    published_cycle = "v2-newer-generic-gap"
+    published_folder = state_root / "content" / "continuous" / "cycles" / published_cycle
+    published_folder.mkdir(parents=True, exist_ok=True)
+    (published_folder / "result.json").write_text(
+        json.dumps({"status": "PUBLISHED", "cycle": published_cycle}) + "\n",
+        encoding="utf-8",
+    )
+    (published_folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+
+    class Growth:
+        def publication_binding(self, *, cycle):
+            return {
+                "status": "BOUND_X_EXPRESSION",
+                "bound": cycle == held_cycle,
+                "cycle": cycle,
+            }
+
+    class XLoop:
+        growth_mission = Growth()
+
+    runner = WakefulContentTaskRunner(state_root=state_root, x_loop=XLoop())
+
+    candidate = runner._social_stage_backlog_candidate()
+
+    assert candidate is not None
+    assert candidate["cycle"] == held_cycle
+    assert candidate["reason"] == "MISSING_X_MISSION_EXPRESSION"
+
+
+def test_x_mission_backlog_replays_even_with_explicit_focus_topic(tmp_path):
+    state_root = tmp_path / "state"
+    cycle = "v2-held-x-with-owner-focus"
+    folder = state_root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    held = {"status": "HELD_BY_CHECKS", "cycle": cycle}
+    (folder / "result.json").write_text(json.dumps(held) + "\n", encoding="utf-8")
+    (folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+
+    class Growth:
+        def publication_binding(self, *, cycle):
+            return {"status": "BOUND_X_EXPRESSION", "bound": True, "cycle": cycle}
+
+    class XLoop:
+        growth_mission = Growth()
+
+        def __init__(self):
+            self.calls = []
+
+        async def after_content_cycle(self, *, result, now):
+            self.calls.append({"result": result, "now": now})
+            return {"status": "SKIPPED", "cycle": result["cycle"], "reason": "test"}
+
+    class CompatibleLoop(Loop):
+        async def run_once(
+            self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+        ):
+            return await super().run_once(
+                now=now,
+                cycle_id=cycle_id,
+                focus_topic=focus_topic,
+                owner_goal=owner_goal,
+            )
+
+    x_loop = XLoop()
+    runner = WakefulContentTaskRunner(
+        app=App(),
+        state_root=state_root,
+        network_service=None,
+        web_worker=None,
+        gsc_collector=None,
+        wakeful=Wakeful(),
+        continuous_loop=CompatibleLoop(state_root),
+        resource_economy=Economy(),
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=x_loop,
+    )
+
+    result = runner.run(
+        "CONTENT_COGNITION",
+        now=NOW,
+        focus_topic="owner-directed-topic",
+    )
+
+    assert result["social_stage_backlog_recovery"]["cycle"] == cycle
+    assert result["social_stage_backlog_recovery"]["reason"] == "MISSING_X_MISSION_EXPRESSION"
+    assert x_loop.calls[0] == {"result": held, "now": NOW}
+    assert len(x_loop.calls) == 2
+
+
 def test_social_stage_persists_x_terminal_receipt(tmp_path):
     state_root = tmp_path / "state"
     cycle = "v2-x-receipt"
