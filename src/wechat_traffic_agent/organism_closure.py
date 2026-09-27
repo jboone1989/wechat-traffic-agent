@@ -65,6 +65,35 @@ def refresh_organism_closure(
         drives=drives,
         developmental_history=development,
     )
+    expired_goals = [
+        dict(row)
+        for row in (life.get("expired_goals") or ())
+        if isinstance(row, Mapping)
+    ]
+    for expired in expired_goals:
+        goal_id = str(expired.get("goal_id") or "")
+        task = str(expired.get("task") or "")
+        drive = str(expired.get("drive") or "")
+        evidence_ref = f"autonomous-expired:{goal_id}"
+        if drive:
+            drive_system.settle(
+                drive=drive,
+                task=task,
+                status="FAILED",
+                utility=None,
+                evidence_ref=evidence_ref,
+                now=now,
+            )
+        developmental_history.record(
+            kind="AUTONOMOUS_GOAL_EXPIRED",
+            domain=f"autonomous:{task.lower() or 'unknown'}",
+            outcome=-1.0,
+            evidence_refs=(goal_id, evidence_ref),
+            now=now,
+            metadata={"close_reason": "TTL_EXPIRED", "drive": drive},
+        )
+    if expired_goals:
+        development = developmental_history.projection()
     goal = life.get("goal") if isinstance(life, Mapping) else None
     if isinstance(goal, Mapping) and life.get("status") == "GOAL_SCHEDULED":
         decision = drives.get("last_decision") if isinstance(drives.get("last_decision"), Mapping) else {}

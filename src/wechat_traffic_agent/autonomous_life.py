@@ -92,8 +92,9 @@ class AutonomousLifeLoop:
             "NEURAL_DEVELOPMENT": timedelta(days=1),
         }.get(task, timedelta(hours=6))
 
-    def _expire(self, now: datetime) -> None:
+    def _expire(self, now: datetime) -> list[dict[str, Any]]:
         goals = []
+        expired: list[dict[str, Any]] = []
         for raw in self.state.get("goals") or ():
             if not isinstance(raw, Mapping):
                 continue
@@ -107,8 +108,10 @@ class AutonomousLifeLoop:
                     row["status"] = "EXPIRED"
                     row["closed_at"] = now.isoformat()
                     row["close_reason"] = "TTL_EXPIRED"
+                    expired.append(dict(row))
             goals.append(row)
         self.state["goals"] = goals[-MAX_GOALS:]
+        return expired
 
     def tick(
         self,
@@ -121,7 +124,8 @@ class AutonomousLifeLoop:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("autonomous life tick requires timezone-aware time")
         now = now.astimezone(timezone.utc)
-        self._expire(now)
+        expired_goals = self._expire(now)
+        expiration = {"expired_goals": expired_goals}
         last_raw = self.state.get("last_generated_at")
         if last_raw:
             try:
@@ -131,21 +135,40 @@ class AutonomousLifeLoop:
             if last is not None and now - last < self.MIN_INTERVAL:
                 self.state["updated_at"] = now.isoformat()
                 _write(self.path, self.state)
-                return {"status": "COOLDOWN", **self.projection()}
+                return {"status": "COOLDOWN", **expiration, **self.projection()}
 
         decision = drives.get("last_decision") if isinstance(drives.get("last_decision"), Mapping) else {}
         winner = decision.get("winner") if isinstance(decision.get("winner"), Mapping) else {}
         task = str(winner.get("task") or "")
         drive = str(winner.get("drive") or "")
         score = float(winner.get("arbitration_score") or 0.0)
+        expired_same_task = [
+            row
+            for row in expired_goals
+            if str(row.get("task") or "") == task and task
+        ]
+        if expired_same_task:
+            self.state["updated_at"] = now.isoformat()
+            _write(self.path, self.state)
+            return {
+                "status": "GOAL_EXPIRED",
+                "goal": dict(expired_same_task[-1]),
+                **expiration,
+                **self.projection(),
+            }
         if task == "REST":
             self.state["updated_at"] = now.isoformat()
             _write(self.path, self.state)
-            return {"status": "REST", "reason": winner.get("reason"), **self.projection()}
+            return {
+                "status": "REST",
+                "reason": winner.get("reason"),
+                **expiration,
+                **self.projection(),
+            }
         if task not in ALLOWED_TASKS or score < self.MIN_SCORE:
             self.state["updated_at"] = now.isoformat()
             _write(self.path, self.state)
-            return {"status": "NO_GOAL", **self.projection()}
+            return {"status": "NO_GOAL", **expiration, **self.projection()}
 
         active = [
             row for row in self.state.get("goals") or ()
@@ -156,7 +179,12 @@ class AutonomousLifeLoop:
         if active:
             self.state["updated_at"] = now.isoformat()
             _write(self.path, self.state)
-            return {"status": "EXISTING_GOAL", "goal": dict(active[-1]), **self.projection()}
+            return {
+                "status": "EXISTING_GOAL",
+                "goal": dict(active[-1]),
+                **expiration,
+                **self.projection(),
+            }
 
         origin = self._origin_for_drive(drive)
         if origin not in ORIGINS:
@@ -201,7 +229,12 @@ class AutonomousLifeLoop:
             "goals": goals[-MAX_GOALS:],
         })
         _write(self.path, self.state)
-        return {"status": "GOAL_SCHEDULED", "goal": goal, **self.projection()}
+        return {
+            "status": "GOAL_SCHEDULED",
+            "goal": goal,
+            **expiration,
+            **self.projection(),
+        }
 
     def close_goal(
         self,

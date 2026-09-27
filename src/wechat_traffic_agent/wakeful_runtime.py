@@ -554,12 +554,45 @@ class ContentWakefulRuntime:
     def _ensure_autonomous_goal_wakes(self, now: datetime) -> int:
         """Recover durable autonomous goals that lost their scheduler wake."""
         projection = self.autonomous_life.projection()
+        recent_goals = [
+            row
+            for row in projection.get("recent_goals") or ()
+            if isinstance(row, dict)
+        ]
         active = [
             row
             for row in projection.get("active_goals") or ()
             if isinstance(row, dict)
             and str(row.get("status") or "").upper() in {"OPEN", "SCHEDULED"}
         ]
+        pending = tuple(self.core.snapshot().pending_plans)
+        active_goal_ids = {
+            str(row.get("goal_id") or "").strip()
+            for row in active
+            if str(row.get("goal_id") or "").strip()
+        }
+        closed_goal_ids = {
+            str(row.get("goal_id") or "").strip()
+            for row in recent_goals
+            if str(row.get("goal_id") or "").strip()
+            and str(row.get("status") or "").upper()
+            in {"EXECUTED", "SATISFIED", "FAILED", "CANCELLED", "EXPIRED"}
+        }
+        for wake in pending:
+            wake_goal_id = (
+                wake.wake_id.removeprefix("autonomous:")
+                if wake.wake_id.startswith("autonomous:")
+                else ""
+            )
+            stale_ref = any(
+                str(ref) in closed_goal_ids
+                for ref in wake.relevant_refs
+            )
+            if (
+                (wake_goal_id and wake_goal_id not in active_goal_ids)
+                or stale_ref
+            ):
+                self.core.cancel(wake.wake_id)
         pending = tuple(self.core.snapshot().pending_plans)
         pending_ids = {wake.wake_id for wake in pending}
         restored = 0
@@ -1252,6 +1285,14 @@ class ContentWakefulRuntime:
             goal_id = str(matches[0].get("goal_id") or "").strip()
             if not goal_id:
                 return None
+        active_goal_ids = {
+            str(row.get("goal_id") or "").strip()
+            for row in self.autonomous_life.projection().get("active_goals") or ()
+            if isinstance(row, dict)
+            and str(row.get("goal_id") or "").strip()
+        }
+        if str(goal_id) not in active_goal_ids:
+            return None
         if (
             isinstance(result, dict)
             and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
