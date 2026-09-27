@@ -851,6 +851,76 @@ def test_social_backlog_finds_recent_published_cycle_missing_draft(tmp_path):
     assert candidate["result"] == published
 
 
+def test_social_backlog_recovers_x_admitted_held_mission_cycle(tmp_path):
+    state_root = tmp_path / "state"
+    cycle = "v2-held-x-gap"
+    folder = state_root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    held = {
+        "status": "HELD_BY_CHECKS",
+        "cycle": cycle,
+        "draft_path": str(state_root / "content" / "drafts" / "held.json"),
+    }
+    (folder / "result.json").write_text(json.dumps(held) + "\n", encoding="utf-8")
+    (folder / "cognition.json").write_text(
+        json.dumps({"worth_saying": True}) + "\n", encoding="utf-8"
+    )
+
+    class Growth:
+        def publication_binding(self, *, cycle):
+            return {
+                "status": "BOUND_X_EXPRESSION",
+                "bound": True,
+                "cycle": cycle,
+            }
+
+    class XLoop:
+        growth_mission = Growth()
+
+    runner = WakefulContentTaskRunner(state_root=state_root, x_loop=XLoop())
+
+    candidate = runner._social_stage_backlog_candidate()
+
+    assert candidate is not None
+    assert candidate["cycle"] == cycle
+    assert candidate["reason"] == "MISSING_X_MISSION_EXPRESSION"
+    assert candidate["result"] == held
+
+    (folder / "x_social_expression.json").write_text(
+        json.dumps({"status": "SKIPPED"}) + "\n", encoding="utf-8"
+    )
+    assert runner._social_stage_backlog_candidate() is None
+
+
+def test_social_stage_persists_x_terminal_receipt(tmp_path):
+    state_root = tmp_path / "state"
+    cycle = "v2-x-receipt"
+
+    class XLoop:
+        async def after_content_cycle(self, *, result, now):
+            return {"status": "SKIPPED", "cycle": result["cycle"], "reason": "low value"}
+
+    runner = WakefulContentTaskRunner(
+        state_root=state_root,
+        social_expression_loop=None,
+        x_browser_publisher=None,
+        okx_orbit_publisher=None,
+        x_loop=XLoop(),
+    )
+    rows = {"status": "OK"}
+    runner._run_social_stage(
+        rows=rows,
+        continuous={"status": "HELD_BY_CHECKS", "cycle": cycle},
+        now=NOW,
+    )
+
+    receipt = json.loads(
+        (state_root / "content" / "continuous" / "cycles" / cycle / "x_social_expression.json").read_text()
+    )
+    assert receipt["status"] == "SKIPPED"
+    assert rows["x_social_expression"]["reason"] == "low value"
+
+
 def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     from types import SimpleNamespace
 

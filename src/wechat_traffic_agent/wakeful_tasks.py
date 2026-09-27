@@ -1754,7 +1754,8 @@ class WakefulContentTaskRunner:
                 continue
             if not isinstance(result, dict):
                 continue
-            if str(result.get("status") or "").upper() != "PUBLISHED":
+            result_status = str(result.get("status") or "").upper()
+            if result_status not in {"PUBLISHED", "HELD_BY_CHECKS"}:
                 continue
             try:
                 cognition = json.loads(
@@ -1768,6 +1769,40 @@ class WakefulContentTaskRunner:
                 else False
             ):
                 continue
+            if result_status == "HELD_BY_CHECKS":
+                x_loop = getattr(self, "x_loop", None)
+                growth = getattr(x_loop, "growth_mission", None)
+                binding_method = getattr(growth, "publication_binding", None)
+                if not callable(binding_method):
+                    continue
+                try:
+                    binding = binding_method(
+                        cycle=str(result.get("cycle") or folder.name)
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+                if (
+                    not isinstance(binding, dict)
+                    or not bool(binding.get("bound"))
+                    or str(binding.get("status") or "") != "BOUND_X_EXPRESSION"
+                ):
+                    continue
+                x_receipt_path = folder / "x_social_expression.json"
+                try:
+                    x_receipt = json.loads(
+                        x_receipt_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, ValueError, json.JSONDecodeError):
+                    x_receipt = {}
+                if str(x_receipt.get("status") or "") in {
+                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "HELD_BY_X_SAFETY"
+                }:
+                    continue
+                return {
+                    "cycle": str(result.get("cycle") or folder.name),
+                    "result": result,
+                    "reason": "MISSING_X_MISSION_EXPRESSION",
+                }
             social_path = folder / "social_expression_drafts.json"
             try:
                 social = json.loads(social_path.read_text(encoding="utf-8"))
@@ -1827,9 +1862,24 @@ class WakefulContentTaskRunner:
         x_loop = getattr(self, "x_loop", None)
         if x_loop is not None:
             try:
-                rows["x_social_expression"] = self._run_async(
+                x_result = self._run_async(
                     x_loop.after_content_cycle(result=continuous, now=now)
                 )
+                rows["x_social_expression"] = x_result
+                state_root = getattr(self, "state_root", None)
+                cycle = str(continuous.get("cycle") or "").strip()
+                if state_root is not None and cycle and isinstance(x_result, dict):
+                    receipt = (
+                        Path(state_root) / "content" / "continuous" / "cycles"
+                        / cycle / "x_social_expression.json"
+                    )
+                    receipt.parent.mkdir(parents=True, exist_ok=True)
+                    tmp = receipt.with_suffix(".json.tmp")
+                    tmp.write_text(
+                        json.dumps(x_result, ensure_ascii=False, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    tmp.replace(receipt)
             except Exception as exc:  # noqa: BLE001
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
