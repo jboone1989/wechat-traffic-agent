@@ -22,7 +22,7 @@ def _parse_time(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def recall_tier(memory: dict[str, Any], *, now: datetime | None = None) -> str:
+def recall_tier(memory: dict[str, Any], *, now: datetime | None = None, age_multiplier: float = 1.0) -> str:
     if str(memory.get("status") or "ACTIVE") == "ARCHIVED":
         return "ARCHIVED"
     importance = float(memory.get("importance") or 0.0)
@@ -33,7 +33,7 @@ def recall_tier(memory: dict[str, Any], *, now: datetime | None = None) -> str:
     attrs = (memory.get("payload") or {}).get("attributes") if isinstance(memory.get("payload"), dict) else {}
     attrs = attrs if isinstance(attrs, dict) else {}
     decay_rate = max(0.2, min(1.5, float(attrs.get("decay_rate") or 1.0)))
-    age_days *= decay_rate
+    age_days *= decay_rate * age_multiplier
     if age_days <= 7:
         return "HOT"
     if age_days <= 30:
@@ -43,11 +43,14 @@ def recall_tier(memory: dict[str, Any], *, now: datetime | None = None) -> str:
     return "ARCHIVED"
 
 
-def recall_weight(memory: dict[str, Any], *, now: datetime | None = None) -> float:
-    base = {"HOT": 1.0, "WARM": 0.72, "COLD": 0.38, "ARCHIVED": 0.12}[recall_tier(memory, now=now)]
+def recall_weight(memory: dict[str, Any], *, now: datetime | None = None,
+                  age_multiplier: float = 1.0, boost_gain: float = 1.0) -> float:
+    base = {"HOT": 1.0, "WARM": 0.72, "COLD": 0.38, "ARCHIVED": 0.12}[
+        recall_tier(memory, now=now, age_multiplier=age_multiplier)]
     attrs = (memory.get("payload") or {}).get("attributes") if isinstance(memory.get("payload"), dict) else {}
     attrs = attrs if isinstance(attrs, dict) else {}
     boost = max(0.75, min(1.5, float(attrs.get("recall_boost") or 1.0)))
+    boost = max(0.75, min(1.5, 1.0 + boost_gain * (boost - 1.0)))
     return max(0.05, min(1.5, base * boost))
 
 

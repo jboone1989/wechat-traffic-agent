@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any, Iterable
 
 from .memory_consolidation import recall_weight
+from .memory_domain_policy import load_policies, policy_ref, validate_policy
 from .memory_system import CanonicalMemoryStore
 from .memory_vector import EmbeddingProvider, SemanticVectorIndex, memory_document
 
@@ -195,10 +196,14 @@ class MemoryRouter:
         store: CanonicalMemoryStore | None = None,
         embedding_provider: EmbeddingProvider | None = None,
         weights: RecallWeights | None = None,
+        domain_policies: dict[str, dict[str, float]] | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.store = store or CanonicalMemoryStore(self.state_root)
         self.weights = weights or self._load_active_weights()
+        self._domain_overrides = domain_policies
+        self.last_recall_metrics: dict[str, float] = {}
+        self.last_domain_policy_refs: dict[str, str] = {}
         self.fts = MemorySearchIndex(self.store)
         self.vector = SemanticVectorIndex(self.store, provider=embedding_provider)
 
@@ -250,6 +255,10 @@ class MemoryRouter:
         entity: str | None = None,
         topic: str | None = None,
     ) -> list[dict[str, Any]]:
+        policies = load_policies(self.state_root) if self._domain_overrides is None else {
+            name: validate_policy(name, value) for name, value in self._domain_overrides.items()
+        }
+        self.last_domain_policy_refs = {name: policy_ref(name, value) for name, value in policies.items()}
         plan = self.plan(
             query, now=now, memory_types=memory_types, entity=entity, topic=topic,
         )
@@ -266,7 +275,9 @@ class MemoryRouter:
             limit=5000,
         )
         allowed = {str(row["memory_id"]): row for row in structured}
-        search_limit = max(50, int(limit) * int(self.weights.search_multiplier))
+        search_limit = max(1, min(200, round(
+            max(50, int(limit) * int(self.weights.search_multiplier)) * policies["index"]["budget_scale"]
+        )))
         lexical = self.fts.search(query, limit=search_limit)
         vector = self.vector.search(query, limit=search_limit)
         lexical_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(lexical)}
@@ -307,12 +318,18 @@ class MemoryRouter:
             if plan.created_from or plan.created_to:
                 score += self.weights.temporal_boost
             if not plan.historical and self.weights.decay_enabled:
-                score *= recall_weight(row, now=now)
+                score *= recall_weight(row, now=now,
+                    age_multiplier=policies["decay"]["age_multiplier"],
+                    boost_gain=policies["salience"]["boost_gain"])
             candidates.append((score, row))
         candidates.sort(
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
             reverse=True,
         )
+        self.last_recall_metrics = {
+            "candidate_cost": float(len(lexical) + len(vector) + len(candidates)),
+            "search_limit": float(search_limit),
+        }
         return [row for _, row in candidates[: max(1, int(limit))]]
 
     @staticmethod

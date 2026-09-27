@@ -15,6 +15,7 @@ FAILURE_KINDS = frozenset({
     "STALE_RECALL",
     "CONFLICT",
     "NO_USEFUL_MEMORY",
+    "SALIENCE_MISMATCH",
 })
 POSITIVE_KINDS = frozenset({"MEMORY_HELPED"})
 
@@ -93,13 +94,14 @@ class MemoryLifeObservatory:
         retrieved_memory_ids: Iterable[str],
         recall_latency_ms: float,
         source: str,
+        metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         return self.record(
             event_type="RETRIEVAL",
             query=query,
             retrieved_memory_ids=retrieved_memory_ids,
             recall_latency_ms=recall_latency_ms,
-            metadata={"source": str(source)},
+            metadata={**dict(metadata or {}), "source": str(source)},
         )
 
     def record_decision_use(

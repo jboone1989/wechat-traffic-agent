@@ -156,6 +156,7 @@ class OperatorLongTermMemory:
             retrieved_memory_ids=[str(row.get("memory_id") or "") for row in learned],
             recall_latency_ms=float(getattr(timer, "elapsed_ms", 0.0)),
             source="operator-long-term-memory",
+            metadata={"domain_policy_refs": self.router.last_domain_policy_refs if remaining else {}},
         )
         return core + learned
 

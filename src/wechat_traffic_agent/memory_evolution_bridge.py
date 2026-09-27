@@ -25,6 +25,8 @@ from .memory_evolution import (
 from .memory_retrieval import RecallWeights
 from .memory_procedural import ProcedurePolicy
 from .memory_observation import MemoryLifeObservatory
+from .memory_domain_evolution import MemoryDomainEvolution
+from .memory_domain_policy import DOMAIN_SPECS
 
 
 CANDIDATE_SPECS = {
@@ -39,6 +41,7 @@ CANDIDATE_SPECS = {
     "PROCEDURE_FAILURE": ("SKILL_VARIANT_PROMOTION", MutationRequirement.JUDGMENT_RULE, "memory.procedure.policy"),
     "INDEX_COST": ("INDEX_CONFIGURATION_CHANGE", MutationRequirement.RETRIEVAL_FAILURE, "memory.index.configuration"),
     "CONTEXT_WASTE": ("INDEX_CONFIGURATION_CHANGE", MutationRequirement.RETRIEVAL_FAILURE, "memory.index.configuration"),
+    "SALIENCE_MISMATCH": ("SALIENCE_WEIGHT_CHANGE", MutationRequirement.JUDGMENT_RULE, "memory.salience.policy"),
 }
 ALLOWED_CANDIDATE_TYPES = frozenset({
     "RECALL_WEIGHT_CHANGE",
@@ -77,6 +80,7 @@ class MemoryRuntimeEvolutionBridge:
         self.state_root = Path(state_root)
         self.observatory = MemoryLifeObservatory(self.state_root)
         self.memory_evolution = MemoryEvolutionEngine(self.state_root)
+        self.domain_evolution = MemoryDomainEvolution(runtime=runtime, state_root=self.state_root)
         self.root = self.state_root / "application" / "memory_system" / "runtime_evolution_bridge"
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_path = self.root / "state.json"
@@ -120,6 +124,10 @@ class MemoryRuntimeEvolutionBridge:
         for row in rows:
             if row["source_ref"] and row["kind"] in CANDIDATE_SPECS:
                 dedup[row["source_ref"]] = row
+                if row["kind"] == "NO_USEFUL_MEMORY":
+                    # This is a bounded ranking hypothesis, not a factual/authority change.
+                    salience = {**row, "source_ref": row["source_ref"] + ":salience", "kind": "SALIENCE_MISMATCH"}
+                    dedup[salience["source_ref"]] = salience
         return list(dedup.values())
 
     @staticmethod
@@ -473,7 +481,11 @@ class MemoryRuntimeEvolutionBridge:
             candidate_type = CANDIDATE_SPECS[row["kind"]][0]
             grouped_sources[candidate_type].append(row)
 
+        domain_results = self.domain_evolution.sync(grouped_sources)
+        proposals.extend(domain_results)
         for candidate_type, source_rows in grouped_sources.items():
+            if candidate_type in DOMAIN_SPECS:
+                continue
             if len(source_rows) < self.MIN_FAILURES_FOR_CANDIDATE:
                 continue
             if candidate_type in candidate_state:
@@ -508,17 +520,6 @@ class MemoryRuntimeEvolutionBridge:
                 proposals.append(proposal)
                 continue
 
-            # Every mutation type must have a domain-specific replay evaluator before Runtime may
-            # create a mutation candidate. Recall weights have one today; decay/index/salience
-            # changes remain gated rather than being guessed into trials.
-            if candidate_type != "RECALL_WEIGHT_CHANGE":
-                proposal = {
-                    "candidate_type": candidate_type,
-                    "status": "AWAITING_REPLAY_EVALUATOR",
-                    "evidence_refs": known_evidence[-32:],
-                }
-                proposals.append(proposal)
-                continue
             cases = self.memory_evolution.build_self_supervised_benchmark(max_cases=24)
             if len(cases) < 4:
                 continue
