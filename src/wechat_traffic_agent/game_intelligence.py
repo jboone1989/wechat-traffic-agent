@@ -1084,6 +1084,35 @@ class GameIntelligence:
             "next_stage": "HARDER_OPEN_WORLD_CURRICULUM",
         }
 
+    def graduation_environment_order(
+        self,
+        environments: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Prioritize the environments furthest from their graduation floor."""
+        names = tuple(str(name).upper() for name in environments)
+        status = self.graduation_status()
+        if status.get("graduated"):
+            return names
+        evidence = status.get("evidence") or {}
+        episodes = evidence.get("episodes") or {}
+        transitions = evidence.get("transitions") or {}
+        original_index = {name: index for index, name in enumerate(names)}
+
+        def priority(name: str) -> tuple[float, float, int]:
+            episode_progress = min(
+                1.0, float(episodes.get(name) or 0) / 40.0
+            )
+            transition_progress = min(
+                1.0, float(transitions.get(name) or 0) / 750.0
+            )
+            return (
+                min(episode_progress, transition_progress),
+                (episode_progress + transition_progress) / 2.0,
+                original_index[name],
+            )
+
+        return tuple(sorted(names, key=priority))
+
     def projection(self) -> dict[str, Any]:
         macro = [
             dict(row) for row in (self.state.get("skills") or {}).values()

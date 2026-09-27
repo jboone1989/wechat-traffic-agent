@@ -285,3 +285,45 @@ def test_accelerated_arena_trains_multiple_worlds_and_records_transfer(tmp_path:
     assert game["transition_count"] >= 32
     assert game["macro_skill_count"] >= 1
     assert game["macro_execution_count"] >= 1
+
+
+def test_accelerated_arena_prioritizes_environment_with_largest_graduation_gap(
+    tmp_path: Path,
+):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    lab.game_intelligence.state["episodes"] = [
+        {"environment": env, "episode_id": f"{env}:{index}", "reward": 0.0}
+        for env, count in {
+            "PONG": 29,
+            "MAZE": 25,
+            "FORAGING": 22,
+            "ROVER": 12,
+        }.items()
+        for index in range(count)
+    ]
+    lab.game_intelligence.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:0",
+            "state_key": str(index),
+            "action": "RIGHT",
+            "reward": 0.0,
+            "next_state_key": str(index + 1),
+        }
+        for env, count in {
+            "PONG": 892,
+            "MAZE": 803,
+            "FORAGING": 639,
+            "ROVER": 360,
+        }.items()
+        for index in range(count)
+    ]
+    lab.game_intelligence._persist(NOW)
+
+    result = lab.run_accelerated_arena(
+        sessions_per_environment=1,
+        base_steps=8,
+        now=NOW,
+    )
+
+    assert result["results"][0]["environment"] == "ROVER"

@@ -309,3 +309,40 @@ def test_graduation_requires_broad_real_game_evidence(tmp_path):
     assert status["graduated"] is True
     assert status["progress"] == 1.0
     assert status["next_stage"] == "HARDER_OPEN_WORLD_CURRICULUM"
+
+
+def test_graduation_environment_order_prioritizes_largest_deficit(tmp_path):
+    engine = GameIntelligence(tmp_path)
+    episode_counts = {
+        "PONG": 29,
+        "MAZE": 25,
+        "FORAGING": 22,
+        "ROVER": 12,
+    }
+    transition_counts = {
+        "PONG": 892,
+        "MAZE": 803,
+        "FORAGING": 639,
+        "ROVER": 360,
+    }
+    engine.state["episodes"] = [
+        {"environment": env, "episode_id": f"{env}:{index}", "reward": 0.0}
+        for env, count in episode_counts.items()
+        for index in range(count)
+    ]
+    engine.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:0",
+            "state_key": str(index),
+            "action": "RIGHT",
+            "reward": 0.0,
+            "next_state_key": str(index + 1),
+        }
+        for env, count in transition_counts.items()
+        for index in range(count)
+    ]
+
+    assert engine.graduation_environment_order(
+        ("PONG", "MAZE", "FORAGING", "ROVER")
+    ) == ("ROVER", "FORAGING", "MAZE", "PONG")

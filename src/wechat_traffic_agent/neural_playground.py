@@ -728,6 +728,8 @@ class FerroBrainLab:
         """Run many headless sessions in one wake instead of scheduler-paced play."""
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         names = tuple(str(value).upper() for value in (environments or self.ENVIRONMENTS))
+        if environments is None:
+            names = self.game_intelligence.graduation_environment_order(names)
         sessions = max(1, min(32, int(sessions_per_environment)))
         results: list[dict[str, Any]] = []
         total_steps = 0
