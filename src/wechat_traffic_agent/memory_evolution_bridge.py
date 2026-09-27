@@ -23,6 +23,7 @@ from .memory_evolution import (
     architecture_fingerprint,
 )
 from .memory_retrieval import RecallWeights
+from .memory_procedural import ProcedurePolicy
 from .memory_observation import MemoryLifeObservatory
 
 
@@ -489,9 +490,27 @@ class MemoryRuntimeEvolutionBridge:
             if len(known_evidence) < self.MIN_FAILURES_FOR_CANDIDATE:
                 continue
 
+            # Procedure variants are evaluated prospectively against verified real executions,
+            # not by replaying external tool calls.  ProceduralMemoryService/ProcedurePolicy
+            # already owns bounded challenger exploration and only promotes a mature variant
+            # after measured outcomes.  Surface that authority truthfully instead of implying
+            # that skill learning is blocked on a replay evaluator.
+            if candidate_type == "SKILL_VARIANT_PROMOTION":
+                proposal = {
+                    "candidate_type": candidate_type,
+                    "status": "PROSPECTIVE_POLICY_OWNS_EVALUATION",
+                    "evaluation_mode": "VERIFIED_PROSPECTIVE_EXECUTION",
+                    "promotion_authority": "memory.procedure.policy",
+                    "minimum_samples_per_variant": ProcedurePolicy.MIN_SAMPLES,
+                    "replay_required": False,
+                    "evidence_refs": known_evidence[-32:],
+                }
+                proposals.append(proposal)
+                continue
+
             # Every mutation type must have a domain-specific replay evaluator before Runtime may
-            # create a mutation candidate. Recall weights have one today; other allowed types are
-            # observed and routed but remain gated rather than being guessed into trials.
+            # create a mutation candidate. Recall weights have one today; decay/index/salience
+            # changes remain gated rather than being guessed into trials.
             if candidate_type != "RECALL_WEIGHT_CHANGE":
                 proposal = {
                     "candidate_type": candidate_type,

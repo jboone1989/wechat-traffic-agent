@@ -262,6 +262,33 @@ def _seed_benchmark_memories(root):
     return store
 
 
+def test_procedure_failures_route_to_verified_prospective_policy_not_fake_replay(tmp_path):
+    runtime_root = tmp_path / "runtime-procedure-policy"
+    state_root = tmp_path / "state-procedure-policy"
+    rt = AgentRuntime.bootstrap(runtime_root, clock=FrozenClock(NOW))
+    engine = MemoryEvolutionEngine(state_root)
+    engine.observe_signal(
+        "PROCEDURE_FAILURE",
+        evidence_ref="receipt:procedure:failure:1",
+        detail="bounded owner tool invocation failed once",
+    )
+    engine.observe_signal(
+        "PROCEDURE_FAILURE",
+        evidence_ref="receipt:procedure:failure:2",
+        detail="bounded owner tool invocation failed again",
+    )
+
+    result = MemoryRuntimeEvolutionBridge(runtime=rt, state_root=state_root).sync()
+    skill = next(
+        row for row in result["candidates"]
+        if row.get("candidate_type") == "SKILL_VARIANT_PROMOTION"
+    )
+    assert skill["status"] == "PROSPECTIVE_POLICY_OWNS_EVALUATION"
+    assert skill["evaluation_mode"] == "VERIFIED_PROSPECTIVE_EXECUTION"
+    assert skill["replay_required"] is False
+    assert skill["minimum_samples_per_variant"] == 3
+
+
 def test_memory_failures_enter_total_evolution_engine_only_after_replay_improves(tmp_path):
     runtime_root = tmp_path / "runtime"
     state_root = tmp_path / "state"
