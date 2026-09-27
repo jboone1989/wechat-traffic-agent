@@ -1889,6 +1889,36 @@ class WakefulContentTaskRunner:
                 rows["x_social_expression"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
+    def _recover_social_stage_backlog(
+        self,
+        *,
+        rows: dict[str, Any],
+        now: datetime,
+        x_mission_only: bool = False,
+    ) -> dict[str, Any] | None:
+        backlog = self._social_stage_backlog_candidate()
+        if backlog is None:
+            return None
+        if (
+            x_mission_only
+            and str(backlog.get("reason") or "") != "MISSING_X_MISSION_EXPRESSION"
+        ):
+            return None
+        replay_rows: dict[str, Any] = {"status": "OK"}
+        self._run_social_stage(
+            rows=replay_rows,
+            continuous=dict(backlog["result"]),
+            now=now,
+        )
+        recovery = {
+            "status": "REPLAYED",
+            "cycle": str(backlog["cycle"]),
+            "reason": str(backlog["reason"]),
+            "results": replay_rows,
+        }
+        rows["social_stage_backlog_recovery"] = recovery
+        return recovery
+
     def _owner_activated_external_goal_ids(self) -> set[str]:
         """Return external-mission goals with durable private-owner activation evidence."""
         state_root = getattr(self, "state_root", None)
@@ -2205,6 +2235,16 @@ class WakefulContentTaskRunner:
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
         if result is None or not result.generation_ready:
             return rows
+        # Finish already-grounded external X work before asking the owner
+        # controller what to do next. Otherwise a fresh owner cognition can
+        # perpetually preempt a mission expression that is one downstream
+        # action away from changing the world.
+        if self.continuous_loop is not None:
+            self._recover_social_stage_backlog(
+                rows=rows,
+                now=now,
+                x_mission_only=True,
+            )
         owner_goal = self._active_owner_goal_context()
         owner_directed_cycle_id: str | None = None
         owner_episode_active = False
@@ -2282,20 +2322,11 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         if self.continuous_loop is None:
             return rows
-        backlog = self._social_stage_backlog_candidate()
-        if backlog is not None:
-            replay_rows: dict[str, Any] = {"status": "OK"}
-            self._run_social_stage(
-                rows=replay_rows,
-                continuous=dict(backlog["result"]),
+        if focus_topic is None:
+            self._recover_social_stage_backlog(
+                rows=rows,
                 now=now,
             )
-            rows["social_stage_backlog_recovery"] = {
-                "status": "REPLAYED",
-                "cycle": str(backlog["cycle"]),
-                "reason": str(backlog["reason"]),
-                "results": replay_rows,
-            }
         # Strategy selection consumes traffic context, so refresh GSC immediately before it.
         # This preserves the pre-Wakeful ordering contract without restoring a monolithic poll loop.
         if self.gsc_collector is not None:
