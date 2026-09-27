@@ -1060,6 +1060,41 @@ class ContentWakefulRuntime:
                         preemptible=False,
                     ))
 
+        architecture_revalidation_world = (
+            self.developmental_world_transfer.architecture_revalidation_candidate(
+                now=now
+            )
+            if candidate_world is None
+            else None
+        )
+        if (
+            not owner_control_active
+            and architecture_revalidation_world is not None
+            and self.developmental_world_transfer.pending(now=now) is None
+        ):
+            target_at = now + timedelta(seconds=10)
+            if not any(
+                wake.task == "NEURAL_DEVELOPMENT_TRANSFER"
+                and wake.at <= target_at
+                for wake in self.core.snapshot().pending_plans
+            ):
+                self.core.schedule(PlannedWake(
+                    wake_id="content:NEURAL_DEVELOPMENT_TRANSFER",
+                    at=target_at,
+                    reason=(
+                        "revalidate selected developmental architecture against "
+                        f"baseline on {architecture_revalidation_world.get('world_id')}"
+                    ),
+                    task="NEURAL_DEVELOPMENT_TRANSFER",
+                    relevant_refs=(
+                        str(architecture_revalidation_world.get("need_id") or ""),
+                        str(architecture_revalidation_world.get("proposal_id") or ""),
+                        str(architecture_revalidation_world.get("world_id") or ""),
+                        "architecture-post-selection-revalidation",
+                    ),
+                    preemptible=False,
+                ))
+
         evolution = self.open_ended_evolution.refresh(now=now)
         consolidation = self.open_ended_evolution.next_consolidation()
         if consolidation is not None and not owner_control_active:

@@ -172,27 +172,39 @@ class DevelopmentalWorldTransferLab:
         candidate = self.agency.next_candidate_world()
         if isinstance(candidate, Mapping):
             return dict(candidate)
-        if (
-            self.architecture is not None
-            and self.architecture.needs_evidence(now)
-        ):
-            adopted = [
-                dict(row)
-                for row in worlds.values()
-                if isinstance(row, Mapping)
-                and row.get("status") == "ADOPTED"
-                and row.get("target_task")
-            ]
-            if adopted:
-                adopted.sort(
-                    key=lambda row: (
-                        str(row.get("last_transfer_evaluation_at") or ""),
-                        str(row.get("world_id") or ""),
-                    ),
-                    reverse=True,
-                )
-                return adopted[0]
+        revalidation = self.architecture_revalidation_candidate(now=now)
+        if revalidation is not None:
+            return revalidation
         return None
+
+    def architecture_revalidation_candidate(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        if (
+            self.architecture is None
+            or not self.architecture.needs_evidence(now)
+        ):
+            return None
+        worlds = self.agency.state.get("worlds") or {}
+        adopted = [
+            dict(row)
+            for row in worlds.values()
+            if isinstance(row, Mapping)
+            and row.get("status") == "ADOPTED"
+            and row.get("target_task")
+        ]
+        if not adopted:
+            return None
+        adopted.sort(
+            key=lambda row: (
+                str(row.get("last_transfer_evaluation_at") or ""),
+                str(row.get("world_id") or ""),
+            ),
+            reverse=True,
+        )
+        return adopted[0]
 
     def begin(
         self,

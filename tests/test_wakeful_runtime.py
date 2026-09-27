@@ -1859,6 +1859,57 @@ def test_frequent_neural_refresh_does_not_manufacture_longitudinal_age(tmp_path)
 
 
 
+def test_neural_refresh_schedules_due_architecture_revalidation_without_active_world(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.developmental_agency.state["worlds"] = {
+        "WORLD_0216": {
+            "world_id": "WORLD_0216",
+            "status": "ADOPTED",
+            "need_id": "development-need:legacy",
+            "proposal_id": "development-proposal:legacy",
+            "target_task": "CHECK_X",
+            "last_transfer_evaluation_at": (
+                NOW - timedelta(days=1)
+            ).isoformat(),
+        }
+    }
+    monkeypatch.setattr(
+        runtime.developmental_agency,
+        "next_candidate_world",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        runtime.developmental_architecture,
+        "needs_evidence",
+        lambda now=None: True,
+    )
+    monkeypatch.setattr(
+        runtime.developmental_world_transfer,
+        "pending",
+        lambda now=None: None,
+    )
+
+    runtime.refresh_neural_life(NOW)
+
+    wake = next(
+        row
+        for row in runtime.core.snapshot().pending_plans
+        if row.task == "NEURAL_DEVELOPMENT_TRANSFER"
+    )
+    assert wake.wake_id == "content:NEURAL_DEVELOPMENT_TRANSFER"
+    assert wake.at == NOW + timedelta(seconds=10)
+    assert "revalidate selected developmental architecture" in wake.reason
+    assert wake.relevant_refs == (
+        "development-need:legacy",
+        "development-proposal:legacy",
+        "WORLD_0216",
+        "architecture-post-selection-revalidation",
+    )
+
+
 def test_neural_refresh_schedules_bounded_open_ended_evolution_consolidation(tmp_path, monkeypatch):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     pending_cycle = {
