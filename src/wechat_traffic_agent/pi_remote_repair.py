@@ -90,7 +90,28 @@ class PiRemoteRepairProvider:
 
 
 def configured_pi_remote_repair_provider() -> PiRemoteRepairProvider | None:
-    root = os.environ.get("PI_REMOTE_REPAIR_ROOT", "").strip()
+    root = (
+        os.environ.get("PI_REMOTE_REPAIR_ROOT", "").strip()
+        or os.environ.get("PI_REMOTE_ROOT", "").strip()
+    )
+    if not root:
+        # Production already has an explicit self-repair workspace when this
+        # capability is intended to exist.  Older deployments omitted the Pi
+        # Remote root from their systemd drop-in; recover the sibling source
+        # checkout only under that opt-in and only when the request-only CLI
+        # surface is visibly present.
+        workspace = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
+        if workspace:
+            candidate = (
+                Path(workspace).expanduser().resolve().parent
+                / "src"
+                / "pi-remote"
+            )
+            if (
+                (candidate / "cli.js").is_file()
+                and (candidate / "repair-requests.js").is_file()
+            ):
+                root = str(candidate)
     if not root:
         return None
     node = os.environ.get("PI_REMOTE_NODE", "node").strip() or "node"

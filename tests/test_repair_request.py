@@ -6,7 +6,10 @@ from types import SimpleNamespace
 import pytest
 
 from wechat_traffic_agent.repair_request import RepairRequest, submit_repair_request
-from wechat_traffic_agent.pi_remote_repair import PiRemoteRepairProvider
+from wechat_traffic_agent.pi_remote_repair import (
+    PiRemoteRepairProvider,
+    configured_pi_remote_repair_provider,
+)
 
 
 def sample_request() -> RepairRequest:
@@ -115,3 +118,29 @@ def test_pi_remote_provider_invokes_only_fixed_request_cli_without_shell(tmp_pat
     assert "deploy" not in " ".join(seen["argv"])
     assert seen["kwargs"]["env"]["PI_REMOTE_REPAIR_REQUEST_ONLY"] == "1"
     assert "OPENAI_API_KEY" not in seen["kwargs"]["env"]
+
+
+def test_configured_provider_recovers_sibling_pi_remote_when_self_repair_is_enabled(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "content-agent-self-repair-workspace"
+    workspace.mkdir()
+    pi_root = tmp_path / "src" / "pi-remote"
+    pi_root.mkdir(parents=True)
+    (pi_root / "cli.js").write_text("// repair cli")
+    (pi_root / "repair-requests.js").write_text("// repair requests")
+    monkeypatch.delenv("PI_REMOTE_REPAIR_ROOT", raising=False)
+    monkeypatch.delenv("PI_REMOTE_ROOT", raising=False)
+    monkeypatch.setenv("CONTENT_SELF_REPAIR_WORKSPACE", str(workspace))
+
+    provider = configured_pi_remote_repair_provider()
+
+    assert provider is not None
+    assert provider.root == pi_root.resolve()
+
+
+def test_configured_provider_does_not_autodiscover_without_self_repair_opt_in(monkeypatch):
+    monkeypatch.delenv("PI_REMOTE_REPAIR_ROOT", raising=False)
+    monkeypatch.delenv("PI_REMOTE_ROOT", raising=False)
+    monkeypatch.delenv("CONTENT_SELF_REPAIR_WORKSPACE", raising=False)
+    assert configured_pi_remote_repair_provider() is None

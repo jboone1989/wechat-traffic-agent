@@ -755,35 +755,63 @@ class SelfMaintenanceService:
         enriched = 0
         scanned = 0
         repair_requested = 0
+        repair_candidates: list[tuple[str, str]] = []
         for path in sorted(folder.glob("*.json")) if folder.exists() else ():
             scanned += 1
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if not isinstance(payload, dict) or payload.get("repair_proposal"):
+            if not isinstance(payload, dict):
                 continue
             if str(payload.get("status") or "") in {
                 "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED", "LEGACY_AGGREGATE", "LEGACY_DUPLICATE"
             }:
                 continue
-            cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
-            proposal = self._proposal_for(
-                error_type=str(payload.get("error_type") or ""),
-                message=str(payload.get("symptom") or ""),
-                cycle=cycles[-1] if cycles else "unknown",
-                failure_site=str(payload.get("failure_site") or "unknown"),
-            )
-            if proposal is None:
+            proposal = payload.get("repair_proposal")
+            if not isinstance(proposal, dict):
+                cycles = [str(x) for x in payload.get("cycles") or () if str(x)]
+                proposal = self._proposal_for(
+                    error_type=str(payload.get("error_type") or ""),
+                    message=str(payload.get("symptom") or ""),
+                    cycle=cycles[-1] if cycles else "unknown",
+                    failure_site=str(payload.get("failure_site") or "unknown"),
+                )
+                if proposal is None:
+                    continue
+                payload["repair_proposal"] = proposal
+                payload["status"] = "REPAIR_PROPOSED"
+                _atomic_json(path, payload)
+                enriched += 1
+                latest = self.root / "latest.json"
+                if str(payload.get("last_seen_at") or "") >= str(_read_last_seen(latest)):
+                    _atomic_json(latest, payload)
+            if str(proposal.get("risk") or "").upper() != "LOW":
                 continue
-            payload["repair_proposal"] = proposal
-            payload["status"] = "REPAIR_PROPOSED"
-            _atomic_json(path, payload)
-            enriched += 1
-            latest = self.root / "latest.json"
-            if str(payload.get("last_seen_at") or "") >= str(_read_last_seen(latest)):
-                _atomic_json(latest, payload)
-            receipt = self.request_code_repair(str(payload.get("problem_id") or ""))
+            prior = payload.get("repair_request")
+            if isinstance(prior, dict):
+                if any(
+                    prior.get(key)
+                    for key in ("request_id", "requestId", "job_id", "jobId")
+                ):
+                    continue
+                if str(prior.get("status") or "") not in {
+                    "", "CAPABILITY_UNAVAILABLE", "REQUEST_FAILED"
+                }:
+                    continue
+            problem_id = str(payload.get("problem_id") or "")
+            if problem_id:
+                repair_candidates.append((
+                    str(payload.get("last_seen_at") or ""),
+                    problem_id,
+                ))
+
+        # Keep startup escalation bounded. Prefer the most recently observed
+        # known failures, and rely on the stable idempotency key for retries.
+        for _seen_at, problem_id in sorted(
+            repair_candidates, reverse=True
+        )[:4]:
+            receipt = self.request_code_repair(problem_id)
             if str(receipt.get("status") or "") in {
                 "REQUESTED", "RECEIVED", "ACCEPTED"
             }:
@@ -791,6 +819,7 @@ class SelfMaintenanceService:
         return {
             "scanned": scanned,
             "enriched": enriched,
+            "repair_candidate_count": len(repair_candidates),
             "repair_requested": repair_requested,
         }
 

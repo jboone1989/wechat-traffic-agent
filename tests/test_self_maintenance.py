@@ -505,6 +505,53 @@ def test_missing_repair_capability_fails_closed_without_local_edit_authority(tmp
     assert "request_id" not in result["repair_request"]
 
 
+def test_review_retries_prior_capability_unavailable_repair_when_transport_recovers(
+    tmp_path,
+):
+    runtime = RepairCapabilityRuntime()
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+        capability_runtime=runtime,
+    )
+    problem = tmp_path / "application/self_maintenance/problems/retryable.json"
+    problem.parent.mkdir(parents=True)
+    problem.write_text(json.dumps({
+        "schema_version": "self-problem.v1",
+        "problem_id": "self-problem:retryable",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "backend did not return a JSON object",
+        "error_type": "ValueError",
+        "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+        "last_seen_at": NOW.isoformat(),
+        "cycles": ["v2-compose-retry"],
+        "repair_proposal": {
+            "proposal_id": "repair-proposal:retryable",
+            "status": "PROPOSED",
+            "repair_kind": "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION",
+            "target_files": ["src/wechat_traffic_agent/content_service.py"],
+            "verification": ["structured composition"],
+            "risk": "LOW",
+            "reversible": True,
+            "source_cycle": "v2-compose-retry",
+        },
+        "repair_request": {
+            "status": "CAPABILITY_UNAVAILABLE",
+            "requested_at": (NOW - timedelta(minutes=5)).isoformat(),
+        },
+    }))
+
+    review = service.review()
+
+    assert review["repair_requested_count"] == 1
+    assert review["proposal_refresh"]["repair_candidate_count"] == 1
+    stored = json.loads(problem.read_text())
+    assert stored["status"] == "REPAIR_REQUESTED"
+    assert stored["repair_request"]["status"] == "RECEIVED"
+    assert stored["repair_request"]["requestId"] == "repair-123"
+    assert len(runtime.calls) == 1
+
+
 def test_non_content_task_failure_enters_durable_maintenance_without_unsafe_repair(tmp_path):
     service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
     recorded = service.ingest_task_outcome("NEURAL_PLAY", {
