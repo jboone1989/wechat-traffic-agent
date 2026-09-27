@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-free-disk-gib", type=float, default=8.0)
     parser.add_argument("--max-load-1m", type=float, default=1.75)
     parser.add_argument("--match-timeout-seconds", type=int, default=240)
+    parser.add_argument("--public-live-path", type=Path, default=None)
     parser.add_argument("--opponents", default=",".join(DEFAULT_OPPONENTS))
     return parser
 
@@ -138,6 +139,7 @@ def main() -> int:
     args = _parser().parse_args()
     args.state_root = args.state_root.expanduser().resolve()
     args.lab_root = args.lab_root.expanduser().resolve()
+    args.public_live_path = args.public_live_path.expanduser().resolve() if args.public_live_path else None
     args.lab_root.mkdir(parents=True, exist_ok=True)
     lock_handle = (args.lab_root / "trainer.lock").open("a+", encoding="utf-8")
     try:
@@ -173,6 +175,10 @@ def main() -> int:
     researcher = ScreepsResearcher(args.state_root)
     live_path = args.state_root / "application" / "screeps_live.json"
     replay_root = args.state_root / "application" / "screeps_replays"
+    def write_live(payload: dict[str, Any]) -> None:
+        _write_json(live_path, payload)
+        if args.public_live_path is not None:
+            _write_json(args.public_live_path, payload)
     base_seed = (
         int(args.seed) if args.seed is not None
         else int(researcher.projection().get("episode_count") or 0) + 1
@@ -182,7 +188,7 @@ def main() -> int:
         snapshot = _resource_snapshot(args.lab_root)
         admission = _resource_admission(snapshot, args)
         if not admission["allowed"]:
-            _write_json(live_path, {
+            write_live({
                 "schema_version": "ferro-screeps-live.v1",
                 "status": "RESOURCE_DEFERRED",
                 "observed_at": datetime.now(timezone.utc).isoformat(),
@@ -218,6 +224,7 @@ def main() -> int:
             "episode_id": episode_id,
             "lab_root": str(args.lab_root),
             "live_path": str(live_path),
+            "public_live_path": str(args.public_live_path) if args.public_live_path else None,
             "replay_path": str(replay_path),
             "frame_interval": 3,
             "ticks": max(20, min(1500, int(args.ticks))),
@@ -283,7 +290,7 @@ def main() -> int:
                 "error": f"HARNESS_EXIT_{returncode}",
                 "research": researcher.projection(),
             })
-            _write_json(live_path, live)
+            write_live(live)
             results.append({"status": "HARNESS_FAILED", **cancellation})
             continue
 
@@ -341,7 +348,7 @@ def main() -> int:
             "reward": settled.reward,
             "research": research,
         })
-        _write_json(live_path, live)
+        write_live(live)
         results.append({
             "status": "SETTLED",
             "episode_id": settled.episode_id,

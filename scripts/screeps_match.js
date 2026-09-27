@@ -310,6 +310,7 @@ async function main() {
   const ticks = Math.max(20, Math.min(1500, Math.trunc(Number(input.ticks || 300))));
   const frameInterval = Math.max(1, Math.min(25, Math.trunc(Number(input.frame_interval || 3))));
   const livePath = input.live_path ? path.resolve(String(input.live_path)) : null;
+  const publicLivePath = input.public_live_path ? path.resolve(String(input.public_live_path)) : null;
   const replayPath = input.replay_path ? path.resolve(String(input.replay_path)) : null;
   const research = input.research && typeof input.research === "object" ? input.research : {};
   const frames = [];
@@ -373,6 +374,7 @@ async function main() {
         ...extra,
       };
       writeJsonAtomic(livePath, base);
+      writeJsonAtomic(publicLivePath, base);
       writeJsonAtomic(replayPath, {
         schema_version: "ferro-screeps-replay.v1",
         episode_id: input.episode_id,
