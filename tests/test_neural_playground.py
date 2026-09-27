@@ -69,8 +69,35 @@ def test_game_reward_is_provenance_bound_to_the_step(tmp_path: Path):
     feedback, utility = substrate.feedback[-1]
     assert feedback.source_event_id == row["event_id"]
     assert feedback.outcome_id == row["event_id"] + ":reward"
-    assert set(feedback.pathway)
+    assert feedback.pathway == (row["action_channel"],)
     assert -1.0 <= utility <= 1.0
+
+
+def test_persistent_policy_can_override_repeated_bad_neural_impulse(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    options = (
+        ("RIGHT", "opportunity"),
+        ("LEFT", "social_attention"),
+        ("UP", "prediction_due"),
+    )
+    delta = {"social_attention": 10.0, "opportunity": 9.0, "prediction_due": 0.0}
+    state = "0,0"
+
+    first, _ = lab._choose(
+        name="MAZE", state_key=state, delta=delta, options=options, event_id="fixed-first"
+    )
+    assert first == "LEFT"
+
+    for _ in range(8):
+        lab._learn_policy(name="MAZE", state_key=state, action="LEFT", reward=-0.2)
+        lab._learn_policy(name="MAZE", state_key=state, action="RIGHT", reward=0.04)
+
+    learned, channel = lab._choose(
+        name="MAZE", state_key=state, delta=delta, options=options, event_id="fixed-learned"
+    )
+    assert learned == "RIGHT"
+    assert channel == "opportunity"
+    assert lab.projection()["policy_learning"]["MAZE"]["updates"] == 16
 
 
 def test_dream_replays_game_experience_without_llm_and_forms_preconcept(tmp_path: Path):

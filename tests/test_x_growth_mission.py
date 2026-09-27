@@ -129,6 +129,66 @@ def _write_bound_cycle(
     return cycle
 
 
+def _write_x_only_bound_cycle(
+    root: Path,
+    *,
+    mission_id: str,
+    cycle: str = "v2-mission-x-only",
+    topic: str = "durable-agent-recovery",
+    grounded: bool = True,
+) -> str:
+    folder = root / "content" / "continuous" / "cycles" / cycle
+    folder.mkdir(parents=True, exist_ok=True)
+    drafts = root / "content" / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    draft_path = drafts / f"{cycle}.json"
+    draft_path.write_text(json.dumps({
+        "artifact": {
+            "source_refs": [{
+                "ref_id": "web:source-1",
+                "source": "runtime:web.fetch",
+                "locator": "https://example.com/source",
+            }]
+        }
+    }), encoding="utf-8")
+    (folder / "mind_plan.json").write_text(json.dumps({
+        "goal": {"origin": "EXTERNAL_MISSION"},
+        "external_mission_id": mission_id,
+        "required_topic": topic,
+    }), encoding="utf-8")
+    (folder / "mission_discovery.json").write_text(json.dumps({
+        "mission_id": mission_id,
+        "decision": {"topic": topic},
+    }), encoding="utf-8")
+    (folder / "result.json").write_text(json.dumps({
+        "status": "HELD_BY_CHECKS",
+        "cycle": cycle,
+        "draft_path": str(draft_path),
+        "automated_checks_passed": False,
+    }), encoding="utf-8")
+    (folder / "evidence_floor_check.json").write_text(json.dumps({
+        "status": "PASS",
+    }), encoding="utf-8")
+    (folder / "cognition.json").write_text(json.dumps({
+        "worth_saying": True,
+        "cognition_state": "BELIEF_CHANGED",
+    }), encoding="utf-8")
+    (folder / "experience.json").write_text(json.dumps({
+        "self_check": {
+            "grounded": grounded,
+            "useful": True,
+            "no_private_data": True,
+            "no_investment_advice": True,
+        },
+        "missing_section_support": [],
+        "missing_section_grounding": [],
+        "perspective_expression": True,
+        # A website-only editorial technique may still be missing.
+        "missing_technique_applications": [0],
+    }), encoding="utf-8")
+    return cycle
+
+
 def _record_bound_baseline(
     coordinator: XGrowthMissionCoordinator,
     *,
@@ -150,6 +210,67 @@ def _record_bound_baseline(
     )
     assert baseline["status"] == "RECORDED"
     return cycle
+
+
+def test_held_website_cycle_can_bind_to_x_when_x_admission_is_safe(tmp_path):
+    runtime, clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    mission_state = asyncio.run(coordinator.observe_identity(
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:x-only",
+        now=NOW,
+    ))
+    cycle = _write_x_only_bound_cycle(
+        tmp_path,
+        mission_id=mission_state["mission_id"],
+    )
+
+    binding = coordinator.publication_binding(cycle=cycle)
+    baseline = coordinator.record_publication_baseline(
+        cycle=cycle,
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:x-only-pre",
+        now=clock.now(),
+    )
+
+    assert binding["status"] == "BOUND_X_EXPRESSION"
+    assert binding["bound"] is True
+    assert binding["admission"]["surface"] == "X"
+    assert binding["admission"]["website_checks_passed"] is False
+    assert binding["admission"]["x_evidence_safety_admission"] is True
+    assert baseline["status"] == "RECORDED"
+
+
+def test_held_website_cycle_cannot_bind_to_x_without_grounding(tmp_path):
+    runtime, _clock, _backend = _runtime(tmp_path)
+    coordinator = XGrowthMissionCoordinator(
+        runtime=runtime,
+        state_root=tmp_path,
+        target=5000,
+        enabled=True,
+    )
+    mission_state = asyncio.run(coordinator.observe_identity(
+        user=_user(2000),
+        identity_receipt_id="receipt:x.identity:x-only-unsafe",
+        now=NOW,
+    ))
+    cycle = _write_x_only_bound_cycle(
+        tmp_path,
+        mission_id=mission_state["mission_id"],
+        cycle="v2-mission-x-only-unsafe",
+        grounded=False,
+    )
+
+    binding = coordinator.publication_binding(cycle=cycle)
+
+    assert binding["status"] == "X_EXPRESSION_ADMISSION_FAILED"
+    assert binding["bound"] is False
+    assert binding["admission"]["grounded"] is False
 
 
 def test_follower_count_requires_real_public_metric():

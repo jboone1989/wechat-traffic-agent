@@ -75,10 +75,12 @@ class FerroBrainLab:
                 "total_sessions": 0,
                 "active_environment": "PONG",
                 "environments": {name: self._default_env(name) for name in self.ENVIRONMENTS},
+                "policies": {},
                 "recent": [],
             }
         for name in self.ENVIRONMENTS:
             raw.setdefault("environments", {}).setdefault(name, self._default_env(name))
+        raw.setdefault("policies", {})
         return raw
 
     def _write(self) -> None:
@@ -100,24 +102,84 @@ class FerroBrainLab:
         )
         return dict(burst or {})
 
-    def _reward(self, *, event_id: str, currents: Mapping[str, float], reward: float, now: datetime) -> dict[str, Any]:
+    def _reward(self, *, event_id: str, action_channel: str, reward: float, now: datetime) -> dict[str, Any]:
         if self.substrate is None or not hasattr(self.substrate, "apply_feedback"):
             return {"status": "CONNECTOME_UNAVAILABLE", "changed_synapse_count": 0}
         feedback = SimpleNamespace(
             outcome_id=f"{event_id}:reward",
             source_event_id=event_id,
             observed_at=now,
-            pathway=tuple(str(k) for k, v in currents.items() if float(v) > 0),
+            pathway=(str(action_channel),),
         )
         return dict(self.substrate.apply_feedback(feedback, utility=_signed_unit(reward)))
 
-    @staticmethod
-    def _choose(delta: Mapping[str, Any], options: tuple[tuple[str, str], ...]) -> str:
-        ranked = sorted(
-            ((float(delta.get(channel) or 0.0), action, channel) for action, channel in options),
-            key=lambda row: (-row[0], row[1]),
+    def _policy_bucket(self, name: str, env: Mapping[str, Any], currents: Mapping[str, float]) -> str:
+        if name == "PONG":
+            error = float(env["ball_y"]) - float(env["paddle_y"])
+            return f"e{max(-3,min(3,int(round(error*6))))}:vx{1 if float(env['ball_vx']) >= 0 else -1}:x{min(3,int(float(env['ball_x'])*4))}"
+        if name == "MAZE":
+            return f"{int(env['x'])},{int(env['y'])}"
+        if name == "FORAGING":
+            dx = float(env["food_x"]) - float(env["x"])
+            dy = float(env["food_y"]) - float(env["y"])
+            energy = min(3, int(float(env["energy"]) * 4))
+            return f"dx{max(-2,min(2,int(round(dx*3))))}:dy{max(-2,min(2,int(round(dy*3))))}:en{energy}"
+        if name == "ROVER":
+            error = max(-4, min(4, int(round(float(env["heading_error"]) * 4))))
+            progress = min(3, int(float(env["progress"]) * 4))
+            return f"e{error}:p{progress}"
+        return "|".join(
+            f"{channel}:{min(3,max(0,int(float(value)*4)))}"
+            for channel, value in sorted(currents.items())
+        )[:512]
+
+    def _policy_row(self, name: str) -> dict[str, Any]:
+        return self.state.setdefault("policies", {}).setdefault(
+            name, {"states": {}, "updates": 0, "explorations": 0}
         )
-        return ranked[0][1] if ranked else options[0][0]
+
+    def _choose(
+        self,
+        *,
+        name: str,
+        state_key: str,
+        delta: Mapping[str, Any],
+        options: tuple[tuple[str, str], ...],
+        event_id: str,
+    ) -> tuple[str, str]:
+        if not options:
+            raise ValueError("brain-lab action set cannot be empty")
+        policy = self._policy_row(name)
+        values = policy.setdefault("states", {}).setdefault(state_key, {})
+        raw = [float(delta.get(channel) or 0.0) for _, channel in options]
+        lo, hi = min(raw), max(raw)
+        neural = [0.5 if hi <= lo else (value - lo) / (hi - lo) for value in raw]
+        scored = []
+        for index, (action, channel) in enumerate(options):
+            q = max(-1.0, min(1.0, float(values.get(action) or 0.0)))
+            score = 0.35 * neural[index] + 0.65 * ((q + 1.0) / 2.0)
+            scored.append((score, action, channel))
+        if self._phase(f"policy-explore:{event_id}") < 0.08 and len(options) > 1:
+            pick = int(self._phase(f"policy-pick:{event_id}") * len(options)) % len(options)
+            policy["explorations"] = int(policy.get("explorations") or 0) + 1
+            return options[pick]
+        _, action, channel = sorted(scored, key=lambda row: (-row[0], row[1]))[0]
+        return action, channel
+
+    def _learn_policy(self, *, name: str, state_key: str, action: str, reward: float) -> None:
+        policy = self._policy_row(name)
+        states = policy.setdefault("states", {})
+        values = states.setdefault(state_key, {})
+        before = float(values.get(action) or 0.0)
+        after = before + 0.28 * (_signed_unit(reward) - before)
+        values[action] = round(_signed_unit(after), 6)
+        policy["updates"] = int(policy.get("updates") or 0) + 1
+        if len(states) > 512:
+            for key in sorted(states):
+                if len(states) <= 512:
+                    break
+                if key != state_key:
+                    states.pop(key, None)
 
     def _pong_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         error = float(env["ball_y"]) - float(env["paddle_y"])
@@ -130,9 +192,11 @@ class FerroBrainLab:
             "curiosity": 0.18,
         }
         burst = self._stimulate(currents, now, event_id)
-        action = self._choose(
-            burst.get("delta_readout_hz") or {},
-            (("UP", "prediction_due"), ("DOWN", "error_recovery"), ("STAY", "opportunity")),
+        options = (("UP", "prediction_due"), ("DOWN", "error_recovery"), ("STAY", "opportunity"))
+        state_key = self._policy_bucket("PONG", env, currents)
+        action, action_channel = self._choose(
+            name="PONG", state_key=state_key,
+            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
         )
         env["paddle_y"] = _clip(float(env["paddle_y"]) + {"UP": 0.085, "DOWN": -0.085, "STAY": 0.0}[action])
         env["ball_x"] = float(env["ball_x"]) + float(env["ball_vx"])
@@ -162,7 +226,8 @@ class FerroBrainLab:
                 env["ball_vx"] = 0.05 + 0.01 * self._phase(f"pong-vx:{env['episode']}")
                 env["ball_vy"] = (self._phase(f"pong-vy:{env['episode']}") - 0.5) * 0.07
         env["last_action"] = action
-        return env, reward, burst, currents
+        self._learn_policy(name="PONG", state_key=state_key, action=action, reward=reward)
+        return env, reward, burst, currents, action_channel
 
     @staticmethod
     def _maze_blocked(x: int, y: int) -> bool:
@@ -179,9 +244,11 @@ class FerroBrainLab:
             "task_urgency": _clip((abs(dx) + abs(dy)) / 12),
         }
         burst = self._stimulate(currents, now, event_id)
-        action = self._choose(
-            burst.get("delta_readout_hz") or {},
-            (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery")),
+        options = (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery"))
+        state_key = self._policy_bucket("MAZE", env, currents)
+        action, action_channel = self._choose(
+            name="MAZE", state_key=state_key,
+            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
         )
         sx, sy = {"RIGHT": (1, 0), "LEFT": (-1, 0), "UP": (0, 1), "DOWN": (0, -1)}[action]
         nx, ny = int(env["x"]) + sx, int(env["y"]) + sy
@@ -200,7 +267,8 @@ class FerroBrainLab:
                 env["episode"] = int(env["episode"]) + 1
                 env["x"], env["y"] = 0, 0
         env["last_action"] = action
-        return env, reward, burst, currents
+        self._learn_policy(name="MAZE", state_key=state_key, action=action, reward=reward)
+        return env, reward, burst, currents, action_channel
 
     def _foraging_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         dx, dy = float(env["food_x"]) - float(env["x"]), float(env["food_y"]) - float(env["y"])
@@ -214,9 +282,11 @@ class FerroBrainLab:
             "curiosity": _clip(distance),
         }
         burst = self._stimulate(currents, now, event_id)
-        action = self._choose(
-            burst.get("delta_readout_hz") or {},
-            (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery")),
+        options = (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery"))
+        state_key = self._policy_bucket("FORAGING", env, currents)
+        action, action_channel = self._choose(
+            name="FORAGING", state_key=state_key,
+            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
         )
         sx, sy = {"RIGHT": (0.07, 0.0), "LEFT": (-0.07, 0.0), "UP": (0.0, 0.07), "DOWN": (0.0, -0.07)}[action]
         env["x"], env["y"] = _clip(float(env["x"]) + sx), _clip(float(env["y"]) + sy)
@@ -235,7 +305,8 @@ class FerroBrainLab:
             env["episode"] = int(env["episode"]) + 1
             env["x"], env["y"], env["energy"] = 0.2, 0.2, 1.0
         env["last_action"] = action
-        return env, reward, burst, currents
+        self._learn_policy(name="FORAGING", state_key=state_key, action=action, reward=reward)
+        return env, reward, burst, currents, action_channel
 
     def _rover_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         error = float(env["heading_error"])
@@ -247,9 +318,11 @@ class FerroBrainLab:
             "curiosity": 0.22,
         }
         burst = self._stimulate(currents, now, event_id)
-        action = self._choose(
-            burst.get("delta_readout_hz") or {},
-            (("LEFT", "prediction_due"), ("RIGHT", "error_recovery"), ("FORWARD", "opportunity")),
+        options = (("LEFT", "prediction_due"), ("RIGHT", "error_recovery"), ("FORWARD", "opportunity"))
+        state_key = self._policy_bucket("ROVER", env, currents)
+        action, action_channel = self._choose(
+            name="ROVER", state_key=state_key,
+            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
         )
         if action == "LEFT":
             error -= 0.16
@@ -272,7 +345,8 @@ class FerroBrainLab:
             env["progress"] = 0.0
             env["heading_error"] = (self._phase(f"rover-gate:{env['episode']}") - 0.5) * 1.2
         env["last_action"] = action
-        return env, reward, burst, currents
+        self._learn_policy(name="ROVER", state_key=state_key, action=action, reward=reward)
+        return env, reward, burst, currents, action_channel
 
     def _generated_specs(self) -> dict[str, dict[str, Any]]:
         raw = {}
@@ -359,7 +433,10 @@ class FerroBrainLab:
             (action, action_channels.get(action) or sensors[index % len(sensors)])
             for index, action in enumerate(actions)
         )
-        action = self._choose(burst.get("delta_readout_hz") or {}, options)
+        state_key = self._policy_bucket(name, env, currents)
+        action, action_channel = self._choose(
+            name=name, state_key=state_key, delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
+        )
         reward_spec = spec.get("reward") if isinstance(spec.get("reward"), Mapping) else {}
         reward = float(
             reward_spec.get("correct") if action == target_action else reward_spec.get("incorrect")
@@ -377,7 +454,8 @@ class FerroBrainLab:
         if int(env["episode_step"]) >= horizon:
             env["episode"] = int(env.get("episode") or 0) + 1
             env["episode_step"] = 0
-        return env, reward, burst, currents
+        self._learn_policy(name=name, state_key=state_key, action=action, reward=reward)
+        return env, reward, burst, currents, action_channel
 
     def step(self, environment: str, *, now: datetime | None = None) -> dict[str, Any]:
         name = str(environment).upper()
@@ -393,22 +471,22 @@ class FerroBrainLab:
         env["step"] = int(env.get("step") or 0) + 1
         event_id = f"brain-lab:{name.lower()}:{int(env.get('episode') or 0)}:{int(env['step'])}"
         if name == "PONG":
-            env, reward, burst, currents = self._pong_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._pong_step(env, now, event_id)
         elif name == "MAZE":
-            env, reward, burst, currents = self._maze_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._maze_step(env, now, event_id)
         elif name == "FORAGING":
-            env, reward, burst, currents = self._foraging_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._foraging_step(env, now, event_id)
         elif name == "ROVER":
-            env, reward, burst, currents = self._rover_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._rover_step(env, now, event_id)
         else:
-            env, reward, burst, currents = self._generated_step(
+            env, reward, burst, currents, action_channel = self._generated_step(
                 name=name,
                 spec=generated[name],
                 env=env,
                 now=now,
                 event_id=event_id,
             )
-        feedback = self._reward(event_id=event_id, currents=currents, reward=reward, now=now)
+        feedback = self._reward(event_id=event_id, action_channel=action_channel, reward=reward, now=now)
         env["last_reward"] = round(float(reward), 6)
         env["reward_sum"] = round(float(env.get("reward_sum") or 0.0) + float(reward), 6)
         self.state["environments"][name] = env
@@ -423,6 +501,7 @@ class FerroBrainLab:
             "spikes": int(burst.get("spikes") or 0),
             "active_neurons": int(burst.get("active_neurons") or 0),
             "changed_synapses": int(feedback.get("changed_synapse_count") or 0),
+            "action_channel": action_channel,
         }
         recent = list(self.state.get("recent") or ())
         recent.append(row)
@@ -491,8 +570,16 @@ class FerroBrainLab:
             "generated_worlds": generated_meta,
             "available_environments": names,
             "pong_hit_rate": None if attempts == 0 else round(int(pong.get("hits") or 0) / attempts, 6),
+            "policy_learning": {
+                name: {
+                    "state_count": len((self.state.get("policies", {}).get(name) or {}).get("states") or {}),
+                    "updates": int((self.state.get("policies", {}).get(name) or {}).get("updates") or 0),
+                    "explorations": int((self.state.get("policies", {}).get(name) or {}).get("explorations") or 0),
+                }
+                for name in names
+            },
             "recent": [dict(row) for row in (self.state.get("recent") or [])[-24:]],
-            "learning_rule": "provenance-linked recurrent eligibility reward on the same persistent connectome",
+            "learning_rule": "connectome action prior + persistent state-action reward learning + provenance-linked recurrent feedback",
         }
 
 

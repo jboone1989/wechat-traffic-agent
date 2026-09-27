@@ -455,6 +455,44 @@ print(json.dumps({
     assert fallback.complete_calls == 1
 
 
+def test_durable_unclaimed_resume_stays_pending_after_dispatch_grace(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+assert sys.argv[1] == "get"
+request_id = sys.argv[2]
+print(json.dumps({
+  "status":"PENDING",
+  "request_id":request_id,
+  "created_at":1,
+  "updated_at":70,
+  "deadline_at":None,
+  "dispatch_timeout_seconds":60,
+  "dispatch_deadline_at":61,
+  "dispatch_waiting_since":61,
+  "response":None
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+    )
+
+    caught = None
+    try:
+        with resume_next_durable_cognition("llmreq-durable-waiting"):
+            asyncio.run(provider.complete("resume durable pending request"))
+    except LivingRuntimeChatGPTPendingError as exc:
+        caught = exc
+
+    assert caught is not None
+    assert caught.request_id == "llmreq-durable-waiting"
+
+
 def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
     fallback = _Fallback()
     marker = tmp_path / ".livingruntime" / "ferro-chatgpt-provider.enabled"

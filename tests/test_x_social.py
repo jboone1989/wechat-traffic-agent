@@ -67,6 +67,11 @@ class _GrowthMission:
         return {"status": "STARTED", "experiment_id": "mission-exp-1"}
 
 
+class _XOnlyGrowthMission(_GrowthMission):
+    def publication_binding(self, *, cycle):
+        return {"status": "BOUND_X_EXPRESSION", "bound": True, "cycle": cycle}
+
+
 class _ModelRuntime:
     agent_manifest = SimpleNamespace(agent_type="content-agent")
 
@@ -145,6 +150,66 @@ def _write_cycle(tmp_path: Path, cycle: str) -> None:
         "rationale": "This is a concise evidence-grounded thought rather than a quota post.",
     }))
     (folder / "mind_plan.json").write_text(json.dumps({"goal": {"inquiry_refs": ["inq-1"]}}))
+
+
+def test_x_mission_can_express_grounded_held_website_cycle(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-x-only-held"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([
+        {
+            "action": "POST",
+            "post_text": "Checkpoint replay preserves completed work; it does not prove universal crash recovery.",
+            "rationale": "The mission-bound cognition is grounded and worth a concise X trace.",
+        },
+        {
+            "safe": True,
+            "no_private_data": True,
+            "no_impersonation": True,
+            "no_harassment": True,
+            "no_investment_advice": True,
+            "no_fabricated_facts": True,
+            "attribution_ok": True,
+            "rationale": "Grounded in the supplied persisted cognition.",
+        },
+    ])
+    runtime = _Runtime(post_ok=True)
+    growth = _XOnlyGrowthMission()
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="",
+        growth_mission=growth,
+    )
+
+    result = asyncio.run(loop.after_content_cycle(
+        result={"status": "HELD_BY_CHECKS", "cycle": cycle, "publication": {}},
+        now=NOW,
+    ))
+
+    assert result["status"] == "POSTED"
+    assert any(capability == "x.post" for capability, _ in runtime.calls)
+    assert growth.calls[0]["post_id"] == "p42"
+
+
+def test_non_mission_held_cycle_still_does_not_expression_post(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-held-no-mission"
+    _write_cycle(tmp_path, cycle)
+    runtime = _Runtime(post_ok=True)
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=_ModelRuntime([]),
+        state_root=tmp_path,
+        base_url="",
+    )
+    result = asyncio.run(loop.after_content_cycle(
+        result={"status": "HELD_BY_CHECKS", "cycle": cycle, "publication": {}},
+        now=NOW,
+    ))
+    assert result["status"] == "NO_EXPRESSION"
+    assert not any(capability == "x.post" for capability, _ in runtime.calls)
 
 
 def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_path: Path, monkeypatch):

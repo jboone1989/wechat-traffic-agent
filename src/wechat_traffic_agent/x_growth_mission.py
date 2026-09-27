@@ -822,35 +822,131 @@ class XGrowthMissionCoordinator:
         if str(discovery.get("mission_id") or "") != str(mission.mission_id):
             return {"status": "MISSION_DISCOVERY_MISMATCH", "bound": False, "cycle": cycle}
         result = _read_json(folder / "result.json")
-        if str(result.get("status") or "").upper() != "PUBLISHED":
-            return {"status": "MISSION_CONTENT_NOT_PUBLISHED", "bound": False, "cycle": cycle}
-        publication = _read_json(folder / "publication.json")
-        outcome = (
-            publication.get("outcome_attribution")
-            if isinstance(publication.get("outcome_attribution"), dict)
-            else {}
-        )
+        result_status = str(result.get("status") or "").upper()
         required_topic = str(plan.get("required_topic") or "").strip()
-        published_topic = str(outcome.get("topic") or "").strip()
-        if required_topic and published_topic != required_topic:
-            return {
-                "status": "MISSION_TOPIC_MISMATCH",
-                "bound": False,
-                "cycle": cycle,
-                "required_topic": required_topic,
-                "published_topic": published_topic,
-            }
         evidence_floor = _read_json(folder / "evidence_floor_check.json")
         if str(evidence_floor.get("status") or "") != "PASS":
             return {"status": "EVIDENCE_FLOOR_NOT_PASSED", "bound": False, "cycle": cycle}
+
+        binding_status = "BOUND"
+        bound_topic = required_topic
+        admission: dict[str, Any] = {"surface": "WEBSITE"}
+        if result_status == "PUBLISHED":
+            publication = _read_json(folder / "publication.json")
+            outcome = (
+                publication.get("outcome_attribution")
+                if isinstance(publication.get("outcome_attribution"), dict)
+                else {}
+            )
+            published_topic = str(outcome.get("topic") or "").strip()
+            if required_topic and published_topic != required_topic:
+                return {
+                    "status": "MISSION_TOPIC_MISMATCH",
+                    "bound": False,
+                    "cycle": cycle,
+                    "required_topic": required_topic,
+                    "published_topic": published_topic,
+                }
+            bound_topic = published_topic or required_topic
+        elif result_status == "HELD_BY_CHECKS":
+            # Website admission contains article-specific editorial constraints
+            # (learned writing techniques, long-form structure, opening-mode
+            # experiments).  Those constraints must not silently become X
+            # publication policy.  A held mission cycle may continue to X only
+            # through this narrower evidence/safety admission; X still performs
+            # its own model safety check and official API guardrails later.
+            cognition = _read_json(folder / "cognition.json")
+            experience = _read_json(folder / "experience.json")
+            self_check = (
+                experience.get("self_check")
+                if isinstance(experience.get("self_check"), dict)
+                else {}
+            )
+            missing_support = list(experience.get("missing_section_support") or ())
+            missing_grounding = list(experience.get("missing_section_grounding") or ())
+            draft_path = str(result.get("draft_path") or "").strip()
+            draft: dict[str, Any] = {}
+            if draft_path:
+                try:
+                    candidate = Path(draft_path).resolve()
+                    drafts_root = (self.state_root / "content" / "drafts").resolve()
+                    if candidate.is_relative_to(drafts_root):
+                        draft = _read_json(candidate)
+                except (OSError, RuntimeError, ValueError):
+                    draft = {}
+            artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
+            source_refs = [
+                row
+                for row in list(artifact.get("source_refs") or ())
+                if isinstance(row, dict)
+                and str(row.get("ref_id") or "").strip()
+                and str(row.get("source") or "").strip()
+            ]
+            x_admitted = all(
+                (
+                    bool(cognition.get("worth_saying")),
+                    bool(self_check.get("grounded")),
+                    bool(self_check.get("useful")),
+                    bool(self_check.get("no_private_data")),
+                    bool(self_check.get("no_investment_advice")),
+                    bool(experience.get("perspective_expression")),
+                    not missing_support,
+                    not missing_grounding,
+                    bool(source_refs),
+                )
+            )
+            if not x_admitted:
+                return {
+                    "status": "X_EXPRESSION_ADMISSION_FAILED",
+                    "bound": False,
+                    "cycle": cycle,
+                    "admission": {
+                        "worth_saying": bool(cognition.get("worth_saying")),
+                        "grounded": bool(self_check.get("grounded")),
+                        "useful": bool(self_check.get("useful")),
+                        "no_private_data": bool(self_check.get("no_private_data")),
+                        "no_investment_advice": bool(self_check.get("no_investment_advice")),
+                        "perspective_expression": bool(experience.get("perspective_expression")),
+                        "missing_section_support": missing_support,
+                        "missing_section_grounding": missing_grounding,
+                        "source_ref_count": len(source_refs),
+                    },
+                }
+            decision = (
+                discovery.get("decision")
+                if isinstance(discovery.get("decision"), dict)
+                else {}
+            )
+            discovered_topic = str(decision.get("topic") or "").strip()
+            if required_topic and discovered_topic and discovered_topic != required_topic:
+                return {
+                    "status": "MISSION_TOPIC_MISMATCH",
+                    "bound": False,
+                    "cycle": cycle,
+                    "required_topic": required_topic,
+                    "published_topic": discovered_topic,
+                }
+            binding_status = "BOUND_X_EXPRESSION"
+            bound_topic = required_topic or discovered_topic
+            admission = {
+                "surface": "X",
+                "website_status": result_status,
+                "website_checks_passed": bool(result.get("automated_checks_passed")),
+                "x_evidence_safety_admission": True,
+                "source_ref_count": len(source_refs),
+            }
+        else:
+            return {"status": "MISSION_CONTENT_NOT_PUBLISHED", "bound": False, "cycle": cycle}
+
         experiment = self._open_experiment(mission.mission_id)
         return {
-            "status": "BOUND",
+            "status": binding_status,
             "bound": True,
             "cycle": cycle,
             "mission_id": mission.mission_id,
             "experiment_id": None if experiment is None else experiment.experiment_id,
-            "topic": published_topic or required_topic,
+            "topic": bound_topic,
+            "admission": admission,
         }
 
     def record_publication_baseline(

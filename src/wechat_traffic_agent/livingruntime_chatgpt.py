@@ -420,7 +420,14 @@ class LivingRuntimeChatGPTProvider:
             resume_existing
             and result_status == "PENDING"
             and result.get("deadline_at") is None
+            and result.get("dispatch_deadline_at") is None
+            and int(result.get("dispatch_timeout_seconds") or 0) == 0
         ):
+            # Pre durable-dispatch queues could create a PENDING request with
+            # no dispatch grace and no terminal boundary at all.  New
+            # LivingRuntime semantics intentionally keep an unclaimed request
+            # PENDING after its dispatch grace; dispatch_deadline_at remains as
+            # provenance and response timeout starts only once ChatGPT claims.
             raise LivingRuntimeChatGPTProviderError(
                 "legacy unbounded cognition request has no dispatch deadline"
             )

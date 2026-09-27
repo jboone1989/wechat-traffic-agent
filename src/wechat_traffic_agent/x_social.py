@@ -383,10 +383,25 @@ class XAutonomyLoop:
         await self._publish_prediction_outcome(folder=folder, context=context, now=now)
         cognition = context.get("cognition") or {}
         cycle = str(context.get("cycle") or "")
-        if result.get("status") != "PUBLISHED" or not cognition.get("worth_saying"):
+        mission_binding = None
+        if self.growth_mission is not None:
+            binding_method = getattr(self.growth_mission, "publication_binding", None)
+            if callable(binding_method):
+                mission_binding = binding_method(cycle=cycle)
+        result_status = str(result.get("status") or "").upper()
+        x_only_admitted = (
+            isinstance(mission_binding, dict)
+            and bool(mission_binding.get("bound"))
+            and str(mission_binding.get("status") or "") == "BOUND_X_EXPRESSION"
+        )
+        if (
+            (result_status != "PUBLISHED" and not x_only_admitted)
+            or not cognition.get("worth_saying")
+        ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
         if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
+        context["x_mission_binding"] = mission_binding
         model_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle)
         public_url = _find_url(context.get("publication"))
         x_mission = x_growth_mission_context(self.state_root)
@@ -418,11 +433,7 @@ class XAutonomyLoop:
                     "guardrail": guard,
                 }
         me, _identity_receipt = self._identity(now=now)
-        mission_binding = None
         if self.growth_mission is not None:
-            binding_method = getattr(self.growth_mission, "publication_binding", None)
-            if callable(binding_method):
-                mission_binding = binding_method(cycle=cycle)
             if isinstance(mission_binding, dict) and bool(mission_binding.get("bound")):
                 baseline = self.growth_mission.record_publication_baseline(
                     cycle=cycle,
