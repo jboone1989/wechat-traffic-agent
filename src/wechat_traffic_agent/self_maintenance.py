@@ -792,7 +792,7 @@ class SelfMaintenanceService:
         enriched = 0
         scanned = 0
         repair_requested = 0
-        repair_candidates: list[tuple[str, str]] = []
+        repair_candidates: list[dict[str, Any]] = []
         for path in sorted(folder.glob("*.json")) if folder.exists() else ():
             scanned += 1
             try:
@@ -858,16 +858,33 @@ class SelfMaintenanceService:
                     continue
             problem_id = str(payload.get("problem_id") or "")
             if problem_id:
-                repair_candidates.append((
-                    str(payload.get("last_seen_at") or ""),
-                    problem_id,
-                ))
+                repair_candidates.append(dict(payload))
 
-        # Keep startup escalation bounded. Prefer the most recently observed
-        # known failures, and rely on the stable idempotency key for retries.
-        for _seen_at, problem_id in sorted(
-            repair_candidates, reverse=True
-        )[:4]:
+        # Researcher ordering is itself an evolvable policy.  Before the first
+        # R&D dream its incumbent is exactly the legacy recency-first rule; a
+        # replay-promoted policy may later reorder only already-authorized
+        # LOW-risk candidates.  It cannot widen repair authority.
+        research_policy_id = None
+        try:
+            from .research_dream import ResearchDreamEngine
+            research_engine = ResearchDreamEngine(self.state_root)
+            ranked_candidates = research_engine.rank_problem_rows(
+                repair_candidates
+            )
+            research_policy_id = (
+                research_engine.projection()
+                .get("incumbent_policy", {}).get("policy_id")
+            )
+        except Exception:
+            ranked_candidates = sorted(
+                repair_candidates,
+                key=lambda row: str(row.get("last_seen_at") or ""),
+                reverse=True,
+            )
+        for candidate in ranked_candidates[:4]:
+            problem_id = str(candidate.get("problem_id") or "")
+            if not problem_id:
+                continue
             receipt = self.request_code_repair(problem_id)
             if str(receipt.get("status") or "") in {
                 "REQUESTED", "RECEIVED", "ACCEPTED"
@@ -878,6 +895,7 @@ class SelfMaintenanceService:
             "enriched": enriched,
             "repair_candidate_count": len(repair_candidates),
             "repair_requested": repair_requested,
+            "research_policy_id": research_policy_id,
         }
 
     def review(self) -> dict[str, Any]:

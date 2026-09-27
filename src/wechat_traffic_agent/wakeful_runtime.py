@@ -161,6 +161,8 @@ class ContentWakefulRuntime:
             self.state_root,
             substrate=getattr(self.core.reflex, "substrate", None),
         )
+        from .research_dream import ResearchDreamEngine
+        self.research_dream = ResearchDreamEngine(self.state_root)
         from .neural_identity import (
             BrainCortexLedger,
             NeuralPersonality,
@@ -1424,7 +1426,12 @@ class ContentWakefulRuntime:
 
     def run_neural_dream(self, now: datetime | None = None, *, replay_count: int = 6) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        result = self.dream_engine.dream(now=now, replay_count=replay_count)
+        neural_result = self.dream_engine.dream(now=now, replay_count=replay_count)
+        research_result = self.research_dream.dream(now=now)
+        result = {
+            **neural_result,
+            "research_dream": research_result,
+        }
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()
@@ -1442,7 +1449,10 @@ class ContentWakefulRuntime:
         return result
 
     def dream_projection(self) -> dict:
-        return self.dream_engine.projection()
+        return {
+            **self.dream_engine.projection(),
+            "research_dream": self.research_dream.projection(),
+        }
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:
         # Operator-authorized resource onboarding is event-driven and should not
@@ -2255,7 +2265,7 @@ class ContentWakefulRuntime:
             "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-8:]],
             "neural_life": self.neural_life.projection() if self.neural_life_enabled else {"status": "DISABLED"},
             "brain_lab": self.brain_lab.projection(),
-            "dreaming": self.dream_engine.projection(),
+            "dreaming": self.dream_projection(),
             "neural_taste": self.neural_taste.projection(),
             "neural_social": self.neural_social.projection(),
             "personality": self.neural_personality.projection(),
