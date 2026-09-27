@@ -44,6 +44,7 @@ def test_screeps_observatory_projects_live_frame_and_replay(tmp_path):
     result = ScreepsObservatory(tmp_path).snapshot(include_frames=True)
 
     assert result["playing"] is True
+    assert result["display_mode"] == "LIVE"
     assert result["tick"] == 42
     assert result["frame"]["ferro"]["creeps"] == 5
     assert result["research_context"]["arm"] == "EXPLORATION"
@@ -119,7 +120,9 @@ def test_screeps_observatory_keeps_latest_replay_when_training_is_deferred(tmp_p
     assert result["playing"] is False
     assert result["status"] == "RESOURCE_DEFERRED"
     assert result["displaying_latest_replay"] is True
+    assert result["display_mode"] == "LAST_REPLAY"
     assert result["episode_id"] == trial["episode_id"]
     assert result["frame"]["tick"] == 60
     assert result["frame"]["tactical"]["mode"] == "WON"
+    assert result["research_context"]["strategy_id"] == "raider-v1"
     assert result["winner"] == "FERRO"

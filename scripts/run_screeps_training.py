@@ -193,7 +193,7 @@ def main() -> int:
                 "status": "RESOURCE_DEFERRED",
                 "observed_at": datetime.now(timezone.utc).isoformat(),
                 "resource_admission": admission,
-                "research": researcher.projection(),
+                "research_summary": researcher.projection(),
             })
             print(json.dumps({
                 "status": "RESOURCE_DEFERRED",
@@ -288,7 +288,7 @@ def main() -> int:
                 "episode_id": episode_id,
                 "observed_at": datetime.now(timezone.utc).isoformat(),
                 "error": f"HARNESS_EXIT_{returncode}",
-                "research": researcher.projection(),
+                "research_summary": researcher.projection(),
             })
             write_live(live)
             results.append({"status": "HARNESS_FAILED", **cancellation})
@@ -335,7 +335,7 @@ def main() -> int:
                 "reward": settled.reward,
                 "winner": row.get("winner"),
                 "settled_at": datetime.now(timezone.utc).isoformat(),
-                "research": research,
+                "research_summary": research,
             })
             _write_json(replay_path, replay)
         live = _read_json(live_path)
@@ -346,7 +346,7 @@ def main() -> int:
             "observed_at": datetime.now(timezone.utc).isoformat(),
             "winner": row.get("winner"),
             "reward": settled.reward,
-            "research": research,
+            "research_summary": research,
         })
         write_live(live)
         results.append({
