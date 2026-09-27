@@ -282,6 +282,66 @@ def _capability_pack_deployment() -> tuple[tuple[str, ...], dict[str, str], dict
     return trusted, preferred, configs
 
 
+def _reconcile_host_capabilities(
+    app: ContentApplication,
+    *,
+    resumable_chatgpt: bool,
+) -> tuple[str, ...]:
+    """Project verified host/runtime abilities into Agent Runtime inventory.
+
+    These are deliberately separate from LLM-backend capabilities.  Registering
+    a host binding lets the SelfModel stop treating an already-usable ability as
+    missing without pretending that the advisory model itself owns shell/MCP
+    execution.
+    """
+    from agent_runtime.capabilities import (
+        CapabilityAccessMode,
+        CapabilityBinding,
+        CapabilityKind,
+        CapabilityLifecycleState,
+        SideEffectLevel,
+    )
+
+    available = set(app.runtime.available_capabilities())
+    inventory = app.domain_runtime.capability_inventory
+    reconciled: list[str] = []
+    if {"web.search", "web.fetch"}.issubset(available):
+        inventory.register(CapabilityBinding(
+            capability_id="web_research",
+            kind=CapabilityKind.WORKFLOW,
+            provider="content-application-runtime",
+            binding_id="ferro-host:web-research",
+            access_mode=CapabilityAccessMode.LOCAL,
+            state=CapabilityLifecycleState.ACTIVE,
+            side_effects=SideEffectLevel.READ_ONLY,
+            health=1.0,
+            entry_point={"capabilities": ["web.search", "web.fetch"]},
+            evidence_refs=[
+                "runtime-capability:web.search",
+                "runtime-capability:web.fetch",
+            ],
+        ))
+        reconciled.append("web_research")
+    if resumable_chatgpt:
+        inventory.register(CapabilityBinding(
+            capability_id="resumable_agent_session",
+            kind=CapabilityKind.SERVICE,
+            provider="livingruntime-chatgpt",
+            binding_id="ferro-host:durable-chatgpt",
+            access_mode=CapabilityAccessMode.REMOTE_ACCESS,
+            state=CapabilityLifecycleState.ACTIVE,
+            side_effects=SideEffectLevel.NONE,
+            health=1.0,
+            entry_point={"transport": "durable-cognition"},
+            evidence_refs=["livingruntime-chatgpt:durable-cognition"],
+        ))
+        reconciled.append("resumable_agent_session")
+    if reconciled:
+        inventory.sync_to_self_model(app.domain_runtime.self_model)
+        app.domain_runtime.persist()
+    return tuple(reconciled)
+
+
 def build_content_application(
     *, root: Path, manifest_path: Path, allow_missing_required_capabilities: bool = False
 ) -> ContentApplication:
@@ -294,7 +354,10 @@ def build_content_application(
     from agent_runtime.runtime import AgentRuntime
     from virtualbrain import Subject, SubjectObservation
 
-    from .runtime_backend import load_optional_advisory_backend
+    from .runtime_backend import (
+        chatgpt_only_mode,
+        load_optional_advisory_backend,
+    )
 
     root = Path(root)
     manifest = load_agent_manifest(manifest_path)
@@ -378,6 +441,10 @@ def build_content_application(
         raise RuntimeError("required Runtime capabilities unavailable: " + missing)
     app.capability_manager = manager
     app.capability_binding_report = report
+    _reconcile_host_capabilities(
+        app,
+        resumable_chatgpt=chatgpt_only_mode(),
+    )
     return app
 
 

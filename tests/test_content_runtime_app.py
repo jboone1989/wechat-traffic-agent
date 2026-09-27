@@ -9,6 +9,7 @@ from wechat_traffic_agent.runtime_app import (
     ContentApplication,
     ContentCapabilityPack,
     _capability_pack_deployment,
+    _reconcile_host_capabilities,
 )
 
 
@@ -259,6 +260,77 @@ def test_manifest_requires_search_and_fetch_but_media_is_optional():
     assert set(optional) == {"image.search", "image.generate", "video.generate"}
     assert optional["image.generate"]["required_permissions"] == ["media.generate"]
     assert optional["video.generate"]["required_permissions"] == ["media.generate"]
+
+
+def test_verified_host_capabilities_correct_self_model_without_faking_backend_execution():
+    from agent_runtime.capabilities import CapabilityInventory
+
+    inventory = CapabilityInventory()
+    inventory.sync_backend_capabilities(
+        {
+            "advisory_reasoning": True,
+            "structured_reasoning": True,
+            "workspace_execution": False,
+            "web_research": False,
+            "mcp_access": False,
+            "resumable_agent_session": False,
+        },
+        provider="legacy-provider",
+    )
+
+    class SelfModel:
+        def __init__(self):
+            self.values = {}
+
+        def apply_update(
+            self, path, value, *, reason, uncertainty, evidence
+        ):
+            self.values[path] = {
+                "value": value,
+                "reason": reason,
+                "uncertainty": uncertainty,
+                "evidence": list(evidence),
+            }
+
+    class Domain:
+        def __init__(self):
+            self.capability_inventory = inventory
+            self.self_model = SelfModel()
+            self.persisted = 0
+
+        def persist(self):
+            self.persisted += 1
+
+    domain = Domain()
+    app = SimpleNamespace(
+        runtime=SimpleNamespace(
+            available_capabilities=lambda: (
+                "content.status",
+                "web.search",
+                "web.fetch",
+                "x.identity",
+            )
+        ),
+        domain_runtime=domain,
+    )
+
+    reconciled = _reconcile_host_capabilities(
+        app,
+        resumable_chatgpt=True,
+    )
+
+    assert reconciled == ("web_research", "resumable_agent_session")
+    assert inventory.usable("web_research") is True
+    assert inventory.usable("resumable_agent_session") is True
+    assert inventory.usable("workspace_execution") is False
+    assert inventory.usable("mcp_access") is False
+    assert inventory.get("web_research").provider == "content-application-runtime"
+    assert inventory.get("resumable_agent_session").provider == "livingruntime-chatgpt"
+    assert domain.self_model.values["capabilities.web_research"]["value"] is True
+    assert domain.self_model.values["capabilities.resumable_agent_session"]["value"] is True
+    assert domain.self_model.values["capabilities.workspace_execution"]["value"] is False
+    assert domain.self_model.values["capabilities.mcp_access"]["value"] is False
+    assert domain.persisted == 1
 
 
 def test_runtime_composition_does_not_import_concrete_web_providers():
