@@ -229,6 +229,9 @@ class ContentWakefulRuntime:
         from .neural_organ_handoff import NeuralOrganHandoff
         self.neural_organ_handoff = NeuralOrganHandoff(self.state_root)
         self._wake_request_root = self.state_root / "application" / "wake_requests"
+        self._optional_deferral_path = (
+            self.state_root / "application" / "optional_task_deferrals.json"
+        )
         # Process-local edge detector for matured delayed-learning work.  The
         # hourly CHECK_OUTCOMES cadence is the liveness fallback; this signature
         # only grants one fast follow-up when the due set actually changes.
@@ -1506,6 +1509,84 @@ class ContentWakefulRuntime:
                     request_ids.append(request_id)
         return tuple(dict.fromkeys(request_ids))
 
+    def _optional_internal_max_deferral_seconds(self) -> int:
+        value = int(
+            os.environ.get(
+                "CONTENT_OPTIONAL_INTERNAL_MAX_DEFERRAL_SECONDS",
+                "900",
+            )
+        )
+        if not 60 <= value <= 21600:
+            raise ValueError(
+                "CONTENT_OPTIONAL_INTERNAL_MAX_DEFERRAL_SECONDS must be 60..21600"
+            )
+        return value
+
+    def _optional_deferral_state(self) -> dict[str, str]:
+        try:
+            payload = json.loads(
+                self._optional_deferral_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+        rows = payload.get("first_deferred_at") if isinstance(payload, dict) else None
+        if not isinstance(rows, dict):
+            return {}
+        return {
+            str(key): str(value)
+            for key, value in rows.items()
+            if str(key).strip() and str(value).strip()
+        }
+
+    def _write_optional_deferral_state(self, rows: Mapping[str, str]) -> None:
+        self._optional_deferral_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema_version": "ferro-optional-task-deferrals.v1",
+            "first_deferred_at": dict(sorted(rows.items())),
+        }
+        tmp = self._optional_deferral_path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, self._optional_deferral_path)
+
+    def _optional_internal_starved(
+        self,
+        wake: PlannedWake,
+        now: datetime,
+        *,
+        record: bool,
+    ) -> bool:
+        if wake.task not in _OPTIONAL_INTERNAL_TASKS:
+            return False
+        rows = self._optional_deferral_state()
+        raw = rows.get(wake.wake_id)
+        first: datetime | None = None
+        if raw:
+            try:
+                parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if parsed.tzinfo is not None and parsed.utcoffset() is not None:
+                    first = parsed.astimezone(timezone.utc)
+            except ValueError:
+                first = None
+        if first is None and record:
+            first = now.astimezone(timezone.utc)
+            rows[wake.wake_id] = first.isoformat()
+            self._write_optional_deferral_state(rows)
+        if first is None:
+            return False
+        return (
+            now.astimezone(timezone.utc) - first
+        ).total_seconds() >= self._optional_internal_max_deferral_seconds()
+
+    def _clear_optional_internal_deferral(self, wake: PlannedWake) -> None:
+        if wake.task not in _OPTIONAL_INTERNAL_TASKS:
+            return
+        rows = self._optional_deferral_state()
+        if rows.pop(wake.wake_id, None) is not None:
+            self._write_optional_deferral_state(rows)
+
     def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
         active_user_goals = self._active_user_goal_ids()
         owner_goal_wake = self._is_owner_goal_cognition_wake(
@@ -1531,11 +1612,18 @@ class ContentWakefulRuntime:
             for plan in self.core.snapshot().pending_plans
         )
         current_is_owner_continuation = owner_goal_wake and wake_has_resume_ref
+        optional_starved = self._optional_internal_starved(
+            wake,
+            now,
+            record=False,
+        )
         if (
             owner_continuation_due
             and not current_is_owner_continuation
             and wake.task not in _OWNER_CONTINUATION_EXEMPT_TASKS
+            and not optional_starved
         ):
+            self._optional_internal_starved(wake, now, record=True)
             return 30.0
         if wake_has_resume_ref:
             # This is continuation of a transaction that already passed
@@ -1546,12 +1634,26 @@ class ContentWakefulRuntime:
             if wake.task in _CHATGPT_COGNITIVE_TASKS:
                 return 60.0
             if wake.task in _OPTIONAL_INTERNAL_TASKS:
-                return 60.0
+                if not optional_starved:
+                    self._optional_internal_starved(wake, now, record=True)
+                    return 60.0
+                # A pending ChatGPT transaction may delay optional organism
+                # activity, but cannot starve it forever. Resource/REST gates
+                # still apply below before the bounded activity is admitted.
         if owner_goal_wake:
             # Explicit owner work bypasses resource-pressure admission, but it
             # cannot violate the durable cognition single-flight invariant.
             return None
-        return self.resource_regulator.defer_seconds(wake.task, now)
+        delay = self.resource_regulator.defer_seconds(wake.task, now)
+        if delay is None:
+            self._clear_optional_internal_deferral(wake)
+        elif (
+            wake.task in _OPTIONAL_INTERNAL_TASKS
+            and not pending_chatgpt
+            and not owner_continuation_due
+        ):
+            self._clear_optional_internal_deferral(wake)
+        return delay
 
     def schedule_goal_followup(
         self,

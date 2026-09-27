@@ -618,6 +618,91 @@ def test_pending_chatgpt_request_defers_new_cognition_and_optional_internal_work
     assert runtime._plan_admission_delay(play) == 60.0
 
 
+def test_optional_internal_work_gets_bounded_slot_after_chatgpt_starvation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("CONTENT_OPTIONAL_INTERNAL_MAX_DEFERRAL_SECONDS", "900")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(runtime.resource_regulator, "defer_seconds", lambda task, now: None)
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_long_pending",
+        task="VERIFY_PREDICTION",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="bounded organism play",
+        task="NEURAL_PLAY",
+    )
+
+    assert runtime._plan_admission_delay(play) == 60.0
+
+    # Starvation evidence is durable: a process restart must not reset the
+    # owner/ChatGPT deferral clock.
+    restarted = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(
+        restarted.core,
+        "clock",
+        lambda: NOW + timedelta(seconds=901),
+    )
+    monkeypatch.setattr(
+        restarted.resource_regulator,
+        "defer_seconds",
+        lambda task, now: None,
+    )
+
+    assert restarted._plan_admission_delay(play) is None
+
+
+def test_owner_continuation_cannot_starve_neural_play_forever(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("CONTENT_OPTIONAL_INTERNAL_MAX_DEFERRAL_SECONDS", "900")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    clock = {"now": NOW}
+    monkeypatch.setattr(runtime.core, "clock", lambda: clock["now"])
+    monkeypatch.setattr(runtime, "_active_user_goal_ids", lambda: {"goal-owner"})
+    monkeypatch.setattr(runtime.resource_regulator, "defer_seconds", lambda task, now: None)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW - timedelta(seconds=1),
+        reason="resume durable content cognition after ChatGPT response",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal-owner", "cognition-request:llmreq_owner_long"),
+    ))
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW - timedelta(minutes=30),
+        reason="organism play",
+        task="NEURAL_PLAY",
+    )
+
+    assert runtime._plan_admission_delay(play) == 30.0
+    clock["now"] = NOW + timedelta(seconds=901)
+    assert runtime._plan_admission_delay(play) is None
+
+
+def test_starvation_cap_does_not_bypass_hard_resource_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_OPTIONAL_INTERNAL_MAX_DEFERRAL_SECONDS", "60")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    clock = {"now": NOW}
+    monkeypatch.setattr(runtime.core, "clock", lambda: clock["now"])
+    runtime.schedule_chatgpt_resume(
+        NOW, request_id="llmreq_resource_block", task="VERIFY_PREDICTION"
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY", at=NOW, reason="play", task="NEURAL_PLAY"
+    )
+    assert runtime._plan_admission_delay(play) == 60.0
+    clock["now"] = NOW + timedelta(seconds=61)
+    monkeypatch.setattr(
+        runtime.resource_regulator, "defer_seconds", lambda task, now: 900.0
+    )
+    assert runtime._plan_admission_delay(play) == 900.0
+
+
 def test_exact_chatgpt_resume_is_not_rethrottled_by_resource_admission(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     resume = PlannedWake(
