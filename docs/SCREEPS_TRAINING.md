@@ -19,21 +19,28 @@ game outcomes.
 
 ## Continuous training
 
-Production uses `ferro-screeps-trainer.service` plus
-`ferro-screeps-trainer.timer`. The timer attempts one 180-tick match every
-10 minutes. Training is automatically deferred when any of these conditions is
-true:
+The repository provides both a systemd timer and an equivalent user crontab.
+VM-0-9 currently uses `deploy/cron/ferro-screeps.crontab` because Remote does
+not require root access to install it. Hosts with root-managed systemd can use
+`ferro-screeps-trainer.service` plus `ferro-screeps-trainer.timer`.
+
+Both schedules attempt one 180-tick match every 10 minutes. Training is
+automatically deferred when any of these conditions is true:
 
 - available memory < 900 MiB;
 - free disk < 10 GiB;
 - one-minute load average > 1.5.
 
-The systemd cgroup additionally limits training to 85% of one CPU and 1 GiB of
-memory. Successful matches remove their temporary Loki database/log directory;
-compact inputs/results and Ferro learning state remain durable.
+The cron deployment runs under `nice -n 10` and idle I/O priority, while the
+systemd deployment additionally caps training at 85% of one CPU and 1 GiB of
+memory. The trainer itself always uses an exclusive lock, a 240-second match
+timeout, and the resource admission gates above. Successful matches remove
+their temporary Loki database/log directory; compact inputs/results and Ferro
+learning state remain durable.
 
-The service expects:
+Both deployment modes expect:
 
 - `/home/ubuntu/ferro-screeps-current` -> deployed Ferro release;
+- `/home/ubuntu/content-agent-venv-current` -> stable Python environment;
 - `/home/ubuntu/screeps-lab` -> local Screeps installation;
 - `/home/ubuntu/content-agent-state` -> production Ferro state.
