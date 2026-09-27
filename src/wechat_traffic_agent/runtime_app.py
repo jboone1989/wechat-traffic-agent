@@ -338,6 +338,11 @@ def _reconcile_host_capabilities(
         reconciled.append("resumable_agent_session")
     if reconciled:
         inventory.sync_to_self_model(app.domain_runtime.self_model)
+        from agent_runtime.self_model import SelfModel, describe_self
+        if isinstance(app.domain_runtime.self_model, SelfModel):
+            app.domain_runtime.self_model.history_summary = describe_self(
+                app.domain_runtime.self_model
+            )
         app.domain_runtime.persist()
     return tuple(reconciled)
 

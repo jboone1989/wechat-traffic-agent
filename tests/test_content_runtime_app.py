@@ -333,6 +333,50 @@ def test_verified_host_capabilities_correct_self_model_without_faking_backend_ex
     assert domain.persisted == 1
 
 
+def test_host_capability_reconciliation_refreshes_structured_self_summary():
+    from agent_runtime.capabilities import CapabilityInventory
+    from agent_runtime.clock import SystemClock
+    from agent_runtime.identity import create_genesis_identity
+    from agent_runtime.self_model.model import SelfModel
+
+    inventory = CapabilityInventory()
+    inventory.sync_backend_capabilities(
+        {
+            "advisory_reasoning": True,
+            "structured_reasoning": True,
+            "workspace_execution": False,
+            "web_research": False,
+            "mcp_access": False,
+            "resumable_agent_session": False,
+        },
+        provider="legacy-provider",
+    )
+    identity = create_genesis_identity("0.1.0", SystemClock())
+
+    class Domain:
+        def __init__(self):
+            self.capability_inventory = inventory
+            self.self_model = SelfModel.bootstrap(identity, identity.created_at)
+
+        def persist(self):
+            pass
+
+    domain = Domain()
+    app = SimpleNamespace(
+        runtime=SimpleNamespace(
+            available_capabilities=lambda: ("web.search", "web.fetch")
+        ),
+        domain_runtime=domain,
+    )
+
+    _reconcile_host_capabilities(app, resumable_chatgpt=True)
+
+    assert "web_research=up" in domain.self_model.history_summary
+    assert "resumable_agent_session=up" in domain.self_model.history_summary
+    assert "workspace_execution=down" in domain.self_model.history_summary
+    assert "mcp_access=down" in domain.self_model.history_summary
+
+
 def test_runtime_composition_does_not_import_concrete_web_providers():
     text = (Path(__file__).resolve().parents[1] / "src/wechat_traffic_agent/runtime_app.py").read_text()
     assert "SearXNGSearchProvider" not in text
