@@ -181,6 +181,7 @@ def main() -> int:
         raise ValueError("at least one opponent strategy is required")
 
     researcher = ScreepsResearcher(args.state_root)
+    training_plan = researcher.planned_episode_count(args.episodes)
     live_path = args.state_root / "application" / "screeps_live.json"
     replay_root = args.state_root / "application" / "screeps_replays"
     def write_live(payload: dict[str, Any]) -> None:
@@ -192,7 +193,7 @@ def main() -> int:
         else int(researcher.projection().get("episode_count") or 0) + 1
     )
     results: list[dict[str, Any]] = []
-    for index in range(max(1, min(64, int(args.episodes)))):
+    for index in range(int(training_plan["planned_episodes"])):
         snapshot = _resource_snapshot(args.lab_root)
         admission = _resource_admission(snapshot, args)
         if not admission["allowed"]:
@@ -384,6 +385,7 @@ def main() -> int:
     print(json.dumps({
         "status": "COMPLETED",
         "completed_episodes": len(results),
+        "training_plan": training_plan,
         "results": results,
         "research": researcher.projection(),
         "resource_snapshot": _resource_snapshot(args.lab_root),

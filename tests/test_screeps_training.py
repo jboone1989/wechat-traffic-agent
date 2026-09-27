@@ -267,3 +267,17 @@ def test_screeps_population_opponent_rotates_toward_untested_member(tmp_path):
 
     second = engine.choose_population_opponent("balanced-v1", seed=3)
     assert second != first
+
+
+def test_graduation_sprint_doubles_single_scheduled_episode(tmp_path):
+    engine = ScreepsResearcher(tmp_path)
+
+    sprint = engine.planned_episode_count(1)
+    assert sprint["mode"] == "GRADUATION_SPRINT"
+    assert sprint["planned_episodes"] == 2
+    assert sprint["graduation"]["graduated"] is False
+
+    engine.game_intelligence.graduation_status = lambda: {"graduated": True}
+    maintenance = engine.planned_episode_count(1)
+    assert maintenance["mode"] == "MAINTENANCE"
+    assert maintenance["planned_episodes"] == 1

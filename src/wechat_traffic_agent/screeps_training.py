@@ -600,6 +600,22 @@ class ScreepsResearcher:
             "evidence_ref": outcome.evidence_ref,
         }
 
+    def planned_episode_count(self, requested: int) -> dict[str, Any]:
+        requested_count = max(1, min(64, int(requested)))
+        graduation = self.game_intelligence.graduation_status()
+        if graduation.get("graduated"):
+            planned = requested_count
+            mode = "MAINTENANCE"
+        else:
+            planned = max(2, requested_count)
+            mode = "GRADUATION_SPRINT"
+        return {
+            "mode": mode,
+            "requested_episodes": requested_count,
+            "planned_episodes": planned,
+            "graduation": graduation,
+        }
+
     def choose_population_opponent(
         self,
         strategy_id: str,
