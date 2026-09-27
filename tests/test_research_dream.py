@@ -431,6 +431,69 @@ def test_researcher_kills_challenger_after_online_regression(tmp_path):
     assert projection["online_rejection_count"] == 1
 
 
+def test_migrated_trial_repairs_source_dream_and_legacy_pool_budget(tmp_path):
+    engine = ResearchDreamEngine(tmp_path)
+    baseline = dict(engine.state["incumbent_policy"])
+    challenger = {
+        "policy_id": "research-policy:offline-v3",
+        "generation": 1,
+        "weights": {
+            "recency": 0.2, "recurrence": 0.3, "known_recipe": 0.25,
+            "diagnosability": 0.15, "diversity": 0.1,
+        },
+        "origin": "RESEARCH_DREAM_REPLAY:research-dream:3",
+        "replay_promoted": False,
+        "online_validation_required": True,
+    }
+    state = engine.state
+    state["dreams"] = [
+        {
+            "dream_id": "research-dream:3",
+            "decision": "PROMOTE_RESEARCH_POLICY_BOUNDED",
+            "incumbent": {"score": 0.42},
+            "winner": {"policy_id": challenger["policy_id"], "score": 0.68},
+        },
+        {
+            "dream_id": "research-dream:5",
+            "decision": "KEEP_INCUMBENT",
+            "incumbent": {"score": 0.67},
+            "winner": {"policy_id": "research-policy:other", "score": 0.67},
+        },
+    ]
+    state["incumbent_policy"] = baseline
+    state["researcher_generation"] = 0
+    state["promotion_count"] = 0
+    state["offline_replay_migration"] = {
+        "status": "MIGRATED",
+        "restored_generation": 0,
+    }
+    state["prospective_trial"] = {
+        "trial_id": "research-trial:migrated",
+        "status": "ACTIVE",
+        "started_at": NOW.isoformat(),
+        "baseline_policy": baseline,
+        "challenger_policy": challenger,
+        "replay_dream_id": "research-dream:5",
+        "replay_incumbent_score": 0.67,
+        "replay_challenger_score": 0.67,
+        "assignments": {},
+        "results": {},
+        "origin": "MIGRATED_PRE_V2_REPLAY_ONLY_INCUMBENT",
+    }
+    state["replay_pool_promotion_count"] = 3
+    _put(engine.path, state)
+
+    repaired = ResearchDreamEngine(tmp_path).projection()
+    trial = repaired["prospective_trial"]
+    assert trial["replay_dream_id"] == "research-dream:3"
+    assert trial["replay_incumbent_score"] == 0.42
+    assert trial["replay_challenger_score"] == 0.68
+    raw = json.loads(engine.path.read_text())
+    assert raw["replay_pool_challenger_count"] == 1
+    assert "replay_pool_promotion_count" not in raw
+    assert raw["offline_replay_migration"]["source_replay_dream_id"] == "research-dream:3"
+
+
 def test_wakeful_public_snapshot_exposes_researcher_generation(tmp_path):
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
 

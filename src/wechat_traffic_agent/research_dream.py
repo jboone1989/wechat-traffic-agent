@@ -144,6 +144,7 @@ class ResearchDreamEngine:
                 "automatic_authority_expansion": False,
             }
         self._migrate_replay_only_incumbent()
+        self._repair_migrated_trial_provenance()
 
     @staticmethod
     def _is_replay_only_policy(row: Mapping[str, Any] | None) -> bool:
@@ -174,6 +175,32 @@ class ResearchDreamEngine:
                 return dict(row)
         return _default_policy()
 
+    @staticmethod
+    def _source_dream_for_policy(
+        policy: Mapping[str, Any],
+        dreams: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        origin = str(policy.get("origin") or "")
+        origin_id = (
+            origin.split("RESEARCH_DREAM_REPLAY:", 1)[1]
+            if origin.startswith("RESEARCH_DREAM_REPLAY:")
+            else ""
+        )
+        if origin_id:
+            exact = next(
+                (row for row in dreams if str(row.get("dream_id") or "") == origin_id),
+                None,
+            )
+            if exact is not None:
+                return exact
+        policy_id = str(policy.get("policy_id") or "")
+        matches = [
+            row for row in dreams
+            if str((row.get("winner") or {}).get("policy_id") or "") == policy_id
+            and row.get("decision") == "PROMOTE_RESEARCH_POLICY_BOUNDED"
+        ]
+        return matches[-1] if matches else (dreams[-1] if dreams else {})
+
     def _migrate_replay_only_incumbent(self) -> None:
         """Demote pre-v2 replay-only incumbents into an online challenger trial."""
         current = self.state.get("incumbent_policy")
@@ -197,12 +224,12 @@ class ResearchDreamEngine:
             for row in self.state.get("dreams") or ()
             if isinstance(row, Mapping)
         ]
-        latest = dreams[-1] if dreams else {}
+        source_dream = self._source_dream_for_policy(challenger, dreams)
         trial_id = "research-trial:migrated-" + sha256(
             (
                 str(challenger.get("policy_id") or "")
                 + "|"
-                + str(latest.get("dream_id") or "")
+                + str(source_dream.get("dream_id") or "")
                 + "|"
                 + str(self.state.get("replay_pool_hash") or "")
             ).encode()
@@ -213,7 +240,7 @@ class ResearchDreamEngine:
             "online_validation_required": True,
             "origin": (
                 str(challenger.get("origin") or "")
-                or f"RESEARCH_DREAM_REPLAY:{latest.get('dream_id') or 'legacy'}"
+                or f"RESEARCH_DREAM_REPLAY:{source_dream.get('dream_id') or 'legacy'}"
             ),
         })
         self.state["incumbent_policy"] = baseline
@@ -248,15 +275,15 @@ class ResearchDreamEngine:
             "started_at": now.isoformat(),
             "baseline_policy": baseline,
             "challenger_policy": challenger,
-            "replay_dream_id": latest.get("dream_id"),
+            "replay_dream_id": source_dream.get("dream_id"),
             "replay_pool_hash": self.state.get("replay_pool_hash"),
             "replay_incumbent_score": (
-                (latest.get("incumbent") or {}).get("score")
-                if isinstance(latest.get("incumbent"), Mapping) else None
+                (source_dream.get("incumbent") or {}).get("score")
+                if isinstance(source_dream.get("incumbent"), Mapping) else None
             ),
             "replay_challenger_score": (
-                (latest.get("winner") or {}).get("score")
-                if isinstance(latest.get("winner"), Mapping) else None
+                (source_dream.get("winner") or {}).get("score")
+                if isinstance(source_dream.get("winner"), Mapping) else None
             ),
             "minimum_samples_per_arm": MIN_ONLINE_SAMPLES_PER_ARM,
             "assignments": {},
@@ -273,13 +300,64 @@ class ResearchDreamEngine:
             "restored_policy_id": baseline.get("policy_id"),
             "restored_generation": validated_generation,
             "prospective_trial_id": trial_id,
+            "source_replay_dream_id": source_dream.get("dream_id"),
             "replay_only_promotion_count": replay_only_promotions,
             "history_preserved": True,
         }
+        self.state["replay_pool_challenger_count"] = 1
+        self.state.pop("replay_pool_promotion_count", None)
         self.state["updated_at"] = now.isoformat()
         self.state["protected_invariants"] = list(PROTECTED_INVARIANTS)
         self.state["automatic_authority_expansion"] = False
         _write(self.path, self.state)
+
+    def _repair_migrated_trial_provenance(self) -> None:
+        migration = self.state.get("offline_replay_migration")
+        trial = self.state.get("prospective_trial")
+        if (
+            not isinstance(migration, Mapping)
+            or str(migration.get("status") or "") != "MIGRATED"
+            or not isinstance(trial, Mapping)
+            or str(trial.get("origin") or "") != "MIGRATED_PRE_V2_REPLAY_ONLY_INCUMBENT"
+        ):
+            return
+        dreams = [
+            dict(row)
+            for row in self.state.get("dreams") or ()
+            if isinstance(row, Mapping)
+        ]
+        challenger = (
+            dict(trial.get("challenger_policy"))
+            if isinstance(trial.get("challenger_policy"), Mapping)
+            else {}
+        )
+        source = self._source_dream_for_policy(challenger, dreams)
+        updated_trial = dict(trial)
+        updated_migration = dict(migration)
+        changed = False
+        source_id = source.get("dream_id")
+        if source_id and updated_trial.get("replay_dream_id") != source_id:
+            updated_trial["replay_dream_id"] = source_id
+            updated_trial["replay_incumbent_score"] = (
+                (source.get("incumbent") or {}).get("score")
+                if isinstance(source.get("incumbent"), Mapping) else None
+            )
+            updated_trial["replay_challenger_score"] = (
+                (source.get("winner") or {}).get("score")
+                if isinstance(source.get("winner"), Mapping) else None
+            )
+            updated_migration["source_replay_dream_id"] = source_id
+            changed = True
+        if self.state.get("replay_pool_challenger_count") != 1:
+            self.state["replay_pool_challenger_count"] = 1
+            changed = True
+        if "replay_pool_promotion_count" in self.state:
+            self.state.pop("replay_pool_promotion_count", None)
+            changed = True
+        if changed:
+            self.state["prospective_trial"] = updated_trial
+            self.state["offline_replay_migration"] = updated_migration
+            _write(self.path, self.state)
 
     def _problem_rows(self) -> dict[str, dict[str, Any]]:
         folder = self.state_root / "application" / "self_maintenance" / "problems"
