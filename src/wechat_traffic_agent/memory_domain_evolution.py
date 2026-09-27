@@ -237,7 +237,14 @@ class MemoryDomainEvolution:
 
     def _persist(self, domain: str, row: dict) -> None:
         atomic_json(self.root / f"{domain}.json", row)
-        if row.get("experiment_id") and row.get("status") in TERMINAL | {"PROMOTED"}:
+        if row.get("experiment_id") and row.get("status") in TERMINAL:
+            experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
+            if experiment.stage is not ExperimentStage.CLOSED:
+                self.runtime.abort_evolution_experiment(
+                    row["experiment_id"],
+                    evidence_refs=[row["replay_evidence_id"]],
+                )
+        elif row.get("experiment_id") and row.get("status") == "PROMOTED":
             experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
             if experiment.stage is ExperimentStage.PROSPECTIVE_TRIAL:
                 self.runtime.evolution_experiment_manager.close(
@@ -262,8 +269,8 @@ class MemoryDomainEvolution:
             "architecture_fingerprint": architecture_fingerprint(),
         })
 
-    def _evidence(self, ref: str, effective_at: datetime, metrics: dict, refs: list[str]):
-        now = aware(self.runtime.clock.now())
+    def _evidence(self, ref: str, effective_at: datetime, metrics: dict, refs: list[str], *, settled_at=None):
+        now = aware(settled_at or self.runtime.clock.now())
         experience = self.runtime.record_domain_evolution_experience(
             domain_event_ref=ref, observed_at=effective_at, effective_at=effective_at,
             context_refs=["memory-domain-evaluator", "paired-shadow-retrieval"], confidence=1.0)
@@ -278,56 +285,145 @@ class MemoryDomainEvolution:
     def _start(self, kind: str, evaluator: DomainEvaluator, row: dict, cases: list[dict],
                weights: dict, policies: dict, failure_refs: list[str]) -> dict:
         domain, capability_id = DOMAIN_SPECS[kind]
-        baseline = policies[domain]
-        reports = [(candidate, evaluator.compare(self.store, cases, weights, policies, candidate))
-                   for candidate in challenger_policies(domain, baseline)]
-        if not reports:
-            row["status"] = "NO_BOUNDED_CHALLENGER"
-            return row
-        challenger, replay = max(reports, key=lambda item: (item[1]["passed"], item[1]["gain"]))
-        row.update(replay=replay, status="REPLAY_NO_IMPROVEMENT")
-        atomic_json(self.root / "replays" / (domain + "-" + row["input_fingerprint"] + ".json"),
-                    {"candidate_type": kind, "cases": cases, "reports": reports})
-        if not replay["passed"]:
-            if replay["protected_regressions"] or not replay["invariants_passed"]:
-                row["status"] = "REPLAY_REJECTED_INVARIANT"
-            return row
-        now = aware(self.runtime.clock.now())
-        _, evidence = self._evidence("memory-domain-replay:" + domain + ":" + row["input_fingerprint"], now,
+        if row.get("status") != "STARTING":
+            baseline = policies[domain]
+            reports = [(candidate, evaluator.compare(self.store, cases, weights, policies, candidate))
+                       for candidate in challenger_policies(domain, baseline)]
+            if not reports:
+                row["status"] = "NO_BOUNDED_CHALLENGER"
+                return row
+            challenger, replay = max(reports, key=lambda item: (item[1]["passed"], item[1]["gain"]))
+            row.update(replay=replay, status="REPLAY_NO_IMPROVEMENT")
+            atomic_json(self.root / "replays" / (domain + "-" + row["input_fingerprint"] + ".json"),
+                        {"candidate_type": kind, "cases": cases, "reports": reports})
+            if not replay["passed"]:
+                if replay["protected_regressions"] or not replay["invariants_passed"]:
+                    row["status"] = "REPLAY_REJECTED_INVARIANT"
+                return row
+            started_at = aware(self.runtime.clock.now())
+            row.update(
+                status="STARTING",
+                baseline=baseline,
+                challenger=challenger,
+                weights=weights,
+                policies=policies,
+                replay_case_ids=[case["case_id"] for case in cases],
+                replay_outcome_refs=[case["outcome_ref"] for case in cases],
+                failure_refs=list(failure_refs),
+                replay_ref="memory-domain-replay:" + domain + ":" + row["input_fingerprint"],
+                started_at=started_at.isoformat(),
+                prospective_start_at=(started_at + timedelta(minutes=1)).isoformat(),
+                prospective_end_at=(started_at + timedelta(days=7)).isoformat(),
+                architecture_fingerprint=architecture_fingerprint(),
+            )
+            # Persist the complete frozen intent before creating any Runtime object.
+            self._persist(domain, row)
+        baseline = row["baseline"]
+        challenger = row["challenger"]
+        replay = row["replay"]
+        started_at = aware(row["started_at"])
+        _, evidence = self._evidence(row["replay_ref"], started_at,
                                      {"useful_recall": replay["candidate"]["useful_recall"], "invariants": 1.0},
-                                     failure_refs + [case["outcome_ref"] for case in cases])
+                                     row["failure_refs"] + row["replay_outcome_refs"],
+                                     settled_at=started_at)
+        if row.get("replay_evidence_id") != evidence.evidence_id:
+            row["replay_evidence_id"] = evidence.evidence_id
+            self._persist(domain, row)
         baseline_ref, challenger_ref = policy_ref(domain, baseline), policy_ref(domain, challenger)
         self.runtime.register_evolution_capability_baseline(
             capability_id=capability_id, implementation_ref=baseline_ref,
             evidence_refs=[evidence.evidence_id], applicability_context=["memory-router"], confidence=1.0)
-        candidate = self.runtime.propose_evolution_candidate(
-            requirement=MutationRequirement.RETRIEVAL_FAILURE if domain == "index" else MutationRequirement.JUDGMENT_RULE,
-            target=challenger_ref, baseline_ref=baseline_ref,
-            description=f"Bounded {kind}; paired future settled-use retrieval with protected memory checks",
-            rollback_plan="Restore prior Runtime capability and exact prior domain parameters atomically",
-            evidence_refs=[evidence.evidence_id], expected_fitness={evaluator.primary: replay["candidate"][evaluator.primary]},
-            protected_invariants=INVARIANTS, risk_budget=0.05, cost_budget=0.0)
-        experiment = self.runtime.create_evolution_experiment(
-            candidate.candidate_id, prospective_start_at=now + timedelta(minutes=1),
-            prospective_end_at=now + timedelta(days=7), metrics=evaluator.metrics(),
-            min_samples_per_arm=MIN_PROSPECTIVE, regression_evidence_refs=[evidence.evidence_id],
-            stop_conditions=INVARIANTS + ["baseline context drift", "any per-case protected regression"])
+        description = f"Bounded {kind}; paired future settled-use retrieval with protected memory checks"
+        candidate = None
+        if row.get("candidate_id"):
+            candidate = self.runtime.evolution_candidate_registry.get(row["candidate_id"])
+        else:
+            candidate = next((
+                item for item in self.runtime.evolution_candidate_registry.items
+                if item.target == challenger_ref
+                and item.baseline_ref == baseline_ref
+                and item.description == description
+                and evidence.evidence_id in item.evidence_refs
+            ), None)
+            if candidate is None:
+                candidate = self.runtime.propose_evolution_candidate(
+                    requirement=MutationRequirement.RETRIEVAL_FAILURE if domain == "index" else MutationRequirement.JUDGMENT_RULE,
+                    target=challenger_ref, baseline_ref=baseline_ref, description=description,
+                    rollback_plan="Restore prior Runtime capability and exact prior domain parameters atomically",
+                    evidence_refs=[evidence.evidence_id],
+                    expected_fitness={evaluator.primary: replay["candidate"][evaluator.primary]},
+                    protected_invariants=INVARIANTS, risk_budget=0.05, cost_budget=0.0)
+            row["candidate_id"] = candidate.candidate_id
+            self._persist(domain, row)
+        experiment = None
+        if row.get("experiment_id"):
+            experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
+        else:
+            prospective_start = aware(row["prospective_start_at"])
+            prospective_end = aware(row["prospective_end_at"])
+            experiment = next((
+                item for item in self.runtime.evolution_experiment_manager.items
+                if item.spec.candidate_id == candidate.candidate_id
+                and item.spec.prospective_start_at == prospective_start
+                and item.spec.prospective_end_at == prospective_end
+            ), None)
+            if experiment is None:
+                frozen_at = aware(self.runtime.clock.now())
+                if prospective_start < frozen_at:
+                    prospective_start = frozen_at + timedelta(minutes=1)
+                    prospective_end = frozen_at + timedelta(days=7)
+                    row["prospective_start_at"] = prospective_start.isoformat()
+                    row["prospective_end_at"] = prospective_end.isoformat()
+                    self._persist(domain, row)
+                experiment = self.runtime.create_evolution_experiment(
+                    candidate.candidate_id, prospective_start_at=prospective_start,
+                    prospective_end_at=prospective_end, metrics=evaluator.metrics(),
+                    min_samples_per_arm=MIN_PROSPECTIVE, regression_evidence_refs=[evidence.evidence_id],
+                    stop_conditions=INVARIANTS + ["baseline context drift", "any per-case protected regression"])
         experiment_id = experiment.spec.experiment_id
-        # Save recovery intent before transitions; retries reconcile Runtime's durable state.
         row.update(status="WAITING_PROSPECTIVE_START", candidate_id=candidate.candidate_id,
-                   experiment_id=experiment_id, baseline=baseline, challenger=challenger,
-                   weights=weights, policies=policies, replay_case_ids=[case["case_id"] for case in cases],
-                   replay_evidence_id=evidence.evidence_id, architecture_fingerprint=architecture_fingerprint())
+                   experiment_id=experiment_id)
         self._persist(domain, row)
-        self.runtime.validate_evolution_replay(experiment_id, evidence_refs=[evidence.evidence_id])
-        self.runtime.enter_evolution_shadow(experiment_id, evidence_refs=[evidence.evidence_id])
+        if experiment.stage is ExperimentStage.PROPOSED:
+            experiment = self.runtime.validate_evolution_replay(experiment_id, evidence_refs=[evidence.evidence_id])
+        if experiment.stage is ExperimentStage.REPLAY_VALIDATED:
+            self.runtime.enter_evolution_shadow(experiment_id, evidence_refs=[evidence.evidence_id])
         return row
+
+    def _sample_counterevidence(self, row: dict, now: datetime) -> list[str]:
+        experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
+        negative_uses, negative_outcomes = self._counterevidence(
+            self.observatory.rows(limit=10000), now)
+        sampled_evidence = {ref for sample in experiment.samples for ref in sample.evidence_refs}
+        contradicted = set()
+        for evidence in self.runtime.evolution_evidence:
+            if evidence.evidence_id not in sampled_evidence:
+                continue
+            refs = set(evidence.evidence_refs)
+            contradicted.update(refs & negative_uses)
+            contradicted.update(refs & negative_outcomes)
+        return sorted(contradicted)
 
     def _advance(self, kind: str, evaluator: DomainEvaluator, row: dict, cases: list[dict],
                  weights: dict, policies: dict) -> dict:
         domain, capability_id = DOMAIN_SPECS[kind]
         now = aware(self.runtime.clock.now())
         active = self.runtime.evolution_capability_registry.active(capability_id)
+        contradicted_samples = self._sample_counterevidence(row, now)
+        if active.candidate_id == row["candidate_id"] and contradicted_samples:
+            capability = self.runtime.rollback_evolution_capability(
+                capability_id,
+                reason="Counterevidence invalidated supporting prospective memory samples",
+                evidence_refs=contradicted_samples,
+            )
+            self._materialize(domain, row["baseline"], capability, "ROLLED_BACK")
+            row.update(
+                status="ROLLED_BACK",
+                reason="Counterevidence invalidated a supporting prospective sample",
+                rollback_failure_refs=contradicted_samples,
+                rolled_back_at=now.isoformat(),
+            )
+            return row
         # Recover crashes between Runtime promotion/rollback and domain-policy materialization.
         if active.candidate_id == row["candidate_id"]:
             self._materialize(domain, row["challenger"], active, "PROMOTED")
@@ -349,12 +445,10 @@ class MemoryDomainEvolution:
             row["status"] = "INVALIDATED_POLICY_DRIFT"
             return row
         experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
-        negative_uses, negative_outcomes = self._counterevidence(self.observatory.rows(limit=10000), now)
-        sampled_evidence = {ref for sample in experiment.samples for ref in sample.evidence_refs}
-        if any(set(evidence.evidence_refs) & (negative_uses | negative_outcomes)
-               for evidence in self.runtime.evolution_evidence if evidence.evidence_id in sampled_evidence):
+        if contradicted_samples:
             row["status"] = "REJECTED_REGRESSION"
             row["reason"] = "Counterevidence invalidated a previously sampled positive use"
+            row["rejected_evidence_refs"] = contradicted_samples
             return row
         if experiment.stage is ExperimentStage.PROPOSED:
             experiment = self.runtime.validate_evolution_replay(row["experiment_id"], evidence_refs=[row["replay_evidence_id"]])
@@ -416,7 +510,7 @@ class MemoryDomainEvolution:
         # filter. Only failures of uses actually bound to this active version count.
         observations = self.observatory.rows(limit=10000)
         uses = {item["memory_use_id"]: item for item in observations}
-        negative_refs = set()
+        harmful_uses: dict[str, set[str]] = {}
         for item in observations:
             use = uses.get(item.get("parent_use_id"), {})
             versions = (use.get("metadata") or {}).get("domain_policy_refs") or {}
@@ -429,13 +523,19 @@ class MemoryDomainEvolution:
                     continue
             except (ValueError, TypeError, KeyError):
                 continue
-            negative_refs.add(str(item["outcome_ref"]))
-        if len(negative_refs) >= 2:
+            use_id = str(item["parent_use_id"])
+            harmful_uses.setdefault(use_id, set()).add(str(item["outcome_ref"]))
+        if len(harmful_uses) >= 2:
+            negative_refs = sorted({
+                ref for use_id, outcomes in harmful_uses.items()
+                for ref in (use_id, *sorted(outcomes))
+            })
             capability = self.runtime.rollback_evolution_capability(
                 capability_id, reason="Two independently settled harmful memory uses bound to active domain version",
-                evidence_refs=sorted(negative_refs))
+                evidence_refs=negative_refs)
             self._materialize(domain, row["baseline"], capability, "ROLLED_BACK")
-            row.update(status="ROLLED_BACK", rollback_failure_refs=sorted(negative_refs),
+            row.update(status="ROLLED_BACK", rollback_failure_refs=negative_refs,
+                       rollback_failure_use_ids=sorted(harmful_uses),
                        rolled_back_at=aware(self.runtime.clock.now()).isoformat())
             return row
         for case in cases:
@@ -469,6 +569,13 @@ class MemoryDomainEvolution:
         for kind, (domain, _) in DOMAIN_SPECS.items():
             evaluator = DomainEvaluator(domain)
             row = self._load(domain)
+            # A prior process may have durably written a terminal domain state and
+            # died before Runtime lifecycle closure. Reconcile that first, before a
+            # changed fingerprint is allowed to archive/restart the domain.
+            if row.get("status") in TERMINAL and row.get("experiment_id"):
+                experiment = self.runtime.evolution_experiment_manager.get(row["experiment_id"])
+                if experiment.stage is not ExperimentStage.CLOSED:
+                    self._persist(domain, row)
             old_status = row.get("status")
             policies = load_policies(self.state_root)
             weights = MemoryRouter(self.state_root).weights.as_dict()
@@ -484,6 +591,8 @@ class MemoryDomainEvolution:
                 row = {}
             if row.get("experiment_id"):
                 row = self._advance(kind, evaluator, row, cases, weights, policies)
+            elif row.get("status") == "STARTING":
+                row = self._start(kind, evaluator, row, cases, weights, policies, source_refs[-32:])
             else:
                 if fingerprint != row.get("input_fingerprint"):
                     row = {"candidate_type": kind, "evaluator": domain + "-settled-use-v1",

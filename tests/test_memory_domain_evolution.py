@@ -5,7 +5,7 @@ import pytest
 
 from agent_runtime.clock import FrozenClock
 from agent_runtime.runtime import AgentRuntime
-from wechat_traffic_agent.memory_domain_evolution import DomainEvaluator, MemoryDomainEvolution
+from wechat_traffic_agent.memory_domain_evolution import DomainEvaluator, MemoryDomainEvolution, aware
 from wechat_traffic_agent.memory_domain_policy import DEFAULTS, DOMAIN_SPECS, load_policies, validate_policy
 from wechat_traffic_agent.memory_evolution_bridge import MemoryRuntimeEvolutionBridge
 from wechat_traffic_agent.memory_evolution import MemoryEvolutionEngine
@@ -66,6 +66,22 @@ def settled(root, query, index, at, *, expected="target", outcome=None, helped=T
     obs.events_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
 
 
+def contradict(root, use_id, outcome, at):
+    obs = MemoryLifeObservatory(root)
+    result = obs.settle(
+        use_id,
+        outcome_ref=outcome,
+        outcome_success=False,
+        memory_helped=False,
+        evidence_ref="world:counter:" + outcome,
+    )
+    rows = obs.rows(limit=10000)
+    for row in rows:
+        if row["memory_use_id"] == result["memory_use_id"]:
+            row["observed_at"] = at.isoformat()
+    obs.events_path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+
 def setup(tmp_path, domain):
     root = tmp_path / "state"
     store, query = fixture(root, domain)
@@ -119,9 +135,23 @@ def test_real_replay_prospective_promotion_and_live_reload(tmp_path, domain):
     settled(root, query, 30, NOW + timedelta(seconds=200), helped=False)
     engine.sync(sources)
     assert engine._load(domain)["status"] == "PROMOTED"
+    observations = engine.observatory.rows(limit=10000)
+    first_harmful_use = next(
+        row["memory_use_id"] for row in observations
+        if row.get("decision_ref") == "decision:30"
+    )
+    contradict(
+        root,
+        first_harmful_use,
+        "second-outcome-same-use",
+        NOW + timedelta(seconds=205),
+    )
+    engine.sync(sources)
+    assert engine._load(domain)["status"] == "PROMOTED"
     settled(root, query, 31, NOW + timedelta(seconds=210), helped=False)
     engine.sync(sources)
     assert engine._load(domain)["status"] == "ROLLED_BACK"
+    assert len(engine._load(domain)["rollback_failure_use_ids"]) == 2
     assert load_policies(root)[domain] == DEFAULTS[domain]
     assert len(runtime.evolution_capability_rollbacks) == 1
     engine.sync(sources)
@@ -227,6 +257,7 @@ def test_other_policy_drift_invalidates_and_refreezes_without_activation(tmp_pat
     runtime.clock.advance(180)
     engine.sync(sources)
     assert engine._load("decay")["status"] == "INVALIDATED_POLICY_DRIFT"
+    assert runtime.evolution_experiment_manager.get(old).stage.value == "CLOSED"
     assert not runtime.evolution_capability_activations
     engine.sync(sources)
     state = engine._load("decay")
@@ -245,3 +276,116 @@ def test_repeated_use_and_conflicting_settlement_do_not_inflate_labels(tmp_path)
     obs.settle(first["memory_use_id"], outcome_ref="outcome:0", outcome_success=False,
                memory_helped=False, evidence_ref="world:correction")
     assert len(engine.cases(NOW + timedelta(days=1))) == 3
+
+
+@pytest.mark.parametrize("domain", ["decay", "index", "salience"])
+def test_counterevidence_for_supporting_prospective_sample_rolls_back_after_promotion(tmp_path, domain):
+    root, _, query, runtime, engine, kind, sources = setup(tmp_path, domain)
+    engine.sync(sources)
+    runtime.clock.advance(180)
+    for index in range(4):
+        settled(root, query, index + 10, NOW + timedelta(seconds=90 + index * 5))
+    engine.sync(sources)
+    state = engine._load(domain)
+    assert state["status"] == "PROMOTED"
+
+    observations = engine.observatory.rows(limit=10000)
+    sampled_use = next(
+        row["memory_use_id"] for row in observations
+        if row.get("decision_ref") == "decision:10"
+    )
+    runtime.clock.advance(120)
+    contradict(
+        root,
+        sampled_use,
+        "outcome:10",
+        NOW + timedelta(seconds=220),
+    )
+    engine.sync(sources)
+
+    state = engine._load(domain)
+    assert state["status"] == "ROLLED_BACK"
+    assert sampled_use in state["rollback_failure_refs"] or "outcome:10" in state["rollback_failure_refs"]
+    assert load_policies(root)[domain] == DEFAULTS[domain]
+    assert len(runtime.evolution_capability_rollbacks) == 1
+
+
+@pytest.mark.parametrize("crash_point", ["candidate", "experiment"])
+def test_starting_intent_recovers_runtime_objects_without_orphans(tmp_path, monkeypatch, crash_point):
+    root, _, _, runtime, engine, _, sources = setup(tmp_path, "decay")
+    original = (
+        runtime.propose_evolution_candidate
+        if crash_point == "candidate"
+        else runtime.create_evolution_experiment
+    )
+    captured = {}
+
+    def create_then_crash(*args, **kwargs):
+        item = original(*args, **kwargs)
+        captured["id"] = (
+            item.candidate_id
+            if crash_point == "candidate"
+            else item.spec.experiment_id
+        )
+        raise OSError("simulated interruption after durable Runtime create")
+
+    monkeypatch.setattr(
+        runtime,
+        "propose_evolution_candidate" if crash_point == "candidate" else "create_evolution_experiment",
+        create_then_crash,
+    )
+    with pytest.raises(OSError):
+        engine.sync(sources)
+
+    state = engine._load("decay")
+    assert state["status"] == "STARTING"
+    if crash_point == "candidate":
+        assert "candidate_id" not in state
+        assert len(runtime.evolution_candidate_registry.items) == 1
+    else:
+        assert state["candidate_id"]
+        assert "experiment_id" not in state
+        assert len(runtime.evolution_experiment_manager.items) == 1
+
+    if crash_point == "candidate":
+        runtime.clock.advance(120)
+
+    runtime = AgentRuntime.restore(tmp_path / "runtime", clock=runtime.clock)
+    engine = MemoryDomainEvolution(runtime=runtime, state_root=root)
+    engine.sync(sources)
+    state = engine._load("decay")
+    assert state["status"] == "WAITING_PROSPECTIVE_START"
+    assert len(runtime.evolution_candidate_registry.items) == 1
+    assert len(runtime.evolution_experiment_manager.items) == 1
+    if crash_point == "candidate":
+        assert state["candidate_id"] == captured["id"]
+    else:
+        assert state["experiment_id"] == captured["id"]
+    assert aware(state["prospective_start_at"]) >= aware(runtime.clock.now())
+
+
+def test_terminal_state_reconciles_runtime_abort_after_persist_crash(tmp_path, monkeypatch):
+    root, _, _, runtime, engine, _, sources = setup(tmp_path, "decay")
+    engine.sync(sources)
+    old = engine._load("decay")["experiment_id"]
+    assert runtime.evolution_experiment_manager.get(old).stage.value == "SHADOW"
+    (root / "application/memory_system/active_recall_policy.json").write_text(
+        json.dumps({"weights": {"lexical_weight": 1.1}}), encoding="utf-8")
+    runtime.clock.advance(180)
+
+    def crash_abort(*args, **kwargs):
+        raise OSError("simulated interruption before Runtime abort")
+
+    monkeypatch.setattr(runtime, "abort_evolution_experiment", crash_abort)
+    with pytest.raises(OSError):
+        engine.sync(sources)
+    assert engine._load("decay")["status"] == "INVALIDATED_POLICY_DRIFT"
+    assert runtime.evolution_experiment_manager.get(old).stage.value == "SHADOW"
+
+    runtime = AgentRuntime.restore(tmp_path / "runtime", clock=runtime.clock)
+    engine = MemoryDomainEvolution(runtime=runtime, state_root=root)
+    engine.sync(sources)
+    assert runtime.evolution_experiment_manager.get(old).stage.value == "CLOSED"
+    state = engine._load("decay")
+    assert state["experiment_id"] != old
+    assert state["status"] == "WAITING_PROSPECTIVE_START"

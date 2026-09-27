@@ -44,6 +44,10 @@ importance, neural input weights, confidence, facts, or consolidation decisions.
   reports are persisted before ingestion, and Runtime experience IDs prevent
   duplicate samples across retries/restarts. This measures retrieval utility on
   future observed workloads; it is not a causal external-world A/B outcome claim.
+- Trial creation uses a durable STARTING intent written before Runtime evidence,
+  candidate, or experiment objects are created. Recovery reuses matching durable
+  Runtime objects instead of creating orphan candidates/experiments after a
+  process interruption.
 - No future improvement, insufficient samples at expiry, per-case regression,
   contradicted sample evidence, or drift in frozen policy context prevents
   promotion. Runtime's evaluation and promotion methods are the only activation
@@ -53,15 +57,23 @@ importance, neural input weights, confidence, facts, or consolidation decisions.
 
 Active parameters are atomically materialized into separate `active_*_policy.json`
 files carrying the Runtime capability version and implementation reference. The
-existing Memory Router reloads them on each call, including already-created Router
+Runtime experiment is explicitly aborted to CLOSED when drift, counterevidence,
+or another terminal rejection occurs before normal prospective close; a local
+terminal status is never used as a substitute for Runtime lifecycle closure.
+The existing Memory Router reloads them on each call, including already-created Router
 instances. Candidate trials never change production parameters. The recall policy
 and other domains remain separately versioned; context drift invalidates a trial
 and a later sync can evaluate again against the new baseline.
 
 Post-promotion comparisons continue on fresh settled cases. A protected regression
 rolls back immediately; two primary regressions also roll back. Two independently
-settled harmful uses can trigger rollback only if their originating real Router
-calls carried this policy implementation reference and occurred after promotion.
+settled harmful uses can trigger rollback only if they have two distinct
+`parent_use_id` values, their originating real Router calls carried this policy
+implementation reference, and they occurred after promotion. Multiple negative
+settlements or outcome references attached to one use still count as one harmful
+use. Counterevidence that later overturns a prospective sample supporting an
+already-promoted version also triggers immediate Runtime rollback and baseline
+materialization.
 The owner-memory adapter records these actual Router bindings; structured memory
 priors do not pretend that a Router policy affected their decisions.
 
