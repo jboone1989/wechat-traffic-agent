@@ -87,9 +87,11 @@ class _ModelRuntime:
 
     def __init__(self, responses):
         self.responses = list(responses)
+        self.tasks = []
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         assert self.responses
+        self.tasks.append(task)
         return json.dumps(self.responses.pop(0))
 
     def persist(self):
@@ -99,12 +101,27 @@ class _ModelRuntime:
 def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
     runtime = _Runtime()
+    observed_social = []
     model = _ModelRuntime([{
         "action": "INVESTIGATE", "category": "EVIDENCE", "valuable_evidence": True,
         "summary": "A concrete method claim is worth verifying before adoption.",
         "reply_text": None, "rationale": "The claim could affect an open inquiry but needs independent verification.",
     }])
-    loop = XAutonomyLoop(runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="https://example.com")
+    loop = XAutonomyLoop(
+        runtime=runtime,
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="https://example.com",
+        social_observer=lambda **kwargs: observed_social.append(kwargs),
+        social_context_provider=lambda actor: {
+            "actor": "actor:pseudonymous",
+            "interactions": 4,
+            "familiarity": 0.55,
+            "valence": 0.2,
+            "approach_bias": 0.65,
+            "last_signal": "QUESTION",
+        } if actor == "u2" else None,
+    )
     result = asyncio.run(loop.observe(now=NOW))
     assert result["status"] == "OK"
     assert ("x.bookmark", {"user_id": "me", "post_id": "m1"}) in runtime.calls
@@ -114,6 +131,15 @@ def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_pa
     history = XHistoryLedger(tmp_path).recent()
     assert history[-1]["event_type"] == "BOOKMARK"
     assert history[-1]["lineage"]["adopted"] is False
+    assert observed_social == [{
+        "actor": "u2",
+        "category": "SOCIAL",
+        "signal": "EVIDENCE",
+        "now": NOW,
+    }]
+    assert '"relationship_context"' in model.tasks[0]
+    assert '"interactions": 4' in model.tasks[0]
+    assert '"familiarity": 0.55' in model.tasks[0]
 
 
 def test_read_only_x_observation_never_replies_or_bookmarks(tmp_path: Path, monkeypatch):

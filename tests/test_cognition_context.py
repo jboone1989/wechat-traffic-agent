@@ -106,6 +106,28 @@ class _Wakeful:
             },
             "neural_control_signals": [{"kind": "attention", "intent": "mission"}],
             "neural_feedback": [{"outcome_id": "out-1", "pathway": ["prediction", "result"]}],
+            "self_model": {
+                "capability_beliefs": {
+                    "web_search": {
+                        "attempts": 7,
+                        "successes": 6,
+                        "failures": 1,
+                        "confidence": 0.82,
+                        "last_verified": "2026-09-25T14:58:00+00:00",
+                        "source": "direct_evidence",
+                    }
+                }
+            },
+            "neural_social": {
+                "relationship_count": 1,
+                "recent_relationships": [{
+                    "actor": "x:user-42",
+                    "interactions": 5,
+                    "familiarity": 0.6,
+                    "valence": 0.4,
+                    "approach_bias": 0.73,
+                }],
+            },
         }
 
 
@@ -138,6 +160,17 @@ def test_cognition_snapshot_unifies_current_harness_state():
     assert context["recent_experience"][0]["event_id"] == "experience-1"
     assert "web.search" in context["capabilities"]["available"]
     assert "content_research" in context["capabilities"]["available"]
+    assert context["capabilities"]["evidence_bound_beliefs"] == [{
+        "capability": "web_search",
+        "confidence": 0.82,
+        "attempts": 7,
+        "successes": 6,
+        "failures": 1,
+        "last_verified": "2026-09-25T14:58:00+00:00",
+        "source": "direct_evidence",
+    }]
+    assert context["social_context"]["relationship_count"] == 1
+    assert context["social_context"]["recent_relationships"][0]["actor"] == "x:user-42"
     assert context["neural_state"]["life"]["affect"]["curiosity"] == 0.7
     assert "history" not in context["neural_state"]["life"]
     assert "irrelevant_bulk" not in context["mind"]["latest_plan"]

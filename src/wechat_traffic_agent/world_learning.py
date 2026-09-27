@@ -54,6 +54,47 @@ class WorldLearningLedger:
             "actions": {},
         }
 
+    @staticmethod
+    def _bounded_actions(actions: Mapping[str, Any]) -> dict[str, Any]:
+        """Bound terminal history without deleting unsettled long-horizon credit."""
+        ordered = [
+            (str(key), value)
+            for key, value in actions.items()
+            if isinstance(value, Mapping)
+        ]
+        active_keys = [
+            key
+            for key, value in ordered
+            if str(value.get("status") or "") not in {"SETTLED", "CANCELLED"}
+        ]
+        terminal_rows = [
+            (key, value)
+            for key, value in ordered
+            if str(value.get("status") or "") in {"SETTLED", "CANCELLED"}
+        ]
+        terminal_rows.sort(
+            key=lambda item: (
+                str(
+                    item[1].get("updated_at")
+                    or item[1].get("committed_at")
+                    or ""
+                ),
+                item[0],
+            )
+        )
+        terminal_capacity = max(0, MAX_ACTIONS - len(active_keys))
+        retained_terminal = (
+            [key for key, _value in terminal_rows[-terminal_capacity:]]
+            if terminal_capacity
+            else []
+        )
+        keep = set(active_keys) | set(retained_terminal)
+        return {
+            key: dict(value)
+            for key, value in ordered
+            if key in keep
+        }
+
     def commit(
         self,
         *,
@@ -109,7 +150,7 @@ class WorldLearningLedger:
             "status": "OPEN",
         }
         actions[action_id] = row
-        self.state["actions"] = dict(list(actions.items())[-MAX_ACTIONS:])
+        self.state["actions"] = self._bounded_actions(actions)
         self.state["updated_at"] = now.isoformat()
         _write(self.path, self.state)
         return dict(row)
@@ -212,7 +253,7 @@ class WorldLearningLedger:
         )
         action["updated_at"] = now.isoformat()
         actions[str(action_id)] = action
-        self.state["actions"] = actions
+        self.state["actions"] = self._bounded_actions(actions)
         self.state["updated_at"] = now.isoformat()
         _write(self.path, self.state)
         return current
@@ -262,7 +303,7 @@ class WorldLearningLedger:
         action["status"] = "CANCELLED"
         action["updated_at"] = now.isoformat()
         actions[str(action_id)] = action
-        self.state["actions"] = actions
+        self.state["actions"] = self._bounded_actions(actions)
         self.state["updated_at"] = now.isoformat()
         _write(self.path, self.state)
         return dict(action)

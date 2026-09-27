@@ -159,6 +159,51 @@ def _mission_state(runtime: Any, now: datetime) -> dict[str, Any]:
             current = None
             trajectory = "UNKNOWN"
             pressure = None
+        roadmap_payload = None
+        latest_roadmap = getattr(controller, "latest_roadmap", None)
+        if callable(latest_roadmap):
+            try:
+                roadmap = latest_roadmap(mission.mission_id)
+            except Exception:
+                roadmap = None
+            if roadmap is not None:
+                schedule_by_step: dict[str, Any] = {}
+                portfolio_schedule = getattr(controller, "portfolio_schedule", None)
+                if callable(portfolio_schedule):
+                    try:
+                        schedule = portfolio_schedule(now=now, max_parallelism=2)
+                        schedule_by_step = {
+                            str(item.step_id): item
+                            for item in list(getattr(schedule, "items", ()) or ())
+                            if str(getattr(item, "mission_id", "") or "")
+                            == str(mission.mission_id)
+                        }
+                    except Exception:
+                        schedule_by_step = {}
+                roadmap_payload = {
+                    "roadmap_id": str(getattr(roadmap, "roadmap_id", "") or ""),
+                    "version": int(getattr(roadmap, "version", 0) or 0),
+                    "rationale": _clip(getattr(roadmap, "rationale", ""), 800),
+                    "steps": [
+                        {
+                            "step_id": str(getattr(step, "step_id", "") or ""),
+                            "title": _clip(getattr(step, "title", ""), 240),
+                            "objective": _clip(getattr(step, "objective", ""), 500),
+                            "depends_on": list(
+                                getattr(step, "depends_on_step_ids", ()) or ()
+                            )[:8],
+                            "status": _enum(
+                                getattr(schedule_by_step.get(str(getattr(step, "step_id", "") or "")), "status", "")
+                            ) or (
+                                "COMPLETED" if getattr(step, "completed_at", None)
+                                else "CANCELLED" if getattr(step, "cancelled_at", None)
+                                else "RUNNING" if getattr(step, "started_at", None)
+                                else "PLANNED"
+                            ),
+                        }
+                        for step in list(getattr(roadmap, "steps", ()) or ())[:16]
+                    ],
+                }
         active.append({
             "mission_id": mission.mission_id,
             "goal_id": mission.goal_id,
@@ -173,6 +218,7 @@ def _mission_state(runtime: Any, now: datetime) -> dict[str, Any]:
             "trajectory": trajectory,
             "pressure": pressure,
             "constraints": [_clip(item, 600) for item in list(mission.constraints)[:12]],
+            "roadmap": roadmap_payload,
         })
     experiments = []
     for item in list(getattr(controller, "experiments", []) or [])[-8:]:
@@ -294,6 +340,43 @@ def build_ferro_cognition_context(
     manifest = getattr(domain_runtime, "agent_manifest", None)
     manifest_caps = list(getattr(manifest, "capabilities", ()) or ())
     capabilities = sorted(set(str(item) for item in [*app_caps, *domain_caps, *manifest_caps] if str(item).strip()))
+
+    self_projection = (
+        wake.get("self_model")
+        if isinstance(wake.get("self_model"), Mapping)
+        else {}
+    )
+    capability_beliefs = []
+    for capability, raw in (self_projection.get("capability_beliefs") or {}).items():
+        if not isinstance(raw, Mapping):
+            continue
+        capability_beliefs.append({
+            "capability": str(capability),
+            "confidence": raw.get("confidence"),
+            "attempts": int(raw.get("attempts") or 0),
+            "successes": int(raw.get("successes") or 0),
+            "failures": int(raw.get("failures") or 0),
+            "last_verified": raw.get("last_verified"),
+            "source": raw.get("source"),
+        })
+    capability_beliefs.sort(
+        key=lambda row: (
+            -int(row.get("attempts") or 0),
+            -float(row.get("confidence") or 0.0),
+            str(row.get("capability") or ""),
+        )
+    )
+
+    social_projection = (
+        wake.get("neural_social")
+        if isinstance(wake.get("neural_social"), Mapping)
+        else {}
+    )
+    relationship_rows = [
+        dict(row)
+        for row in list(social_projection.get("recent_relationships") or ())
+        if isinstance(row, Mapping)
+    ][:8]
 
     intents = list(packet.current_intent)
     owner_goal_ids: set[str] = set()
@@ -435,6 +518,14 @@ def build_ferro_cognition_context(
             "application": app_caps,
             "domain_reasoning": domain_caps,
             "manifest": manifest_caps,
+            "evidence_bound_beliefs": capability_beliefs[:16],
+        },
+        "social_context": {
+            "relationship_count": int(
+                social_projection.get("relationship_count") or 0
+            ),
+            "recent_relationships": relationship_rows,
+            "authority": "PERSISTED_NEURAL_SOCIAL_STATE",
         },
         "operational_state": {
             "wakeful_state": wake.get("state"),

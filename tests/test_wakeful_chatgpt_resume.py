@@ -561,6 +561,57 @@ def test_owner_external_mission_defers_prediction_verification(monkeypatch, tmp_
     assert wakeful.sync_calls == [now]
 
 
+class _OverduePrediction:
+    prediction_id = "prediction:owner-calibration-debt"
+    due_at = datetime(2026, 9, 26, 10, 0, tzinfo=timezone.utc)
+
+
+class _OverdueOwnerMissionPredictions(_OwnerMissionPredictions):
+    def due(self, now):
+        return (_OverduePrediction(),)
+
+
+class _OverduePredictionLoop:
+    def __init__(self):
+        self.predictions = _OverdueOwnerMissionPredictions()
+        self.called = False
+
+    async def verify_due_predictions(self, *, now):
+        self.called = True
+        return {"verified": 1}
+
+
+def test_owner_external_mission_cannot_starve_overdue_prediction_calibration(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    loop = _OverduePredictionLoop()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=loop,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda: {
+            "goal_id": "goal-owner",
+            "origin": "EXTERNAL_MISSION",
+            "description": "Run the real owner mission",
+        },
+    )
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+
+    result = runner.run("VERIFY_PREDICTION", now=now)
+
+    assert result["status"] == "OK"
+    assert result["owner_mission_calibration_debt"] is True
+    assert result["prediction_verification"] == {"verified": 1}
+    assert loop.called is True
+    assert loop.predictions.deferred == []
+    assert wakeful.scheduled == []
+
+
 
 def test_owner_context_falls_back_to_authoritative_goal_ledger(tmp_path):
     proposals = (
@@ -643,6 +694,44 @@ def test_owner_context_uses_active_operator_external_mission_without_proposal(tm
     assert context is not None
     assert context["goal_id"] == "goal-owner-runtime"
     assert context["origin"] == "EXTERNAL_MISSION"
+
+
+def test_owner_context_prefers_priority_over_recency(tmp_path):
+    older_high_priority = SimpleNamespace(
+        goal_id="goal-high",
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+        description="Important owner goal",
+        reason="higher priority",
+        priority=0.95,
+        created_at=datetime(2026, 9, 25, tzinfo=timezone.utc),
+    )
+    newer_low_priority = SimpleNamespace(
+        goal_id="goal-new",
+        origin=SimpleNamespace(value="USER"),
+        status=SimpleNamespace(value="ACTIVE"),
+        description="Newer but less important goal",
+        reason="lower priority",
+        priority=0.20,
+        created_at=datetime(2026, 9, 27, tzinfo=timezone.utc),
+    )
+    domain_runtime = SimpleNamespace(
+        active_goals=[older_high_priority, newer_low_priority],
+        goals=[older_high_priority, newer_low_priority],
+        external_missions=[],
+    )
+    runner = WakefulContentTaskRunner(
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+        state_root=tmp_path,
+        wakeful=_Wakeful(),
+        continuous_loop=_CompletedLoop(),
+    )
+
+    context = runner._active_owner_goal_context()
+
+    assert context is not None
+    assert context["goal_id"] == "goal-high"
+    assert context["priority"] == 0.95
 
 
 

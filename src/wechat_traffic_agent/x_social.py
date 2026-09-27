@@ -140,11 +140,15 @@ class XHistoryLedger:
 class XAutonomyLoop:
     def __init__(self, *, runtime: Any, model_runtime: Any, state_root: Path, base_url: str,
                  browser_mentions_observer: Any | None = None,
-                 growth_mission: Any | None = None) -> None:
+                 growth_mission: Any | None = None,
+                 social_observer: Any | None = None,
+                 social_context_provider: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
         self.growth_mission = growth_mission
+        self.social_observer = social_observer
+        self.social_context_provider = social_context_provider
         self.state_root = Path(state_root)
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
@@ -360,6 +364,26 @@ class XAutonomyLoop:
         self._activity(cycle=cycle, title="Someone replied", detail=row.get("summary", "")[:220])
         folder = self.root / "social-model-calls" / cycle / post_id
         model_runtime = ReceiptRuntime(self.model_runtime, folder)
+        actor = str(row.get("x_author_id") or row.get("username") or "").strip()
+        relationship_context = None
+        provider = self.social_context_provider
+        if callable(provider) and actor:
+            candidate = provider(actor)
+            if isinstance(candidate, dict):
+                relationship_context = {
+                    key: candidate.get(key)
+                    for key in (
+                        "actor",
+                        "interactions",
+                        "familiarity",
+                        "valence",
+                        "approach_bias",
+                        "last_category",
+                        "last_signal",
+                        "last_seen_at",
+                    )
+                    if candidate.get(key) is not None
+                }
         prompt = (
             "X_SOCIAL_ATTENTION: Classify this public X mention. Decide IGNORE, INVESTIGATE, or REPLY. "
             "Questions, substantive rebuttals, or evidence may deserve attention. Spam and low-information reactions should not. "
@@ -367,7 +391,8 @@ class XAutonomyLoop:
             "A reply must be <=280 characters, contain no private data, impersonation, harassment, investment advice, fabricated facts, or unsupported factual assertions. "
             "If factual verification is needed before replying, choose INVESTIGATE instead. Return JSON only.\n"
             + json.dumps({"mention": row, "agent_handle": me.get("username"),
-                          "public_persona": public_persona_projection(self.state_root)}, ensure_ascii=False)
+                          "public_persona": public_persona_projection(self.state_root),
+                          "relationship_context": relationship_context}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, SocialAttentionDecision)
         if decision.category != "SPAM":
@@ -375,6 +400,14 @@ class XAutonomyLoop:
                 state_root=self.state_root, source="X", message=str(row.get("summary") or ""),
                 category=decision.category, source_ref=post_id, observed_at=now, summary=decision.summary,
             )
+            observer = self.social_observer
+            if callable(observer) and actor:
+                observer(
+                    actor=actor,
+                    category="SOCIAL",
+                    signal=decision.category,
+                    now=now,
+                )
         if decision.valuable_evidence:
             _append_jsonl(self.social_evidence_path, {
                 "schema_version": "content-agent-x-social-evidence.v1",

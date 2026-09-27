@@ -16,6 +16,8 @@ class _ShutdownRequested(BaseException):
 
 
 class WakefulContentTaskRunner:
+    MAX_OWNER_PREDICTION_DEFER = timedelta(hours=1)
+
     def __init__(self, **components: Any) -> None:
         self.__dict__.update(components)
         self.stop_requested = components.get("stop_requested") or (lambda: False)
@@ -1308,9 +1310,23 @@ class WakefulContentTaskRunner:
             return {"task": "VERIFY_PREDICTION", "status": "DISABLED"}
         ledger = getattr(self.continuous_loop, "predictions", None)
         owner_goal = self._active_owner_goal_context()
+        due_predictions = (
+            tuple(ledger.due(now))
+            if ledger is not None and callable(getattr(ledger, "due", None))
+            else ()
+        )
+        overdue_owner_prediction = any(
+            (
+                due_at := getattr(prediction, "due_at", None)
+            ) is not None
+            and now - due_at.astimezone(timezone.utc)
+            >= self.MAX_OWNER_PREDICTION_DEFER
+            for prediction in due_predictions
+        )
         if (
             owner_goal is not None
             and str(owner_goal.get("origin") or "") == "EXTERNAL_MISSION"
+            and not overdue_owner_prediction
         ):
             deferred = []
             if (
@@ -1325,7 +1341,7 @@ class WakefulContentTaskRunner:
                         delay=timedelta(minutes=15),
                         reason="OWNER_EXTERNAL_MISSION_PRIORITY",
                     )
-                    for prediction in tuple(ledger.due(now))
+                    for prediction in due_predictions
                 ]
                 if deferred:
                     sync = getattr(self.wakeful, "sync_prediction_wakes", None)
@@ -1343,13 +1359,18 @@ class WakefulContentTaskRunner:
                 ),
             }
         try:
-            if ledger is not None and callable(getattr(ledger, "due", None)):
-                for prediction in ledger.due(now):
+            if due_predictions:
+                for prediction in due_predictions:
                     self.wakeful.emit_prediction_due(
                         prediction_ref=str(prediction.prediction_id), observed_at=now,
                     )
             result = self._run_async(self.continuous_loop.verify_due_predictions(now=now))
-            return {"task": "VERIFY_PREDICTION", "status": "OK", "prediction_verification": result}
+            return {
+                "task": "VERIFY_PREDICTION",
+                "status": "OK",
+                "prediction_verification": result,
+                "owner_mission_calibration_debt": overdue_owner_prediction,
+            }
         except Exception as exc:  # noqa: BLE001
             return {"task": "VERIFY_PREDICTION", "status": "DEGRADED", "prediction_verification": self._error(exc)}
 
@@ -2046,7 +2067,10 @@ class WakefulContentTaskRunner:
         if not candidates:
             return None
         candidates.sort(
-            key=lambda item: str(getattr(item[0], "created_at", "") or ""),
+            key=lambda item: (
+                float(getattr(item[0], "priority", 0.0) or 0.0),
+                str(getattr(item[0], "created_at", "") or ""),
+            ),
             reverse=True,
         )
         goal, origin = candidates[0]
@@ -2095,6 +2119,114 @@ class WakefulContentTaskRunner:
                     pressure = getattr(progress, "pressure", None)
                 except Exception:
                     pass
+            roadmap_context = None
+            if controller is not None:
+                latest_roadmap = getattr(controller, "latest_roadmap", None)
+                if callable(latest_roadmap):
+                    try:
+                        roadmap = latest_roadmap(
+                            str(getattr(mission, "mission_id"))
+                        )
+                    except Exception:
+                        roadmap = None
+                    if roadmap is not None:
+                        schedule_by_step: dict[str, Any] = {}
+                        portfolio_schedule = getattr(
+                            controller, "portfolio_schedule", None
+                        )
+                        if callable(portfolio_schedule):
+                            try:
+                                schedule = portfolio_schedule(
+                                    now=now,
+                                    max_parallelism=2,
+                                )
+                                schedule_by_step = {
+                                    str(item.step_id): item
+                                    for item in list(
+                                        getattr(schedule, "items", ()) or ()
+                                    )
+                                    if str(
+                                        getattr(item, "mission_id", "") or ""
+                                    )
+                                    == str(getattr(mission, "mission_id"))
+                                }
+                            except Exception:
+                                schedule_by_step = {}
+                        roadmap_context = {
+                            "roadmap_id": str(
+                                getattr(roadmap, "roadmap_id", "") or ""
+                            ),
+                            "version": int(
+                                getattr(roadmap, "version", 0) or 0
+                            ),
+                            "rationale": str(
+                                getattr(roadmap, "rationale", "") or ""
+                            )[:800],
+                            "steps": [
+                                {
+                                    "step_id": str(
+                                        getattr(step, "step_id", "") or ""
+                                    ),
+                                    "title": str(
+                                        getattr(step, "title", "") or ""
+                                    )[:240],
+                                    "objective": str(
+                                        getattr(step, "objective", "") or ""
+                                    )[:500],
+                                    "depends_on": list(
+                                        getattr(
+                                            step, "depends_on_step_ids", ()
+                                        )
+                                        or ()
+                                    )[:8],
+                                    "status": str(
+                                        getattr(
+                                            getattr(
+                                                schedule_by_step.get(
+                                                    str(
+                                                        getattr(
+                                                            step,
+                                                            "step_id",
+                                                            "",
+                                                        )
+                                                        or ""
+                                                    )
+                                                ),
+                                                "status",
+                                                "",
+                                            ),
+                                            "value",
+                                            getattr(
+                                                schedule_by_step.get(
+                                                    str(
+                                                        getattr(
+                                                            step,
+                                                            "step_id",
+                                                            "",
+                                                        )
+                                                        or ""
+                                                    )
+                                                ),
+                                                "status",
+                                                "",
+                                            ),
+                                        )
+                                        or (
+                                            "COMPLETED"
+                                            if getattr(step, "completed_at", None)
+                                            else "CANCELLED"
+                                            if getattr(step, "cancelled_at", None)
+                                            else "RUNNING"
+                                            if getattr(step, "started_at", None)
+                                            else "PLANNED"
+                                        )
+                                    ),
+                                }
+                                for step in list(
+                                    getattr(roadmap, "steps", ()) or ()
+                                )[:16]
+                            ],
+                        }
             return {
                 "mission_id": str(getattr(mission, "mission_id", "") or ""),
                 "goal_id": goal_id,
@@ -2114,6 +2246,7 @@ class WakefulContentTaskRunner:
                     str(item)[:500]
                     for item in list(getattr(mission, "constraints", ()) or ())[:8]
                 ],
+                "roadmap": roadmap_context,
             }
         return {}
 

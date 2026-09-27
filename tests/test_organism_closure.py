@@ -420,6 +420,46 @@ def test_world_learning_requires_world_evidence_and_settles_delayed_windows(tmp_
     assert ledger.projection()["function_success_is_reward"] is False
 
 
+def test_world_learning_retains_unsettled_long_horizon_credit_when_history_is_bounded(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("wechat_traffic_agent.world_learning.MAX_ACTIONS", 2)
+    ledger = WorldLearningLedger(tmp_path)
+    long_horizon = ledger.commit(
+        action_kind="LONG_HORIZON_EXPERIMENT",
+        prediction="the delayed effect remains measurable after thirty days",
+        expected_utility=0.4,
+        confidence=0.7,
+        evidence_refs=("plan:long",),
+        now=NOW,
+        windows=(("30d", timedelta(days=30)),),
+    )
+    for index in range(2):
+        action = ledger.commit(
+            action_kind="SHORT_EXPERIMENT",
+            prediction=f"short experiment {index} has an immediate measurable outcome",
+            expected_utility=0.1,
+            confidence=0.6,
+            evidence_refs=(f"plan:short:{index}",),
+            now=NOW + timedelta(minutes=index + 1),
+            windows=(("10m", timedelta(minutes=10)),),
+        )
+        ledger.settle(
+            action_id=action["action_id"],
+            window="10m",
+            actual_utility=0.2,
+            evidence_refs=(f"metric:short:{index}",),
+            now=NOW + timedelta(minutes=index + 11),
+        )
+
+    actions = ledger.state["actions"]
+    assert long_horizon["action_id"] in actions
+    assert actions[long_horizon["action_id"]]["status"] == "OPEN"
+    assert len(actions) == 2
+    restored = WorldLearningLedger(tmp_path)
+    assert restored.due(NOW + timedelta(days=30))[0]["action_id"] == long_horizon["action_id"]
+
+
 def test_self_model_is_falsifiable_and_counter_evidence_reduces_confidence(tmp_path):
     model = SelfModel(tmp_path)
     first = model.observe_capability(

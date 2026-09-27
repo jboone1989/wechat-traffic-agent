@@ -517,6 +517,8 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             runtime=app.runtime, model_runtime=app.domain_runtime, state_root=state_root,
             base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
             growth_mission=x_growth_mission,
+            social_observer=wakeful_runtime.observe_social_interaction,
+            social_context_provider=wakeful_runtime.neural_social.relationship,
         )
     x_browser_publisher = XBrowserPublisher(
         state_root=state_root,
