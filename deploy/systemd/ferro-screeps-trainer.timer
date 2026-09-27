@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule Ferro Screeps external-world training
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=60
+AccuracySec=30
+Persistent=true
+Unit=ferro-screeps-trainer.service
+
+[Install]
+WantedBy=timers.target

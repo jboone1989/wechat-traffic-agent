@@ -1,0 +1,27 @@
+[Unit]
+Description=Ferro resource-bounded Screeps training episode
+After=network.target
+ConditionPathExists=/home/ubuntu/screeps-lab/node_modules/@screepts/screeps-test-server
+ConditionPathExists=/home/ubuntu/ferro-screeps-current/scripts/run_screeps_training.py
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/ferro-screeps-current
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ubuntu/content-agent-venv-current/bin/python /home/ubuntu/ferro-screeps-current/scripts/run_screeps_training.py --state-root /home/ubuntu/content-agent-state --lab-root /home/ubuntu/screeps-lab --episodes 1 --ticks 180 --min-free-memory-mib 900 --min-free-disk-gib 10 --max-load-1m 1.5 --match-timeout-seconds 240
+SuccessExitStatus=75
+TimeoutStartSec=5min
+KillMode=control-group
+Nice=10
+CPUWeight=20
+CPUQuota=85%
+MemoryHigh=768M
+MemoryMax=1G
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
