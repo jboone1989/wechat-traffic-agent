@@ -1178,6 +1178,34 @@ def test_real_minifly_shadow_substrate_is_separate_from_semantic_ports(tmp_path,
     assert substrate["recent_bursts"][-1]["synaptic_events"] > 0
     assert snapshot["connectome"]["status"] == "SHADOW_ACTIVE"
 
+    manifest_path = tmp_path / "application" / "neural_topology.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == "ferro-neural-topology.v1"
+    assert manifest["enabled"] is True
+    assert manifest["source"] == "minifly"
+    assert manifest["electrode_size"] == 12
+
+    # A Researcher/offline process may not inherit the production systemd
+    # environment.  It must still restore exactly the same persisted body
+    # topology instead of falling back to a semantically incompatible graph.
+    for key in (
+        "CONTENT_FLY_CONNECTOME_ENABLED",
+        "CONTENT_FLY_CONNECTOME_SOURCE",
+        "CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT",
+        "CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE",
+        "CONTENT_FLY_CONNECTOME_INPUT_HZ",
+        "CONTENT_FLY_CONNECTOME_STIMULUS_MS",
+        "CONTENT_FLY_CONNECTOME_SETTLE_MS",
+        "CONTENT_FLY_CONNECTOME_BASELINE_MS",
+        "CONTENT_NEUROGENESIS_ENABLED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    restored = ContentWakefulRuntime(state_root=tmp_path)
+    restored_snapshot = restored.public_snapshot()
+    assert restored_snapshot["connectome"]["status"] == "SHADOW_ACTIVE"
+    assert restored_snapshot["neural_graph"]["substrate"]["neuron_count"] == 850
+    assert restored_snapshot["neural_graph"]["substrate"]["auxiliary_channel_count"] == 8
+
 
 def test_action_commitment_is_a_stable_provenance_bound_neural_stimulus(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)

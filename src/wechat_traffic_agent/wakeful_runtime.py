@@ -38,6 +38,109 @@ _CONNECTOME_AUX_CHANNELS = (
     "sense_network_error",
 )
 
+_NEURAL_TOPOLOGY_SCHEMA = "ferro-neural-topology.v1"
+_CONNECTOME_ENV_KEYS = (
+    "CONTENT_FLY_CONNECTOME_ENABLED",
+    "CONTENT_FLY_CONNECTOME_SOURCE",
+    "CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT",
+    "CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE",
+    "CONTENT_FLY_CONNECTOME_INPUT_HZ",
+    "CONTENT_FLY_CONNECTOME_STIMULUS_MS",
+    "CONTENT_FLY_CONNECTOME_SETTLE_MS",
+    "CONTENT_FLY_CONNECTOME_BASELINE_MS",
+    "CONTENT_NEUROGENESIS_ENABLED",
+)
+
+
+def _enabled(value: object) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _load_neural_topology_manifest(state_root: Path) -> dict[str, Any]:
+    path = Path(state_root) / "application" / "neural_topology.json"
+    try:
+        row = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(row, dict) or row.get("schema_version") != _NEURAL_TOPOLOGY_SCHEMA:
+        return {}
+    return row
+
+
+def _connectome_config(state_root: Path) -> dict[str, Any]:
+    """Resolve one stable, non-secret neural topology across Worker/Researcher."""
+    manifest = _load_neural_topology_manifest(state_root)
+    env_present = any(key in os.environ for key in _CONNECTOME_ENV_KEYS)
+
+    def pick(env_key: str, manifest_key: str, default: object) -> object:
+        value = os.environ.get(env_key)
+        if value is not None:
+            return value
+        if manifest_key in manifest:
+            return manifest[manifest_key]
+        return default
+
+    enabled_raw = os.environ.get("CONTENT_FLY_CONNECTOME_ENABLED")
+    enabled = (
+        _enabled(enabled_raw)
+        if enabled_raw is not None
+        else bool(manifest.get("enabled", False))
+    )
+    return {
+        "schema_version": _NEURAL_TOPOLOGY_SCHEMA,
+        "enabled": enabled,
+        "source": str(pick("CONTENT_FLY_CONNECTOME_SOURCE", "source", "minifly")),
+        "upstream_commit": str(
+            pick(
+                "CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT",
+                "upstream_commit",
+                "3e26934",
+            )
+        ),
+        "electrode_size": int(
+            pick("CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE", "electrode_size", 64)
+        ),
+        "input_hz": float(
+            pick("CONTENT_FLY_CONNECTOME_INPUT_HZ", "input_hz", 120)
+        ),
+        "stimulus_ms": float(
+            pick("CONTENT_FLY_CONNECTOME_STIMULUS_MS", "stimulus_ms", 10)
+        ),
+        "settle_ms": float(
+            pick("CONTENT_FLY_CONNECTOME_SETTLE_MS", "settle_ms", 40)
+        ),
+        "baseline_ms": float(
+            pick("CONTENT_FLY_CONNECTOME_BASELINE_MS", "baseline_ms", 20)
+        ),
+        "neurogenesis_enabled": _enabled(
+            pick("CONTENT_NEUROGENESIS_ENABLED", "neurogenesis_enabled", "1")
+        ),
+        "configuration_source": (
+            "ENVIRONMENT" if env_present else "PERSISTED_MANIFEST"
+        ),
+    }
+
+
+def _persist_neural_topology_manifest(state_root: Path, config: Mapping[str, Any]) -> None:
+    if not bool(config.get("enabled")):
+        return
+    path = Path(state_root) / "application" / "neural_topology.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        key: config[key]
+        for key in (
+            "schema_version", "enabled", "source", "upstream_commit",
+            "electrode_size", "input_hz", "stimulus_ms", "settle_ms",
+            "baseline_ms", "neurogenesis_enabled",
+        )
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(
+        json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
 
 def _connectome_body_currents(
     neural_life: Mapping[str, Any],
@@ -110,28 +213,28 @@ class ContentWakefulRuntime:
         self.neural_life_enabled = os.environ.get("CONTENT_NEURAL_LIFE_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
         self.neural_life = FerroNeuralLife(self.state_root)
         semantic = LIFNeuralGraph()
-        self.connectome_enabled = os.environ.get("CONTENT_FLY_CONNECTOME_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+        connectome_config = _connectome_config(self.state_root)
+        self.connectome_enabled = bool(connectome_config["enabled"])
         self.connectome_error: dict[str, str] | None = None
         reflex = semantic
         if self.connectome_enabled:
             try:
                 from virtualbrain.research.fly_connectome import FlyDronesBurstEngine, HybridConnectomeNervousSystem
-                source = os.environ.get("CONTENT_FLY_CONNECTOME_SOURCE", "minifly")
                 base_substrate = FlyDronesBurstEngine(
-                    source=source,
+                    source=str(connectome_config["source"]),
                     state_path=self.state_root / "application" / "fly_connectome_state.npz",
                     channels=semantic.neuron_names,
                     aux_channels=_CONNECTOME_AUX_CHANNELS,
-                    upstream_commit=os.environ.get("CONTENT_FLY_CONNECTOME_UPSTREAM_COMMIT", "3e26934"),
-                    electrode_size=int(os.environ.get("CONTENT_FLY_CONNECTOME_ELECTRODE_SIZE", "64")),
-                    input_hz=float(os.environ.get("CONTENT_FLY_CONNECTOME_INPUT_HZ", "120")),
-                    stimulus_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_STIMULUS_MS", "10")),
-                    settle_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_SETTLE_MS", "40")),
-                    baseline_ms=float(os.environ.get("CONTENT_FLY_CONNECTOME_BASELINE_MS", "20")),
+                    upstream_commit=str(connectome_config["upstream_commit"]),
+                    electrode_size=int(connectome_config["electrode_size"]),
+                    input_hz=float(connectome_config["input_hz"]),
+                    stimulus_ms=float(connectome_config["stimulus_ms"]),
+                    settle_ms=float(connectome_config["settle_ms"]),
+                    baseline_ms=float(connectome_config["baseline_ms"]),
                 )
-                neurogenesis_enabled = os.environ.get(
-                    "CONTENT_NEUROGENESIS_ENABLED", "1"
-                ).lower() in {"1", "true", "yes", "on"}
+                neurogenesis_enabled = bool(
+                    connectome_config["neurogenesis_enabled"]
+                )
                 if neurogenesis_enabled:
                     from virtualbrain.research.developmental_connectome import DevelopmentalConnectomeSubstrate
                     substrate = DevelopmentalConnectomeSubstrate(
@@ -141,6 +244,10 @@ class ContentWakefulRuntime:
                 else:
                     substrate = base_substrate
                 reflex = HybridConnectomeNervousSystem(semantic=semantic, substrate=substrate)
+                # Persist only topology/configuration, never state or secrets.
+                # Offline Researcher/repair processes can then restore the
+                # exact same body shape without depending on systemd env.
+                _persist_neural_topology_manifest(self.state_root, connectome_config)
             except Exception as exc:
                 # The connectome is initially SHADOW and must never become a life dependency.
                 self.connectome_error = {"error_type": type(exc).__name__, "message": str(exc)[:300]}
