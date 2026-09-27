@@ -690,14 +690,14 @@ def test_pending_chatgpt_request_defers_new_cognition_and_optional_internal_work
         reason="verify another prediction",
         task="VERIFY_PREDICTION",
     )
-    play = PlannedWake(
-        wake_id="content:NEURAL_PLAY",
+    optional = PlannedWake(
+        wake_id="content:NEURAL_TRANSFER",
         at=NOW,
-        reason="optional internal play",
-        task="NEURAL_PLAY",
+        reason="optional internal transfer",
+        task="NEURAL_TRANSFER",
     )
     assert runtime._plan_admission_delay(verify) == 60.0
-    assert runtime._plan_admission_delay(play) == 60.0
+    assert runtime._plan_admission_delay(optional) == 60.0
 
 
 def test_optional_internal_work_gets_bounded_slot_after_chatgpt_starvation(
@@ -713,10 +713,10 @@ def test_optional_internal_work_gets_bounded_slot_after_chatgpt_starvation(
         task="VERIFY_PREDICTION",
     )
     play = PlannedWake(
-        wake_id="content:NEURAL_PLAY",
+        wake_id="content:NEURAL_TRANSFER",
         at=NOW,
-        reason="bounded organism play",
-        task="NEURAL_PLAY",
+        reason="bounded organism transfer",
+        task="NEURAL_TRANSFER",
     )
 
     assert runtime._plan_admission_delay(play) == 60.0
@@ -775,7 +775,10 @@ def test_starvation_cap_does_not_bypass_hard_resource_gate(monkeypatch, tmp_path
         NOW, request_id="llmreq_resource_block", task="VERIFY_PREDICTION"
     )
     play = PlannedWake(
-        wake_id="content:NEURAL_PLAY", at=NOW, reason="play", task="NEURAL_PLAY"
+        wake_id="content:NEURAL_TRANSFER",
+        at=NOW,
+        reason="transfer",
+        task="NEURAL_TRANSFER",
     )
     assert runtime._plan_admission_delay(play) == 60.0
     clock["now"] = NOW + timedelta(seconds=61)
@@ -783,6 +786,73 @@ def test_starvation_cap_does_not_bypass_hard_resource_gate(monkeypatch, tmp_path
         runtime.resource_regulator, "defer_seconds", lambda task, now: 900.0
     )
     assert runtime._plan_admission_delay(play) == 900.0
+
+
+def test_ungraduated_neural_play_bypasses_pending_chatgpt_but_keeps_resource_gate(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "graduation_status",
+        lambda: {"graduated": False},
+    )
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_reflection_pending",
+        task="REFLECT",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="graduation sprint play",
+        task="NEURAL_PLAY",
+    )
+
+    monkeypatch.setattr(
+        runtime.resource_regulator,
+        "defer_seconds",
+        lambda task, now: None,
+    )
+    assert runtime._plan_admission_delay(play) is None
+
+    monkeypatch.setattr(
+        runtime.resource_regulator,
+        "defer_seconds",
+        lambda task, now: 900.0,
+    )
+    assert runtime._plan_admission_delay(play) == 900.0
+
+
+def test_graduated_neural_play_remains_optional_during_pending_chatgpt(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "graduation_status",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.resource_regulator,
+        "defer_seconds",
+        lambda task, now: None,
+    )
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_reflection_pending",
+        task="REFLECT",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="maintenance play",
+        task="NEURAL_PLAY",
+    )
+
+    assert runtime._plan_admission_delay(play) == 60.0
 
 
 def test_exact_chatgpt_resume_is_not_rethrottled_by_resource_admission(tmp_path):
