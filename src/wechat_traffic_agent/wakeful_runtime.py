@@ -2438,6 +2438,16 @@ class ContentWakefulRuntime:
 
     def public_snapshot(self) -> dict:
         snap = self.core.snapshot()
+        try:
+            from .screeps_training import ScreepsResearcher
+            screeps_training = ScreepsResearcher(
+                self.state_root
+            ).projection()
+        except Exception as exc:  # noqa: BLE001
+            screeps_training = {
+                "status": "DEGRADED",
+                "error_type": type(exc).__name__,
+            }
         return {
             "presence": "AWAKE",
             "state": snap.state.value,
@@ -2489,6 +2499,7 @@ class ContentWakefulRuntime:
             "drive_system": self.drive_system.projection(),
             "developmental_history": self.developmental_history.projection(),
             "world_learning": self.world_learning.projection(),
+            "screeps_training": screeps_training,
             "autonomous_life": self.autonomous_life.projection(),
             "self_model": self.self_model.projection(),
             "lineage_experiments": self.lineage_experiments.projection(),

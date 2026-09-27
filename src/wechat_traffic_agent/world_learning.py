@@ -36,9 +36,16 @@ def _write(path: Path, payload: Mapping[str, Any]) -> None:
 class WorldLearningLedger:
     """Prediction -> action -> delayed outcome -> learning signal."""
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(self, state_root: Path, *, namespace: str | None = None) -> None:
         self.state_root = Path(state_root)
-        self.path = self.state_root / "application" / "world_learning.json"
+        raw_namespace = str(namespace or "").strip().lower()
+        if raw_namespace and (
+            len(raw_namespace) > 48
+            or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in raw_namespace)
+        ):
+            raise ValueError("world learning namespace is invalid")
+        filename = "world_learning.json" if not raw_namespace else f"world_learning.{raw_namespace}.json"
+        self.path = self.state_root / "application" / filename
         raw = _read(self.path)
         self.state = raw if raw.get("schema_version") == SCHEMA else {
             "schema_version": SCHEMA,
@@ -209,6 +216,56 @@ class WorldLearningLedger:
         self.state["updated_at"] = now.isoformat()
         _write(self.path, self.state)
         return current
+
+    def cancel(
+        self,
+        *,
+        action_id: str,
+        reason: str,
+        evidence_refs: Iterable[str],
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Close a commitment without creating a reward signal.
+
+        Infrastructure/harness failures are evidence about the experiment
+        system, not evidence that the tested world strategy was good or bad.
+        """
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        refs = tuple(dict.fromkeys(str(x) for x in evidence_refs if str(x)))
+        if not refs:
+            raise ValueError("cancellation requires evidence")
+        reason = str(reason or "").strip()
+        if not reason:
+            raise ValueError("cancellation requires reason")
+        actions = dict(self.state.get("actions") or {})
+        action = dict(actions.get(str(action_id)) or {})
+        if not action:
+            raise KeyError("unknown world action")
+        if action.get("status") == "CANCELLED":
+            return dict(action)
+        settlements = dict(action.get("settlements") or {})
+        for key, row in list(settlements.items()):
+            current = dict(row) if isinstance(row, Mapping) else {}
+            if current.get("status") != "PENDING":
+                continue
+            current.update({
+                "status": "CANCELLED",
+                "observed_at": now.isoformat(),
+                "actual_utility": None,
+                "prediction_error": None,
+                "learning_signal": None,
+                "cancellation_reason": reason[:500],
+                "evidence_refs": list(refs),
+            })
+            settlements[str(key)] = current
+        action["settlements"] = settlements
+        action["status"] = "CANCELLED"
+        action["updated_at"] = now.isoformat()
+        actions[str(action_id)] = action
+        self.state["actions"] = actions
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
+        return dict(action)
 
     def projection(self) -> dict[str, Any]:
         actions = [dict(row) for row in (self.state.get("actions") or {}).values() if isinstance(row, Mapping)]
