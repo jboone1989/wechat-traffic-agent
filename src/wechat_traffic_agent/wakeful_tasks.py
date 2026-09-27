@@ -2323,13 +2323,21 @@ class WakefulContentTaskRunner:
                 ).strip() or None
                 if action == "WAIT":
                     wait_seconds = int(decision.get("wait_seconds") or 300)
-                    schedule = getattr(self.wakeful, "schedule_goal_followup", None)
-                    if callable(schedule):
-                        schedule(
+                    schedule_wait = getattr(self.wakeful, "schedule_owner_wait", None)
+                    if callable(schedule_wait):
+                        rows["owner_wait"] = schedule_wait(
                             now,
                             seconds=max(60, min(wait_seconds, 21600)),
                             relevant_refs=(str(owner_goal.get("goal_id") or ""),),
                         )
+                    else:
+                        schedule = getattr(self.wakeful, "schedule_goal_followup", None)
+                        if callable(schedule):
+                            schedule(
+                                now,
+                                seconds=max(60, min(wait_seconds, 21600)),
+                                relevant_refs=(str(owner_goal.get("goal_id") or ""),),
+                            )
                     complete = getattr(self.owner_agent_episode, "complete", None)
                     if callable(complete):
                         rows["owner_agent_episode_completion"] = complete(

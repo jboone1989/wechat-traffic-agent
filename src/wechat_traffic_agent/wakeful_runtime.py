@@ -27,6 +27,8 @@ _DEFAULT_INTERVALS = {
     "NEURAL_TRANSFER": 14400,
 }
 
+_OWNER_WAIT_REASON = "resume owner goal after explicit wait"
+
 _CONNECTOME_AUX_CHANNELS = (
     "sense_cpu_pressure",
     "sense_memory_pressure",
@@ -439,6 +441,42 @@ class ContentWakefulRuntime:
                     if existing is not None
                     else None
                 )
+                if (
+                    existing is not None
+                    and existing.reason == _OWNER_WAIT_REASON
+                    and wake.at < existing.at
+                    and not incoming_cognition_refs
+                ):
+                    # Normal cadence/owner-refresh requests cannot cancel a
+                    # deliberate future WAIT.  Merge only non-transactional
+                    # provenance and leave its deadline intact. A real
+                    # cognition-request continuation is handled below and may
+                    # resume an already-started transaction.
+                    merged_refs = tuple(dict.fromkeys(
+                        (
+                            *(str(ref) for ref in existing.relevant_refs),
+                            *(
+                                str(ref)
+                                for ref in wake.relevant_refs
+                                if not str(ref).startswith("cognition-request:")
+                            ),
+                        )
+                    ))
+                    if merged_refs != existing.relevant_refs:
+                        self.core.cancel(wake_id)
+                        protected = PlannedWake(
+                            wake_id=existing.wake_id,
+                            at=existing.at,
+                            reason=_OWNER_WAIT_REASON,
+                            task=existing.task,
+                            relevant_refs=merged_refs,
+                            cancel_conditions=existing.cancel_conditions,
+                            preemptible=existing.preemptible,
+                        )
+                        self.core.schedule(protected)
+                        current[wake_id] = protected
+                        merged += 1
+                    continue
                 replace_cognition_pointer = bool(
                     existing is not None
                     and incoming_cognition_refs
@@ -1781,7 +1819,7 @@ class ContentWakefulRuntime:
         seconds: int = 5,
         relevant_refs: tuple[str, ...] = (),
     ) -> None:
-        delay = max(1, min(int(seconds), 300))
+        delay = max(1, min(int(seconds), 21600))
         at = now + timedelta(seconds=delay)
         wake_id = "content:CONTENT_COGNITION"
         existing = next(
@@ -1789,6 +1827,26 @@ class ContentWakefulRuntime:
             None,
         )
         owner_refs = tuple(str(ref) for ref in relevant_refs if str(ref).strip())
+        if (
+            existing is not None
+            and existing.reason == _OWNER_WAIT_REASON
+            and existing.at > now
+        ):
+            # An explicit WAIT is a durable owner decision, not an ordinary
+            # cadence hint. Startup/goal-refresh followups may add provenance,
+            # but they cannot pull the owner back into cognition before the
+            # chosen wait window expires.
+            owner_refs = tuple(dict.fromkeys((*existing.relevant_refs, *owner_refs)))
+            if owner_refs != existing.relevant_refs:
+                self.core.cancel(wake_id)
+                self.core.schedule(PlannedWake(
+                    wake_id=wake_id,
+                    at=existing.at,
+                    reason=_OWNER_WAIT_REASON,
+                    task="CONTENT_COGNITION",
+                    relevant_refs=owner_refs,
+                ))
+            return
         if existing is not None and self._is_owner_goal_cognition_wake(existing):
             owner_refs = tuple(dict.fromkeys((*existing.relevant_refs, *owner_refs)))
             if existing.at <= at and owner_refs == existing.relevant_refs:
@@ -1806,6 +1864,46 @@ class ContentWakefulRuntime:
             task="CONTENT_COGNITION",
             relevant_refs=owner_refs,
         ))
+
+    def schedule_owner_wait(
+        self,
+        now: datetime,
+        *,
+        seconds: int,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Persist an explicit owner WAIT that ordinary goal refresh cannot preempt."""
+        delay = max(60, min(int(seconds), 21600))
+        at = now.astimezone(timezone.utc) + timedelta(seconds=delay)
+        refs = tuple(dict.fromkeys(
+            str(ref).strip()
+            for ref in relevant_refs
+            if str(ref).strip()
+        ))
+        wake_id = "content:CONTENT_COGNITION"
+        existing = next(
+            (
+                wake
+                for wake in self.core.snapshot().pending_plans
+                if wake.wake_id == wake_id
+            ),
+            None,
+        )
+        if existing is not None:
+            refs = tuple(dict.fromkeys((*existing.relevant_refs, *refs)))
+            self.core.cancel(wake_id)
+        self.core.schedule(PlannedWake(
+            wake_id=wake_id,
+            at=at,
+            reason=_OWNER_WAIT_REASON,
+            task="CONTENT_COGNITION",
+            relevant_refs=refs,
+        ))
+        return {
+            "status": "SCHEDULED",
+            "wait_seconds": delay,
+            "resume_at": at.isoformat(),
+        }
 
     def schedule_provider_recovery(
         self,

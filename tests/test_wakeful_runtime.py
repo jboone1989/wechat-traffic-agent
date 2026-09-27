@@ -455,6 +455,88 @@ def test_owner_followup_upgrades_earlier_ordinary_cognition_wake(tmp_path):
     assert ready.relevant_refs == ("goal_owner",)
 
 
+def test_explicit_owner_wait_preserves_full_window_against_startup_followup(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    result = runtime.schedule_owner_wait(
+        NOW,
+        seconds=7200,
+        relevant_refs=("goal_owner",),
+    )
+    assert result["wait_seconds"] == 7200
+    pending = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    expected_at = NOW + timedelta(seconds=7200)
+    assert pending.at == expected_at
+    assert pending.reason == "resume owner goal after explicit wait"
+
+    # Startup restoration and ordinary owner refreshes may add provenance but
+    # must not pull an explicit WAIT back to "now".
+    runtime.schedule_goal_followup(
+        NOW + timedelta(seconds=30),
+        seconds=1,
+        relevant_refs=("goal_owner", "mission_owner"),
+    )
+    restored = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert restored.at == expected_at
+    assert restored.reason == "resume owner goal after explicit wait"
+    assert restored.relevant_refs == ("goal_owner", "mission_owner")
+
+
+def test_external_owner_refresh_cannot_preempt_explicit_wait(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_owner_wait(
+        NOW,
+        seconds=7200,
+        relevant_refs=("goal_owner",),
+    )
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW + timedelta(seconds=10),
+        reason="resume active owner goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal_owner", "mission_owner"),
+    ))
+
+    runtime._drain_external_wake_requests()
+    pending = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert pending.at == NOW + timedelta(seconds=7200)
+    assert pending.reason == "resume owner goal after explicit wait"
+    assert pending.relevant_refs == ("goal_owner", "mission_owner")
+
+
+def test_real_cognition_continuation_may_resume_during_explicit_owner_wait(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.schedule_owner_wait(
+        NOW,
+        seconds=7200,
+        relevant_refs=("goal_owner",),
+    )
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW + timedelta(seconds=10),
+        reason="resume durable content_cognition after ChatGPT response",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal_owner", "cognition-request:llmreq_real"),
+    ))
+
+    runtime._drain_external_wake_requests()
+    pending = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert pending.at == NOW + timedelta(seconds=10)
+    assert pending.reason == "resume durable content_cognition after ChatGPT response"
+    assert pending.relevant_refs[-1] == "cognition-request:llmreq_real"
+
+
 def test_external_owner_wake_upgrades_earlier_ordinary_cognition_wake(tmp_path):
     now = datetime.now(timezone.utc).replace(microsecond=0)
     for name, pressure in (("survival_resources", "WATCH"), ("llm_resource_pool", "CRITICAL")):
