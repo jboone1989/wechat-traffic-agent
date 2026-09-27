@@ -469,6 +469,12 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     )
     if self_maintenance_reconcile.get("archived_duplicates"):
         print(json.dumps({"self_maintenance_reconcile": self_maintenance_reconcile}, sort_keys=True))
+    self_maintenance_review = self_maintenance.review()
+    if (
+        self_maintenance_review.get("repair_requested_count")
+        or self_maintenance_review.get("repair_proposed_count")
+    ):
+        print(json.dumps({"self_maintenance_review": self_maintenance_review}, sort_keys=True))
     from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
     repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
     repair_test_pythonpath = os.environ.get(

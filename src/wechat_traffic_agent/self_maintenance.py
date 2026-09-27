@@ -795,7 +795,7 @@ class SelfMaintenanceService:
         }
 
     def review(self) -> dict[str, Any]:
-        self.refresh_known_proposals()
+        refresh = self.refresh_known_proposals()
         folder = self.root / "problems"
         rows: list[dict[str, Any]] = []
         for path in sorted(folder.glob("*.json")) if folder.exists() else ():
@@ -816,6 +816,8 @@ class SelfMaintenanceService:
             "status": "OK",
             "open_count": len(open_rows),
             "repair_proposed_count": sum(1 for row in open_rows if row.get("repair_proposal")),
+            "repair_requested_count": int(refresh.get("repair_requested") or 0),
+            "proposal_refresh": refresh,
             "problems": [
                 {
                     "problem_id": row.get("problem_id"),

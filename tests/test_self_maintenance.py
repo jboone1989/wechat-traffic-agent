@@ -203,6 +203,7 @@ def test_review_enriches_existing_composition_json_problem(tmp_path):
     review = service.review()
 
     assert review["repair_proposed_count"] == 1
+    assert review["repair_requested_count"] == 1
     updated = json.loads(problem.read_text())
     assert updated["repair_proposal"]["repair_kind"] == (
         "USE_STRUCTURED_OUTPUT_FOR_CONTENT_COMPOSITION"
