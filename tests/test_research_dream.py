@@ -300,6 +300,137 @@ def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
     assert settled["dream"]["decision"] == "WAIT_FOR_PROSPECTIVE_RESULTS"
 
 
+def test_legacy_replay_only_incumbent_is_demoted_into_prospective_trial(tmp_path):
+    engine = ResearchDreamEngine(tmp_path)
+    baseline = dict(engine.state["incumbent_policy"])
+    replay_policy = {
+        "policy_id": "research-policy:legacy-replay-v3",
+        "generation": 3,
+        "weights": {
+            "recency": 0.20,
+            "recurrence": 0.30,
+            "known_recipe": 0.25,
+            "diagnosability": 0.15,
+            "diversity": 0.10,
+        },
+        "origin": "RESEARCH_DREAM_REPLAY:research-dream:3",
+        "replay_promoted": True,
+        "online_validation_required": True,
+    }
+    state = engine.state
+    state["incumbent_history"] = [
+        baseline,
+        {
+            **replay_policy,
+            "policy_id": "research-policy:legacy-replay-v1",
+            "generation": 1,
+            "origin": "RESEARCH_DREAM_REPLAY:research-dream:1",
+        },
+    ]
+    state["incumbent_policy"] = replay_policy
+    state["researcher_generation"] = 3
+    state["promotion_count"] = 3
+    state["replay_pool_hash"] = "sha256:legacy-pool"
+    state["dreams"] = [{
+        "dream_id": "research-dream:3",
+        "incumbent": {"score": 0.55},
+        "winner": {"score": 0.67},
+        "decision": "PROMOTE_RESEARCH_POLICY_BOUNDED",
+    }]
+    _put(engine.path, state)
+
+    migrated = ResearchDreamEngine(tmp_path)
+    projection = migrated.projection()
+
+    assert projection["incumbent_policy"]["policy_id"] == baseline["policy_id"]
+    assert projection["researcher_generation"] == 0
+    assert projection["promotion_count"] == 0
+    assert projection["reversion_count"] == 1
+    trial = projection["prospective_trial"]
+    assert trial["status"] == "ACTIVE"
+    assert trial["challenger_policy"]["policy_id"] == replay_policy["policy_id"]
+    assert trial["challenger_policy"]["online_validation_required"] is True
+    migration = migrated.state["offline_replay_migration"]
+    assert migration["status"] == "MIGRATED"
+    assert migration["invalidated_replay_generation"] == 3
+    assert migration["restored_generation"] == 0
+    assert migration["replay_only_promotion_count"] == 3
+    assert migration["history_preserved"] is True
+
+
+def test_researcher_kills_challenger_after_online_regression(tmp_path):
+    for suffix, age, status, kind in (
+        ("old-a", 90, "ADOPTED_VERIFIED", "KNOWN_A"),
+        ("old-b", 80, "ADOPTED_VERIFIED", "KNOWN_B"),
+        ("mid", 50, "CANDIDATE_COMMITTED", "KNOWN_C"),
+        ("bad-a", 3, "CAPABILITY_UNAVAILABLE", "GENERATED_BOUNDED_EDIT"),
+        ("bad-b", 2, "CAPABILITY_UNAVAILABLE", "GENERATED_BOUNDED_EDIT"),
+        ("bad-c", 1, "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED", "GENERATED_BOUNDED_EDIT"),
+    ):
+        _world(
+            tmp_path,
+            suffix=suffix,
+            age_minutes=age,
+            status=status,
+            occurrences=3 if status == "ADOPTED_VERIFIED" else 1,
+            repair_kind=kind,
+        )
+
+    engine = ResearchDreamEngine(tmp_path)
+    initial = engine.dream(now=NOW)
+    assert initial["dream"]["decision"] == "START_RESEARCH_POLICY_TRIAL"
+    original_incumbent = initial["incumbent_policy"]["policy_id"]
+    trial = engine.projection()["prospective_trial"]
+    trial_id = trial["trial_id"]
+
+    future_rows = []
+    arm_ids = {"BASELINE": [], "CANDIDATE": []}
+    index = 0
+    while min(len(arm_ids["BASELINE"]), len(arm_ids["CANDIDATE"])) < 2:
+        problem_id = f"self-problem:regression-{index}"
+        arm = engine._trial_arm(problem_id, trial_id)
+        if len(arm_ids[arm]) < 2:
+            arm_ids[arm].append(problem_id)
+            future_rows.append({
+                "problem_id": problem_id,
+                "last_seen_at": (NOW + timedelta(minutes=1)).isoformat(),
+                "occurrences": 1,
+                "error_type": "ValueError",
+                "failure_site": "content_goal_loop.py:_run>content_service.py:compose",
+                "repair_proposal": {"repair_kind": "KNOWN_RECIPE", "risk": "LOW"},
+            })
+        index += 1
+    ResearchDreamEngine(tmp_path).rank_problem_rows(
+        future_rows, now=NOW + timedelta(minutes=1)
+    )
+    assigned = ResearchDreamEngine(tmp_path).projection()["prospective_trial"]["assignments"]
+    for problem_id, arm in assigned.items():
+        safe = problem_id.replace(":", "-")
+        _put(
+            tmp_path / "application/self_maintenance/repair_trials" / f"{safe}.json",
+            {
+                "schema_version": "self-repair-trial.v1",
+                "problem_id": problem_id,
+                "status": (
+                    "CAPABILITY_UNAVAILABLE"
+                    if arm == "CANDIDATE"
+                    else "ADOPTED_VERIFIED"
+                ),
+                "observed_at": (NOW + timedelta(minutes=2)).isoformat(),
+            },
+        )
+
+    ResearchDreamEngine(tmp_path).dream(now=NOW + timedelta(minutes=3))
+    projection = ResearchDreamEngine(tmp_path).projection()
+    assert projection["prospective_trial"]["status"] == "REJECTED"
+    assert projection["prospective_trial"]["decision"] == (
+        "KILL_CHALLENGER_AFTER_PROSPECTIVE_REGRESSION"
+    )
+    assert projection["researcher_generation"] == 0
+    assert projection["incumbent_policy"]["policy_id"] == original_incumbent
+    assert projection["online_rejection_count"] == 1
+
+
 def test_wakeful_public_snapshot_exposes_researcher_generation(tmp_path):
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
 

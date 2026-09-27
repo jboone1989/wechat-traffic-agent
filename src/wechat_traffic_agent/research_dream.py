@@ -138,9 +138,148 @@ class ResearchDreamEngine:
                 "reversion_count": 0,
                 "online_rejection_count": 0,
                 "prospective_trial": None,
+                "offline_replay_migration": None,
+                "validated_generation_count": 0,
                 "protected_invariants": list(PROTECTED_INVARIANTS),
                 "automatic_authority_expansion": False,
             }
+        self._migrate_replay_only_incumbent()
+
+    @staticmethod
+    def _is_replay_only_policy(row: Mapping[str, Any] | None) -> bool:
+        if not isinstance(row, Mapping):
+            return False
+        return (
+            str(row.get("origin") or "").startswith("RESEARCH_DREAM_REPLAY:")
+            and bool(row.get("online_validation_required"))
+        )
+
+    def _last_validated_incumbent(self) -> dict[str, Any]:
+        history = [
+            dict(row)
+            for row in self.state.get("incumbent_history") or ()
+            if isinstance(row, Mapping)
+        ]
+        current = self.state.get("incumbent_policy")
+        candidates = [*history, current]
+        for row in reversed(candidates):
+            if not isinstance(row, Mapping):
+                continue
+            if self._is_replay_only_policy(row):
+                continue
+            origin = str(row.get("origin") or "")
+            if origin.startswith("PROSPECTIVE_RESEARCH_TRIAL:"):
+                return dict(row)
+            if origin == "LEGACY_RECENCY_FIRST":
+                return dict(row)
+        return _default_policy()
+
+    def _migrate_replay_only_incumbent(self) -> None:
+        """Demote pre-v2 replay-only incumbents into an online challenger trial."""
+        current = self.state.get("incumbent_policy")
+        if not self._is_replay_only_policy(current):
+            self.state.setdefault(
+                "validated_generation_count",
+                int((current or {}).get("generation") or 0)
+                if isinstance(current, Mapping) else 0,
+            )
+            self.state.setdefault("offline_replay_migration", None)
+            return
+        prior = self.state.get("offline_replay_migration")
+        if isinstance(prior, Mapping) and str(prior.get("status") or "") == "MIGRATED":
+            return
+        now = datetime.now(timezone.utc)
+        challenger = dict(current)
+        baseline = self._last_validated_incumbent()
+        validated_generation = int(baseline.get("generation") or 0)
+        dreams = [
+            dict(row)
+            for row in self.state.get("dreams") or ()
+            if isinstance(row, Mapping)
+        ]
+        latest = dreams[-1] if dreams else {}
+        trial_id = "research-trial:migrated-" + sha256(
+            (
+                str(challenger.get("policy_id") or "")
+                + "|"
+                + str(latest.get("dream_id") or "")
+                + "|"
+                + str(self.state.get("replay_pool_hash") or "")
+            ).encode()
+        ).hexdigest()[:20]
+        challenger.update({
+            "generation": validated_generation + 1,
+            "replay_promoted": False,
+            "online_validation_required": True,
+            "origin": (
+                str(challenger.get("origin") or "")
+                or f"RESEARCH_DREAM_REPLAY:{latest.get('dream_id') or 'legacy'}"
+            ),
+        })
+        self.state["incumbent_policy"] = baseline
+        self.state["researcher_generation"] = validated_generation
+        self.state["validated_generation_count"] = validated_generation
+        # Old promotion_count counted replay-only promotions. Preserve that
+        # provenance separately and reset the production promotion metric.
+        replay_only_promotions = int(self.state.get("promotion_count") or 0)
+        self.state["promotion_count"] = 0
+        legacy_dream_refs = [
+            str(row.get("dream_id") or "")
+            for row in dreams
+            if str(row.get("decision") or "") == "PROMOTE_RESEARCH_POLICY_BOUNDED"
+            and str(row.get("dream_id") or "")
+        ]
+        self.state["offline_promotion_invalidated_count"] = (
+            replay_only_promotions
+        )
+        self.state["legacy_offline_promotions"] = {
+            "invalidated_generation": int((current or {}).get("generation") or 0),
+            "invalidated_policy_id": challenger.get("policy_id"),
+            "invalidated_count": replay_only_promotions,
+            "evidence_refs": legacy_dream_refs,
+            "history_preserved": True,
+        }
+        self.state["reversion_count"] = int(
+            self.state.get("reversion_count") or 0
+        ) + 1
+        self.state["prospective_trial"] = {
+            "trial_id": trial_id,
+            "status": "ACTIVE",
+            "started_at": now.isoformat(),
+            "baseline_policy": baseline,
+            "challenger_policy": challenger,
+            "replay_dream_id": latest.get("dream_id"),
+            "replay_pool_hash": self.state.get("replay_pool_hash"),
+            "replay_incumbent_score": (
+                (latest.get("incumbent") or {}).get("score")
+                if isinstance(latest.get("incumbent"), Mapping) else None
+            ),
+            "replay_challenger_score": (
+                (latest.get("winner") or {}).get("score")
+                if isinstance(latest.get("winner"), Mapping) else None
+            ),
+            "minimum_samples_per_arm": MIN_ONLINE_SAMPLES_PER_ARM,
+            "assignments": {},
+            "results": {},
+            "origin": "MIGRATED_PRE_V2_REPLAY_ONLY_INCUMBENT",
+        }
+        self.state["offline_replay_migration"] = {
+            "status": "MIGRATED",
+            "migrated_at": now.isoformat(),
+            "invalidated_replay_generation": int(
+                (current or {}).get("generation") or 0
+            ),
+            "invalidated_policy_id": challenger.get("policy_id"),
+            "restored_policy_id": baseline.get("policy_id"),
+            "restored_generation": validated_generation,
+            "prospective_trial_id": trial_id,
+            "replay_only_promotion_count": replay_only_promotions,
+            "history_preserved": True,
+        }
+        self.state["updated_at"] = now.isoformat()
+        self.state["protected_invariants"] = list(PROTECTED_INVARIANTS)
+        self.state["automatic_authority_expansion"] = False
+        _write(self.path, self.state)
 
     def _problem_rows(self) -> dict[str, dict[str, Any]]:
         folder = self.state_root / "application" / "self_maintenance" / "problems"
@@ -306,8 +445,16 @@ class ResearchDreamEngine:
                     "promotion_evidence_ref": str(row.get("trial_id") or ""),
                     "online_validation_required": False,
                 })
+                previous = dict(self.state.get("incumbent_policy") or _default_policy())
+                history = [
+                    dict(item) for item in self.state.get("incumbent_history") or ()
+                    if isinstance(item, Mapping)
+                ]
+                history.append(previous)
+                self.state["incumbent_history"] = history[-32:]
                 self.state["incumbent_policy"] = challenger
                 self.state["researcher_generation"] = generation
+                self.state["validated_generation_count"] = generation
                 self.state["promotion_count"] = int(
                     self.state.get("promotion_count") or 0
                 ) + 1
@@ -600,10 +747,7 @@ class ResearchDreamEngine:
                 same_pool = True
                 pool_challengers = sum(
                     1 for row in prior_same_pool
-                    if row.get("decision") in {
-                        "PROMOTE_RESEARCH_POLICY_BOUNDED",
-                        "START_RESEARCH_POLICY_TRIAL",
-                    }
+                    if row.get("decision") == "START_RESEARCH_POLICY_TRIAL"
                 )
 
         incumbent = (
