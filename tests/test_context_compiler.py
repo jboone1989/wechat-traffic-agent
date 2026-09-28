@@ -138,3 +138,36 @@ def test_context_receipt_has_stable_identity_and_budget_utilization():
     assert receipt["receipt_id"].startswith("context-receipt:sha256:")
     assert receipt["receipt_id"] == second["context_receipt"]["receipt_id"]
     assert 0 < receipt["budget_utilization_estimate"] < 1
+
+
+def test_context_receipt_records_decision_conditioned_selection_summary():
+    metadata = compile_surface_metadata(
+        prompt="PLAN: choose the next action",
+        surface="agent_runtime",
+        sections={"decision_context": {"selected_count": 2}},
+        candidate_counts={"decision_candidates": 18},
+        downstream_budget_chars=60_000,
+        selection_summary={
+            "retrieval_policy": "decision_conditioned_context_retrieval_v1",
+            "information_need_ids": ["objective", "counterevidence"],
+            "candidate_count": 18,
+            "selected_count": 2,
+            "rejected_candidates": [
+                {
+                    "context_id": "belief:noise",
+                    "reason": "below_decision_relevance_floor",
+                }
+            ],
+        },
+    )
+
+    receipt = metadata["context_receipt"]
+    assert (
+        receipt["selection_summary"]["retrieval_policy"]
+        == "decision_conditioned_context_retrieval_v1"
+    )
+    assert receipt["selection_summary"]["selected_count"] == 2
+    assert receipt["selection_summary"]["rejected_candidates"][0]["context_id"] == "belief:noise"
+    assert receipt["selection_policy"].startswith(
+        "information_need_global_retrieval"
+    )

@@ -202,6 +202,7 @@ def build_context_receipt(
     sections: Mapping[str, Any],
     candidate_counts: Mapping[str, int] | None = None,
     downstream_budget_chars: int | None = None,
+    selection_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     sizes = {str(key): _json_chars(value) for key, value in sections.items()}
     counts = {
@@ -216,6 +217,7 @@ def build_context_receipt(
         "section_chars": sizes,
         "candidate_counts": counts,
         "downstream_budget_chars": budget,
+        "selection_summary": dict(selection_summary or {}),
     }
     digest = hashlib.sha256(
         json.dumps(
@@ -241,9 +243,17 @@ def build_context_receipt(
             else round(selected_chars / budget, 6)
         ),
         "selection_policy": (
-            "decision_relevance_then_freshness_and_evidence; "
-            "surface_disclosure_and_runtime_projector_are_final_bounds"
+            (
+                "information_need_global_retrieval_then_dependency_and_counterevidence; "
+                "surface_disclosure_and_runtime_projector_are_final_bounds"
+            )
+            if selection_summary
+            else (
+                "decision_relevance_then_freshness_and_evidence; "
+                "surface_disclosure_and_runtime_projector_are_final_bounds"
+            )
         ),
+        "selection_summary": dict(selection_summary or {}),
     }
 
 
@@ -259,6 +269,7 @@ def compile_surface_metadata(
     pending_plan_count: int | None = None,
     candidate_counts: Mapping[str, int] | None = None,
     downstream_budget_chars: int | None = None,
+    selection_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     decision = infer_decision_frame(
         prompt,
@@ -280,6 +291,7 @@ def compile_surface_metadata(
             sections=sections,
             candidate_counts=candidate_counts,
             downstream_budget_chars=downstream_budget_chars,
+            selection_summary=selection_summary,
         ),
     }
 
