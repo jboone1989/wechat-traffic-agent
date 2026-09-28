@@ -106,3 +106,70 @@ def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
     assert contract_problem["status"] == "DIAGNOSING"
     assert len(wakeful.signals) == 1
     assert len(wakeful.reflections) == 1
+
+
+def test_settled_autonomous_goal_no_effect_is_felt_in_production_path(tmp_path):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+
+    result = runner.observe_settled_capability_outcome(
+        "RESOURCE_REVIEW",
+        {
+            "status": "EXECUTED",
+            "goal_id": "autonomous-goal:test",
+            "close_evidence_ref": "task-result:settled-no-effect",
+            "world_utility": 0.0,
+            "drive_feedback": {
+                "no_effect_streak": 23,
+                "last_outcome_status": "EXECUTED",
+            },
+        },
+        now=NOW,
+    )
+
+    assert result["status"] == "VIOLATED"
+    assert result["capability_contracts"]["status"] == "VIOLATED"
+    assert result["interoception"]["primary_symptom"] == "contract_goal_effect_absent"
+    assert result["maintenance_observation"]["status"] in {
+        "RECORDED",
+        "ALREADY_RECORDED",
+    }
+    problems = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    ]
+    problem = next(
+        row for row in problems
+        if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
+    )
+    assert (
+        problem["failure_site"]
+        == "wakeful_runtime.py:autonomous_goal_effect_contract"
+    )
+    assert problem["status"] == "DIAGNOSING"
+    assert len(wakeful.signals) == 1
+    assert len(wakeful.reflections) == 1
+
+
+def test_settled_world_outcome_can_expose_silent_goal_disease(tmp_path):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+
+    result = runner.observe_settled_capability_outcome(
+        "RESOURCE_REVIEW",
+        {
+            "status": "EXECUTED",
+            "goal_id": "goal:test",
+            "world_utility": 0.0,
+            "drive_feedback": {
+                "no_effect_streak": 23,
+                "last_outcome_status": "EXECUTED",
+            },
+        },
+        now=NOW,
+    )
+
+    assert result["status"] == "VIOLATED"
+    assert result["interoception"]["primary_symptom"] == "contract_goal_effect_absent"
+    assert result["capability_contracts"]["violations"][0]["subsystem"] == "goal_execution"
+    assert len(wakeful.signals) == 1

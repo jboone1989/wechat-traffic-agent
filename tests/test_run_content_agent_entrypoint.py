@@ -175,3 +175,20 @@ def test_task_result_logging_keeps_small_results_intact_and_bounds_large_results
     assert summarized["sections"]["survival_resource_after_actions"]["status"] == "OK"
     assert "huge" not in json.dumps(summarized)
     assert len(json.dumps(summarized).encode("utf-8")) < module._TASK_RESULT_LOG_MAX_BYTES
+
+
+def test_autonomous_goal_settlement_reenters_capability_contracts():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    assert "observe_autonomous_goal_outcome(" in text
+    assert "task_runner.observe_settled_capability_outcome(" in text
+    assert text.index("observe_autonomous_goal_outcome(") < text.index(
+        "task_runner.observe_settled_capability_outcome("
+    )
+    assert "autonomous_goal_capability_contract" in text
+
+
+def test_entrypoint_does_not_double_ingest_completed_task_outcome():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    # WakefulContentTaskRunner._finalize_task_result owns normal task
+    # self-maintenance. The supervisor only records exceptions.
+    assert "maintenance.ingest_task_outcome(task, task_result, now=now)" not in text

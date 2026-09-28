@@ -780,12 +780,6 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                         except Exception:
                             pass  # Preserve the original task failure for the supervisor.
                     raise
-            maintenance = getattr(task_runner, "self_maintenance", None)
-            if maintenance is not None:
-                try:
-                    maintenance.ingest_task_outcome(task, task_result, now=now)
-                except Exception:
-                    pass  # Diagnosis cannot hide a completed task result.
             try:
                 reflection_schedule = wakeful_runtime.schedule_reflection_from_outcome(
                     task,
@@ -851,6 +845,26 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             )
             if autonomous_goal is not None:
                 print(json.dumps({"autonomous_goal_outcome": autonomous_goal}, ensure_ascii=False, sort_keys=True))
+                try:
+                    settled_contract = task_runner.observe_settled_capability_outcome(
+                        task,
+                        autonomous_goal,
+                        now=now,
+                    )
+                    if str(settled_contract.get("status") or "") == "VIOLATED":
+                        print(json.dumps(
+                            {"autonomous_goal_capability_contract": settled_contract},
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        ))
+                except Exception as exc:
+                    print(json.dumps({
+                        "autonomous_goal_capability_contract": {
+                            "status": "DEGRADED",
+                            "error_type": type(exc).__name__,
+                            "message": str(exc)[:300],
+                        }
+                    }, ensure_ascii=False, sort_keys=True), file=sys.stderr)
             if task in _DOMAIN_EXPERIENCE_TASKS:
                 domain_goal_ref = next(
                     (
