@@ -313,3 +313,51 @@ def test_expired_autonomous_goal_becomes_drive_failure_and_late_result_is_ignore
         goal_id=goal_id,
         observed_at=later,
     ) is None
+
+
+def test_owner_commitment_keeps_neural_play_to_embodied_timeslice(monkeypatch):
+    calls = []
+
+    class _Game:
+        def graduation_status(self):
+            return {"graduated": True}
+        def open_world_graduation_status(self, environments):
+            return {"graduated": True}
+        def adversarial_open_world_graduation_status(self, environments):
+            return {"graduated": False}
+
+    class _Brain:
+        ENVIRONMENTS = ("PONG", "MAZE", "FORAGING", "ROVER")
+        game_intelligence = _Game()
+        def foundation_competence(self):
+            return {"graduated": True}
+        def open_world_curriculum_environments(self, *, limit=4):
+            return ("WORLD_0001", "WORLD_0002", "WORLD_0003")
+        def adversarial_open_world_environments(self, *, limit=4):
+            return ("ADV_WORLD_0001", "ADV_WORLD_0002")
+        def run_accelerated_arena(self, **kwargs):
+            calls.append(kwargs)
+            return {"mode": "HEADLESS_ACCELERATED_ARENA"}
+
+    class _Wakeful:
+        brain_lab = _Brain()
+        def run_brain_lab(self, now, *, steps):
+            assert steps == 12
+            return {"status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM"}
+
+    runner = WakefulContentTaskRunner(wakeful=_Wakeful())
+    monkeypatch.setattr(
+        runner,
+        "_select_active_owner_goal",
+        lambda **kwargs: {"goal_id": "goal-owner"},
+    )
+
+    result = runner._neural_play_impl(NOW)
+
+    assert calls == []
+    assert result["owner_commitment_timeslice"] is True
+    assert result["accelerated_arena"]["status"] == (
+        "DEFERRED_ACCELERATION_FOR_OWNER_COMMITMENT"
+    )
+    assert result["accelerated_arena"]["bounded_embodied_steps"] == 12
+    assert result["active_game_stage"] == "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"

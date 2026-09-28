@@ -395,6 +395,18 @@ class WakefulContentTaskRunner:
         adversarial_open_world_graduation = None
         active_stage = "FOUNDATION_GAMES_V1"
         brain_lab = getattr(self.wakeful, "brain_lab", None)
+        owner_goal = self._select_active_owner_goal(now=now)
+        owner_commitment_timeslice = owner_goal is not None
+
+        def run_arena(**kwargs):
+            if owner_commitment_timeslice:
+                return {
+                    "status": "DEFERRED_ACCELERATION_FOR_OWNER_COMMITMENT",
+                    "owner_goal_id": str(owner_goal.get("goal_id") or ""),
+                    "bounded_embodied_steps": 12,
+                }
+            return brain_lab.run_accelerated_arena(**kwargs)
+
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
             graduation = brain_lab.game_intelligence.graduation_status()
             competence_graduation = brain_lab.foundation_competence()
@@ -404,7 +416,7 @@ class WakefulContentTaskRunner:
                     str(value).upper()
                     for value in competence_graduation.get("remediation_environments") or ()
                 )
-                arena = brain_lab.run_accelerated_arena(
+                arena = run_arena(
                     environments=deficits or brain_lab.ENVIRONMENTS,
                     sessions_per_environment=6,
                     base_steps=40,
@@ -418,7 +430,7 @@ class WakefulContentTaskRunner:
                     )
                     if not open_world_graduation.get("graduated"):
                         active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
-                        arena = brain_lab.run_accelerated_arena(
+                        arena = run_arena(
                             environments=harder,
                             sessions_per_environment=3,
                             base_steps=40,
@@ -436,7 +448,7 @@ class WakefulContentTaskRunner:
                         )
                         if adversarial_open_world_graduation.get("graduated"):
                             active_stage = "OPEN_ENDED_SELF_CHALLENGE"
-                        arena = brain_lab.run_accelerated_arena(
+                        arena = run_arena(
                             environments=adversarial,
                             sessions_per_environment=(
                                 1
@@ -448,13 +460,13 @@ class WakefulContentTaskRunner:
                         )
                 else:
                     active_stage = "FOUNDATION_MAINTENANCE_WAITING_FOR_OPEN_WORLD"
-                    arena = brain_lab.run_accelerated_arena(
+                    arena = run_arena(
                         sessions_per_environment=1,
                         base_steps=24,
                         now=now,
                     )
             else:
-                arena = brain_lab.run_accelerated_arena(
+                arena = run_arena(
                     sessions_per_environment=6,
                     base_steps=32,
                     now=now,
@@ -468,6 +480,7 @@ class WakefulContentTaskRunner:
             "open_world_graduation": open_world_graduation,
             "adversarial_open_world_graduation": adversarial_open_world_graduation,
             "active_game_stage": active_stage,
+            "owner_commitment_timeslice": owner_commitment_timeslice,
         }
 
     def _neural_dream(self, now: datetime) -> dict[str, Any]:
