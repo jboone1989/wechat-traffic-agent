@@ -594,3 +594,61 @@ def test_interoception_is_always_on_cognition_context(tmp_path):
     assert context["interoception"]["suspected_faults"]
     assert "interoception" in context["decision_context"]["always_on_sources"]
     assert "interoception" in context["context_receipt"]["selection_summary"]["always_on_sources"]
+
+
+def test_context_contract_violation_enters_self_maintenance(monkeypatch, tmp_path):
+    import json
+
+    mind = _Mind()
+    mind.state_root = tmp_path
+
+    report = {
+        "schema_version": "ferro-capability-contracts.v1",
+        "surface": "cognition_context",
+        "status": "VIOLATED",
+        "observation_id": "capability-contract:forced-context-break",
+        "observed_at": "2026-09-28T16:30:00+00:00",
+        "duplicate": False,
+        "checked_contracts": ["relevant_context_must_reach_cognition"],
+        "violations": [{
+            "kind": "context_selection_empty",
+            "subsystem": "context",
+            "severity": 0.72,
+            "contract": "relevant_context_must_reach_cognition",
+            "expected": "relevant facts reach model cognition",
+            "observed": "candidate_count=12, selected_count=0",
+            "evidence_refs": ["context-receipt:selection"],
+        }],
+    }
+    monkeypatch.setattr(
+        "wechat_traffic_agent.cognition_context.CapabilityContractMonitor.observe_context",
+        lambda self, snapshot, *, now: dict(report),
+    )
+
+    context = build_ferro_cognition_context(
+        application=_application(),
+        mind=mind,
+        wakeful=_Wakeful(),
+        prompt="choose the next useful action",
+        now=__import__("datetime").datetime(
+            2026, 9, 28, 16, 30,
+            tzinfo=__import__("datetime").timezone.utc,
+        ),
+    )
+
+    assert context["capability_contracts"]["status"] == "VIOLATED"
+    assert context["interoception"]["status"] in {"WATCH", "ILL"}
+    assert context["capability_contract_diagnosis"]["status"] in {
+        "RECORDED",
+        "ALREADY_RECORDED",
+    }
+    problems = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    ]
+    problem = next(
+        row for row in problems
+        if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
+    )
+    assert problem["failure_site"] == "cognition_context.py:capability_contract"
+    assert problem["status"] == "DIAGNOSING"

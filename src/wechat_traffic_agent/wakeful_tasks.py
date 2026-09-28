@@ -45,6 +45,10 @@ class WakefulContentTaskRunner:
             from .interoceptive_fault import InteroceptiveFaultSystem
 
             self.interoceptive_faults = InteroceptiveFaultSystem(Path(state_root))
+        if state_root is not None and getattr(self, "capability_contracts", None) is None:
+            from .capability_contracts import CapabilityContractMonitor
+
+            self.capability_contracts = CapabilityContractMonitor(Path(state_root))
         if state_root is not None and getattr(self, "owner_agent_episode", None) is None:
             from .owner_agent_episode import OwnerAgentEpisode
 
@@ -217,6 +221,29 @@ class WakefulContentTaskRunner:
             # Administrative/non-executed states are neither illness nor
             # recovery evidence. Preserve their external result contract.
             return rows
+        contract_monitor = getattr(self, "capability_contracts", None)
+        if contract_monitor is not None:
+            try:
+                rows["capability_contracts"] = contract_monitor.observe_task(
+                    task, rows, now=now
+                )
+            except Exception as exc:  # contract sensing failure is itself pathology
+                rows["capability_contracts"] = {
+                    "schema_version": "ferro-capability-contracts.v1",
+                    "surface": "task_result",
+                    "task": task,
+                    "status": "SENSOR_FAILURE",
+                    "violations": [{
+                        "kind": "capability_contract_sensor_failure",
+                        "subsystem": "interoception",
+                        "severity": 0.72,
+                        "contract": "capability_contracts_must_be_observable",
+                        "expected": "contract evaluator returns a deterministic report",
+                        "observed": type(exc).__name__ + ": " + str(exc)[:400],
+                        "evidence_refs": [],
+                    }],
+                }
+
         sensor = getattr(self, "interoceptive_faults", None)
         if sensor is None:
             return rows
@@ -273,6 +300,41 @@ class WakefulContentTaskRunner:
                 rows["maintenance_observation"] = self._error(exc)
 
         diagnostic_failure = sensed.get("diagnostic_failure")
+        contract_report = (
+            rows.get("capability_contracts")
+            if isinstance(rows.get("capability_contracts"), dict)
+            else {}
+        )
+        contract_violations = [
+            row for row in list(contract_report.get("violations") or [])
+            if isinstance(row, dict)
+        ]
+        if isinstance(diagnostic_failure, dict) and contract_violations:
+            top_contract = contract_violations[0]
+            contract_subsystem = str(top_contract.get("subsystem") or "capability")
+            failure_sites = {
+                "context": "cognition_context.py:capability_contract",
+                "neural": "behavioral_state.py:capability_contract",
+                "goal_execution": "wakeful_tasks.py:goal_effect_contract",
+                "tool_use": "owner_agent_episode.py:tool_effect_contract",
+                "interoception": "capability_contracts.py:contract_sensor",
+            }
+            diagnostic_failure = {
+                **diagnostic_failure,
+                "error_type": "CAPABILITY_CONTRACT_VIOLATION",
+                "failure_site": failure_sites.get(
+                    contract_subsystem,
+                    "capability_contracts.py:" + contract_subsystem,
+                ),
+                "message": (
+                    "capability contract violation: "
+                    + str(top_contract.get("kind") or "unknown")
+                    + "; expected="
+                    + str(top_contract.get("expected") or "")[:300]
+                    + "; observed="
+                    + str(top_contract.get("observed") or "")[:400]
+                ),
+            }
         if (
             bool(sensed.get("should_diagnose"))
             and isinstance(diagnostic_failure, dict)
@@ -326,6 +388,150 @@ class WakefulContentTaskRunner:
                 except Exception as exc:  # noqa: BLE001
                     rows["interoception"]["diagnostic_wake"] = self._error(exc)
         return rows
+
+    def observe_settled_capability_outcome(
+        self,
+        task: str,
+        outcome: dict[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Sense post-task world settlement that did not exist at task return time."""
+        task = str(task or "UNKNOWN").upper()
+        if not isinstance(outcome, dict):
+            return {"status": "IGNORED_NON_MAPPING_OUTCOME", "task": task}
+        monitor = getattr(self, "capability_contracts", None)
+        sensor = getattr(self, "interoceptive_faults", None)
+        if monitor is None or sensor is None:
+            return {"status": "SENSOR_UNAVAILABLE", "task": task}
+
+        cycle = str(
+            outcome.get("close_evidence_ref")
+            or outcome.get("goal_id")
+            or outcome.get("outcome_id")
+            or f"settled-{task.lower()}-{int(now.timestamp())}"
+        )
+        synthetic = {
+            "task": task,
+            "status": "OK",
+            "cycle": cycle,
+            "autonomous_goal_outcome": dict(outcome),
+        }
+        try:
+            contract_report = monitor.observe_task(task, synthetic, now=now)
+        except Exception as exc:
+            return {
+                "status": "SENSOR_FAILURE",
+                "task": task,
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:400],
+            }
+        if not list(contract_report.get("violations") or []):
+            return {
+                "status": "PASS",
+                "task": task,
+                "capability_contracts": contract_report,
+            }
+
+        sensed = sensor.observe(
+            task,
+            {
+                **synthetic,
+                "capability_contracts": contract_report,
+            },
+            now=now,
+        )
+        projection = dict(sensed.get("projection") or {})
+        observation = dict(sensed.get("observation") or {})
+        receipt: dict[str, Any] = {
+            "status": "VIOLATED",
+            "task": task,
+            "capability_contracts": contract_report,
+            "interoception": {
+                **self._compact_interoception(projection),
+                "observation_id": observation.get("observation_id"),
+                "episode_id": observation.get("episode_id"),
+                "severity": observation.get("severity"),
+                "primary_symptom": observation.get("primary_symptom"),
+            },
+        }
+
+        if observation.get("abnormal"):
+            emit = getattr(self.wakeful, "emit_interoceptive_fault", None)
+            if callable(emit):
+                try:
+                    receipt["interoception"]["neural_signal"] = emit(
+                        {
+                            "episode_id": observation.get("episode_id"),
+                            "subsystem": observation.get("subsystem"),
+                            "primary_symptom": observation.get("primary_symptom"),
+                            "severity": observation.get("severity"),
+                            "projection": projection,
+                        },
+                        observed_at=now,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    receipt["interoception"]["neural_signal"] = self._error(exc)
+
+        if bool(sensed.get("should_diagnose")):
+            violations = [
+                row for row in list(contract_report.get("violations") or [])
+                if isinstance(row, dict)
+            ]
+            top = violations[0] if violations else {}
+            subsystem = str(top.get("subsystem") or "goal_execution")
+            failure_sites = {
+                "goal_execution": "wakeful_runtime.py:autonomous_goal_effect_contract",
+                "tool_use": "owner_agent_episode.py:tool_effect_contract",
+                "context": "cognition_context.py:capability_contract",
+                "neural": "behavioral_state.py:capability_contract",
+            }
+            maintenance = getattr(self, "self_maintenance", None)
+            diagnostic_failure = sensed.get("diagnostic_failure")
+            if maintenance is not None and isinstance(diagnostic_failure, dict):
+                try:
+                    receipt["maintenance_observation"] = maintenance.ingest_failure(
+                        {
+                            **diagnostic_failure,
+                            "task": task,
+                            "error_type": "CAPABILITY_CONTRACT_VIOLATION",
+                            "failure_site": failure_sites.get(
+                                subsystem,
+                                "capability_contracts.py:" + subsystem,
+                            ),
+                            "message": (
+                                "capability contract violation: "
+                                + str(top.get("kind") or "unknown")
+                                + "; expected="
+                                + str(top.get("expected") or "")[:300]
+                                + "; observed="
+                                + str(top.get("observed") or "")[:400]
+                            ),
+                        },
+                        now=now,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    receipt["maintenance_observation"] = self._error(exc)
+            schedule = getattr(self.wakeful, "schedule_reflection", None)
+            if callable(schedule):
+                try:
+                    episode_id = str(observation.get("episode_id") or "")
+                    receipt["diagnostic_wake"] = schedule(
+                        now,
+                        seconds=15,
+                        reason=(
+                            "diagnose settled capability pathology: "
+                            + str(observation.get("primary_symptom") or "unknown")
+                            + " in "
+                            + str(observation.get("subsystem") or subsystem)
+                        ),
+                        relevant_refs=tuple(
+                            ref for ref in (episode_id, "interoception:active") if ref
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    receipt["diagnostic_wake"] = self._error(exc)
+        return receipt
 
     def run(
         self,

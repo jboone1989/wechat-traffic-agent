@@ -152,6 +152,40 @@ def test_logical_wakeful_failure_site_maps_back_to_bounded_source_files(tmp_path
     ]
 
 
+def test_capability_contract_failure_sites_localize_to_affected_modules(tmp_path):
+    workspace = _workspace(tmp_path)
+    for name in (
+        "cognition_context.py",
+        "behavioral_state.py",
+        "wakeful_tasks.py",
+        "owner_agent_episode.py",
+    ):
+        (workspace / "src/wechat_traffic_agent" / name).write_text(
+            "def capability_surface():\n    return 'ok'\n"
+        )
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    assert planner.candidate_source_paths({
+        "failure_site": "cognition_context.py:capability_contract",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: context selection empty",
+    }) == ["src/wechat_traffic_agent/cognition_context.py"]
+    assert planner.candidate_source_paths({
+        "failure_site": "behavioral_state.py:capability_contract",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: neural behavior missing",
+    }) == ["src/wechat_traffic_agent/behavioral_state.py"]
+    assert planner.candidate_source_paths({
+        "failure_site": "wakeful_tasks.py:goal_effect_contract",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated action has no effect",
+    }) == ["src/wechat_traffic_agent/wakeful_tasks.py"]
+    assert planner.candidate_source_paths({
+        "failure_site": "owner_agent_episode.py:tool_effect_contract",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated tool has no new evidence",
+    }) == ["src/wechat_traffic_agent/owner_agent_episode.py"]
+
+
 def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
     state = tmp_path / "state"
     workspace = _workspace(tmp_path)

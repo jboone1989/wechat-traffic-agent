@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
@@ -64,3 +65,44 @@ def test_run_wrapper_turns_chronic_fallback_into_neural_signal_and_diagnosis(tmp
         "ALREADY_RECORDED",
     }
     assert runner.self_maintenance.review()["open_count"] >= 1
+
+
+def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+
+    runner._run_unobserved = lambda *_args, **_kwargs: {
+        "task": "RESOURCE_REVIEW",
+        "status": "OK",
+        "cycle": "resource-no-effect",
+        "autonomous_goal_outcome": {
+            "status": "EXECUTED",
+            "world_utility": 0.0,
+            "drive_feedback": {
+                "no_effect_streak": 23,
+                "last_outcome_status": "EXECUTED",
+            },
+        },
+    }
+
+    result = runner.run("RESOURCE_REVIEW", now=NOW)
+
+    assert result["status"] == "OK"
+    assert result["capability_contracts"]["status"] == "VIOLATED"
+    assert result["interoception"]["primary_symptom"] == "contract_goal_effect_absent"
+    assert result["maintenance_observation"]["status"] in {
+        "RECORDED",
+        "ALREADY_RECORDED",
+    }
+    problems = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    ]
+    contract_problem = next(
+        row for row in problems
+        if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
+    )
+    assert contract_problem["failure_site"] == "wakeful_tasks.py:goal_effect_contract"
+    assert contract_problem["status"] == "DIAGNOSING"
+    assert len(wakeful.signals) == 1
+    assert len(wakeful.reflections) == 1

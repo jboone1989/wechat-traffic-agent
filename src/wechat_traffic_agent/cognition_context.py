@@ -8,9 +8,10 @@ import re
 from typing import Any, Mapping
 
 from .behavioral_state import build_behavioral_state, build_phenotype_prior
+from .capability_contracts import CapabilityContractMonitor
 from .context_compiler import compile_surface_metadata, infer_decision_frame
 from .decision_context import build_ferro_decision_context, extract_commitments
-from .interoceptive_fault import read_interoceptive_projection
+from .interoceptive_fault import InteroceptiveFaultSystem, read_interoceptive_projection
 from .memory_self import ProspectiveSelfMemoryService
 
 
@@ -738,7 +739,7 @@ def build_ferro_cognition_context(
     ]
     internal_selected = bool(selected_neural_life)
 
-    return {
+    snapshot = {
         "continuity": {
             "schema_version": "ferro-cognition-snapshot.v1",
             "as_of": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
@@ -797,6 +798,81 @@ def build_ferro_cognition_context(
         "behavioral_state": behavioral_state,
         "epistemic_contract": metadata["epistemic_contract"],
     }
+
+    if state_root is not None:
+        contract_report = CapabilityContractMonitor(state_root).observe_context(
+            snapshot,
+            now=now,
+        )
+        snapshot["capability_contracts"] = contract_report
+        if contract_report.get("violations") and not contract_report.get("duplicate"):
+            sensed = InteroceptiveFaultSystem(state_root).observe(
+                "CONTENT_COGNITION",
+                {
+                    "task": "CONTENT_COGNITION",
+                    "status": "OK",
+                    "cycle": contract_report.get("observation_id"),
+                    "capability_contracts": contract_report,
+                },
+                now=now,
+            )
+            diagnostic_failure = sensed.get("diagnostic_failure")
+            if bool(sensed.get("should_diagnose")) and isinstance(diagnostic_failure, dict):
+                top_contract = next(
+                    (
+                        row
+                        for row in list(contract_report.get("violations") or [])
+                        if isinstance(row, Mapping)
+                    ),
+                    {},
+                )
+                contract_subsystem = str(top_contract.get("subsystem") or "context")
+                failure_site = (
+                    "behavioral_state.py:capability_contract"
+                    if contract_subsystem == "neural"
+                    else "cognition_context.py:capability_contract"
+                )
+                from .self_maintenance import SelfMaintenanceService
+
+                maintenance = SelfMaintenanceService(
+                    state_root=state_root,
+                    evolution_runtime=domain_runtime,
+                    capability_runtime=app_runtime,
+                )
+                snapshot["capability_contract_diagnosis"] = maintenance.ingest_failure(
+                    {
+                        **diagnostic_failure,
+                        "task": "CONTENT_COGNITION",
+                        "error_type": "CAPABILITY_CONTRACT_VIOLATION",
+                        "failure_site": failure_site,
+                        "message": (
+                            "capability contract violation: "
+                            + str(top_contract.get("kind") or "unknown")
+                            + "; expected="
+                            + str(top_contract.get("expected") or "")[:300]
+                            + "; observed="
+                            + str(top_contract.get("observed") or "")[:400]
+                        ),
+                    },
+                    now=now,
+                )
+            updated_interoception = dict(sensed.get("projection") or {})
+            snapshot["interoception"] = {
+                key: updated_interoception.get(key)
+                for key in (
+                    "schema_version",
+                    "status",
+                    "updated_at",
+                    "distress",
+                    "confidence_in_self",
+                    "active_episode_ids",
+                    "suspected_faults",
+                    "symptoms",
+                    "latest_observation_id",
+                )
+                if updated_interoception.get(key) is not None
+            }
+    return snapshot
 
 
 def bind_ferro_cognition_context(*, application: Any, mind: Any, wakeful: Any) -> None:

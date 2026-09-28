@@ -97,7 +97,7 @@ def _status_rows(value: Any, *, path: str = "result", depth: int = 0) -> list[tu
         if status:
             rows.append((path, status))
         for key, child in value.items():
-            if key in {"interoception", "maintenance_observation"}:
+            if key in {"interoception", "maintenance_observation", "capability_contracts"}:
                 continue
             if isinstance(child, (Mapping, list, tuple)):
                 rows.extend(_status_rows(child, path=f"{path}.{key}", depth=depth + 1))
@@ -119,7 +119,7 @@ def _numeric_rows(
     rows: list[tuple[str, str, float]] = []
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if key in {"interoception", "maintenance_observation"}:
+            if key in {"interoception", "maintenance_observation", "capability_contracts"}:
                 continue
             if key in wanted and isinstance(child, (int, float)) and not isinstance(child, bool):
                 rows.append((path, key, float(child)))
@@ -140,7 +140,7 @@ def _has_retryable(value: Any, *, depth: int = 0) -> bool:
         return any(
             _has_retryable(child, depth=depth + 1)
             for key, child in value.items()
-            if key not in {"interoception", "maintenance_observation"}
+            if key not in {"interoception", "maintenance_observation", "capability_contracts"}
             and isinstance(child, (Mapping, list, tuple))
         )
     if isinstance(value, (list, tuple)):
@@ -214,6 +214,36 @@ def classify_task_result(task: str, result: Mapping[str, Any]) -> dict[str, Any]
     }:
         add("goal_stall", 0.30, "result.status", primary)
 
+    contract_subsystem = ""
+    contract_report = (
+        result.get("capability_contracts")
+        if isinstance(result.get("capability_contracts"), Mapping)
+        else {}
+    )
+    contract_violations = [
+        row for row in list(contract_report.get("violations") or [])
+        if isinstance(row, Mapping)
+    ]
+    for index, row in enumerate(contract_violations[:16]):
+        kind = str(row.get("kind") or "unknown")
+        severity = _bounded(row.get("severity"), 0.45)
+        subsystem_name = str(row.get("subsystem") or "capability")
+        if not contract_subsystem or severity >= max(
+            [
+                _bounded(v.get("severity"), 0.0)
+                for v in contract_violations[:index]
+                if isinstance(v, Mapping)
+            ]
+            or [0.0]
+        ):
+            contract_subsystem = subsystem_name
+        add(
+            "contract_" + kind,
+            severity,
+            f"result.capability_contracts.violations[{index}]",
+            str(row.get("observed") or row.get("contract") or kind),
+        )
+
     prediction_error = 0.0
     for path, key, value in _numeric_rows(result, frozenset({"prediction_error"})):
         error = _bounded(value)
@@ -253,7 +283,7 @@ def classify_task_result(task: str, result: Mapping[str, Any]) -> dict[str, Any]
     base_severity = float(symptoms[0]["severity"]) if symptoms else 0.0
     if len(symptoms) > 1:
         base_severity = min(1.0, base_severity + 0.06 * min(4, len(symptoms) - 1))
-    subsystem = _subsystem(task, statuses)
+    subsystem = contract_subsystem or _subsystem(task, statuses)
     primary_symptom = str(symptoms[0]["kind"]) if symptoms else "healthy"
     return {
         "task": task,

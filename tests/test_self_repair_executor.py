@@ -97,3 +97,49 @@ def test_non_low_risk_never_uses_automatic_request_path(tmp_path):
 
     assert result["status"] == "NEEDS_HUMAN_REVIEW"
     assert runtime.calls == []
+
+
+def test_capability_contract_problem_routes_to_pi_remote(tmp_path):
+    root = tmp_path / "application" / "self_maintenance"
+    folder = root / "problems"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "contract-problem.json"
+    path.write_text(json.dumps({
+        "problem_id": "self-problem:contract123",
+        "status": "REPAIR_PROPOSED",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated action has no effect",
+        "error_type": "CAPABILITY_CONTRACT_VIOLATION",
+        "failure_site": "wakeful_tasks.py:goal_effect_contract",
+        "severity": "LOW",
+        "observed_world_impact": "Repeated executed actions produced no goal-relevant effect.",
+        "evidence_refs": ["task-result:RESOURCE_REVIEW:no-effect"],
+        "repair_proposal": {
+            "proposal_id": "repair-proposal:contract123",
+            "repair_kind": "GENERATED_BOUNDED_EDIT",
+            "risk": "LOW",
+            "target_files": ["src/wechat_traffic_agent/wakeful_tasks.py"],
+            "generated_recipe": {
+                "hypothesis": "goal effect settlement is not exposed correctly",
+                "rationale": "contract evidence localizes the effect boundary",
+                "risk": "LOW",
+                "confidence": 0.9,
+                "target_files": [],
+                "edits": [],
+                "focused_tests": [],
+                "implementation_markers": [],
+            },
+        },
+        "cycles": ["resource-no-effect"],
+        "occurrences": 1,
+        "last_seen_at": NOW.isoformat(),
+    }))
+    runtime = RequestCapability()
+
+    result = _executor(tmp_path, runtime).run_once(now=NOW)
+
+    assert result["status"] == "REQUESTED_TO_PI_REMOTE"
+    assert runtime.calls[0][0] == "REQUEST_CODE_REPAIR"
+    payload = runtime.calls[0][1]
+    assert payload["sourceProblemId"] == "self-problem:contract123"
+    assert payload["failureSite"] == "wakeful_tasks.py:goal_effect_contract"
+    assert payload["targetFiles"] == ["src/wechat_traffic_agent/wakeful_tasks.py"]
