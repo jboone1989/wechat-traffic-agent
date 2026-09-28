@@ -49,6 +49,11 @@ def test_behavioral_state_turns_neural_state_into_bounded_behavioral_directives(
     assert "disagree" in joined
     assert "learning, experimentation" in joined
     assert len(state["behavioral_directives"]) <= 16
+    assert [row["source"] for row in state["realization_targets"]][:2] == [
+        "affect.boredom",
+        "drive.evolution",
+    ]
+    assert len(state["realization_targets"]) <= 4
     assert "not decorative telemetry" in state["control_semantics"]
 
 
@@ -70,3 +75,43 @@ def test_relationship_modulates_same_behavioral_state_without_changing_authority
     assert "avoid repetitive self-introduction" in joined
     assert "willingness to continue" in joined
     assert "never changing facts, safety boundaries, or authorization" in state["control_semantics"]
+    assert any(
+        row["source"] == "relationship.familiarity"
+        for row in state["realization_targets"]
+    )
+
+
+def test_realization_targets_change_with_current_neural_personality():
+    independent = build_behavioral_state({
+        "neural_life": {
+            "affect": {"confidence": 0.92, "boredom": 0.88},
+            "drives": {"evolution": 0.82},
+        },
+        "personality": {
+            "traits": {
+                "independence": 0.98,
+                "novelty_seeking": 0.91,
+                "playfulness": 0.76,
+            }
+        },
+    })
+    cautious = build_behavioral_state({
+        "neural_life": {
+            "affect": {"confidence": 0.40, "boredom": 0.10},
+            "drives": {"survival": 0.88},
+        },
+        "personality": {
+            "traits": {
+                "independence": 0.30,
+                "novelty_seeking": 0.25,
+                "caution": 0.95,
+            }
+        },
+    })
+
+    independent_sources = [row["source"] for row in independent["realization_targets"]]
+    cautious_sources = [row["source"] for row in cautious["realization_targets"]]
+    assert independent_sources != cautious_sources
+    assert "personality.independence" in independent_sources
+    assert "personality.caution" in cautious_sources
+    assert "drive.survival" in cautious_sources

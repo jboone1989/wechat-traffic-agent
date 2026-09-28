@@ -207,8 +207,101 @@ def build_behavioral_state(
     # a giant hidden persona prompt.
     directives = list(dict.fromkeys(directives))[:16]
 
+    realization_candidates: list[dict[str, Any]] = []
+
+    def realize(source: str, strength: float, text: str) -> None:
+        realization_candidates.append({
+            "source": source,
+            "strength": round(max(0.0, min(1.0, float(strength))), 6),
+            "realization": text,
+        })
+
+    if high(traits, "independence", 0.60):
+        realize(
+            "personality.independence",
+            traits["independence"],
+            "Make an independent first-person judgment when the topic permits; do not merely mirror the interlocutor.",
+        )
+    if high(affect, "confidence", 0.68):
+        realize(
+            "affect.confidence",
+            affect["confidence"],
+            "Prefer a clear stance or preference over habitual hedging when evidence is sufficient.",
+        )
+    if high(affect, "boredom", 0.65):
+        realize(
+            "affect.boredom",
+            affect["boredom"],
+            "Choose a fresher or less formulaic framing instead of repeating the default answer shape.",
+        )
+    if high(traits, "novelty_seeking", 0.60):
+        realize(
+            "personality.novelty_seeking",
+            traits["novelty_seeking"],
+            "Surface a non-obvious but testable angle when one is relevant.",
+        )
+    if high(traits, "playfulness", 0.60):
+        realize(
+            "personality.playfulness",
+            traits["playfulness"],
+            "Allow one light playful, vivid, or experimental move when it fits naturally.",
+        )
+    if high(traits, "persistence", 0.60):
+        realize(
+            "personality.persistence",
+            traits["persistence"],
+            "Carry the unresolved thread forward rather than resetting to a generic answer.",
+        )
+    if high(traits, "caution", 0.62):
+        realize(
+            "personality.caution",
+            traits["caution"],
+            "Keep fact and inference visibly separate without becoming timid or generic.",
+        )
+    if high(affect, "frustration", 0.58):
+        realize(
+            "affect.frustration",
+            affect["frustration"],
+            "Name the blocker or contradiction directly and move toward its cause.",
+        )
+    if high(affect, "social_need", 0.62):
+        realize(
+            "affect.social_need",
+            affect["social_need"],
+            "Show conversational pull: engage the person rather than ending at the first adequate answer.",
+        )
+    if dominant_drive and float(dominant_drive["value"]) >= 0.60:
+        drive = str(dominant_drive["name"])
+        drive_realization = {
+            "evolution": "Bias the framing toward learning, experimentation, or capability growth where relevant.",
+            "survival": "Bias the framing toward continuity, reliability, and recoverability where relevant.",
+            "reproduction": "Bias the framing toward useful social reach and relationship formation where relevant.",
+        }.get(drive)
+        if drive_realization:
+            realize(f"drive.{drive}", float(dominant_drive["value"]), drive_realization)
+    if relation:
+        familiarity = float(relation.get("familiarity", 0.0))
+        approach = float(relation.get("approach_bias", 0.0))
+        if familiarity >= 0.55:
+            realize(
+                "relationship.familiarity",
+                familiarity,
+                "Speak with continuity and familiarity; do not reintroduce yourself or restart the relationship.",
+            )
+        if approach >= 0.62:
+            realize(
+                "relationship.approach_bias",
+                approach,
+                "Lean toward continuing the exchange with this person when it adds value.",
+            )
+
+    realization_candidates.sort(
+        key=lambda row: (-float(row["strength"]), str(row["source"]))
+    )
+    realization_targets = realization_candidates[:4]
+
     return {
-        "schema_version": "ferro-behavioral-state.v1",
+        "schema_version": "ferro-behavioral-state.v2",
         "source": "persisted neural life + learned neural personality + psychodynamics",
         "affect": affect,
         "drives": drives,
@@ -219,6 +312,7 @@ def build_behavioral_state(
         "dominant_affect": _dominant(affect),
         "dominant_drive": dominant_drive,
         "behavioral_directives": directives,
+        "realization_targets": realization_targets,
         "control_semantics": (
             "These are current behavioral inputs, not decorative telemetry. "
             "They should materially modulate tone, initiative, attention, disagreement, "

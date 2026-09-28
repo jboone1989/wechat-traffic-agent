@@ -519,7 +519,11 @@ def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp
     assert "Avoid formulaic repetition" in prompt
     assert "avoid repetitive self-introduction" in prompt
     assert "not decorative telemetry" in prompt
+    assert "CURRENT BEHAVIOR REALIZATION TARGETS" in prompt
+    assert '"source":"affect.boredom"' in prompt
+    assert "Make at least one observable choice in wording, stance, initiative" in prompt
     assert "Do not flatten yourself into a generic polite assistant" in kwargs["system"]
+    assert "Prioritize its realization_targets" in kwargs["system"]
 
 
 def test_public_snapshot_degrades_optional_live_components_instead_of_failing(tmp_path):
