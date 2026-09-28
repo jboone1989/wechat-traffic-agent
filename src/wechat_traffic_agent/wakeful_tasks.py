@@ -5,7 +5,6 @@ import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-import inspect
 import json
 import math
 from pathlib import Path
@@ -180,7 +179,7 @@ class WakefulContentTaskRunner:
         # unresolved continuation pointer.
         resume_request_id = resume_request_ids[-1] if resume_request_ids else ""
         if task == "CONTENT_COGNITION" and resume_request_id:
-            owner_goal = self._select_active_owner_goal(
+            owner_goal = self._active_owner_goal_context(
                 relevant_refs=relevant_refs,
                 now=now,
             )
@@ -278,7 +277,7 @@ class WakefulContentTaskRunner:
             }
             resume_refs = tuple(relevant_refs)
             if task == "CONTENT_COGNITION":
-                owner_goal = self._select_active_owner_goal(
+                owner_goal = self._active_owner_goal_context(
                     relevant_refs=relevant_refs,
                     now=now,
                 )
@@ -395,7 +394,7 @@ class WakefulContentTaskRunner:
         adversarial_open_world_graduation = None
         active_stage = "FOUNDATION_GAMES_V1"
         brain_lab = getattr(self.wakeful, "brain_lab", None)
-        owner_goal = self._select_active_owner_goal(now=now)
+        owner_goal = self._active_owner_goal_context(now=now)
         owner_commitment_timeslice = owner_goal is not None
 
         def run_arena(**kwargs):
@@ -2318,26 +2317,6 @@ class WakefulContentTaskRunner:
             ),
         }
 
-    def _select_active_owner_goal(
-        self,
-        *,
-        relevant_refs: tuple[str, ...] = (),
-        now: datetime | None = None,
-    ) -> dict[str, Any] | None:
-        selector = self._active_owner_goal_context
-        try:
-            parameters = inspect.signature(selector).parameters.values()
-        except (TypeError, ValueError):
-            parameters = ()
-        accepts_kwargs = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters
-        )
-        names = {parameter.name for parameter in parameters}
-        if accepts_kwargs or "relevant_refs" in names or "now" in names:
-            return selector(relevant_refs=relevant_refs, now=now)
-        return selector()
-
     def _owner_agent_mission_context(
         self,
         owner_goal: dict[str, Any],
@@ -2659,7 +2638,7 @@ class WakefulContentTaskRunner:
                 now=now,
                 x_mission_only=True,
             )
-        owner_goal = self._select_active_owner_goal(
+        owner_goal = self._active_owner_goal_context(
             relevant_refs=relevant_refs,
             now=now,
         )

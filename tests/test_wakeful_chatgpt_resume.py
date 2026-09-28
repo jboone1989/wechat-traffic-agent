@@ -116,7 +116,7 @@ def test_pending_content_injects_active_owner_goal_into_resume_provenance(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Advance owner mission",
@@ -155,7 +155,7 @@ def test_stale_owner_cognition_resume_is_ignored_before_content_pipeline(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Advance owner mission",
@@ -211,7 +211,7 @@ def test_content_cognition_never_uses_task_wide_next_llm_resume(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Advance owner mission",
@@ -360,7 +360,7 @@ def test_internal_content_wait_preserves_owner_and_wake_provenance(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Advance owner mission",
@@ -538,7 +538,7 @@ def test_owner_external_mission_defers_prediction_verification(monkeypatch, tmp_
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Run the real owner mission",
@@ -594,7 +594,7 @@ def test_owner_external_mission_cannot_starve_overdue_prediction_calibration(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Run the real owner mission",
@@ -754,7 +754,7 @@ def test_owner_external_mission_defers_prediction_task_even_without_due_rows(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Run the real owner mission",
@@ -793,7 +793,7 @@ def test_legacy_content_resume_is_consumed_before_new_owner_episode(
     monkeypatch.setattr(
         runner,
         "_active_owner_goal_context",
-        lambda: {
+        lambda **_kwargs: {
             "goal_id": "goal-owner",
             "origin": "EXTERNAL_MISSION",
             "description": "Advance owner mission",
