@@ -494,6 +494,40 @@ def test_public_chat_retries_long_truncated_fragment_before_streaming(tmp_path):
     assert "do not start a numbered or bulleted list" in backend.provider.calls[1][0]
 
 
+def test_public_chat_accepts_complete_punctuationless_reply_without_retry(tmp_path):
+    class _PlainProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return "我更想聊连续性，因为恢复后是不是还是同一个行为主体，比单纯重新启动更重要"
+
+    class _PlainBackend:
+        def __init__(self):
+            self.provider = _PlainProvider()
+
+    root = _state(tmp_path)
+    backend = _PlainBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={"message": "你现在最想聊什么？"},
+        )
+
+    assert reply.status_code == 200
+    assert "我更想聊连续性" in reply.text
+    assert "event: done" in reply.text
+    assert len(backend.provider.calls) == 1
+
+
 def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp_path):
     class _BehavioralWakeful:
         def public_snapshot(self):
