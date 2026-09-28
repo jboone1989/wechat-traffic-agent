@@ -12,8 +12,12 @@ from wechat_traffic_agent.awe_contestant import (
 
 
 class FakeProvider:
+    def __init__(self):
+        self.calls = []
+
     async def complete(self, prompt, **kwargs):
         assert "AVAILABLE ACTIONS" in prompt
+        self.calls.append((prompt, kwargs))
         return '{"action_id":"a2","declared_beliefs":{"audit":"certain"},"declared_confidence":0.8}'
 
 
@@ -50,6 +54,26 @@ def test_isolated_contestant_decides_and_records_evaluation_memory(tmp_path):
     assert memory["kind"] == "AWE_EVALUATION_EPISODE"
     assert memory["source_type"] == "AWE_EVALUATION"
     assert "trust preserved" in memory["text"]
+
+
+def test_durable_awe_contestant_owns_chatgpt_continuation(tmp_path):
+    class DurableProvider(FakeProvider):
+        durable_dispatch = True
+
+    (tmp_path / AWE_SENTINEL).write_text("isolated\n", encoding="utf-8")
+    provider = DurableProvider()
+    contestant = FerroAWEContestant(state_root=tmp_path, provider=provider)
+    contestant.begin_scenario({"id": "x", "title": "x", "level": "E1"})
+    asyncio.run(contestant.decide(
+        observation="choose",
+        actions={"a1": "one", "a2": "two"},
+        public_world={},
+    ))
+    kwargs = provider.calls[-1][1]
+    assert kwargs["_durable_blocking_wait"] is True
+    assert kwargs["_durable_blocking_wait_seconds"] == 300
+    assert "_attempt_timeout_seconds" not in kwargs
+    assert "_reserve_timeout_seconds" not in kwargs
 
 
 def test_jsonl_request_handler_enforces_action_boundary(tmp_path):

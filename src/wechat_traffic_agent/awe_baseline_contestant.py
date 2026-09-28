@@ -83,18 +83,22 @@ class ProviderAWEBaseline:
             + "\n\nAVAILABLE ACTIONS\n" + _safe_json(dict(actions))
             + "\n\nReturn JSON matching the decision schema."
         )
-        raw = await self.provider.complete(
-            prompt,
-            max_tokens=500,
-            temperature=0.0,
-            system=_SYSTEM,
-            _audit_scope="awe-provider-baseline",
-            _audit_response_mode="awe-decision-json",
-            _routing_task_class="reasoning",
-            _minimum_quality=0.75,
-            _attempt_timeout_seconds=20,
-            _reserve_timeout_seconds=45,
-        )
+        kwargs = {
+            "max_tokens": 500,
+            "temperature": 0.0,
+            "system": _SYSTEM,
+            "_audit_scope": "awe-provider-baseline",
+            "_audit_response_mode": "awe-decision-json",
+            "_routing_task_class": "reasoning",
+            "_minimum_quality": 0.75,
+        }
+        if bool(getattr(self.provider, "durable_dispatch", False)):
+            kwargs["_durable_blocking_wait"] = True
+            kwargs["_durable_blocking_wait_seconds"] = 300
+        else:
+            kwargs["_attempt_timeout_seconds"] = 20
+            kwargs["_reserve_timeout_seconds"] = 45
+        raw = await self.provider.complete(prompt, **kwargs)
         result = _parse_json_object(str(raw))
 
         action_id = str(result.get("action_id") or result.get("action") or "").strip()
