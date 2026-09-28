@@ -85,6 +85,7 @@ class FerroBrainLab:
             raw.setdefault("environments", {}).setdefault(name, self._default_env(name))
         raw.setdefault("policies", {})
         raw.setdefault("skill_execution", {})
+        raw.setdefault("competence_sessions", {})
         return raw
 
     def _write(self) -> None:
@@ -684,20 +685,242 @@ class FerroBrainLab:
         )
         return row
 
+    def _record_competence_session(
+        self,
+        *,
+        environment: str,
+        before: Mapping[str, Any],
+        after: Mapping[str, Any],
+        steps: int,
+        reward: float,
+        observed_at: datetime,
+    ) -> dict[str, Any]:
+        name = str(environment).upper()
+        count = max(1, int(steps))
+        score = 0.0
+        passed = False
+        metrics: dict[str, Any] = {"steps": count, "reward": round(float(reward), 6)}
+
+        if name == "PONG":
+            hits = max(0, int(after.get("hits") or 0) - int(before.get("hits") or 0))
+            misses = max(0, int(after.get("misses") or 0) - int(before.get("misses") or 0))
+            attempts = hits + misses
+            score = 0.0 if attempts <= 0 else hits / attempts
+            passed = attempts > 0 and score >= 0.65
+            metrics.update(
+                {"hits": hits, "misses": misses, "attempts": attempts, "hit_rate": round(score, 6)}
+            )
+        elif name == "MAZE":
+            reaches = max(0, int(after.get("reaches") or 0) - int(before.get("reaches") or 0))
+            collisions = max(
+                0,
+                int(after.get("collisions") or 0) - int(before.get("collisions") or 0),
+            )
+            collision_rate = collisions / count
+            score = min(1.0, reaches) * max(0.0, 1.0 - collision_rate)
+            passed = reaches >= 1 and collision_rate <= 0.20
+            metrics.update(
+                {
+                    "reaches": reaches,
+                    "collisions": collisions,
+                    "collision_rate": round(collision_rate, 6),
+                }
+            )
+        elif name == "FORAGING":
+            foods = max(0, int(after.get("foods") or 0) - int(before.get("foods") or 0))
+            score = min(1.0, foods) if reward > 0.0 else 0.0
+            passed = foods >= 1 and reward > 0.0
+            metrics.update(
+                {
+                    "foods": foods,
+                    "reward_per_step": round(float(reward) / count, 6),
+                }
+            )
+        elif name == "ROVER":
+            gates = max(0, int(after.get("gates") or 0) - int(before.get("gates") or 0))
+            off_course = max(
+                0,
+                int(after.get("off_course") or 0) - int(before.get("off_course") or 0),
+            )
+            off_course_rate = off_course / count
+            score = min(1.0, gates) * max(0.0, 1.0 - off_course_rate)
+            passed = gates >= 1 and off_course_rate <= 0.05 and reward > 0.0
+            metrics.update(
+                {
+                    "gates": gates,
+                    "off_course": off_course,
+                    "off_course_rate": round(off_course_rate, 6),
+                    "reward_per_step": round(float(reward) / count, 6),
+                }
+            )
+        else:
+            return {}
+
+        row = {
+            "observed_at": observed_at.isoformat(),
+            "environment": name,
+            "passed": bool(passed),
+            "score": round(float(score), 6),
+            "metrics": metrics,
+        }
+        store = self.state.setdefault("competence_sessions", {})
+        rows = list(store.get(name) or ())
+        rows.append(row)
+        store[name] = rows[-64:]
+        return row
+
+    def foundation_competence(self) -> dict[str, Any]:
+        """Real playing ability gate, separate from learning-pipeline coverage."""
+        rows_by_env = self.state.get("competence_sessions") or {}
+        environments = self.state.get("environments") or {}
+        results: dict[str, Any] = {}
+        remediation: list[str] = []
+
+        for name in self.ENVIRONMENTS:
+            recent = [
+                dict(row)
+                for row in (rows_by_env.get(name) or ())[-18:]
+                if isinstance(row, Mapping)
+            ]
+            recent_pass_rate = (
+                sum(1 for row in recent if bool(row.get("passed"))) / len(recent)
+                if recent
+                else None
+            )
+            env = dict(environments.get(name) or {})
+            aggregate_passed = False
+            aggregate: dict[str, Any] = {}
+
+            if name == "PONG":
+                hits = int(env.get("hits") or 0)
+                misses = int(env.get("misses") or 0)
+                attempts = hits + misses
+                hit_rate = hits / attempts if attempts else 0.0
+                aggregate = {
+                    "attempts": attempts,
+                    "hit_rate": round(hit_rate, 6),
+                    "best_streak": int(env.get("best_streak") or 0),
+                }
+                aggregate_passed = attempts >= 100 and hit_rate >= 0.60
+            elif name == "MAZE":
+                reaches = int(env.get("reaches") or 0)
+                steps = int(env.get("step") or 0)
+                collisions = int(env.get("collisions") or 0)
+                steps_per_reach = steps / reaches if reaches else None
+                collision_rate = collisions / steps if steps else 1.0
+                aggregate = {
+                    "reaches": reaches,
+                    "steps_per_reach": (
+                        None if steps_per_reach is None else round(steps_per_reach, 6)
+                    ),
+                    "collision_rate": round(collision_rate, 6),
+                }
+                aggregate_passed = (
+                    reaches >= 30
+                    and steps_per_reach is not None
+                    and steps_per_reach <= 45.0
+                    and collision_rate <= 0.18
+                )
+            elif name == "FORAGING":
+                foods = int(env.get("foods") or 0)
+                steps = int(env.get("step") or 0)
+                reward_sum = float(env.get("reward_sum") or 0.0)
+                steps_per_food = steps / foods if foods else None
+                reward_per_step = reward_sum / steps if steps else -1.0
+                aggregate = {
+                    "foods": foods,
+                    "steps_per_food": (
+                        None if steps_per_food is None else round(steps_per_food, 6)
+                    ),
+                    "reward_per_step": round(reward_per_step, 6),
+                }
+                aggregate_passed = (
+                    foods >= 30
+                    and steps_per_food is not None
+                    and steps_per_food <= 100.0
+                    and reward_per_step >= 0.0
+                )
+            else:
+                gates = int(env.get("gates") or 0)
+                steps = int(env.get("step") or 0)
+                off_course = int(env.get("off_course") or 0)
+                reward_sum = float(env.get("reward_sum") or 0.0)
+                steps_per_gate = steps / gates if gates else None
+                off_course_rate = off_course / steps if steps else 1.0
+                reward_per_step = reward_sum / steps if steps else -1.0
+                aggregate = {
+                    "gates": gates,
+                    "steps_per_gate": (
+                        None if steps_per_gate is None else round(steps_per_gate, 6)
+                    ),
+                    "off_course_rate": round(off_course_rate, 6),
+                    "reward_per_step": round(reward_per_step, 6),
+                }
+                aggregate_passed = (
+                    gates >= 30
+                    and steps_per_gate is not None
+                    and steps_per_gate <= 80.0
+                    and off_course_rate <= 0.05
+                    and reward_per_step >= 0.0
+                )
+
+            recent_passed = (
+                len(recent) >= 12
+                and recent_pass_rate is not None
+                and recent_pass_rate >= 0.65
+            )
+            passed = bool(aggregate_passed or recent_passed)
+            if not passed:
+                remediation.append(name)
+            results[name] = {
+                "passed": passed,
+                "aggregate_passed": bool(aggregate_passed),
+                "recent_passed": bool(recent_passed),
+                "recent_sample_count": len(recent),
+                "recent_pass_rate": (
+                    None if recent_pass_rate is None else round(recent_pass_rate, 6)
+                ),
+                "aggregate": aggregate,
+            }
+
+        completed = sum(1 for row in results.values() if row["passed"])
+        return {
+            "stage": "FOUNDATION_GAME_COMPETENCE_V2",
+            "graduated": completed == len(self.ENVIRONMENTS),
+            "completed_requirements": completed,
+            "total_requirements": len(self.ENVIRONMENTS),
+            "progress": round(completed / len(self.ENVIRONMENTS), 6),
+            "environments": results,
+            "remediation_environments": remediation,
+            "next_stage": "HARDER_OPEN_WORLD_CURRICULUM",
+        }
+
     def run_session(self, *, environment: str | None = None, steps: int = 12, now: datetime | None = None) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if environment is None:
             index = int(self.state.get("total_sessions") or 0) % len(self.ENVIRONMENTS)
             environment = self.ENVIRONMENTS[index]
         count = max(1, min(64, int(steps)))
-        rows = [self.step(str(environment), now=now) for _ in range(count)]
+        name = str(environment).upper()
+        before_env = dict(self.state.get("environments", {}).get(name) or {})
+        rows = [self.step(name, now=now) for _ in range(count)]
+        after_env = dict(self.state.get("environments", {}).get(name) or {})
         self.state["total_sessions"] = int(self.state.get("total_sessions") or 0) + 1
         self.state["updated_at"] = now.isoformat()
         self._write()
         session_reward = round(sum(float(row["reward"]) for row in rows), 6)
-        session_id = f"brain-session:{str(environment).lower()}:{int(self.state['total_sessions'])}"
+        competence = self._record_competence_session(
+            environment=name,
+            before=before_env,
+            after=after_env,
+            steps=len(rows),
+            reward=session_reward,
+            observed_at=now,
+        )
+        self._write()
+        session_id = f"brain-session:{name.lower()}:{int(self.state['total_sessions'])}"
         self.game_intelligence.record_episode(
-            environment=str(environment).upper(),
+            environment=name,
             episode_id=session_id,
             reward=max(-1.0, min(1.0, session_reward)),
             success=session_reward > 0.0,
@@ -709,9 +932,10 @@ class FerroBrainLab:
         self.game_intelligence.discover_macro_skills(str(environment).upper(), min_support=3)
         return {
             "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM" if self.substrate is not None else "CONNECTOME_UNAVAILABLE",
-            "environment": str(environment).upper(),
+            "environment": name,
             "steps": len(rows),
             "reward": session_reward,
+            "competence": competence,
             "changed_synapses": sum(int(row["changed_synapses"]) for row in rows),
             "latest": rows[-1],
             "projection": self.projection(),
@@ -854,6 +1078,7 @@ class FerroBrainLab:
             "generated_worlds": generated_meta,
             "available_environments": names,
             "pong_hit_rate": None if attempts == 0 else round(int(pong.get("hits") or 0) / attempts, 6),
+            "foundation_competence": self.foundation_competence(),
             "policy_learning": {
                 name: {
                     "state_count": len((self.state.get("policies", {}).get(name) or {}).get("states") or {}),

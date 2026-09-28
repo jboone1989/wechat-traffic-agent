@@ -379,3 +379,44 @@ def test_open_world_curriculum_selects_active_difficult_and_diverse_worlds(tmp_p
     selected = lab.open_world_curriculum_environments(limit=3)
     assert set(selected) == {"WORLD_0001", "WORLD_0002", "WORLD_0003"}
     assert "WORLD_0004" not in selected
+
+
+def test_foundation_competence_distinguishes_playing_skill_from_sample_volume(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    envs = lab.state["environments"]
+
+    envs["PONG"].update({"hits": 30, "misses": 70, "best_streak": 4})
+    envs["MAZE"].update({"reaches": 40, "collisions": 900, "step": 3000})
+    envs["FORAGING"].update({"foods": 40, "step": 8000, "reward_sum": -20.0})
+    envs["ROVER"].update(
+        {"gates": 40, "step": 1800, "off_course": 20, "reward_sum": 90.0}
+    )
+
+    status = lab.foundation_competence()
+    assert status["graduated"] is False
+    assert status["progress"] == 0.25
+    assert status["environments"]["PONG"]["passed"] is False
+    assert status["environments"]["MAZE"]["passed"] is False
+    assert status["environments"]["FORAGING"]["passed"] is False
+    assert status["environments"]["ROVER"]["passed"] is True
+    assert status["remediation_environments"] == ["PONG", "MAZE", "FORAGING"]
+
+
+def test_recent_competence_can_overcome_old_bad_history(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    for name in lab.ENVIRONMENTS:
+        lab.state["competence_sessions"][name] = [
+            {
+                "observed_at": NOW.isoformat(),
+                "environment": name,
+                "passed": True,
+                "score": 1.0,
+                "metrics": {},
+            }
+            for _ in range(12)
+        ]
+
+    status = lab.foundation_competence()
+    assert status["graduated"] is True
+    assert status["progress"] == 1.0
+    assert all(row["recent_passed"] for row in status["environments"].values())

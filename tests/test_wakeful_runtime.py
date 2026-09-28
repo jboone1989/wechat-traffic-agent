@@ -836,6 +836,11 @@ def test_graduated_neural_play_remains_optional_during_pending_chatgpt(
         lambda: {"graduated": True},
     )
     monkeypatch.setattr(
+        runtime.brain_lab,
+        "foundation_competence",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
         runtime.resource_regulator,
         "defer_seconds",
         lambda task, now: None,
@@ -2165,3 +2170,38 @@ def test_unchanged_world_learning_due_set_does_not_self_reschedule_every_refresh
         and row.at <= NOW + timedelta(minutes=5)
         for row in runtime.core.snapshot().pending_plans
     )
+
+
+def test_poor_foundation_competence_keeps_neural_play_in_sprint_lane(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "graduation_status",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "foundation_competence",
+        lambda: {"graduated": False},
+    )
+    monkeypatch.setattr(
+        runtime.resource_regulator,
+        "defer_seconds",
+        lambda task, now: None,
+    )
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_reflection_pending",
+        task="REFLECT",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="foundation skill remediation",
+        task="NEURAL_PLAY",
+    )
+
+    assert runtime._plan_admission_delay(play) is None

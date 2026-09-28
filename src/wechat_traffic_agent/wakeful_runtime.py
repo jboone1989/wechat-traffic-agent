@@ -2028,7 +2028,11 @@ class ContentWakefulRuntime:
         active_game_sprint_play = False
         if wake.task == "NEURAL_PLAY":
             foundation = self.brain_lab.game_intelligence.graduation_status()
-            if not bool(foundation.get("graduated")):
+            competence = self.brain_lab.foundation_competence()
+            if (
+                not bool(foundation.get("graduated"))
+                or not bool(competence.get("graduated"))
+            ):
                 active_game_sprint_play = True
             else:
                 harder = self.brain_lab.open_world_curriculum_environments(limit=4)

@@ -361,12 +361,26 @@ class WakefulContentTaskRunner:
         result = self.wakeful.run_brain_lab(now, steps=12)
         arena = None
         graduation = None
+        competence_graduation = None
         open_world_graduation = None
         active_stage = "FOUNDATION_GAMES_V1"
         brain_lab = getattr(self.wakeful, "brain_lab", None)
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
             graduation = brain_lab.game_intelligence.graduation_status()
-            if graduation.get("graduated"):
+            competence_graduation = brain_lab.foundation_competence()
+            if not competence_graduation.get("graduated"):
+                active_stage = "FOUNDATION_SKILL_REMEDIATION"
+                deficits = tuple(
+                    str(value).upper()
+                    for value in competence_graduation.get("remediation_environments") or ()
+                )
+                arena = brain_lab.run_accelerated_arena(
+                    environments=deficits or brain_lab.ENVIRONMENTS,
+                    sessions_per_environment=6,
+                    base_steps=40,
+                    now=now,
+                )
+            elif graduation.get("graduated"):
                 harder = brain_lab.open_world_curriculum_environments(limit=4)
                 if harder:
                     active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
@@ -399,6 +413,7 @@ class WakefulContentTaskRunner:
             **result,
             "accelerated_arena": arena,
             "graduation": graduation,
+            "competence_graduation": competence_graduation,
             "open_world_graduation": open_world_graduation,
             "active_game_stage": active_stage,
         }
