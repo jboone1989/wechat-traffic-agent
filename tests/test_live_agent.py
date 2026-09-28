@@ -269,6 +269,10 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Ferro is thinking" in talk.text
     assert "Public reasoning summary" in talk.text
     assert "not hidden chain-of-thought" in talk.text
+    assert "touchend" in talk.text
+    assert "window.localStorage" in talk.text
+    assert "response.body.getReader" in talk.text
+    assert "Ready." in talk.text
     assert 'id="send" type="button"' in talk.text
     assert "addEventListener('click',sendMessage)" in talk.text
     assert "setInterval(refreshState,5000)" in talk.text
