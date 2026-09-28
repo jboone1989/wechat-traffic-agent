@@ -976,7 +976,7 @@ def build_ferro_decision_context(
         source: selected_payloads(result, source)
         for source in (
             "goal", "mission", "experiment", "interest", "inquiry", "belief",
-            "belief_change", "plan", "strategy", "experience", "resource",
+            "belief_change", "plan", "strategy", "experience", "memory", "resource",
             "capability", "capability_belief", "relationship", "commitment",
             "internal", "operational",
         )

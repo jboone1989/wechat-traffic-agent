@@ -8,7 +8,8 @@ import re
 from typing import Any, Mapping
 
 from .behavioral_state import build_behavioral_state
-from .context_compiler import compile_surface_metadata
+from .context_compiler import compile_surface_metadata, infer_decision_frame
+from .decision_context import build_ferro_decision_context, extract_commitments
 from .memory_self import ProspectiveSelfMemoryService
 
 
@@ -118,7 +119,9 @@ def _compact_latest_plan(value: Any) -> dict[str, Any] | None:
     return {key: value[key] for key in keys if key in value}
 
 
-def _recent_life_experience(mind: Any, *, limit: int = 8) -> list[dict[str, Any]]:
+def _recent_life_experience(
+    mind: Any, *, limit: int | None = 8
+) -> list[dict[str, Any]]:
     try:
         snapshot = mind.session.snapshot()
     except Exception:
@@ -126,7 +129,8 @@ def _recent_life_experience(mind: Any, *, limit: int = 8) -> list[dict[str, Any]
     autobiography = snapshot.get("autobiography") if isinstance(snapshot, Mapping) else {}
     rows = list((autobiography or {}).get("events") or [])
     result: list[dict[str, Any]] = []
-    for row in rows[-max(1, int(limit)):]:
+    selected_rows = rows if limit is None else rows[-max(1, int(limit)):]
+    for row in selected_rows:
         if not isinstance(row, Mapping):
             continue
         result.append({
@@ -423,13 +427,9 @@ def build_ferro_cognition_context(
         )
         if owner_goal_ids and plan_goal_id not in owner_goal_ids:
             latest_plan = None
-    strategy_topics = list(
-        ((projection.get("strategy_learning") or {}).get("topics") or [])
-    )[-16:]
     if owner_mode:
-        # Keep only the most recent settled/proposed owner experiments in the
-        # cognition snapshot.  Full experiment history remains durable in the
-        # mission ledger and does not need to consume every reasoning turn.
+        # Current mission rows remain bounded, while durable historical outcomes
+        # are retrieved globally through MemoryRouter and full life history.
         compact_experiments = []
         for row in list(mission_state.get("recent_experiments") or [])[-2:]:
             if not isinstance(row, Mapping):
@@ -443,156 +443,338 @@ def build_ferro_cognition_context(
             **mission_state,
             "recent_experiments": compact_experiments,
         }
-        strategy_topics = [
-            str(row)
-            for row in _relevant_rows(
-                strategy_topics,
-                query_context,
-                limit=6,
-                fallback_to_recent=False,
-                min_score=2,
-            )
-        ]
 
+    decision_frame = infer_decision_frame(
+        query_context or prompt,
+        surface="agent_runtime",
+        owner_mode=owner_mode,
+    )
+    all_life_experience = _recent_life_experience(mind, limit=None)
+    commitments = extract_commitments(domain_runtime)
+    state_root = (
+        getattr(mind, "state_root", None)
+        or getattr(wakeful, "state_root", None)
+        or getattr(application, "state_root", None)
+    )
+    decision_context = build_ferro_decision_context(
+        prompt=query_context or prompt,
+        decision_frame=decision_frame,
+        owner_scope=owner_scope,
+        mission_state=mission_state,
+        intents=[
+            dict(row)
+            for row in intents
+            if isinstance(row, Mapping)
+        ],
+        projection=projection,
+        resources=dict(packet.current_resources),
+        capabilities=capabilities,
+        capability_beliefs=capability_beliefs,
+        relationship_rows=relationship_rows,
+        commitments=commitments,
+        life_experience=all_life_experience,
+        wake=wake,
+        behavioral_state=behavioral_state,
+        latest_plan=latest_plan,
+        state_root=state_root,
+        now=now,
+        budget_chars=12_000 if owner_mode else 18_000,
+    )
+    selected = (
+        decision_context.get("selected")
+        if isinstance(decision_context.get("selected"), Mapping)
+        else {}
+    )
+
+    selected_current_intent = [
+        dict(row)
+        for row in list(selected.get("goal") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_missions = [
+        dict(row)
+        for row in list(selected.get("mission") or [])
+        if isinstance(row, Mapping) and row.get("mission_id")
+    ]
+    selected_experiments = [
+        dict(row)
+        for row in list(selected.get("experiment") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_mission_state = {
+        "active": selected_missions,
+        "recent_experiments": selected_experiments,
+    }
+    selected_plan = next(
+        (
+            dict(row)
+            for row in list(selected.get("plan") or [])
+            if isinstance(row, Mapping)
+        ),
+        None,
+    )
+    selected_strategy_topics = [
+        str(row.get("topic") or "")
+        for row in list(selected.get("strategy") or [])
+        if isinstance(row, Mapping) and str(row.get("topic") or "")
+    ]
     mind_section = {
         "mind_schema": projection.get("mind_schema"),
         "mind_tick": projection.get("mind_tick"),
-        "interests": _relevant_rows(
-            list(projection.get("interests") or []),
-            query_context,
-            limit=3 if owner_mode else 6,
-            fallback_to_recent=not owner_mode,
-            min_score=2 if owner_mode else 1,
-        ),
-        "open_inquiries": _relevant_rows(
-            list(projection.get("open_inquiries") or []),
-            query_context,
-            limit=3 if owner_mode else 6,
-            fallback_to_recent=not owner_mode,
-            min_score=2 if owner_mode else 1,
-        ),
-        "beliefs": _relevant_rows(
-            list(projection.get("beliefs") or []),
-            query_context,
-            limit=3 if owner_mode else 6,
-            fallback_to_recent=not owner_mode,
-            min_score=2 if owner_mode else 1,
-        ),
-        "recent_belief_changes": _relevant_rows(
-            list(projection.get("recent_belief_changes") or []),
-            query_context,
-            limit=3 if owner_mode else 6,
-            fallback_to_recent=not owner_mode,
-            min_score=2 if owner_mode else 1,
-        ),
-        "latest_plan": latest_plan,
+        "interests": [
+            dict(row)
+            for row in list(selected.get("interest") or [])
+            if isinstance(row, Mapping)
+        ],
+        "open_inquiries": [
+            dict(row)
+            for row in list(selected.get("inquiry") or [])
+            if isinstance(row, Mapping)
+        ],
+        "beliefs": [
+            dict(row)
+            for row in list(selected.get("belief") or [])
+            if isinstance(row, Mapping)
+        ],
+        "recent_belief_changes": [
+            dict(row)
+            for row in list(selected.get("belief_change") or [])
+            if isinstance(row, Mapping)
+        ],
+        "latest_plan": selected_plan,
         "strategy_learning": {
             "outcome_count": int(
                 ((projection.get("strategy_learning") or {}).get("outcome_count") or 0)
             ),
-            "topics": strategy_topics,
+            "topics": selected_strategy_topics,
         },
         "learning_boundary": _clip(projection.get("learning_boundary"), 1200),
     }
-
-    recent_experience = _relevant_rows(
-        _recent_life_experience(mind),
-        query_context,
-        limit=4 if owner_mode else 8,
-        fallback_to_recent=not owner_mode,
-        min_score=2 if owner_mode else 1,
+    recent_experience = [
+        dict(row)
+        for row in list(selected.get("experience") or [])
+        if isinstance(row, Mapping)
+    ]
+    retrieved_memory = [
+        dict(row)
+        for row in list(selected.get("memory") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_resources = next(
+        (
+            dict(row)
+            for row in list(selected.get("resource") or [])
+            if isinstance(row, Mapping)
+        ),
+        {},
     )
+    selected_capabilities = [
+        str(row)
+        for row in list(selected.get("capability") or [])
+        if str(row)
+    ]
+    selected_capability_beliefs = [
+        dict(row)
+        for row in list(selected.get("capability_belief") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_relationships = [
+        dict(row)
+        for row in list(selected.get("relationship") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_commitments = [
+        dict(row)
+        for row in list(selected.get("commitment") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_operational = next(
+        (
+            dict(row)
+            for row in list(selected.get("operational") or [])
+            if isinstance(row, Mapping)
+        ),
+        {},
+    )
+    selected_internal = [
+        dict(row)
+        for row in list(selected.get("internal") or [])
+        if isinstance(row, Mapping)
+    ]
+    selected_neural_life: dict[str, Any] = {}
+    selected_behavioral_state: dict[str, Any] = {}
+    for row in selected_internal:
+        if "personality_traits" in row or "behavioral_directives" in row:
+            selected_behavioral_state.update(row)
+        else:
+            selected_neural_life.update(row)
+
+    selected_fact_index = [
+        {
+            "context_id": row.get("context_id"),
+            "source": row.get("source"),
+            "kind": row.get("kind"),
+            "selection": row.get("selection"),
+        }
+        for row in list(decision_context.get("selected_facts") or [])
+        if isinstance(row, Mapping)
+    ]
+    llm_decision_context = {
+        "schema_version": decision_context.get("schema_version"),
+        "information_needs": list(
+            decision_context.get("information_needs") or []
+        ),
+        "fact_index": selected_fact_index,
+        "candidate_count": int(decision_context.get("candidate_count") or 0),
+        "selected_count": int(decision_context.get("selected_count") or 0),
+        "selected_chars_estimate": int(
+            decision_context.get("selected_chars_estimate") or 0
+        ),
+        "budget_chars": int(decision_context.get("budget_chars") or 0),
+        "memory_router": dict(decision_context.get("memory_router") or {}),
+    }
+    selection_summary = {
+        "retrieval_policy": "decision_conditioned_context_retrieval_v1",
+        "information_need_ids": [
+            str(row.get("need_id") or "")
+            for row in list(decision_context.get("information_needs") or [])
+            if isinstance(row, Mapping)
+        ],
+        "candidate_count": int(decision_context.get("candidate_count") or 0),
+        "selected_count": int(decision_context.get("selected_count") or 0),
+        "excluded_count": int(decision_context.get("excluded_count") or 0),
+        "selected_sources": list(decision_context.get("selected_sources") or []),
+        "selected_facts": selected_fact_index[:16],
+        "rejected_candidates": list(
+            decision_context.get("rejected_candidates") or []
+        )[:16],
+        "memory_router": dict(decision_context.get("memory_router") or {}),
+    }
+
     core_sections = {
         "continuity": {
             "application_cycle": int(getattr(app_runtime, "cycle", 0) or 0),
             "mind_tick": int(projection.get("mind_tick") or 0),
         },
-        "current_intent": intents[:4] if owner_mode else intents[:8],
-        "missions": mission_state,
+        "decision_context": llm_decision_context,
+        "current_intent": selected_current_intent,
+        "missions": selected_mission_state,
+        "commitments": selected_commitments,
         "mind": mind_section,
         "recent_experience": recent_experience,
-        "resources": dict(packet.current_resources),
-        "capabilities": capabilities,
-        "operational_state": {
-            "wakeful_state": wake.get("state"),
-            "pending_plan_count": wake.get("pending_plan_count"),
+        "retrieved_memory": retrieved_memory,
+        "resources": selected_resources,
+        "capabilities": {
+            "available": selected_capabilities,
+            "evidence_bound_beliefs": selected_capability_beliefs,
         },
+        "social_context": {"recent_relationships": selected_relationships},
+        "operational_state": selected_operational,
+        "neural_state": {"life": selected_neural_life},
+        "behavioral_state": selected_behavioral_state,
     }
     metadata = compile_surface_metadata(
         prompt=query_context or prompt,
         surface="agent_runtime",
         owner_mode=owner_mode,
         sections=core_sections,
-        missions=list(mission_state.get("active") or []),
+        missions=list(selected_mission_state.get("active") or []),
         goals=[
-            row for row in intents
+            row
+            for row in selected_current_intent
             if isinstance(row, Mapping) and str(row.get("kind") or "") == "GOAL"
         ],
         inquiries=[
-            row for row in list(mind_section.get("open_inquiries") or [])
+            row
+            for row in list(mind_section.get("open_inquiries") or [])
             if isinstance(row, Mapping)
         ],
+        # The queue count is itself an unresolved-work signal, not a payload
+        # dump. Keep it available to the open-loop compiler.
         pending_plan_count=int(wake.get("pending_plan_count") or 0),
         candidate_counts={
             "intents": len(packet.current_intent),
             "missions": len(list(mission_state.get("active") or [])),
+            "commitments": len(commitments),
             "interests": len(list(projection.get("interests") or [])),
             "open_inquiries": len(list(projection.get("open_inquiries") or [])),
             "beliefs": len(list(projection.get("beliefs") or [])),
-            "recent_experience": len(_recent_life_experience(mind)),
+            "recent_experience": len(all_life_experience),
             "capabilities": len(capabilities),
+            "decision_candidates": int(
+                decision_context.get("candidate_count") or 0
+            ),
         },
         downstream_budget_chars=60_000,
+        selection_summary=selection_summary,
     )
+
+    selected_application_caps = [
+        str(item) for item in app_caps if str(item) in selected_capabilities
+    ]
+    selected_domain_caps = [
+        str(item) for item in domain_caps if str(item) in selected_capabilities
+    ]
+    selected_manifest_caps = [
+        str(item) for item in manifest_caps if str(item) in selected_capabilities
+    ]
+    internal_selected = bool(selected_neural_life or selected_behavioral_state)
 
     return {
         "continuity": {
             "schema_version": "ferro-cognition-snapshot.v1",
             "as_of": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
-            "subject_id": getattr(getattr(application, "subject", None), "subject_id", None),
-            "subject_tick": int(getattr(getattr(application, "subject", None), "tick", 0) or 0),
+            "subject_id": getattr(
+                getattr(application, "subject", None), "subject_id", None
+            ),
+            "subject_tick": int(
+                getattr(getattr(application, "subject", None), "tick", 0) or 0
+            ),
             "application_cycle": int(getattr(app_runtime, "cycle", 0) or 0),
             "mind_tick": int(projection.get("mind_tick") or 0),
             "agent_runtime_cycle_is_host_internal": True,
         },
         "decision_frame": metadata["decision_frame"],
+        "decision_context": llm_decision_context,
         "context_receipt": metadata["context_receipt"],
-        "current_intent": intents[:4] if owner_mode else intents[:8],
+        "current_intent": selected_current_intent,
         "open_loops": metadata["open_loops"],
-        "missions": mission_state,
+        "missions": selected_mission_state,
+        "commitments": selected_commitments,
         "mind": mind_section,
         "recent_experience": recent_experience,
-        "resources": dict(packet.current_resources),
+        "retrieved_memory": retrieved_memory,
+        "resources": selected_resources,
         "capabilities": {
-            "available": capabilities,
-            "application": app_caps,
-            "domain_reasoning": domain_caps,
-            "manifest": manifest_caps,
-            "evidence_bound_beliefs": capability_beliefs[:16],
+            "available": selected_capabilities,
+            "application": selected_application_caps,
+            "domain_reasoning": selected_domain_caps,
+            "manifest": selected_manifest_caps,
+            "evidence_bound_beliefs": selected_capability_beliefs,
         },
         "social_context": {
             "relationship_count": int(
                 social_projection.get("relationship_count") or 0
             ),
-            "recent_relationships": relationship_rows,
+            "recent_relationships": selected_relationships,
             "authority": "PERSISTED_NEURAL_SOCIAL_STATE",
         },
-        "operational_state": {
-            "wakeful_state": wake.get("state"),
-            "attention": wake.get("attention"),
-            "resource_pressure": wake.get("resource_pressure"),
-            "last_cognition_at": wake.get("last_cognition_at"),
-            "last_action_at": wake.get("last_action_at"),
-            "pending_plan_count": wake.get("pending_plan_count"),
-            "recent_stimulus_kinds": wake.get("recent_stimulus_kinds"),
-        },
+        "operational_state": selected_operational,
         "neural_state": {
-            "life": compact_neural_life,
-            "control_signals": [] if owner_mode else list(wake.get("neural_control_signals") or [])[-6:],
-            "feedback": [] if owner_mode else list(wake.get("neural_feedback") or [])[-6:],
+            "life": selected_neural_life,
+            "control_signals": (
+                []
+                if owner_mode or not internal_selected
+                else list(wake.get("neural_control_signals") or [])[-6:]
+            ),
+            "feedback": (
+                []
+                if owner_mode or not internal_selected
+                else list(wake.get("neural_feedback") or [])[-6:]
+            ),
             "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
-        "behavioral_state": behavioral_state,
+        "behavioral_state": selected_behavioral_state,
         "epistemic_contract": metadata["epistemic_contract"],
     }
 
