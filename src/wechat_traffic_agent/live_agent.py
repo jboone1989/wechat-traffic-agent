@@ -1208,6 +1208,8 @@ class LiveAgentService:
             })
 
         async def chat(request: Request):
+            if "text/event-stream" in str(request.headers.get("accept") or "").lower():
+                return await chat_stream(request)
             key = request.client.host if request.client else "unknown"
             if not self._limiter.allow(key, time.monotonic()):
                 return JSONResponse({"error": "rate_limited"}, status_code=429)
@@ -3555,7 +3557,6 @@ class LiveAgentService:
             Route("/api/agent/status", status, methods=["GET"]),
             Route("/api/agent/stream", stream, methods=["GET"]),
             Route("/api/agent/chat", chat, methods=["POST"]),
-            Route("/api/agent/chat/stream", chat_stream, methods=["POST"]),
         ]
         if operator_console is not None:
             routes.extend([

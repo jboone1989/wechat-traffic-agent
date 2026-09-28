@@ -265,7 +265,7 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Worlds Ferro generated for itself" in brain.text
     assert "DEVELOPMENTAL AGENCY · NO LLM MOTOR LOOP" in brain.text
     assert "Public reasoning summary" in talk.text
-    assert "/api/agent/chat/stream" in talk.text
+    assert "fetch('/api/agent/chat'" in talk.text
     assert "Ferro is thinking" in talk.text
     assert "Public reasoning summary" in talk.text
     assert "not hidden chain-of-thought" in talk.text
@@ -333,7 +333,8 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     )
     with TestClient(service._app()) as client:
         reply = client.post(
-            "/api/agent/chat/stream",
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
             json={"message": "Tell me something interesting."},
         )
     assert reply.status_code == 200
