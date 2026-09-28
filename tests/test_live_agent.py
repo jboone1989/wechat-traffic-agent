@@ -32,6 +32,21 @@ class _Backend:
         self.provider = _Provider()
 
 
+class _StreamingProvider:
+    def __init__(self):
+        self.calls = []
+
+    async def stream(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        yield "Hello "
+        yield "from Ferro."
+
+
+class _StreamingBackend:
+    def __init__(self):
+        self.provider = _StreamingProvider()
+
+
 def _write(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -203,7 +218,7 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Learning details" not in live.text
     assert "agent-core" not in live.text
     assert talk.status_code == 200
-    assert "What I’m thinking about" in talk.text
+    assert "PUBLIC REASONING SUMMARY" in talk.text
     assert neural.status_code == 200
     assert "FERRO NEURAL LIFE ROADMAP v1" in neural.text
     assert "ROADMAP EVIDENCE MATRIX" in neural.text
@@ -249,7 +264,11 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
     assert "Neural Life ↗" in brain.text
     assert "Worlds Ferro generated for itself" in brain.text
     assert "DEVELOPMENTAL AGENCY · NO LLM MOTOR LOOP" in brain.text
-    assert "PUBLIC_REASONING_SUMMARY" in talk.text
+    assert "Public reasoning summary" in talk.text
+    assert "/api/agent/chat/stream" in talk.text
+    assert "Ferro is thinking" in talk.text
+    assert "Public reasoning summary" in talk.text
+    assert "not hidden chain-of-thought" in talk.text
     assert 'id="send" type="button"' in talk.text
     assert "addEventListener('click',sendMessage)" in talk.text
     assert "setInterval(refreshState,5000)" in talk.text
@@ -301,6 +320,42 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert talk.status_code == 200
     assert "OPEN CONVERSATION" in talk.text
     assert "talk to me normally" in talk.text.lower()
+
+
+def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_path):
+    root = _state(tmp_path)
+    public_backend = _StreamingBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=public_backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat/stream",
+            json={"message": "Tell me something interesting."},
+        )
+    assert reply.status_code == 200
+    assert reply.headers["content-type"].startswith("text/event-stream")
+    body = reply.text
+    assert "event: status" in body
+    assert '"stage":"READING_STATE"' in body
+    assert '"stage":"CONTACTING_MODEL"' in body
+    assert '"stage":"COMPOSING"' in body
+    assert "event: reasoning" in body
+    assert '"kind":"PUBLIC_REASONING_SUMMARY"' in body
+    assert '"private_chain_of_thought_exposed":false' in body
+    assert "event: delta" in body
+    assert '"text":"Hello "' in body
+    assert '"text":"from Ferro."' in body
+    assert "event: done" in body
+    assert len(public_backend.provider.calls) == 1
+    prompt, kwargs = public_backend.provider.calls[0]
+    assert "Tell me something interesting." in prompt
+    assert kwargs["_routing_task_class"] == "simple_public_text"
+    interaction_path = root / "content/persona/interactions.jsonl"
+    assert interaction_path.exists()
 
 
 def test_public_chat_returns_bounded_503_before_proxy_timeout(tmp_path, monkeypatch):
