@@ -1120,7 +1120,7 @@ def test_owner_goal_keeps_bounded_neural_learning_but_cancels_motor_control(
     assert "motor:decision-1" not in pending
 
 
-def test_owner_goal_cognition_respects_existing_chatgpt_single_flight(
+def test_owner_goal_cognition_ignores_unrelated_chatgpt_single_flight(
     monkeypatch, tmp_path
 ):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
@@ -1142,7 +1142,7 @@ def test_owner_goal_cognition_respects_existing_chatgpt_single_flight(
         relevant_refs=("goal-owner",),
     )
 
-    assert runtime._plan_admission_delay(owner) == 60.0
+    assert runtime._plan_admission_delay(owner) is None
 
 
 def test_due_owner_continuation_preempts_older_nonessential_wake(

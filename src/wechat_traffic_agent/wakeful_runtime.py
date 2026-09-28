@@ -2063,6 +2063,11 @@ class ContentWakefulRuntime:
             now,
             record=False,
         )
+        if owner_goal_wake and not wake_has_resume_ref:
+            # Owner-goal cognition now uses its own direct OpenAI authority.
+            # An unrelated durable ChatGPT transaction is not a valid reason
+            # to delay a new owner commitment.
+            return None
         if (
             owner_continuation_due
             and not current_is_owner_continuation
@@ -2087,10 +2092,6 @@ class ContentWakefulRuntime:
                 # A pending ChatGPT transaction may delay optional organism
                 # activity, but cannot starve it forever. Resource/REST gates
                 # still apply below before the bounded activity is admitted.
-        if owner_goal_wake:
-            # Explicit owner work bypasses resource-pressure admission, but it
-            # cannot violate the durable cognition single-flight invariant.
-            return None
         delay = self.resource_regulator.defer_seconds(wake.task, now)
         if delay is None:
             self._clear_optional_internal_deferral(wake)
