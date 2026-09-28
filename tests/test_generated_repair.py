@@ -159,6 +159,7 @@ def test_capability_contract_failure_sites_localize_to_affected_modules(tmp_path
         "behavioral_state.py",
         "wakeful_tasks.py",
         "owner_agent_episode.py",
+        "survival_resources.py",
     ):
         (workspace / "src/wechat_traffic_agent" / name).write_text(
             "def capability_surface():\n    return 'ok'\n"
@@ -180,6 +181,13 @@ def test_capability_contract_failure_sites_localize_to_affected_modules(tmp_path
         "failure_site": "wakeful_tasks.py:goal_effect_contract",
         "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated action has no effect",
     }) == ["src/wechat_traffic_agent/wakeful_tasks.py"]
+    assert planner.candidate_source_paths({
+        "failure_site": "resource_review:survival_resources",
+        "symptom": "CAPABILITY_CONTRACT_VIOLATION: resource goal repeatedly has no effect",
+    }) == [
+        "src/wechat_traffic_agent/wakeful_tasks.py",
+        "src/wechat_traffic_agent/survival_resources.py",
+    ]
     assert planner.candidate_source_paths({
         "failure_site": "owner_agent_episode.py:tool_effect_contract",
         "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated tool has no new evidence",

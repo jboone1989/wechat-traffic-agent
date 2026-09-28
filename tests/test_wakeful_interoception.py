@@ -102,7 +102,7 @@ def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
         row for row in problems
         if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
     )
-    assert contract_problem["failure_site"] == "wakeful_tasks.py:goal_effect_contract"
+    assert contract_problem["failure_site"] == "resource_review:survival_resources"
     assert contract_problem["status"] == "DIAGNOSING"
     assert len(wakeful.signals) == 1
     assert len(wakeful.reflections) == 1
@@ -142,10 +142,7 @@ def test_settled_autonomous_goal_no_effect_is_felt_in_production_path(tmp_path):
         row for row in problems
         if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
     )
-    assert (
-        problem["failure_site"]
-        == "wakeful_runtime.py:autonomous_goal_effect_contract"
-    )
+    assert problem["failure_site"] == "resource_review:survival_resources"
     assert problem["status"] == "DIAGNOSING"
     assert len(wakeful.signals) == 1
     assert len(wakeful.reflections) == 1
@@ -173,3 +170,49 @@ def test_settled_world_outcome_can_expose_silent_goal_disease(tmp_path):
     assert result["interoception"]["primary_symptom"] == "contract_goal_effect_absent"
     assert result["capability_contracts"]["violations"][0]["subsystem"] == "goal_execution"
     assert len(wakeful.signals) == 1
+
+
+def test_neural_interoception_feels_persisted_chronic_no_effect(tmp_path):
+    application = tmp_path / "application"
+    application.mkdir(parents=True)
+    (application / "drive_system.json").write_text(json.dumps({
+        "drives": {
+            "resource": {
+                "no_effect_streak": 23,
+                "last_outcome_status": "EXECUTED",
+                "last_outcome_utility": 0.0,
+                "last_outcome_evidence_ref": "task-result:persisted-resource-no-effect",
+                "last_attempted_at": NOW.isoformat(),
+            },
+        },
+    }))
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+
+    result = runner._finalize_task_result(
+        "NEURAL_INTEROCEPTION",
+        {
+            "task": "NEURAL_INTEROCEPTION",
+            "status": "OK",
+            "cycle": "body-scan-1",
+        },
+        now=NOW,
+    )
+
+    assert result["durable_capability_contracts"]["status"] == "VIOLATED"
+    assert result["capability_contracts"]["surface"] == "durable_state"
+    assert result["interoception"]["primary_symptom"] == "contract_goal_effect_absent"
+    assert result["maintenance_observation"]["status"] in {
+        "RECORDED",
+        "ALREADY_RECORDED",
+    }
+    problems = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    ]
+    problem = next(
+        row for row in problems
+        if row.get("error_type") == "CAPABILITY_CONTRACT_VIOLATION"
+    )
+    assert problem["failure_site"] == "resource_review:survival_resources"
+    assert problem["status"] == "DIAGNOSING"

@@ -74,8 +74,9 @@ def _violation(
     expected: str,
     observed: str,
     evidence_refs: list[str] | None = None,
+    failure_site: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "kind": kind,
         "subsystem": subsystem,
         "severity": round(_bounded(severity), 6),
@@ -86,6 +87,9 @@ def _violation(
             str(x) for x in (evidence_refs or []) if str(x).strip()
         ))[:16],
     }
+    if failure_site:
+        row["failure_site"] = str(failure_site)[:500]
+    return row
 
 
 def evaluate_context_contract(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -215,6 +219,80 @@ def evaluate_context_contract(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             "salient_internal_differences_must_create_behavioral_pressure",
             "context_receipt_must_match_model_visible_selection",
         ],
+    }
+
+
+def evaluate_durable_state_contract(
+    state_root: Path | str,
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Detect chronic capability failure that persists even when no task is running."""
+    root = Path(state_root)
+    drive_state = _read_json(root / "application" / "drive_system.json")
+    drives = _mapping(drive_state.get("drives"))
+    violations: list[dict[str, Any]] = []
+
+    for drive_name, raw in sorted(drives.items(), key=lambda item: str(item[0])):
+        row = _mapping(raw)
+        try:
+            no_effect = int(row.get("no_effect_streak") or 0)
+        except (TypeError, ValueError):
+            no_effect = 0
+        if no_effect < 3:
+            continue
+        severity = min(0.92, 0.42 + 0.025 * no_effect)
+        last_attempted = str(row.get("last_attempted_at") or "")
+        evidence_ref = str(row.get("last_outcome_evidence_ref") or "")
+        observed = (
+            f"drive={drive_name}, no_effect_streak={no_effect}, "
+            f"last_outcome_status={row.get('last_outcome_status')}, "
+            f"last_outcome_utility={row.get('last_outcome_utility')}, "
+            f"last_attempted_at={last_attempted or 'unknown'}"
+        )
+        inferred_task = {
+            "resource": "RESOURCE_REVIEW",
+            "survival": "RESOURCE_REVIEW",
+            "curiosity": "OBSERVE_WORLD",
+            "social": "CHECK_X",
+            "creation": "CONTENT_COGNITION",
+            "mastery": "REFLECT",
+            "propagation": "NEURAL_DEVELOPMENT",
+        }.get(str(drive_name).lower(), "")
+        last_task = str(row.get("last_outcome_task") or inferred_task).upper()
+        failure_site = {
+            "RESOURCE_REVIEW": "resource_review:survival_resources",
+            "CONTENT_COGNITION": "content_cognition:content_goal_loop",
+            "CHECK_X": "check_x:x_growth",
+            "OBSERVE_WORLD": "observe_world:world_feed",
+        }.get(last_task, "wakeful_tasks.py:goal_effect_contract")
+        violations.append(_violation(
+            "goal_effect_absent",
+            subsystem="goal_execution",
+            severity=severity,
+            contract="persistent_drive_attempts_must_eventually_change_goal_relevant_state",
+            expected="a repeatedly activated drive eventually produces measurable effect or a concrete blocker",
+            observed=observed,
+            evidence_refs=[
+                ref for ref in (
+                    evidence_ref,
+                    f"drive-state:{drive_name}",
+                ) if ref
+            ],
+            failure_site=failure_site,
+        ))
+
+    violations.sort(key=lambda row: (-float(row["severity"]), str(row["kind"]), str(row.get("observed") or "")))
+    return {
+        "schema_version": SCHEMA,
+        "surface": "durable_state",
+        "task": "NEURAL_INTEROCEPTION",
+        "status": "VIOLATED" if violations else "PASS",
+        "violations": violations,
+        "checked_contracts": [
+            "persistent_drive_attempts_must_eventually_change_goal_relevant_state",
+        ],
+        "observed_at": now.astimezone(timezone.utc).isoformat(),
     }
 
 
@@ -409,6 +487,22 @@ class CapabilityContractMonitor:
         ])
         return self._persist(report, now=now, identity=identity)
 
+    def observe_durable_state(self, *, now: datetime) -> dict[str, Any]:
+        report = evaluate_durable_state_contract(self.state_root, now=now)
+        fingerprint = [
+            (
+                str(row.get("kind") or ""),
+                str(row.get("subsystem") or ""),
+                str(row.get("observed") or ""),
+            )
+            for row in list(report.get("violations") or [])
+            if isinstance(row, Mapping)
+        ]
+        identity = "durable|" + sha256(
+            json.dumps(fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()[:20]
+        return self._persist(report, now=now, identity=identity)
+
     def observe_task(self, task: str, result: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
         report = evaluate_task_contract(task, result)
         cycle = str(
@@ -426,5 +520,6 @@ __all__ = [
     "MAX_HISTORY",
     "SCHEMA",
     "evaluate_context_contract",
+    "evaluate_durable_state_contract",
     "evaluate_task_contract",
 ]

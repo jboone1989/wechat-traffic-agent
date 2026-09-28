@@ -196,6 +196,32 @@ class WakefulContentTaskRunner:
             if projection.get(key) is not None
         }
 
+    @staticmethod
+    def _contract_failure_site(task: str, subsystem: str) -> str:
+        task = str(task or "UNKNOWN").upper()
+        subsystem = str(subsystem or "capability")
+        if subsystem == "context":
+            return "cognition_context.py:capability_contract"
+        if subsystem == "neural":
+            return "behavioral_state.py:capability_contract"
+        if subsystem == "tool_use":
+            return "owner_agent_episode.py:tool_effect_contract"
+        if subsystem == "interoception":
+            return "capability_contracts.py:contract_sensor"
+        if subsystem == "goal_execution":
+            if task == "RESOURCE_REVIEW":
+                # Resource-goal effect spans wakeful orchestration plus the
+                # survival resource actuator. Give diagnosis both surfaces.
+                return "resource_review:survival_resources"
+            if task == "CONTENT_COGNITION":
+                return "content_cognition:content_goal_loop"
+            if task == "CHECK_X":
+                return "check_x:x_growth"
+            if task == "CHECK_OUTCOMES":
+                return "check_outcomes:outcome"
+            return task.lower() + ":goal_effect_contract"
+        return "capability_contracts.py:" + subsystem
+
     def _finalize_task_result(
         self,
         task: str,
@@ -224,9 +250,15 @@ class WakefulContentTaskRunner:
         contract_monitor = getattr(self, "capability_contracts", None)
         if contract_monitor is not None:
             try:
-                rows["capability_contracts"] = contract_monitor.observe_task(
+                task_contract = contract_monitor.observe_task(
                     task, rows, now=now
                 )
+                rows["capability_contracts"] = task_contract
+                if task in {"NEURAL_INTEROCEPTION", "RESOURCE_REVIEW"}:
+                    durable_contract = contract_monitor.observe_durable_state(now=now)
+                    rows["durable_capability_contracts"] = durable_contract
+                    if list(durable_contract.get("violations") or []):
+                        rows["capability_contracts"] = durable_contract
             except Exception as exc:  # contract sensing failure is itself pathology
                 rows["capability_contracts"] = {
                     "schema_version": "ferro-capability-contracts.v1",
@@ -312,19 +344,15 @@ class WakefulContentTaskRunner:
         if isinstance(diagnostic_failure, dict) and contract_violations:
             top_contract = contract_violations[0]
             contract_subsystem = str(top_contract.get("subsystem") or "capability")
-            failure_sites = {
-                "context": "cognition_context.py:capability_contract",
-                "neural": "behavioral_state.py:capability_contract",
-                "goal_execution": "wakeful_tasks.py:goal_effect_contract",
-                "tool_use": "owner_agent_episode.py:tool_effect_contract",
-                "interoception": "capability_contracts.py:contract_sensor",
-            }
             diagnostic_failure = {
                 **diagnostic_failure,
                 "error_type": "CAPABILITY_CONTRACT_VIOLATION",
-                "failure_site": failure_sites.get(
-                    contract_subsystem,
-                    "capability_contracts.py:" + contract_subsystem,
+                "failure_site": (
+                    str(top_contract.get("failure_site") or "")
+                    or self._contract_failure_site(
+                        task,
+                        contract_subsystem,
+                    )
                 ),
                 "message": (
                     "capability contract violation: "
@@ -480,12 +508,6 @@ class WakefulContentTaskRunner:
             ]
             top = violations[0] if violations else {}
             subsystem = str(top.get("subsystem") or "goal_execution")
-            failure_sites = {
-                "goal_execution": "wakeful_runtime.py:autonomous_goal_effect_contract",
-                "tool_use": "owner_agent_episode.py:tool_effect_contract",
-                "context": "cognition_context.py:capability_contract",
-                "neural": "behavioral_state.py:capability_contract",
-            }
             maintenance = getattr(self, "self_maintenance", None)
             diagnostic_failure = sensed.get("diagnostic_failure")
             if maintenance is not None and isinstance(diagnostic_failure, dict):
@@ -495,9 +517,12 @@ class WakefulContentTaskRunner:
                             **diagnostic_failure,
                             "task": task,
                             "error_type": "CAPABILITY_CONTRACT_VIOLATION",
-                            "failure_site": failure_sites.get(
-                                subsystem,
-                                "capability_contracts.py:" + subsystem,
+                            "failure_site": (
+                                str(top.get("failure_site") or "")
+                                or self._contract_failure_site(
+                                    task,
+                                    subsystem,
+                                )
                             ),
                             "message": (
                                 "capability contract violation: "

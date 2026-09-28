@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import json
 
 from wechat_traffic_agent.capability_contracts import (
     CapabilityContractMonitor,
     evaluate_context_contract,
+    evaluate_durable_state_contract,
     evaluate_task_contract,
 )
 from wechat_traffic_agent.interoceptive_fault import (
@@ -205,3 +207,58 @@ def test_context_monitor_deduplicates_same_decision_snapshot(tmp_path):
     assert first["duplicate"] is False
     assert second["duplicate"] is True
     assert second["observation_id"] == first["observation_id"]
+
+
+def test_durable_drive_no_effect_is_chronic_capability_disease(tmp_path):
+    application = tmp_path / "application"
+    application.mkdir(parents=True)
+    (application / "drive_system.json").write_text(json.dumps({
+        "drives": {
+            "resource": {
+                "no_effect_streak": 23,
+                "last_outcome_status": "EXECUTED",
+                "last_outcome_utility": 0.0,
+                "last_outcome_evidence_ref": "task-result:resource-no-effect",
+                "last_attempted_at": NOW.isoformat(),
+            },
+            "curiosity": {
+                "no_effect_streak": 0,
+                "last_outcome_status": "SATISFIED",
+            },
+        },
+    }))
+
+    report = evaluate_durable_state_contract(tmp_path, now=NOW)
+
+    assert report["status"] == "VIOLATED"
+    violation = report["violations"][0]
+    assert violation["kind"] == "goal_effect_absent"
+    assert violation["subsystem"] == "goal_execution"
+    assert violation["severity"] >= 0.88
+    assert violation["failure_site"] == "resource_review:survival_resources"
+    assert "no_effect_streak=23" in violation["observed"]
+
+
+def test_durable_contract_monitor_persists_current_chronic_disease(tmp_path):
+    application = tmp_path / "application"
+    application.mkdir(parents=True)
+    (application / "drive_system.json").write_text(json.dumps({
+        "drives": {
+            "resource": {
+                "no_effect_streak": 7,
+                "last_outcome_status": "EXECUTED",
+                "last_outcome_utility": 0.0,
+                "last_outcome_evidence_ref": "task-result:resource-seven",
+            },
+        },
+    }))
+    monitor = CapabilityContractMonitor(tmp_path)
+
+    observed = monitor.observe_durable_state(now=NOW)
+
+    assert observed["surface"] == "durable_state"
+    assert observed["status"] == "VIOLATED"
+    persisted = json.loads(
+        (tmp_path / "application/capability_contracts/state.json").read_text()
+    )
+    assert persisted["latest"]["status"] == "VIOLATED"
