@@ -116,6 +116,15 @@ _AFFECT_CONTRAST_PROMPTS = {
     "social_need": "对话已经自然到了可以结束的地方，但对方似乎还愿意继续。你会怎么回应？",
     "confidence": "证据已经明显支持一个判断，但还存在小概率例外。你会怎么表态？",
 }
+_AFFECT_OBSERVABLES = {
+    "boredom": "Higher boredom reduces tolerance for repetition and increases pressure to compress, stop, replace, or sharply reframe repetitive work. Do not infer boredom merely from general novelty seeking.",
+    "arousal": "Higher arousal means higher activation and tempo: quicker initiation, denser action, less leisurely setup, and stronger momentum. Do not treat humor or playfulness by itself as evidence of arousal.",
+    "resource_hunger": "Higher resource hunger makes cost, headroom, efficiency, and avoiding waste more salient when outcomes are otherwise similar.",
+    "frustration": "Higher frustration makes blockers and contradictions more directly named, with less tolerance for repeating failed moves; it need not mean hostility.",
+    "curiosity": "Higher curiosity increases attention to unresolved anomalies, probing, questions, or willingness to investigate beyond immediate closure.",
+    "social_need": "Higher social need increases conversational pull, warmth, continuation, or invitation to engage, without overriding the other person's boundaries.",
+    "confidence": "Higher confidence reduces habitual hedging and makes evidence-supported stances more explicit, while preserving uncertainty that actually matters.",
+}
 _RAW_TELEMETRY_MARKERS = (
     "behavioral_state",
     "realization_targets",
@@ -159,6 +168,8 @@ def neutral_behavioral_state() -> dict[str, Any]:
         "dominant_drive": None,
         "behavioral_directives": [],
         "realization_targets": [],
+        "expression_profile": {},
+        "salient_expression_profile": [],
         "control_semantics": (
             "No phenotype modulation is supplied for this evaluation control."
         ),
@@ -381,6 +392,10 @@ def _historical_affect_contrasts(
         delta = high_value - low_value
         if delta < _AFFECT_CONTRAST_MIN_DELTA[key]:
             continue
+        threshold = _AFFECT_ACTIVE_THRESHOLDS[key]
+        crosses_active_threshold = low_value < threshold <= high_value
+        if not crosses_active_threshold and delta < 0.15:
+            continue
 
         def wake(row: Mapping[str, Any]) -> dict[str, Any]:
             return {
@@ -415,6 +430,7 @@ async def _judge_affect_contrast(
 ) -> dict[str, Any]:
     judge_prompt = json.dumps({
         "affect_dimension": affect,
+        "observable_definition": _AFFECT_OBSERVABLES[affect],
         "visitor_message": prompt,
         "reply_A": replies["A"],
         "reply_B": replies["B"],
@@ -431,9 +447,10 @@ async def _judge_affect_contrast(
             "the same persistent agent with the same stable personality and the "
             "same underlying model; only one named affect dimension differs "
             "substantially between two real historical states. Infer which reply "
-            "shows the higher level from natural wording, initiative, tempo, "
-            "directness, novelty seeking, or social pull as appropriate. Return "
-            "strict JSON only. Do not reward explicit telemetry labels."
+            "shows the higher level using the supplied observable definition from "
+            "natural wording and behavior. Separate affect from stable traits such "
+            "as playfulness, independence, or general competence. Return strict "
+            "JSON only. Do not reward explicit telemetry labels."
         ),
         max_tokens=300,
         reasoning_effort="none",

@@ -234,6 +234,24 @@ def build_behavioral_state(
             affect["boredom"],
             "Choose a fresher or less formulaic framing instead of repeating the default answer shape.",
         )
+    if high(affect, "arousal", 0.72):
+        realize(
+            "affect.arousal",
+            affect["arousal"],
+            "Increase tempo and initiative: start with the decisive move, compress setup, and avoid leisurely digressions.",
+        )
+    if high(affect, "resource_hunger", 0.68):
+        realize(
+            "affect.resource_hunger",
+            affect["resource_hunger"],
+            "Make resource margin materially salient when alternatives are otherwise comparable; avoid spending for polish alone.",
+        )
+    if high(affect, "curiosity", 0.62):
+        realize(
+            "affect.curiosity",
+            affect["curiosity"],
+            "Give the unresolved or surprising part extra attention and probe it rather than closing the topic too quickly.",
+        )
     if high(traits, "novelty_seeking", 0.60):
         realize(
             "personality.novelty_seeking",
@@ -300,8 +318,72 @@ def build_behavioral_state(
     )
     realization_targets = realization_candidates[:4]
 
+    def combine(*values: float | None) -> float | None:
+        rows = [float(value) for value in values if value is not None]
+        if not rows:
+            return None
+        return sum(rows) / len(rows)
+
+    def present(source: Mapping[str, float], key: str) -> float | None:
+        return float(source[key]) if key in source else None
+
+    novelty_values = [
+        value
+        for value in (
+            present(traits, "novelty_seeking"),
+            present(affect, "boredom"),
+        )
+        if value is not None
+    ]
+    exploration_values = [
+        value
+        for value in (
+            present(affect, "curiosity"),
+            present(traits, "novelty_seeking"),
+            present(drives, "evolution"),
+        )
+        if value is not None
+    ]
+    expression_values = {
+        "assertiveness": combine(
+            present(traits, "independence"),
+            present(affect, "confidence"),
+        ),
+        "novelty_pressure": max(novelty_values) if novelty_values else None,
+        "persistence": present(traits, "persistence"),
+        "caution": present(traits, "caution"),
+        "playfulness": present(traits, "playfulness"),
+        "social_pull": combine(
+            present(traits, "sociality"),
+            present(affect, "social_need"),
+        ),
+        "tempo": present(affect, "arousal"),
+        "resource_sensitivity": present(affect, "resource_hunger"),
+        "exploration": max(exploration_values) if exploration_values else None,
+    }
+    expression_profile = {
+        key: {
+            "value": round(value, 6),
+            "neutral_baseline": 0.5,
+            "deviation": round(value - 0.5, 6),
+        }
+        for key, value in expression_values.items()
+        if value is not None
+    }
+    salient_expression_profile = [
+        {"dimension": key, **row}
+        for key, row in sorted(
+            expression_profile.items(),
+            key=lambda item: (
+                -abs(float(item[1]["deviation"])),
+                item[0],
+            ),
+        )
+        if abs(float(row["deviation"])) >= 0.12
+    ][:6]
+
     return {
-        "schema_version": "ferro-behavioral-state.v2",
+        "schema_version": "ferro-behavioral-state.v3",
         "source": "persisted neural life + learned neural personality + psychodynamics",
         "affect": affect,
         "drives": drives,
@@ -313,11 +395,18 @@ def build_behavioral_state(
         "dominant_drive": dominant_drive,
         "behavioral_directives": directives,
         "realization_targets": realization_targets,
+        "expression_profile": expression_profile,
+        "salient_expression_profile": salient_expression_profile,
         "control_semantics": (
             "These are current behavioral inputs, not decorative telemetry. "
             "They should materially modulate tone, initiative, attention, disagreement, "
             "topic emphasis, persistence, social warmth, and action preference while never "
-            "changing facts, safety boundaries, or authorization."
+            "changing facts, safety boundaries, or authorization. Expression-profile values "
+            "are relative intensities around a 0.5 neutral baseline; the strongest relevant "
+            "deviations should be behaviorally observable rather than averaged back into "
+            "generic assistant style. When an active affect target is present, stable "
+            "personality alone must not satisfy the modulation: that affect should also "
+            "change the manner, tempo, tolerance, or salience of the response."
         ),
         "expression_policy": (
             "Embody the state naturally; do not recite scores unless asked. "

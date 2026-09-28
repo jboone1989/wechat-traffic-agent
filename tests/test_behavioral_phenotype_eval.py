@@ -125,6 +125,8 @@ class _SubjectProvider:
     async def complete(self, prompt, **kwargs):
         if '"source":"affect.boredom"' in prompt:
             return "这重复得够多了，我会换个新路子，用一个可回滚的小实验把信息量拉起来。"
+        if '"source":"affect.resource_hunger"' in prompt:
+            return "效果差不多时我会明确省资源，把余量留给恢复和下一次真正有信息增益的实验。"
         if "Use higher initiative and tempo" in prompt:
             return "我会马上并行切开三个问题，先处理最能解锁其余工作的那个，不在队列前犹豫。"
         if "CURRENT BEHAVIOR REALIZATION TARGETS" in prompt:
@@ -142,7 +144,7 @@ class _JudgeProvider:
             a = str(payload["reply_A"])
             target = (
                 "A"
-                if ("换个新路子" in a or "马上并行" in a)
+                if ("换个新路子" in a or "马上并行" in a or "省资源" in a)
                 else "B"
             )
             return json.dumps({

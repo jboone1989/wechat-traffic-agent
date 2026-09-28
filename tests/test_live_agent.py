@@ -630,8 +630,11 @@ def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp
     assert "CURRENT BEHAVIOR REALIZATION TARGETS" in prompt
     assert '"source":"affect.boredom"' in prompt
     assert "Make at least one observable choice in wording, stance, initiative" in prompt
+    assert "CURRENT EXPRESSION PROFILE" in prompt
+    assert '"dimension":"novelty_pressure"' in prompt
     assert "Do not flatten yourself into a generic polite assistant" in kwargs["system"]
-    assert "Prioritize its realization_targets" in kwargs["system"]
+    assert "Treat expression_profile as relative intensity around a 0.5 neutral baseline" in kwargs["system"]
+    assert "active target comes from affect.*" in kwargs["system"]
 
 
 def test_public_snapshot_degrades_optional_live_components_instead_of_failing(tmp_path):
