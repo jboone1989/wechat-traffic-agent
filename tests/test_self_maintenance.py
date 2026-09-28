@@ -618,7 +618,7 @@ def test_non_content_task_failure_enters_durable_maintenance_without_unsafe_repa
     assert latest["status"] == "DIAGNOSING"
 
 
-def test_same_task_success_reconciles_older_problem_and_recurrence_reopens_it(tmp_path):
+def test_same_task_recovery_requires_three_healthy_results_and_recurrence_reopens_it(tmp_path):
     service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
     failed = service.ingest_task_outcome(
         "NEURAL_PLAY",
@@ -628,12 +628,31 @@ def test_same_task_success_reconciles_older_problem_and_recurrence_reopens_it(tm
     assert failed["status"] == "RECORDED"
     assert service.review()["open_count"] == 1
 
-    recovered = service.ingest_task_outcome(
+    first = service.ingest_task_outcome(
         "NEURAL_PLAY",
-        {"status": "OK", "cycle": "neural-play-success"},
+        {"status": "OK", "cycle": "neural-play-success-1"},
         now=NOW + timedelta(minutes=1),
     )
-    assert recovered["status"] == "RECOVERY_RECORDED"
+    assert first["status"] == "RECOVERY_RECORDED"
+    assert first["recovered_count"] == 0
+    assert first["recovering_count"] == 1
+    assert first["consecutive_healthy"] == 1
+    assert service.review()["open_count"] == 1
+
+    second = service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "OK", "cycle": "neural-play-success-2"},
+        now=NOW + timedelta(minutes=2),
+    )
+    assert second["recovered_count"] == 0
+    assert second["consecutive_healthy"] == 2
+    assert service.review()["open_count"] == 1
+
+    recovered = service.ingest_task_outcome(
+        "NEURAL_PLAY",
+        {"status": "OK", "cycle": "neural-play-success-3"},
+        now=NOW + timedelta(minutes=3),
+    )
     assert recovered["recovered_count"] == 1
     assert recovered["recovered_problem_ids"] == [failed["problem_id"]]
     stored = json.loads(
@@ -641,19 +660,61 @@ def test_same_task_success_reconciles_older_problem_and_recurrence_reopens_it(tm
     )
     assert stored["status"] == "RECOVERED_VERIFIED"
     assert stored["recovery_result_status"] == "OK"
-    assert recovered["evidence_ref"] in stored["recovery_evidence_refs"]
+    assert stored["recovery_healthy_streak"] == 3
     assert service.review()["open_count"] == 0
 
     recurring = service.ingest_task_outcome(
         "NEURAL_PLAY",
         {"status": "DEGRADED", "brain_lab": {"status": "ERROR"}},
-        now=NOW + timedelta(minutes=2),
+        now=NOW + timedelta(minutes=4),
     )
     assert recurring["status"] == "RECORDED"
     assert recurring["problem_id"] == failed["problem_id"]
     assert recurring["problem_status"] == "DIAGNOSING"
     assert service.review()["open_count"] == 1
 
+
+def test_fallback_and_retry_do_not_count_as_recovery(tmp_path):
+    service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())
+    service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {"status": "ERROR", "error_type": "RuntimeError", "cycle": "content-fail"},
+        now=NOW,
+    )
+    first = service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {
+            "status": "OK",
+            "cycle": "fallback",
+            "composition": {"status": "FALLBACK_USED"},
+        },
+        now=NOW + timedelta(minutes=1),
+    )
+    assert first["status"] == "IGNORED_NON_ERROR"
+    assert first["pathology_observed"] is True
+
+    healthy = service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {"status": "OK", "cycle": "healthy"},
+        now=NOW + timedelta(minutes=2),
+    )
+    assert healthy["consecutive_healthy"] == 1
+
+    retry = service.ingest_task_outcome(
+        "CONTENT_COGNITION",
+        {
+            "status": "OK",
+            "cycle": "retry",
+            "provider": {"status": "RETRY_SCHEDULED"},
+        },
+        now=NOW + timedelta(minutes=3),
+    )
+    assert retry["status"] == "IGNORED_NON_ERROR"
+    after = json.loads(
+        (tmp_path / "application/self_maintenance/task_successes/content_cognition.json").read_text()
+    )
+    assert after["consecutive_healthy"] == 0
+    assert service.review()["open_count"] == 1
 
 def test_success_from_other_task_does_not_close_problem(tmp_path):
     service = SelfMaintenanceService(state_root=tmp_path, evolution_runtime=EvolutionRuntime())

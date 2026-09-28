@@ -527,6 +527,7 @@ def test_phenotype_prior_is_always_on_even_when_internal_retrieval_is_suppressed
         assert context["decision_context"]["always_on_sources"] == [
             "phenotype_prior",
             "behavioral_state",
+            "interoception",
         ]
         fact_ids = {
             str(row.get("context_id") or "")
@@ -547,6 +548,7 @@ def test_behavioral_state_is_not_a_retrieval_candidate_anymore():
     assert receipt["selection_summary"]["always_on_sources"] == [
         "phenotype_prior",
         "behavioral_state",
+        "interoception",
     ]
     selected_ids = {
         str(row.get("context_id") or "")
@@ -559,3 +561,36 @@ def test_behavioral_state_is_not_a_retrieval_candidate_anymore():
     assert "internal:behavioral" not in selected_ids
     assert "internal:behavioral" not in rejected_ids
     assert context["phenotype_prior"]["stable_phenotype"]["personality_traits"]
+
+
+def test_interoception_is_always_on_cognition_context(tmp_path):
+    from datetime import datetime, timezone
+
+    from wechat_traffic_agent.interoceptive_fault import InteroceptiveFaultSystem
+
+    mind = _Mind()
+    mind.state_root = tmp_path
+    system = InteroceptiveFaultSystem(tmp_path)
+    system.observe(
+        "CONTENT_COGNITION",
+        {
+            "status": "DEGRADED",
+            "cycle": "sick-cycle",
+            "context_builder": {"status": "ERROR"},
+        },
+        now=datetime(2026, 9, 28, 15, 0, tzinfo=timezone.utc),
+    )
+
+    context = build_ferro_cognition_context(
+        application=_application(),
+        mind=mind,
+        wakeful=_Wakeful(),
+        prompt="choose the next action",
+    )
+
+    assert context["interoception"]["status"] in {"WATCH", "ILL"}
+    assert context["interoception"]["distress"] > 0
+    assert context["interoception"]["active_episode_ids"]
+    assert context["interoception"]["suspected_faults"]
+    assert "interoception" in context["decision_context"]["always_on_sources"]
+    assert "interoception" in context["context_receipt"]["selection_summary"]["always_on_sources"]

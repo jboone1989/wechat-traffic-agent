@@ -41,6 +41,10 @@ class WakefulContentTaskRunner:
                 evolution_runtime=evolution_runtime,
                 capability_runtime=capability_runtime,
             )
+        if state_root is not None and getattr(self, "interoceptive_faults", None) is None:
+            from .interoceptive_fault import InteroceptiveFaultSystem
+
+            self.interoceptive_faults = InteroceptiveFaultSystem(Path(state_root))
         if state_root is not None and getattr(self, "owner_agent_episode", None) is None:
             from .owner_agent_episode import OwnerAgentEpisode
 
@@ -170,7 +174,184 @@ class WakefulContentTaskRunner:
         tmp.replace(receipt_path)
         path.unlink(missing_ok=True)
 
+    @staticmethod
+    def _compact_interoception(projection: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: projection.get(key)
+            for key in (
+                "schema_version",
+                "status",
+                "updated_at",
+                "distress",
+                "confidence_in_self",
+                "active_episode_ids",
+                "suspected_faults",
+                "symptoms",
+                "latest_observation_id",
+            )
+            if projection.get(key) is not None
+        }
+
+    def _finalize_task_result(
+        self,
+        task: str,
+        result: dict[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Make task pathology visible even when defensive code preserved continuity."""
+        task = str(task or "UNKNOWN").upper()
+        rows = dict(result) if isinstance(result, dict) else {
+            "task": task,
+            "status": "ERROR",
+            "error_type": "InvalidTaskResult",
+            "message": f"wakeful task returned {type(result).__name__}",
+        }
+        rows.setdefault("task", task)
+        if str(rows.get("status") or "").upper() in {
+            "WAITING_FOR_CHATGPT",
+            "SHUTDOWN_CHECKPOINT",
+            "CANCELLED",
+            "STALE_OWNER_COGNITION_IGNORED",
+        }:
+            # Administrative/non-executed states are neither illness nor
+            # recovery evidence. Preserve their external result contract.
+            return rows
+        sensor = getattr(self, "interoceptive_faults", None)
+        if sensor is None:
+            return rows
+
+        try:
+            sensed = sensor.observe(task, rows, now=now)
+        except Exception as exc:  # interoception failure is itself a degraded capability
+            rows["interoception"] = {
+                "status": "SENSOR_FAILURE",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:500],
+            }
+            if str(rows.get("status") or "").upper() not in {
+                "ERROR", "FAILED", "DEGRADED",
+            }:
+                rows["status"] = "DEGRADED"
+            maintenance = getattr(self, "self_maintenance", None)
+            if maintenance is not None:
+                try:
+                    rows["maintenance_observation"] = maintenance.ingest_failure(
+                        {
+                            "status": "ERROR",
+                            "task": "NEURAL_INTEROCEPTION",
+                            "cycle": f"interoception-sensor-{int(now.timestamp())}",
+                            "error_type": type(exc).__name__,
+                            "message": "interoception sensor failed: " + str(exc)[:400],
+                            "failure_site": "interoception:sensor",
+                        },
+                        now=now,
+                    )
+                except Exception as maintenance_exc:  # noqa: BLE001
+                    rows["maintenance_observation"] = self._error(maintenance_exc)
+            return rows
+
+        projection = dict(sensed.get("projection") or {})
+        observation = dict(sensed.get("observation") or {})
+        rows["interoception"] = {
+            **self._compact_interoception(projection),
+            "observation_id": observation.get("observation_id"),
+            "episode_id": observation.get("episode_id"),
+            "severity": observation.get("severity"),
+            "primary_symptom": observation.get("primary_symptom"),
+        }
+
+        maintenance = getattr(self, "self_maintenance", None)
+        maintenance_result: dict[str, Any] | None = None
+        if maintenance is not None:
+            try:
+                maintenance_result = maintenance.ingest_task_outcome(
+                    task, rows, now=now
+                )
+                rows["maintenance_observation"] = maintenance_result
+            except Exception as exc:  # noqa: BLE001
+                rows["maintenance_observation"] = self._error(exc)
+
+        diagnostic_failure = sensed.get("diagnostic_failure")
+        if (
+            bool(sensed.get("should_diagnose"))
+            and isinstance(diagnostic_failure, dict)
+            and maintenance is not None
+            and str((maintenance_result or {}).get("status") or "") not in {
+                "RECORDED", "ALREADY_RECORDED",
+            }
+        ):
+            try:
+                rows["maintenance_observation"] = maintenance.ingest_failure(
+                    diagnostic_failure, now=now
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["maintenance_observation"] = self._error(exc)
+
+        if observation.get("abnormal"):
+            emit = getattr(self.wakeful, "emit_interoceptive_fault", None)
+            if callable(emit):
+                try:
+                    rows["interoception"]["neural_signal"] = emit(
+                        {
+                            "episode_id": observation.get("episode_id"),
+                            "subsystem": observation.get("subsystem"),
+                            "primary_symptom": observation.get("primary_symptom"),
+                            "severity": observation.get("severity"),
+                            "projection": projection,
+                        },
+                        observed_at=now,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    rows["interoception"]["neural_signal"] = self._error(exc)
+
+        if bool(sensed.get("should_diagnose")):
+            schedule = getattr(self.wakeful, "schedule_reflection", None)
+            if callable(schedule):
+                try:
+                    episode_id = str(observation.get("episode_id") or "")
+                    rows["interoception"]["diagnostic_wake"] = schedule(
+                        now,
+                        seconds=15,
+                        reason=(
+                            "diagnose felt runtime pathology: "
+                            + str(observation.get("primary_symptom") or "unknown")
+                            + " in "
+                            + str(observation.get("subsystem") or "unknown")
+                        ),
+                        relevant_refs=tuple(
+                            ref for ref in (episode_id, "interoception:active") if ref
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    rows["interoception"]["diagnostic_wake"] = self._error(exc)
+        return rows
+
     def run(
+        self,
+        task: str,
+        *,
+        now: datetime,
+        focus_topic: str | None = None,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        try:
+            result = self._run_unobserved(
+                task,
+                now=now,
+                focus_topic=focus_topic,
+                relevant_refs=relevant_refs,
+            )
+        except Exception as exc:
+            self._finalize_task_result(
+                task,
+                self._error(exc, uncaught=True),
+                now=now,
+            )
+            raise
+        return self._finalize_task_result(task, result, now=now)
+
+    def _run_unobserved(
         self,
         task: str,
         *,
@@ -370,11 +551,17 @@ class WakefulContentTaskRunner:
             }
 
     def _neural_interoception(self, now: datetime) -> dict[str, Any]:
+        fault_projection = (
+            self.interoceptive_faults.projection(now=now)
+            if getattr(self, "interoceptive_faults", None) is not None
+            else {}
+        )
         projection = self.wakeful.refresh_neural_life(now)
         return {
             "task": "NEURAL_INTEROCEPTION",
             "status": "OK" if projection.get("status") != "DISABLED" else "DISABLED",
             "neural_life": projection,
+            "fault_interoception": self._compact_interoception(fault_projection),
         }
 
     def _neural_play(self, now: datetime) -> dict[str, Any]:

@@ -15,6 +15,10 @@ from agent_runtime.agency.diagnosis import (
 )
 from agent_runtime.evolution import EvolutionFactKind
 
+from .interoceptive_fault import (
+    RECOVERY_HEALTHY_STREAK,
+    classify_task_result,
+)
 from .repair_request import RepairEvidenceRef, RepairRequest, submit_repair_request
 
 
@@ -25,6 +29,7 @@ _KNOWN_RECOVERY_INPUT_CHANGE = "model phase input changed during recovery"
 _TASK_NON_SUCCESS_STATUSES = {
     "", "ERROR", "DEGRADED", "FAILED", "BUSY", "RESOURCE_DEFERRED", "DEFERRED",
     "SHUTDOWN_CHECKPOINT", "CANCELLED", "SKIPPED", "INTERRUPTED",
+    "WAITING_FOR_CHATGPT", "STALE_OWNER_COGNITION_IGNORED",
 }
 
 
@@ -92,7 +97,7 @@ class SelfMaintenanceService:
         self.memory = DiagnosticMemory(self.root)
 
     def ingest_task_outcome(self, task: str, result: dict[str, Any], *, now: datetime) -> dict[str, Any]:
-        """Record both failure and same-task recovery evidence from every wakeful task."""
+        """Record pathology and require sustained health before declaring recovery."""
         if not isinstance(result, dict):
             return {"status": "IGNORED_NON_ERROR"}
         if now.tzinfo is None or now.utcoffset() is None:
@@ -110,7 +115,10 @@ class SelfMaintenanceService:
             else None
         )
         cycle = str(result.get("cycle") or f"{task.lower()}-{int(now.timestamp())}")
-        if _task_result_is_success(status, failed_parts):
+        pathology = classify_task_result(task, result)
+        if pathology["abnormal"]:
+            self._reset_task_success(task)
+        if _task_result_is_success(status, failed_parts) and not pathology["abnormal"]:
             recovery = self._record_task_success(
                 task=task,
                 status=status,
@@ -123,7 +131,11 @@ class SelfMaintenanceService:
         if embedded is not None:
             return embedded
         if status not in {"ERROR", "DEGRADED"} and not failed_parts:
-            return {"status": "IGNORED_NON_ERROR"}
+            return {
+                "status": "IGNORED_NON_ERROR",
+                "pathology_observed": bool(pathology["abnormal"]),
+                "symptoms": list(pathology.get("symptoms") or []),
+            }
         return self.ingest_failure({
             "status": "ERROR", "task": task, "cycle": cycle,
             "error_type": str(result.get("error_type") or status or "SUBTASK_FAILURE")[:120],
@@ -141,6 +153,20 @@ class SelfMaintenanceService:
     ) -> dict[str, Any]:
         observed_at = now.astimezone(timezone.utc).isoformat()
         evidence_ref = f"wakeful-task:{task}:{cycle}:result"
+        safe = re.sub(r"[^a-z0-9_.-]+", "-", task.lower()).strip("-") or "unknown"
+        success_path = self.root / "task_successes" / f"{safe}.json"
+        previous: dict[str, Any] = {}
+        try:
+            loaded = json.loads(success_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            previous = {}
+        healthy_streak = int(previous.get("consecutive_healthy") or 0) + 1
+        recovery_refs = list(dict.fromkeys([
+            *(str(x) for x in previous.get("recovery_evidence_refs") or () if str(x)),
+            evidence_ref,
+        ]))[-RECOVERY_HEALTHY_STREAK:]
         success = {
             "schema_version": "self-maintenance-task-success.v1",
             "task": task,
@@ -148,22 +174,41 @@ class SelfMaintenanceService:
             "cycle": cycle,
             "observed_at": observed_at,
             "evidence_ref": evidence_ref,
+            "consecutive_healthy": healthy_streak,
+            "required_consecutive_healthy": RECOVERY_HEALTHY_STREAK,
+            "recovery_evidence_refs": recovery_refs,
         }
-        safe = re.sub(r"[^a-z0-9_.-]+", "-", task.lower()).strip("-") or "unknown"
-        _atomic_json(self.root / "task_successes" / f"{safe}.json", success)
+        _atomic_json(success_path, success)
         recovered = self._reconcile_task_recovery(
             task=task,
             observed_at=now.astimezone(timezone.utc),
             evidence_ref=evidence_ref,
             result_status=status,
+            healthy_streak=healthy_streak,
+            recovery_evidence_refs=recovery_refs,
         )
         return {
             "status": "RECOVERY_RECORDED",
             "task": task,
             "cycle": cycle,
             "evidence_ref": evidence_ref,
+            "consecutive_healthy": healthy_streak,
+            "required_consecutive_healthy": RECOVERY_HEALTHY_STREAK,
             **recovered,
         }
+
+    def _reset_task_success(self, task: str) -> None:
+        safe = re.sub(r"[^a-z0-9_.-]+", "-", str(task or "").lower()).strip("-") or "unknown"
+        path = self.root / "task_successes" / f"{safe}.json"
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        payload["consecutive_healthy"] = 0
+        payload["recovery_evidence_refs"] = []
+        _atomic_json(path, payload)
 
     def _reconcile_task_recovery(
         self,
@@ -172,9 +217,12 @@ class SelfMaintenanceService:
         observed_at: datetime,
         evidence_ref: str,
         result_status: str,
+        healthy_streak: int,
+        recovery_evidence_refs: list[str],
     ) -> dict[str, Any]:
         folder = self.root / "problems"
         recovered: list[dict[str, Any]] = []
+        recovering: list[dict[str, Any]] = []
         terminal = {
             "VERIFIED", "CLOSED", "REJECTED", "RECOVERED_VERIFIED",
             "LEGACY_AGGREGATE", "LEGACY_DUPLICATE",
@@ -198,13 +246,25 @@ class SelfMaintenanceService:
                 continue
             if last_seen.astimezone(timezone.utc) >= observed_at:
                 continue
+            payload["recovery_healthy_streak"] = int(healthy_streak)
+            payload["required_recovery_healthy_streak"] = RECOVERY_HEALTHY_STREAK
+            payload["recovery_evidence_refs"] = list(dict.fromkeys([
+                *(str(x) for x in payload.get("recovery_evidence_refs") or () if str(x)),
+                *recovery_evidence_refs,
+            ]))[-16:]
+            if healthy_streak < RECOVERY_HEALTHY_STREAK:
+                payload["recovery_candidate_at"] = observed_at.isoformat()
+                _atomic_json(path, payload)
+                recovering.append(payload)
+                continue
             payload["status"] = "RECOVERED_VERIFIED"
             payload["recovered_at"] = observed_at.isoformat()
             payload["recovery_result_status"] = str(result_status)
-            payload["recovery_evidence_refs"] = list(dict.fromkeys([
-                *(str(x) for x in payload.get("recovery_evidence_refs") or () if str(x)),
-                evidence_ref,
-            ]))[-16:]
+            payload["recovery_verification"] = {
+                "required_consecutive_healthy": RECOVERY_HEALTHY_STREAK,
+                "observed_consecutive_healthy": int(healthy_streak),
+                "latest_evidence_ref": evidence_ref,
+            }
             _atomic_json(path, payload)
             recovered.append(payload)
 
@@ -225,8 +285,13 @@ class SelfMaintenanceService:
                 _atomic_json(latest_path, replacement)
         return {
             "recovered_count": len(recovered),
+            "recovering_count": len(recovering),
             "recovered_problem_ids": [
                 str(row.get("problem_id") or "") for row in recovered
+                if str(row.get("problem_id") or "")
+            ],
+            "recovering_problem_ids": [
+                str(row.get("problem_id") or "") for row in recovering
                 if str(row.get("problem_id") or "")
             ],
         }
@@ -241,6 +306,7 @@ class SelfMaintenanceService:
         message = " ".join(str(failure.get("message") or "").split())[:1000]
         cycle = _cycle_ref(failure.get("cycle"))
         task = str(failure.get("task") or "CONTENT_COGNITION").upper()
+        self._reset_task_success(task)
         failure_site = str(failure.get("failure_site") or _stable_failure_site(self.state_root, cycle))
         signature = sha256(
             f"{task}\0{error_type}\0{message}\0{failure_site}".encode("utf-8")

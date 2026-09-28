@@ -2702,6 +2702,70 @@ class ContentWakefulRuntime:
             payload_ref=prediction_ref,
         ), enqueue=False)
 
+    def emit_interoceptive_fault(
+        self,
+        fault: Mapping[str, Any],
+        *,
+        observed_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Feed persistent runtime pathology back into Ferro's nervous system."""
+        now = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        episode_id = str(fault.get("episode_id") or "interoception:unlocalized")
+        subsystem = str(fault.get("subsystem") or "unknown")
+        symptom = str(fault.get("primary_symptom") or "unknown")
+        projection = (
+            fault.get("projection")
+            if isinstance(fault.get("projection"), Mapping)
+            else {}
+        )
+        severity = max(
+            0.0,
+            min(
+                1.0,
+                max(
+                    float(fault.get("severity") or 0.0),
+                    float(projection.get("distress") or 0.0),
+                ),
+            ),
+        )
+        attention_channel = (
+            "resource_pressure"
+            if subsystem == "resources"
+            else "task_urgency"
+        )
+        event_hash = hashlib.sha256(
+            (episode_id + "\0" + subsystem + "\0" + symptom).encode("utf-8")
+        ).hexdigest()[:20]
+        event_id = (
+            f"interoceptive-fault:{event_hash}:"
+            f"{int(now.timestamp() // 300)}"
+        )
+        signal = self.core.emit(
+            StimulusEvent(
+                event_id=event_id,
+                source="ferro-interoceptive-fault-system",
+                kind="INTEROCEPTION_FAULT",
+                observed_at=now,
+                salience=max(0.08, severity),
+                novelty=0.48,
+                urgency=max(0.10, severity),
+                persistence=0.97,
+                payload_ref=episode_id,
+                attention_channel=attention_channel,
+            ),
+            enqueue=False,
+        )
+        return {
+            "status": "OBSERVED",
+            "event_id": event_id,
+            "episode_id": episode_id,
+            "subsystem": subsystem,
+            "symptom": symptom,
+            "magnitude": round(severity, 6),
+            "attention_channel": signal.channel,
+            "threshold_crossed": signal.threshold_crossed,
+        }
+
     def set_resource_pressure(self, pressure: str) -> None:
         normalized = str(pressure or "UNKNOWN").upper()
         previous = self.core.snapshot().resource_pressure

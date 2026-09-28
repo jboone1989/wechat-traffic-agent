@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from .behavioral_state import build_behavioral_state, build_phenotype_prior
 from .context_compiler import compile_surface_metadata, infer_decision_frame
 from .decision_context import build_ferro_decision_context, extract_commitments
+from .interoceptive_fault import read_interoceptive_projection
 from .memory_self import ProspectiveSelfMemoryService
 
 
@@ -605,6 +606,23 @@ def build_ferro_cognition_context(
     for row in selected_internal:
         selected_neural_life.update(row)
 
+    raw_interoception = read_interoceptive_projection(state_root)
+    interoception = {
+        key: raw_interoception.get(key)
+        for key in (
+            "schema_version",
+            "status",
+            "updated_at",
+            "distress",
+            "confidence_in_self",
+            "active_episode_ids",
+            "suspected_faults",
+            "symptoms",
+            "latest_observation_id",
+        )
+        if raw_interoception.get(key) is not None
+    }
+
     selected_fact_index = [
         {
             "context_id": row.get("context_id"),
@@ -628,7 +646,7 @@ def build_ferro_cognition_context(
         ),
         "budget_chars": int(decision_context.get("budget_chars") or 0),
         "memory_router": dict(decision_context.get("memory_router") or {}),
-        "always_on_sources": ["phenotype_prior", "behavioral_state"],
+        "always_on_sources": ["phenotype_prior", "behavioral_state", "interoception"],
     }
     selection_summary = {
         "retrieval_policy": "decision_conditioned_context_retrieval_v1",
@@ -646,7 +664,7 @@ def build_ferro_cognition_context(
             decision_context.get("rejected_candidates") or []
         )[:16],
         "memory_router": dict(decision_context.get("memory_router") or {}),
-        "always_on_sources": ["phenotype_prior", "behavioral_state"],
+        "always_on_sources": ["phenotype_prior", "behavioral_state", "interoception"],
     }
 
     core_sections = {
@@ -669,6 +687,7 @@ def build_ferro_cognition_context(
         "social_context": {"recent_relationships": selected_relationships},
         "operational_state": selected_operational,
         "neural_state": {"life": selected_neural_life},
+        "interoception": interoception,
         "phenotype_prior": phenotype_prior,
         "behavioral_state": behavioral_state,
     }
@@ -773,6 +792,7 @@ def build_ferro_cognition_context(
             ),
             "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
+        "interoception": interoception,
         "phenotype_prior": phenotype_prior,
         "behavioral_state": behavioral_state,
         "epistemic_contract": metadata["epistemic_contract"],
