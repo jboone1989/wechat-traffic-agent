@@ -135,7 +135,7 @@ def test_non_crypto_goal_keeps_research_search_shape(tmp_path):
         return []
     worker = GoalEvidenceExplorer(state_root=tmp_path, feeds=("https://example.org/feed",), rss_fetcher=rss, web_searcher=web)
     result = asyncio.run(worker.search_web(goal_topic="model-evaluation", now=NOW))
-    assert result["query"] == "model evaluation AI trading research evidence"
+    assert result["query"] == "model evaluation evidence implementation"
     assert calls == [result["query"]]
 
 

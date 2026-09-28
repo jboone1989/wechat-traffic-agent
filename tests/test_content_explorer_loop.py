@@ -12,6 +12,8 @@ from wechat_traffic_agent.content_goal_loop import (
     _normalize_mission_discovery, _compact_website_decision_view,
     _compact_writing_experience, _select_evidence_decision_context,
     _resolve_technique_requirements, _required_techniques_applied,
+    _owner_focus_anchor_terms, _owner_focus_candidate_matches,
+    _owner_focus_search_query,
 )
 from test_content_explorer import candidate
 from test_content_loop import NOW, Runtime, setup
@@ -58,6 +60,44 @@ def test_evidence_first_defers_conflicting_reader_question_opener():
     assert requirement["deferred_indices"] == [0]
     assert _required_techniques_applied({1, 2}, requirement) is True
     assert _required_techniques_applied({1}, requirement) is False
+
+
+def test_owner_focus_query_uses_owner_entities_without_trading_bias():
+    goal = {
+        "description": (
+            "Promote LivingRuntime Remote for ChatGPT AI agents using Pi Remote, "
+            "dynamic command approval, durable receipt, and guardian."
+        )
+    }
+    query = _owner_focus_search_query(
+        goal,
+        "livingruntime-remote-growth-experiment",
+    )
+    assert query.startswith("livingruntime remote")
+    assert "ChatGPT" in query
+    assert "Pi" in query
+    assert "trading" not in query.casefold()
+    assert _owner_focus_anchor_terms(
+        "livingruntime-remote-growth-experiment"
+    ) == ("livingruntime", "remote")
+
+
+def test_owner_focus_candidate_gate_rejects_semantic_drift():
+    topic = "livingruntime-remote-growth-experiment"
+    relevant = {
+        "title": "LivingRuntime Remote: controlled remote host execution for ChatGPT",
+        "summary": "Pi Remote, command approval, durable receipts, and guardian.",
+        "url": "https://example.org/livingruntime-remote",
+        "source": "web",
+    }
+    drift = {
+        "title": "AQuA: recursively self-improving quantitative trading research",
+        "summary": "An autonomous system improves factor discovery from prior evidence.",
+        "url": "https://arxiv.org/abs/2608.12841",
+        "source": "web",
+    }
+    assert _owner_focus_candidate_matches(relevant, topic) is True
+    assert _owner_focus_candidate_matches(drift, topic) is False
 
 
 def test_reader_question_first_defers_conflicting_observation_opener():

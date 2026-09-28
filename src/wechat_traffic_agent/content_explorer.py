@@ -248,7 +248,7 @@ class GoalEvidenceExplorer:
         query = (
             normalized_topic + " BTC ETH SOL latest market catalyst today"
             if words & crypto_terms
-            else normalized_topic + " AI trading research evidence"
+            else normalized_topic + " evidence implementation"
         )
         try:
             rows = await self.web_searcher(query, now)

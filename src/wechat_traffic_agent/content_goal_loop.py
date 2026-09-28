@@ -476,6 +476,65 @@ def _allow_unconstrained_output_fallback(*, goal_active, goal_origin, owner_goal
     return True
 
 
+_OWNER_FOCUS_GENERIC_TERMS = {
+    "growth", "experiment", "experiments", "content", "research", "evidence",
+    "goal", "goals", "task", "tasks", "current", "real", "public", "latest",
+    "new", "website", "topic", "topics",
+}
+
+
+def _owner_focus_anchor_terms(topic):
+    words = [
+        value
+        for value in re.findall(r"[a-z0-9]+", str(topic or "").casefold())
+        if len(value) >= 4 and value not in _OWNER_FOCUS_GENERIC_TERMS
+    ]
+    return tuple(dict.fromkeys(words))[:4]
+
+
+def _owner_focus_candidate_matches(row, topic):
+    anchors = _owner_focus_anchor_terms(topic)
+    if not anchors:
+        return True
+    text = " ".join(
+        str(row.get(field) or "")
+        for field in ("title", "summary", "url", "source")
+    ).casefold()
+    normalized = re.sub(r"[^a-z0-9]+", " ", text)
+    compact = normalized.replace(" ", "")
+    matched = sum(
+        1
+        for anchor in anchors
+        if anchor in normalized or anchor in compact
+    )
+    return matched >= min(2, len(anchors))
+
+
+def _owner_focus_search_query(owner_goal, topic):
+    anchors = list(_owner_focus_anchor_terms(topic))
+    description = str((owner_goal or {}).get("description") or "")
+    raw_tokens = re.findall(r"[A-Za-z][A-Za-z0-9.+/-]*", description)
+    stop = {
+        "goal", "draft", "growth", "experiment", "content", "current", "real",
+        "task", "the", "and", "for", "with", "into", "from", "this", "that",
+        "through", "existing", "value", "safe", "public", "posted",
+    }
+    selected = []
+    for token in raw_tokens:
+        folded = token.casefold().strip("./-")
+        if not folded or folded in stop:
+            continue
+        if len(folded) < 3 and folded not in {"ai", "pi"}:
+            continue
+        if folded in anchors or folded in {row.casefold() for row in selected}:
+            continue
+        selected.append(token)
+        if len(selected) >= 10:
+            break
+    query = " ".join([*anchors, *selected]).strip()
+    return query[:180].rstrip(" ,.;:-")
+
+
 def _compact_website_decision_view(snapshot, *, article_limit=80):
     """Bound Website context for semantic selection without dropping local validation data."""
     if not isinstance(snapshot, dict):
@@ -1720,11 +1779,17 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         else:
             self._activity(cycle, 'OBSERVE', 'I’m matching evidence to my current goal',
                            f"Filtering candidates for {effective_topic or 'the best traffic opportunity'}.")
+            initial_candidates = list(evidence_pool['items'])
+            if owner_focus_fast_path and effective_topic:
+                initial_candidates = [
+                    row for row in initial_candidates
+                    if _owner_focus_candidate_matches(row, effective_topic)
+                ]
             initial = await self.explorer.filter_for_goal(
                 runtime=explorer_runtime,
                 goal_topic=str(effective_topic or ''),
                 topic_context=topic_context,
-                candidates=evidence_pool['items'],
+                candidates=initial_candidates,
             )
             exploration = dict(initial)
             source_failures = list(evidence_pool.get('failures', []))
@@ -1747,9 +1812,20 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     ).strip()
                     self._activity(cycle, 'OBSERVE', 'I don’t have a strong local match, so I’m searching the web',
                                    f"Looking for fresh public evidence about {effective_topic}.")
+                    owner_query = (
+                        _owner_focus_search_query(owner_goal, effective_topic)
+                        if owner_focus_fast_path and effective_topic
+                        else ''
+                    )
                     if mission_query and callable(search_mission_web):
                         web_pool = await search_mission_web(
                             query=mission_query,
+                            goal_topic=str(effective_topic),
+                            now=now,
+                        )
+                    elif owner_query and callable(search_mission_web):
+                        web_pool = await search_mission_web(
+                            query=owner_query,
                             goal_topic=str(effective_topic),
                             now=now,
                         )
@@ -1761,6 +1837,15 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         web_pool = {'items': [], 'failures': [], 'query': None}
                     web_pool['items'] = [row for row in web_pool['items']
                                          if _candidate_available_for_pool(self.inbox, row)]
+                    if owner_focus_fast_path and effective_topic:
+                        web_pool['items'] = [
+                            row for row in web_pool['items']
+                            if _owner_focus_candidate_matches(row, effective_topic)
+                        ]
+                        web_pool['owner_focus_query'] = owner_query
+                        web_pool['owner_focus_anchors'] = list(
+                            _owner_focus_anchor_terms(effective_topic)
+                        )
                     _put(web_path, web_pool)
                 source_failures.extend(web_pool.get('failures', []))
                 if web_pool['items']:
