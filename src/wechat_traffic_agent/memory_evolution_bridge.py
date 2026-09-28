@@ -78,7 +78,10 @@ class MemoryRuntimeEvolutionBridge:
     def __init__(self, *, runtime: Any, state_root: Path) -> None:
         self.runtime = runtime
         self.state_root = Path(state_root)
-        self.observatory = MemoryLifeObservatory(self.state_root)
+        self.observatory = MemoryLifeObservatory(
+            self.state_root,
+            now_provider=self.runtime.clock.now,
+        )
         self.memory_evolution = MemoryEvolutionEngine(self.state_root)
         self.domain_evolution = MemoryDomainEvolution(runtime=runtime, state_root=self.state_root)
         self.root = self.state_root / "application" / "memory_system" / "runtime_evolution_bridge"

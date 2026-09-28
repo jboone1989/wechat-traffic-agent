@@ -177,7 +177,10 @@ class MemoryDomainEvolution:
         self.store = CanonicalMemoryStore(self.state_root)
         self.root = self.store.root / "domain_evolution"
         self.root.mkdir(parents=True, exist_ok=True)
-        self.observatory = MemoryLifeObservatory(self.state_root)
+        self.observatory = MemoryLifeObservatory(
+            self.state_root,
+            now_provider=self.runtime.clock.now,
+        )
 
     def cases(self, now: datetime) -> list[dict]:
         rows = self.observatory.rows(limit=10000)

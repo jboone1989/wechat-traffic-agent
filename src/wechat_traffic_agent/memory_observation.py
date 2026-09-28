@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from uuid import uuid4
 
 
@@ -20,8 +20,11 @@ FAILURE_KINDS = frozenset({
 POSITIVE_KINDS = frozenset({"MEMORY_HELPED"})
 
 
-def _utc_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+def _utc_iso(now: datetime | None = None) -> str:
+    value = now or datetime.now(timezone.utc)
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class MemoryLifeObservatory:
@@ -31,8 +34,14 @@ class MemoryLifeObservatory:
     measure retrieval/decision quality and to feed bounded Memory Evolution candidates.
     """
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        *,
+        now_provider: Callable[[], datetime] | None = None,
+    ) -> None:
         self.state_root = Path(state_root)
+        self._now_provider = now_provider
         self.root = self.state_root / "application" / "memory_system" / "life_observatory"
         self.root.mkdir(parents=True, exist_ok=True)
         self.events_path = self.root / "memory_use_events.jsonl"
@@ -62,7 +71,9 @@ class MemoryLifeObservatory:
         row = {
             "memory_use_id": "memory-use:" + uuid4().hex,
             "event_type": str(event_type or "RETRIEVAL").strip().upper(),
-            "observed_at": _utc_iso(),
+            "observed_at": _utc_iso(
+                self._now_provider() if self._now_provider is not None else None
+            ),
             "query": str(query or "")[:1600],
             "retrieved_memory_ids": list(dict.fromkeys(
                 str(item).strip() for item in retrieved_memory_ids if str(item).strip()
