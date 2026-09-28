@@ -416,4 +416,57 @@ def build_behavioral_state(
     }
 
 
-__all__ = ["build_behavioral_state"]
+def build_phenotype_prior(
+    behavioral_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Split always-on individual identity from momentary behavioral modulation."""
+    state = _mapping(behavioral_state)
+    stable = {
+        "personality_traits": dict(_mapping(state.get("personality_traits"))),
+        "psychodynamics": dict(_mapping(state.get("psychodynamics"))),
+    }
+    dynamic = {
+        "affect": dict(_mapping(state.get("affect"))),
+        "drives": dict(_mapping(state.get("drives"))),
+        "intention": dict(_mapping(state.get("intention"))),
+        "dominant_affect": state.get("dominant_affect"),
+        "dominant_drive": state.get("dominant_drive"),
+    }
+    expression = {
+        "expression_profile": dict(_mapping(state.get("expression_profile"))),
+        "salient_expression_profile": [
+            dict(row)
+            for row in list(state.get("salient_expression_profile") or [])
+            if isinstance(row, Mapping)
+        ][:6],
+        "realization_targets": [
+            dict(row)
+            for row in list(state.get("realization_targets") or [])
+            if isinstance(row, Mapping)
+        ][:4],
+        "behavioral_directives": [
+            str(row)
+            for row in list(state.get("behavioral_directives") or [])
+            if str(row)
+        ][:16],
+    }
+    return {
+        "schema_version": "ferro-phenotype-prior.v1",
+        "stable_phenotype": stable,
+        "dynamic_modulation": dynamic,
+        "expression": expression,
+        "retrieval_policy": {
+            "stable_phenotype": "ALWAYS_ON_NEVER_RETRIEVAL_CONDITIONED",
+            "dynamic_modulation": "ALWAYS_ON_REFRESH_EACH_COGNITION",
+            "situational_context": "DECISION_CONDITIONED_RETRIEVAL",
+        },
+        "control_semantics": (
+            "The stable phenotype is part of Ferro's persistent individual identity and "
+            "must influence every cognition with meaningful behavioral choice. Dynamic "
+            "modulation changes current intensity and salience without replacing that "
+            "individual identity. Neither may change facts, safety, or authorization."
+        ),
+    }
+
+
+__all__ = ["build_behavioral_state", "build_phenotype_prior"]

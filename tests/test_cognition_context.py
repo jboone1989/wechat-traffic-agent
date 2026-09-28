@@ -471,3 +471,91 @@ def test_owner_scope_relevance_ignores_generic_orchestration_words():
     assert [row["event_id"] for row in context["recent_experience"]] == [
         "relevant"
     ]
+
+
+class _LowPressureWakeful(_Wakeful):
+    def public_snapshot(self):
+        value = super().public_snapshot()
+        value["resource_pressure"] = "NORMAL"
+        value["neural_life"] = {
+            **value["neural_life"],
+            "affect": {
+                **value["neural_life"]["affect"],
+                "boredom": 0.81,
+                "confidence": 0.79,
+            },
+            "drives": {
+                **value["neural_life"]["drives"],
+                "evolution": 0.83,
+            },
+        }
+        return value
+
+
+def test_phenotype_prior_is_always_on_even_when_internal_retrieval_is_suppressed():
+    prompts = (
+        "SOCIAL_EXPRESSION_DRAFT: write the X expression for this supported finding.",
+        "PLAN: choose the next bounded experiment.",
+        "VERIFY: check whether this claim is supported by the evidence.",
+        "Answer the current question directly.",
+    )
+
+    contexts = [
+        build_ferro_cognition_context(
+            application=_application(),
+            mind=_Mind(),
+            wakeful=_LowPressureWakeful(),
+            prompt=prompt,
+        )
+        for prompt in prompts
+    ]
+
+    first_prior = contexts[0]["phenotype_prior"]
+    first_traits = first_prior["stable_phenotype"]["personality_traits"]
+    assert first_traits["independence"] == 0.72
+    assert first_traits["persistence"] == 0.73
+    assert first_prior["dynamic_modulation"]["affect"]["boredom"] == 0.81
+    assert (
+        first_prior["retrieval_policy"]["stable_phenotype"]
+        == "ALWAYS_ON_NEVER_RETRIEVAL_CONDITIONED"
+    )
+
+    for context in contexts:
+        assert context["phenotype_prior"]["stable_phenotype"] == first_prior["stable_phenotype"]
+        assert context["behavioral_state"]["personality_traits"] == first_traits
+        assert context["behavioral_state"]["affect"]["boredom"] == 0.81
+        assert context["decision_context"]["always_on_sources"] == [
+            "phenotype_prior",
+            "behavioral_state",
+        ]
+        fact_ids = {
+            str(row.get("context_id") or "")
+            for row in context["decision_context"]["fact_index"]
+        }
+        assert "internal:behavioral" not in fact_ids
+
+
+def test_behavioral_state_is_not_a_retrieval_candidate_anymore():
+    context = build_ferro_cognition_context(
+        application=_application(),
+        mind=_Mind(),
+        wakeful=_LowPressureWakeful(),
+        prompt="Answer an unrelated general question.",
+    )
+
+    receipt = context["context_receipt"]
+    assert receipt["selection_summary"]["always_on_sources"] == [
+        "phenotype_prior",
+        "behavioral_state",
+    ]
+    selected_ids = {
+        str(row.get("context_id") or "")
+        for row in context["decision_context"]["fact_index"]
+    }
+    rejected_ids = {
+        str(row.get("context_id") or "")
+        for row in receipt["selection_summary"]["rejected_candidates"]
+    }
+    assert "internal:behavioral" not in selected_ids
+    assert "internal:behavioral" not in rejected_ids
+    assert context["phenotype_prior"]["stable_phenotype"]["personality_traits"]

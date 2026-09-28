@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Mapping
 
-from .behavioral_state import build_behavioral_state
+from .behavioral_state import build_behavioral_state, build_phenotype_prior
 from .context_compiler import compile_surface_metadata, infer_decision_frame
 from .decision_context import build_ferro_decision_context, extract_commitments
 from .memory_self import ProspectiveSelfMemoryService
@@ -379,6 +379,7 @@ def build_ferro_cognition_context(
         else {}
     )
     behavioral_state = build_behavioral_state(wake)
+    phenotype_prior = build_phenotype_prior(behavioral_state)
     relationship_rows = [
         dict(row)
         for row in list(social_projection.get("recent_relationships") or ())
@@ -474,7 +475,6 @@ def build_ferro_cognition_context(
         commitments=commitments,
         life_experience=all_life_experience,
         wake=wake,
-        behavioral_state=behavioral_state,
         latest_plan=latest_plan,
         state_root=state_root,
         now=now,
@@ -602,12 +602,8 @@ def build_ferro_cognition_context(
         if isinstance(row, Mapping)
     ]
     selected_neural_life: dict[str, Any] = {}
-    selected_behavioral_state: dict[str, Any] = {}
     for row in selected_internal:
-        if "personality_traits" in row or "behavioral_directives" in row:
-            selected_behavioral_state.update(row)
-        else:
-            selected_neural_life.update(row)
+        selected_neural_life.update(row)
 
     selected_fact_index = [
         {
@@ -632,6 +628,7 @@ def build_ferro_cognition_context(
         ),
         "budget_chars": int(decision_context.get("budget_chars") or 0),
         "memory_router": dict(decision_context.get("memory_router") or {}),
+        "always_on_sources": ["phenotype_prior", "behavioral_state"],
     }
     selection_summary = {
         "retrieval_policy": "decision_conditioned_context_retrieval_v1",
@@ -649,6 +646,7 @@ def build_ferro_cognition_context(
             decision_context.get("rejected_candidates") or []
         )[:16],
         "memory_router": dict(decision_context.get("memory_router") or {}),
+        "always_on_sources": ["phenotype_prior", "behavioral_state"],
     }
 
     core_sections = {
@@ -671,7 +669,8 @@ def build_ferro_cognition_context(
         "social_context": {"recent_relationships": selected_relationships},
         "operational_state": selected_operational,
         "neural_state": {"life": selected_neural_life},
-        "behavioral_state": selected_behavioral_state,
+        "phenotype_prior": phenotype_prior,
+        "behavioral_state": behavioral_state,
     }
     metadata = compile_surface_metadata(
         prompt=query_context or prompt,
@@ -718,7 +717,7 @@ def build_ferro_cognition_context(
     selected_manifest_caps = [
         str(item) for item in manifest_caps if str(item) in selected_capabilities
     ]
-    internal_selected = bool(selected_neural_life or selected_behavioral_state)
+    internal_selected = bool(selected_neural_life)
 
     return {
         "continuity": {
@@ -774,7 +773,8 @@ def build_ferro_cognition_context(
             ),
             "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
-        "behavioral_state": selected_behavioral_state,
+        "phenotype_prior": phenotype_prior,
+        "behavioral_state": behavioral_state,
         "epistemic_contract": metadata["epistemic_contract"],
     }
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from wechat_traffic_agent.behavioral_state import build_behavioral_state
+from wechat_traffic_agent.behavioral_state import build_behavioral_state, build_phenotype_prior
 
 
 def test_behavioral_state_turns_neural_state_into_bounded_behavioral_directives():
@@ -115,3 +115,45 @@ def test_realization_targets_change_with_current_neural_personality():
     assert "personality.independence" in independent_sources
     assert "personality.caution" in cautious_sources
     assert "drive.survival" in cautious_sources
+
+
+def test_phenotype_prior_separates_stable_identity_from_dynamic_state():
+    state = build_behavioral_state({
+        "neural_life": {
+            "affect": {"boredom": 0.91, "confidence": 0.86},
+            "drives": {"evolution": 0.72, "survival": 0.61},
+            "intention": {"name": "EVOLVE", "strength": 0.9},
+        },
+        "personality": {
+            "traits": {
+                "independence": 0.98,
+                "persistence": 0.74,
+                "playfulness": 0.77,
+            }
+        },
+        "psychodynamics": {
+            "id": {"dominant_impulse": "EVOLVE"},
+            "superego": {"growth_commitment": 0.84},
+            "conflict": 0.21,
+        },
+    })
+
+    prior = build_phenotype_prior(state)
+
+    assert prior["schema_version"] == "ferro-phenotype-prior.v1"
+    assert prior["stable_phenotype"]["personality_traits"]["independence"] == 0.98
+    assert prior["stable_phenotype"]["personality_traits"]["persistence"] == 0.74
+    assert prior["dynamic_modulation"]["affect"]["boredom"] == 0.91
+    assert prior["dynamic_modulation"]["drives"]["evolution"] == 0.72
+    assert (
+        prior["retrieval_policy"]["stable_phenotype"]
+        == "ALWAYS_ON_NEVER_RETRIEVAL_CONDITIONED"
+    )
+    assert (
+        prior["retrieval_policy"]["dynamic_modulation"]
+        == "ALWAYS_ON_REFRESH_EACH_COGNITION"
+    )
+    assert (
+        prior["retrieval_policy"]["situational_context"]
+        == "DECISION_CONDITIONED_RETRIEVAL"
+    )

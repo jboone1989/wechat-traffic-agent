@@ -891,7 +891,6 @@ def build_ferro_decision_context(
     commitments: Sequence[Mapping[str, Any]],
     life_experience: Sequence[Mapping[str, Any]],
     wake: Mapping[str, Any],
-    behavioral_state: Mapping[str, Any],
     latest_plan: Mapping[str, Any] | None,
     state_root: Any,
     now: datetime,
@@ -1104,16 +1103,6 @@ def build_ferro_decision_context(
                 current=True,
             ))
 
-    if behavioral_state:
-        local.append(candidate(
-            context_id="internal:behavioral",
-            source="internal",
-            kind="BEHAVIORAL_STATE",
-            payload=dict(behavioral_state),
-            importance=0.8,
-            confidence=0.9,
-            current=True,
-        ))
 
     operational = {
         key: wake.get(key)
