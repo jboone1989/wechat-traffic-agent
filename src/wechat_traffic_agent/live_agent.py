@@ -1280,16 +1280,22 @@ async def _generate_guarded_public_reply(
         "_reserve_timeout_seconds": 6,
         "_max_failovers": 3,
     }
-    reply = str(await provider.complete(prompt, **kwargs) or "").strip()
+
+    async def generate(value: str) -> str:
+        stream = getattr(provider, "stream", None)
+        if callable(stream):
+            chunks: list[str] = []
+            async for chunk in stream(value, **kwargs):
+                text = str(chunk or "")
+                if text:
+                    chunks.append(text)
+            return "".join(chunks).strip()
+        return str(await provider.complete(value, **kwargs) or "").strip()
+
+    reply = await generate(prompt)
     if _public_reply_is_visitor_facing(reply, message):
         return reply
-    repaired = str(
-        await provider.complete(
-            _public_reply_repair_prompt(prompt, message),
-            **kwargs,
-        )
-        or ""
-    ).strip()
+    repaired = await generate(_public_reply_repair_prompt(prompt, message))
     if _public_reply_is_visitor_facing(repaired, message):
         return repaired
     raise ValueError("public_model_returned_non_visitor_facing_text")

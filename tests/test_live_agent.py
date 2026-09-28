@@ -40,6 +40,11 @@ class _StreamingProvider:
         self.calls.append((prompt, kwargs))
         return "Hello from Ferro."
 
+    async def stream(self, prompt, **kwargs):
+        self.calls.append((prompt, kwargs))
+        yield "Hello "
+        yield "from Ferro."
+
 
 class _StreamingBackend:
     def __init__(self):
