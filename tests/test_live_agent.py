@@ -364,6 +364,80 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     assert interaction_path.exists()
 
 
+def test_public_snapshot_degrades_optional_live_components_instead_of_failing(tmp_path):
+    class _BrokenApplication(_Application):
+        def status_observation(self):
+            raise RuntimeError("application telemetry exploded")
+
+    class _BrokenMind:
+        def public_projection(self):
+            raise RuntimeError("mind projection exploded")
+
+    class _BrokenWakeful:
+        def public_snapshot(self):
+            raise IndexError("neural telemetry dimensions changed")
+
+    root = _state(tmp_path)
+    snapshot = public_agent_snapshot(
+        root,
+        _BrokenApplication(),
+        _BrokenMind(),
+        wakeful=_BrokenWakeful(),
+    )
+    assert snapshot["agent"]["generation_ready"] is False
+    assert snapshot["life"]["presence"]["wakeful"]["status"] == "UNAVAILABLE"
+    assert snapshot["life"]["presence"]["wakeful"]["presence"] == "UNKNOWN"
+    assert snapshot["learning"]["mind"]["status"] == "UNAVAILABLE"
+    assert snapshot["public_reasoning"]["private_chain_of_thought_exposed"] is False
+
+
+def test_public_chat_stream_continues_when_live_state_and_neural_relationship_fail(
+    tmp_path, monkeypatch
+):
+    import wechat_traffic_agent.live_agent as live_module
+
+    class _BrokenWakeful:
+        def observe_social_interaction(self, **kwargs):
+            raise IndexError("relationship neural state unavailable")
+
+        def emit_talk(self, **kwargs):
+            raise RuntimeError("talk telemetry unavailable")
+
+    def _broken_snapshot(*args, **kwargs):
+        raise IndexError("boolean index did not match indexed array")
+
+    monkeypatch.setattr(live_module, "public_agent_snapshot", _broken_snapshot)
+    root = _state(tmp_path)
+    public_backend = _StreamingBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=public_backend,
+        wakeful=_BrokenWakeful(),
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={
+                "message": "Can we still talk?",
+                "visitor_id": "v_1234567890abcdef12345678",
+            },
+        )
+    assert reply.status_code == 200
+    body = reply.text
+    assert '"stage":"RECEIVED"' in body
+    assert '"stage":"STATE_DEGRADED"' in body
+    assert '"label":"Continuing with reduced context"' in body
+    assert "chat_state_temporarily_unavailable" not in body
+    assert '"text":"Hello "' in body
+    assert '"text":"from Ferro."' in body
+    assert "event: done" in body
+    assert '"status": "DEGRADED"' in public_backend.provider.calls[0][0]
+    assert "Answer the visitor directly without depending on unavailable telemetry." in public_backend.provider.calls[0][0]
+
+
 def test_public_chat_returns_bounded_503_before_proxy_timeout(tmp_path, monkeypatch):
     class _SlowProvider:
         async def complete(self, prompt, **kwargs):
