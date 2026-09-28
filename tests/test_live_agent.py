@@ -1144,3 +1144,55 @@ def test_public_snapshot_reports_persisted_self_maintenance_after_failed_cycle(t
     assert snapshot["activity"]["last_phase"] == "RECOVER"
     assert "persistent SelfProblem" in snapshot["activity"]["current_focus"]
     assert "NORMALIZE_COGNITION_STATE_TO_DURABLE_WORLDVIEW" in snapshot["activity"]["current_focus"]
+
+
+def test_public_chat_retries_short_punctuationless_incomplete_chinese_reply(tmp_path):
+    class _ShortIncompleteProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            if len(self.calls) == 1:
+                return "我最想把当前卡在错误的内容"
+            return "我现在最想继续解决的是内容生产链里的真实断点，把已经发现的问题逐个验证并闭环。"
+
+    class _ShortIncompleteBackend:
+        def __init__(self):
+            self.provider = _ShortIncompleteProvider()
+
+    root = _state(tmp_path)
+    backend = _ShortIncompleteBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            json={"message": "你现在最想继续解决什么？"},
+        )
+
+    assert reply.status_code == 200
+    assert "内容生产链里的真实断点" in reply.json()["reply"]
+    assert len(backend.provider.calls) == 2
+    assert "PUBLIC OUTPUT REQUIREMENT" in backend.provider.calls[1][0]
+
+
+def test_public_chat_snapshot_distinguishes_snapshot_time_from_health_time():
+    snapshot = _public_chat_snapshot({
+        "as_of": "2026-09-28T07:48:16+00:00",
+        "snapshot_at": "2026-09-28T09:00:24+00:00",
+        "agent": {"online": False, "heartbeat_age_seconds": 4328},
+        "activity": {},
+        "learning": {"mind": {}},
+        "life": {},
+        "social": {},
+        "boundaries": {},
+    })
+
+    assert snapshot["as_of"] == "2026-09-28T09:00:24+00:00"
+    assert snapshot["snapshot_at"] == "2026-09-28T09:00:24+00:00"
+    assert snapshot["health_as_of"] == "2026-09-28T07:48:16+00:00"

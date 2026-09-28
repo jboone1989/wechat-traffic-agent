@@ -200,14 +200,21 @@ def _context_audit_from_prompt(prompt: str) -> dict[str, Any] | None:
     if isinstance(public_snapshot, dict):
         snapshot_at = _parse_timestamp(public_snapshot.get("snapshot_at"))
         source_as_of = _parse_timestamp(public_snapshot.get("as_of"))
+        health_as_of = _parse_timestamp(public_snapshot.get("health_as_of"))
         freshness = {
             "snapshot_at": public_snapshot.get("snapshot_at"),
             "source_as_of": public_snapshot.get("as_of"),
+            "health_as_of": public_snapshot.get("health_as_of"),
         }
         if snapshot_at is not None and source_as_of is not None:
             freshness["source_age_seconds"] = max(
                 0,
                 int((snapshot_at - source_as_of).total_seconds()),
+            )
+        if snapshot_at is not None and health_as_of is not None:
+            freshness["health_age_seconds"] = max(
+                0,
+                int((snapshot_at - health_as_of).total_seconds()),
             )
     elif isinstance(runtime_state, dict):
         continuity = runtime_state.get("continuity")
@@ -222,6 +229,9 @@ def _context_audit_from_prompt(prompt: str) -> dict[str, Any] | None:
     source_age = freshness.get("source_age_seconds")
     if isinstance(source_age, int) and source_age > 900:
         issues.append("STALE_SOURCE_OBSERVATION")
+    health_age = freshness.get("health_age_seconds")
+    if isinstance(health_age, int) and health_age > 900:
+        issues.append("STALE_RUNTIME_HEALTH")
 
     return {
         "schema_version": "ferro-context-audit.v1",

@@ -932,8 +932,9 @@ def _public_chat_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     context = {
         "schema_version": "public-agent-chat-context:v1",
-        "as_of": snapshot.get("as_of"),
+        "as_of": snapshot.get("snapshot_at") or snapshot.get("as_of"),
         "snapshot_at": snapshot.get("snapshot_at"),
+        "health_as_of": snapshot.get("as_of"),
         "agent": snapshot.get("agent"),
         "activity": {
             key: activity.get(key)
@@ -986,8 +987,9 @@ def _public_chat_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         return bounded
     return _bounded_chat_value({
         "schema_version": "public-agent-chat-context:v1",
-        "as_of": snapshot.get("as_of"),
+        "as_of": snapshot.get("snapshot_at") or snapshot.get("as_of"),
         "snapshot_at": snapshot.get("snapshot_at"),
+        "health_as_of": snapshot.get("as_of"),
         "agent": snapshot.get("agent"),
         "activity": {
             "run_state": activity.get("run_state"),
@@ -1155,7 +1157,9 @@ def _public_reply_is_visitor_facing(reply: str, message: str) -> bool:
             )
             if continuation_tail or enumerating or unbalanced:
                 return False
-            if cjk_count < 8 and word_count < 6:
+            if cjk_count and cjk_count < 18:
+                return False
+            if not cjk_count and word_count < 6:
                 return False
     return True
 
@@ -1680,7 +1684,7 @@ class LiveAgentService:
                     self.wakeful.emit_talk(message=message)
                 except Exception:
                     pass
-            return JSONResponse({"reply": str(reply), "snapshot_as_of": snapshot["as_of"],
+            return JSONResponse({"reply": str(reply), "snapshot_as_of": snapshot.get("snapshot_at") or snapshot["as_of"],
                                  "learning_effect": "audience_interest_evidence_only",
                                  "interaction": recorded}, headers={"Cache-Control": "no-store"})
 
@@ -1923,7 +1927,7 @@ class LiveAgentService:
                 yield sse(
                     "done",
                     {
-                        "snapshot_as_of": snapshot["as_of"],
+                        "snapshot_as_of": snapshot.get("snapshot_at") or snapshot["as_of"],
                         "learning_effect": "audience_interest_evidence_only",
                         "interaction": recorded,
                     },
