@@ -2067,6 +2067,7 @@ class ContentWakefulRuntime:
             owner_continuation_due
             and not current_is_owner_continuation
             and wake.task not in _OWNER_CONTINUATION_EXEMPT_TASKS
+            and not active_game_sprint_play
             and not optional_starved
         ):
             self._optional_internal_starved(wake, now, record=True)
