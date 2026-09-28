@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any, Mapping
 
+from .behavioral_state import build_behavioral_state
 from .memory_self import ProspectiveSelfMemoryService
 
 
@@ -372,6 +373,7 @@ def build_ferro_cognition_context(
         if isinstance(wake.get("neural_social"), Mapping)
         else {}
     )
+    behavioral_state = build_behavioral_state(wake)
     relationship_rows = [
         dict(row)
         for row in list(social_projection.get("recent_relationships") or ())
@@ -542,6 +544,7 @@ def build_ferro_cognition_context(
             "feedback": [] if owner_mode else list(wake.get("neural_feedback") or [])[-6:],
             "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
+        "behavioral_state": behavioral_state,
     }
 
 

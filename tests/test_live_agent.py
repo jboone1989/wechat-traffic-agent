@@ -364,6 +364,79 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     assert interaction_path.exists()
 
 
+def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp_path):
+    class _BehavioralWakeful:
+        def public_snapshot(self):
+            return {
+                "presence": "AWAKE",
+                "state": "WAITING",
+                "neural_life": {
+                    "affect": {
+                        "boredom": 0.94,
+                        "curiosity": 0.78,
+                        "confidence": 0.81,
+                        "social_need": 0.69,
+                    },
+                    "drives": {"evolution": 0.88, "survival": 0.42},
+                    "intention": {"name": "EVOLVE", "strength": 0.9},
+                },
+                "personality": {
+                    "traits": {
+                        "novelty_seeking": 0.84,
+                        "persistence": 0.76,
+                        "sociality": 0.67,
+                        "independence": 0.71,
+                        "playfulness": 0.64,
+                    },
+                    "prompt_defined": False,
+                },
+                "psychodynamics": {
+                    "id": {"dominant_impulse": "EVOLVE"},
+                    "superego": {"continuity_pressure": 0.52},
+                    "conflict": 0.22,
+                },
+            }
+
+        def observe_social_interaction(self, **kwargs):
+            return {
+                "familiarity": 0.82,
+                "approach_bias": 0.77,
+                "interactions": 11,
+            }
+
+        def emit_talk(self, **kwargs):
+            return None
+
+    root = _state(tmp_path)
+    public_backend = _StreamingBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=public_backend,
+        wakeful=_BehavioralWakeful(),
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={
+                "message": "Tell me what you think.",
+                "visitor_id": "v_1234567890abcdef12345678",
+            },
+        )
+
+    assert reply.status_code == 200
+    prompt, kwargs = public_backend.provider.calls[0]
+    assert '"behavioral_state"' in prompt
+    assert '"boredom": 0.94' in prompt
+    assert '"novelty_seeking": 0.84' in prompt
+    assert "Avoid formulaic repetition" in prompt
+    assert "avoid repetitive self-introduction" in prompt
+    assert "not decorative telemetry" in prompt
+    assert "Do not flatten yourself into a generic polite assistant" in kwargs["system"]
+
+
 def test_public_snapshot_degrades_optional_live_components_instead_of_failing(tmp_path):
     class _BrokenApplication(_Application):
         def status_observation(self):

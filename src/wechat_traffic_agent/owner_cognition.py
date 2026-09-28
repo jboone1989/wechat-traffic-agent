@@ -5,6 +5,8 @@ import json
 import re
 from typing import Any, Mapping, Sequence
 
+from .behavioral_state import build_behavioral_state
+
 DEFAULT_CONTEXT_CHARS = 10_000
 DEFAULT_MEMORY_CHARS = 5_000
 DEFAULT_ARCHIVE_CHARS = 2_500
@@ -291,6 +293,9 @@ def build_owner_private_context(
     wakeful_state = (
         ((snapshot.get("life") or {}).get("presence") or {}).get("wakeful") or {}
     )
+    behavioral_state = build_behavioral_state(
+        wakeful_state if isinstance(wakeful_state, Mapping) else {}
+    )
     self_memory = ProspectiveSelfMemoryService.snapshot_from_runtime(
         application, mind
     )
@@ -302,6 +307,7 @@ def build_owner_private_context(
         "neural_life": wakeful_state.get("neural_life"),
         "neural_personality": wakeful_state.get("personality"),
         "psychodynamics": wakeful_state.get("psychodynamics"),
+        "behavioral_state": behavioral_state,
         "brain_vs_cortex": wakeful_state.get("brain_vs_cortex"),
         "open_development_acceptance": wakeful_state.get(
             "open_development_acceptance"

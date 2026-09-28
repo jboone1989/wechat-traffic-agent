@@ -98,11 +98,27 @@ class _Wakeful:
             "pending_plan_count": 2,
             "recent_stimulus_kinds": ["MISSION_OUTCOME"],
             "neural_life": {
-                "affect": {"curiosity": 0.7, "frustration": 0.4},
+                "affect": {"curiosity": 0.7, "frustration": 0.4, "boredom": 0.8, "confidence": 0.76},
                 "body": {"disk_pressure": 0.5},
-                "drives": {"evolution": 0.6},
+                "drives": {"evolution": 0.8, "survival": 0.4},
                 "intention": {"name": "EVOLVE", "strength": 0.8},
                 "history": [{"must": "not leak bulk history"}],
+            },
+            "personality": {
+                "traits": {
+                    "novelty_seeking": 0.82,
+                    "persistence": 0.73,
+                    "sociality": 0.61,
+                    "caution": 0.45,
+                    "independence": 0.72,
+                    "playfulness": 0.66,
+                },
+                "prompt_defined": False,
+            },
+            "psychodynamics": {
+                "id": {"dominant_impulse": "EVOLVE"},
+                "superego": {"continuity_pressure": 0.55, "growth_commitment": 0.84},
+                "conflict": 0.25,
             },
             "neural_control_signals": [{"kind": "attention", "intent": "mission"}],
             "neural_feedback": [{"outcome_id": "out-1", "pathway": ["prediction", "result"]}],
@@ -173,6 +189,13 @@ def test_cognition_snapshot_unifies_current_harness_state():
     assert context["social_context"]["recent_relationships"][0]["actor"] == "x:user-42"
     assert context["neural_state"]["life"]["affect"]["curiosity"] == 0.7
     assert "history" not in context["neural_state"]["life"]
+    assert context["behavioral_state"]["personality_traits"]["novelty_seeking"] == 0.82
+    assert context["behavioral_state"]["dominant_drive"]["name"] == "evolution"
+    assert "not decorative telemetry" in context["behavioral_state"]["control_semantics"]
+    assert any(
+        "formulaic repetition" in row
+        for row in context["behavioral_state"]["behavioral_directives"]
+    )
     assert "irrelevant_bulk" not in context["mind"]["latest_plan"]
 
 
