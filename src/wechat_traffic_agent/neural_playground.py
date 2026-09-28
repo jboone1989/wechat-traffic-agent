@@ -351,7 +351,15 @@ class FerroBrainLab:
             )
             expected = prediction.get("expected_reward")
             world_score = 0.5 if expected is None else (max(-1.0, min(1.0, float(expected))) + 1.0) / 2.0
-            score = 0.25 * neural[index] + 0.50 * ((q + 1.0) / 2.0) + 0.25 * world_score
+            # Neural state regulates temperament/exploration globally. At the
+            # low-level motor layer it is only a bounded tie-breaker: min-max
+            # normalization can otherwise amplify tiny readout noise to a full
+            # 0..1 preference and overpower learned task competence.
+            score = (
+                0.05 * neural[index]
+                + 0.62 * ((q + 1.0) / 2.0)
+                + 0.33 * world_score
+            )
             scored.append((score, action, channel))
         temperament = self._temperament()
         explore_rate = max(0.04, min(0.24, 0.06 + 0.18 * float(temperament.get("exploration") or 0.0)))

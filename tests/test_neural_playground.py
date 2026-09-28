@@ -154,6 +154,24 @@ def test_td_policy_bootstraps_future_value_but_not_across_terminal_boundary(
     assert policy["states"]["terminal-start"]["RIGHT"] == 0.0
 
 
+def test_learned_motor_skill_beats_extreme_neural_tie_break_noise(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    lab._phase = lambda _key: 0.99
+    policy = lab._policy_row("PONG")
+    policy["states"]["s"] = {"UP": 0.25, "DOWN": 0.0}
+
+    action, channel = lab._choose(
+        name="PONG",
+        state_key="s",
+        delta={"prediction_due": -100.0, "error_recovery": 100.0},
+        options=(("UP", "prediction_due"), ("DOWN", "error_recovery")),
+        event_id="motor-arbitration:test",
+    )
+
+    assert action == "UP"
+    assert channel == "prediction_due"
+
+
 def test_world_model_uses_same_policy_state_key_as_action_selection(tmp_path: Path):
     lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
     row = lab.step("PONG", now=NOW)
