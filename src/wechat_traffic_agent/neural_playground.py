@@ -30,6 +30,9 @@ class FerroBrainLab:
     SCHEMA_VERSION = "ferro-brain-lab.v1"
     ENVIRONMENTS = ("PONG", "MAZE", "FORAGING", "ROVER")
     MAX_RECENT = 64
+    # One eligibility trace may receive at most three outcomes in the physical
+    # substrate, so one neural decision drives exactly three measured motor frames.
+    MOTOR_FRAMES_PER_NEURAL_FRAME = 3
 
     def __init__(self, state_root: Path, *, substrate: Any | None) -> None:
         self.state_root = Path(state_root)
@@ -37,6 +40,7 @@ class FerroBrainLab:
         self.path = self.state_root / "application" / "brain_lab.json"
         self.state = self._load()
         self.game_intelligence = GameIntelligence(self.state_root)
+        self._motor_frame_cache: dict[str, dict[str, Any]] = {}
 
     def _default_env(self, name: str) -> dict[str, Any]:
         if name == "PONG":
@@ -107,16 +111,35 @@ class FerroBrainLab:
         )
         return dict(burst or {})
 
-    def _reward(self, *, event_id: str, action_channel: str, reward: float, now: datetime) -> dict[str, Any]:
+    def _reward(
+        self,
+        *,
+        event_id: str,
+        action_channel: str,
+        reward: float,
+        now: datetime,
+        outcome_event_id: str | None = None,
+    ) -> dict[str, Any]:
         if self.substrate is None or not hasattr(self.substrate, "apply_feedback"):
             return {"status": "CONNECTOME_UNAVAILABLE", "changed_synapse_count": 0}
         feedback = SimpleNamespace(
-            outcome_id=f"{event_id}:reward",
+            outcome_id=f"{outcome_event_id or event_id}:reward",
             source_event_id=event_id,
             observed_at=now,
             pathway=(str(action_channel),),
         )
         return dict(self.substrate.apply_feedback(feedback, utility=_signed_unit(reward)))
+
+    @staticmethod
+    def _reused_motor_burst(cache: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "NEURAL_FRAME_REUSED",
+            "delta_readout_hz": dict(cache.get("delta_readout_hz") or {}),
+            "spikes": 0,
+            "active_neurons": 0,
+            "neural_frame_reused": True,
+            "neural_source_event_id": cache.get("source_event_id"),
+        }
 
     def _policy_bucket(self, name: str, env: Mapping[str, Any], currents: Mapping[str, float]) -> str:
         if name == "PONG":
@@ -336,7 +359,13 @@ class FerroBrainLab:
                 if key != state_key:
                     states.pop(key, None)
 
-    def _pong_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+    def _pong_step(
+        self,
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+        motor_override: tuple[str, str] | None = None,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         error = float(env["ball_y"]) - float(env["paddle_y"])
         approach = _clip((float(env["ball_x"]) - 0.45) / 0.55) if float(env["ball_vx"]) > 0 else 0.0
         currents = {
@@ -346,13 +375,19 @@ class FerroBrainLab:
             "opportunity": _clip(0.25 + approach * 0.75),
             "curiosity": 0.18,
         }
-        burst = self._stimulate(currents, now, event_id)
         options = (("UP", "prediction_due"), ("DOWN", "error_recovery"), ("STAY", "opportunity"))
         state_key = self._policy_bucket("PONG", env, currents)
-        action, action_channel = self._choose(
-            name="PONG", state_key=state_key,
-            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
-        )
+        if motor_override is None:
+            burst = self._stimulate(currents, now, event_id)
+            action, action_channel = self._choose(
+                name="PONG", state_key=state_key,
+                delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
+            )
+        else:
+            action, action_channel = motor_override
+            burst = self._reused_motor_burst(
+                self._motor_frame_cache.get("PONG") or {}
+            )
         env["paddle_y"] = _clip(float(env["paddle_y"]) + {"UP": 0.085, "DOWN": -0.085, "STAY": 0.0}[action])
         env["ball_x"] = float(env["ball_x"]) + float(env["ball_vx"])
         env["ball_y"] = float(env["ball_y"]) + float(env["ball_vy"])
@@ -388,7 +423,13 @@ class FerroBrainLab:
     def _maze_blocked(x: int, y: int) -> bool:
         return (x, y) in {(1, 1), (1, 2), (3, 1), (3, 2), (3, 3), (5, 3), (5, 4), (2, 5)}
 
-    def _maze_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+    def _maze_step(
+        self,
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+        motor_override: tuple[str, str] | None = None,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         dx, dy = int(env["goal_x"]) - int(env["x"]), int(env["goal_y"]) - int(env["y"])
         currents = {
             "opportunity": _clip(max(0, dx) / 6),
@@ -398,13 +439,19 @@ class FerroBrainLab:
             "curiosity": 0.30,
             "task_urgency": _clip((abs(dx) + abs(dy)) / 12),
         }
-        burst = self._stimulate(currents, now, event_id)
         options = (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery"))
         state_key = self._policy_bucket("MAZE", env, currents)
-        action, action_channel = self._choose(
-            name="MAZE", state_key=state_key,
-            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
-        )
+        if motor_override is None:
+            burst = self._stimulate(currents, now, event_id)
+            action, action_channel = self._choose(
+                name="MAZE", state_key=state_key,
+                delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
+            )
+        else:
+            action, action_channel = motor_override
+            burst = self._reused_motor_burst(
+                self._motor_frame_cache.get("MAZE") or {}
+            )
         sx, sy = {"RIGHT": (1, 0), "LEFT": (-1, 0), "UP": (0, 1), "DOWN": (0, -1)}[action]
         nx, ny = int(env["x"]) + sx, int(env["y"]) + sy
         old_distance = abs(dx) + abs(dy)
@@ -425,7 +472,13 @@ class FerroBrainLab:
         self._learn_policy(name="MAZE", state_key=state_key, action=action, reward=reward)
         return env, reward, burst, currents, action_channel
 
-    def _foraging_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+    def _foraging_step(
+        self,
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+        motor_override: tuple[str, str] | None = None,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         dx, dy = float(env["food_x"]) - float(env["x"]), float(env["food_y"]) - float(env["y"])
         distance = math.hypot(dx, dy)
         currents = {
@@ -436,13 +489,19 @@ class FerroBrainLab:
             "resource_pressure": _clip(1.0 - float(env["energy"])),
             "curiosity": _clip(distance),
         }
-        burst = self._stimulate(currents, now, event_id)
         options = (("RIGHT", "opportunity"), ("LEFT", "social_attention"), ("UP", "prediction_due"), ("DOWN", "error_recovery"))
         state_key = self._policy_bucket("FORAGING", env, currents)
-        action, action_channel = self._choose(
-            name="FORAGING", state_key=state_key,
-            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
-        )
+        if motor_override is None:
+            burst = self._stimulate(currents, now, event_id)
+            action, action_channel = self._choose(
+                name="FORAGING", state_key=state_key,
+                delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
+            )
+        else:
+            action, action_channel = motor_override
+            burst = self._reused_motor_burst(
+                self._motor_frame_cache.get("FORAGING") or {}
+            )
         sx, sy = {"RIGHT": (0.07, 0.0), "LEFT": (-0.07, 0.0), "UP": (0.0, 0.07), "DOWN": (0.0, -0.07)}[action]
         env["x"], env["y"] = _clip(float(env["x"]) + sx), _clip(float(env["y"]) + sy)
         env["energy"] = _clip(float(env["energy"]) - 0.018)
@@ -463,7 +522,13 @@ class FerroBrainLab:
         self._learn_policy(name="FORAGING", state_key=state_key, action=action, reward=reward)
         return env, reward, burst, currents, action_channel
 
-    def _rover_step(self, env: dict[str, Any], now: datetime, event_id: str) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+    def _rover_step(
+        self,
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+        motor_override: tuple[str, str] | None = None,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
         error = float(env["heading_error"])
         currents = {
             "prediction_due": _clip(max(0.0, error)),
@@ -472,13 +537,19 @@ class FerroBrainLab:
             "threat_risk": _clip(abs(error)),
             "curiosity": 0.22,
         }
-        burst = self._stimulate(currents, now, event_id)
         options = (("LEFT", "prediction_due"), ("RIGHT", "error_recovery"), ("FORWARD", "opportunity"))
         state_key = self._policy_bucket("ROVER", env, currents)
-        action, action_channel = self._choose(
-            name="ROVER", state_key=state_key,
-            delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
-        )
+        if motor_override is None:
+            burst = self._stimulate(currents, now, event_id)
+            action, action_channel = self._choose(
+                name="ROVER", state_key=state_key,
+                delta=burst.get("delta_readout_hz") or {}, options=options, event_id=event_id,
+            )
+        else:
+            action, action_channel = motor_override
+            burst = self._reused_motor_burst(
+                self._motor_frame_cache.get("ROVER") or {}
+            )
         if action == "LEFT":
             error -= 0.16
         elif action == "RIGHT":
@@ -624,16 +695,45 @@ class FerroBrainLab:
             )
         env = dict(self.state["environments"][name])
         before_env = dict(env)
+        motor_cache = (
+            dict(self._motor_frame_cache.get(name) or {})
+            if name in self.ENVIRONMENTS
+            else {}
+        )
+        macro_active = bool(
+            ((self.state.get("skill_execution") or {}).get(name) or {})
+        )
+        reuse_motor = (
+            bool(motor_cache)
+            and not macro_active
+            and int(env.get("step") or 0) % self.MOTOR_FRAMES_PER_NEURAL_FRAME != 0
+        )
+        motor_override = (
+            (
+                str(motor_cache.get("action") or ""),
+                str(motor_cache.get("action_channel") or ""),
+            )
+            if reuse_motor
+            else None
+        )
         env["step"] = int(env.get("step") or 0) + 1
         event_id = f"brain-lab:{name.lower()}:{int(env.get('episode') or 0)}:{int(env['step'])}"
         if name == "PONG":
-            env, reward, burst, currents, action_channel = self._pong_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._pong_step(
+                env, now, event_id, motor_override
+            )
         elif name == "MAZE":
-            env, reward, burst, currents, action_channel = self._maze_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._maze_step(
+                env, now, event_id, motor_override
+            )
         elif name == "FORAGING":
-            env, reward, burst, currents, action_channel = self._foraging_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._foraging_step(
+                env, now, event_id, motor_override
+            )
         elif name == "ROVER":
-            env, reward, burst, currents, action_channel = self._rover_step(env, now, event_id)
+            env, reward, burst, currents, action_channel = self._rover_step(
+                env, now, event_id, motor_override
+            )
         else:
             env, reward, burst, currents, action_channel = self._generated_step(
                 name=name,
@@ -642,7 +742,28 @@ class FerroBrainLab:
                 now=now,
                 event_id=event_id,
             )
-        feedback = self._reward(event_id=event_id, action_channel=action_channel, reward=reward, now=now)
+        neural_source_event_id = event_id
+        if name in self.ENVIRONMENTS:
+            if reuse_motor:
+                neural_source_event_id = str(
+                    motor_cache.get("source_event_id") or event_id
+                )
+            else:
+                self._motor_frame_cache[name] = {
+                    "action": str(env.get("last_action") or ""),
+                    "action_channel": str(action_channel),
+                    "source_event_id": event_id,
+                    "delta_readout_hz": dict(
+                        burst.get("delta_readout_hz") or {}
+                    ),
+                }
+        feedback = self._reward(
+            event_id=neural_source_event_id,
+            outcome_event_id=event_id,
+            action_channel=action_channel,
+            reward=reward,
+            now=now,
+        )
         macro_execution = self._settle_macro_step(
             name=name,
             reward=float(reward),
@@ -663,6 +784,8 @@ class FerroBrainLab:
             "active_neurons": int(burst.get("active_neurons") or 0),
             "changed_synapses": int(feedback.get("changed_synapse_count") or 0),
             "action_channel": action_channel,
+            "neural_frame_reused": bool(reuse_motor),
+            "neural_source_event_id": neural_source_event_id,
             "macro_execution": macro_execution,
         }
         row["state_key"] = self._experience_state_key(name, before_env)
@@ -902,6 +1025,8 @@ class FerroBrainLab:
             environment = self.ENVIRONMENTS[index]
         count = max(1, min(64, int(steps)))
         name = str(environment).upper()
+        if name in self.ENVIRONMENTS:
+            self._motor_frame_cache.pop(name, None)
         before_env = dict(self.state.get("environments", {}).get(name) or {})
         with self.game_intelligence.batch_updates():
             rows = [self.step(name, now=now) for _ in range(count)]
