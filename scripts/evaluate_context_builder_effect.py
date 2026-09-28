@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 from typing import Any
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -369,7 +371,11 @@ def _service_environment(service: str = "content-agent.service") -> dict[str, st
     return result
 
 
-def structural_only_report(cases: list[dict[str, Any]]) -> dict[str, Any]:
+def structural_only_report(
+    cases: list[dict[str, Any]],
+    *,
+    model_reason: str = "production service has no OPENAI_API_KEY",
+) -> dict[str, Any]:
     rows = []
     for case in cases:
         result = case["builder_result"]
@@ -425,7 +431,7 @@ def structural_only_report(cases: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "benchmark": "ferro-context-builder-effect-v1",
         "model_available": False,
-        "model_reason": "production service has no OPENAI_API_KEY",
+        "model_reason": model_reason,
         "cases": len(cases),
         "pairs": len(PAIRS),
         "structural": {
@@ -465,6 +471,59 @@ def structural_only_report(cases: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _openai_preflight(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str = "gpt-5.6-sol",
+) -> str | None:
+    """Return a bounded unavailability reason, or None when one tiny call works."""
+
+    body = {
+        "model": model,
+        "input": "Return only OK.",
+        "store": False,
+        "max_output_tokens": 16,
+        "reasoning": {"effort": "none"},
+        "text": {"verbosity": "low"},
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/responses",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20.0) as response:
+            response.read()
+        return None
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        error_type = ""
+        error_code = ""
+        try:
+            payload = json.loads(raw)
+            error = payload.get("error") if isinstance(payload, dict) else {}
+            if isinstance(error, dict):
+                error_type = str(error.get("type") or "")
+                error_code = str(error.get("code") or "")
+        except json.JSONDecodeError:
+            pass
+        details = [f"HTTP_{exc.code}"]
+        if error_type:
+            details.append(error_type)
+        if error_code:
+            details.append(error_code)
+        return ":".join(details)
+    except (OSError, ValueError) as exc:
+        return "PREFLIGHT_" + type(exc).__name__.upper()
+
+
+
 async def run() -> dict[str, Any]:
     cases = [make_case(spec, variant) for spec in PAIRS for variant in ("a", "b")]
     service_env = _service_environment()
@@ -474,15 +533,29 @@ async def run() -> dict[str, Any]:
         or ""
     ).strip()
     if not api_key:
-        return structural_only_report(cases)
+        return structural_only_report(
+            cases,
+            model_reason="OPENAI_API_KEY_MISSING",
+        )
+    base_url = str(
+        os.environ.get("OPENAI_BASE_URL")
+        or service_env.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).rstrip("/")
+    preflight_reason = await asyncio.to_thread(
+        _openai_preflight,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    if preflight_reason is not None:
+        return structural_only_report(
+            cases,
+            model_reason=preflight_reason,
+        )
     provider = OpenAIResponsesProvider(
         api_key=api_key,
         model="gpt-5.6-sol",
-        base_url=str(
-            os.environ.get("OPENAI_BASE_URL")
-            or service_env.get("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ).rstrip("/"),
+        base_url=base_url,
         timeout_seconds=45.0,
         reasoning_effort="low",
     )
