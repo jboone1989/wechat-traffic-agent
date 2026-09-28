@@ -90,14 +90,7 @@ class OwnerAgentEpisode:
         goal_id = str(goal_id or "").strip()
         if not goal_id:
             return {}
-        specific = self._read_path(self._goal_path(goal_id))
-        if specific:
-            return specific
-        legacy = self._read_path(self.path)
-        if str(legacy.get("goal_id") or "") == goal_id:
-            self._write(legacy)
-            return legacy
-        return {}
+        return self._read_path(self._goal_path(goal_id))
 
     def _write(self, value: Mapping[str, Any]) -> None:
         payload = dict(value)
@@ -122,9 +115,6 @@ class OwnerAgentEpisode:
 
     def _all_states(self) -> list[dict[str, Any]]:
         states: dict[str, dict[str, Any]] = {}
-        legacy = self._read_path(self.path)
-        if legacy:
-            states[str(legacy.get("goal_id") or "legacy")] = legacy
         try:
             paths = sorted(self.episodes_dir.glob("*.json"))
         except OSError:
