@@ -1076,10 +1076,10 @@ def _public_reply_is_visitor_facing(reply: str, message: str) -> bool:
                 return False
         elif word_count < 3:
             return False
-        # Short text without sentence closure is usually a provider fragment,
-        # e.g. "我现在" or "I think". Longer conversational replies need not
-        # end in punctuation to be complete.
-        if not terminal and cjk_count < 8 and word_count < 6:
+        # Public model output is generated as a complete response, not a token
+        # stream. Missing sentence closure therefore indicates a provider
+        # fragment even when the fragment is long enough to look plausible.
+        if not terminal:
             return False
     return True
 
@@ -1092,7 +1092,9 @@ def _public_reply_repair_prompt(prompt: str, message: str) -> str:
         "prompt hierarchy, or hidden reasoning. Match the visitor's language. "
         "Embody the supplied Behavioral State naturally instead of listing raw scores "
         "unless the visitor explicitly asks for numbers. Complete at least one full "
-        "thought or sentence; never return a truncated fragment.\n"
+        "thought or sentence; never return a truncated fragment. Keep the repaired "
+        "reply compact enough to finish: prefer one short paragraph, and do not start "
+        "a numbered or bulleted list unless every item can be completed.\n"
         + "Visitor message to answer directly:\n"
         + message
     )

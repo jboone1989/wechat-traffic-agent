@@ -449,6 +449,51 @@ def test_public_chat_retries_truncated_fragment_before_streaming(tmp_path):
     assert "never return a truncated fragment" in backend.provider.calls[1][0]
 
 
+def test_public_chat_retries_long_truncated_fragment_before_streaming(tmp_path):
+    class _LongFragmentProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            if len(self.calls) == 1:
+                return (
+                    "我现在最想聊持久会话恢复。原因有三点：第一，它决定代理能不能真正连续；"
+                    "第二，我更在意恢复后是不是还是同一个行为主体；第三，我想比较不同方案比如会话"
+                )
+            return (
+                "我现在更想聊持久会话恢复，但重点不是“能重启”这么无聊。"
+                "我更在意恢复后是不是还保留同一个行为连续性；否则只是进程复活，不是主体延续。"
+            )
+
+    class _LongFragmentBackend:
+        def __init__(self):
+            self.provider = _LongFragmentProvider()
+
+    root = _state(tmp_path)
+    backend = _LongFragmentBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={"message": "你现在最想聊什么？为什么？"},
+        )
+
+    assert reply.status_code == 200
+    body = reply.text
+    assert "不同方案比如会话" not in body
+    assert "能重启”这么无聊" in body
+    assert "event: done" in body
+    assert len(backend.provider.calls) == 2
+    assert "do not start a numbered or bulleted list" in backend.provider.calls[1][0]
+
+
 def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp_path):
     class _BehavioralWakeful:
         def public_snapshot(self):
