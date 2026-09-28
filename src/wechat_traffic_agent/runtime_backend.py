@@ -158,7 +158,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
 
     model = str(
         os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
-        or "gpt-5.6-luna"
+        or "gpt-5.6-sol"
     ).strip()
     base_url = str(
         os.environ.get("OPENAI_BASE_URL")
@@ -197,7 +197,7 @@ def load_owner_cognition_runtime(*, state_root: Path | None = None):
     model = str(
         os.environ.get("FERRO_OWNER_COGNITION_OPENAI_MODEL")
         or os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
-        or "gpt-5.6-luna"
+        or "gpt-5.6-sol"
     ).strip()
     base_url = str(
         os.environ.get("OPENAI_BASE_URL")

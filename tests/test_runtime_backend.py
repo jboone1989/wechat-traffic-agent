@@ -66,7 +66,7 @@ def test_public_chat_uses_dedicated_openai_realtime_backend(monkeypatch):
     backend = load_public_chat_backend()
 
     assert backend is not None
-    assert backend.provider.model == "gpt-5.6-luna"
+    assert backend.provider.model == "gpt-5.6-sol"
     assert backend.provider.base_url == "https://api.openai.com/v1"
     assert backend.provider.timeout_seconds == 18.0
     assert backend.provider.reasoning_effort == "none"

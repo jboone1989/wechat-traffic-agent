@@ -29,7 +29,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--service", default="content-agent.service")
     p.add_argument("--output", default="")
     p.add_argument("--limit", type=int, default=0)
-    p.add_argument("--model", default="")
+    p.add_argument("--model", default="gpt-5.6-sol")
     return p
 
 
@@ -70,8 +70,7 @@ async def _run(args: argparse.Namespace) -> dict:
         raise RuntimeError("production service has no OPENAI_API_KEY")
     model = str(
         args.model
-        or service_env.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
-        or "gpt-5.6-luna"
+        or "gpt-5.6-sol"
     ).strip()
     base_url = str(
         service_env.get("OPENAI_BASE_URL")

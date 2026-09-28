@@ -19,7 +19,7 @@ class OpenAIPublicChatError(RuntimeError):
 @dataclass
 class OpenAIResponsesProvider:
     api_key: str = field(repr=False)
-    model: str = "gpt-5.6-luna"
+    model: str = "gpt-5.6-sol"
     base_url: str = "https://api.openai.com/v1"
     timeout_seconds: float = 18.0
     reasoning_effort: str = "none"
