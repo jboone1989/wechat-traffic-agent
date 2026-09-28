@@ -173,37 +173,44 @@ def test_cognition_snapshot_unifies_current_harness_state():
     assert context["continuity"]["subject_tick"] == 2372
     assert context["continuity"]["mind_tick"] == 420
     assert context["mind"]["mind_tick"] == 420
-    assert context["recent_experience"][0]["event_id"] == "experience-1"
-    assert "web.search" in context["capabilities"]["available"]
-    assert "content_research" in context["capabilities"]["available"]
-    assert context["capabilities"]["evidence_bound_beliefs"] == [{
-        "capability": "web_search",
-        "confidence": 0.82,
-        "attempts": 7,
-        "successes": 6,
-        "failures": 1,
-        "last_verified": "2026-09-25T14:58:00+00:00",
-        "source": "direct_evidence",
-    }]
+
+    # V1 keeps the full source pool observable but does not dump every source
+    # into the LLM context when it does not answer an information need.
+    receipt = context["context_receipt"]
+    assert receipt["candidate_counts"]["recent_experience"] == 1
+    assert receipt["candidate_counts"]["capabilities"] == 8
+    assert receipt["candidate_counts"]["decision_candidates"] >= 1
+    assert context["recent_experience"] == []
+    assert context["decision_context"]["selected_count"] <= 24
+    assert set(context["capabilities"]["available"]).issubset({
+        "content.status",
+        "web.search",
+        "web.fetch",
+        "social.publish",
+        "advisory_reasoning",
+        "structured_reasoning",
+        "topic_discovery",
+        "content_research",
+    })
+
     assert context["social_context"]["relationship_count"] == 1
-    assert context["social_context"]["recent_relationships"][0]["actor"] == "x:user-42"
-    assert context["neural_state"]["life"]["affect"]["curiosity"] == 0.7
-    assert "history" not in context["neural_state"]["life"]
-    assert context["behavioral_state"]["personality_traits"]["novelty_seeking"] == 0.82
-    assert context["behavioral_state"]["dominant_drive"]["name"] == "evolution"
+    assert "history" not in str(context["neural_state"]["life"])
     assert context["decision_frame"]["decision_type"] == "GENERAL_COGNITION"
-    assert context["context_receipt"]["downstream_budget_chars"] == 60_000
-    assert "recent_experience" in context["context_receipt"]["candidate_counts"]
+    assert receipt["downstream_budget_chars"] == 60_000
+    assert (
+        receipt["selection_policy"]
+        == "information_need_global_retrieval_then_dependency_and_counterevidence; "
+        "surface_disclosure_and_runtime_projector_are_final_bounds"
+    )
+    assert "internal_pressure" in {
+        item["need_id"]
+        for item in context["decision_context"]["information_needs"]
+    }
     assert (
         context["epistemic_contract"]["model_inference"]
         == "unverified_until_observed"
     )
-    assert "not decorative telemetry" in context["behavioral_state"]["control_semantics"]
-    assert any(
-        "formulaic repetition" in row
-        for row in context["behavioral_state"]["behavioral_directives"]
-    )
-    assert "irrelevant_bulk" not in context["mind"]["latest_plan"]
+    assert "irrelevant_bulk" not in str(context["mind"])
 
 
 def test_owner_episode_context_filters_noise_and_demotes_neural_control():
