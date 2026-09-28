@@ -8,6 +8,7 @@ private owner state).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from typing import Any, Mapping, Sequence
@@ -119,10 +120,14 @@ def extract_open_loops(
         goal_id = str(mission.get("goal_id") or "")
         if goal_id:
             mission_goal_ids.add(goal_id)
+        mission_id = str(mission.get("mission_id") or goal_id or "").strip()
+        description = _clip(mission.get("description"), 260)
+        if not mission_id and not description:
+            continue
         rows.append({
             "kind": "MISSION",
-            "id": str(mission.get("mission_id") or goal_id or ""),
-            "description": _clip(mission.get("description"), 260),
+            "id": mission_id,
+            "description": description,
             "status": status or "ACTIVE",
             "unfinished_steps": unfinished,
         })
@@ -134,10 +139,13 @@ def extract_open_loops(
         status = str(goal.get("status") or "").upper()
         if status in {"COMPLETED", "SUCCEEDED", "FAILED", "CANCELLED", "CLOSED"}:
             continue
+        description = _clip(goal.get("description"), 260)
+        if not goal_id and not description:
+            continue
         rows.append({
             "kind": "GOAL",
             "id": goal_id,
-            "description": _clip(goal.get("description"), 260),
+            "description": description,
             "status": status or "ACTIVE",
         })
 
@@ -145,12 +153,16 @@ def extract_open_loops(
         status = str(inquiry.get("status") or "OPEN").upper()
         if status in {"CLOSED", "RESOLVED", "ANSWERED", "CANCELLED"}:
             continue
+        inquiry_id = str(inquiry.get("inquiry_id") or "").strip()
+        description = _clip(
+            inquiry.get("question") or inquiry.get("description"), 260
+        )
+        if not inquiry_id and not description:
+            continue
         rows.append({
             "kind": "INQUIRY",
-            "id": str(inquiry.get("inquiry_id") or ""),
-            "description": _clip(
-                inquiry.get("question") or inquiry.get("description"), 260
-            ),
+            "id": inquiry_id,
+            "description": description,
             "status": status,
         })
 
@@ -192,18 +204,41 @@ def build_context_receipt(
     downstream_budget_chars: int | None = None,
 ) -> dict[str, Any]:
     sizes = {str(key): _json_chars(value) for key, value in sections.items()}
+    counts = {
+        str(key): max(0, int(value))
+        for key, value in (candidate_counts or {}).items()
+    }
+    selected_chars = sum(sizes.values())
+    budget = None if downstream_budget_chars is None else int(downstream_budget_chars)
+    identity_payload = {
+        "decision_frame": dict(decision_frame),
+        "selected_sections": list(sections.keys()),
+        "section_chars": sizes,
+        "candidate_counts": counts,
+        "downstream_budget_chars": budget,
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            identity_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     return {
-        "schema_version": "ferro-context-receipt.v1",
+        "schema_version": "ferro-context-receipt.v2",
+        "receipt_id": "context-receipt:sha256:" + digest,
         "decision_type": str(decision_frame.get("decision_type") or ""),
         "selected_sections": list(sections.keys()),
         "section_chars": sizes,
-        "selected_chars_estimate": sum(sizes.values()),
-        "candidate_counts": {
-            str(key): max(0, int(value))
-            for key, value in (candidate_counts or {}).items()
-        },
-        "downstream_budget_chars": (
-            None if downstream_budget_chars is None else int(downstream_budget_chars)
+        "selected_chars_estimate": selected_chars,
+        "candidate_counts": counts,
+        "downstream_budget_chars": budget,
+        "budget_utilization_estimate": (
+            None
+            if budget is None or budget <= 0
+            else round(selected_chars / budget, 6)
         ),
         "selection_policy": (
             "decision_relevance_then_freshness_and_evidence; "

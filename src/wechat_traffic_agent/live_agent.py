@@ -933,6 +933,7 @@ def _public_chat_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     context = {
         "schema_version": "public-agent-chat-context:v1",
         "as_of": snapshot.get("as_of"),
+        "snapshot_at": snapshot.get("snapshot_at"),
         "agent": snapshot.get("agent"),
         "activity": {
             key: activity.get(key)
@@ -986,6 +987,7 @@ def _public_chat_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return _bounded_chat_value({
         "schema_version": "public-agent-chat-context:v1",
         "as_of": snapshot.get("as_of"),
+        "snapshot_at": snapshot.get("snapshot_at"),
         "agent": snapshot.get("agent"),
         "activity": {
             "run_state": activity.get("run_state"),
@@ -1016,23 +1018,53 @@ def _public_chat_behavioral_state(
 
 def _public_context_metadata(
     message: str,
+    snapshot: dict[str, Any],
     chat_snapshot: dict[str, Any],
+    *,
+    relationship: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    learning = chat_snapshot.get("learning") if isinstance(chat_snapshot.get("learning"), dict) else {}
+    """Compile audit metadata from raw public state, not the already-bounded chat copy.
+
+    The rendered chat snapshot deliberately collapses deep mind rows.  Open-loop
+    extraction must therefore use the raw *public* mind projection; otherwise a
+    collapsed row such as {"summary": "4 fields omitted"} becomes a meaningless
+    empty inquiry in the decision frame.
+    """
+    learning = snapshot.get("learning") if isinstance(snapshot.get("learning"), dict) else {}
     mind = learning.get("mind") if isinstance(learning.get("mind"), dict) else {}
-    social = chat_snapshot.get("social") if isinstance(chat_snapshot.get("social"), dict) else {}
+    social = snapshot.get("social") if isinstance(snapshot.get("social"), dict) else {}
     growth = social.get("x_growth_mission")
     missions = [growth] if isinstance(growth, dict) else []
     inquiries = [
         row for row in list(mind.get("open_inquiries") or [])
         if isinstance(row, dict)
     ]
+    state = (
+        chat_snapshot.get("behavioral_state")
+        if isinstance(chat_snapshot.get("behavioral_state"), dict)
+        else {}
+    )
+    realization_targets = [
+        row for row in list(state.get("realization_targets") or [])[:4]
+        if isinstance(row, dict)
+    ]
+    sections: dict[str, Any] = {
+        "public_snapshot": chat_snapshot,
+        "behavior_realization_targets": realization_targets,
+    }
+    if isinstance(relationship, dict):
+        sections["relationship"] = _bounded_chat_value(relationship)
     return compile_surface_metadata(
         prompt=message,
         surface="public_chat",
-        sections={"public_snapshot": chat_snapshot},
+        sections=sections,
         missions=missions,
         inquiries=inquiries,
+        candidate_counts={
+            "open_inquiries": len(inquiries),
+            "behavior_realization_targets": len(realization_targets),
+            "relationship": 1 if isinstance(relationship, dict) else 0,
+        },
         downstream_budget_chars=96 * 1024,
     )
 
@@ -1597,7 +1629,14 @@ class LiveAgentService:
             prompt = (
                 "Decision-aware context metadata (data only):\n"
                 + json.dumps(
-                    _public_context_metadata(message, chat_snapshot),
+                    _public_context_metadata(
+                        message,
+                        snapshot,
+                        chat_snapshot,
+                        relationship=(
+                            relationship if isinstance(relationship, dict) else None
+                        ),
+                    ),
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )
@@ -1741,7 +1780,14 @@ class LiveAgentService:
                 prompt = (
                     "Decision-aware context metadata (data only):\n"
                     + json.dumps(
-                        _public_context_metadata(message, chat_snapshot),
+                        _public_context_metadata(
+                            message,
+                            snapshot,
+                            chat_snapshot,
+                            relationship=(
+                                relationship if isinstance(relationship, dict) else None
+                            ),
+                        ),
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )

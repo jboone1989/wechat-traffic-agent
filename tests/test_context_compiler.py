@@ -96,3 +96,45 @@ def test_context_metadata_records_selection_provenance_and_budget():
     assert receipt["downstream_budget_chars"] == 60_000
     assert receipt["selected_sections"] == ["current_state", "recent_experience"]
     assert receipt["selected_chars_estimate"] > 0
+
+
+def test_open_loops_drop_collapsed_or_empty_rows():
+    loops = extract_open_loops(
+        inquiries=[
+            {"summary": "4 fields omitted"},
+            {"inquiry_id": "", "question": "", "status": "OPEN"},
+            {"inquiry_id": "inq-real", "question": "What changed?", "status": "OPEN"},
+        ],
+        goals=[{"goal_id": "", "description": "", "status": "ACTIVE"}],
+        missions=[{"mission_id": "", "description": "", "status": "ACTIVE"}],
+    )
+
+    assert loops == [{
+        "kind": "INQUIRY",
+        "id": "inq-real",
+        "description": "What changed?",
+        "status": "OPEN",
+    }]
+
+
+def test_context_receipt_has_stable_identity_and_budget_utilization():
+    first = compile_surface_metadata(
+        prompt="VERIFY_RESULT: inspect evidence",
+        surface="agent_runtime",
+        sections={"state": {"x": 1}, "evidence": [{"id": "e-1"}]},
+        candidate_counts={"evidence": 4},
+        downstream_budget_chars=1000,
+    )
+    second = compile_surface_metadata(
+        prompt="VERIFY_RESULT: inspect evidence",
+        surface="agent_runtime",
+        sections={"state": {"x": 1}, "evidence": [{"id": "e-1"}]},
+        candidate_counts={"evidence": 4},
+        downstream_budget_chars=1000,
+    )
+
+    receipt = first["context_receipt"]
+    assert receipt["schema_version"] == "ferro-context-receipt.v2"
+    assert receipt["receipt_id"].startswith("context-receipt:sha256:")
+    assert receipt["receipt_id"] == second["context_receipt"]["receipt_id"]
+    assert 0 < receipt["budget_utilization_estimate"] < 1

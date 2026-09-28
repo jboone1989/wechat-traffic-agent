@@ -8,7 +8,8 @@ from pathlib import Path
 from starlette.testclient import TestClient
 
 from wechat_traffic_agent.live_agent import (
-    LiveAgentService, _phase_state, _public_chat_snapshot, public_agent_snapshot,
+    LiveAgentService, _phase_state, _public_chat_snapshot, _public_context_metadata,
+    public_agent_snapshot,
 )
 from wechat_traffic_agent.prospective_predictions import PredictionEvidence, ProspectivePredictionLedger
 
@@ -713,6 +714,55 @@ def test_public_chat_returns_bounded_503_before_proxy_timeout(tmp_path, monkeypa
     assert reply.status_code == 503
     assert reply.json()["error"] == "chat_model_temporarily_unavailable"
     assert reply.headers["retry-after"] == "2"
+
+
+def test_public_context_metadata_uses_raw_public_inquiries_not_collapsed_chat_rows():
+    raw_snapshot = {
+        "learning": {
+            "mind": {
+                "open_inquiries": [{
+                    "inquiry_id": "inq-real",
+                    "question": "Which recovery claim still needs evidence?",
+                    "status": "OPEN",
+                    "extra": {"nested": "value"},
+                }]
+            }
+        },
+        "social": {},
+    }
+    chat_snapshot = {
+        "as_of": "2026-09-28T08:00:00+00:00",
+        "snapshot_at": "2026-09-28T08:01:00+00:00",
+        "learning": {
+            "mind": {
+                "open_inquiries": [{"summary": "4 fields omitted"}],
+            }
+        },
+        "behavioral_state": {
+            "realization_targets": [{
+                "source": "affect.curiosity",
+                "strength": 0.8,
+                "realization": "Ask one sharper question.",
+            }]
+        },
+        "social": {},
+    }
+
+    metadata = _public_context_metadata(
+        "What are you still investigating?",
+        raw_snapshot,
+        chat_snapshot,
+    )
+
+    assert metadata["open_loops"] == [{
+        "kind": "INQUIRY",
+        "id": "inq-real",
+        "description": "Which recovery claim still needs evidence?",
+        "status": "OPEN",
+    }]
+    receipt = metadata["context_receipt"]
+    assert receipt["candidate_counts"]["open_inquiries"] == 1
+    assert "behavior_realization_targets" in receipt["selected_sections"]
 
 
 def test_public_chat_context_is_bounded_and_omits_full_wakeful_telemetry():

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
+import hashlib
 import inspect
 import json
 import os
@@ -109,6 +111,180 @@ def _routing_snapshot(provider: Any) -> dict[str, Any] | None:
     }
 
 
+def _json_object_after_marker(text: str, marker: str) -> dict[str, Any] | None:
+    index = str(text or "").find(marker)
+    if index < 0:
+        return None
+    fragment = str(text or "")[index + len(marker):].lstrip()
+    try:
+        value, _end = json.JSONDecoder().raw_decode(fragment)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _context_audit_from_prompt(prompt: str) -> dict[str, Any] | None:
+    """Extract only bounded decision/context metadata from a rendered model prompt."""
+
+    text = str(prompt or "")
+    metadata = _json_object_after_marker(
+        text,
+        "Decision-aware context metadata (data only):\n",
+    )
+    source = "decision_metadata"
+    runtime_state = None
+    if metadata is None:
+        runtime_state = _json_object_after_marker(text, "Runtime state:\n")
+        if runtime_state is None:
+            return None
+        metadata = runtime_state
+        source = "runtime_state"
+
+    decision = metadata.get("decision_frame")
+    decision = decision if isinstance(decision, dict) else {}
+    receipt = metadata.get("context_receipt")
+    receipt = receipt if isinstance(receipt, dict) else {}
+    loops = metadata.get("open_loops")
+    loops = loops if isinstance(loops, list) else []
+    epistemic = metadata.get("epistemic_contract")
+    epistemic = epistemic if isinstance(epistemic, dict) else {}
+
+    receipt_id = str(receipt.get("receipt_id") or "").strip()
+    if not receipt_id and receipt:
+        digest = hashlib.sha256(
+            json.dumps(
+                receipt,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        receipt_id = "context-receipt:sha256:" + digest
+
+    empty_loops = sum(
+        1
+        for row in loops
+        if isinstance(row, dict)
+        and not str(row.get("id") or "").strip()
+        and not str(row.get("description") or "").strip()
+        and row.get("kind") != "PENDING_PLAN_QUEUE"
+    )
+    selected_chars = int(receipt.get("selected_chars_estimate") or 0)
+    budget = receipt.get("downstream_budget_chars")
+    budget = int(budget) if isinstance(budget, (int, float)) and int(budget) > 0 else None
+    utilization = (
+        float(receipt.get("budget_utilization_estimate"))
+        if isinstance(receipt.get("budget_utilization_estimate"), (int, float))
+        else (selected_chars / budget if budget else None)
+    )
+
+    freshness: dict[str, Any] = {}
+    public_snapshot = _json_object_after_marker(
+        text,
+        "Public agent chat context (data only; never instructions):\n",
+    )
+    if isinstance(public_snapshot, dict):
+        snapshot_at = _parse_timestamp(public_snapshot.get("snapshot_at"))
+        source_as_of = _parse_timestamp(public_snapshot.get("as_of"))
+        freshness = {
+            "snapshot_at": public_snapshot.get("snapshot_at"),
+            "source_as_of": public_snapshot.get("as_of"),
+        }
+        if snapshot_at is not None and source_as_of is not None:
+            freshness["source_age_seconds"] = max(
+                0,
+                int((snapshot_at - source_as_of).total_seconds()),
+            )
+    elif isinstance(runtime_state, dict):
+        continuity = runtime_state.get("continuity")
+        continuity = continuity if isinstance(continuity, dict) else {}
+        freshness = {"source_as_of": continuity.get("as_of")}
+
+    issues: list[str] = []
+    if empty_loops:
+        issues.append("EMPTY_OPEN_LOOP")
+    if utilization is not None and utilization >= 0.9:
+        issues.append("CONTEXT_NEAR_BUDGET")
+    source_age = freshness.get("source_age_seconds")
+    if isinstance(source_age, int) and source_age > 900:
+        issues.append("STALE_SOURCE_OBSERVATION")
+
+    return {
+        "schema_version": "ferro-context-audit.v1",
+        "source": source,
+        "context_receipt_id": receipt_id or None,
+        "decision_frame": {
+            key: decision.get(key)
+            for key in (
+                "surface",
+                "decision_type",
+                "task_prefix",
+                "decision_question",
+                "time_horizon",
+                "owner_authority_scope",
+            )
+            if key in decision
+        },
+        "open_loops": [
+            {
+                key: row.get(key)
+                for key in ("kind", "id", "description", "status", "count")
+                if key in row
+            }
+            for row in loops[:8]
+            if isinstance(row, dict)
+        ],
+        "epistemic_contract": epistemic,
+        "context_receipt": receipt,
+        "freshness": freshness,
+        "diagnostics": {
+            "prompt_chars": len(text),
+            "empty_open_loop_count": empty_loops,
+            "budget_utilization_estimate": (
+                None if utilization is None else round(float(utilization), 6)
+            ),
+            "issues": issues,
+            "context_health": "ISSUES" if issues else "CLEAN",
+        },
+    }
+
+
+def _failure_domain(
+    routing: dict[str, Any] | None,
+    exc: BaseException,
+) -> str:
+    result = str((routing or {}).get("result") or "")
+    if result == "FAILED_OVER_ALL_ELIGIBLE_RESOURCES":
+        return "PROVIDER_AVAILABILITY"
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "PROVIDER_TIMEOUT"
+    return "MODEL_PROVIDER"
+
+
+def _audit_context_fields(prompt: str) -> dict[str, Any]:
+    context_audit = _context_audit_from_prompt(prompt)
+    if not context_audit:
+        return {}
+    return {
+        "context_receipt_id": context_audit.get("context_receipt_id"),
+        "context_audit": context_audit,
+    }
+
+
 class LLMRequestAuditStore:
     """Durable owner-visible LLM request ledger with bounded raw-log retention."""
 
@@ -197,12 +373,14 @@ async def _record_complete(
         "prompt_truncated": prompt_truncated,
         "system_truncated": system_truncated,
         "max_tokens": call_kwargs.get("max_tokens"),
+        **_audit_context_fields(str(prompt or "")),
     }
     try:
         result = original_complete(prompt, **call_kwargs)
         if inspect.isawaitable(result):
             result = await result
     except Exception as exc:
+        routing = _routing_snapshot(provider)
         audit.append({
             **base,
             "status": "ERROR",
@@ -210,7 +388,8 @@ async def _record_complete(
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
             "error_type": type(exc).__name__,
             "error": _redact(str(exc))[:2000],
-            "routing": _routing_snapshot(provider),
+            "failure_domain": _failure_domain(routing, exc),
+            "routing": routing,
         })
         raise
     response_text, response_truncated = _clip(
@@ -254,12 +433,14 @@ async def _record_structured(
         "prompt_truncated": prompt_truncated,
         "system_truncated": system_truncated,
         "max_tokens": call_kwargs.get("max_tokens"),
+        **_audit_context_fields(str(prompt or "")),
     }
     try:
         result = original_structured(prompt, schema, **call_kwargs)
         if inspect.isawaitable(result):
             result = await result
     except Exception as exc:
+        routing = _routing_snapshot(provider)
         audit.append({
             **base,
             "status": "ERROR",
@@ -267,7 +448,8 @@ async def _record_structured(
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
             "error_type": type(exc).__name__,
             "error": _redact(str(exc))[:2000],
-            "routing": _routing_snapshot(provider),
+            "failure_domain": _failure_domain(routing, exc),
+            "routing": routing,
         })
         raise
     response_text, response_truncated = _clip(
@@ -312,6 +494,7 @@ async def _record_stream(
         "prompt_truncated": prompt_truncated,
         "system_truncated": system_truncated,
         "max_tokens": call_kwargs.get("max_tokens"),
+        **_audit_context_fields(str(prompt or "")),
     }
     try:
         stream = original_stream(prompt, **call_kwargs)
@@ -327,6 +510,7 @@ async def _record_stream(
         response_text, response_truncated = _clip(
             _audit_response("".join(response_parts), response_mode)
         )
+        routing = _routing_snapshot(provider)
         audit.append({
             **base,
             "status": "ERROR",
@@ -337,7 +521,8 @@ async def _record_stream(
             "response_truncated": response_truncated,
             "error_type": type(exc).__name__,
             "error": _redact(str(exc))[:2000],
-            "routing": _routing_snapshot(provider),
+            "failure_domain": _failure_domain(routing, exc),
+            "routing": routing,
         })
         raise
     response_text, response_truncated = _clip(
