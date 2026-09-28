@@ -1082,6 +1082,51 @@ class OwnerSeedExplorer(CryptoMissionExplorer):
         raise AssertionError("owner SEARCH_WORLD seed should precede a fresh generic collector scan")
 
 
+class OwnerFocusWorldFeed:
+    async def collect(self, **kwargs):
+        raise AssertionError(
+            "explicit owner focus must not run generic world-model exploration"
+        )
+
+
+def test_explicit_user_owner_focus_skips_generic_world_model(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    runtime, explorer = CryptoMissionRuntime(), CryptoMissionExplorer()
+    worker = ContinuousContentLoop(
+        runtime=runtime,
+        state_root=legacy.state,
+        artifacts_path=legacy.artifacts_path,
+        site_root=legacy.site_root,
+        base_url=legacy.base_url,
+        curriculum_path=legacy.curriculum_path,
+        feeds=legacy.feeds,
+        interval_hours=legacy.interval_hours,
+        fetcher=legacy.fetcher,
+        publisher=publisher,
+        explorer=explorer,
+        world_feed=OwnerFocusWorldFeed(),
+    )
+
+    result = asyncio.run(worker.run_once(
+        now=NOW,
+        cycle_id="v2-owner-focus-1789491604",
+        focus_topic="crypto-market",
+        owner_goal={
+            "goal_id": "goal-owner-user",
+            "origin": "USER",
+            "description": "Execute the explicit owner topic now.",
+            "priority": 0.9,
+        },
+    ))
+
+    assert result["status"] == "PUBLISHED"
+    assert result["mind_plan"]["required_topic"] == "crypto-market"
+    assert result["mind_plan"]["goal"]["origin"] == "USER"
+    cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
+    assert not (cycle / "world_model_calls").exists()
+    assert not (cycle / "world_feed.json").exists()
+
+
 def test_owner_search_seed_becomes_first_evidence_pool_and_persists_for_resume(tmp_path):
     _runtime, legacy, publisher = setup(tmp_path)
     runtime = CryptoMissionRuntime()

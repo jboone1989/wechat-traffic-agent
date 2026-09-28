@@ -948,6 +948,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             and owner_goal.get('origin') == 'EXTERNAL_MISSION'
             and mission_context is not None
         )
+        owner_focus_fast_path = bool(
+            owner_goal is not None
+            and str(getattr(self, '_focus_topic', None) or '').strip()
+        )
         owner_seed_path = folder / 'owner_seed_evidence.json'
         if owner_seed_path.exists():
             owner_seed_payload = json.loads(
@@ -985,7 +989,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
 
         world_payload = None
         prefetched_evidence_pool = None
-        if self.world_feed is not None and not owner_mission_fast_path:
+        if (
+            self.world_feed is not None
+            and not owner_mission_fast_path
+            and not owner_focus_fast_path
+        ):
             world_path = folder / 'world_feed.json'
             if world_path.exists():
                 world_payload = json.loads(world_path.read_text())
