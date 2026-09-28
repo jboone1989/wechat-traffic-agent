@@ -452,3 +452,147 @@ def test_freshness_breaks_same_subject_tie_without_requiring_stale_flag() -> Non
     )
 
     assert result["selected_ids"] == ["experience:fresh"]
+
+
+
+def test_memory_router_recalls_old_critical_fact_across_50_newer_distractors(
+    tmp_path,
+) -> None:
+    store = CanonicalMemoryStore(tmp_path)
+    store.append_memory({
+        "memory_id": "m:zircon-critical",
+        "memory_type": "EPISODIC",
+        "kind": "EPISODE",
+        "text": (
+            "zircon-durable-route failed until recovery omega was used; "
+            "for zircon-durable-route the proven next step is recovery omega."
+        ),
+        "created_at": "2026-01-02T00:00:00Z",
+        "status": "ACTIVE",
+        "importance": 0.98,
+        "confidence": 1.0,
+        "source_type": "RUNTIME_EXPERIENCE",
+        "source_ref": "outcome:zircon-critical",
+        "topics": ["zircon-durable-route", "recovery"],
+        "payload": {
+            "goal": "restore zircon-durable-route",
+            "outcome": "recovered",
+            "lesson": "use recovery omega for zircon-durable-route",
+        },
+    })
+    for index in range(50):
+        store.append_memory({
+            "memory_id": f"m:recent-noise-{index:02d}",
+            "memory_type": "EPISODIC",
+            "kind": "EPISODE",
+            "text": (
+                "A newer unrelated durable route recovery planning episode "
+                f"{index} discussed generic retry and verification."
+            ),
+            "created_at": f"2026-09-{1 + index // 2:02d}T{index % 24:02d}:00:00Z",
+            "status": "ACTIVE",
+            "importance": 0.9,
+            "confidence": 1.0,
+            "source_type": "RUNTIME_EXPERIENCE",
+            "source_ref": f"outcome:noise-{index}",
+            "topics": ["generic-recovery"],
+            "payload": {
+                "goal": "unrelated maintenance",
+                "lesson": "generic retry verification",
+            },
+        })
+
+    result = build_decision_context(
+        prompt=(
+            "PLAN: zircon-durable-route failed again; choose the proven "
+            "recovery for zircon-durable-route"
+        ),
+        decision_frame=_frame("PLANNING"),
+        owner_scope=None,
+        missions=[],
+        local_candidates=[],
+        state_root=tmp_path,
+        now=NOW,
+        max_facts=8,
+    )
+
+    assert result["memory_router"]["recalled_rows_across_needs"] > 0
+    assert "memory:m:zircon-critical" in result["selected_ids"]
+    critical = next(
+        fact
+        for fact in result["selected_facts"]
+        if fact["context_id"] == "memory:m:zircon-critical"
+    )
+    assert any(
+        reason.startswith("memory_router_rank:")
+        for reason in critical["selection"]["reasons"]
+    )
+
+
+def test_memory_router_current_state_excludes_50_superseded_same_target_memories(
+    tmp_path,
+) -> None:
+    store = CanonicalMemoryStore(tmp_path)
+    for index in range(50):
+        store.append_memory({
+            "memory_id": f"m:provider-old-{index:02d}",
+            "memory_type": "EPISODIC",
+            "kind": "EPISODE",
+            "text": (
+                "provider-temporal-x historical verification said the provider "
+                f"was unavailable in old episode {index}."
+            ),
+            "created_at": f"2026-08-{1 + index // 2:02d}T{index % 24:02d}:00:00Z",
+            "status": "SUPERSEDED",
+            "importance": 0.99,
+            "confidence": 1.0,
+            "source_type": "RUNTIME_EXPERIENCE",
+            "source_ref": f"provider-old:{index}",
+            "topics": ["provider-temporal-x"],
+            "payload": {
+                "target": "provider-temporal-x",
+                "state": "unavailable",
+            },
+        })
+    store.append_memory({
+        "memory_id": "m:provider-current",
+        "memory_type": "EPISODIC",
+        "kind": "EPISODE",
+        "text": (
+            "provider-temporal-x latest current verification succeeded; "
+            "the provider is available now."
+        ),
+        "created_at": "2026-09-28T11:55:00Z",
+        "observed_at": "2026-09-28T11:55:00Z",
+        "status": "ACTIVE",
+        "importance": 0.95,
+        "confidence": 1.0,
+        "source_type": "RUNTIME_EXPERIENCE",
+        "source_ref": "provider-current",
+        "topics": ["provider-temporal-x"],
+        "payload": {
+            "target": "provider-temporal-x",
+            "state": "available",
+            "supersedes": "all prior provider-temporal-x verification",
+        },
+    })
+
+    result = build_decision_context(
+        prompt=(
+            "SELECT: provider-temporal-x current status now; decide whether "
+            "the provider is available for use"
+        ),
+        decision_frame=_frame("SELECTION"),
+        owner_scope=None,
+        missions=[],
+        local_candidates=[],
+        state_root=tmp_path,
+        now=NOW,
+        max_facts=8,
+    )
+
+    assert "memory:m:provider-current" in result["selected_ids"]
+    assert not any(
+        context_id.startswith("memory:m:provider-old-")
+        for context_id in result["selected_ids"]
+    )
