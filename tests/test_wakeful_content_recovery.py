@@ -910,7 +910,7 @@ def test_social_backlog_recovers_x_admitted_held_mission_cycle(tmp_path):
     assert runner._social_stage_backlog_candidate() is None
 
 
-def test_x_credit_blocker_suppresses_repeated_mission_backlog_replay(tmp_path):
+def test_x_api_credit_blocker_does_not_suppress_browser_capable_backlog(tmp_path):
     state_root = tmp_path / "state"
     cycle = "v2-held-x-credit-blocked"
     folder = state_root / "content" / "continuous" / "cycles" / cycle
@@ -949,7 +949,10 @@ def test_x_credit_blocker_suppresses_repeated_mission_backlog_replay(tmp_path):
         growth_mission = Growth()
 
     runner = WakefulContentTaskRunner(state_root=state_root, x_loop=XLoop())
-    assert runner._social_stage_backlog_candidate() is None
+    candidate = runner._social_stage_backlog_candidate()
+    assert candidate is not None
+    assert candidate["cycle"] == cycle
+    assert candidate["reason"] == "MISSING_X_MISSION_EXPRESSION"
 
 
 def test_x_mission_backlog_preempts_newer_generic_social_gap(tmp_path):

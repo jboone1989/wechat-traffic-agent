@@ -73,6 +73,14 @@ def _active_execution_blocker(
     row = _read_json(Path(state_root) / "content" / "x" / "publication_blocker.json")
     if str(row.get("status") or "") != "ACTIVE":
         return None
+    # A depleted API provider no longer blocks X publication because Ferro has
+    # authenticated browser transports. Only a publication-wide capability
+    # failure should be exposed as an execution blocker.
+    if (
+        str(row.get("blocker") or "") == "X_CREDITS_DEPLETED"
+        or str(row.get("resource") or "") == "X_API_CREDITS"
+    ):
+        return None
     raw = str(row.get("retry_after") or "")
     try:
         retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -1653,7 +1661,7 @@ class XGrowthMissionCoordinator:
             "generation_authority": "MISSION_STRATEGY_ONLY",
             "publication_authority": False,
             "causal_claim": False,
-            "policy_mode": "OFFICIAL_X_API_ONLY",
+            "policy_mode": "VERIFIED_X_TRANSPORT_ROUTING",
             "execution_blocker": (
                 _active_execution_blocker(self.state_root, now=now)
             ),

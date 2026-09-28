@@ -2334,7 +2334,18 @@ class WakefulContentTaskRunner:
         except (OSError, ValueError, json.JSONDecodeError):
             blocker = {}
         blocker_active = False
-        if isinstance(blocker, dict) and str(blocker.get("status") or "") == "ACTIVE":
+        provider_only_blocker = (
+            isinstance(blocker, dict)
+            and (
+                str(blocker.get("blocker") or "") == "X_CREDITS_DEPLETED"
+                or str(blocker.get("resource") or "") == "X_API_CREDITS"
+            )
+        )
+        if (
+            isinstance(blocker, dict)
+            and str(blocker.get("status") or "") == "ACTIVE"
+            and not provider_only_blocker
+        ):
             try:
                 retry_after = datetime.fromisoformat(
                     str(blocker.get("retry_after") or "").replace("Z", "+00:00")

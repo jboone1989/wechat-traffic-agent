@@ -303,7 +303,7 @@ def test_first_official_observation_creates_mission_and_proposes_experiment(tmp_
     assert result["baseline"] == 2007.0
     assert result["target"] == 5000.0
     assert result["current"] == 2007.0
-    assert result["policy_mode"] == "OFFICIAL_X_API_ONLY"
+    assert result["policy_mode"] == "VERIFIED_X_TRANSPORT_ROUTING"
     assert result["publication_authority"] is False
     assert result["causal_claim"] is False
     assert result["roadmap_transition"]["status"] == "PLANNED"
@@ -1183,4 +1183,4 @@ def test_x_growth_context_ignores_expired_publication_blocker(tmp_path):
         encoding="utf-8",
     )
     context = x_growth_mission_context(tmp_path)
-    assert context["execution_blocker"]["blocker"] == "X_CREDITS_DEPLETED"
+    assert "execution_blocker" not in context

@@ -140,12 +140,14 @@ class XHistoryLedger:
 class XAutonomyLoop:
     def __init__(self, *, runtime: Any, model_runtime: Any, state_root: Path, base_url: str,
                  browser_mentions_observer: Any | None = None,
+                 browser_publish_transport: Any | None = None,
                  growth_mission: Any | None = None,
                  social_observer: Any | None = None,
                  social_context_provider: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
+        self.browser_publish_transport = browser_publish_transport
         self.growth_mission = growth_mission
         self.social_observer = social_observer
         self.social_context_provider = social_context_provider
@@ -177,6 +179,13 @@ class XAutonomyLoop:
         row = _read_json(self.publication_blocker_path)
         if str(row.get("status") or "") != "ACTIVE":
             return None
+        # API credits are a provider-specific outage, not a publication-wide
+        # blocker now that authenticated browser transports are available.
+        if (
+            str(row.get("blocker") or "") == "X_CREDITS_DEPLETED"
+            or str(row.get("resource") or "") == "X_API_CREDITS"
+        ):
+            return None
         raw = str(row.get("retry_after") or "")
         try:
             retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -195,6 +204,8 @@ class XAutonomyLoop:
         status: str,
         detail: str,
         receipt_id: str | None,
+        resource: str = "X_PUBLICATION_TRANSPORT",
+        required_action: str = "RESTORE_X_PUBLICATION_TRANSPORT",
     ) -> dict[str, Any]:
         prior = _read_json(self.publication_blocker_path)
         first_seen = prior.get("first_seen_at") or now.isoformat()
@@ -202,8 +213,8 @@ class XAutonomyLoop:
             "schema_version": "content-agent-x-publication-blocker.v1",
             "status": "ACTIVE",
             "blocker": str(status),
-            "resource": "X_API_CREDITS",
-            "required_action": "ADD_X_API_CREDITS",
+            "resource": str(resource),
+            "required_action": str(required_action),
             "first_seen_at": first_seen,
             "last_seen_at": now.isoformat(),
             "retry_after": (now + timedelta(hours=6)).isoformat(),
@@ -545,39 +556,107 @@ class XAutonomyLoop:
                         "baseline": baseline,
                     }
         post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
+        publication_receipt_id = post.receipt_id
+        publication_transport = "X_API"
+        publication_url: str | None = None
+        transport_failover: dict[str, Any] | None = None
+        post_id = ""
         if not post.payload.get("ok"):
             post_status = str(post.payload.get("status") or "X_POST_FAILED")
             detail = str(post.payload.get("detail") or "")[:300]
             if post_status == "X_CREDITS_DEPLETED":
-                blocker = self._record_publication_blocker(
-                    now=now,
-                    status=post_status,
-                    detail=detail,
-                    receipt_id=post.receipt_id,
-                )
-                self._write_status(now=now, status=post_status, detail=detail)
-                return {
-                    "status": post_status,
-                    "cycle": cycle,
-                    "receipt_id": post.receipt_id,
-                    "detail": detail,
-                    "blocker": blocker,
-                    "retry_after": blocker["retry_after"],
+                try:
+                    browser_transport = self.browser_publish_transport
+                    if browser_transport is None:
+                        from .x_browser import XBrowserTransportRouter
+                        browser_transport = XBrowserTransportRouter(state_root=self.state_root)
+                    published = await browser_transport.publish(text=decision.post_text)
+                except Exception as fallback_exc:
+                    fallback_detail = (
+                        f"X API credits depleted ({detail or 'no detail'}); "
+                        f"authenticated browser publication also failed: "
+                        f"{type(fallback_exc).__name__}: {str(fallback_exc)[:220]}"
+                    )
+                    blocker = self._record_publication_blocker(
+                        now=now,
+                        status="X_PUBLICATION_CAPABILITY_UNAVAILABLE",
+                        detail=fallback_detail,
+                        receipt_id=post.receipt_id,
+                    )
+                    self._write_status(
+                        now=now,
+                        status="X_PUBLICATION_CAPABILITY_UNAVAILABLE",
+                        detail=fallback_detail,
+                    )
+                    return {
+                        "status": "X_PUBLICATION_CAPABILITY_UNAVAILABLE",
+                        "cycle": cycle,
+                        "receipt_id": post.receipt_id,
+                        "detail": fallback_detail,
+                        "blocker": blocker,
+                        "retry_after": blocker["retry_after"],
+                        "transport_failover": {
+                            "status": "BROWSER_FALLBACK_FAILED",
+                            "failed_transport": "X_API",
+                            "fallback_transport": "AUTHENTICATED_BROWSER",
+                            "api_status": post_status,
+                            "fallback_error_type": type(fallback_exc).__name__,
+                        },
+                    }
+                post_id = str(getattr(published, "post_id", "") or "").strip()
+                publication_url = str(getattr(published, "url", "") or "").strip() or None
+                provider = str(getattr(published, "provider", "") or "BROWSER").strip()
+                publication_transport = f"{provider}_BROWSER"
+                publication_receipt_id = f"x-browser-fallback:{cycle}:{post_id}"
+                transport_failover = {
+                    "status": "BROWSER_FALLBACK_USED",
+                    "failed_transport": "X_API",
+                    "fallback_transport": publication_transport,
+                    "api_status": post_status,
+                    "reason": "provider-specific X API credits exhausted",
                 }
-            return {
-                "status": post_status, "cycle": cycle,
-                "receipt_id": post.receipt_id, "detail": detail,
-            }
-        post_id = first_post_id(post.payload.get("data"))
+                self._clear_publication_blocker(
+                    now=now,
+                    receipt_id=publication_receipt_id,
+                )
+                self._write_status(
+                    now=now,
+                    status="OK_BROWSER_FALLBACK",
+                    detail=(
+                        "X API credits are depleted; publication succeeded through "
+                        "the authenticated browser transport."
+                    ),
+                )
+                self._activity(
+                    cycle=cycle,
+                    title="Published on X through browser fallback",
+                    detail=(
+                        "The X API provider was unavailable, so I used the existing "
+                        "authenticated browser capability instead of blocking the goal."
+                    ),
+                )
+            else:
+                return {
+                    "status": post_status, "cycle": cycle,
+                    "receipt_id": post.receipt_id, "detail": detail,
+                }
+        else:
+            post_id = first_post_id(post.payload.get("data")) or ""
         if not post_id:
-            return {"status": "X_POST_ID_MISSING", "cycle": cycle, "receipt_id": post.receipt_id}
+            return {
+                "status": "X_POST_ID_MISSING",
+                "cycle": cycle,
+                "receipt_id": publication_receipt_id,
+                "transport": publication_transport,
+                "transport_failover": transport_failover,
+            }
         mission_experiment_transition: dict[str, Any] | None = None
         if self.growth_mission is not None:
             try:
                 mission_experiment_transition = (
                     self.growth_mission.start_experiment_from_publication(
                         cycle=cycle,
-                        publication_receipt_id=post.receipt_id,
+                        publication_receipt_id=publication_receipt_id,
                         post_id=post_id,
                         now=now,
                     )
@@ -588,16 +667,18 @@ class XAutonomyLoop:
                     "error_type": type(exc).__name__,
                     "message": str(exc)[:300],
                 }
-        self._clear_publication_blocker(now=now, receipt_id=post.receipt_id)
+        self._clear_publication_blocker(now=now, receipt_id=publication_receipt_id)
         handle = str(me.get("username") or "").lstrip("@")
-        url = f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
+        url = publication_url or (
+            f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
+        )
         worldview = context.get("worldview") or {}
         plan = context.get("mind_plan") or {}
         row = self.history.append({
             "event_type": "EXPRESSION", "cycle": cycle,
             "cognition": cognition, "expression_kind": cognition.get("expression_kind"),
             "text": decision.post_text, "x_post_id": post_id, "x_url": url,
-            "runtime_receipt_id": post.receipt_id,
+            "runtime_receipt_id": publication_receipt_id,
             "worldview": worldview,
             "prediction": context.get("prediction"),
             "inquiry_refs": list((plan.get("goal") or {}).get("inquiry_refs") or ()) if isinstance(plan.get("goal"), dict) else [],
@@ -612,6 +693,8 @@ class XAutonomyLoop:
                     else None
                 ),
                 "mission_experiment_transition": mission_experiment_transition,
+                "publication_transport": publication_transport,
+                "transport_failover": transport_failover,
             },
         })
         self._update_recent_public_posts(row)
@@ -622,7 +705,9 @@ class XAutonomyLoop:
             "cycle": cycle,
             "post_id": post_id,
             "url": url,
-            "receipt_id": post.receipt_id,
+            "receipt_id": publication_receipt_id,
+            "transport": publication_transport,
+            "transport_failover": transport_failover,
             "mission_experiment_transition": mission_experiment_transition,
         }
 

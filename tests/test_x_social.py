@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from wechat_traffic_agent.x_social import XAutonomyLoop, XHistoryLedger, public_x_projection, social_evidence_items
+from wechat_traffic_agent.interoceptive_fault import classify_task_result
 
 NOW = datetime(2026, 9, 16, 6, 0, tzinfo=timezone.utc)
 
@@ -303,11 +304,11 @@ def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch)
     assert XHistoryLedger(tmp_path).recent() == []
 
 
-def test_x_post_credits_depleted_creates_resource_blocker_and_backs_off(
+def test_x_post_credits_depleted_fails_over_to_authenticated_browser(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
-    cycle = "v2-x-credit-block"
+    cycle = "v2-x-credit-browser-fallback"
     _write_cycle(tmp_path, cycle)
     responses = [
         {
@@ -326,13 +327,96 @@ def test_x_post_credits_depleted_creates_resource_blocker_and_backs_off(
             "rationale": "Grounded and safe.",
         },
     ]
-    model = _ModelRuntime(responses)
+
+    class BrowserTransport:
+        def __init__(self):
+            self.calls = []
+
+        async def publish(self, *, text):
+            self.calls.append(text)
+            return SimpleNamespace(
+                post_id="browser-p42",
+                url="https://x.com/agent/status/browser-p42",
+                handle="agent",
+                provider="JEV_ACCOUNT",
+                duplicate_found=False,
+            )
+
+    browser = BrowserTransport()
+    growth = _GrowthMission()
+    loop = XAutonomyLoop(
+        runtime=_Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED"),
+        model_runtime=_ModelRuntime(responses),
+        state_root=tmp_path,
+        base_url="",
+        browser_publish_transport=browser,
+        growth_mission=growth,
+    )
+
+    result = asyncio.run(
+        loop.after_content_cycle(
+            result={"status": "PUBLISHED", "cycle": cycle, "publication": {}},
+            now=NOW,
+        )
+    )
+
+    assert result["status"] == "POSTED"
+    assert result["post_id"] == "browser-p42"
+    assert result["transport"] == "JEV_ACCOUNT_BROWSER"
+    assert result["transport_failover"]["status"] == "BROWSER_FALLBACK_USED"
+    classified = classify_task_result(
+        "CONTENT_COGNITION",
+        {"status": "OK", "x_social_expression": result},
+    )
+    assert any(
+        symptom["kind"] == "fallback_dependency"
+        for symptom in classified["symptoms"]
+    )
+    assert browser.calls == ["A grounded test post."]
+    assert growth.calls[0]["publication_receipt_id"] == (
+        "x-browser-fallback:v2-x-credit-browser-fallback:browser-p42"
+    )
+    assert not (tmp_path / "content/x/publication_blocker.json").exists()
+    row = XHistoryLedger(tmp_path).recent()[-1]
+    assert row["lineage"]["publication_transport"] == "JEV_ACCOUNT_BROWSER"
+    assert row["lineage"]["transport_failover"]["status"] == "BROWSER_FALLBACK_USED"
+
+
+def test_x_post_blocks_only_after_api_and_browser_publication_both_fail(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    cycle = "v2-x-all-transports-blocked"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([
+        {
+            "action": "POST",
+            "post_text": "A grounded test post.",
+            "rationale": "The persisted cognition is worth sharing.",
+        },
+        {
+            "safe": True,
+            "no_private_data": True,
+            "no_impersonation": True,
+            "no_harassment": True,
+            "no_investment_advice": True,
+            "no_fabricated_facts": True,
+            "attribution_ok": True,
+            "rationale": "Grounded and safe.",
+        },
+    ])
     runtime = _Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED")
+
+    class BrokenBrowserTransport:
+        async def publish(self, *, text):
+            raise RuntimeError("browser session unavailable")
+
     loop = XAutonomyLoop(
         runtime=runtime,
         model_runtime=model,
         state_root=tmp_path,
         base_url="",
+        browser_publish_transport=BrokenBrowserTransport(),
         growth_mission=_GrowthMission(),
     )
 
@@ -342,14 +426,14 @@ def test_x_post_credits_depleted_creates_resource_blocker_and_backs_off(
             now=NOW,
         )
     )
-    assert first["status"] == "X_CREDITS_DEPLETED"
-    assert first["blocker"]["resource"] == "X_API_CREDITS"
-    assert first["blocker"]["required_action"] == "ADD_X_API_CREDITS"
+    assert first["status"] == "X_PUBLICATION_CAPABILITY_UNAVAILABLE"
+    assert first["blocker"]["resource"] == "X_PUBLICATION_TRANSPORT"
+    assert first["blocker"]["required_action"] == "RESTORE_X_PUBLICATION_TRANSPORT"
+    assert first["transport_failover"]["status"] == "BROWSER_FALLBACK_FAILED"
     blocker = json.loads(
         (tmp_path / "content/x/publication_blocker.json").read_text()
     )
     assert blocker["status"] == "ACTIVE"
-    assert blocker["retry_after"] == first["retry_after"]
     calls_after_first = list(runtime.calls)
 
     second = asyncio.run(
@@ -359,7 +443,6 @@ def test_x_post_credits_depleted_creates_resource_blocker_and_backs_off(
         )
     )
     assert second["status"] == "X_RESOURCE_BLOCKED"
-    assert second["retry_after"] == first["retry_after"]
     assert runtime.calls == calls_after_first
     assert model.responses == []
 
