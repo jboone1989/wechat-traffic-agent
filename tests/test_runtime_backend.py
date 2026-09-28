@@ -71,35 +71,52 @@ def test_chatgpt_mode_flag_can_report_legacy_config_without_rebuilding_aliases()
     }) == {}
 
 
-def test_public_chat_requires_explicit_openai_api_key(monkeypatch, tmp_path):
+def test_public_chat_uses_livingruntime_without_openai_api_key(
+    monkeypatch, tmp_path
+):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert load_public_chat_backend(state_root=tmp_path) is None
-
-
-def test_public_chat_uses_dedicated_openai_realtime_backend(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", raising=False)
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
 
     backend = load_public_chat_backend()
 
     assert backend is not None
-    assert backend.provider.model == "gpt-5.6-sol"
-    assert backend.provider.base_url == "https://api.openai.com/v1"
-    assert backend.provider.timeout_seconds == 18.0
-    assert backend.provider.reasoning_effort == "none"
-    assert "sk-test-not-real" not in repr(backend.provider)
+    assert backend.provider.provider_name == "livingruntime-chatgpt"
+    assert backend.provider.available is True
 
 
-def test_public_chat_stays_on_sol_even_if_legacy_override_is_present(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+def test_public_chat_ignores_openai_api_credentials(
+    monkeypatch, tmp_path
+):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-public-chat-must-ignore")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
     monkeypatch.setenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", "gpt-5.6-luna")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
 
     backend = load_public_chat_backend()
 
-    assert backend.provider.model == "gpt-5.6-sol"
-    assert backend.provider.base_url == "https://api.openai.com/v1"
+    assert backend is not None
+    assert backend.provider.provider_name == "livingruntime-chatgpt"
+    assert backend.provider.available is True
+    assert "sk-public-chat-must-ignore" not in repr(backend.provider)
+
+
+def test_public_chat_is_unavailable_when_livingruntime_provider_is_disabled(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
+    monkeypatch.setenv(
+        "LIVINGRUNTIME_CHATGPT_COGNITION_CLI",
+        str(tmp_path / "missing-cognitionctl.py"),
+    )
+
+    assert load_public_chat_backend() is None
 
 
 def test_owner_cognition_uses_livingruntime_when_openai_key_missing(

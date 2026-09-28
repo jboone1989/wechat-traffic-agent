@@ -20,6 +20,10 @@ from .channels.brain_lab_page import brain_lab_document
 from .channels.screeps_live_page import screeps_live_document
 from .screeps_observatory import ScreepsObservatory
 from .owner_cognition import build_owner_cognition_prompt, build_owner_private_context
+from .livingruntime_chatgpt import (
+    LivingRuntimeChatGPTPendingError,
+    resume_next_durable_cognition,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8104
@@ -27,6 +31,7 @@ MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 24
+PUBLIC_CHAT_RESUME_AFTER_SECONDS = 15
 _PUBLIC_BACKEND_UNSET = object()
 PUBLIC_CHAT_STATE_TIMEOUT_SECONDS = 2.0
 
@@ -1331,14 +1336,22 @@ async def _generate_guarded_public_reply(
     *,
     prompt: str,
     message: str,
+    resume_request_id: str | None = None,
 ) -> str:
-    """Generate privately, validate, and only then allow text onto the public surface."""
+    """Generate privately, validate, and only then allow text onto the public surface.
+
+    LivingRuntime public chat is durable. The first call may return PENDING; a
+    later HTTP/SSE retry resumes that exact request instead of creating another
+    model call or depending on API quota.
+    """
     kwargs = {
         "max_tokens": 260,
         "system": _PUBLIC_SYSTEM,
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
         "timeout_seconds": 18,
+        "_durable_blocking_wait": True,
+        "_durable_blocking_wait_seconds": 18,
     }
 
     async def generate(value: str) -> str:
@@ -1352,7 +1365,11 @@ async def _generate_guarded_public_reply(
             return "".join(chunks).strip()
         return str(await provider.complete(value, **kwargs) or "").strip()
 
-    reply = await generate(prompt)
+    if resume_request_id:
+        with resume_next_durable_cognition(resume_request_id):
+            reply = await generate(prompt)
+    else:
+        reply = await generate(prompt)
     if _public_reply_is_visitor_facing(reply, message):
         return reply
     repaired = await generate(_public_reply_repair_prompt(prompt, message))
@@ -1623,9 +1640,6 @@ class LiveAgentService:
         async def chat(request: Request):
             if "text/event-stream" in str(request.headers.get("accept") or "").lower():
                 return await chat_stream(request)
-            key = request.client.host if request.client else "unknown"
-            if not self._limiter.allow(key, time.monotonic()):
-                return JSONResponse({"error": "rate_limited"}, status_code=429)
             if self.public_backend is None:
                 return JSONResponse({"error": "chat_backend_unavailable"}, status_code=503)
             if int(request.headers.get("content-length") or 0) > 4096:
@@ -1636,10 +1650,25 @@ class LiveAgentService:
                 return JSONResponse({"error": "invalid_json"}, status_code=400)
             message = str(body.get("message") or "").strip() if isinstance(body, dict) else ""
             visitor_id = str(body.get("visitor_id") or "").strip() if isinstance(body, dict) else ""
+            resume_request_id = (
+                str(body.get("request_id") or "").strip()
+                if isinstance(body, dict)
+                else ""
+            )
             if visitor_id and not re.fullmatch(r"v_[a-f0-9]{24,64}", visitor_id):
                 visitor_id = ""
+            if resume_request_id and not re.fullmatch(
+                r"llmreq_[a-f0-9]{32}", resume_request_id
+            ):
+                resume_request_id = ""
             if not message or len(message) > MAX_MESSAGE_CHARS:
                 return JSONResponse({"error": "message_must_be_1_to_1000_characters"}, status_code=400)
+            key = request.client.host if request.client else "unknown"
+            if (
+                not resume_request_id
+                and not self._limiter.allow(key, time.monotonic())
+            ):
+                return JSONResponse({"error": "rate_limited"}, status_code=429)
             scope = classify_public_question(message)
             try:
                 snapshot = await asyncio.wait_for(
@@ -1657,7 +1686,12 @@ class LiveAgentService:
             except Exception as exc:
                 snapshot = _degraded_public_chat_snapshot(self.state_root, exc)
             relationship = None
-            if self.wakeful is not None and visitor_id and hasattr(self.wakeful, "observe_social_interaction"):
+            if (
+                not resume_request_id
+                and self.wakeful is not None
+                and visitor_id
+                and hasattr(self.wakeful, "observe_social_interaction")
+            ):
                 try:
                     relationship = self.wakeful.observe_social_interaction(
                         actor=visitor_id,
@@ -1703,10 +1737,24 @@ class LiveAgentService:
                         self.public_backend.provider,
                         prompt=prompt,
                         message=message,
+                        resume_request_id=resume_request_id or None,
                     ),
                     timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
                 )
-            except (asyncio.TimeoutError, LivingRuntimeChatGPTPendingError):
+            except LivingRuntimeChatGPTPendingError as exc:
+                return JSONResponse(
+                    {
+                        "status": "WAITING_FOR_CHATGPT",
+                        "request_id": exc.request_id,
+                        "retry_after_seconds": PUBLIC_CHAT_RESUME_AFTER_SECONDS,
+                    },
+                    status_code=202,
+                    headers={
+                        "Cache-Control": "no-store",
+                        "Retry-After": str(PUBLIC_CHAT_RESUME_AFTER_SECONDS),
+                    },
+                )
+            except asyncio.TimeoutError:
                 return JSONResponse(
                     {"error": "chat_model_temporarily_unavailable"},
                     status_code=503,
@@ -1732,9 +1780,6 @@ class LiveAgentService:
                                  "interaction": recorded}, headers={"Cache-Control": "no-store"})
 
         async def chat_stream(request: Request):
-            key = request.client.host if request.client else "unknown"
-            if not self._limiter.allow(key, time.monotonic()):
-                return JSONResponse({"error": "rate_limited"}, status_code=429)
             if self.public_backend is None:
                 return JSONResponse({"error": "chat_backend_unavailable"}, status_code=503)
             if int(request.headers.get("content-length") or 0) > 4096:
@@ -1745,13 +1790,28 @@ class LiveAgentService:
                 return JSONResponse({"error": "invalid_json"}, status_code=400)
             message = str(body.get("message") or "").strip() if isinstance(body, dict) else ""
             visitor_id = str(body.get("visitor_id") or "").strip() if isinstance(body, dict) else ""
+            resume_request_id = (
+                str(body.get("request_id") or "").strip()
+                if isinstance(body, dict)
+                else ""
+            )
             if visitor_id and not re.fullmatch(r"v_[a-f0-9]{24,64}", visitor_id):
                 visitor_id = ""
+            if resume_request_id and not re.fullmatch(
+                r"llmreq_[a-f0-9]{32}", resume_request_id
+            ):
+                resume_request_id = ""
             if not message or len(message) > MAX_MESSAGE_CHARS:
                 return JSONResponse(
                     {"error": "message_must_be_1_to_1000_characters"},
                     status_code=400,
                 )
+            key = request.client.host if request.client else "unknown"
+            if (
+                not resume_request_id
+                and not self._limiter.allow(key, time.monotonic())
+            ):
+                return JSONResponse({"error": "rate_limited"}, status_code=429)
             scope = classify_public_question(message)
 
             def sse(event: str, payload: dict[str, Any]) -> str:
@@ -1799,7 +1859,8 @@ class LiveAgentService:
 
                 relationship = None
                 if (
-                    self.wakeful is not None
+                    not resume_request_id
+                    and self.wakeful is not None
                     and visitor_id
                     and hasattr(self.wakeful, "observe_social_interaction")
                 ):
@@ -1906,10 +1967,26 @@ class LiveAgentService:
                             self.public_backend.provider,
                             prompt=prompt,
                             message=message,
+                            resume_request_id=resume_request_id or None,
                         ),
                         timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
                     )
-                except (asyncio.TimeoutError, LivingRuntimeChatGPTPendingError):
+                except LivingRuntimeChatGPTPendingError as exc:
+                    yield sse(
+                        "waiting",
+                        {
+                            "status": "WAITING_FOR_CHATGPT",
+                            "request_id": exc.request_id,
+                            "retry_after_seconds": PUBLIC_CHAT_RESUME_AFTER_SECONDS,
+                            "label": "Queued for ChatGPT",
+                            "detail": (
+                                "This turn is safely queued. Ferro will resume "
+                                "the same request instead of dropping the reply."
+                            ),
+                        },
+                    )
+                    return
+                except asyncio.TimeoutError:
                     yield sse(
                         "error",
                         {

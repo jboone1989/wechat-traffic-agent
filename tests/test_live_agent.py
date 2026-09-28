@@ -12,6 +12,7 @@ from wechat_traffic_agent.live_agent import (
     public_agent_snapshot,
 )
 from wechat_traffic_agent.prospective_predictions import PredictionEvidence, ProspectivePredictionLedger
+from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
 
 
 class _Application:
@@ -326,14 +327,93 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert kwargs["_routing_task_class"] == "simple_public_text"
     assert kwargs["_minimum_quality"] == 0.7
     assert kwargs["timeout_seconds"] == 18
-    assert "_durable_blocking_wait" not in kwargs
-    assert "_durable_blocking_wait_seconds" not in kwargs
+    assert kwargs["_durable_blocking_wait"] is True
+    assert kwargs["_durable_blocking_wait_seconds"] == 18
     assert "_attempt_timeout_seconds" not in kwargs
     assert "_reserve_timeout_seconds" not in kwargs
     assert "_max_failovers" not in kwargs
     assert talk.status_code == 200
     assert "OPEN CONVERSATION" in talk.text
     assert "talk to me normally" in talk.text.lower()
+
+
+def test_public_chat_stream_exposes_durable_wait_and_resumes_same_request(tmp_path):
+    request_id = "llmreq_" + "a" * 32
+
+    class _PendingProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            if len(self.calls) == 1:
+                raise LivingRuntimeChatGPTPendingError(request_id)
+            return "I am back. This is the resumed public reply."
+
+    class _PendingBackend:
+        def __init__(self):
+            self.provider = _PendingProvider()
+
+    backend = _PendingBackend()
+    service = LiveAgentService(
+        state_root=_state(tmp_path),
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        first = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={"message": "Can this turn survive a wait?"},
+        )
+        second = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={
+                "message": "Can this turn survive a wait?",
+                "request_id": request_id,
+            },
+        )
+
+    assert first.status_code == 200
+    assert "event: waiting" in first.text
+    assert '"status":"WAITING_FOR_CHATGPT"' in first.text
+    assert f'"request_id":"{request_id}"' in first.text
+    assert "event: error" not in first.text
+
+    assert second.status_code == 200
+    assert "event: done" in second.text
+    assert "I am back. This is the resumed public reply." in second.text
+    assert len(backend.provider.calls) == 2
+
+
+def test_public_chat_json_returns_202_for_durable_pending(tmp_path):
+    request_id = "llmreq_" + "b" * 32
+
+    class _PendingProvider:
+        async def complete(self, prompt, **kwargs):
+            raise LivingRuntimeChatGPTPendingError(request_id)
+
+    class _PendingBackend:
+        provider = _PendingProvider()
+
+    service = LiveAgentService(
+        state_root=_state(tmp_path),
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=_PendingBackend(),
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            json={"message": "hello durable public chat"},
+        )
+
+    assert reply.status_code == 202
+    assert reply.json()["status"] == "WAITING_FOR_CHATGPT"
+    assert reply.json()["request_id"] == request_id
+    assert int(reply.headers["retry-after"]) >= 2
 
 
 def test_public_chat_does_not_fall_back_to_owner_backend_when_explicitly_disabled(tmp_path):
