@@ -197,6 +197,55 @@ def test_macro_skill_becomes_executable_then_requires_real_validation(tmp_path):
     assert skill["requires_prospective_world_validation"] is False
 
 
+def test_macro_skill_is_quarantined_after_repeated_negative_real_execution(tmp_path):
+    engine = GameIntelligence(tmp_path)
+    for episode in range(3):
+        engine.record_transition(
+            environment="PONG",
+            episode_id=f"bad-macro:{episode}",
+            state_key="s0",
+            action="UP",
+            reward=0.3,
+            next_state_key="s1",
+            observed_at=NOW + timedelta(seconds=episode * 10),
+        )
+        engine.record_transition(
+            environment="PONG",
+            episode_id=f"bad-macro:{episode}",
+            state_key="s1",
+            action="DOWN",
+            reward=0.3,
+            next_state_key="s2",
+            observed_at=NOW + timedelta(seconds=episode * 10 + 1),
+        )
+    engine.discover_macro_skills("PONG", min_support=3)
+    macro = engine.choose_macro_skill(
+        "PONG",
+        valid_actions=("UP", "DOWN", "STAY"),
+        seed=1,
+    )
+    assert macro is not None
+
+    for index in range(3):
+        result = engine.record_macro_execution(
+            environment="PONG",
+            skill_id=macro["skill_id"],
+            execution_id=f"bad-run:{index}",
+            actions=macro["actions"],
+            reward=-0.5,
+            observed_at=NOW + timedelta(minutes=index + 1),
+        )
+
+    assert result["prospectively_rejected"] is True
+    skill = engine.state["skills"][macro["skill_id"]]
+    assert skill["prospective_status"] == "REJECTED"
+    assert engine.choose_macro_skill(
+        "PONG",
+        valid_actions=("UP", "DOWN", "STAY"),
+        seed=2,
+    ) is None
+
+
 def test_population_opponent_prefers_least_tested_pair(tmp_path):
     engine = GameIntelligence(tmp_path)
     engine.register_population(

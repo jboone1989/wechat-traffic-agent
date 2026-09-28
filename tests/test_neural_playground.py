@@ -90,6 +90,122 @@ def test_motor_frames_reuse_neural_decision_and_keep_unique_reward_outcomes(
     )
 
 
+def test_reused_neural_frame_still_reselects_motor_action_each_world_step(
+    tmp_path: Path,
+):
+    substrate = FakeSubstrate()
+    lab = FerroBrainLab(tmp_path, substrate=substrate)
+    calls = []
+
+    def choose(**kwargs):
+        calls.append(kwargs["event_id"])
+        action = ("UP", "DOWN", "STAY")[(len(calls) - 1) % 3]
+        channels = {
+            "UP": "prediction_due",
+            "DOWN": "error_recovery",
+            "STAY": "opportunity",
+        }
+        return action, channels[action]
+
+    lab._choose = choose
+    lab.run_session(environment="PONG", steps=3, now=NOW)
+
+    assert len(substrate.stimuli) == 1
+    assert len(calls) == 3
+    assert [row["action"] for row in lab.state["recent"][-3:]] == [
+        "UP",
+        "DOWN",
+        "STAY",
+    ]
+    assert [row["neural_frame_reused"] for row in lab.state["recent"][-3:]] == [
+        False,
+        True,
+        True,
+    ]
+
+
+def test_td_policy_bootstraps_future_value_but_not_across_terminal_boundary(
+    tmp_path: Path,
+):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    policy = lab._policy_row("MAZE")
+    policy["states"]["next"] = {"UP": 0.8}
+
+    lab._learn_policy(
+        name="MAZE",
+        state_key="start",
+        action="RIGHT",
+        reward=0.0,
+        next_state_key="next",
+        terminal=False,
+    )
+    propagated = policy["states"]["start"]["RIGHT"]
+    assert propagated > 0.0
+
+    policy["states"]["terminal-start"] = {"RIGHT": 0.0}
+    lab._learn_policy(
+        name="MAZE",
+        state_key="terminal-start",
+        action="RIGHT",
+        reward=0.0,
+        next_state_key="next",
+        terminal=True,
+    )
+    assert policy["states"]["terminal-start"]["RIGHT"] == 0.0
+
+
+def test_world_model_uses_same_policy_state_key_as_action_selection(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    row = lab.step("PONG", now=NOW)
+
+    prediction = lab.game_intelligence.predict(
+        environment="PONG",
+        state_key=row["policy_state_key"],
+        skill_id=f"PONG:{row['action']}",
+    )
+
+    assert prediction["status"] == "EMPIRICAL_STATE_SKILL_MODEL"
+    assert prediction["samples"] == 1
+
+
+def test_td_policy_migration_resets_only_corrupted_foundation_policies(tmp_path: Path):
+    app = tmp_path / "application"
+    app.mkdir(parents=True)
+    state = {
+        "schema_version": FerroBrainLab.SCHEMA_VERSION,
+        "created_at": NOW.isoformat(),
+        "updated_at": NOW.isoformat(),
+        "total_steps": 10,
+        "total_sessions": 2,
+        "active_environment": "PONG",
+        "environments": {
+            name: FerroBrainLab(tmp_path, substrate=None)._default_env(name)
+            for name in FerroBrainLab.ENVIRONMENTS
+        },
+        "policies": {
+            "PONG": {"states": {"old": {"UP": 0.4}}, "updates": 1, "explorations": 0},
+            "MAZE": {"states": {"old": {"RIGHT": 0.4}}, "updates": 1, "explorations": 0},
+            "FORAGING": {"states": {"old": {"UP": 0.4}}, "updates": 1, "explorations": 0},
+            "ROVER": {"states": {"old": {"FORWARD": 0.8}}, "updates": 1, "explorations": 0},
+        },
+        "recent": [],
+    }
+    (app / "brain_lab.json").write_text(json.dumps(state), encoding="utf-8")
+
+    lab = FerroBrainLab(tmp_path, substrate=None)
+
+    assert lab.state["policy_algorithm_version"] == FerroBrainLab.POLICY_ALGORITHM_VERSION
+    assert "PONG" not in lab.state["policies"]
+    assert "MAZE" not in lab.state["policies"]
+    assert "FORAGING" not in lab.state["policies"]
+    assert "ROVER" in lab.state["policies"]
+    assert lab.state["learning_migrations"][-1]["environments"] == [
+        "PONG",
+        "MAZE",
+        "FORAGING",
+    ]
+
+
 def test_game_reward_is_provenance_bound_to_the_step(tmp_path: Path):
     substrate = FakeSubstrate()
     lab = FerroBrainLab(tmp_path, substrate=substrate)

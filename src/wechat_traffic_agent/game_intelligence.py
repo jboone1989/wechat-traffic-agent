@@ -626,9 +626,15 @@ class GameIntelligence:
             offline = float(row.get("offline_sequence_mean_reward") or 0.0)
             if offline <= 0.0:
                 continue
-            empirical = (
-                ((row.get("environments") or {}).get(env) or {}).get("mean_reward")
-            )
+            evidence = ((row.get("environments") or {}).get(env) or {})
+            runs = int(evidence.get("count") or 0)
+            empirical = evidence.get("mean_reward")
+            if (
+                runs >= 3
+                and empirical is not None
+                and float(empirical) <= 0.0
+            ):
+                continue
             empirical_score = (
                 offline if empirical is None else float(empirical)
             )
@@ -693,9 +699,22 @@ class GameIntelligence:
             and mean_reward is not None
             and float(mean_reward) > 0.0
         )
+        rejected = bool(
+            runs >= 3
+            and mean_reward is not None
+            and float(mean_reward) <= 0.0
+        )
         skill["prospective_runs"] = runs
         skill["prospectively_validated"] = validated
-        skill["requires_prospective_world_validation"] = not validated
+        skill["prospectively_rejected"] = rejected
+        skill["requires_prospective_world_validation"] = not validated and not rejected
+        skill["prospective_status"] = (
+            "VALIDATED"
+            if validated
+            else "REJECTED"
+            if rejected
+            else "TRIAL"
+        )
         self.state.setdefault("skills", {})[skill_id] = skill
         self._persist(now)
         return {
@@ -705,6 +724,7 @@ class GameIntelligence:
             "reward": round(float(reward), 6),
             "prospective_runs": runs,
             "prospectively_validated": validated,
+            "prospectively_rejected": rejected,
         }
 
     @staticmethod
