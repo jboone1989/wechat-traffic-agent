@@ -36,10 +36,9 @@ class _StreamingProvider:
     def __init__(self):
         self.calls = []
 
-    async def stream(self, prompt, **kwargs):
+    async def complete(self, prompt, **kwargs):
         self.calls.append((prompt, kwargs))
-        yield "Hello "
-        yield "from Ferro."
+        return "Hello from Ferro."
 
 
 class _StreamingBackend:
@@ -353,8 +352,7 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     assert '"kind":"PUBLIC_REASONING_SUMMARY"' in body
     assert '"private_chain_of_thought_exposed":false' in body
     assert "event: delta" in body
-    assert '"text":"Hello "' in body
-    assert '"text":"from Ferro."' in body
+    assert '"text":"Hello from Ferro."' in body
     assert "event: done" in body
     assert len(public_backend.provider.calls) == 1
     prompt, kwargs = public_backend.provider.calls[0]
@@ -362,6 +360,50 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     assert kwargs["_routing_task_class"] == "simple_public_text"
     interaction_path = root / "content/persona/interactions.jsonl"
     assert interaction_path.exists()
+
+
+def test_public_chat_rejects_model_planning_text_before_streaming_to_visitor(tmp_path):
+    class _PlanningProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            if len(self.calls) == 1:
+                return (
+                    "We need to respond in first person. The user asks about current state. "
+                    "We must obey the system instruction and balance the request."
+                )
+            return "我现在明显偏向探索和变化，不太想重复旧套路。好奇心很强，也更愿意直接指出阻塞；此刻最想做的是把一个真实问题推进到可验证的结果。"
+
+    class _PlanningBackend:
+        def __init__(self):
+            self.provider = _PlanningProvider()
+
+    root = _state(tmp_path)
+    backend = _PlanningBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={"message": "你现在是什么状态？"},
+        )
+
+    assert reply.status_code == 200
+    body = reply.text
+    assert "We need to respond" not in body
+    assert "instruction hierarchy" not in body
+    assert "我现在明显偏向探索和变化" in body
+    assert "event: done" in body
+    assert len(backend.provider.calls) == 2
+    assert "PUBLIC OUTPUT REQUIREMENT" in backend.provider.calls[1][0]
+    assert "Match the visitor's language" in backend.provider.calls[1][0]
 
 
 def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp_path):
@@ -504,8 +546,7 @@ def test_public_chat_stream_continues_when_live_state_and_neural_relationship_fa
     assert '"stage":"STATE_DEGRADED"' in body
     assert '"label":"Continuing with reduced context"' in body
     assert "chat_state_temporarily_unavailable" not in body
-    assert '"text":"Hello "' in body
-    assert '"text":"from Ferro."' in body
+    assert '"text":"Hello from Ferro."' in body
     assert "event: done" in body
     assert '"status": "DEGRADED"' in public_backend.provider.calls[0][0]
     assert "Answer the visitor directly without depending on unavailable telemetry." in public_backend.provider.calls[0][0]
