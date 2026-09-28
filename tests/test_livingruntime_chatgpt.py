@@ -157,6 +157,55 @@ print(json.dumps({
     }
 
 
+def test_durable_blocking_wait_keeps_external_contestant_alive(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+idx = sys.argv.index("--wait-timeout-seconds")
+wait_timeout = int(sys.argv[idx + 1])
+print(json.dumps({
+    "status": "COMPLETED",
+    "request_id": payload["request_id"],
+    "created_at": 100.0,
+    "finished_at": 101.0,
+    "response": {
+        "text": json.dumps({
+            "payload_timeout": payload["timeout_seconds"],
+            "wait_timeout": wait_timeout,
+        }, separators=(",", ":")),
+        "provider": "livingruntime-chatgpt",
+        "model": "gpt-5.6-sol",
+        "session_id": "session-blocking",
+        "sha256": "blocking123",
+        "completed_at": 101.0
+    }
+}, separators=(",", ":")))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=120,
+        foreground_wait_seconds=5,
+    )
+
+    result = asyncio.run(
+        provider.complete(
+            "external benchmark turn",
+            _durable_blocking_wait=True,
+            _durable_blocking_wait_seconds=90,
+        )
+    )
+
+    assert json.loads(result) == {
+        "payload_timeout": 120,
+        "wait_timeout": 90,
+    }
+
+
 def test_disabled_remote_falls_back_without_running_cli(tmp_path):
     fallback = _Fallback()
     provider = LivingRuntimeChatGPTProvider(

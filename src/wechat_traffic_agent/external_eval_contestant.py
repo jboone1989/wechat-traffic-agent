@@ -136,7 +136,13 @@ class FerroExternalEvalContestant:
                 "_routing_task_class": "reasoning",
                 "_minimum_quality": 0.75,
             }
-            if not bool(getattr(self.provider, "durable_dispatch", False)):
+            if bool(getattr(self.provider, "durable_dispatch", False)):
+                # The external JSONL contestant owns this continuation. Keep
+                # it alive while ChatGPT services the durable request instead
+                # of surfacing PENDING as a benchmark process failure.
+                kwargs["_durable_blocking_wait"] = True
+                kwargs["_durable_blocking_wait_seconds"] = 300
+            else:
                 kwargs["_attempt_timeout_seconds"] = 20
                 kwargs["_reserve_timeout_seconds"] = 40
             return await self.provider.complete(request_prompt, **kwargs)

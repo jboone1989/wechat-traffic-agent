@@ -77,6 +77,8 @@ def test_durable_baseline_does_not_shorten_queue_lifetime(tmp_path):
     kwargs = provider.calls[-1][1]
     assert "_attempt_timeout_seconds" not in kwargs
     assert "_reserve_timeout_seconds" not in kwargs
+    assert kwargs["_durable_blocking_wait"] is True
+    assert kwargs["_durable_blocking_wait_seconds"] == 300
 
 
 def test_basic_baseline_carries_bounded_episode_history(tmp_path):
