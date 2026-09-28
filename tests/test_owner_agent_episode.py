@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
+from wechat_traffic_agent.openai_public_chat import OpenAIPublicChatError
 from wechat_traffic_agent.owner_agent_episode import OwnerAgentEpisode
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
@@ -322,6 +323,84 @@ def test_clear_pending_request_only_releases_matching_request(tmp_path):
     assert episode.classify_request(
         "goal-owner", "llmreq-owner-timeout"
     ) == "STALE"
+
+
+def test_owner_cognition_blocker_persists_until_retry_window(tmp_path):
+    episode = OwnerAgentEpisode(tmp_path)
+    episode._state_for(
+        {"goal_id": "goal-owner", "description": "Promote LivingRuntime Remote"},
+        NOW,
+    )
+
+    blocked = episode.mark_cognition_blocked(
+        goal_id="goal-owner",
+        error_type="OpenAIPublicChatError",
+        message="HTTP_429",
+        retry_at=NOW + timedelta(minutes=5),
+        now=NOW,
+    )
+
+    assert blocked["status"] == "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
+    assert episode.running_for("goal-owner") is True
+    assert episode.cognition_blocker_for(
+        "goal-owner",
+        now=NOW + timedelta(minutes=4),
+    )["message"] == "HTTP_429"
+    assert episode.cognition_blocker_for(
+        "goal-owner",
+        now=NOW + timedelta(minutes=5),
+    ) is None
+
+
+def test_owner_429_is_bounded_and_duplicate_wake_does_not_retry_api(tmp_path):
+    class FailingRuntime:
+        def __init__(self):
+            self.calls = 0
+
+        async def cognitive_probe(self, prompt, max_tokens):
+            self.calls += 1
+            raise OpenAIPublicChatError("HTTP_429")
+
+    class Wakeful:
+        def __init__(self):
+            self.goal_followups = []
+
+        def schedule_goal_followup(self, now, *, seconds=5, relevant_refs=()):
+            self.goal_followups.append((now, seconds, tuple(relevant_refs)))
+
+    runtime = FailingRuntime()
+    wakeful = Wakeful()
+    domain_runtime = SimpleNamespace(
+        active_goals=[],
+        goals=[],
+        external_missions=[],
+    )
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+        wakeful=wakeful,
+        owner_cognition_runtime=runtime,
+    )
+    owner_goal = {
+        "goal_id": "goal-owner",
+        "description": "Promote LivingRuntime Remote",
+        "origin": "USER",
+        "priority": 0.9,
+    }
+
+    first = runner._owner_agent_control(owner_goal=owner_goal, now=NOW)
+    second = runner._owner_agent_control(
+        owner_goal=owner_goal,
+        now=NOW + timedelta(minutes=1),
+    )
+
+    assert first["status"] == "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
+    assert first["retry_seconds"] == 300
+    assert second["status"] == "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
+    assert runtime.calls == 1
+    assert wakeful.goal_followups == [
+        (NOW, 300, ("goal-owner",)),
+    ]
 
 
 def test_pending_request_from_previous_owner_goal_is_stale(tmp_path):

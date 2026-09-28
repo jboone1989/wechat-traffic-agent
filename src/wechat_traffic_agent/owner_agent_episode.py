@@ -216,6 +216,73 @@ class OwnerAgentEpisode:
             and str(state.get("status") or "") == "RUNNING"
         )
 
+    def cognition_blocker_for(
+        self,
+        goal_id: str,
+        *,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        state = self._read(goal_id)
+        blocker = (
+            state.get("cognition_blocker")
+            if isinstance(state.get("cognition_blocker"), dict)
+            else None
+        )
+        if (
+            state.get("schema_version") != self.SCHEMA
+            or str(state.get("goal_id") or "") != str(goal_id or "")
+            or str(state.get("status") or "") != "RUNNING"
+            or blocker is None
+        ):
+            return None
+        retry_raw = str(blocker.get("retry_at") or "")
+        try:
+            retry_at = datetime.fromisoformat(retry_raw.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if retry_at.tzinfo is None:
+            return None
+        if now.astimezone(timezone.utc) >= retry_at.astimezone(timezone.utc):
+            return None
+        return dict(blocker)
+
+    def mark_cognition_blocked(
+        self,
+        *,
+        goal_id: str,
+        error_type: str,
+        message: str,
+        retry_at: datetime,
+        now: datetime,
+    ) -> dict[str, Any]:
+        state = self._read(goal_id)
+        if (
+            state.get("schema_version") != self.SCHEMA
+            or str(state.get("goal_id") or "") != str(goal_id or "")
+        ):
+            return {"status": "NO_EPISODE"}
+        stamp = now.astimezone(timezone.utc)
+        retry_at = retry_at.astimezone(timezone.utc)
+        blocker = {
+            "error_type": str(error_type or "PROVIDER_ERROR"),
+            "message": str(message or "")[:300],
+            "blocked_at": stamp.isoformat(),
+            "retry_at": retry_at.isoformat(),
+            "retryable": True,
+        }
+        state = {
+            **state,
+            "status": "RUNNING",
+            "cognition_blocker": blocker,
+            "last_cognition_error": blocker,
+            "updated_at": stamp.isoformat(),
+        }
+        self._write(state)
+        return {
+            "status": "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
+            **blocker,
+        }
+
     def classify_request(self, goal_id: str, request_id: str) -> str:
         """Classify one durable cognition request against the current episode.
 
@@ -401,6 +468,7 @@ class OwnerAgentEpisode:
                     **state,
                     "status": "DECIDED",
                     "decision": payload,
+                    "cognition_blocker": None,
                     "pending_request_id": None,
                     "pending_step_index": None,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -426,6 +494,7 @@ class OwnerAgentEpisode:
                 **state,
                 "status": "RUNNING",
                 "steps": [*list(state.get("steps") or []), step],
+                "cognition_blocker": None,
                 "pending_request_id": None,
                 "pending_step_index": None,
                 "updated_at": datetime.now(timezone.utc).isoformat(),

@@ -2507,6 +2507,17 @@ class WakefulContentTaskRunner:
         domain_runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
         if episode is None or domain_runtime is None:
             return {"status": "UNAVAILABLE"}
+        goal_id = str(owner_goal.get("goal_id") or "").strip()
+        active_blocker = episode.cognition_blocker_for(
+            goal_id,
+            now=now,
+        )
+        if active_blocker is not None:
+            return {
+                "status": "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
+                "goal_id": goal_id,
+                **active_blocker,
+            }
         mission_context = self._owner_agent_mission_context(owner_goal, now)
         cognition_runtime = getattr(self, "owner_cognition_runtime", None)
         if cognition_runtime is None:
@@ -2605,16 +2616,42 @@ class WakefulContentTaskRunner:
             "mission_id": str(mission_context.get("mission_id") or ""),
             "description": str(owner_goal.get("description") or ""),
         }):
-            return self._run_async(
-                episode.run(
-                    runtime=cognition_runtime,
-                    owner_goal=owner_goal,
-                    mission_context=mission_context,
-                    tool_executor=execute_tool,
-                    now=now,
-                    resume_request_id=resume_request_id,
+            try:
+                return self._run_async(
+                    episode.run(
+                        runtime=cognition_runtime,
+                        owner_goal=owner_goal,
+                        mission_context=mission_context,
+                        tool_executor=execute_tool,
+                        now=now,
+                        resume_request_id=resume_request_id,
+                    )
                 )
-            )
+            except Exception as exc:
+                from .openai_public_chat import OpenAIPublicChatError
+
+                if not isinstance(exc, OpenAIPublicChatError):
+                    raise
+                retry_seconds = 300 if "HTTP_429" in str(exc) else 120
+                blocked = episode.mark_cognition_blocked(
+                    goal_id=goal_id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    retry_at=now + timedelta(seconds=retry_seconds),
+                    now=now,
+                )
+                schedule = getattr(self.wakeful, "schedule_goal_followup", None)
+                if callable(schedule):
+                    schedule(
+                        now,
+                        seconds=retry_seconds,
+                        relevant_refs=(goal_id,),
+                    )
+                return {
+                    **blocked,
+                    "goal_id": goal_id,
+                    "retry_seconds": retry_seconds,
+                }
 
     @staticmethod
     def _owner_agent_seed_evidence(control: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2703,6 +2740,13 @@ class WakefulContentTaskRunner:
                 resume_request_id=owner_resume_request_id,
             )
             rows["owner_agent_episode"] = control
+            if (
+                str(control.get("status") or "")
+                == "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
+            ):
+                rows["status"] = "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
+                rows["owner_cognition_blocker"] = control
+                return rows
             if str(control.get("status") or "") == "UNRESOLVED_ACTION_REQUIRED":
                 rows["status"] = "OWNER_ACTION_REQUIRED_BUT_UNRESOLVED"
                 return rows
