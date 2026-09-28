@@ -482,61 +482,227 @@ def build_decision_context(
     selected_chars = 0
     trace: dict[str, dict[str, Any]] = {}
 
-    # Need-centric round-robin prevents one large source/section from consuming
-    # the full window. Higher-priority needs get more passes.
+    # V2 selection is marginal-utility set cover rather than fixed passes. A
+    # candidate that answers several information needs is preferred, and once a
+    # need has strong evidence it stops consuming more context merely because
+    # more lexically-similar rows exist.
     ordered_needs = sorted(needs, key=lambda item: item.priority, reverse=True)
-    for pass_index in range(4):
-        for need in ordered_needs:
-            if len(selected) >= max_facts:
-                break
-            ranked = scored_by_need.get(need.need_id) or []
-            if pass_index >= len(ranked):
+    need_by_id = {need.need_id: need for need in ordered_needs}
+    score_lookup: dict[str, dict[str, tuple[float, list[str]]]] = {
+        need.need_id: {
+            cid: (float(score), list(reasons))
+            for score, cid, reasons in (scored_by_need.get(need.need_id) or [])
+        }
+        for need in ordered_needs
+    }
+    top_score = {
+        need.need_id: float((scored_by_need.get(need.need_id) or [(0.0, "", [])])[0][0])
+        for need in ordered_needs
+    }
+    coverage_floor = {
+        need.need_id: max(0.78, 0.68 * top_score[need.need_id])
+        for need in ordered_needs
+        if top_score[need.need_id] > 0.0
+    }
+    uncovered = {
+        need.need_id
+        for need in ordered_needs
+        if scored_by_need.get(need.need_id)
+    }
+
+    # Owner goal/mission identity is not optional retrieval evidence; it is the
+    # decision anchor itself. Preserve at most one current goal and one current
+    # mission so aggressive reranking cannot erase what the decision is about.
+    mandatory_anchor_ids: list[str] = []
+    for source, id_key, allowed_ids in (
+        ("goal", "goal_id", owner_goal_ids),
+        ("mission", "mission_id", owner_mission_ids),
+    ):
+        if not allowed_ids:
+            continue
+        for row in candidates:
+            if str(row.get("source") or "") != source or not bool(row.get("current")):
                 continue
-            score, cid, reasons = ranked[pass_index]
-            row = by_id[cid]
-            row_chars = len(_text(row.get("payload"))) + len(str(row.get("text") or ""))
-            if cid not in selected and selected_chars + row_chars > budget_chars:
-                continue
-            if cid not in selected:
-                selected[cid] = row
-                selected_chars += row_chars
-            entry = trace.setdefault(
-                cid,
-                {"score": 0.0, "need_ids": [], "reasons": []},
+            payload = row.get("payload")
+            value = (
+                str(payload.get(id_key) or "")
+                if isinstance(payload, Mapping)
+                else ""
             )
+            if value and value in allowed_ids:
+                mandatory_anchor_ids.append(str(row.get("context_id") or ""))
+                break
+
+    for row in candidates:
+        if str(row.get("source") or "") != "plan" or not bool(row.get("current")):
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        plan_goal = (
+            payload.get("goal")
+            if isinstance(payload.get("goal"), Mapping)
+            else {}
+        )
+        plan_goal_id = str(
+            payload.get("owner_goal_id")
+            or plan_goal.get("goal_id")
+            or ""
+        )
+        plan_mission_id = str(payload.get("external_mission_id") or "")
+        if (
+            (plan_goal_id and plan_goal_id in owner_goal_ids)
+            or (plan_mission_id and plan_mission_id in owner_mission_ids)
+        ):
+            mandatory_anchor_ids.append(str(row.get("context_id") or ""))
+            break
+
+    for cid in mandatory_anchor_ids:
+        if not cid or cid in selected:
+            continue
+        row = by_id[cid]
+        row_chars = len(_text(row.get("payload"))) + len(str(row.get("text") or ""))
+        if selected_chars + row_chars > budget_chars:
+            continue
+        selected[cid] = row
+        selected_chars += row_chars
+        entry = trace.setdefault(
+            cid,
+            {"score": 0.0, "need_ids": [], "reasons": []},
+        )
+        objective_match = score_lookup.get("objective", {}).get(cid)
+        if objective_match is not None:
+            entry["score"] = max(float(entry["score"]), round(objective_match[0], 4))
+            entry["need_ids"].append("objective")
+            for reason in objective_match[1]:
+                if reason not in entry["reasons"]:
+                    entry["reasons"].append(reason)
+        entry["reasons"].append("mandatory_owner_scope_anchor")
+    if mandatory_anchor_ids:
+        uncovered.discard("objective")
+
+    while uncovered and len(selected) < max_facts:
+        best: tuple[float, float, str, list[str]] | None = None
+        for row in candidates:
+            cid = str(row.get("context_id") or "")
+            if not cid or cid in selected:
+                continue
+            matched: list[str] = []
+            marginal = 0.0
+            strongest = 0.0
+            for need_id in uncovered:
+                match = score_lookup.get(need_id, {}).get(cid)
+                if match is None:
+                    continue
+                score = float(match[0])
+                reasons = list(match[1])
+                if score < coverage_floor.get(need_id, 0.78):
+                    continue
+                # A need is only considered satisfied by the right kind of
+                # evidence. This prevents a goal/mission row from accidentally
+                # satisfying "past outcomes" merely because it repeats the same
+                # project words.
+                typed_evidence = (
+                    "source_matches_information_need" in reasons
+                    or any(reason.startswith("memory_router_rank:") for reason in reasons)
+                    or "current_need_prior" in reasons
+                )
+                if not typed_evidence:
+                    continue
+                peak = max(0.001, top_score.get(need_id, score))
+                normalized = min(1.0, score / peak)
+                need = need_by_id[need_id]
+                marginal += need.priority * (0.7 + 0.3 * normalized)
+                strongest = max(strongest, score)
+                matched.append(need_id)
+            if not matched:
+                continue
+            row_chars = len(_text(row.get("payload"))) + len(str(row.get("text") or ""))
+            if selected and selected_chars + row_chars > budget_chars:
+                continue
+            # Multi-need coverage is valuable; large rows pay a small tax so a
+            # compact fact wins when decision utility is otherwise equivalent.
+            utility = (
+                marginal
+                + 0.16 * max(0, len(matched) - 1)
+                - 0.12 * min(1.0, row_chars / max(1, budget_chars))
+            )
+            item = (utility, strongest, cid, matched)
+            if best is None or item[:3] > best[:3]:
+                best = item
+
+        if best is None:
+            break
+
+        _, _, cid, matched = best
+        row = by_id[cid]
+        row_chars = len(_text(row.get("payload"))) + len(str(row.get("text") or ""))
+        if selected_chars + row_chars > budget_chars:
+            break
+        selected[cid] = row
+        selected_chars += row_chars
+        entry = trace.setdefault(
+            cid,
+            {"score": 0.0, "need_ids": [], "reasons": []},
+        )
+        for need_id in matched:
+            score, reasons = score_lookup[need_id][cid]
             entry["score"] = max(float(entry["score"]), round(score, 4))
-            if need.need_id not in entry["need_ids"]:
-                entry["need_ids"].append(need.need_id)
+            if need_id not in entry["need_ids"]:
+                entry["need_ids"].append(need_id)
             for reason in reasons:
                 if reason not in entry["reasons"]:
                     entry["reasons"].append(reason)
+            uncovered.discard(need_id)
+        entry["reasons"].append(
+            "marginal_need_coverage:" + ",".join(sorted(matched))
+        )
 
-    # Dependency expansion: once a decision-changing fact is selected, recover
-    # linked goal/mission/outcome/promise evidence even if lexical similarity is low.
+    # Dependency expansion is intentionally narrow. Owner goal/mission IDs are
+    # too broad to justify pulling every related record after the information
+    # needs were already satisfied. Expansion therefore requires a more specific
+    # shared causal/evidence key, and is capped to a few facts.
     dependency_keys = set()
     for row in selected.values():
         dependency_keys.update(_dependency_tokens(row))
+    generic_dependency_keys = owner_goal_ids | owner_mission_ids
+    specific_dependency_keys = dependency_keys - generic_dependency_keys
     if dependency_keys and len(selected) < max_facts:
         expansion: list[tuple[float, str, list[str]]] = []
+        generic_evidence_sources = {
+            "experience", "memory", "commitment", "relationship", "experiment",
+            "belief_change", "capability_belief",
+        }
         for row in candidates:
             cid = str(row.get("context_id") or "")
             if cid in selected:
                 continue
-            shared = dependency_keys & _dependency_tokens(row)
-            if not shared:
+            row_tokens = _dependency_tokens(row)
+            specific_shared = specific_dependency_keys & row_tokens
+            generic_shared = generic_dependency_keys & row_tokens
+            if not specific_shared and not generic_shared:
                 continue
+            source = str(row.get("source") or "")
+            # A bare owner goal/mission link is allowed to recover only evidence
+            # rows, never another arbitrary state row. The expansion cap below
+            # keeps this from becoming a goal-wide dump.
+            if not specific_shared and source not in generic_evidence_sources:
+                continue
+            shared = specific_shared or generic_shared
             score = (
-                1.8
-                + 0.7 * min(3, len(shared))
-                + 0.5 * float(row.get("importance") or 0.0)
-                + 0.3 * float(row.get("confidence") or 0.0)
+                (1.15 if specific_shared else 0.82)
+                + 0.55 * min(3, len(shared))
+                + 0.35 * float(row.get("importance") or 0.0)
+                + 0.2 * float(row.get("confidence") or 0.0)
             )
             expansion.append(
                 (score, cid, ["dependency_expansion:" + ",".join(sorted(shared)[:4])])
             )
         expansion.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        expansion_limit = min(2, max(1, len(ordered_needs) // 3))
+        added = 0
         for score, cid, reasons in expansion:
-            if len(selected) >= max_facts:
+            if len(selected) >= max_facts or added >= expansion_limit:
                 break
             row = by_id[cid]
             row_chars = len(_text(row.get("payload"))) + len(str(row.get("text") or ""))
@@ -544,6 +710,7 @@ def build_decision_context(
                 continue
             selected[cid] = row
             selected_chars += row_chars
+            added += 1
             trace[cid] = {
                 "score": round(score, 4),
                 "need_ids": ["dependencies"],
@@ -630,6 +797,17 @@ def build_decision_context(
         "selected_sources": selected_sources,
         "selected_chars_estimate": selected_chars,
         "budget_chars": int(budget_chars),
+        "need_coverage": {
+            "covered": sorted(
+                {
+                    need_id
+                    for meta in trace.values()
+                    for need_id in list(meta.get("need_ids") or [])
+                    if need_id != "dependencies"
+                }
+            ),
+            "uncovered": sorted(uncovered),
+        },
         "memory_router": {
             "enabled": state_root is not None,
             "recalled_rows_across_needs": memory_recall_count,

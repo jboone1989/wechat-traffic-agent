@@ -226,3 +226,79 @@ def test_internal_state_is_selected_by_pressure_not_by_recency() -> None:
     assert "internal_pressure" in {
         need["need_id"] for need in pressured["information_needs"]
     }
+
+
+def test_marginal_need_coverage_suppresses_redundant_same_need_noise() -> None:
+    rows = [
+        candidate(
+            context_id="goal:owner",
+            source="goal",
+            kind="GOAL",
+            payload={
+                "goal_id": "goal-owner",
+                "description": "Grow LivingRuntime Remote on X",
+            },
+            text="Grow LivingRuntime Remote on X",
+            current=True,
+            importance=0.98,
+            confidence=1.0,
+            refs=["goal-owner"],
+        ),
+        candidate(
+            context_id="experience:critical",
+            source="experience",
+            kind="OUTCOME",
+            payload={
+                "goal_id": "goal-owner",
+                "summary": "The current growth strategy failed three times.",
+            },
+            text="LivingRuntime Remote X growth strategy failed three times.",
+            importance=0.98,
+            confidence=1.0,
+            refs=["goal-owner"],
+        ),
+    ]
+    rows.extend(
+        candidate(
+            context_id=f"experience:noise:{index}",
+            source="experience",
+            kind="OUTCOME",
+            payload={
+                "goal_id": f"other-goal-{index}",
+                "summary": "An unrelated growth strategy outcome was discussed.",
+            },
+            text=(
+                "Unrelated X growth strategy outcome failed or succeeded; "
+                f"other-goal-{index}"
+            ),
+            importance=0.95,
+            confidence=1.0,
+            refs=[f"other-goal-{index}"],
+        )
+        for index in range(30)
+    )
+
+    result = build_decision_context(
+        prompt="SELECT: choose what to do next for LivingRuntime Remote X growth",
+        decision_frame=_frame("SELECTION"),
+        owner_scope={
+            "goal_id": "goal-owner",
+            "description": "Grow LivingRuntime Remote on X",
+        },
+        missions=[],
+        local_candidates=rows,
+        state_root=None,
+        now=NOW,
+        budget_chars=8_000,
+        max_facts=20,
+    )
+
+    assert "goal:owner" in result["selected_ids"]
+    assert "experience:critical" in result["selected_ids"]
+    assert not any(
+        context_id.startswith("experience:noise:")
+        for context_id in result["selected_ids"]
+    )
+    assert result["selected_count"] <= 3
+    assert "objective" in result["need_coverage"]["covered"]
+    assert "past_outcomes" in result["need_coverage"]["covered"]
