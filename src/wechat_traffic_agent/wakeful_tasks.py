@@ -95,6 +95,22 @@ class WakefulContentTaskRunner:
             raise _ShutdownRequested()
         return asyncio.run(self._await_with_shutdown(awaitable))
 
+    def _owner_behavioral_context(self) -> dict[str, Any]:
+        wakeful = getattr(self, "wakeful", None)
+        projection = getattr(wakeful, "behavioral_projection", None)
+        if not callable(projection):
+            raise RuntimeError(
+                "owner cognition requires live wakeful behavioral projection"
+            )
+        from .behavioral_state import build_behavioral_state, build_phenotype_prior
+
+        behavioral_state = build_behavioral_state(projection())
+        phenotype_prior = build_phenotype_prior(behavioral_state)
+        return {
+            "phenotype_prior": phenotype_prior,
+            "behavioral_state": behavioral_state,
+        }
+
     def _windfall_pending_path(self) -> Path | None:
         state_root = getattr(self, "state_root", None)
         if state_root is None:
@@ -2500,6 +2516,7 @@ class WakefulContentTaskRunner:
                 state_root=Path(self.state_root)
                 if getattr(self, "state_root", None) is not None
                 else None,
+                behavioral_context_provider=self._owner_behavioral_context,
             )
             self.owner_cognition_runtime = cognition_runtime
 
@@ -2915,6 +2932,7 @@ class WakefulContentTaskRunner:
                     state_root=Path(self.state_root)
                     if getattr(self, "state_root", None) is not None
                     else None,
+                    behavioral_context_provider=self._owner_behavioral_context,
                 )
                 self.owner_cognition_runtime = owner_content_cognition
         content_run_kwargs = dict(

@@ -2727,6 +2727,25 @@ class ContentWakefulRuntime:
             stop.set()
             watcher.join(timeout=1.0)
 
+    def behavioral_projection(self) -> dict:
+        """Return only the live state needed for always-on individual modulation."""
+        snap = self.core.snapshot()
+        neural_life = (
+            self.neural_life.projection()
+            if self.neural_life_enabled
+            else {"status": "DISABLED"}
+        )
+        personality = self.neural_personality.projection()
+        return {
+            "neural_life": neural_life,
+            "personality": personality,
+            "psychodynamics": self.psychodynamics.projection(
+                neural_life=neural_life,
+                personality=personality,
+                active_goal_count=len(snap.active_goal_refs),
+            ),
+        }
+
     def public_snapshot(self) -> dict:
         snap = self.core.snapshot()
         try:

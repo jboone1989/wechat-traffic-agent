@@ -67,6 +67,30 @@ def test_neural_life_stimulates_aux_body_electrodes_without_feedback_authority(t
     assert call["currents"]
 
 
+def test_behavioral_projection_is_lightweight_and_contains_individual_state(
+    tmp_path, monkeypatch
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "projection",
+        lambda: (_ for _ in ()).throw(AssertionError("brain lab must not be read")),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "dream_projection",
+        lambda: (_ for _ in ()).throw(AssertionError("dream state must not be read")),
+    )
+
+    projection = runtime.behavioral_projection()
+
+    assert set(projection) == {"neural_life", "personality", "psychodynamics"}
+    assert "affect" in projection["neural_life"]
+    assert "drives" in projection["neural_life"]
+    assert "traits" in projection["personality"]
+    assert isinstance(projection["psychodynamics"], dict)
+
+
 
 def test_initial_plans_are_explicit_and_restart_safe(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)

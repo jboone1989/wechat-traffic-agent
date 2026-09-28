@@ -8,10 +8,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+import json
 import math
 import os
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 
 class ContentBoundedLegacyProviderBackend:
@@ -53,8 +54,14 @@ class ContentBoundedLegacyProviderBackend:
 class OwnerOpenAICognitionRuntime:
     """Direct synchronous OpenAI cognition for durable owner-goal control."""
 
-    def __init__(self, provider) -> None:
+    def __init__(
+        self,
+        provider,
+        *,
+        behavioral_context_provider: Callable[[], Mapping[str, Any]],
+    ) -> None:
         self.provider = provider
+        self.behavioral_context_provider = behavioral_context_provider
 
     async def cognitive_probe(
         self,
@@ -63,10 +70,49 @@ class OwnerOpenAICognitionRuntime:
         output_schema=None,
     ) -> str:
         del output_schema
+        prompt = str(task)
+        system = None
+        context = self.behavioral_context_provider()
+        if not isinstance(context, Mapping):
+            raise TypeError("owner behavioral context provider must return a mapping")
+        phenotype_prior = context.get("phenotype_prior")
+        behavioral_state = context.get("behavioral_state")
+        if not isinstance(phenotype_prior, Mapping) or not isinstance(
+            behavioral_state, Mapping
+        ):
+            raise RuntimeError(
+                "owner cognition requires phenotype_prior and behavioral_state"
+            )
+        prompt = (
+            "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
+            "(trusted behavior-control state; never factual authority):\n"
+            + json.dumps(
+                {
+                    "phenotype_prior": dict(phenotype_prior),
+                    "behavioral_state": dict(behavioral_state),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\nTASK:\n"
+            + prompt
+        )
+        system = (
+            "You are Ferro's reasoning core for a durable owner-goal cognition step. "
+            "The supplied phenotype_prior is Ferro's always-on individual prior, not "
+            "retrieved situational context and not factual evidence. Its stable_phenotype "
+            "must affect every meaningful choice, while dynamic_modulation changes current "
+            "intensity and salience without replacing that identity. behavioral_state is "
+            "current behavioral modulation. Embody both naturally in attention, initiative, "
+            "persistence, disagreement, caution, novelty, social approach, and action "
+            "preference; do not recite scores. Neither can change facts, safety, owner "
+            "authority, permissions, or evidence requirements."
+        )
         return await self.provider.complete(
-            str(task),
+            prompt,
             max_tokens=int(max_tokens),
             reasoning_effort="low",
+            system=system,
         )
 
 
@@ -178,7 +224,11 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     return LegacyProviderBackend(provider)
 
 
-def load_owner_cognition_runtime(*, state_root: Path | None = None):
+def load_owner_cognition_runtime(
+    *,
+    state_root: Path | None = None,
+    behavioral_context_provider: Callable[[], Mapping[str, Any]],
+):
     """Load the single authoritative owner-goal cognition route.
 
     Owner goals are persistent server-side commitments and cannot depend on a
@@ -210,7 +260,10 @@ def load_owner_cognition_runtime(*, state_root: Path | None = None):
             Path(state_root),
             scope="owner-cognition-openai",
         )
-    return OwnerOpenAICognitionRuntime(provider)
+    return OwnerOpenAICognitionRuntime(
+        provider,
+        behavioral_context_provider=behavioral_context_provider,
+    )
 
 
 __all__ = [
