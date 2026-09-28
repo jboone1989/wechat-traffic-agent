@@ -513,6 +513,46 @@ class ContentWakefulRuntime:
                     )
                 incoming_owner = self._is_owner_goal_cognition_wake(wake)
                 existing_owner = self._is_owner_goal_cognition_wake(existing)
+                active_owner_ids = self._active_user_goal_ids()
+                incoming_owner_refs = tuple(
+                    str(ref)
+                    for ref in wake.relevant_refs
+                    if str(ref) in active_owner_ids
+                )
+                existing_owner_refs = (
+                    tuple(
+                        str(ref)
+                        for ref in existing.relevant_refs
+                        if str(ref) in active_owner_ids
+                    )
+                    if existing is not None
+                    else ()
+                )
+                replace_owner_target = bool(
+                    existing is not None
+                    and incoming_owner
+                    and existing_owner
+                    and not incoming_cognition_refs
+                    and existing_cognition_ref is None
+                    and incoming_owner_refs
+                    and incoming_owner_refs != existing_owner_refs
+                    and len(incoming_owner_refs) <= max(1, len(existing_owner_refs))
+                )
+                if replace_owner_target:
+                    # A cross-process owner wake naming one concrete active
+                    # goal is stronger provenance than an already-scheduled
+                    # broad owner refresh. Never let a later broad refresh
+                    # erase a precise target. Durable cognition continuations
+                    # and explicit WAIT are handled by the guards above.
+                    wake = PlannedWake(
+                        wake_id=wake.wake_id,
+                        at=min(wake.at, existing.at),
+                        reason=wake.reason,
+                        task=wake.task,
+                        relevant_refs=wake.relevant_refs,
+                        cancel_conditions=wake.cancel_conditions,
+                        preemptible=wake.preemptible,
+                    )
                 if existing is not None and incoming_owner and not existing_owner:
                     # External owner intent has stronger admission semantics
                     # than an ordinary cadence wake. Preserve the earlier due
@@ -531,9 +571,12 @@ class ContentWakefulRuntime:
                     existing is None
                     or wake.at < existing.at
                     or replace_cognition_pointer
+                    or replace_owner_target
                     or (incoming_owner and not existing_owner)
                 ):
-                    if existing is not None and replace_cognition_pointer:
+                    if existing is not None and (
+                        replace_cognition_pointer or replace_owner_target
+                    ):
                         self.core.cancel(wake_id)
                     self.core.schedule(wake)
                     current[wake_id] = wake

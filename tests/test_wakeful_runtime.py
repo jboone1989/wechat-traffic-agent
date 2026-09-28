@@ -1407,6 +1407,53 @@ def test_external_wake_spool_uses_write_order_not_filename_for_latest_cognition(
     )
 
 
+def test_external_exact_owner_goal_narrows_existing_broad_owner_wake(tmp_path):
+    state = tmp_path / "application" / "domain_runtime" / "agent_state.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text(json.dumps({
+        "data": {
+            "goals": [
+                {"data": {
+                    "goal_id": "goal_parent",
+                    "origin": {"value": "USER"},
+                    "status": {"value": "ACTIVE"},
+                }},
+                {"data": {
+                    "goal_id": "goal_specific",
+                    "origin": {"value": "USER"},
+                    "status": {"value": "ACTIVE"},
+                }},
+            ]
+        }
+    }), encoding="utf-8")
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW + timedelta(seconds=10),
+        reason="reconsider priorities after owner activated a goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal_parent", "goal_specific"),
+        preemptible=False,
+    ))
+    runtime._enqueue_external_wake(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW + timedelta(seconds=30),
+        reason="execute exact owner child goal",
+        task="CONTENT_COGNITION",
+        relevant_refs=("goal_specific",),
+        preemptible=False,
+    ))
+
+    assert runtime._drain_external_wake_requests() == 1
+    wake = next(
+        row for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:CONTENT_COGNITION"
+    )
+    assert wake.at == NOW + timedelta(seconds=10)
+    assert wake.reason == "execute exact owner child goal"
+    assert wake.relevant_refs == ("goal_specific",)
+
+
 def test_full_neural_graph_is_exposed_without_claiming_future_plasticity(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     snapshot = runtime.public_snapshot()
