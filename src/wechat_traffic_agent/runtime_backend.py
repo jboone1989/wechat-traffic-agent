@@ -160,10 +160,52 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
     )
 
 
+def load_public_chat_backend(*, state_root: Path | None = None):
+    """Load an always-on synchronous backend for the public web conversation.
+
+    Ferro's internal/owner cognition may intentionally be CHATGPT_ONLY and
+    durably suspend until a ChatGPT session claims the request. Public HTTP chat
+    cannot use that suspension protocol: a visitor expects an immediate request/
+    response. Keep the authority surfaces separate and route only public chat
+    through the already-provisioned API resource pool.
+    """
+    if state_root is None:
+        return None
+    from agent_runtime.backends import LegacyProviderBackend
+    from agent_runtime.llm import ResourcePoolProvider, load_resource_pool_manifest
+    from .llm_audit import audited_provider
+
+    root = Path(state_root)
+    manifest_path = root / "application" / "llm_resource_pool" / "resources.json"
+    if not manifest_path.exists():
+        return None
+    try:
+        resources = load_resource_pool_manifest(manifest_path)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not resources:
+        return None
+    # Do not inherit the CHATGPT_ONLY internal-cognition policy. Public chat has
+    # its own bounded resource health/decision state and uses the pool defaults:
+    # synchronous providers, quality floor, provider diversity and failover.
+    provider = ResourcePoolProvider(
+        resources,
+        policy_path=None,
+        state_dir=manifest_path.parent / "public-chat-runtime",
+        manifest_path=manifest_path,
+    )
+    provider = audited_provider(provider, root)
+    return ContentBoundedLegacyProviderBackend(
+        LegacyProviderBackend(provider),
+        default_duration_seconds=_content_advisory_timeout_seconds(),
+    )
+
+
 __all__ = [
     "ContentBoundedLegacyProviderBackend",
     "_content_advisory_timeout_seconds",
     "load_optional_advisory_backend",
+    "load_public_chat_backend",
     "runtime_llm_aliases",
     "chatgpt_only_mode",
 ]
