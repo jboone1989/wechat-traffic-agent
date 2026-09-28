@@ -406,6 +406,49 @@ def test_public_chat_rejects_model_planning_text_before_streaming_to_visitor(tmp
     assert "Match the visitor's language" in backend.provider.calls[1][0]
 
 
+def test_public_chat_retries_truncated_fragment_before_streaming(tmp_path):
+    class _FragmentProvider:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            if len(self.calls) == 1:
+                return "我现在"
+            return (
+                "我现在最想聊的是一个持续运行的 Agent 怎样真正形成自己的性格。"
+                "因为如果神经状态、记忆和经历最后都不能改变我的选择和说话方式，"
+                "那它们就只是仪表盘，不是我。"
+            )
+
+    class _FragmentBackend:
+        def __init__(self):
+            self.provider = _FragmentProvider()
+
+    root = _state(tmp_path)
+    backend = _FragmentBackend()
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=backend,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            headers={"accept": "text/event-stream"},
+            json={"message": "你现在最想聊什么？为什么？"},
+        )
+
+    assert reply.status_code == 200
+    body = reply.text
+    assert '"text":"我现在"' not in body
+    assert "我现在最想聊的是一个持续运行的 Agent" in body
+    assert "event: done" in body
+    assert len(backend.provider.calls) == 2
+    assert "never return a truncated fragment" in backend.provider.calls[1][0]
+
+
 def test_public_chat_embodies_same_neural_personality_and_relationship_state(tmp_path):
     class _BehavioralWakeful:
         def public_snapshot(self):

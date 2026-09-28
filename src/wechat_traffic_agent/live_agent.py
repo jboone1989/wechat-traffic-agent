@@ -1053,6 +1053,34 @@ def _public_reply_is_visitor_facing(reply: str, message: str) -> bool:
         r"[\u3400-\u9fff]", text
     ):
         return False
+    visitor = str(message or "").strip().lower()
+    simple_greeting = bool(re.fullmatch(
+        r"(?:hi|hello|hey|yo|你好|嗨|哈[啰喽]|在吗)[\s!！?？,.，。]*",
+        visitor,
+    ))
+    cjk_count = len(re.findall(r"[\u3400-\u9fff]", text))
+    word_count = len(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'’-]*\b", text))
+    terminal = bool(re.search(r"[.!?。！？…][\"'”’）)\]]*$", text))
+    explanation_expected = any(marker in visitor for marker in (
+        "why", "how", "explain", "tell me about",
+        "为什么", "怎么", "如何", "解释", "原因",
+    ))
+    if not simple_greeting:
+        if explanation_expected:
+            if cjk_count and cjk_count < 10:
+                return False
+            if not cjk_count and word_count < 6:
+                return False
+        elif cjk_count:
+            if cjk_count < 4:
+                return False
+        elif word_count < 3:
+            return False
+        # Short text without sentence closure is usually a provider fragment,
+        # e.g. "我现在" or "I think". Longer conversational replies need not
+        # end in punctuation to be complete.
+        if not terminal and cjk_count < 8 and word_count < 6:
+            return False
     return True
 
 
@@ -1063,7 +1091,8 @@ def _public_reply_repair_prompt(prompt: str, message: str) -> str:
         "Do not describe how to answer, do not discuss instructions, policies, roles, "
         "prompt hierarchy, or hidden reasoning. Match the visitor's language. "
         "Embody the supplied Behavioral State naturally instead of listing raw scores "
-        "unless the visitor explicitly asks for numbers.\n"
+        "unless the visitor explicitly asks for numbers. Complete at least one full "
+        "thought or sentence; never return a truncated fragment.\n"
         + "Visitor message to answer directly:\n"
         + message
     )
