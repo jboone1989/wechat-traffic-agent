@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import timedelta
 import math
 import os
 from pathlib import Path
@@ -49,6 +50,45 @@ class ContentBoundedLegacyProviderBackend:
                 request, max_duration_seconds=self.default_duration_seconds
             )
         return await self._backend.run(request)
+
+
+def _public_chat_resource_pool(resources, *, manifest_path: Path):
+    """Build a public-only pool that recovers quickly from transient API wobble.
+
+    Public chat is interactive and already bounds each provider attempt. A
+    multi-minute exponential cooldown for an empty/transport-failed response
+    can otherwise cascade across the whole free pool and create a site-wide
+    outage. Authentication, rate-limit and invalid-model failures retain the
+    Agent Runtime cooldown policy unchanged.
+    """
+    from agent_runtime.llm import ResourcePoolProvider
+
+    class PublicChatResourcePoolProvider(ResourcePoolProvider):
+        _SHORT_COOLDOWN_SECONDS = {
+            "EMPTY_RESPONSE": 15,
+            "REQUEST_FAILED": 20,
+            "TimeoutError": 20,
+        }
+
+        def _record_failure(self, spec, code):
+            super()._record_failure(spec, code)
+            seconds = self._SHORT_COOLDOWN_SECONDS.get(str(code))
+            if seconds is None:
+                return
+            health = self._health.get(spec.resource_id)
+            if health is None:
+                return
+            health.cooldown_until = (
+                self.now() + timedelta(seconds=seconds)
+            ).isoformat()
+            self._persist_health()
+
+    return PublicChatResourcePoolProvider(
+        resources,
+        policy_path=None,
+        state_dir=manifest_path.parent / "public-chat-runtime",
+        manifest_path=manifest_path,
+    )
 
 
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
@@ -172,7 +212,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     if state_root is None:
         return None
     from agent_runtime.backends import LegacyProviderBackend
-    from agent_runtime.llm import ResourcePoolProvider, load_resource_pool_manifest
+    from agent_runtime.llm import load_resource_pool_manifest
     from .llm_audit import audited_provider
 
     root = Path(state_root)
@@ -188,12 +228,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     # Do not inherit the CHATGPT_ONLY internal-cognition policy. Public chat has
     # its own bounded resource health/decision state and uses the pool defaults:
     # synchronous providers, quality floor, provider diversity and failover.
-    provider = ResourcePoolProvider(
-        resources,
-        policy_path=None,
-        state_dir=manifest_path.parent / "public-chat-runtime",
-        manifest_path=manifest_path,
-    )
+    provider = _public_chat_resource_pool(resources, manifest_path=manifest_path)
     provider = audited_provider(provider, root)
     return ContentBoundedLegacyProviderBackend(
         LegacyProviderBackend(provider),
@@ -204,6 +239,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
 __all__ = [
     "ContentBoundedLegacyProviderBackend",
     "_content_advisory_timeout_seconds",
+    "_public_chat_resource_pool",
     "load_optional_advisory_backend",
     "load_public_chat_backend",
     "runtime_llm_aliases",

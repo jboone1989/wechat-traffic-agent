@@ -1276,9 +1276,9 @@ async def _generate_guarded_public_reply(
         "system": _PUBLIC_SYSTEM,
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
-        "_attempt_timeout_seconds": 6,
-        "_reserve_timeout_seconds": 8,
-        "_max_failovers": 2,
+        "_attempt_timeout_seconds": 4,
+        "_reserve_timeout_seconds": 6,
+        "_max_failovers": 3,
     }
     reply = str(await provider.complete(prompt, **kwargs) or "").strip()
     if _public_reply_is_visitor_facing(reply, message):

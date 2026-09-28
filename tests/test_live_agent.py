@@ -319,9 +319,9 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert "open public conversation surface" in kwargs["system"]
     assert kwargs["_routing_task_class"] == "simple_public_text"
     assert kwargs["_minimum_quality"] == 0.7
-    assert kwargs["_attempt_timeout_seconds"] == 6
-    assert kwargs["_reserve_timeout_seconds"] == 8
-    assert kwargs["_max_failovers"] == 2
+    assert kwargs["_attempt_timeout_seconds"] == 4
+    assert kwargs["_reserve_timeout_seconds"] == 6
+    assert kwargs["_max_failovers"] == 3
     assert talk.status_code == 200
     assert "OPEN CONVERSATION" in talk.text
     assert "talk to me normally" in talk.text.lower()
