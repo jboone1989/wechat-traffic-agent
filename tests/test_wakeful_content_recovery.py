@@ -113,7 +113,7 @@ class Loop:
         }
 
     async def run_once(
-        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None
     ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
@@ -131,7 +131,7 @@ class Loop:
 
 class MissionTimeoutLoop(Loop):
     async def run_once(
-        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None
     ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
@@ -485,7 +485,7 @@ class MissionLoop(Loop):
         super().__init__(state_root, result_status=result_status)
 
     async def run_once(
-        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None
     ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
@@ -778,7 +778,7 @@ def test_legacy_mission_discovery_error_recovers_identity_from_active_mission(tm
 
 class AlreadyProcessedPublishedLoop(Loop):
     async def run_once(
-        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None
+        self, *, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None
     ):
         cycle = str(cycle_id)
         self.calls.append((now, cycle, focus_topic))
@@ -1095,7 +1095,7 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     loop.owner_goals = []
     original = loop.run_once
 
-    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None):
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None):
         loop.owner_goals.append(owner_goal)
         return await original(
             now=now,
@@ -1103,6 +1103,7 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
             focus_topic=focus_topic,
             owner_goal=owner_goal,
             seed_evidence=seed_evidence,
+            cognition_runtime=cognition_runtime,
         )
 
     loop.run_once = capture
@@ -1194,7 +1195,7 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
     loop.owner_goals = []
     original = loop.run_once
 
-    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None):
+    async def capture(*, now, cycle_id, focus_topic, owner_goal=None, seed_evidence=None, cognition_runtime=None):
         loop.owner_goals.append(owner_goal)
         return await original(
             now=now,
@@ -1202,6 +1203,7 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
             focus_topic=focus_topic,
             owner_goal=owner_goal,
             seed_evidence=seed_evidence,
+            cognition_runtime=cognition_runtime,
         )
 
     loop.run_once = capture

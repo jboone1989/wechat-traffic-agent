@@ -46,6 +46,24 @@ from .world_feed import WorldFeed
 from .x_growth_mission import x_growth_mission_context
 
 
+class _CognitionRuntimeOverlay:
+    """Delegate runtime state/actions while overriding only cognition."""
+
+    def __init__(self, base_runtime, cognition_runtime):
+        self._base_runtime = base_runtime
+        self._cognition_runtime = cognition_runtime
+
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
+        return await self._cognition_runtime.cognitive_probe(
+            task,
+            max_tokens,
+            output_schema=output_schema,
+        )
+
+    def __getattr__(self, name):
+        return getattr(self._base_runtime, name)
+
+
 class EvidenceSelection(Contract):
     title: str = Field(min_length=4, max_length=80)
     evidence_id: str
@@ -805,6 +823,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         focus_topic=None,
         owner_goal=None,
         seed_evidence=None,
+        cognition_runtime=None,
     ):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
@@ -824,10 +843,17 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if self._owner_goal is not None
             else None
         )
+        base_runtime = self.runtime
+        if self._owner_goal is not None and cognition_runtime is not None:
+            self.runtime = _CognitionRuntimeOverlay(
+                base_runtime,
+                cognition_runtime,
+            )
         try:
             with owner_cognition_scope(owner_scope):
                 return await super().run_once(now=now, cycle_id=cycle_id)
         finally:
+            self.runtime = base_runtime
             self._focus_topic = None
             self._owner_goal = None
             self._seed_evidence = []

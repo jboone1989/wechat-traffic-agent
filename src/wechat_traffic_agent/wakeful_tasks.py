@@ -2901,13 +2901,34 @@ class WakefulContentTaskRunner:
                 "origin": owner_goal["origin"],
                 "priority": owner_goal["priority"],
             }
-        continuous = self._run_async(self.continuous_loop.run_once(
+        owner_content_cognition = None
+        if owner_goal is not None:
+            owner_content_cognition = getattr(
+                self,
+                "owner_cognition_runtime",
+                None,
+            )
+            if owner_content_cognition is None:
+                from .runtime_backend import load_owner_cognition_runtime
+
+                owner_content_cognition = load_owner_cognition_runtime(
+                    state_root=Path(self.state_root)
+                    if getattr(self, "state_root", None) is not None
+                    else None,
+                )
+                self.owner_cognition_runtime = owner_content_cognition
+        content_run_kwargs = dict(
             now=now,
             cycle_id=directed_cycle_id,
             focus_topic=focus_topic,
             owner_goal=owner_goal,
             seed_evidence=owner_seed_evidence,
-        ))
+        )
+        if owner_goal is not None:
+            content_run_kwargs["cognition_runtime"] = owner_content_cognition
+        continuous = self._run_async(
+            self.continuous_loop.run_once(**content_run_kwargs)
+        )
         rows["continuous_content"] = continuous
         if str(continuous.get("status") or "").upper() == "WAITING_FOR_CHATGPT":
             rows["status"] = "WAITING_FOR_CHATGPT"
