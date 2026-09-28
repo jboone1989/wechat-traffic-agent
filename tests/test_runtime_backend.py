@@ -73,14 +73,14 @@ def test_public_chat_uses_dedicated_openai_realtime_backend(monkeypatch):
     assert "sk-test-not-real" not in repr(backend.provider)
 
 
-def test_public_chat_openai_model_is_configurable(monkeypatch):
+def test_public_chat_stays_on_sol_even_if_legacy_override_is_present(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", "chat-latest")
+    monkeypatch.setenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", "gpt-5.6-luna")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
 
     backend = load_public_chat_backend()
 
-    assert backend.provider.model == "chat-latest"
+    assert backend.provider.model == "gpt-5.6-sol"
     assert backend.provider.base_url == "https://api.openai.com/v1"
 
 
@@ -91,14 +91,14 @@ def test_owner_cognition_requires_explicit_openai_key(monkeypatch, tmp_path):
         load_owner_cognition_runtime(state_root=tmp_path)
 
 
-def test_owner_cognition_uses_direct_openai_without_fallback(monkeypatch):
+def test_owner_cognition_uses_sol_without_model_fallback(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("FERRO_OWNER_COGNITION_OPENAI_MODEL", "owner-model")
+    monkeypatch.setenv("FERRO_OWNER_COGNITION_OPENAI_MODEL", "gpt-5.6-luna")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
 
     runtime = load_owner_cognition_runtime()
 
-    assert runtime.provider.model == "owner-model"
+    assert runtime.provider.model == "gpt-5.6-sol"
     assert runtime.provider.base_url == "https://api.openai.com/v1"
     assert runtime.provider.timeout_seconds == 30.0
     assert runtime.provider.reasoning_effort == "low"

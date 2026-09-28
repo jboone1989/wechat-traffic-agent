@@ -156,10 +156,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     from agent_runtime.backends import LegacyProviderBackend
     from .openai_public_chat import OpenAIResponsesProvider
 
-    model = str(
-        os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
-        or "gpt-5.6-sol"
-    ).strip()
+    model = "gpt-5.6-sol"
     base_url = str(
         os.environ.get("OPENAI_BASE_URL")
         or "https://api.openai.com/v1"
@@ -194,11 +191,7 @@ def load_owner_cognition_runtime(*, state_root: Path | None = None):
 
     from .openai_public_chat import OpenAIResponsesProvider
 
-    model = str(
-        os.environ.get("FERRO_OWNER_COGNITION_OPENAI_MODEL")
-        or os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
-        or "gpt-5.6-sol"
-    ).strip()
+    model = "gpt-5.6-sol"
     base_url = str(
         os.environ.get("OPENAI_BASE_URL")
         or "https://api.openai.com/v1"
