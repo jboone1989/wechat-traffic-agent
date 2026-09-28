@@ -1145,9 +1145,13 @@ class LiveAgentService:
                 return JSONResponse(payload, headers={"Cache-Control": "no-store"})
             if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
                 return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)
-            payload = dict(self.wakeful.brain_lab_projection())
+            payload = dict(
+                await asyncio.to_thread(self.wakeful.brain_lab_projection)
+            )
             if hasattr(self.wakeful, "dream_projection"):
-                payload["dreaming"] = self.wakeful.dream_projection()
+                payload["dreaming"] = await asyncio.to_thread(
+                    self.wakeful.dream_projection
+                )
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def neural_telemetry_status(request: Request):
