@@ -717,6 +717,48 @@ class FerroBrainLab:
             "projection": self.projection(),
         }
 
+    def open_world_curriculum_environments(self, *, limit: int = 4) -> tuple[str, ...]:
+        specs = self._generated_specs()
+        candidates: list[tuple[float, str, str]] = []
+        allowed = {"CANDIDATE", "EXPERIMENTING", "ADOPTED"}
+        for name, spec in specs.items():
+            status = str(spec.get("status") or "").upper()
+            if status not in allowed:
+                continue
+            sensors = len(spec.get("sensor_channels") or ())
+            actions = len(spec.get("actions") or ())
+            noise = float(spec.get("noise") or 0.0)
+            period = max(1, int(spec.get("context_switch_period") or 12))
+            horizon = max(8, int(spec.get("episode_horizon") or 48))
+            difficulty = (
+                0.35 * sensors
+                + 0.55 * actions
+                + 5.0 * noise
+                + 4.0 / period
+                + horizon / 80.0
+            )
+            target = str(spec.get("target_task") or "UNKNOWN")
+            candidates.append((difficulty, name, target))
+        candidates.sort(key=lambda row: (-row[0], row[1]))
+
+        chosen: list[str] = []
+        seen_targets: set[str] = set()
+        bounded = max(1, min(8, int(limit)))
+        for _, name, target in candidates:
+            if target in seen_targets:
+                continue
+            chosen.append(name)
+            seen_targets.add(target)
+            if len(chosen) >= bounded:
+                return tuple(chosen)
+        for _, name, _ in candidates:
+            if name in chosen:
+                continue
+            chosen.append(name)
+            if len(chosen) >= bounded:
+                break
+        return tuple(chosen)
+
     def run_accelerated_arena(
         self,
         *,

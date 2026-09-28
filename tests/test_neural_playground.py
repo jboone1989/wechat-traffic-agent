@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from wechat_traffic_agent.neural_dreaming import FerroDreamEngine
@@ -327,3 +328,54 @@ def test_accelerated_arena_prioritizes_environment_with_largest_graduation_gap(
     )
 
     assert result["results"][0]["environment"] == "ROVER"
+
+
+def test_open_world_curriculum_selects_active_difficult_and_diverse_worlds(tmp_path: Path):
+    app = tmp_path / "application"
+    app.mkdir(parents=True)
+    worlds = {
+        "WORLD_0001": {
+            "status": "CANDIDATE",
+            "target_task": "CHECK_X",
+            "sensor_channels": ["a", "b", "c", "d"],
+            "actions": ["A0", "A1", "A2", "A3"],
+            "noise": 0.12,
+            "context_switch_period": 4,
+            "episode_horizon": 64,
+        },
+        "WORLD_0002": {
+            "status": "EXPERIMENTING",
+            "target_task": "REFLECT",
+            "sensor_channels": ["a", "b", "c", "d"],
+            "actions": ["A0", "A1", "A2", "A3"],
+            "noise": 0.10,
+            "context_switch_period": 5,
+            "episode_horizon": 60,
+        },
+        "WORLD_0003": {
+            "status": "ADOPTED",
+            "target_task": "OBSERVE_WORLD",
+            "sensor_channels": ["a", "b", "c", "d"],
+            "actions": ["A0", "A1", "A2"],
+            "noise": 0.08,
+            "context_switch_period": 7,
+            "episode_horizon": 58,
+        },
+        "WORLD_0004": {
+            "status": "REVISE_REQUIRED",
+            "target_task": "CONTENT_COGNITION",
+            "sensor_channels": ["a", "b", "c", "d"],
+            "actions": ["A0", "A1", "A2", "A3"],
+            "noise": 0.20,
+            "context_switch_period": 2,
+            "episode_horizon": 80,
+        },
+    }
+    (app / "developmental_agency.json").write_text(
+        json.dumps({"worlds": worlds}),
+        encoding="utf-8",
+    )
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    selected = lab.open_world_curriculum_environments(limit=3)
+    assert set(selected) == {"WORLD_0001", "WORLD_0002", "WORLD_0003"}
+    assert "WORLD_0004" not in selected

@@ -346,3 +346,94 @@ def test_graduation_environment_order_prioritizes_largest_deficit(tmp_path):
     assert engine.graduation_environment_order(
         ("PONG", "MAZE", "FORAGING", "ROVER")
     ) == ("ROVER", "FORAGING", "MAZE", "PONG")
+
+
+def test_foundation_graduation_is_durably_latched(tmp_path):
+    engine = GameIntelligence(tmp_path)
+    base = ("PONG", "MAZE", "FORAGING", "ROVER")
+    engine.state["episodes"] = [
+        {"environment": env, "episode_id": f"{env}:{i}", "reward": 0.1}
+        for env in base for i in range(40)
+    ]
+    engine.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:0",
+            "state_key": str(i),
+            "action": "A",
+            "reward": 0.1,
+            "next_state_key": str(i + 1),
+        }
+        for env in base for i in range(750)
+    ]
+    engine.state["skills"] = {
+        "macro:maze:a": {"kind": "MACRO", "prospectively_validated": True},
+        "macro:pong:b": {"kind": "MACRO", "prospectively_validated": True},
+    }
+    engine.state["transfer_evaluations"] = [
+        {"interpretation": "MEASURED_CROSS_GAME_REUSE"} for _ in range(3)
+    ]
+    engine.state["population"] = {
+        "SCREEPS": {
+            "matches": [{"episode_id": f"s:{i}"} for i in range(50)],
+            "members": {
+                name: {"games": 5, "wins": 3, "losses": 2, "reward_sum": 1.0, "params": {}}
+                for name in ("a", "b", "c", "d")
+            },
+        }
+    }
+    first = engine.graduation_status()
+    assert first["graduated"] is True
+    assert first["latched"] is True
+
+    engine.state["episodes"] = []
+    engine.state["transitions"] = []
+    engine._persist()
+    reloaded = GameIntelligence(tmp_path).graduation_status()
+    assert reloaded["graduated"] is True
+    assert reloaded["latched"] is True
+    assert reloaded["progress"] == 1.0
+
+
+def test_open_world_graduation_requires_depth_macros_transfer_and_progress(tmp_path):
+    engine = GameIntelligence(tmp_path)
+    worlds = ("WORLD_0001", "WORLD_0002", "WORLD_0003")
+    engine.state["episodes"] = [
+        {"environment": env, "episode_id": f"{env}:{i}", "reward": 0.4}
+        for env in worlds for i in range(20)
+    ]
+    engine.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:0",
+            "state_key": str(i),
+            "action": "A0",
+            "reward": 0.1,
+            "next_state_key": str(i + 1),
+        }
+        for env in worlds for i in range(500)
+    ]
+    engine.state["skills"] = {
+        f"macro:{env.lower()}:x": {
+            "kind": "MACRO",
+            "prospectively_validated": True,
+        }
+        for env in worlds
+    }
+    engine.state["transfer_evaluations"] = [
+        {
+            "source_environment": worlds[i % 3],
+            "target_environment": worlds[(i + 1) % 3],
+            "interpretation": "MEASURED_CROSS_GAME_REUSE",
+        }
+        for i in range(6)
+    ]
+    engine.state["curricula"] = {
+        "WORLD_0001": {"level": 2},
+        "WORLD_0002": {"level": 3},
+        "WORLD_0003": {"level": 1},
+    }
+    status = engine.open_world_graduation_status(worlds)
+    assert status["graduated"] is True
+    assert status["progress"] == 1.0
+    assert status["next_stage"] == "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"

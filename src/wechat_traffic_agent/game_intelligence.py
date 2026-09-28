@@ -1015,8 +1015,9 @@ class GameIntelligence:
         self.state["accelerated_batches"] = rows[-128:]
         self._persist(now)
 
+    @_mutating
     def graduation_status(self) -> dict[str, Any]:
-        """Measure whether the current game curriculum has enough real evidence."""
+        """Measure and durably latch completion of the foundation curriculum."""
         base_environments = ("PONG", "MAZE", "FORAGING", "ROVER")
         episode_counts = {name: 0 for name in base_environments}
         transition_counts = {name: 0 for name in base_environments}
@@ -1065,22 +1066,40 @@ class GameIntelligence:
             "measured_cross_game_transfers": measured_transfers >= 3,
         }
         completed = sum(1 for value in checks.values() if value)
+        current_evidence = {
+            "episodes": episode_counts,
+            "transitions": transition_counts,
+            "screeps_matches": int(population.get("match_count") or 0),
+            "population_member_count": len(members),
+            "population_min_games": population_min_games,
+            "validated_macro_skills": validated_macro_skills,
+            "measured_cross_game_transfers": measured_transfers,
+        }
+        milestones = self.state.setdefault("graduation_milestones", {})
+        milestone = dict(milestones.get("FOUNDATION_GAMES_V1") or {})
+        if all(checks.values()) and not milestone.get("graduated"):
+            milestone = {
+                "stage": "FOUNDATION_GAMES_V1",
+                "graduated": True,
+                "graduated_at": datetime.now(timezone.utc).isoformat(),
+                "checks": dict(checks),
+                "evidence": current_evidence,
+            }
+            milestones["FOUNDATION_GAMES_V1"] = milestone
+            self._persist()
+        latched = bool(milestone.get("graduated"))
         return {
             "stage": "FOUNDATION_GAMES_V1",
-            "graduated": all(checks.values()),
-            "completed_requirements": completed,
+            "graduated": bool(latched or all(checks.values())),
+            "graduated_at": milestone.get("graduated_at"),
+            "latched": latched,
+            "completed_requirements": len(checks) if latched else completed,
             "total_requirements": len(checks),
-            "progress": round(completed / len(checks), 6),
-            "checks": checks,
-            "evidence": {
-                "episodes": episode_counts,
-                "transitions": transition_counts,
-                "screeps_matches": int(population.get("match_count") or 0),
-                "population_member_count": len(members),
-                "population_min_games": population_min_games,
-                "validated_macro_skills": validated_macro_skills,
-                "measured_cross_game_transfers": measured_transfers,
-            },
+            "progress": 1.0 if latched else round(completed / len(checks), 6),
+            "checks": dict(milestone.get("checks") or checks) if latched else checks,
+            "evidence": dict(milestone.get("evidence") or current_evidence) if latched else current_evidence,
+            "current_retention_checks": checks,
+            "current_evidence": current_evidence,
             "next_stage": "HARDER_OPEN_WORLD_CURRICULUM",
         }
 
@@ -1112,6 +1131,95 @@ class GameIntelligence:
             )
 
         return tuple(sorted(names, key=priority))
+
+    def open_world_graduation_status(
+        self,
+        environments: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        names = tuple(
+            dict.fromkeys(
+                str(value).upper()
+                for value in (
+                    environments
+                    or sorted(
+                        {
+                            str(row.get("environment") or "").upper()
+                            for row in (self.state.get("episodes") or ())
+                            if isinstance(row, Mapping)
+                            and str(row.get("environment") or "").upper().startswith("WORLD_")
+                        }
+                    )
+                )
+                if str(value).upper().startswith("WORLD_")
+            )
+        )
+        episodes = {name: 0 for name in names}
+        transitions = {name: 0 for name in names}
+        for row in self.state.get("episodes") or ():
+            if not isinstance(row, Mapping):
+                continue
+            env = str(row.get("environment") or "").upper()
+            if env in episodes:
+                episodes[env] += 1
+        for row in self.state.get("transitions") or ():
+            if not isinstance(row, Mapping):
+                continue
+            env = str(row.get("environment") or "").upper()
+            if env in transitions:
+                transitions[env] += 1
+        ready_worlds = [
+            name for name in names
+            if episodes[name] >= 20 and transitions[name] >= 500
+        ]
+        validated_macros = 0
+        for skill_id, row in (self.state.get("skills") or {}).items():
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("kind") != "MACRO" or not row.get("prospectively_validated"):
+                continue
+            if any(str(skill_id).startswith(f"macro:{name.lower()}:") for name in names):
+                validated_macros += 1
+        measured_transfers = 0
+        name_set = set(names)
+        for row in self.state.get("transfer_evaluations") or ():
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("interpretation") != "MEASURED_CROSS_GAME_REUSE":
+                continue
+            source = str(row.get("source_environment") or "").upper()
+            target = str(row.get("target_environment") or "").upper()
+            if source in name_set and target in name_set:
+                measured_transfers += 1
+        advanced_worlds = sum(
+            1 for name in names
+            if int(((self.state.get("curricula") or {}).get(name) or {}).get("level") or 1) >= 2
+        )
+        checks = {
+            "world_diversity": len(names) >= 3,
+            "world_sample_depth": len(ready_worlds) >= 3,
+            "validated_open_world_macros": validated_macros >= 3,
+            "measured_open_world_transfers": measured_transfers >= 6,
+            "adaptive_curriculum_progress": advanced_worlds >= 2,
+        }
+        completed = sum(1 for value in checks.values() if value)
+        return {
+            "stage": "HARDER_OPEN_WORLD_CURRICULUM",
+            "graduated": all(checks.values()),
+            "completed_requirements": completed,
+            "total_requirements": len(checks),
+            "progress": round(completed / len(checks), 6),
+            "checks": checks,
+            "evidence": {
+                "environments": list(names),
+                "episodes": episodes,
+                "transitions": transitions,
+                "ready_worlds": ready_worlds,
+                "validated_macro_skills": validated_macros,
+                "measured_transfers": measured_transfers,
+                "advanced_worlds": advanced_worlds,
+            },
+            "next_stage": "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD",
+        }
 
     def projection(self) -> dict[str, Any]:
         macro = [
@@ -1147,6 +1255,12 @@ class GameIntelligence:
             ],
             "accelerated_batch_count": len(self.state.get("accelerated_batches") or ()),
             "graduation": self.graduation_status(),
+            "open_world_graduation": self.open_world_graduation_status(),
+            "active_stage": (
+                "HARDER_OPEN_WORLD_CURRICULUM"
+                if self.graduation_status().get("graduated")
+                else "FOUNDATION_GAMES_V1"
+            ),
             "reward_authority": "MEASURED_GAME_WORLD_ONLY",
             "offline_replay_can_promote": False,
         }

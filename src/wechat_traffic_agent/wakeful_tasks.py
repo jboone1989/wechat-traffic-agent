@@ -361,19 +361,46 @@ class WakefulContentTaskRunner:
         result = self.wakeful.run_brain_lab(now, steps=12)
         arena = None
         graduation = None
+        open_world_graduation = None
+        active_stage = "FOUNDATION_GAMES_V1"
         brain_lab = getattr(self.wakeful, "brain_lab", None)
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
             graduation = brain_lab.game_intelligence.graduation_status()
-            arena = brain_lab.run_accelerated_arena(
-                sessions_per_environment=1 if graduation.get("graduated") else 6,
-                base_steps=24 if graduation.get("graduated") else 32,
-                now=now,
-            )
+            if graduation.get("graduated"):
+                harder = brain_lab.open_world_curriculum_environments(limit=4)
+                if harder:
+                    active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
+                    open_world_graduation = (
+                        brain_lab.game_intelligence.open_world_graduation_status(harder)
+                    )
+                    arena = brain_lab.run_accelerated_arena(
+                        environments=harder,
+                        sessions_per_environment=(
+                            1 if open_world_graduation.get("graduated") else 3
+                        ),
+                        base_steps=40,
+                        now=now,
+                    )
+                else:
+                    active_stage = "FOUNDATION_MAINTENANCE_WAITING_FOR_OPEN_WORLD"
+                    arena = brain_lab.run_accelerated_arena(
+                        sessions_per_environment=1,
+                        base_steps=24,
+                        now=now,
+                    )
+            else:
+                arena = brain_lab.run_accelerated_arena(
+                    sessions_per_environment=6,
+                    base_steps=32,
+                    now=now,
+                )
         return {
             "task": "NEURAL_PLAY",
             **result,
             "accelerated_arena": arena,
             "graduation": graduation,
+            "open_world_graduation": open_world_graduation,
+            "active_game_stage": active_stage,
         }
 
     def _neural_dream(self, now: datetime) -> dict[str, Any]:
