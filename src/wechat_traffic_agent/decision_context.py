@@ -79,6 +79,116 @@ def _text(value: Any) -> str:
     return str(value or "")
 
 
+_STALE_STATUSES = frozenset({
+    "STALE", "SUPERSEDED", "REVOKED", "INVALID", "OBSOLETE", "REPLACED",
+})
+_TEMPORAL_KEYS = ("observed_at", "updated_at", "created_at", "at", "timestamp")
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _candidate_timestamp(row: Mapping[str, Any]) -> datetime | None:
+    containers: list[Mapping[str, Any]] = [row]
+    payload = row.get("payload")
+    if isinstance(payload, Mapping):
+        containers.append(payload)
+        nested = payload.get("payload")
+        if isinstance(nested, Mapping):
+            containers.append(nested)
+    for container in containers:
+        for key in _TEMPORAL_KEYS:
+            parsed = _parse_timestamp(container.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _explicitly_stale(row: Mapping[str, Any], *, now: datetime) -> bool:
+    payload = row.get("payload")
+    containers = [row]
+    if isinstance(payload, Mapping):
+        containers.append(payload)
+    for container in containers:
+        if container.get("stale") is True:
+            return True
+        status = str(container.get("status") or "").strip().upper()
+        if status in _STALE_STATUSES:
+            return True
+        if container.get("superseded_by") or container.get("replaced_by"):
+            return True
+        valid_until = _parse_timestamp(container.get("valid_until"))
+        if valid_until is not None and valid_until < now:
+            return True
+    return False
+
+
+def _declares_supersession(row: Mapping[str, Any]) -> bool:
+    payload = row.get("payload")
+    if not isinstance(payload, Mapping):
+        return False
+    for key in (
+        "supersedes", "superseded_refs", "replaces", "replaced_refs",
+        "supersedes_prior", "supersedes_previous",
+    ):
+        value = payload.get(key)
+        if value not in (None, False, "", [], (), {}):
+            return True
+    return False
+
+
+def _temporal_adjustment(
+    row: Mapping[str, Any],
+    *,
+    now: datetime,
+) -> tuple[float, list[str]]:
+    reasons: list[str] = []
+    if bool(row.get("_temporal_shadowed")):
+        return -3.0, ["superseded_by_newer_evidence"]
+    if _explicitly_stale(row, now=now):
+        return -2.6, ["explicitly_stale_evidence"]
+
+    adjustment = 0.0
+    observed = _candidate_timestamp(row)
+    if bool(row.get("current")):
+        # "current" is already represented by narrow need-specific priors in
+        # _rank_candidate. Keep only a tiny temporal nudge here so current state
+        # cannot crowd out untimestamped but decision-relevant durable history.
+        adjustment += 0.08
+        reasons.append("temporal_current")
+    if observed is not None:
+        age_seconds = max(0.0, (now - observed).total_seconds())
+        if age_seconds <= 6 * 3600:
+            adjustment += 0.55
+            reasons.append("fresh_within_6h")
+        elif age_seconds <= 24 * 3600:
+            adjustment += 0.4
+            reasons.append("fresh_within_24h")
+        elif age_seconds <= 7 * 86400:
+            adjustment += 0.2
+            reasons.append("fresh_within_7d")
+        elif age_seconds <= 30 * 86400:
+            adjustment += 0.08
+            reasons.append("fresh_within_30d")
+    if _declares_supersession(row):
+        adjustment += 0.35
+        reasons.append("declares_supersession")
+    return adjustment, reasons
+
+
 def plan_information_needs(
     *,
     prompt: str,
@@ -278,6 +388,7 @@ def _rank_candidate(
     owner_goal_ids: set[str],
     owner_mission_ids: set[str],
     recall_rank: int | None,
+    now: datetime,
 ) -> tuple[float, list[str]]:
     text = str(row.get("text") or "")
     terms = _terms(text)
@@ -358,6 +469,15 @@ def _rank_candidate(
         score += 0.38
         reasons.append("resource_constraint")
 
+    # Temporal validity is part of relevance, not a generic "newer is better"
+    # rule. Explicitly stale/superseded evidence is strongly demoted; fresh or
+    # current evidence receives a bounded boost, while old durable evidence can
+    # still compete when it has not been invalidated.
+    temporal_delta, temporal_reasons = _temporal_adjustment(row, now=now)
+    if score > 0 or temporal_delta < 0:
+        score += temporal_delta
+        reasons.extend(temporal_reasons)
+
     # Salience and confidence are tie-breakers/modulators, not relevance
     # generators. An unrelated high-importance memory should still score zero.
     if score > 0:
@@ -369,7 +489,7 @@ def _rank_candidate(
         if confidence >= 0.85:
             reasons.append("high_confidence")
 
-    return score * need.priority, reasons
+    return max(0.0, score) * need.priority, reasons
 
 
 def _dependency_tokens(row: Mapping[str, Any]) -> set[str]:
@@ -451,6 +571,35 @@ def build_decision_context(
             memory_errors.append(f"router:{type(exc).__name__}")
 
     candidates = list(by_id.values())
+
+    # Resolve explicit version/supersession semantics before scoring. A newer
+    # fact that declares it supersedes prior evidence shadows only older facts
+    # sharing a specific dependency/entity token. Goal/mission IDs alone are too
+    # broad, so long-horizon history for the same goal remains available unless
+    # a more specific subject/version link exists.
+    generic_temporal_tokens = owner_goal_ids | owner_mission_ids
+    superseders = [
+        row
+        for row in candidates
+        if _declares_supersession(row) and _candidate_timestamp(row) is not None
+    ]
+    for newer in superseders:
+        newer_at = _candidate_timestamp(newer)
+        if newer_at is None:
+            continue
+        newer_tokens = _dependency_tokens(newer)
+        for older in candidates:
+            if older is newer or bool(older.get("current")):
+                continue
+            older_at = _candidate_timestamp(older)
+            if older_at is None or older_at >= newer_at:
+                continue
+            shared_specific = (
+                newer_tokens & _dependency_tokens(older)
+            ) - generic_temporal_tokens
+            if shared_specific:
+                older["_temporal_shadowed"] = True
+
     anchor_terms = _terms(
         " ".join([
             str(prompt or ""),
@@ -472,6 +621,7 @@ def build_decision_context(
                 owner_goal_ids=owner_goal_ids,
                 owner_mission_ids=owner_mission_ids,
                 recall_rank=recall_ranks.get((need.need_id, cid)),
+                now=current_time,
             )
             if score > 0.6:
                 scored.append((score, cid, reasons))
@@ -676,6 +826,10 @@ def build_decision_context(
         for row in candidates:
             cid = str(row.get("context_id") or "")
             if cid in selected:
+                continue
+            if bool(row.get("_temporal_shadowed")) or _explicitly_stale(
+                row, now=current_time
+            ):
                 continue
             row_tokens = _dependency_tokens(row)
             specific_shared = specific_dependency_keys & row_tokens

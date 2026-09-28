@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from wechat_traffic_agent.decision_context import (
     build_decision_context,
@@ -302,3 +302,153 @@ def test_marginal_need_coverage_suppresses_redundant_same_need_noise() -> None:
     assert result["selected_count"] <= 3
     assert "objective" in result["need_coverage"]["covered"]
     assert "past_outcomes" in result["need_coverage"]["covered"]
+
+
+def test_newer_superseding_fact_shadows_older_same_subject_evidence() -> None:
+    goal_id = "goal-temporal"
+    mission_id = "mission-temporal"
+    target = "provider-temporal"
+    latest = candidate(
+        context_id="experience:latest",
+        source="experience",
+        kind="LATEST_OUTCOME",
+        payload={
+            "goal_id": goal_id,
+            "mission_id": mission_id,
+            "target": target,
+            "observed_at": NOW.isoformat(),
+            "supersedes": "prior target evidence",
+        },
+        text="provider-temporal latest verified outcome succeeded and supersedes prior evidence",
+        importance=0.9,
+        confidence=1.0,
+        refs=[goal_id, mission_id, target],
+    )
+    stale = candidate(
+        context_id="experience:stale",
+        source="experience",
+        kind="OUTCOME",
+        payload={
+            "goal_id": goal_id,
+            "mission_id": mission_id,
+            "target": target,
+            "observed_at": (NOW - timedelta(days=2)).isoformat(),
+            "stale": True,
+        },
+        text="provider-temporal older outcome failed",
+        importance=1.0,
+        confidence=1.0,
+        refs=[goal_id, mission_id, target],
+    )
+
+    result = build_decision_context(
+        prompt="SELECT: decide whether provider-temporal should be used now",
+        decision_frame=_frame("SELECTION"),
+        owner_scope={
+            "goal_id": goal_id,
+            "mission_id": mission_id,
+            "description": "decide provider-temporal current use",
+        },
+        missions=[{
+            "goal_id": goal_id,
+            "mission_id": mission_id,
+            "description": "decide provider-temporal current use",
+        }],
+        local_candidates=[latest, stale],
+        state_root=None,
+        now=NOW,
+    )
+
+    assert "experience:latest" in result["selected_ids"]
+    assert "experience:stale" not in result["selected_ids"]
+
+
+def test_supersession_does_not_erase_unrelated_long_horizon_history() -> None:
+    latest = candidate(
+        context_id="experience:latest-a",
+        source="experience",
+        kind="LATEST_OUTCOME",
+        payload={
+            "goal_id": "goal-a",
+            "target": "target-a",
+            "observed_at": NOW.isoformat(),
+            "supersedes": "prior target-a evidence",
+        },
+        text="target-a latest outcome succeeded",
+        refs=["goal-a", "target-a"],
+        importance=0.9,
+        confidence=1.0,
+    )
+    durable_other = candidate(
+        context_id="memory:durable-b",
+        source="memory",
+        kind="DURABLE_HISTORY",
+        payload={
+            "goal_id": "goal-a",
+            "target": "target-b",
+            "observed_at": (NOW - timedelta(days=120)).isoformat(),
+        },
+        text="target-b durable historical pattern is important to this decision",
+        refs=["goal-a", "target-b"],
+        importance=1.0,
+        confidence=1.0,
+    )
+
+    result = build_decision_context(
+        prompt="PLAN: compare target-a with target-b historical pattern",
+        decision_frame=_frame("PLANNING"),
+        owner_scope={"goal_id": "goal-a", "description": "compare target-a target-b"},
+        missions=[],
+        local_candidates=[latest, durable_other],
+        state_root=None,
+        now=NOW,
+    )
+
+    assert "experience:latest-a" in result["selected_ids"]
+    assert "memory:durable-b" in result["selected_ids"]
+
+
+def test_freshness_breaks_same_subject_tie_without_requiring_stale_flag() -> None:
+    goal_id = "goal-freshness"
+    target = "route-freshness"
+    older = candidate(
+        context_id="experience:older",
+        source="experience",
+        kind="OUTCOME",
+        payload={
+            "goal_id": goal_id,
+            "target": target,
+            "observed_at": (NOW - timedelta(days=3)).isoformat(),
+        },
+        text="route-freshness verification result is available",
+        refs=[goal_id, target],
+        importance=0.95,
+        confidence=1.0,
+    )
+    fresh = candidate(
+        context_id="experience:fresh",
+        source="experience",
+        kind="OUTCOME",
+        payload={
+            "goal_id": goal_id,
+            "target": target,
+            "observed_at": (NOW - timedelta(minutes=5)).isoformat(),
+        },
+        text="route-freshness verification result is available",
+        refs=[goal_id, target],
+        importance=0.95,
+        confidence=1.0,
+    )
+
+    result = build_decision_context(
+        prompt="VERIFY: use the route-freshness verification result",
+        decision_frame=_frame("VERIFICATION"),
+        owner_scope={"goal_id": goal_id, "description": "verify route-freshness"},
+        missions=[],
+        local_candidates=[older, fresh],
+        state_root=None,
+        now=NOW,
+        max_facts=1,
+    )
+
+    assert result["selected_ids"] == ["experience:fresh"]
