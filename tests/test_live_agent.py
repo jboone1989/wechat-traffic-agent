@@ -325,14 +325,33 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert "open public conversation surface" in kwargs["system"]
     assert kwargs["_routing_task_class"] == "simple_public_text"
     assert kwargs["_minimum_quality"] == 0.7
-    assert kwargs["_durable_blocking_wait"] is True
-    assert kwargs["_durable_blocking_wait_seconds"] == 20
+    assert kwargs["timeout_seconds"] == 18
+    assert "_durable_blocking_wait" not in kwargs
+    assert "_durable_blocking_wait_seconds" not in kwargs
     assert "_attempt_timeout_seconds" not in kwargs
     assert "_reserve_timeout_seconds" not in kwargs
     assert "_max_failovers" not in kwargs
     assert talk.status_code == 200
     assert "OPEN CONVERSATION" in talk.text
     assert "talk to me normally" in talk.text.lower()
+
+
+def test_public_chat_does_not_fall_back_to_owner_backend_when_explicitly_disabled(tmp_path):
+    owner_backend = _Backend()
+    service = LiveAgentService(
+        state_root=_state(tmp_path),
+        application=_Application(),
+        backend=owner_backend,
+        public_backend=None,
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            json={"message": "hello"},
+        )
+    assert reply.status_code == 503
+    assert reply.json()["error"] == "chat_backend_unavailable"
+    assert owner_backend.provider.calls == []
 
 
 def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_path):

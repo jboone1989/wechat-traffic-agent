@@ -128,9 +128,37 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
     )
 
 def load_public_chat_backend(*, state_root: Path | None = None):
-    """Use the main ChatGPT backend for public chat; no API-provider side pool."""
-    del state_root
-    return None
+    """Load synchronous OpenAI for public HTTP chat only."""
+    api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        return None
+
+    from agent_runtime.backends import LegacyProviderBackend
+    from agent_runtime.llm.openai_compatible import OpenAICompatibleChatProvider
+
+    model = str(
+        os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
+        or "gpt-5.6-luna"
+    ).strip()
+    base_url = str(
+        os.environ.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).strip().rstrip("/")
+    provider = OpenAICompatibleChatProvider(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        timeout_seconds=18.0,
+        include_usage=False,
+    )
+    if state_root is not None:
+        from .llm_audit import audited_provider
+        provider = audited_provider(
+            provider,
+            Path(state_root),
+            scope="public-chat-openai",
+        )
+    return LegacyProviderBackend(provider)
 
 
 __all__ = [

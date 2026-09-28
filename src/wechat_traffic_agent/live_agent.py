@@ -27,6 +27,7 @@ MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 24
+_PUBLIC_BACKEND_UNSET = object()
 
 _OWNER_PROMPT_CONTEXT_CHARS = 10000
 _OWNER_PROMPT_MEMORY_CHARS = 5000
@@ -1312,11 +1313,7 @@ async def _generate_guarded_public_reply(
         "system": _PUBLIC_SYSTEM,
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
-        # Public chat now uses the same LivingRuntime ChatGPT cognition path as
-        # the rest of Ferro. Wait in the foreground for most of the HTTP budget
-        # rather than falling through to external API providers.
-        "_durable_blocking_wait": True,
-        "_durable_blocking_wait_seconds": 20,
+        "timeout_seconds": 18,
     }
 
     async def generate(value: str) -> str:
@@ -1375,9 +1372,11 @@ class LiveAgentService:
 
     def __init__(self, *, state_root: Path, application: Any, backend: Any | None, mind: Any | None = None,
                  host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, poll_seconds: int = 300,
-                 wakeful: Any | None = None, public_backend: Any | None = None) -> None:
+                 wakeful: Any | None = None, public_backend: Any = _PUBLIC_BACKEND_UNSET) -> None:
         self.state_root, self.application, self.backend, self.mind = Path(state_root), application, backend, mind
-        self.public_backend = public_backend if public_backend is not None else backend
+        self.public_backend = (
+            backend if public_backend is _PUBLIC_BACKEND_UNSET else public_backend
+        )
         self.host, self.port, self.poll_seconds, self.wakeful = host, int(port), int(poll_seconds), wakeful
         self.started_at = datetime.now(timezone.utc)
         self._limiter = _RateLimiter()

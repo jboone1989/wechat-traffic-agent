@@ -50,5 +50,32 @@ def test_chatgpt_mode_flag_can_report_legacy_config_without_rebuilding_aliases()
     }) == {}
 
 
-def test_public_chat_has_no_separate_api_provider_backend(tmp_path):
+def test_public_chat_requires_explicit_openai_api_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     assert load_public_chat_backend(state_root=tmp_path) is None
+
+
+def test_public_chat_uses_dedicated_openai_realtime_backend(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", raising=False)
+
+    backend = load_public_chat_backend()
+
+    assert backend is not None
+    assert backend.provider.model == "gpt-5.6-luna"
+    assert backend.provider.base_url == "https://api.openai.com/v1"
+    assert backend.provider.timeout_seconds == 18.0
+    assert backend.provider.include_usage is False
+    assert "sk-test-not-real" not in repr(backend.provider)
+
+
+def test_public_chat_openai_model_is_configurable(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", "chat-latest")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
+
+    backend = load_public_chat_backend()
+
+    assert backend.provider.model == "chat-latest"
+    assert backend.provider.base_url == "https://api.openai.com/v1"
