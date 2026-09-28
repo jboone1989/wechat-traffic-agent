@@ -356,29 +356,6 @@ class OperatorConversationStore:
         return ""
 
     @staticmethod
-    def _cancel_runtime_goal(runtime: Any, goal_id: str) -> bool:
-        wanted = str(goal_id or "").strip()
-        if not wanted:
-            return False
-        rows = getattr(runtime, "goals", None)
-        if not isinstance(rows, list):
-            rows = getattr(runtime, "active_goals", None)
-        if not isinstance(rows, list):
-            return False
-        for goal in rows:
-            if str(getattr(goal, "goal_id", "") or "") != wanted:
-                continue
-            if _enum_text(getattr(goal, "status", "")) not in {"ACTIVE", "BLOCKED"}:
-                return False
-            status = getattr(goal, "status", None)
-            if hasattr(getattr(status, "__class__", object), "CANCELLED"):
-                goal.status = status.__class__.CANCELLED
-            else:
-                goal.status = "CANCELLED"
-            return True
-        return False
-
-    @staticmethod
     def _compatible_external_mission(runtime: Any, row: Mapping[str, Any]) -> Any | None:
         metric = _normalize_metric(row.get("metric"))
         target = row.get("target")
@@ -504,20 +481,19 @@ class OperatorConversationStore:
             inherited_authorization_from=str(prior.get("proposal_id") or ""),
         )
         old_goal_id = str(prior.get("goal_id") or "")
-        cancelled = self._cancel_runtime_goal(runtime, old_goal_id)
         prior["status"] = "SUPERSEDED"
         prior["semantic_status"] = "SUPERSEDED"
         prior["superseded_by_proposal_id"] = proposal_id
         prior["superseded_at"] = _utc_iso()
         self._write_proposal(prior)
         activated["supersedes_proposal_id"] = str(prior.get("proposal_id") or "")
-        activated["superseded_goal_id"] = old_goal_id
-        activated["superseded_goal_cancelled"] = bool(cancelled)
+        activated["related_owner_goal_id"] = old_goal_id
+        activated["related_owner_goal_preserved"] = bool(old_goal_id)
         self._write_proposal(activated)
         runtime.persist()
         self.append(
             "system",
-            "Goal semantics reconciled: the degraded intake goal was superseded by the canonical interpreted goal.",
+            "Goal semantics reconciled: the interpreted proposal was linked without cancelling the original owner goal.",
             metadata={
                 "proposal_id": proposal_id,
                 "supersedes_proposal_id": prior.get("proposal_id"),

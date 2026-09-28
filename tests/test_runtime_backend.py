@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from wechat_traffic_agent.runtime_backend import (
     _temporary_runtime_llm_environment,
     chatgpt_only_mode,
+    load_owner_cognition_runtime,
     load_public_chat_backend,
     runtime_llm_aliases,
 )
@@ -79,3 +82,24 @@ def test_public_chat_openai_model_is_configurable(monkeypatch):
 
     assert backend.provider.model == "chat-latest"
     assert backend.provider.base_url == "https://api.openai.com/v1"
+
+
+def test_owner_cognition_requires_explicit_openai_key(monkeypatch, tmp_path):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        load_owner_cognition_runtime(state_root=tmp_path)
+
+
+def test_owner_cognition_uses_direct_openai_without_fallback(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("FERRO_OWNER_COGNITION_OPENAI_MODEL", "owner-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
+
+    runtime = load_owner_cognition_runtime()
+
+    assert runtime.provider.model == "owner-model"
+    assert runtime.provider.base_url == "https://api.openai.com/v1"
+    assert runtime.provider.timeout_seconds == 30.0
+    assert runtime.provider.reasoning_effort == "low"
+    assert "sk-test-not-real" not in repr(runtime.provider)

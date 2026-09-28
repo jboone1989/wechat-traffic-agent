@@ -340,18 +340,7 @@ class OwnerAgentEpisode:
             + json.dumps(OwnerAgentDecision.model_json_schema(), ensure_ascii=False)
         )
         raw = await runtime.cognitive_probe(prompt, max_tokens=1400)
-        try:
-            return OwnerAgentDecision.model_validate_json(_extract_json(raw))
-        except Exception as exc:
-            repaired = await runtime.cognitive_probe(
-                prompt
-                + "\nRepair only the JSON/action arguments. Do not add prose outside JSON. Error: "
-                + str(exc)[:800]
-                + "\nPrevious untrusted response: "
-                + raw[:2000],
-                max_tokens=1400,
-            )
-            return OwnerAgentDecision.model_validate_json(_extract_json(repaired))
+        return OwnerAgentDecision.model_validate_json(_extract_json(raw))
 
     async def run(
         self,
@@ -453,27 +442,25 @@ class OwnerAgentEpisode:
             }
             self._write(state)
 
-        fallback = {
-            "action": "WAIT",
-            "query": None,
-            "topic": None,
-            "wait_seconds": 300,
-            "rationale": "Bounded inspection budget exhausted without a justified action; retry after fresh state.",
-        }
         state = {
             **state,
-            "status": "DECIDED",
-            "decision": fallback,
+            "status": "UNRESOLVED_ACTION_REQUIRED",
+            "decision": None,
+            "unresolved_reason": (
+                "Owner control exhausted its bounded inspection budget without "
+                "choosing a permitted world-changing action."
+            ),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self._write(state)
         return {
-            "status": "DECIDED",
+            "status": "UNRESOLVED_ACTION_REQUIRED",
             "episode_id": state["episode_id"],
             "cycle_id": state["cycle_id"],
-            "decision": fallback,
+            "decision": None,
             "steps": list(state.get("steps") or []),
             "resumed": False,
+            "unresolved_reason": state["unresolved_reason"],
         }
 
     def clear_pending_request(

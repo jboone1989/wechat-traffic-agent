@@ -50,6 +50,26 @@ class ContentBoundedLegacyProviderBackend:
         return await self._backend.run(request)
 
 
+class OwnerOpenAICognitionRuntime:
+    """Direct synchronous OpenAI cognition for durable owner-goal control."""
+
+    def __init__(self, provider) -> None:
+        self.provider = provider
+
+    async def cognitive_probe(
+        self,
+        task: str,
+        max_tokens: int,
+        output_schema=None,
+    ) -> str:
+        del output_schema
+        return await self.provider.complete(
+            str(task),
+            max_tokens=int(max_tokens),
+            reasoning_effort="low",
+        )
+
+
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
     env = os.environ if environ is None else environ
     raw = str(env.get("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS") or "45").strip()
@@ -161,11 +181,52 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     return LegacyProviderBackend(provider)
 
 
+def load_owner_cognition_runtime(*, state_root: Path | None = None):
+    """Load the single authoritative owner-goal cognition route.
+
+    Owner goals are persistent server-side commitments and cannot depend on a
+    transient ChatGPT UI session being attached. There is no provider fallback:
+    missing credentials or request failures are explicit errors.
+    """
+    api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is required for owner cognition")
+
+    from .openai_public_chat import OpenAIResponsesProvider
+
+    model = str(
+        os.environ.get("FERRO_OWNER_COGNITION_OPENAI_MODEL")
+        or os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
+        or "gpt-5.6-luna"
+    ).strip()
+    base_url = str(
+        os.environ.get("OPENAI_BASE_URL")
+        or "https://api.openai.com/v1"
+    ).strip().rstrip("/")
+    provider = OpenAIResponsesProvider(
+        api_key=api_key,
+        model=model,
+        base_url=base_url,
+        timeout_seconds=30.0,
+        reasoning_effort="low",
+    )
+    if state_root is not None:
+        from .llm_audit import audited_provider
+        provider = audited_provider(
+            provider,
+            Path(state_root),
+            scope="owner-cognition-openai",
+        )
+    return OwnerOpenAICognitionRuntime(provider)
+
+
 __all__ = [
     "ContentBoundedLegacyProviderBackend",
     "_content_advisory_timeout_seconds",
     "load_optional_advisory_backend",
+    "load_owner_cognition_runtime",
     "load_public_chat_backend",
+    "OwnerOpenAICognitionRuntime",
     "runtime_llm_aliases",
     "chatgpt_only_mode",
 ]

@@ -409,8 +409,9 @@ def test_semantic_reconciliation_supersedes_degraded_goal_and_inherits_owner_act
     assert canonical["kind"] == "EXTERNAL_MISSION"
     assert canonical["inherited_activation_from"] == degraded["proposal_id"]
     assert canonical["supersedes_proposal_id"] == degraded["proposal_id"]
-    assert canonical["superseded_goal_cancelled"] is True
-    assert old_goal.status == "CANCELLED"
+    assert canonical["related_owner_goal_id"] == old_goal.goal_id
+    assert canonical["related_owner_goal_preserved"] is True
+    assert old_goal.status == "ACTIVE"
     assert store.get_proposal(degraded["proposal_id"])["status"] == "SUPERSEDED"
     assert len(runtime.external_missions) == 1
 
@@ -924,7 +925,7 @@ class UnavailableOwnerProvider:
         raise RuntimeError("all eligible LLM resources failed without exposing provider responses")
 
 
-def test_owner_task_intake_survives_llm_pool_outage(tmp_path, monkeypatch):
+def test_owner_task_intake_reports_llm_pool_outage_without_degraded_goal(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
     root = tmp_path / "state"
     application = FakeApplication()
@@ -946,34 +947,28 @@ def test_owner_task_intake_survives_llm_pool_outage(tmp_path, monkeypatch):
             headers={"X-Operator-Request": "1"},
             json={"message": directive},
         )
-        assert intake.status_code == 200
-        assert intake.json()["status"] == "COGNITION_DEFERRED"
-        assert intake.json()["proposal"] is None
+        assert intake.status_code == 503
+        body = intake.json()
+        assert body["error"] == "owner_cognition_unavailable"
+        assert body["owner_message_persisted"] is True
 
         draft = client.post(
             "/operator/api/chat/goal-draft",
             headers={"X-Operator-Request": "1"},
             json={},
         )
-        assert draft.status_code == 200
-        body = draft.json()
-        assert body["status"] == "GOAL_DRAFT_COGNITION_DEFERRED"
-        assert body["proposal"]["status"] == "DRAFT"
-        assert body["proposal"]["kind"] == "GENERAL"
-        assert body["proposal"]["description"] == directive
-        proposal_id = body["proposal"]["proposal_id"]
+        assert draft.status_code == 503
+        assert draft.json()["goal_draft_created"] is False
 
-        activated = client.post(
-            "/operator/api/chat/goals/" + proposal_id.replace(":", "%3A") + "/activate",
-            headers={"X-Operator-Request": "1"},
-            json={},
-        )
-        assert activated.status_code == 200
-        assert activated.json()["activated"]["status"] == "ACTIVATED"
-
-    assert application.domain_runtime.active_goals[-1].description == directive
-    assert application.domain_runtime.persisted == 1
-    assert wakeful.calls and wakeful.calls[-1][1] == 5
+    store = OperatorConversationStore(root)
+    assert any(
+        row.get("role") == "operator" and row.get("text") == directive
+        for row in store.history()
+    )
+    assert store.proposals() == []
+    assert application.domain_runtime.active_goals == []
+    assert application.domain_runtime.persisted == 0
+    assert wakeful.calls == []
 
 
 class TransientContextFailureProvider:
@@ -984,7 +979,7 @@ class TransientContextFailureProvider:
         raise FileNotFoundError("optional-state-rotated")
 
 
-def test_owner_task_intake_survives_transient_context_io_failure(tmp_path, monkeypatch):
+def test_owner_task_intake_reports_transient_context_io_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
     root = tmp_path / "state"
     service = LiveAgentService(
@@ -1000,8 +995,8 @@ def test_owner_task_intake_survives_transient_context_io_failure(tmp_path, monke
             headers={"X-Operator-Request": "1"},
             json={"message": "宣传 LivingRuntime Remote，并保留真实断点证据。"},
         )
-    assert response.status_code == 200
+    assert response.status_code == 502
     body = response.json()
-    assert body["status"] == "COGNITION_DEFERRED"
-    assert body["proposal"] is None
-    assert body["history"][-1]["role"] == "system"
+    assert body["error"] == "operator_chat_failed"
+    assert body["error_type"] == "FileNotFoundError"
+    assert body["owner_message_persisted"] is True

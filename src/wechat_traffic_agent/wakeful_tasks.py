@@ -2488,10 +2488,20 @@ class WakefulContentTaskRunner:
         resume_request_id: str | None = None,
     ) -> dict[str, Any]:
         episode = getattr(self, "owner_agent_episode", None)
-        runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
-        if episode is None or runtime is None:
+        domain_runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
+        if episode is None or domain_runtime is None:
             return {"status": "UNAVAILABLE"}
         mission_context = self._owner_agent_mission_context(owner_goal, now)
+        cognition_runtime = getattr(self, "owner_cognition_runtime", None)
+        if cognition_runtime is None:
+            from .runtime_backend import load_owner_cognition_runtime
+
+            cognition_runtime = load_owner_cognition_runtime(
+                state_root=Path(self.state_root)
+                if getattr(self, "state_root", None) is not None
+                else None,
+            )
+            self.owner_cognition_runtime = cognition_runtime
 
         async def execute_tool(decision: dict[str, Any]) -> dict[str, Any]:
             action = str(decision.get("action") or "")
@@ -2580,7 +2590,7 @@ class WakefulContentTaskRunner:
         }):
             return self._run_async(
                 episode.run(
-                    runtime=runtime,
+                    runtime=cognition_runtime,
                     owner_goal=owner_goal,
                     mission_context=mission_context,
                     tool_executor=execute_tool,
@@ -2676,6 +2686,9 @@ class WakefulContentTaskRunner:
                 resume_request_id=owner_resume_request_id,
             )
             rows["owner_agent_episode"] = control
+            if str(control.get("status") or "") == "UNRESOLVED_ACTION_REQUIRED":
+                rows["status"] = "OWNER_ACTION_REQUIRED_BUT_UNRESOLVED"
+                return rows
             if str(control.get("status") or "") == "DECIDED":
                 decision = (
                     control.get("decision")

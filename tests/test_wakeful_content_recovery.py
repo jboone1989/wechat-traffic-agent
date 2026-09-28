@@ -1148,6 +1148,7 @@ def test_latest_active_user_goal_is_passed_to_continuous_content(tmp_path):
     regulator = BlockingRegulator()
     runner = WakefulContentTaskRunner(
         app=app,
+        owner_cognition_runtime=app.domain_runtime,
         state_root=state_root,
         network_service=None,
         wakeful=Wakeful(),
@@ -1239,6 +1240,7 @@ def test_owner_activated_external_mission_gets_free_cognition_lane(tmp_path):
     regulator = BlockingRegulator()
     runner = WakefulContentTaskRunner(
         app=app,
+        owner_cognition_runtime=app.domain_runtime,
         state_root=state_root,
         network_service=None,
         wakeful=Wakeful(),

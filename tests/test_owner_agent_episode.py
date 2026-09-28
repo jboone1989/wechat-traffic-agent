@@ -27,6 +27,16 @@ class Runtime:
         return json.dumps(self.responses.pop(0))
 
 
+class RawRuntime:
+    def __init__(self, raw: str):
+        self.raw = raw
+        self.calls = 0
+
+    async def cognitive_probe(self, prompt, max_tokens):
+        self.calls += 1
+        return self.raw
+
+
 def test_owner_episode_can_inspect_then_choose_content_as_one_tool(tmp_path):
     runtime = Runtime([
         {
@@ -75,6 +85,55 @@ def test_owner_episode_can_inspect_then_choose_content_as_one_tool(tmp_path):
     assert calls == ["INSPECT_MISSION"]
     assert len(runtime.prompts) == 2
     assert "not a content topic by default" in runtime.prompts[0][0]
+
+
+def test_owner_episode_does_not_repair_invalid_model_json(tmp_path):
+    runtime = RawRuntime("not-json")
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("invalid cognition must not execute a tool")
+
+    with pytest.raises(ValueError, match="backend did not return a JSON object"):
+        asyncio.run(episode.run(
+            runtime=runtime,
+            owner_goal={"goal_id": "goal-owner", "description": "Act on the owner goal"},
+            mission_context={},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    assert runtime.calls == 1
+
+
+def test_owner_episode_exhaustion_is_explicitly_unresolved_not_wait(tmp_path):
+    runtime = Runtime([
+        {
+            "action": "INSPECT_MISSION",
+            "query": None,
+            "topic": None,
+            "wait_seconds": None,
+            "rationale": "Inspect once.",
+        }
+        for _ in range(OwnerAgentEpisode.MAX_STEPS)
+    ])
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        return {"status": "OK"}
+
+    result = asyncio.run(episode.run(
+        runtime=runtime,
+        owner_goal={"goal_id": "goal-owner", "description": "Act on the owner goal"},
+        mission_context={},
+        tool_executor=execute,
+        now=NOW,
+    ))
+
+    assert result["status"] == "UNRESOLVED_ACTION_REQUIRED"
+    assert result["decision"] is None
+    assert len(result["steps"]) == OwnerAgentEpisode.MAX_STEPS
+    assert episode.projection_for("goal-owner")["status"] == "UNRESOLVED_ACTION_REQUIRED"
 
 
 def test_owner_episode_resume_reuses_durable_terminal_decision(tmp_path):
