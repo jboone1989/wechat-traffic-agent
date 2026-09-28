@@ -1113,6 +1113,18 @@ class LiveAgentService:
 
         async def brain_lab_status(request: Request):
             view = str(request.query_params.get("view") or "").strip().lower()
+            if view == "live":
+                if self.wakeful is None or not hasattr(
+                    self.wakeful, "brain_lab_live_projection"
+                ):
+                    return JSONResponse(
+                        {"error": "brain_lab_unavailable"},
+                        status_code=503,
+                    )
+                return JSONResponse(
+                    dict(self.wakeful.brain_lab_live_projection()),
+                    headers={"Cache-Control": "no-store"},
+                )
             if view == "telemetry":
                 detail = str(request.query_params.get("detail") or "full").strip().lower()
                 compact = detail in {"compact", "mobile", "low"}

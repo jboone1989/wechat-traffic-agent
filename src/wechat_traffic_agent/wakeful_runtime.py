@@ -1825,6 +1825,9 @@ class ContentWakefulRuntime:
     def brain_lab_projection(self) -> dict:
         return self.brain_lab.projection()
 
+    def brain_lab_live_projection(self) -> dict:
+        return self.brain_lab.live_projection()
+
     def run_neural_dream(self, now: datetime | None = None, *, replay_count: int = 6) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         neural_result = self.dream_engine.dream(now=now, replay_count=replay_count)

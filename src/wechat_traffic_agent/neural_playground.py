@@ -1093,5 +1093,35 @@ class FerroBrainLab:
             "game_intelligence": self.game_intelligence.projection(),
         }
 
+    def live_projection(self) -> dict[str, Any]:
+        """Small in-memory projection for high-frequency game visualization."""
+        environments = {
+            name: dict(
+                (self.state.get("environments") or {}).get(name)
+                or self._default_env(name)
+            )
+            for name in self.ENVIRONMENTS
+        }
+        pong = environments["PONG"]
+        attempts = int(pong.get("hits") or 0) + int(pong.get("misses") or 0)
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "updated_at": self.state.get("updated_at"),
+            "same_production_connectome": self.substrate is not None,
+            "active_environment": self.state.get("active_environment"),
+            "total_steps": int(self.state.get("total_steps") or 0),
+            "total_sessions": int(self.state.get("total_sessions") or 0),
+            "environments": environments,
+            "pong_hit_rate": (
+                None
+                if attempts == 0
+                else round(int(pong.get("hits") or 0) / attempts, 6)
+            ),
+            "foundation_competence": self.foundation_competence(),
+            "recent": [
+                dict(row) for row in (self.state.get("recent") or [])[-24:]
+            ],
+        }
+
 
 __all__ = ["FerroBrainLab"]
