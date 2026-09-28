@@ -134,7 +134,7 @@ def load_public_chat_backend(*, state_root: Path | None = None):
         return None
 
     from agent_runtime.backends import LegacyProviderBackend
-    from agent_runtime.llm.openai_compatible import OpenAICompatibleChatProvider
+    from .openai_public_chat import OpenAIResponsesProvider
 
     model = str(
         os.environ.get("FERRO_PUBLIC_CHAT_OPENAI_MODEL")
@@ -144,12 +144,12 @@ def load_public_chat_backend(*, state_root: Path | None = None):
         os.environ.get("OPENAI_BASE_URL")
         or "https://api.openai.com/v1"
     ).strip().rstrip("/")
-    provider = OpenAICompatibleChatProvider(
+    provider = OpenAIResponsesProvider(
         api_key=api_key,
         model=model,
         base_url=base_url,
         timeout_seconds=18.0,
-        include_usage=False,
+        reasoning_effort="none",
     )
     if state_root is not None:
         from .llm_audit import audited_provider
