@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -294,9 +295,42 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert "open public conversation surface" in kwargs["system"]
     assert kwargs["_routing_task_class"] == "simple_public_text"
     assert kwargs["_minimum_quality"] == 0.7
+    assert kwargs["_attempt_timeout_seconds"] == 6
+    assert kwargs["_reserve_timeout_seconds"] == 8
+    assert kwargs["_max_failovers"] == 2
     assert talk.status_code == 200
     assert "OPEN CONVERSATION" in talk.text
     assert "talk to me normally" in talk.text.lower()
+
+
+def test_public_chat_returns_bounded_503_before_proxy_timeout(tmp_path, monkeypatch):
+    class _SlowProvider:
+        async def complete(self, prompt, **kwargs):
+            await asyncio.sleep(0.05)
+            return "too late"
+
+    class _SlowBackend:
+        provider = _SlowProvider()
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.live_agent.PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS",
+        0.01,
+    )
+    root = _state(tmp_path)
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+        public_backend=_SlowBackend(),
+    )
+    with TestClient(service._app()) as client:
+        reply = client.post(
+            "/api/agent/chat",
+            json={"message": "Tell me something about rain."},
+        )
+    assert reply.status_code == 503
+    assert reply.json()["error"] == "chat_model_temporarily_unavailable"
+    assert reply.headers["retry-after"] == "2"
 
 
 def test_public_chat_context_is_bounded_and_omits_full_wakeful_telemetry():
