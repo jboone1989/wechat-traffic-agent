@@ -341,6 +341,7 @@ def test_public_chat_stream_emits_safe_reasoning_status_and_model_deltas(tmp_pat
     assert reply.headers["content-type"].startswith("text/event-stream")
     body = reply.text
     assert "event: status" in body
+    assert '"stage":"RECEIVED"' in body
     assert '"stage":"READING_STATE"' in body
     assert '"stage":"CONTACTING_MODEL"' in body
     assert '"stage":"COMPOSING"' in body
