@@ -746,6 +746,25 @@ def test_owner_continuation_cannot_starve_neural_play_forever(
     clock = {"now": NOW}
     monkeypatch.setattr(runtime.core, "clock", lambda: clock["now"])
     monkeypatch.setattr(runtime, "_active_user_goal_ids", lambda: {"goal-owner"})
+    # This case tests starvation protection for ordinary maintenance play.
+    # Explicitly mark every active game sprint as complete; an empty fresh
+    # Brain Lab is otherwise correctly treated as an ungraduated foundation
+    # sprint and should bypass owner-continuation deferral immediately.
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "graduation_status",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "foundation_competence",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "open_world_curriculum_environments",
+        lambda limit=4: (),
+    )
     monkeypatch.setattr(runtime.resource_regulator, "defer_seconds", lambda task, now: None)
     runtime.core.schedule(PlannedWake(
         wake_id="content:CONTENT_COGNITION",
