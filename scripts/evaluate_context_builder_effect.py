@@ -356,7 +356,7 @@ def _service_environment(service: str = "content-agent.service") -> dict[str, st
     pid = int(raw_pid)
     if pid <= 1:
         raise RuntimeError(f"{service} has no live MainPID")
-    rows = Path(f"/proc/{pid}/environ").read_bytes().split(b"\\0")
+    rows = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
     allowed = {"OPENAI_API_KEY", "OPENAI_BASE_URL"}
     result: dict[str, str] = {}
     for raw in rows:
