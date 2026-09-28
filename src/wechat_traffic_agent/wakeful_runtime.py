@@ -2025,14 +2025,22 @@ class ContentWakefulRuntime:
             for plan in self.core.snapshot().pending_plans
         )
         current_is_owner_continuation = owner_goal_wake and wake_has_resume_ref
-        graduation_sprint_play = (
-            wake.task == "NEURAL_PLAY"
-            and not bool(
-                self.brain_lab.game_intelligence.graduation_status().get(
-                    "graduated"
-                )
-            )
-        )
+        active_game_sprint_play = False
+        if wake.task == "NEURAL_PLAY":
+            foundation = self.brain_lab.game_intelligence.graduation_status()
+            if not bool(foundation.get("graduated")):
+                active_game_sprint_play = True
+            else:
+                harder = self.brain_lab.open_world_curriculum_environments(limit=4)
+                if harder:
+                    open_world = (
+                        self.brain_lab.game_intelligence.open_world_graduation_status(
+                            harder
+                        )
+                    )
+                    active_game_sprint_play = not bool(
+                        open_world.get("graduated")
+                    )
         optional_starved = self._optional_internal_starved(
             wake,
             now,
@@ -2054,7 +2062,7 @@ class ContentWakefulRuntime:
         if pending_chatgpt and not wake_has_resume_ref:
             if wake.task in _CHATGPT_COGNITIVE_TASKS:
                 return 60.0
-            if wake.task in _OPTIONAL_INTERNAL_TASKS and not graduation_sprint_play:
+            if wake.task in _OPTIONAL_INTERNAL_TASKS and not active_game_sprint_play:
                 if not optional_starved:
                     self._optional_internal_starved(wake, now, record=True)
                     return 60.0
