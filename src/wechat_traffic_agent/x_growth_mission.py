@@ -65,6 +65,27 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _active_execution_blocker(
+    state_root: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    row = _read_json(Path(state_root) / "content" / "x" / "publication_blocker.json")
+    if str(row.get("status") or "") != "ACTIVE":
+        return None
+    raw = str(row.get("retry_after") or "")
+    try:
+        retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return row
+    if retry_after.tzinfo is None or retry_after.utcoffset() is None:
+        return row
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if stamp >= retry_after.astimezone(timezone.utc):
+        return None
+    return row
+
+
 def follower_count_from_user(user: dict[str, Any]) -> int | None:
     """Return the official public followers_count without inventing a zero."""
     public_metrics = user.get("public_metrics")
@@ -85,9 +106,7 @@ def x_growth_mission_context(state_root: Path) -> dict[str, Any]:
             "generation_authority": "NONE",
             "publication_authority": False,
         }
-    blocker = _read_json(
-        Path(state_root) / "content" / "x" / "publication_blocker.json"
-    )
+    blocker = _active_execution_blocker(Path(state_root))
     if blocker:
         payload = {**payload, "execution_blocker": blocker}
     return payload
@@ -1636,10 +1655,7 @@ class XGrowthMissionCoordinator:
             "causal_claim": False,
             "policy_mode": "OFFICIAL_X_API_ONLY",
             "execution_blocker": (
-                _read_json(
-                    self.state_root / "content" / "x" / "publication_blocker.json"
-                )
-                or None
+                _active_execution_blocker(self.state_root, now=now)
             ),
         }
         _write_json(self.path, payload)

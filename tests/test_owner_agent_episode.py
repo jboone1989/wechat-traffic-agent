@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
 from wechat_traffic_agent.owner_agent_episode import OwnerAgentEpisode
+from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
 
 NOW = datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc)
@@ -285,3 +287,205 @@ def test_pending_request_from_previous_owner_goal_is_stale(tmp_path):
     assert episode.classify_request(
         "goal-new", "llmreq-old-owner"
     ) == "STALE"
+
+
+def test_multiple_owner_goals_keep_independent_durable_episodes(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-goal-a")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs before cognition completes")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={"goal_id": "goal-a", "description": "Grow X followers"},
+            mission_context={},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    result_b = asyncio.run(episode.run(
+        runtime=Runtime([{
+            "action": "WAIT",
+            "query": None,
+            "topic": None,
+            "wait_seconds": 300,
+            "rationale": "Wait for the next bounded observation window.",
+        }]),
+        owner_goal={
+            "goal_id": "goal-b",
+            "description": "Promote LivingRuntime Remote",
+        },
+        mission_context={},
+        tool_executor=execute,
+        now=NOW,
+    ))
+
+    assert result_b["status"] == "DECIDED"
+    assert episode.running_for("goal-a") is True
+    assert episode.running_for("goal-b") is False
+    assert episode.classify_request("goal-a", "llmreq-goal-a") == "PENDING"
+    assert episode.classify_request("goal-b", "llmreq-goal-a") == "STALE"
+    assert episode.projection_for("goal-a")["pending_request_id"] == "llmreq-goal-a"
+    assert episode.projection_for("goal-b")["decision"]["action"] == "WAIT"
+
+
+def test_owner_goal_scheduler_prevents_priority_starvation(tmp_path):
+    old = NOW.replace(hour=0)
+    recent = NOW.replace(hour=0, minute=20)
+    goal_a = SimpleNamespace(
+        goal_id="goal-a",
+        description="Grow X followers",
+        origin="EXTERNAL_MISSION",
+        status="ACTIVE",
+        priority=0.95,
+        created_at=old,
+    )
+    goal_b = SimpleNamespace(
+        goal_id="goal-b",
+        description="Promote LivingRuntime Remote",
+        origin="USER",
+        status="ACTIVE",
+        priority=0.70,
+        created_at=old,
+    )
+    domain_runtime = SimpleNamespace(
+        active_goals=[goal_a, goal_b],
+        goals=[goal_a, goal_b],
+        external_missions=[
+            SimpleNamespace(
+                goal_id="goal-a",
+                status="ACTIVE",
+                issued_by="operator",
+            )
+        ],
+    )
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+    )
+    runner.owner_agent_episode._write({
+        "schema_version": OwnerAgentEpisode.SCHEMA,
+        "goal_id": "goal-a",
+        "status": "COMPLETED",
+        "created_at": old.isoformat(),
+        "updated_at": recent.isoformat(),
+        "cognition_request_ids": [],
+        "stale_request_ids": [],
+        "pending_request_id": None,
+    })
+
+    selected = runner._active_owner_goal_context(
+        now=NOW.replace(hour=0, minute=30),
+    )
+    assert selected["goal_id"] == "goal-b"
+    assert selected["selection_authority"] == "FAIR_OWNER_GOAL_SCHEDULER"
+
+    exact = runner._active_owner_goal_context(
+        relevant_refs=("goal-a",),
+        now=NOW.replace(hour=0, minute=30),
+    )
+    assert exact["goal_id"] == "goal-a"
+    assert exact["selection_authority"] == "EXACT_OWNER_GOAL_REF"
+
+
+def test_owner_goal_context_uses_specific_active_proposal_over_parent_goal(tmp_path):
+    proposals = (
+        tmp_path
+        / "application"
+        / "operator_chat"
+        / "goal_proposals"
+    )
+    proposals.mkdir(parents=True)
+    (proposals / "remote.json").write_text(
+        json.dumps({
+            "status": "ACTIVATED",
+            "semantic_status": "CANONICAL",
+            "kind": "EXTERNAL_MISSION",
+            "goal_id": "goal-x-growth",
+            "proposal_id": "goal-proposal:remote",
+            "description": (
+                "Promote LivingRuntime Remote as the next real X growth experiment"
+            ),
+            "reason": "Bind a concrete POSTED receipt to follower outcome.",
+            "activated_at": "2026-09-28T09:00:00Z",
+        }),
+        encoding="utf-8",
+    )
+    goal = SimpleNamespace(
+        goal_id="goal-x-growth",
+        description="Grow X followers to 5000",
+        origin="USER",
+        status="ACTIVE",
+        priority=0.9,
+        created_at=NOW,
+    )
+    domain_runtime = SimpleNamespace(
+        active_goals=[goal],
+        goals=[goal],
+        external_missions=[],
+    )
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        app=SimpleNamespace(domain_runtime=domain_runtime),
+    )
+
+    context = runner._active_owner_goal_context(now=NOW)
+
+    assert context["goal_id"] == "goal-x-growth"
+    assert context["description"].startswith("Promote LivingRuntime Remote")
+    assert context["parent_goal_description"] == "Grow X followers to 5000"
+    assert context["owner_proposal_id"] == "goal-proposal:remote"
+    assert context["owner_commitment_kind"] == "EXTERNAL_MISSION"
+
+
+def test_specific_owner_commitment_supersedes_generic_pending_episode(tmp_path):
+    class PendingRuntime:
+        async def cognitive_probe(self, prompt, max_tokens):
+            raise LivingRuntimeChatGPTPendingError("llmreq-generic-parent")
+
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("no tool runs before cognition completes")
+
+    with pytest.raises(LivingRuntimeChatGPTPendingError):
+        asyncio.run(episode.run(
+            runtime=PendingRuntime(),
+            owner_goal={
+                "goal_id": "goal-x-growth",
+                "description": "Grow X followers to 5000",
+            },
+            mission_context={},
+            tool_executor=execute,
+            now=NOW,
+        ))
+
+    specific = asyncio.run(episode.run(
+        runtime=Runtime([{
+            "action": "RUN_CONTENT_PIPELINE",
+            "query": None,
+            "topic": "livingruntime-remote",
+            "wait_seconds": None,
+            "rationale": "Execute the specific bounded Remote promotion experiment now.",
+        }]),
+        owner_goal={
+            "goal_id": "goal-x-growth",
+            "owner_proposal_id": "goal-proposal:remote",
+            "description": "Promote LivingRuntime Remote and obtain a POSTED receipt",
+        },
+        mission_context={},
+        tool_executor=execute,
+        now=NOW,
+    ))
+
+    assert specific["status"] == "DECIDED"
+    assert specific["decision"]["topic"] == "livingruntime-remote"
+    state = episode.projection_for("goal-x-growth")
+    assert state["commitment_key"] == "goal-proposal:remote"
+    assert "llmreq-generic-parent" in state["stale_request_ids"]
+    assert state["pending_request_id"] is None

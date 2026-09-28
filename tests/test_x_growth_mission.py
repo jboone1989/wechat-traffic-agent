@@ -1147,3 +1147,40 @@ def test_context_marked_proposed_experiment_is_replanned_when_contract_is_missin
         "measurement_window_hours": 24.0,
         "settlement_metric": "x.followers",
     }
+
+
+def test_x_growth_context_ignores_expired_publication_blocker(tmp_path):
+    mission_path = tmp_path / "content" / "x" / "growth_mission.json"
+    mission_path.parent.mkdir(parents=True)
+    mission_path.write_text(
+        json.dumps({
+            "schema_version": "content-agent-x-growth-mission.v1",
+            "status": "ACTIVE",
+            "goal_id": "goal-x",
+        }),
+        encoding="utf-8",
+    )
+    blocker_path = tmp_path / "content" / "x" / "publication_blocker.json"
+    blocker_path.write_text(
+        json.dumps({
+            "status": "ACTIVE",
+            "blocker": "X_CREDITS_DEPLETED",
+            "retry_after": "2020-01-01T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+
+    context = x_growth_mission_context(tmp_path)
+
+    assert "execution_blocker" not in context
+
+    blocker_path.write_text(
+        json.dumps({
+            "status": "ACTIVE",
+            "blocker": "X_CREDITS_DEPLETED",
+            "retry_after": "2099-01-01T00:00:00+00:00",
+        }),
+        encoding="utf-8",
+    )
+    context = x_growth_mission_context(tmp_path)
+    assert context["execution_blocker"]["blocker"] == "X_CREDITS_DEPLETED"

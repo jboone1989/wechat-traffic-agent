@@ -5,6 +5,7 @@ import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import inspect
 import json
 import math
 from pathlib import Path
@@ -179,7 +180,10 @@ class WakefulContentTaskRunner:
         # unresolved continuation pointer.
         resume_request_id = resume_request_ids[-1] if resume_request_ids else ""
         if task == "CONTENT_COGNITION" and resume_request_id:
-            owner_goal = self._active_owner_goal_context()
+            owner_goal = self._select_active_owner_goal(
+                relevant_refs=relevant_refs,
+                now=now,
+            )
             episode = getattr(self, "owner_agent_episode", None)
             classify = getattr(episode, "classify_request", None)
             owner_goal_id = (
@@ -274,7 +278,10 @@ class WakefulContentTaskRunner:
             }
             resume_refs = tuple(relevant_refs)
             if task == "CONTENT_COGNITION":
-                owner_goal = self._active_owner_goal_context()
+                owner_goal = self._select_active_owner_goal(
+                    relevant_refs=relevant_refs,
+                    now=now,
+                )
                 owner_goal_id = (
                     str(owner_goal.get("goal_id") or "").strip()
                     if isinstance(owner_goal, dict)
@@ -2073,15 +2080,23 @@ class WakefulContentTaskRunner:
 
     def _owner_activated_external_goal_ids(self) -> set[str]:
         """Return external-mission goals with durable private-owner activation evidence."""
+        return {
+            goal_id
+            for goal_id, row in self._owner_active_goal_proposals().items()
+            if str(row.get("kind") or "") == "EXTERNAL_MISSION"
+        }
+
+    def _owner_active_goal_proposals(self) -> dict[str, dict[str, Any]]:
+        """Latest canonical activated owner proposal for each backing runtime goal."""
         state_root = getattr(self, "state_root", None)
         if state_root is None:
-            return set()
+            return {}
         proposals_root = (
             Path(state_root) / "application" / "operator_chat" / "goal_proposals"
         )
         if not proposals_root.is_dir():
-            return set()
-        goal_ids: set[str] = set()
+            return {}
+        rows: dict[str, tuple[str, dict[str, Any]]] = {}
         for path in proposals_root.glob("*.json"):
             try:
                 row = json.loads(path.read_text(encoding="utf-8"))
@@ -2089,16 +2104,30 @@ class WakefulContentTaskRunner:
                 continue
             if not isinstance(row, dict):
                 continue
-            if (
-                str(row.get("status") or "") == "ACTIVATED"
-                and str(row.get("kind") or "") == "EXTERNAL_MISSION"
-            ):
-                goal_id = str(row.get("goal_id") or "").strip()
-                if goal_id:
-                    goal_ids.add(goal_id)
-        return goal_ids
+            if str(row.get("status") or "") != "ACTIVATED":
+                continue
+            semantic = str(row.get("semantic_status") or "CANONICAL")
+            if semantic not in {"CANONICAL", "ACTIVE", ""}:
+                continue
+            goal_id = str(row.get("goal_id") or "").strip()
+            if not goal_id:
+                continue
+            stamp = str(
+                row.get("activated_at")
+                or row.get("created_at")
+                or ""
+            )
+            current = rows.get(goal_id)
+            if current is None or stamp >= current[0]:
+                rows[goal_id] = (stamp, dict(row))
+        return {goal_id: row for goal_id, (_, row) in rows.items()}
 
-    def _active_owner_goal_context(self) -> dict[str, Any] | None:
+    def _active_owner_goal_context(
+        self,
+        *,
+        relevant_refs: tuple[str, ...] = (),
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
         runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
         goals = list(getattr(runtime, "active_goals", ()) or ())
         seen_goal_ids = {
@@ -2117,7 +2146,12 @@ class WakefulContentTaskRunner:
             if status == "ACTIVE" and goal_id not in seen_goal_ids:
                 goals.append(goal)
                 seen_goal_ids.add(goal_id)
-        owner_external_goal_ids = self._owner_activated_external_goal_ids()
+        owner_proposals = self._owner_active_goal_proposals()
+        owner_external_goal_ids = {
+            goal_id
+            for goal_id, row in owner_proposals.items()
+            if str(row.get("kind") or "") == "EXTERNAL_MISSION"
+        }
         # Runtime external missions are already durable operator-issued
         # commitments. Use them as an independent owner-authority source so a
         # stale/missing application proposal projection cannot demote an active
@@ -2167,26 +2201,129 @@ class WakefulContentTaskRunner:
                 candidates.append((goal, context_origin))
         if not candidates:
             return None
-        candidates.sort(
-            key=lambda item: (
-                float(getattr(item[0], "priority", 0.0) or 0.0),
-                str(getattr(item[0], "created_at", "") or ""),
-            ),
-            reverse=True,
-        )
-        goal, origin = candidates[0]
-        description = str(getattr(goal, "description", "") or "").strip()
+        preferred_ids = {
+            str(ref).strip()
+            for ref in relevant_refs
+            if str(ref).strip()
+            and not str(ref).startswith("cognition-request:")
+        }
+        if preferred_ids:
+            preferred = [
+                item
+                for item in candidates
+                if str(getattr(item[0], "goal_id", "") or "").strip()
+                in preferred_ids
+            ]
+            if preferred:
+                candidates = preferred
+
+        episode = getattr(self, "owner_agent_episode", None)
+        projection_for = getattr(episode, "projection_for", None)
+        stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+
+        scored: list[tuple[float, float, str, Any, str]] = []
+        non_pending: list[tuple[float, float, str, Any, str]] = []
+        for goal, origin in candidates:
+            goal_id = str(getattr(goal, "goal_id", "") or "").strip()
+            priority = float(getattr(goal, "priority", 0.0) or 0.0)
+            state = (
+                projection_for(goal_id)
+                if goal_id and callable(projection_for)
+                else {}
+            )
+            updated_raw = str(
+                state.get("updated_at")
+                or state.get("completed_at")
+                or state.get("created_at")
+                or ""
+            )
+            try:
+                updated_at = datetime.fromisoformat(
+                    updated_raw.replace("Z", "+00:00")
+                )
+                if updated_at.tzinfo is None or updated_at.utcoffset() is None:
+                    raise ValueError
+                age_seconds = max(
+                    0.0,
+                    (stamp - updated_at.astimezone(timezone.utc)).total_seconds(),
+                )
+            except ValueError:
+                # Never-run goals must get a turn before already-active goals.
+                age_seconds = 10**9
+            # Priority is useful for ordering near-equal goals, but cannot
+            # permanently starve another active owner commitment.
+            fairness_score = age_seconds + max(0.0, min(1.0, priority)) * 300.0
+            row = (
+                fairness_score,
+                priority,
+                str(getattr(goal, "created_at", "") or ""),
+                goal,
+                origin,
+            )
+            scored.append(row)
+            pending = bool(
+                str(state.get("status") or "") == "RUNNING"
+                and str(state.get("pending_request_id") or "").strip()
+            )
+            if not pending:
+                non_pending.append(row)
+        pool = non_pending or scored
+        pool.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+        _, _, _, goal, origin = pool[0]
+        parent_description = str(
+            getattr(goal, "description", "") or ""
+        ).strip()
         goal_id = str(getattr(goal, "goal_id", "") or "").strip()
+        proposal = owner_proposals.get(goal_id) or {}
+        proposal_description = str(
+            proposal.get("description") or ""
+        ).strip()
+        description = proposal_description or parent_description
         if not goal_id or not description:
             return None
         return {
             "goal_id": goal_id,
             "origin": origin,
             "description": description,
+            "parent_goal_description": parent_description,
+            "owner_proposal_id": str(
+                proposal.get("proposal_id") or ""
+            ) or None,
+            "owner_commitment_kind": str(
+                proposal.get("kind") or ""
+            ) or None,
+            "owner_commitment_reason": str(
+                proposal.get("reason") or ""
+            ) or None,
             "reason": str(getattr(goal, "reason", "") or ""),
             "priority": float(getattr(goal, "priority", 0.0) or 0.0),
             "created_at": str(getattr(goal, "created_at", "") or ""),
+            "selection_authority": (
+                "EXACT_OWNER_GOAL_REF"
+                if goal_id in preferred_ids
+                else "FAIR_OWNER_GOAL_SCHEDULER"
+            ),
         }
+
+    def _select_active_owner_goal(
+        self,
+        *,
+        relevant_refs: tuple[str, ...] = (),
+        now: datetime | None = None,
+    ) -> dict[str, Any] | None:
+        selector = self._active_owner_goal_context
+        try:
+            parameters = inspect.signature(selector).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        names = {parameter.name for parameter in parameters}
+        if accepts_kwargs or "relevant_refs" in names or "now" in names:
+            return selector(relevant_refs=relevant_refs, now=now)
+        return selector()
 
     def _owner_agent_mission_context(
         self,
@@ -2509,7 +2646,10 @@ class WakefulContentTaskRunner:
                 now=now,
                 x_mission_only=True,
             )
-        owner_goal = self._active_owner_goal_context()
+        owner_goal = self._select_active_owner_goal(
+            relevant_refs=relevant_refs,
+            now=now,
+        )
         owner_directed_cycle_id: str | None = None
         owner_episode_active = False
         owner_seed_evidence: list[dict[str, Any]] = []
@@ -2580,6 +2720,7 @@ class WakefulContentTaskRunner:
                                 "wait_seconds": wait_seconds,
                             },
                             now=now,
+                            goal_id=str(owner_goal.get("goal_id") or ""),
                         )
                     rows["status"] = "OWNER_AGENT_WAITING"
                     return rows

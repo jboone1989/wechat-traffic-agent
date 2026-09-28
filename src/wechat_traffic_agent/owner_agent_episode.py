@@ -70,22 +70,73 @@ class OwnerAgentEpisode:
     def __init__(self, state_root: Path) -> None:
         self.state_root = Path(state_root)
         self.path = self.state_root / "application" / "owner_agent_episode.json"
+        self.episodes_dir = self.state_root / "application" / "owner_agent_episodes"
 
-    def _read(self) -> dict[str, Any]:
+    def _goal_path(self, goal_id: str) -> Path:
+        digest = sha256(str(goal_id or "").strip().encode()).hexdigest()[:24]
+        return self.episodes_dir / f"{digest}.json"
+
+    @staticmethod
+    def _read_path(path: Path) -> dict[str, Any]:
         try:
-            value = json.loads(self.path.read_text(encoding="utf-8"))
+            value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             return {}
         return value if isinstance(value, dict) else {}
 
+    def _read(self, goal_id: str | None = None) -> dict[str, Any]:
+        if goal_id is None:
+            return self._read_path(self.path)
+        goal_id = str(goal_id or "").strip()
+        if not goal_id:
+            return {}
+        specific = self._read_path(self._goal_path(goal_id))
+        if specific:
+            return specific
+        legacy = self._read_path(self.path)
+        if str(legacy.get("goal_id") or "") == goal_id:
+            self._write(legacy)
+            return legacy
+        return {}
+
     def _write(self, value: Mapping[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(dict(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(tmp, self.path)
+        payload = dict(value)
+        targets = [self.path]
+        goal_id = str(payload.get("goal_id") or "").strip()
+        if goal_id:
+            targets.append(self._goal_path(goal_id))
+        for target in targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(target.suffix + ".tmp")
+            tmp.write_text(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.replace(tmp, target)
+
+    def _all_states(self) -> list[dict[str, Any]]:
+        states: dict[str, dict[str, Any]] = {}
+        legacy = self._read_path(self.path)
+        if legacy:
+            states[str(legacy.get("goal_id") or "legacy")] = legacy
+        try:
+            paths = sorted(self.episodes_dir.glob("*.json"))
+        except OSError:
+            paths = []
+        for path in paths:
+            state = self._read_path(path)
+            if state:
+                states[str(state.get("goal_id") or path.name)] = state
+        return list(states.values())
+
+    def projection_for(self, goal_id: str) -> dict[str, Any]:
+        return self._read(goal_id)
 
     @staticmethod
     def _compact(value: Any, *, depth: int = 0) -> Any:
@@ -110,7 +161,12 @@ class OwnerAgentEpisode:
 
     def _state_for(self, owner_goal: Mapping[str, Any], now: datetime) -> dict[str, Any]:
         goal_id = str(owner_goal.get("goal_id") or "").strip()
-        current = self._read()
+        commitment_key = str(
+            owner_goal.get("owner_proposal_id")
+            or owner_goal.get("commitment_id")
+            or goal_id
+        ).strip()
+        current = self._read(goal_id)
         created_raw = str(current.get("created_at") or "")
         try:
             created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
@@ -119,6 +175,12 @@ class OwnerAgentEpisode:
         resumable = (
             current.get("schema_version") == self.SCHEMA
             and str(current.get("goal_id") or "") == goal_id
+            and str(
+                current.get("commitment_key")
+                or current.get("goal_id")
+                or ""
+            )
+            == commitment_key
             and str(current.get("status") or "") in {"RUNNING", "DECIDED"}
             and created.tzinfo is not None
             and now - created.astimezone(timezone.utc) <= self.MAX_AGE
@@ -131,6 +193,7 @@ class OwnerAgentEpisode:
             "cycle_id": "v2-owner-" + sha256(goal_id.encode()).hexdigest()[:12]
             + "-" + str(int(now.timestamp())),
             "goal_id": goal_id,
+            "commitment_key": commitment_key,
             "goal": self._compact(dict(owner_goal)),
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
@@ -156,7 +219,7 @@ class OwnerAgentEpisode:
         return state
 
     def running_for(self, goal_id: str) -> bool:
-        state = self._read()
+        state = self._read(goal_id)
         return (
             state.get("schema_version") == self.SCHEMA
             and str(state.get("goal_id") or "") == str(goal_id or "")
@@ -171,12 +234,12 @@ class OwnerAgentEpisode:
         cognition phase. NOT_OWNER belongs to another durable workflow.
         """
         request_id = str(request_id or "").strip()
-        state = self._read()
+        state = self._read(goal_id)
         if (
             not request_id
             or state.get("schema_version") != self.SCHEMA
         ):
-            return "NOT_OWNER"
+            state = {}
         same_goal = str(state.get("goal_id") or "") == str(goal_id or "")
         pending = str(state.get("pending_request_id") or "").strip()
         if pending and request_id == pending:
@@ -193,6 +256,18 @@ class OwnerAgentEpisode:
         }
         if request_id in known:
             return "STALE"
+        for other in self._all_states():
+            other_known = {
+                str(value)
+                for value in (
+                    str(other.get("pending_request_id") or ""),
+                    *list(other.get("cognition_request_ids") or ()),
+                    *list(other.get("stale_request_ids") or ()),
+                )
+                if str(value).strip()
+            }
+            if request_id in other_known:
+                return "STALE"
         return "NOT_OWNER"
 
     @staticmethod
@@ -245,6 +320,9 @@ class OwnerAgentEpisode:
             "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
             "Choose the next useful tool/action, not a content topic by default. "
             "Prefer reality checks when key facts are missing; do not repeat a tool whose prior result already answers the need. "
+            "Treat a specific activated owner proposal as the immediate commitment under its broader parent goal. "
+            "A commitment is not progressing merely because it was analyzed: prefer one permitted bounded world-changing action or a concrete blocker receipt. "
+            "Use WAIT only when no currently permitted tool can materially advance the commitment or when the next evidence is genuinely time-dependent. "
             "Neural/drive signals are advisory inputs only and never override the owner goal or authorization. "
             "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
             "Return JSON only.\n"
@@ -407,12 +485,18 @@ class OwnerAgentEpisode:
     ) -> bool:
         """Release one failed durable request without disturbing episode state."""
         request_id = str(request_id or "").strip()
-        state = self._read()
-        if (
-            not request_id
-            or state.get("schema_version") != self.SCHEMA
-            or str(state.get("pending_request_id") or "") != request_id
-        ):
+        if not request_id:
+            return False
+        state = next(
+            (
+                row
+                for row in self._all_states()
+                if row.get("schema_version") == self.SCHEMA
+                and str(row.get("pending_request_id") or "") == request_id
+            ),
+            None,
+        )
+        if state is None:
             return False
         stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         state = {
@@ -429,8 +513,14 @@ class OwnerAgentEpisode:
         self._write(state)
         return True
 
-    def complete(self, *, outcome: Mapping[str, Any], now: datetime) -> dict[str, Any]:
-        state = self._read()
+    def complete(
+        self,
+        *,
+        outcome: Mapping[str, Any],
+        now: datetime,
+        goal_id: str | None = None,
+    ) -> dict[str, Any]:
+        state = self._read(goal_id)
         if state.get("schema_version") != self.SCHEMA:
             return {"status": "NO_EPISODE"}
         completed = {
