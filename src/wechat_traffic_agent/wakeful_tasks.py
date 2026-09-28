@@ -356,6 +356,28 @@ class WakefulContentTaskRunner:
         }
 
     def _neural_play(self, now: datetime) -> dict[str, Any]:
+        try:
+            return self._neural_play_impl(now)
+        except Exception as exc:  # noqa: BLE001
+            brain_lab = getattr(self.wakeful, "brain_lab", None)
+            substrate = getattr(brain_lab, "substrate", None)
+            recorder = getattr(substrate, "record_error", None)
+            if callable(recorder):
+                try:
+                    recorder(exc, now)
+                except Exception:
+                    pass
+            return {
+                "task": "NEURAL_PLAY",
+                "status": "ERROR",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:500],
+                "failure_isolated": True,
+                "service_continuity_preserved": True,
+                "active_game_stage": "FAILED_ISOLATED",
+            }
+
+    def _neural_play_impl(self, now: datetime) -> dict[str, Any]:
         # Keep one normal embodied session for organ-handoff semantics, then use
         # the already-admitted resource window for a bounded headless arena.
         result = self.wakeful.run_brain_lab(now, steps=12)

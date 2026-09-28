@@ -132,6 +132,33 @@ def test_general_cognition_mission_state_sees_same_roadmap():
     ]
 
 
+def test_neural_play_failure_is_isolated_from_service_continuity():
+    recorded = []
+
+    class _Substrate:
+        def record_error(self, exc, observed_at):
+            recorded.append((type(exc).__name__, str(exc), observed_at))
+
+    class _Wakeful:
+        brain_lab = SimpleNamespace(substrate=_Substrate())
+
+        def run_brain_lab(self, now, *, steps):
+            raise IndexError(
+                "boolean index did not match indexed array along axis 0"
+            )
+
+    runner = WakefulContentTaskRunner(wakeful=_Wakeful())
+    result = runner._neural_play(NOW)
+
+    assert result["task"] == "NEURAL_PLAY"
+    assert result["status"] == "ERROR"
+    assert result["error_type"] == "IndexError"
+    assert result["failure_isolated"] is True
+    assert result["service_continuity_preserved"] is True
+    assert result["active_game_stage"] == "FAILED_ISOLATED"
+    assert recorded[0][0] == "IndexError"
+
+
 from wechat_traffic_agent.developmental_history import DevelopmentalHistory
 from wechat_traffic_agent.organism_closure import refresh_organism_closure
 from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
