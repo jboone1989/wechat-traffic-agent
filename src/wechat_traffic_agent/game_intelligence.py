@@ -78,6 +78,8 @@ class GameIntelligence:
         self.path = self.state_root / "application" / "game_intelligence.json"
         self.lock_path = self.state_root / "application" / "game_intelligence.lock"
         self._mutation_depth = 0
+        self._batch_depth = 0
+        self._batch_dirty = False
         self._lock_handle = None
         raw = _read(self.path)
         if raw.get("schema_version") == SCHEMA:
@@ -145,6 +147,24 @@ class GameIntelligence:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     finally:
                         handle.close()
+
+    @contextmanager
+    def batch_updates(self):
+        """Apply many measured updates under one lock and one durable commit.
+
+        In-memory state is updated immediately, so prediction/world-model reads
+        within the same game session still see every transition. Only the
+        expensive full-state JSON commit is deferred until the session ends.
+        """
+        with self._mutation():
+            self._batch_depth += 1
+            try:
+                yield self
+            finally:
+                self._batch_depth -= 1
+                if self._batch_depth == 0 and self._batch_dirty:
+                    _write(self.path, self.state)
+                    self._batch_dirty = False
 
     @staticmethod
     def _skill_family(skill_id: str, actions: Sequence[str] = ()) -> str:
@@ -1268,6 +1288,9 @@ class GameIntelligence:
     def _persist(self, now: datetime | None = None) -> None:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         self.state["updated_at"] = now.isoformat()
+        if self._batch_depth > 0:
+            self._batch_dirty = True
+            return
         _write(self.path, self.state)
 
 

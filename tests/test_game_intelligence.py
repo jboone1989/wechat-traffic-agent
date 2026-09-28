@@ -6,6 +6,7 @@ from wechat_traffic_agent.game_intelligence import (
     GameIntelligence,
     MIN_CURRICULUM_EPISODES,
 )
+import wechat_traffic_agent.game_intelligence as game_intelligence_module
 
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
@@ -260,6 +261,40 @@ def test_concurrent_instances_merge_experience_instead_of_overwriting(tmp_path):
     ids = {row["episode_id"] for row in restored.state["episodes"]}
     assert ids == {"concurrent:maze", "concurrent:foraging"}
     assert restored.projection()["transition_count"] == 2
+
+
+def test_batch_updates_keep_in_session_learning_and_commit_once(monkeypatch, tmp_path):
+    engine = GameIntelligence(tmp_path)
+    writes = []
+    real_write = game_intelligence_module._write
+
+    def counted_write(path, payload):
+        writes.append(path)
+        real_write(path, payload)
+
+    monkeypatch.setattr(game_intelligence_module, "_write", counted_write)
+    with engine.batch_updates():
+        for index in range(12):
+            engine.record_transition(
+                environment="PONG",
+                episode_id="batch:pong:1",
+                state_key=f"s{index}",
+                action="UP",
+                reward=0.2,
+                next_state_key=f"s{index + 1}",
+                observed_at=NOW + timedelta(seconds=index),
+            )
+        prediction = engine.predict(
+            environment="PONG",
+            state_key="s11",
+            skill_id="PONG:UP",
+        )
+        assert prediction["samples"] == 1
+        assert writes == []
+
+    assert len(writes) == 1
+    restored = GameIntelligence(tmp_path)
+    assert restored.projection()["transition_count"] == 12
 
 
 def test_graduation_requires_broad_real_game_evidence(tmp_path):

@@ -903,33 +903,34 @@ class FerroBrainLab:
         count = max(1, min(64, int(steps)))
         name = str(environment).upper()
         before_env = dict(self.state.get("environments", {}).get(name) or {})
-        rows = [self.step(name, now=now) for _ in range(count)]
-        after_env = dict(self.state.get("environments", {}).get(name) or {})
-        self.state["total_sessions"] = int(self.state.get("total_sessions") or 0) + 1
-        self.state["updated_at"] = now.isoformat()
-        self._write()
-        session_reward = round(sum(float(row["reward"]) for row in rows), 6)
-        competence = self._record_competence_session(
-            environment=name,
-            before=before_env,
-            after=after_env,
-            steps=len(rows),
-            reward=session_reward,
-            observed_at=now,
-        )
-        self._write()
-        session_id = f"brain-session:{name.lower()}:{int(self.state['total_sessions'])}"
-        self.game_intelligence.record_episode(
-            environment=name,
-            episode_id=session_id,
-            reward=max(-1.0, min(1.0, session_reward)),
-            success=session_reward > 0.0,
-            metrics={"steps": len(rows), "raw_reward": session_reward},
-            evidence_ref=rows[-1].get("event_id"),
-            observed_at=now,
-            source="BRAIN_LAB_SESSION",
-        )
-        self.game_intelligence.discover_macro_skills(str(environment).upper(), min_support=3)
+        with self.game_intelligence.batch_updates():
+            rows = [self.step(name, now=now) for _ in range(count)]
+            after_env = dict(self.state.get("environments", {}).get(name) or {})
+            self.state["total_sessions"] = int(self.state.get("total_sessions") or 0) + 1
+            self.state["updated_at"] = now.isoformat()
+            self._write()
+            session_reward = round(sum(float(row["reward"]) for row in rows), 6)
+            competence = self._record_competence_session(
+                environment=name,
+                before=before_env,
+                after=after_env,
+                steps=len(rows),
+                reward=session_reward,
+                observed_at=now,
+            )
+            self._write()
+            session_id = f"brain-session:{name.lower()}:{int(self.state['total_sessions'])}"
+            self.game_intelligence.record_episode(
+                environment=name,
+                episode_id=session_id,
+                reward=max(-1.0, min(1.0, session_reward)),
+                success=session_reward > 0.0,
+                metrics={"steps": len(rows), "raw_reward": session_reward},
+                evidence_ref=rows[-1].get("event_id"),
+                observed_at=now,
+                source="BRAIN_LAB_SESSION",
+            )
+            self.game_intelligence.discover_macro_skills(name, min_support=3)
         return {
             "status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM" if self.substrate is not None else "CONNECTOME_UNAVAILABLE",
             "environment": name,
