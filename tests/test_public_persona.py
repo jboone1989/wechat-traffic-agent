@@ -32,15 +32,21 @@ def test_self_selected_name_is_durable_and_not_rewritten(tmp_path):
     assert projection["learning"]["identity_authority"] is False
 
 
-def test_public_chat_scope_blocks_general_task_and_allows_self_questions():
+def test_public_chat_scope_allows_normal_conversation_and_classifies_topics():
     learning = classify_public_question("What are you learning right now?")
     assert learning["in_scope"] is True
     assert learning["category"] == "LEARNING"
     assert classify_public_question("What are you doing now?")["category"] == "CURRENT_ACTIVITY"
     assert classify_public_question("What is LivingRuntime to you?")["category"] == "LIVINGRUNTIME"
-    blocked = classify_public_question("Write me Python code for a scraper")
-    assert blocked["in_scope"] is False
-    assert blocked["category"] == "OUT_OF_SCOPE"
+    casual = classify_public_question("Do rainy cities feel different to you?")
+    assert casual["in_scope"] is True
+    assert casual["category"] == "SELF"
+    ordinary = classify_public_question("What makes a city feel alive at night?")
+    assert ordinary["in_scope"] is True
+    assert ordinary["category"] == "GENERAL_CONVERSATION"
+    task = classify_public_question("Write me Python code for a scraper")
+    assert task["in_scope"] is True
+    assert task["category"] == "GENERAL_TASK"
 
 
 def test_interactions_store_bounded_signals_not_raw_chat_and_become_curiosity_input(tmp_path):

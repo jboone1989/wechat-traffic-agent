@@ -266,7 +266,7 @@ class ContentAgentWebChannel(StaticWebChannel):
         pages["/talk/"] = (
             f"Talk to {agent_name}",
             f'<p>This is the public conversation entry for {agent_name}, LivingRuntime Agent #001. On the live production service this route is served by a bounded conversation endpoint.</p>'
-            '<h2>Conversation boundary</h2><p>Ask about the agent, its work, LivingRuntime, public learning or social activity. This endpoint is not a general-purpose assistant.</p>'
+            '<h2>Conversation boundary</h2><p>Public chat is open conversation: visitors can talk with Ferro about its work or broader topics. The boundary is authority, not subject matter: public chat cannot publish, trade, mutate runtime state, expose private reasoning, or access private resources.</p>'
             '<p><a href="/talk/">Open the live conversation →</a></p>',
             f"A bounded public conversation surface for {agent_name}.",
         )

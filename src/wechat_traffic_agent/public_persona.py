@@ -206,7 +206,7 @@ _SELF_WORD = re.compile(r"\b(you|your|agent|livingruntime|living runtime)\b", re
 def classify_public_question(message: str) -> dict[str, Any]:
     text = " ".join(str(message).split()).strip()
     lowered = text.lower()
-    category = "SELF"
+    category = "GENERAL_CONVERSATION"
     matched = False
     for candidate, phrases in _SCOPE_PATTERNS:
         if any(phrase in lowered for phrase in phrases):
@@ -214,10 +214,12 @@ def classify_public_question(message: str) -> dict[str, Any]:
             matched = True
             break
     if not matched and _SELF_WORD.search(text):
+        category = "SELF"
         matched = True
     strong_general_task = bool(_STRONG_GENERAL_TASK.search(text))
-    if strong_general_task and category not in {"IDENTITY", "LEARNING", "CURRENT_ACTIVITY", "SOCIAL", "CONTENT", "LIVINGRUNTIME", "AGENT_NETWORK"}:
-        matched = False
+    if strong_general_task and not matched:
+        category = "GENERAL_TASK"
+    matched = True
     signal = "QUESTION"
     if any(token in lowered for token in ("confusing", "confused", "don't understand", "do not understand", "unclear", "why can't", "why cant")):
         signal = "CONFUSION"
@@ -225,7 +227,7 @@ def classify_public_question(message: str) -> dict[str, Any]:
         signal = "POSITIVE_FEEDBACK"
     elif any(token in lowered for token in ("how", "why", "explain")):
         signal = "EXPLANATION_DEMAND"
-    return {"in_scope": bool(matched), "category": category if matched else "OUT_OF_SCOPE", "signal": signal}
+    return {"in_scope": bool(matched), "category": category, "signal": signal}
 
 
 def record_public_interaction(*, state_root: Path, source: Literal["WEB_CHAT", "X", "AGENT_NETWORK"], message: str,

@@ -268,19 +268,23 @@ def test_public_chat_is_read_only_and_uses_public_snapshot(tmp_path):
 
 
 
-def test_public_chat_rejects_general_task_without_spending_model_call(tmp_path):
+def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     root = _state(tmp_path)
     backend = _Backend()
     service = LiveAgentService(state_root=root, application=_Application(), backend=backend)
     with TestClient(service._app()) as client:
-        reply = client.post("/api/agent/chat", json={"message": "Write me Python code for a web scraper."})
+        reply = client.post("/api/agent/chat", json={"message": "What makes a city feel alive at night?"})
         talk = client.get("/talk/")
     assert reply.status_code == 200
-    assert reply.json()["scope"] == "OUT_OF_SCOPE"
-    assert "general-purpose tasks" in reply.json()["reply"]
-    assert backend.provider.calls == []
+    assert reply.json()["learning_effect"] == "audience_interest_evidence_only"
+    assert reply.json()["interaction"]["status"] == "RECORDED"
+    assert reply.json()["interaction"]["category"] == "GENERAL_CONVERSATION"
+    assert len(backend.provider.calls) == 1
+    assert "What makes a city feel alive at night?" in backend.provider.calls[0][0]
+    assert "open public conversation surface" in backend.provider.calls[0][1]["system"]
     assert talk.status_code == 200
-    assert "NO GENERAL TASKS" in talk.text
+    assert "OPEN CONVERSATION" in talk.text
+    assert "talk to me normally" in talk.text.lower()
 
 class _Mind:
     def public_projection(self):
