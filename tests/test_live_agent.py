@@ -661,6 +661,36 @@ def test_public_snapshot_degrades_optional_live_components_instead_of_failing(tm
     assert snapshot["public_reasoning"]["private_chain_of_thought_exposed"] is False
 
 
+def test_public_status_degrades_instead_of_blocking_on_slow_neural_snapshot(
+    tmp_path, monkeypatch
+):
+    import time
+    import wechat_traffic_agent.live_agent as live_module
+
+    def _slow_snapshot(*args, **kwargs):
+        time.sleep(0.08)
+        raise AssertionError("slow snapshot should not control HTTP latency")
+
+    monkeypatch.setattr(live_module, "public_agent_snapshot", _slow_snapshot)
+    monkeypatch.setattr(
+        live_module,
+        "PUBLIC_CHAT_STATE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    root = _state(tmp_path)
+    service = LiveAgentService(
+        state_root=root,
+        application=_Application(),
+        backend=_Backend(),
+    )
+    with TestClient(service._app()) as client:
+        reply = client.get("/api/agent/status")
+
+    assert reply.status_code == 200
+    assert reply.json()["schema_version"] == "public-agent-snapshot:degraded"
+    assert reply.json()["agent"]["online"] is True
+
+
 def test_public_chat_stream_continues_when_live_state_and_neural_relationship_fail(
     tmp_path, monkeypatch
 ):

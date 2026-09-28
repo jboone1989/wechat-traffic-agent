@@ -1540,11 +1540,22 @@ class LiveAgentService:
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def status(_request: Request):
-            return JSONResponse(public_agent_snapshot(
-                self.state_root, self.application, self.mind, poll_seconds=self.poll_seconds,
-                service_started_at=self.started_at, wakeful=self.wakeful,
-            ),
-                                headers={"Cache-Control": "no-store"})
+            try:
+                payload = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        public_agent_snapshot,
+                        self.state_root,
+                        self.application,
+                        self.mind,
+                        poll_seconds=self.poll_seconds,
+                        service_started_at=self.started_at,
+                        wakeful=self.wakeful,
+                    ),
+                    timeout=PUBLIC_CHAT_STATE_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                payload = _degraded_public_chat_snapshot(self.state_root, exc)
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def stream(request: Request):
             async def event_source():
