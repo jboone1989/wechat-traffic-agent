@@ -385,6 +385,7 @@ class WakefulContentTaskRunner:
         graduation = None
         competence_graduation = None
         open_world_graduation = None
+        adversarial_open_world_graduation = None
         active_stage = "FOUNDATION_GAMES_V1"
         brain_lab = getattr(self.wakeful, "brain_lab", None)
         if brain_lab is not None and hasattr(brain_lab, "run_accelerated_arena"):
@@ -405,18 +406,39 @@ class WakefulContentTaskRunner:
             elif graduation.get("graduated"):
                 harder = brain_lab.open_world_curriculum_environments(limit=4)
                 if harder:
-                    active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
                     open_world_graduation = (
                         brain_lab.game_intelligence.open_world_graduation_status(harder)
                     )
-                    arena = brain_lab.run_accelerated_arena(
-                        environments=harder,
-                        sessions_per_environment=(
-                            1 if open_world_graduation.get("graduated") else 3
-                        ),
-                        base_steps=40,
-                        now=now,
-                    )
+                    if not open_world_graduation.get("graduated"):
+                        active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
+                        arena = brain_lab.run_accelerated_arena(
+                            environments=harder,
+                            sessions_per_environment=3,
+                            base_steps=40,
+                            now=now,
+                        )
+                    else:
+                        adversarial = brain_lab.adversarial_open_world_environments(
+                            limit=4
+                        )
+                        active_stage = "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+                        adversarial_open_world_graduation = (
+                            brain_lab.game_intelligence.adversarial_open_world_graduation_status(
+                                adversarial
+                            )
+                        )
+                        if adversarial_open_world_graduation.get("graduated"):
+                            active_stage = "OPEN_ENDED_SELF_CHALLENGE"
+                        arena = brain_lab.run_accelerated_arena(
+                            environments=adversarial,
+                            sessions_per_environment=(
+                                1
+                                if adversarial_open_world_graduation.get("graduated")
+                                else 3
+                            ),
+                            base_steps=64,
+                            now=now,
+                        )
                 else:
                     active_stage = "FOUNDATION_MAINTENANCE_WAITING_FOR_OPEN_WORLD"
                     arena = brain_lab.run_accelerated_arena(
@@ -437,6 +459,7 @@ class WakefulContentTaskRunner:
             "graduation": graduation,
             "competence_graduation": competence_graduation,
             "open_world_graduation": open_world_graduation,
+            "adversarial_open_world_graduation": adversarial_open_world_graduation,
             "active_game_stage": active_stage,
         }
 

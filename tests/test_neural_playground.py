@@ -546,6 +546,76 @@ def test_open_world_curriculum_selects_active_difficult_and_diverse_worlds(tmp_p
     assert "WORLD_0004" not in selected
 
 
+def test_adversarial_worlds_are_self_generated_and_structurally_harder(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+
+    names = lab.adversarial_open_world_environments(limit=4)
+    specs = lab._generated_specs()
+
+    assert set(names) == {
+        "ADV_WORLD_0001",
+        "ADV_WORLD_0002",
+        "ADV_WORLD_0003",
+        "ADV_WORLD_0004",
+    }
+    for name in names:
+        spec = specs[name]
+        assert spec["generation"] == "FERRO_ADVERSARIAL"
+        assert spec["generator"] == "LONG_HORIZON_ADVERSARIAL_GENERATOR_V1"
+        assert spec["stage"] == "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+        assert int(spec["episode_horizon"]) >= 192
+        assert float(spec["observation_dropout"]) >= 0.20
+        assert int(spec["delayed_reward_window"]) >= 8
+        assert float(spec["adversary_strength"]) >= 0.18
+        assert spec["weakness_signature"] is not None
+
+    assert lab.open_world_curriculum_environments(limit=4) == ()
+
+
+def test_adversarial_world_uses_partial_observation_delayed_reward_and_context_switch(
+    tmp_path: Path,
+):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    name = lab.adversarial_open_world_environments(limit=1)[0]
+
+    result = lab.run_session(environment=name, steps=64, now=NOW)
+    env = lab.state["environments"][name]
+    spec = lab.state["adversarial_worlds"][name]
+
+    assert result["steps"] == 64
+    assert int(env["partial_observation_steps"]) > 0
+    assert int(env["delayed_settlements"]) >= 4
+    assert int(env["context_changes"]) >= 1
+    assert 0.0 < float(env["resource"]) < 1.0
+    assert int(env["episode_step"]) == 64
+    assert int(spec["episode_horizon"]) > 64
+    episode = lab.game_intelligence.state["episodes"][-1]
+    assert episode["environment"] == name
+    assert "correct_rate" in episode["metrics"]
+    assert "adversary_overrides" in episode["metrics"]
+
+
+def test_adversarial_delayed_reward_credits_the_whole_action_window(tmp_path: Path):
+    lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
+    lab.adversarial_open_world_environments(limit=4)
+    name = "ADV_WORLD_0001"
+    calls = []
+
+    def capture_learning(**kwargs):
+        calls.append(dict(kwargs))
+
+    lab._learn_policy = capture_learning
+
+    for _ in range(3):
+        lab.step(name, now=NOW)
+    assert calls == []
+
+    lab.step(name, now=NOW)
+    assert len(calls) == 4
+    assert len({row["state_key"] for row in calls}) >= 2
+    assert any(abs(float(row["reward"])) > 0.02 for row in calls)
+
+
 def test_foundation_competence_distinguishes_playing_skill_from_sample_volume(tmp_path: Path):
     lab = FerroBrainLab(tmp_path, substrate=FakeSubstrate())
     envs = lab.state["environments"]

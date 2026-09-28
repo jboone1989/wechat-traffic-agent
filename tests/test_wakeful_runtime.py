@@ -900,6 +900,66 @@ def test_ungraduated_open_world_play_bypasses_pending_chatgpt(
     assert runtime._plan_admission_delay(play) is None
 
 
+def test_ungraduated_adversarial_open_world_play_bypasses_pending_chatgpt(
+    monkeypatch, tmp_path
+):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    monkeypatch.setattr(runtime.core, "clock", lambda: NOW)
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "graduation_status",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "foundation_competence",
+        lambda: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "open_world_curriculum_environments",
+        lambda limit=4: ("WORLD_0001", "WORLD_0002", "WORLD_0003"),
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "open_world_graduation_status",
+        lambda environments: {"graduated": True},
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab,
+        "adversarial_open_world_environments",
+        lambda limit=4: (
+            "ADV_WORLD_0001",
+            "ADV_WORLD_0002",
+            "ADV_WORLD_0003",
+            "ADV_WORLD_0004",
+        ),
+    )
+    monkeypatch.setattr(
+        runtime.brain_lab.game_intelligence,
+        "adversarial_open_world_graduation_status",
+        lambda environments: {"graduated": False},
+    )
+    monkeypatch.setattr(
+        runtime.resource_regulator,
+        "defer_seconds",
+        lambda task, now: None,
+    )
+    runtime.schedule_chatgpt_resume(
+        NOW,
+        request_id="llmreq_reflection_pending",
+        task="REFLECT",
+    )
+    play = PlannedWake(
+        wake_id="content:NEURAL_PLAY",
+        at=NOW,
+        reason="adversarial open world graduation sprint",
+        task="NEURAL_PLAY",
+    )
+
+    assert runtime._plan_admission_delay(play) is None
+
+
 def test_exact_chatgpt_resume_is_not_rethrottled_by_resource_admission(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     resume = PlannedWake(

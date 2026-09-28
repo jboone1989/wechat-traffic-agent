@@ -30,6 +30,8 @@ class FerroBrainLab:
     SCHEMA_VERSION = "ferro-brain-lab.v1"
     POLICY_ALGORITHM_VERSION = "td-q-v2"
     ENVIRONMENTS = ("PONG", "MAZE", "FORAGING", "ROVER")
+    ADVERSARIAL_STAGE = "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+    ADVERSARIAL_WORLD_COUNT = 4
     MAX_RECENT = 64
     # One eligibility trace may receive at most three outcomes in the physical
     # substrate. Reuse the neural frame, but reselect the motor action from the
@@ -86,6 +88,7 @@ class FerroBrainLab:
                 "environments": {name: self._default_env(name) for name in self.ENVIRONMENTS},
                 "policies": {},
                 "policy_algorithm_version": self.POLICY_ALGORITHM_VERSION,
+                "adversarial_worlds": {},
                 "recent": [],
             }
         for name in self.ENVIRONMENTS:
@@ -108,6 +111,7 @@ class FerroBrainLab:
                 )
         raw.setdefault("skill_execution", {})
         raw.setdefault("competence_sessions", {})
+        raw.setdefault("adversarial_worlds", {})
         return raw
 
     def _write(self) -> None:
@@ -174,6 +178,60 @@ class FerroBrainLab:
             error = max(-4, min(4, int(round(float(env["heading_error"]) * 4))))
             progress = min(3, int(float(env["progress"]) * 4))
             return f"e{error}:p{progress}"
+        if name.startswith("ADV_WORLD_"):
+            level = int(self.game_intelligence.curriculum(name).get("level") or 1)
+            action_signal_channels = {
+                "prediction_due",
+                "curiosity",
+                "task_urgency",
+                "error_recovery",
+            }
+            compact_observed = "|".join(
+                f"{channel}:{0 if float(value) < 0.38 else 2 if float(value) > 0.62 else 1}"
+                for channel, value in sorted(currents.items())
+                if channel in action_signal_channels
+            )
+            full_observed = "|".join(
+                f"{channel}:{0 if float(value) < 0.38 else 2 if float(value) > 0.62 else 1}"
+                for channel, value in sorted(currents.items())
+            )
+            if level <= 1:
+                return f"l1|{compact_observed}"[:512]
+            resource = min(4, max(0, int(float(env.get("resource") or 0.0) * 5)))
+            delay_phase = min(7, int(env.get("steps_since_settlement") or 0))
+            temporal_phase = min(
+                7, (int(env.get("episode_step") or 0) // 8) % 8
+            )
+            if level == 2:
+                return (
+                    f"l2:r{resource}:t{temporal_phase}:d{delay_phase}|{compact_observed}"
+                )[:512]
+            last_action = str(env.get("last_action") or "NONE")
+            last_reward = float(env.get("last_reward") or 0.0)
+            reward_sign = 1 if last_reward > 0.05 else -1 if last_reward < -0.05 else 0
+            action_counts = {
+                str(key): int(value or 0)
+                for key, value in (env.get("action_counts") or {}).items()
+            }
+            total_actions = sum(action_counts.values())
+            dominant_action = (
+                sorted(
+                    action_counts.items(),
+                    key=lambda row: (-row[1], row[0]),
+                )[0][0]
+                if action_counts
+                else "NONE"
+            )
+            dominant_share = (
+                max(action_counts.values()) / total_actions
+                if total_actions > 0
+                else 0.0
+            )
+            bias_bin = min(3, int(dominant_share * 4))
+            return (
+                f"r{resource}:d{delay_phase}:t{temporal_phase}:a{last_action}:"
+                f"z{reward_sign}:b{dominant_action}:{bias_bin}|{full_observed}"
+            )[:512]
         return "|".join(
             f"{channel}:{min(3,max(0,int(float(value)*4)))}"
             for channel, value in sorted(currents.items())
@@ -650,6 +708,213 @@ class FerroBrainLab:
         )
         return env, reward, burst, currents, action_channel
 
+    def _adversarial_weakness_signature(self) -> dict[str, Any]:
+        """Summarize measured weaknesses that seed self-generated adversarial worlds."""
+        negative_skills: list[tuple[float, str]] = []
+        for skill_id, raw in (self.game_intelligence.state.get("skills") or {}).items():
+            if not isinstance(raw, Mapping):
+                continue
+            reward_sum = float(raw.get("reward_sum") or 0.0)
+            count = int(raw.get("count") or 0)
+            if count <= 0:
+                continue
+            mean_reward = reward_sum / count
+            if mean_reward < 0.0:
+                negative_skills.append((mean_reward, str(skill_id)))
+        negative_skills.sort(key=lambda row: (row[0], row[1]))
+        recent = [
+            dict(row)
+            for row in (self.state.get("recent") or ())[-64:]
+            if isinstance(row, Mapping)
+        ]
+        action_counts: dict[str, int] = {}
+        for row in recent:
+            action = str(row.get("action") or "")
+            if action:
+                action_counts[action] = int(action_counts.get(action) or 0) + 1
+        dominant_action = (
+            sorted(action_counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
+            if action_counts
+            else None
+        )
+        return {
+            "negative_skills": [skill_id for _, skill_id in negative_skills[:8]],
+            "dominant_recent_action": dominant_action,
+            "recent_action_counts": dict(sorted(action_counts.items())),
+        }
+
+    def _ensure_adversarial_worlds(self) -> dict[str, dict[str, Any]]:
+        worlds = self.state.setdefault("adversarial_worlds", {})
+        active = {
+            str(name).upper(): dict(spec)
+            for name, spec in worlds.items()
+            if isinstance(spec, Mapping)
+            and str(spec.get("status") or "").upper()
+            not in {"REJECTED", "RETIRED"}
+        }
+        if len(active) >= self.ADVERSARIAL_WORLD_COUNT:
+            return active
+
+        weakness = self._adversarial_weakness_signature()
+        weakness_token = json.dumps(
+            weakness,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        archetypes = (
+            {
+                "name": "MEMORY_SWITCH",
+                "horizon": 192,
+                "period": 9,
+                "dropout": 0.20,
+                "spoof": 0.05,
+                "delay": 8,
+                "resource_decay": 0.0018,
+                "adversary": 0.18,
+                "objective_flip": 27,
+            },
+            {
+                "name": "DECEPTIVE_OBSERVATION",
+                "horizon": 224,
+                "period": 7,
+                "dropout": 0.30,
+                "spoof": 0.12,
+                "delay": 12,
+                "resource_decay": 0.0020,
+                "adversary": 0.24,
+                "objective_flip": 21,
+            },
+            {
+                "name": "RESOURCE_CONFLICT",
+                "horizon": 256,
+                "period": 11,
+                "dropout": 0.25,
+                "spoof": 0.07,
+                "delay": 16,
+                "resource_decay": 0.0025,
+                "adversary": 0.22,
+                "objective_flip": 32,
+            },
+            {
+                "name": "ADAPTIVE_COUNTERPLAY",
+                "horizon": 224,
+                "period": 5,
+                "dropout": 0.28,
+                "spoof": 0.10,
+                "delay": 10,
+                "resource_decay": 0.0022,
+                "adversary": 0.32,
+                "objective_flip": 17,
+            },
+        )
+        sensors = (
+            "prediction_due",
+            "curiosity",
+            "task_urgency",
+            "threat_risk",
+            "resource_pressure",
+            "error_recovery",
+        )
+        actions = ("A0", "A1", "A2", "A3")
+        action_channels = {
+            "A0": "prediction_due",
+            "A1": "curiosity",
+            "A2": "task_urgency",
+            "A3": "error_recovery",
+        }
+        created_at = datetime.now(timezone.utc).isoformat()
+        for index, archetype in enumerate(archetypes, start=1):
+            name = f"ADV_WORLD_{index:04d}"
+            if name in active:
+                continue
+            seed = sha256(
+                f"{self.ADVERSARIAL_STAGE}|{archetype['name']}|{weakness_token}".encode()
+            ).hexdigest()[:32]
+            latent_weights = {
+                action: {
+                    channel: round(
+                        (
+                            1.35
+                            if channel == action_channels[action]
+                            else (
+                                self._phase(
+                                    f"{seed}:{action}:{channel}:weight"
+                                )
+                                * 0.30
+                                - 0.15
+                            )
+                        ),
+                        3,
+                    )
+                    for channel in sensors
+                }
+                for action in actions
+            }
+            spec = {
+                "world_id": name,
+                "generation": "FERRO_ADVERSARIAL",
+                "generator": "LONG_HORIZON_ADVERSARIAL_GENERATOR_V1",
+                "stage": self.ADVERSARIAL_STAGE,
+                "archetype": archetype["name"],
+                "created_at": created_at,
+                "status": "CANDIDATE",
+                "seed": seed,
+                "sensor_channels": list(sensors),
+                "actions": list(actions),
+                "action_channels": dict(action_channels),
+                "latent_weights": latent_weights,
+                "episode_horizon": archetype["horizon"],
+                "context_switch_period": archetype["period"],
+                "observation_dropout": archetype["dropout"],
+                "observation_spoof": archetype["spoof"],
+                "delayed_reward_window": archetype["delay"],
+                "resource_decay": archetype["resource_decay"],
+                "adversary_strength": archetype["adversary"],
+                "objective_flip_period": archetype["objective_flip"],
+                "weakness_signature": weakness,
+                "reward": {
+                    "correct": 1.0,
+                    "incorrect": -0.45,
+                    "resource_safe": 0.25,
+                    "step_cost": -0.01,
+                    "resource_failure": -1.0,
+                },
+                "safety": {
+                    "brain_lab_only": True,
+                    "no_external_actions": True,
+                    "no_llm_motor_loop": True,
+                    "measured_reward_only": True,
+                },
+            }
+            worlds[name] = spec
+            active[name] = dict(spec)
+        self.state["adversarial_worlds"] = worlds
+        self._write()
+        return active
+
+    def adversarial_open_world_environments(
+        self,
+        *,
+        limit: int = 4,
+    ) -> tuple[str, ...]:
+        specs = self._ensure_adversarial_worlds()
+        bounded = max(1, min(self.ADVERSARIAL_WORLD_COUNT, int(limit)))
+        candidates = []
+        environments = self.state.get("environments") or {}
+        for name, spec in specs.items():
+            env = environments.get(name) or {}
+            candidates.append(
+                (
+                    int(env.get("episode") or 0),
+                    int(env.get("step") or 0),
+                    str(spec.get("archetype") or ""),
+                    name,
+                )
+            )
+        candidates.sort()
+        return tuple(row[-1] for row in candidates[:bounded])
+
     def _generated_specs(self) -> dict[str, dict[str, Any]]:
         raw = {}
         try:
@@ -659,19 +924,31 @@ class FerroBrainLab:
                 )
             )
         except (OSError, ValueError, json.JSONDecodeError):
-            return {}
+            raw = {}
         worlds = raw.get("worlds") if isinstance(raw.get("worlds"), Mapping) else {}
-        return {
+        generated = {
             str(world_id).upper(): dict(spec)
             for world_id, spec in worlds.items()
             if isinstance(spec, Mapping)
             and str(spec.get("status") or "") not in {"REJECTED", "RETIRED"}
         }
+        generated.update(
+            {
+                str(world_id).upper(): dict(spec)
+                for world_id, spec in (
+                    self.state.get("adversarial_worlds") or {}
+                ).items()
+                if isinstance(spec, Mapping)
+                and str(spec.get("status") or "").upper()
+                not in {"REJECTED", "RETIRED"}
+            }
+        )
+        return generated
 
     @staticmethod
     def _generated_default(spec: Mapping[str, Any]) -> dict[str, Any]:
         actions = [str(value) for value in spec.get("actions") or ("A0", "A1", "A2")]
-        return {
+        row = {
             "episode": 0,
             "step": 0,
             "episode_step": 0,
@@ -682,6 +959,292 @@ class FerroBrainLab:
             "last_target_action": actions[0],
             "last_reward": 0.0,
         }
+        if str(spec.get("stage") or "") == FerroBrainLab.ADVERSARIAL_STAGE:
+            row.update(
+                {
+                    "resource": 1.0,
+                    "delayed_reward_buffer": 0.0,
+                    "delayed_reward_count": 0,
+                    "steps_since_settlement": 0,
+                    "delayed_settlements": 0,
+                    "context_changes": 0,
+                    "adversary_overrides": 0,
+                    "partial_observation_steps": 0,
+                    "resource_failures": 0,
+                    "action_counts": {action: 0 for action in actions},
+                    "hidden_context": 0,
+                    "credit_trace": [],
+                }
+            )
+        return row
+
+    def _adversarial_step(
+        self,
+        *,
+        name: str,
+        spec: Mapping[str, Any],
+        env: dict[str, Any],
+        now: datetime,
+        event_id: str,
+    ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+        seed = str(spec.get("seed") or name)
+        sensors = [str(value) for value in spec.get("sensor_channels") or ()]
+        actions = [str(value) for value in spec.get("actions") or ()]
+        action_channels = {
+            str(key): str(value)
+            for key, value in (spec.get("action_channels") or {}).items()
+        }
+        if not sensors or not actions:
+            raise ValueError(f"adversarial world {name} has no sensors/actions")
+
+        episode_before = int(env.get("episode") or 0)
+        episode_step = int(env.get("episode_step") or 0)
+        curriculum_level = int(
+            self.game_intelligence.curriculum(name).get("level") or 1
+        )
+        difficulty_scale = min(
+            1.0, 0.35 + 0.20 * max(0, curriculum_level - 1)
+        )
+        base_period = max(2, int(spec.get("context_switch_period") or 7))
+        period_multiplier = max(
+            1.0, 2.0 - 0.5 * max(0, curriculum_level - 1)
+        )
+        period = max(2, int(round(base_period * period_multiplier)))
+        context_slot = episode_step // period
+        previous_context = int(env.get("hidden_context") or 0)
+        if context_slot != previous_context:
+            env["context_changes"] = int(env.get("context_changes") or 0) + 1
+        env["hidden_context"] = context_slot
+
+        true_currents: dict[str, float] = {}
+        observed_currents: dict[str, float] = {}
+        dropout = _clip(
+            float(spec.get("observation_dropout") or 0.0) * difficulty_scale,
+            0.0,
+            0.75,
+        )
+        spoof = _clip(
+            float(spec.get("observation_spoof") or 0.0) * difficulty_scale,
+            0.0,
+            0.40,
+        )
+        hidden_count = 0
+        for channel in sensors:
+            base = self._phase(
+                f"{seed}:episode:{episode_before}:context:{context_slot}:{channel}"
+            )
+            drift = (
+                self._phase(f"{seed}:episode:{episode_before}:step:{episode_step}:{channel}:drift")
+                - 0.5
+            ) * 0.18
+            truth = _clip(base + drift)
+            true_currents[channel] = truth
+            gate = self._phase(f"{seed}:{episode_before}:{episode_step}:{channel}:observe")
+            if gate < dropout:
+                observed = 0.5
+                hidden_count += 1
+            elif gate < dropout + spoof:
+                observed = 1.0 - truth
+                hidden_count += 1
+            else:
+                observed = truth
+            observed_currents[channel] = _clip(observed)
+        if hidden_count:
+            env["partial_observation_steps"] = int(
+                env.get("partial_observation_steps") or 0
+            ) + 1
+
+        latent_weights = (
+            spec.get("latent_weights")
+            if isinstance(spec.get("latent_weights"), Mapping)
+            else {}
+        )
+        objective_period = max(5, int(spec.get("objective_flip_period") or 21))
+        objective_slot = episode_step // objective_period
+        base_scores: list[tuple[float, str]] = []
+        for action in actions:
+            weights = (
+                latent_weights.get(action)
+                if isinstance(latent_weights.get(action), Mapping)
+                else {}
+            )
+            score = sum(
+                float(weights.get(channel) or 0.0)
+                * (float(true_currents[channel]) - 0.5)
+                for channel in sensors
+            )
+            context_bias = (
+                self._phase(f"{seed}:context:{context_slot}:action:{action}") - 0.5
+            ) * 0.20
+            score += context_bias
+            if curriculum_level >= 3 and objective_slot % 2:
+                score *= -1.0
+            base_scores.append((score, action))
+        base_scores.sort(key=lambda row: (-row[0], row[1]))
+        base_target = base_scores[0][1]
+
+        action_counts = {
+            action: int((env.get("action_counts") or {}).get(action) or 0)
+            for action in actions
+        }
+        total_actions = sum(action_counts.values())
+        adversary_strength = _clip(
+            float(spec.get("adversary_strength") or 0.0) * difficulty_scale,
+            0.0,
+            0.8,
+        )
+        adapted_scores = []
+        for score, action in base_scores:
+            share = (
+                action_counts[action] / total_actions
+                if total_actions > 0
+                else 0.0
+            )
+            penalty = adversary_strength * max(0.0, share - 0.30) * 3.0
+            adapted_scores.append((score - penalty, action))
+        adapted_scores.sort(key=lambda row: (-row[0], row[1]))
+        target_action = adapted_scores[0][1]
+        if target_action != base_target:
+            env["adversary_overrides"] = int(env.get("adversary_overrides") or 0) + 1
+
+        burst = self._stimulate(observed_currents, now, event_id)
+        options = tuple(
+            (action, action_channels.get(action) or sensors[index % len(sensors)])
+            for index, action in enumerate(actions)
+        )
+        state_key = self._policy_bucket(name, env, observed_currents)
+        action, action_channel = self._choose(
+            name=name,
+            state_key=state_key,
+            delta=burst.get("delta_readout_hz") or {},
+            options=options,
+            event_id=event_id,
+        )
+        action_counts[action] = int(action_counts.get(action) or 0) + 1
+        env["action_counts"] = action_counts
+
+        reward_spec = (
+            spec.get("reward") if isinstance(spec.get("reward"), Mapping) else {}
+        )
+        utility = float(
+            reward_spec.get("correct")
+            if action == target_action
+            else reward_spec.get("incorrect")
+        )
+        if action == target_action:
+            env["correct"] = int(env.get("correct") or 0) + 1
+        else:
+            env["incorrect"] = int(env.get("incorrect") or 0) + 1
+
+        resource = float(env.get("resource") or 1.0)
+        resource_decay = max(
+            0.0008,
+            float(spec.get("resource_decay") or 0.004)
+            * min(1.0, 0.70 + 0.10 * curriculum_level),
+        )
+        action_index = actions.index(action)
+        action_cost = resource_decay * (1.0 + 0.35 * action_index)
+        safe_action = actions[
+            min(
+                range(len(actions)),
+                key=lambda index: resource_decay * (1.0 + 0.35 * index),
+            )
+        ]
+        if resource < 0.40 and action == safe_action:
+            utility += float(reward_spec.get("resource_safe") or 0.0)
+        if action != target_action:
+            action_cost += resource_decay * 0.45
+        resource = _clip(resource - action_cost)
+        env["resource"] = resource
+
+        credit_trace = [
+            dict(row)
+            for row in (env.get("credit_trace") or ())
+            if isinstance(row, Mapping)
+        ]
+        delayed_buffer = float(env.get("delayed_reward_buffer") or 0.0) + utility
+        delayed_count = int(env.get("delayed_reward_count") or 0) + 1
+        base_delay = max(4, int(spec.get("delayed_reward_window") or 8))
+        delay_window = max(
+            4,
+            min(
+                base_delay,
+                int(
+                    round(
+                        base_delay
+                        * min(
+                            1.0,
+                            0.55 + 0.15 * max(0, curriculum_level - 1),
+                        )
+                    )
+                ),
+            ),
+        )
+        steps_since = int(env.get("steps_since_settlement") or 0) + 1
+        step_cost = float(reward_spec.get("step_cost") or -0.01)
+        reward = step_cost
+        settled_signal: float | None = None
+        terminal = False
+        max_horizon = max(192, int(spec.get("episode_horizon") or 192))
+        horizon = min(
+            max_horizon,
+            128 + 32 * max(0, curriculum_level - 1),
+        )
+        env["episode_step"] = episode_step + 1
+        if resource <= 0.001:
+            reward += float(reward_spec.get("resource_failure") or -1.0)
+            env["resource_failures"] = int(env.get("resource_failures") or 0) + 1
+            terminal = True
+        if int(env["episode_step"]) >= horizon:
+            terminal = True
+        if steps_since >= delay_window or terminal:
+            settled_signal = _signed_unit(
+                delayed_buffer / max(1, delayed_count)
+            )
+            reward += settled_signal
+            delayed_buffer = 0.0
+            delayed_count = 0
+            steps_since = 0
+            env["delayed_settlements"] = int(env.get("delayed_settlements") or 0) + 1
+
+        env["delayed_reward_buffer"] = round(delayed_buffer, 6)
+        env["delayed_reward_count"] = delayed_count
+        env["steps_since_settlement"] = steps_since
+        env["last_action"] = action
+        env["last_target_action"] = target_action
+        if terminal:
+            env["episode"] = episode_before + 1
+            env["episode_step"] = 0
+            env["resource"] = 1.0
+            env["action_counts"] = {value: 0 for value in actions}
+            env["hidden_context"] = 0
+
+        next_state_key = self._policy_bucket(name, env, observed_currents)
+        credit_trace.append(
+            {
+                "state_key": state_key,
+                "action": action,
+                "next_state_key": next_state_key,
+            }
+        )
+        if settled_signal is not None:
+            # The world reveals one measured delayed outcome for the whole
+            # window. Propagate that same observed signal backward through the
+            # actions that produced it instead of crediting only the final
+            # settlement action.
+            for distance, item in enumerate(reversed(credit_trace)):
+                credit = step_cost + settled_signal * (0.96 ** distance)
+                self._learn_policy(
+                    name=name,
+                    state_key=str(item["state_key"]),
+                    action=str(item["action"]),
+                    reward=credit,
+                    next_state_key=str(item["next_state_key"]),
+                    terminal=bool(terminal and distance == 0),
+                )
+            credit_trace = []
+        env["credit_trace"] = credit_trace[-max(8, delay_window * 2):]
+        return env, reward, burst, observed_currents, action_channel
 
     def _generated_step(
         self,
@@ -692,6 +1255,14 @@ class FerroBrainLab:
         now: datetime,
         event_id: str,
     ) -> tuple[dict[str, Any], float, dict[str, Any], dict[str, float]]:
+        if str(spec.get("stage") or "") == self.ADVERSARIAL_STAGE:
+            return self._adversarial_step(
+                name=name,
+                spec=spec,
+                env=env,
+                now=now,
+                event_id=event_id,
+            )
         seed = str(spec.get("seed") or name)
         sensors = [str(value) for value in spec.get("sensor_channels") or ()]
         actions = [str(value) for value in spec.get("actions") or ()]
@@ -1116,12 +1687,80 @@ class FerroBrainLab:
             )
             self._write()
             session_id = f"brain-session:{name.lower()}:{int(self.state['total_sessions'])}"
+            episode_metrics: dict[str, Any] = {
+                "steps": len(rows),
+                "raw_reward": session_reward,
+            }
+            episode_success = session_reward > 0.0
+            generated_spec = self._generated_specs().get(name)
+            if (
+                generated_spec
+                and str(generated_spec.get("stage") or "") == self.ADVERSARIAL_STAGE
+            ):
+                curriculum_level = int(
+                    self.game_intelligence.curriculum(name).get("level") or 1
+                )
+                correct = max(
+                    0,
+                    int(after_env.get("correct") or 0)
+                    - int(before_env.get("correct") or 0),
+                )
+                incorrect = max(
+                    0,
+                    int(after_env.get("incorrect") or 0)
+                    - int(before_env.get("incorrect") or 0),
+                )
+                attempts = correct + incorrect
+                correct_rate = correct / attempts if attempts else 0.0
+                success_threshold = min(
+                    0.55,
+                    0.34 + 0.06 * max(0, curriculum_level - 1),
+                )
+                resource_failures = max(
+                    0,
+                    int(after_env.get("resource_failures") or 0)
+                    - int(before_env.get("resource_failures") or 0),
+                )
+                episode_metrics.update(
+                    {
+                        "correct": correct,
+                        "incorrect": incorrect,
+                        "correct_rate": round(correct_rate, 6),
+                        "success_threshold": round(success_threshold, 6),
+                        "curriculum_level": curriculum_level,
+                        "resource_end": round(
+                            float(after_env.get("resource") or 0.0), 6
+                        ),
+                        "resource_failures": resource_failures,
+                        "context_changes": max(
+                            0,
+                            int(after_env.get("context_changes") or 0)
+                            - int(before_env.get("context_changes") or 0),
+                        ),
+                        "delayed_settlements": max(
+                            0,
+                            int(after_env.get("delayed_settlements") or 0)
+                            - int(before_env.get("delayed_settlements") or 0),
+                        ),
+                        "adversary_overrides": max(
+                            0,
+                            int(after_env.get("adversary_overrides") or 0)
+                            - int(before_env.get("adversary_overrides") or 0),
+                        ),
+                    }
+                )
+                episode_success = bool(
+                    attempts >= 16
+                    and correct_rate >= success_threshold
+                    and resource_failures == 0
+                    and session_reward > 0.0
+                )
             self.game_intelligence.record_episode(
                 environment=name,
                 episode_id=session_id,
                 reward=max(-1.0, min(1.0, session_reward)),
-                success=session_reward > 0.0,
-                metrics={"steps": len(rows), "raw_reward": session_reward},
+                success=episode_success,
+                metrics=episode_metrics,
                 evidence_ref=rows[-1].get("event_id"),
                 observed_at=now,
                 source="BRAIN_LAB_SESSION",
@@ -1143,6 +1782,8 @@ class FerroBrainLab:
         candidates: list[tuple[float, str, str]] = []
         allowed = {"CANDIDATE", "EXPERIMENTING", "ADOPTED"}
         for name, spec in specs.items():
+            if str(spec.get("stage") or "") == self.ADVERSARIAL_STAGE:
+                continue
             status = str(spec.get("status") or "").upper()
             if status not in allowed:
                 continue
@@ -1252,6 +1893,9 @@ class FerroBrainLab:
             attempts = int(env.get("correct") or 0) + int(env.get("incorrect") or 0)
             generated_meta[name] = {
                 "status": spec.get("status"),
+                "stage": spec.get("stage"),
+                "generation": spec.get("generation"),
+                "archetype": spec.get("archetype"),
                 "target_task": spec.get("target_task"),
                 "avoids_environment": spec.get("avoids_environment"),
                 "sensor_channels": list(spec.get("sensor_channels") or ()),
@@ -1260,6 +1904,10 @@ class FerroBrainLab:
                 "episodes": int(env.get("episode") or 0),
                 "steps": int(env.get("step") or 0),
                 "reward_sum": float(env.get("reward_sum") or 0.0),
+                "resource": env.get("resource"),
+                "delayed_settlements": int(env.get("delayed_settlements") or 0),
+                "context_changes": int(env.get("context_changes") or 0),
+                "adversary_overrides": int(env.get("adversary_overrides") or 0),
             }
         pong = environments["PONG"]
         attempts = int(pong.get("hits") or 0) + int(pong.get("misses") or 0)
@@ -1273,6 +1921,11 @@ class FerroBrainLab:
             "environments": environments,
             "ancestral_environments": list(self.ENVIRONMENTS),
             "generated_worlds": generated_meta,
+            "adversarial_worlds": sorted(
+                name
+                for name, spec in generated.items()
+                if str(spec.get("stage") or "") == self.ADVERSARIAL_STAGE
+            ),
             "available_environments": names,
             "pong_hit_rate": None if attempts == 0 else round(int(pong.get("hits") or 0) / attempts, 6),
             "foundation_competence": self.foundation_competence(),

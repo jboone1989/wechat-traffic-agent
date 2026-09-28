@@ -159,6 +159,57 @@ def test_neural_play_failure_is_isolated_from_service_continuity():
     assert recorded[0][0] == "IndexError"
 
 
+def test_neural_play_enters_long_horizon_adversarial_stage_after_open_world_graduation():
+    calls = []
+
+    class _Game:
+        def graduation_status(self):
+            return {"graduated": True}
+
+        def open_world_graduation_status(self, environments):
+            return {"graduated": True, "environments": list(environments)}
+
+        def adversarial_open_world_graduation_status(self, environments):
+            return {"graduated": False, "environments": list(environments)}
+
+    class _Brain:
+        ENVIRONMENTS = ("PONG", "MAZE", "FORAGING", "ROVER")
+        game_intelligence = _Game()
+
+        def foundation_competence(self):
+            return {"graduated": True}
+
+        def open_world_curriculum_environments(self, *, limit=4):
+            return ("WORLD_0001", "WORLD_0002", "WORLD_0003")
+
+        def adversarial_open_world_environments(self, *, limit=4):
+            return ("ADV_WORLD_0001", "ADV_WORLD_0002", "ADV_WORLD_0003", "ADV_WORLD_0004")
+
+        def run_accelerated_arena(self, **kwargs):
+            calls.append(kwargs)
+            return {"mode": "HEADLESS_ACCELERATED_ARENA"}
+
+    class _Wakeful:
+        brain_lab = _Brain()
+
+        def run_brain_lab(self, now, *, steps):
+            return {"status": "TRAINED_ON_PRODUCTION_NERVOUS_SYSTEM"}
+
+    runner = WakefulContentTaskRunner(wakeful=_Wakeful())
+    result = runner._neural_play_impl(NOW)
+
+    assert result["active_game_stage"] == "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+    assert result["adversarial_open_world_graduation"]["graduated"] is False
+    assert calls[-1]["environments"] == (
+        "ADV_WORLD_0001",
+        "ADV_WORLD_0002",
+        "ADV_WORLD_0003",
+        "ADV_WORLD_0004",
+    )
+    assert calls[-1]["sessions_per_environment"] == 3
+    assert calls[-1]["base_steps"] == 64
+
+
 from wechat_traffic_agent.developmental_history import DevelopmentalHistory
 from wechat_traffic_agent.organism_closure import refresh_organism_closure
 from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime

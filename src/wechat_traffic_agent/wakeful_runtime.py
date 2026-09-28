@@ -2045,9 +2045,19 @@ class ContentWakefulRuntime:
                             harder
                         )
                     )
-                    active_game_sprint_play = not bool(
-                        open_world.get("graduated")
-                    )
+                    if not bool(open_world.get("graduated")):
+                        active_game_sprint_play = True
+                    else:
+                        adversarial = (
+                            self.brain_lab.adversarial_open_world_environments(limit=4)
+                        )
+                        adversarial_status = (
+                            self.brain_lab.game_intelligence
+                            .adversarial_open_world_graduation_status(adversarial)
+                        )
+                        active_game_sprint_play = not bool(
+                            adversarial_status.get("graduated")
+                        )
         optional_starved = self._optional_internal_starved(
             wake,
             now,

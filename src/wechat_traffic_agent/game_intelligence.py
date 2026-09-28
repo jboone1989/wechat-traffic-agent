@@ -391,9 +391,22 @@ class GameIntelligence:
         stats["reward_sum"] = round(float(stats.get("reward_sum") or 0.0) + float(reward), 6)
         stats["success_rate"] = round(int(stats["successes"]) / int(stats["episodes"]), 6)
         stats["mean_reward"] = _mean(float(stats["reward_sum"]), int(stats["episodes"]))
+        recent = [bool(value) for value in stats.get("recent_successes") or ()]
+        recent.append(bool(success))
+        stats["recent_successes"] = recent[-12:]
+        stats["recent_success_rate"] = round(
+            sum(1 for value in stats["recent_successes"] if value)
+            / len(stats["recent_successes"]),
+            6,
+        )
         levels[str(level)] = stats
         if int(stats["episodes"]) >= MIN_CURRICULUM_EPISODES:
             rate = float(stats["success_rate"])
+            if (
+                str(environment).upper().startswith("ADV_WORLD_")
+                and len(stats["recent_successes"]) >= MIN_CURRICULUM_EPISODES
+            ):
+                rate = float(stats["recent_success_rate"])
             if rate >= 0.70 and level < int(row.get("max_level") or 10):
                 row["level"] = level + 1
                 row["advance_count"] = int(row.get("advance_count") or 0) + 1
@@ -1261,11 +1274,183 @@ class GameIntelligence:
             "next_stage": "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD",
         }
 
+    @_mutating
+    def adversarial_open_world_graduation_status(
+        self,
+        environments: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
+        names = tuple(
+            dict.fromkeys(
+                str(value).upper()
+                for value in (
+                    environments
+                    or sorted(
+                        {
+                            str(row.get("environment") or "").upper()
+                            for row in (self.state.get("episodes") or ())
+                            if isinstance(row, Mapping)
+                            and str(row.get("environment") or "")
+                            .upper()
+                            .startswith("ADV_WORLD_")
+                        }
+                    )
+                )
+                if str(value).upper().startswith("ADV_WORLD_")
+            )
+        )
+        episodes = {name: 0 for name in names}
+        transitions = {name: 0 for name in names}
+        recent_successes: dict[str, list[bool]] = {name: [] for name in names}
+        exposures = {
+            name: {
+                "context_changes": 0,
+                "delayed_settlements": 0,
+                "adversary_overrides": 0,
+                "resource_failures": 0,
+            }
+            for name in names
+        }
+        for row in self.state.get("episodes") or ():
+            if not isinstance(row, Mapping):
+                continue
+            env = str(row.get("environment") or "").upper()
+            if env not in episodes:
+                continue
+            episodes[env] += 1
+            recent_successes[env].append(bool(row.get("success")))
+            recent_successes[env] = recent_successes[env][-20:]
+            metrics = row.get("metrics") if isinstance(row.get("metrics"), Mapping) else {}
+            for key in exposures[env]:
+                exposures[env][key] += int(metrics.get(key) or 0)
+        for row in self.state.get("transitions") or ():
+            if not isinstance(row, Mapping):
+                continue
+            env = str(row.get("environment") or "").upper()
+            if env in transitions:
+                transitions[env] += 1
+
+        ready_worlds = [
+            name
+            for name in names
+            if episodes[name] >= 15 and transitions[name] >= 900
+        ]
+        success_rates = {
+            name: (
+                sum(1 for value in recent_successes[name] if value)
+                / len(recent_successes[name])
+                if recent_successes[name]
+                else 0.0
+            )
+            for name in names
+        }
+        robust_worlds = [
+            name
+            for name in names
+            if len(recent_successes[name]) >= 12 and success_rates[name] >= 0.55
+        ]
+        exposed_worlds = [
+            name
+            for name in names
+            if exposures[name]["context_changes"] >= 20
+            and exposures[name]["delayed_settlements"] >= 30
+            and exposures[name]["adversary_overrides"] >= 8
+        ]
+
+        name_set = set(names)
+        measured_transfers = 0
+        for row in self.state.get("transfer_evaluations") or ():
+            if not isinstance(row, Mapping):
+                continue
+            if row.get("interpretation") != "MEASURED_CROSS_GAME_REUSE":
+                continue
+            source = str(row.get("source_environment") or "").upper()
+            target = str(row.get("target_environment") or "").upper()
+            if source in name_set and target in name_set:
+                measured_transfers += 1
+        advanced_worlds = sum(
+            1
+            for name in names
+            if int(
+                ((self.state.get("curricula") or {}).get(name) or {}).get("level")
+                or 1
+            )
+            >= 3
+        )
+        checks = {
+            "adversarial_world_diversity": len(names) >= 4,
+            "long_horizon_sample_depth": len(ready_worlds) >= 3,
+            "sustained_adversarial_success": len(robust_worlds) >= 3,
+            "delayed_adaptive_exposure": len(exposed_worlds) >= 3,
+            "transfer_and_curriculum": measured_transfers >= 6
+            and advanced_worlds >= 3,
+        }
+        completed = sum(1 for value in checks.values() if value)
+        current_evidence = {
+            "environments": list(names),
+            "episodes": episodes,
+            "transitions": transitions,
+            "ready_worlds": ready_worlds,
+            "success_rates": {
+                name: round(rate, 6) for name, rate in success_rates.items()
+            },
+            "robust_worlds": robust_worlds,
+            "exposures": exposures,
+            "exposed_worlds": exposed_worlds,
+            "measured_transfers": measured_transfers,
+            "advanced_worlds": advanced_worlds,
+        }
+        milestones = self.state.setdefault("graduation_milestones", {})
+        milestone = dict(
+            milestones.get("LONG_HORIZON_ADVERSARIAL_OPEN_WORLD") or {}
+        )
+        if all(checks.values()) and not milestone.get("graduated"):
+            milestone = {
+                "stage": "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD",
+                "graduated": True,
+                "graduated_at": datetime.now(timezone.utc).isoformat(),
+                "cohort": list(names),
+                "checks": dict(checks),
+                "evidence": current_evidence,
+            }
+            milestones["LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"] = milestone
+            self._persist()
+        latched = bool(milestone.get("graduated"))
+        return {
+            "stage": "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD",
+            "graduated": bool(latched or all(checks.values())),
+            "graduated_at": milestone.get("graduated_at"),
+            "latched": latched,
+            "completed_requirements": len(checks) if latched else completed,
+            "total_requirements": len(checks),
+            "progress": 1.0 if latched else round(completed / len(checks), 6),
+            "checks": (
+                dict(milestone.get("checks") or checks) if latched else checks
+            ),
+            "evidence": (
+                dict(milestone.get("evidence") or current_evidence)
+                if latched
+                else current_evidence
+            ),
+            "current_evidence": current_evidence,
+            "next_stage": "OPEN_ENDED_SELF_CHALLENGE",
+        }
+
     def projection(self) -> dict[str, Any]:
         macro = [
             dict(row) for row in (self.state.get("skills") or {}).values()
             if isinstance(row, Mapping) and row.get("kind") == "MACRO"
         ]
+        foundation = self.graduation_status()
+        open_world = self.open_world_graduation_status()
+        adversarial = self.adversarial_open_world_graduation_status()
+        if not foundation.get("graduated"):
+            active_stage = "FOUNDATION_GAMES_V1"
+        elif not open_world.get("graduated"):
+            active_stage = "HARDER_OPEN_WORLD_CURRICULUM"
+        elif not adversarial.get("graduated"):
+            active_stage = "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+        else:
+            active_stage = "OPEN_ENDED_SELF_CHALLENGE"
         return {
             "schema_version": SCHEMA,
             "updated_at": self.state.get("updated_at"),
@@ -1294,13 +1479,10 @@ class GameIntelligence:
                 if isinstance(row, Mapping)
             ],
             "accelerated_batch_count": len(self.state.get("accelerated_batches") or ()),
-            "graduation": self.graduation_status(),
-            "open_world_graduation": self.open_world_graduation_status(),
-            "active_stage": (
-                "HARDER_OPEN_WORLD_CURRICULUM"
-                if self.graduation_status().get("graduated")
-                else "FOUNDATION_GAMES_V1"
-            ),
+            "graduation": foundation,
+            "open_world_graduation": open_world,
+            "adversarial_open_world_graduation": adversarial,
+            "active_stage": active_stage,
             "reward_authority": "MEASURED_GAME_WORLD_ONLY",
             "offline_replay_can_promote": False,
         }

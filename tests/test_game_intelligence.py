@@ -60,6 +60,34 @@ def test_episode_dream_and_curriculum_require_real_episode_outcomes(tmp_path):
     assert all(row["requires_prospective_world_validation"] for row in dream["challengers"])
 
 
+def test_adversarial_curriculum_can_advance_after_early_failures_when_recent_window_recovers(
+    tmp_path,
+):
+    engine = GameIntelligence(tmp_path)
+    env = "ADV_WORLD_0001"
+    for index in range(5):
+        engine.record_episode(
+            environment=env,
+            episode_id=f"early-failure:{index}",
+            reward=-0.5,
+            success=False,
+            observed_at=NOW + timedelta(minutes=index),
+        )
+    for index in range(12):
+        result = engine.record_episode(
+            environment=env,
+            episode_id=f"recovery:{index}",
+            reward=0.6,
+            success=True,
+            observed_at=NOW + timedelta(minutes=10 + index),
+        )
+
+    assert result["curriculum"]["level"] >= 2
+    level_one = result["curriculum"]["levels"]["1"]
+    assert level_one["success_rate"] < 0.70
+    assert level_one["recent_success_rate"] >= 0.70
+
+
 def test_self_play_population_uses_measured_matches(tmp_path):
     engine = GameIntelligence(tmp_path)
     strategies = {
@@ -521,3 +549,70 @@ def test_open_world_graduation_requires_depth_macros_transfer_and_progress(tmp_p
     assert status["graduated"] is True
     assert status["progress"] == 1.0
     assert status["next_stage"] == "LONG_HORIZON_ADVERSARIAL_OPEN_WORLD"
+
+
+def test_adversarial_open_world_graduation_requires_long_horizon_success_and_latches(
+    tmp_path,
+):
+    engine = GameIntelligence(tmp_path)
+    worlds = tuple(f"ADV_WORLD_{index:04d}" for index in range(1, 5))
+    engine.state["episodes"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:{index}",
+            "reward": 0.7,
+            "success": index < 12,
+            "metrics": {
+                "context_changes": 2,
+                "delayed_settlements": 3,
+                "adversary_overrides": 1,
+                "resource_failures": 0,
+            },
+        }
+        for env in worlds
+        for index in range(15)
+    ]
+    engine.state["transitions"] = [
+        {
+            "environment": env,
+            "episode_id": f"{env}:{index // 64}",
+            "state_key": str(index),
+            "action": "A0",
+            "reward": 0.01,
+            "next_state_key": str(index + 1),
+        }
+        for env in worlds
+        for index in range(900)
+    ]
+    engine.state["transfer_evaluations"] = [
+        {
+            "source_environment": worlds[index % 4],
+            "target_environment": worlds[(index + 1) % 4],
+            "interpretation": "MEASURED_CROSS_GAME_REUSE",
+        }
+        for index in range(6)
+    ]
+    engine.state["curricula"] = {
+        worlds[0]: {"level": 3},
+        worlds[1]: {"level": 4},
+        worlds[2]: {"level": 3},
+        worlds[3]: {"level": 2},
+    }
+
+    status = engine.adversarial_open_world_graduation_status(worlds)
+    assert status["graduated"] is True
+    assert status["latched"] is True
+    assert status["progress"] == 1.0
+    assert status["next_stage"] == "OPEN_ENDED_SELF_CHALLENGE"
+    assert len(status["evidence"]["robust_worlds"]) == 4
+    assert len(status["evidence"]["exposed_worlds"]) == 4
+
+    engine.state["episodes"] = []
+    engine.state["transitions"] = []
+    engine._persist()
+    restored = GameIntelligence(tmp_path).adversarial_open_world_graduation_status(
+        worlds
+    )
+    assert restored["graduated"] is True
+    assert restored["latched"] is True
+    assert restored["progress"] == 1.0
