@@ -85,6 +85,69 @@ def test_snapshot_treats_notes_as_first_class_inventory(tmp_path):
     assert {row["route"] for row in snap["articles"]} == {"/articles/article-one/", "/notes/note-one/"}
     assert snap["topics"]["shared"] == ["article-1", "note-1"]
 
+
+def test_worker_resolves_matching_inventory_for_derived_live_release(tmp_path):
+    starter_source = tmp_path / "starter-source"
+    starter_source.mkdir()
+    starter, _ = site(starter_source)
+    rows = [
+        ContentArtifact(
+            artifact_id=f"a{i}",
+            kind="article",
+            slug=f"article-{i}",
+            title=f"Existing article number {i}",
+            summary="Existing bounded evidence.",
+            sections=(
+                ContentSection(
+                    heading="Facts",
+                    paragraphs=("Existing explanation.",),
+                ),
+            ),
+            tags=("shared",),
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            public_safe=True,
+        )
+        for i in range(4)
+    ]
+    releases = tmp_path / "public" / "releases"
+    derived = releases / "screeps-live-derived"
+    StaticWebChannel(
+        StaticWebsiteConfig(
+            site_name="Lab",
+            description="Evidence",
+            base_url="https://example.com",
+        )
+    ).build(rows, derived)
+    current = tmp_path / "public" / "current"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    current.symlink_to(derived)
+
+    state_root = tmp_path / "state"
+    inventories = state_root / "content" / "automatic_website" / "inventories"
+    inventories.mkdir(parents=True)
+    matching = inventories / "canonical-parent.json"
+    matching.write_text(
+        json.dumps([row.model_dump(mode="json") for row in rows]),
+        encoding="utf-8",
+    )
+
+    worker = WebEditorialWorker(
+        runtime=Runtime(),
+        state_root=state_root,
+        artifacts_path=starter,
+        site_root=current,
+        base_url="https://example.com",
+    )
+
+    assert worker._current_artifacts_path() == matching
+    snapshot = website_snapshot(
+        worker._current_artifacts_path(),
+        current,
+        "https://example.com",
+    )
+    assert len(snapshot["articles"]) == 4
+
+
 def test_real_compose_path_drafts_once_and_restored_plan_skips_both_models(tmp_path):
     artifacts,root=site(tmp_path)
     runtime=Runtime()

@@ -168,11 +168,47 @@ class WebEditorialWorker:
         self.artifacts_path, self.site_root, self.base_url = artifacts_path, site_root, base_url
         self.inbox = ContentDraftInbox(self.state_root / "content")
 
+    def _current_artifacts_path(self) -> Path:
+        """Resolve the canonical inventory for the rendered site now in service."""
+        site_root = Path(self.site_root)
+        if not site_root.is_symlink():
+            return Path(self.artifacts_path)
+        inventories = (
+            self.state_root / "content" / "automatic_website" / "inventories"
+        )
+        direct = inventories / (site_root.resolve().name + ".json")
+        if direct.exists():
+            return direct
+
+        rendered = {
+            "/" + str(path.parent.relative_to(site_root)) + "/"
+            for category in ("articles", "guides", "research", "notes")
+            for path in (site_root / category).glob("*/index.html")
+        }
+        matches: list[Path] = []
+        for candidate in sorted(inventories.glob("*.json")):
+            candidate_routes = {
+                _route_for(artifact)
+                for artifact in _load_artifacts(candidate)
+            }
+            if candidate_routes == rendered:
+                matches.append(candidate)
+        if len(matches) != 1:
+            raise ValueError(
+                "rendered site requires exactly one matching canonical inventory; "
+                f"found {len(matches)}"
+            )
+        return matches[0]
+
     async def run_once(self, *, now=None):
         now = now or datetime.now(timezone.utc)
         if now.utcoffset() is None:
             raise ValueError("timezone required")
-        snapshot = website_snapshot(self.artifacts_path, self.site_root, self.base_url)
+        snapshot = website_snapshot(
+            self._current_artifacts_path(),
+            self.site_root,
+            self.base_url,
+        )
         snapshot_id = digest(snapshot)
         plan_path = self.state_root / "content/editorial_plans" / (snapshot_id + ".json")
         if plan_path.exists():
