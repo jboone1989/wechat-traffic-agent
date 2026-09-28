@@ -6,7 +6,7 @@ import os
 import pytest
 
 from wechat_traffic_agent.runtime_backend import (
-    OwnerOpenAICognitionRuntime,
+    OwnerChatGPTCognitionRuntime,
     _temporary_runtime_llm_environment,
     chatgpt_only_mode,
     load_owner_cognition_runtime,
@@ -115,28 +115,30 @@ def test_owner_cognition_uses_livingruntime_when_openai_key_missing(
         behavioral_context_provider=_behavioral_context,
     )
 
-    assert runtime.provider is None
-    assert runtime.fallback_provider is not None
-    assert runtime.fallback_provider.available is True
+    assert runtime.provider is not None
+    assert runtime.provider.available is True
 
 
-def test_owner_cognition_uses_sol_without_model_fallback(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
-    monkeypatch.setenv("FERRO_OWNER_COGNITION_OPENAI_MODEL", "gpt-5.6-luna")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1/")
+def test_owner_cognition_ignores_openai_api_credentials(
+    monkeypatch, tmp_path
+):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
+    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-api-must-be-ignored")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 
     runtime = load_owner_cognition_runtime(
         behavioral_context_provider=_behavioral_context,
     )
 
-    assert runtime.provider.model == "gpt-5.6-sol"
-    assert runtime.provider.base_url == "https://api.openai.com/v1"
-    assert runtime.provider.timeout_seconds == 30.0
-    assert runtime.provider.reasoning_effort == "low"
-    assert "sk-test-not-real" not in repr(runtime.provider)
+    assert runtime.provider.provider_name == "livingruntime-chatgpt"
+    assert runtime.provider.available is True
+    assert "sk-api-must-be-ignored" not in repr(runtime.provider)
 
 
-def test_owner_direct_sol_cognition_carries_always_on_phenotype():
+def test_owner_chatgpt_cognition_carries_always_on_phenotype():
     class Provider:
         def __init__(self):
             self.prompt = None
@@ -148,7 +150,7 @@ def test_owner_direct_sol_cognition_carries_always_on_phenotype():
             return '{"action":"WAIT"}'
 
     provider = Provider()
-    runtime = OwnerOpenAICognitionRuntime(
+    runtime = OwnerChatGPTCognitionRuntime(
         provider,
         behavioral_context_provider=lambda: {
             "phenotype_prior": {
@@ -184,70 +186,15 @@ def test_owner_direct_sol_cognition_carries_always_on_phenotype():
     assert provider.kwargs["reasoning_effort"] == "low"
 
 
-def test_owner_direct_sol_cognition_refuses_to_drop_phenotype_silently():
+def test_owner_chatgpt_cognition_refuses_to_drop_phenotype_silently():
     class Provider:
         async def complete(self, prompt, **kwargs):
             raise AssertionError("provider must not be called without phenotype")
 
-    runtime = OwnerOpenAICognitionRuntime(
+    runtime = OwnerChatGPTCognitionRuntime(
         Provider(),
         behavioral_context_provider=lambda: {"behavioral_state": {}},
     )
 
     with pytest.raises(RuntimeError, match="requires phenotype_prior"):
         asyncio.run(runtime.cognitive_probe("OWNER_AGENT_EPISODE: choose", 200))
-
-
-def test_owner_cognition_falls_back_to_livingruntime_on_openai_429():
-    from wechat_traffic_agent.openai_public_chat import OpenAIPublicChatError
-
-    class Primary:
-        async def complete(self, prompt, **kwargs):
-            raise OpenAIPublicChatError("HTTP_429")
-
-    class Fallback:
-        def __init__(self):
-            self.prompt = None
-            self.kwargs = None
-
-        async def complete(self, prompt, **kwargs):
-            self.prompt = prompt
-            self.kwargs = kwargs
-            return '{"action":"WAIT"}'
-
-    fallback = Fallback()
-    runtime = OwnerOpenAICognitionRuntime(
-        Primary(),
-        fallback_provider=fallback,
-        behavioral_context_provider=_behavioral_context,
-    )
-
-    result = asyncio.run(
-        runtime.cognitive_probe("OWNER_AGENT_EPISODE: choose", 256)
-    )
-
-    assert result == '{"action":"WAIT"}'
-    assert "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT" in fallback.prompt
-    assert fallback.kwargs["reasoning_effort"] == "low"
-    assert "always-on individual prior" in fallback.kwargs["system"]
-
-
-def test_owner_cognition_does_not_hide_non_429_openai_failures():
-    from wechat_traffic_agent.openai_public_chat import OpenAIPublicChatError
-
-    class Primary:
-        async def complete(self, prompt, **kwargs):
-            raise OpenAIPublicChatError("HTTP_401")
-
-    class Fallback:
-        async def complete(self, prompt, **kwargs):
-            raise AssertionError("fallback must not hide authentication failure")
-
-    runtime = OwnerOpenAICognitionRuntime(
-        Primary(),
-        fallback_provider=Fallback(),
-        behavioral_context_provider=_behavioral_context,
-    )
-
-    with pytest.raises(OpenAIPublicChatError, match="HTTP_401"):
-        asyncio.run(runtime.cognitive_probe("OWNER_AGENT_EPISODE: choose", 256))

@@ -51,18 +51,16 @@ class ContentBoundedLegacyProviderBackend:
         return await self._backend.run(request)
 
 
-class OwnerOpenAICognitionRuntime:
-    """Direct synchronous OpenAI cognition for durable owner-goal control."""
+class OwnerChatGPTCognitionRuntime:
+    """Durable LivingRuntime ChatGPT cognition for owner-goal control."""
 
     def __init__(
         self,
         provider,
         *,
         behavioral_context_provider: Callable[[], Mapping[str, Any]],
-        fallback_provider=None,
     ) -> None:
         self.provider = provider
-        self.fallback_provider = fallback_provider
         self.behavioral_context_provider = behavioral_context_provider
 
     async def cognitive_probe(
@@ -110,30 +108,12 @@ class OwnerOpenAICognitionRuntime:
             "preference; do not recite scores. Neither can change facts, safety, owner "
             "authority, permissions, or evidence requirements."
         )
-        async def complete_with(provider):
-            return await provider.complete(
-                prompt,
-                max_tokens=int(max_tokens),
-                reasoning_effort="low",
-                system=system,
-            )
-
-        if self.provider is not None:
-            try:
-                return await complete_with(self.provider)
-            except Exception as exc:
-                from .openai_public_chat import OpenAIPublicChatError
-
-                if not isinstance(exc, OpenAIPublicChatError):
-                    raise
-                if "HTTP_429" not in str(exc):
-                    raise
-                if self.fallback_provider is None:
-                    raise
-
-        if self.fallback_provider is None:
-            raise RuntimeError("owner cognition has no available provider")
-        return await complete_with(self.fallback_provider)
+        return await self.provider.complete(
+            prompt,
+            max_tokens=int(max_tokens),
+            reasoning_effort="low",
+            system=system,
+        )
 
 
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
@@ -249,60 +229,30 @@ def load_owner_cognition_runtime(
     state_root: Path | None = None,
     behavioral_context_provider: Callable[[], Mapping[str, Any]],
 ):
-    """Load the single authoritative owner-goal cognition route.
+    """Load Ferro's authoritative owner-goal cognition route.
 
-    Owner goals prefer synchronous GPT-5.6 Sol API cognition when available.
-    HTTP 429 (including exhausted API credit) falls back to the durable
-    LivingRuntime ChatGPT queue, which preserves the exact request across
-    replaceable UI sessions. Other API failures remain explicit.
+    Owner cognition is LivingRuntime ChatGPT Provider-only. API credentials,
+    quota, provider pools, and legacy model fallbacks are intentionally outside
+    this path. The durable queue preserves the exact request across replaceable
+    ChatGPT sessions.
     """
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
-    from .openai_public_chat import OpenAIResponsesProvider
 
-    chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
-    api_key = str(os.environ.get("OPENAI_API_KEY") or "").strip()
-
-    provider = None
-    if api_key:
-        model = "gpt-5.6-sol"
-        base_url = str(
-            os.environ.get("OPENAI_BASE_URL")
-            or "https://api.openai.com/v1"
-        ).strip().rstrip("/")
-        provider = OpenAIResponsesProvider(
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            timeout_seconds=30.0,
-            reasoning_effort="low",
-        )
-    elif not chatgpt_provider.available:
+    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    if not provider.available:
         raise RuntimeError(
-            "owner cognition requires OPENAI_API_KEY or available LivingRuntime ChatGPT"
+            "owner cognition requires available LivingRuntime ChatGPT provider"
         )
-
     if state_root is not None:
         from .llm_audit import audited_provider
-        if provider is not None:
-            provider = audited_provider(
-                provider,
-                Path(state_root),
-                scope="owner-cognition-openai",
-            )
-        if chatgpt_provider.available:
-            chatgpt_provider = audited_provider(
-                chatgpt_provider,
-                Path(state_root),
-                scope="owner-cognition-chatgpt",
-            )
-    return OwnerOpenAICognitionRuntime(
+        provider = audited_provider(
+            provider,
+            Path(state_root),
+            scope="owner-cognition-chatgpt",
+        )
+    return OwnerChatGPTCognitionRuntime(
         provider,
         behavioral_context_provider=behavioral_context_provider,
-        fallback_provider=(
-            chatgpt_provider
-            if getattr(chatgpt_provider, "available", True)
-            else None
-        ),
     )
 
 
@@ -312,7 +262,7 @@ __all__ = [
     "load_optional_advisory_backend",
     "load_owner_cognition_runtime",
     "load_public_chat_backend",
-    "OwnerOpenAICognitionRuntime",
+    "OwnerChatGPTCognitionRuntime",
     "runtime_llm_aliases",
     "chatgpt_only_mode",
 ]

@@ -3,19 +3,20 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 from typing import Any
-import urllib.error
-import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from wechat_traffic_agent.decision_context import build_decision_context, candidate
-from wechat_traffic_agent.openai_public_chat import OpenAIResponsesProvider
+from wechat_traffic_agent.livingruntime_chatgpt import (
+    LivingRuntimeChatGPTPendingError,
+    LivingRuntimeChatGPTProvider,
+    LivingRuntimeChatGPTProviderError,
+    durable_cognition_phase,
+)
 
 
 @dataclass(frozen=True)
@@ -350,31 +351,10 @@ def parse_action(text: str, options: tuple[str, str]) -> str:
     return "__INVALID__"
 
 
-def _service_environment(service: str = "content-agent.service") -> dict[str, str]:
-    raw_pid = subprocess.check_output(
-        ["systemctl", "show", service, "--property=MainPID", "--value"],
-        text=True,
-    ).strip()
-    pid = int(raw_pid)
-    if pid <= 1:
-        raise RuntimeError(f"{service} has no live MainPID")
-    rows = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
-    allowed = {"OPENAI_API_KEY", "OPENAI_BASE_URL"}
-    result: dict[str, str] = {}
-    for raw in rows:
-        if b"=" not in raw:
-            continue
-        key_raw, value_raw = raw.split(b"=", 1)
-        key = key_raw.decode("utf-8", "ignore")
-        if key in allowed:
-            result[key] = value_raw.decode("utf-8", "ignore")
-    return result
-
-
 def structural_only_report(
     cases: list[dict[str, Any]],
     *,
-    model_reason: str = "production service has no OPENAI_API_KEY",
+    model_reason: str,
 ) -> dict[str, Any]:
     rows = []
     for case in cases:
@@ -393,43 +373,15 @@ def structural_only_report(
             "critical_selected": case["critical_id"] in selected_ids,
             "selected_count": len(selected_ids),
             "candidate_count": len(full_rows),
-            "precision": (
-                len(selected_ids & relevant) / max(1, len(selected_ids))
-            ),
+            "precision": len(selected_ids & relevant) / max(1, len(selected_ids)),
             "full_chars": len(compact_rows(full_rows)),
             "builder_chars": len(compact_rows(selected_rows)),
             "budget_ok": int(result.get("selected_chars_estimate") or 0)
             <= int(result.get("budget_chars") or 5200),
         })
-    family = {}
-    for name in sorted({row["family"] for row in rows}):
-        subset = [row for row in rows if row["family"] == name]
-        family[name] = {
-            "critical_recall": round(
-                sum(row["critical_selected"] for row in subset) / len(subset), 4
-            ),
-            "precision": round(
-                sum(row["precision"] for row in subset) / len(subset), 4
-            ),
-            "avg_selected_count": round(
-                sum(row["selected_count"] for row in subset) / len(subset), 2
-            ),
-        }
-    pair_sensitivity = []
-    for spec in PAIRS:
-        subset = sorted(
-            [row for row in rows if row["pair_id"] == spec.pair_id],
-            key=lambda row: row["case_id"],
-        )
-        pair_sensitivity.append({
-            "pair_id": spec.pair_id,
-            "family": spec.family,
-            "both_critical_selected": (
-                len(subset) == 2 and all(row["critical_selected"] for row in subset)
-            ),
-        })
+
     return {
-        "benchmark": "ferro-context-builder-effect-v1",
+        "benchmark": "ferro-context-builder-effect-v2",
         "model_available": False,
         "model_reason": model_reason,
         "cases": len(cases),
@@ -438,7 +390,9 @@ def structural_only_report(
             "critical_fact_recall": round(
                 sum(row["critical_selected"] for row in rows) / len(rows), 4
             ),
-            "precision": round(sum(row["precision"] for row in rows) / len(rows), 4),
+            "precision": round(
+                sum(row["precision"] for row in rows) / len(rows), 4
+            ),
             "avg_selected_count": round(
                 sum(row["selected_count"] for row in rows) / len(rows), 2
             ),
@@ -460,131 +414,76 @@ def structural_only_report(
             "budget_pass_rate": round(
                 sum(row["budget_ok"] for row in rows) / len(rows), 4
             ),
-            "family": family,
-            "pair_critical_recall_rate": round(
-                sum(item["both_critical_selected"] for item in pair_sensitivity)
-                / len(pair_sensitivity),
-                4,
-            ),
             "cases": rows,
         },
     }
 
 
-def _openai_preflight(
-    *,
-    api_key: str,
-    base_url: str,
-    model: str = "gpt-5.6-sol",
-) -> str | None:
-    """Return a bounded unavailability reason, or None when one tiny call works."""
-
-    body = {
-        "model": model,
-        "input": "Return only OK.",
-        "store": False,
-        "max_output_tokens": 16,
-        "reasoning": {"effort": "none"},
-        "text": {"verbosity": "low"},
-    }
-    request = urllib.request.Request(
-        base_url.rstrip("/") + "/responses",
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20.0) as response:
-            response.read()
-        return None
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        error_type = ""
-        error_code = ""
-        try:
-            payload = json.loads(raw)
-            error = payload.get("error") if isinstance(payload, dict) else {}
-            if isinstance(error, dict):
-                error_type = str(error.get("type") or "")
-                error_code = str(error.get("code") or "")
-        except json.JSONDecodeError:
-            pass
-        details = [f"HTTP_{exc.code}"]
-        if error_type:
-            details.append(error_type)
-        if error_code:
-            details.append(error_code)
-        return ":".join(details)
-    except (OSError, ValueError) as exc:
-        return "PREFLIGHT_" + type(exc).__name__.upper()
-
-
-
 async def run() -> dict[str, Any]:
     cases = [make_case(spec, variant) for spec in PAIRS for variant in ("a", "b")]
-    service_env = _service_environment()
-    api_key = str(
-        os.environ.get("OPENAI_API_KEY")
-        or service_env.get("OPENAI_API_KEY")
-        or ""
-    ).strip()
-    if not api_key:
+    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    if not provider.available:
         return structural_only_report(
             cases,
-            model_reason="OPENAI_API_KEY_MISSING",
+            model_reason="LIVINGRUNTIME_CHATGPT_PROVIDER_UNAVAILABLE",
         )
-    base_url = str(
-        os.environ.get("OPENAI_BASE_URL")
-        or service_env.get("OPENAI_BASE_URL")
-        or "https://api.openai.com/v1"
-    ).rstrip("/")
-    preflight_reason = await asyncio.to_thread(
-        _openai_preflight,
-        api_key=api_key,
-        base_url=base_url,
-    )
-    if preflight_reason is not None:
-        return structural_only_report(
-            cases,
-            model_reason=preflight_reason,
-        )
-    provider = OpenAIResponsesProvider(
-        api_key=api_key,
-        model="gpt-5.6-sol",
-        base_url=base_url,
-        timeout_seconds=45.0,
-        reasoning_effort="low",
-    )
 
-    sem = asyncio.Semaphore(6)
+    # Benchmarks use their own agent queue so they cannot block Ferro's normal
+    # cognition. Requests are deterministic durable phases: rerunning this
+    # script resumes exact completed/pending requests instead of spending API
+    # quota or creating duplicates.
+    provider.agent_id = "ferro-context-benchmark"
+    provider.foreground_wait_seconds = 1.0
+
     calls: list[dict[str, Any]] = []
+    pending: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    max_pending_per_run = 8
 
-    async def one(case: dict[str, Any], mode: str, rows: list[dict[str, Any]]) -> None:
-        async with sem:
-            raw = await provider.complete(
-                decision_prompt(case, mode, rows),
-                max_tokens=64,
-                reasoning_effort="low",
-                timeout_seconds=45.0,
-            )
-            action = parse_action(raw, case["options"])
-            calls.append({
-                "case_id": case["case_id"],
-                "pair_id": case["pair_id"],
-                "family": case["family"],
-                "mode": mode,
-                "expected": case["expected"],
-                "action": action,
-                "correct": action == case["expected"],
-                "context_chars": len(compact_rows(rows)),
-                "row_count": len(rows),
-            })
+    async def one(
+        case: dict[str, Any],
+        mode: str,
+        rows: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        phase_id = f"context-builder-effect-v2:{case['case_id']}:{mode}"
+        with durable_cognition_phase(phase_id):
+            try:
+                raw = await provider.complete(
+                    decision_prompt(case, mode, rows),
+                    max_tokens=64,
+                    _routing_task_class="context_builder_eval",
+                    _durable_blocking_wait=True,
+                    _durable_blocking_wait_seconds=15,
+                )
+            except LivingRuntimeChatGPTPendingError as exc:
+                return {
+                    "pending": True,
+                    "case_id": case["case_id"],
+                    "mode": mode,
+                    "request_id": exc.request_id,
+                }
+            except LivingRuntimeChatGPTProviderError as exc:
+                return {
+                    "error": True,
+                    "case_id": case["case_id"],
+                    "mode": mode,
+                    "message": str(exc)[:300],
+                }
 
-    tasks = []
+        action = parse_action(raw, case["options"])
+        return {
+            "case_id": case["case_id"],
+            "pair_id": case["pair_id"],
+            "family": case["family"],
+            "mode": mode,
+            "expected": case["expected"],
+            "action": action,
+            "correct": action == case["expected"],
+            "context_chars": len(compact_rows(rows)),
+            "row_count": len(rows),
+        }
+
+    stop = False
     for case in cases:
         modes = {
             "current": case["current"],
@@ -593,18 +492,60 @@ async def run() -> dict[str, Any]:
             "oracle": case["oracle"],
         }
         for mode, rows in modes.items():
-            tasks.append(one(case, mode, rows))
-    await asyncio.gather(*tasks)
+            result = await one(case, mode, rows)
+            if result is None:
+                continue
+            if result.get("pending"):
+                pending.append({
+                    "case_id": str(result["case_id"]),
+                    "mode": str(result["mode"]),
+                    "request_id": str(result["request_id"]),
+                })
+                if len(pending) >= max_pending_per_run:
+                    stop = True
+                    break
+            elif result.get("error"):
+                errors.append({
+                    "case_id": str(result["case_id"]),
+                    "mode": str(result["mode"]),
+                    "message": str(result["message"]),
+                })
+            else:
+                calls.append(result)
+        if stop:
+            break
+
+    if pending or errors or len(calls) < len(cases) * 4:
+        report = structural_only_report(
+            cases,
+            model_reason=(
+                "WAITING_FOR_CHATGPT"
+                if pending
+                else "LIVINGRUNTIME_CHATGPT_PROVIDER_ERROR"
+            ),
+        )
+        report.update({
+            "status": "WAITING_FOR_CHATGPT" if pending else "INCOMPLETE",
+            "provider": "livingruntime-chatgpt",
+            "completed_calls_this_run": len(calls),
+            "expected_main_calls": len(cases) * 4,
+            "pending_count": len(pending),
+            "pending_requests": pending,
+            "errors": errors,
+        })
+        return report
 
     by_mode: dict[str, dict[str, Any]] = {}
     for mode in ("current", "full", "builder", "oracle"):
-        rows = [r for r in calls if r["mode"] == mode]
+        rows = [row for row in calls if row["mode"] == mode]
         by_mode[mode] = {
-            "accuracy": round(sum(r["correct"] for r in rows) / len(rows), 4),
-            "correct": sum(r["correct"] for r in rows),
+            "accuracy": round(sum(row["correct"] for row in rows) / len(rows), 4),
+            "correct": sum(row["correct"] for row in rows),
             "total": len(rows),
-            "avg_context_chars": round(sum(r["context_chars"] for r in rows) / len(rows), 1),
-            "avg_rows": round(sum(r["row_count"] for r in rows) / len(rows), 1),
+            "avg_context_chars": round(
+                sum(row["context_chars"] for row in rows) / len(rows), 1
+            ),
+            "avg_rows": round(sum(row["row_count"] for row in rows) / len(rows), 1),
         }
 
     structural = []
@@ -615,108 +556,106 @@ async def run() -> dict[str, Any]:
             "family": case["family"],
             "critical_selected": case["critical_id"] in selected,
             "selected_count": len(selected),
-            "candidate_count": int(case["builder_result"].get("candidate_count") or 0),
-            "selected_chars_estimate": int(case["builder_result"].get("selected_chars_estimate") or 0),
+            "candidate_count": int(
+                case["builder_result"].get("candidate_count") or 0
+            ),
+            "selected_chars_estimate": int(
+                case["builder_result"].get("selected_chars_estimate") or 0
+            ),
         })
 
     pair_effects = []
     for spec in PAIRS:
-        pair_rows = [r for r in calls if r["pair_id"] == spec.pair_id]
+        pair_rows = [row for row in calls if row["pair_id"] == spec.pair_id]
         item = {"pair_id": spec.pair_id, "family": spec.family}
         for mode in ("current", "full", "builder", "oracle"):
-            m = sorted(
-                [r for r in pair_rows if r["mode"] == mode],
-                key=lambda r: r["case_id"],
+            matches = sorted(
+                [row for row in pair_rows if row["mode"] == mode],
+                key=lambda row: row["case_id"],
             )
             item[mode] = {
-                "actions": [r["action"] for r in m],
-                "expected": [r["expected"] for r in m],
-                "flipped": len(m) == 2 and m[0]["action"] != m[1]["action"],
-                "both_correct": len(m) == 2 and all(r["correct"] for r in m),
+                "actions": [row["action"] for row in matches],
+                "expected": [row["expected"] for row in matches],
+                "flipped": (
+                    len(matches) == 2
+                    and matches[0]["action"] != matches[1]["action"]
+                ),
+                "both_correct": (
+                    len(matches) == 2
+                    and all(row["correct"] for row in matches)
+                ),
             }
         pair_effects.append(item)
 
-    # Critical-fact ablation: six representative pairs, one from each family.
-    representatives = []
-    seen = set()
-    for case in cases:
-        if case["family"] not in seen and case["case_id"].endswith(":b"):
-            representatives.append(case)
-            seen.add(case["family"])
-    ablations = []
-
-    async def ablate(case: dict[str, Any]) -> None:
-        baseline_rows = builder_rows(case)
-        without = [r for r in baseline_rows if r.get("context_id") != case["critical_id"]]
-        async with sem:
-            raw = await provider.complete(
-                decision_prompt(case, "builder_minus_critical", without),
-                max_tokens=64,
-                reasoning_effort="low",
-                timeout_seconds=45.0,
-            )
-        action = parse_action(raw, case["options"])
-        baseline_call = next(
-            r for r in calls
-            if r["case_id"] == case["case_id"] and r["mode"] == "builder"
-        )
-        ablations.append({
-            "case_id": case["case_id"],
-            "family": case["family"],
-            "critical_id": case["critical_id"],
-            "baseline_action": baseline_call["action"],
-            "baseline_correct": baseline_call["correct"],
-            "ablated_action": action,
-            "ablated_correct": action == case["expected"],
-            "action_changed": action != baseline_call["action"],
-            "causal_utility": bool(
-                baseline_call["correct"] and action != case["expected"]
-            ),
-        })
-
-    await asyncio.gather(*(ablate(case) for case in representatives))
-
-    report = {
-        "benchmark": "ferro-context-builder-effect-v1",
-        "model": "gpt-5.6-sol",
+    return {
+        "benchmark": "ferro-context-builder-effect-v2",
+        "provider": "livingruntime-chatgpt",
+        "model": "chatgpt-session",
         "cases": len(cases),
         "pairs": len(PAIRS),
         "summary": by_mode,
         "structural": {
             "critical_fact_recall": round(
-                sum(r["critical_selected"] for r in structural) / len(structural), 4
+                sum(row["critical_selected"] for row in structural)
+                / len(structural),
+                4,
             ),
             "avg_selected_count": round(
-                sum(r["selected_count"] for r in structural) / len(structural), 2
+                sum(row["selected_count"] for row in structural)
+                / len(structural),
+                2,
             ),
             "avg_candidate_count": round(
-                sum(r["candidate_count"] for r in structural) / len(structural), 2
+                sum(row["candidate_count"] for row in structural)
+                / len(structural),
+                2,
             ),
             "cases": structural,
         },
         "counterfactual": {
             mode: {
                 "flip_rate": round(
-                    sum(p[mode]["flipped"] for p in pair_effects) / len(pair_effects), 4
+                    sum(item[mode]["flipped"] for item in pair_effects)
+                    / len(pair_effects),
+                    4,
                 ),
                 "both_correct_rate": round(
-                    sum(p[mode]["both_correct"] for p in pair_effects) / len(pair_effects), 4
+                    sum(item[mode]["both_correct"] for item in pair_effects)
+                    / len(pair_effects),
+                    4,
                 ),
             }
             for mode in ("current", "full", "builder", "oracle")
         },
-        "ablations": ablations,
         "pair_effects": pair_effects,
-        "calls": sorted(calls, key=lambda r: (r["case_id"], r["mode"])),
+        "calls": sorted(
+            calls,
+            key=lambda row: (row["case_id"], row["mode"]),
+        ),
     }
-    return report
 
 
 if __name__ == "__main__":
     report = asyncio.run(run())
     output = Path("/tmp/ferro-context-builder-effect-v1.json")
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if report.get("model_available") is False:
+    if report.get("status") == "WAITING_FOR_CHATGPT":
+        concise = {
+            "benchmark": report["benchmark"],
+            "provider": report.get("provider"),
+            "status": report["status"],
+            "completed_calls_this_run": report["completed_calls_this_run"],
+            "expected_main_calls": report["expected_main_calls"],
+            "pending_count": report["pending_count"],
+            "pending_requests": report["pending_requests"],
+            "structural": {
+                key: value
+                for key, value in report["structural"].items()
+                if key != "cases"
+            },
+            "output": str(output),
+        }
+    elif report.get("model_available") is False:
         concise = {
             "benchmark": report["benchmark"],
             "model_available": False,
