@@ -28,6 +28,7 @@ RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 24
 _PUBLIC_BACKEND_UNSET = object()
+PUBLIC_CHAT_STATE_TIMEOUT_SECONDS = 2.0
 
 _OWNER_PROMPT_CONTEXT_CHARS = 10000
 _OWNER_PROMPT_MEMORY_CHARS = 5000
@@ -1606,9 +1607,17 @@ class LiveAgentService:
                 return JSONResponse({"error": "message_must_be_1_to_1000_characters"}, status_code=400)
             scope = classify_public_question(message)
             try:
-                snapshot = public_agent_snapshot(
-                    self.state_root, self.application, self.mind, poll_seconds=self.poll_seconds,
-                    service_started_at=self.started_at, wakeful=self.wakeful,
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        public_agent_snapshot,
+                        self.state_root,
+                        self.application,
+                        self.mind,
+                        poll_seconds=self.poll_seconds,
+                        service_started_at=self.started_at,
+                        wakeful=self.wakeful,
+                    ),
+                    timeout=PUBLIC_CHAT_STATE_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
                 snapshot = _degraded_public_chat_snapshot(self.state_root, exc)
@@ -1731,13 +1740,17 @@ class LiveAgentService:
                 await asyncio.sleep(0)
                 state_degraded = False
                 try:
-                    snapshot = public_agent_snapshot(
-                        self.state_root,
-                        self.application,
-                        self.mind,
-                        poll_seconds=self.poll_seconds,
-                        service_started_at=self.started_at,
-                        wakeful=self.wakeful,
+                    snapshot = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            public_agent_snapshot,
+                            self.state_root,
+                            self.application,
+                            self.mind,
+                            poll_seconds=self.poll_seconds,
+                            service_started_at=self.started_at,
+                            wakeful=self.wakeful,
+                        ),
+                        timeout=PUBLIC_CHAT_STATE_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:
                     state_degraded = True
