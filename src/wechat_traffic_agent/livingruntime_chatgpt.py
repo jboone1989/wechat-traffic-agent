@@ -340,6 +340,30 @@ class LivingRuntimeChatGPTProvider:
                 max(1, cli_timeout_seconds - 1),
             ),
         )
+        # Normal Ferro cognition is suspend/resume: return control after a
+        # short foreground wait and let the wakeful scheduler resume the exact
+        # durable request later. External benchmark contestants are different:
+        # their JSONL process is itself the continuation owner. If that process
+        # exits on PENDING, the evaluator records a harness failure even though
+        # the model request remains healthy and durable. Allow those callers to
+        # keep the process alive while waiting for the same request, without
+        # shortening the durable queue lifetime encoded in the payload.
+        blocking_wait = bool(kwargs.get("_durable_blocking_wait", False))
+        blocking_wait_seconds = foreground_wait_seconds
+        if blocking_wait:
+            raw_blocking_wait = kwargs.get("_durable_blocking_wait_seconds")
+            try:
+                requested_blocking_wait = (
+                    int(raw_blocking_wait)
+                    if raw_blocking_wait is not None
+                    else 300
+                )
+            except (TypeError, ValueError):
+                requested_blocking_wait = 300
+            blocking_wait_seconds = max(
+                foreground_wait_seconds,
+                min(cli_timeout_seconds, max(1, requested_blocking_wait)),
+            )
         resume_existing = bool(explicit_resume_id)
         command = (
             [
@@ -354,7 +378,7 @@ class LivingRuntimeChatGPTProvider:
                 str(self.cli_path),
                 "call",
                 "--wait-timeout-seconds",
-                str(foreground_wait_seconds),
+                str(blocking_wait_seconds),
             ]
         )
         proc = await asyncio.create_subprocess_exec(
@@ -366,7 +390,11 @@ class LivingRuntimeChatGPTProvider:
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(None if resume_existing else body),
-                timeout=float(foreground_wait_seconds) + 3.0,
+                timeout=float(
+                    foreground_wait_seconds
+                    if resume_existing
+                    else blocking_wait_seconds
+                ) + 3.0,
             )
         except asyncio.TimeoutError as exc:
             proc.kill()
