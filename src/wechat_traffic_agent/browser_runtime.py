@@ -54,10 +54,7 @@ def jev_readiness() -> dict[str, Any]:
     chatgpt_exclusive = chatgpt_only_mode()
     typesafe = bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
     explicit_text_key = bool(os.environ.get("TEXT_MODEL_API_KEY", "").strip())
-    deepseek_key = bool(os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip())
-    openrouter_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
-    openrouter_model = bool(os.environ.get("CONTENT_JEV_TEXT_MODEL", "").strip())
-    text_key = explicit_text_key or deepseek_key or (openrouter_key and openrouter_model)
+    text_key = explicit_text_key
     installed = _module_available("jev_ultrafast")
     harness = _module_available("browser_harness")
     if not enabled:
@@ -83,15 +80,7 @@ def jev_readiness() -> dict[str, Any]:
         "typesafe_configured": typesafe,
         "text_helper_configured": text_key and not chatgpt_exclusive,
         "chatgpt_exclusive": chatgpt_exclusive,
-        "text_helper_source": (
-            "EXPLICIT"
-            if explicit_text_key
-            else "DEEPSEEK_STABLE"
-            if deepseek_key
-            else "OPENROUTER"
-            if openrouter_key and openrouter_model
-            else "MISSING"
-        ),
+        "text_helper_source": "EXPLICIT" if explicit_text_key else "MISSING",
         "package_installed": installed,
         "browser_harness_installed": harness,
     }
@@ -184,22 +173,6 @@ class JevBrowserExecutor:
         readiness = jev_readiness()
         if readiness["status"] != "READY":
             raise BrowserRuntimeUnavailable(str(readiness["reason"] or readiness["status"]))
-        from .runtime_backend import chatgpt_only_mode
-        if (
-            not chatgpt_only_mode()
-            and not os.environ.get("TEXT_MODEL_API_KEY", "").strip()
-        ):
-            deepseek = os.environ.get("VIRTUALBRAIN_LLM_API_KEY", "").strip()
-            openrouter = os.environ.get("OPENROUTER_API_KEY", "").strip()
-            openrouter_model = os.environ.get("CONTENT_JEV_TEXT_MODEL", "").strip()
-            if deepseek:
-                os.environ["TEXT_MODEL_API_KEY"] = deepseek
-                os.environ.setdefault("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
-                os.environ.setdefault("TEXT_MODEL", "deepseek-chat")
-            elif openrouter and openrouter_model:
-                os.environ["TEXT_MODEL_API_KEY"] = openrouter
-                os.environ.setdefault("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1")
-                os.environ.setdefault("TEXT_MODEL", openrouter_model)
         return cls(state_root=state_root)
 
     def _factory(self) -> Callable[[str, str], Any]:
@@ -276,22 +249,6 @@ class AccountJevExecutor:
     @staticmethod
     def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
         env = dict(os.environ)
-        from .runtime_backend import chatgpt_only_mode
-        if (
-            not chatgpt_only_mode(env)
-            and not env.get("TEXT_MODEL_API_KEY", "").strip()
-        ):
-            deepseek = env.get("VIRTUALBRAIN_LLM_API_KEY", "").strip()
-            openrouter = env.get("OPENROUTER_API_KEY", "").strip()
-            model = env.get("CONTENT_JEV_TEXT_MODEL", "").strip()
-            if deepseek:
-                env["TEXT_MODEL_API_KEY"] = deepseek
-                env.setdefault("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1")
-                env.setdefault("TEXT_MODEL", "deepseek-chat")
-            elif openrouter and model:
-                env["TEXT_MODEL_API_KEY"] = openrouter
-                env.setdefault("TEXT_MODEL_BASE_URL", "https://openrouter.ai/api/v1")
-                env.setdefault("TEXT_MODEL", model)
         env["BU_CDP_URL"] = cdp_url
         env["BU_NAME"] = ("acct_" + account_id[-20:])[:64]
         src_root = str(Path(__file__).resolve().parents[1])

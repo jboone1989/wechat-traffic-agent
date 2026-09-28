@@ -1,15 +1,13 @@
-"""Advisory backend wiring for the persistent Content Agent.
+"""ChatGPT-only advisory backend wiring for the persistent Content Agent.
 
-The deployed Content Agent already shares LLM credentials with VirtualBrain.
-Agent Runtime currently names the same DeepSeek credential/model variables
-differently, so this adapter provides a process-local compatibility seam
-without persisting or logging secret values.
+Ferro deliberately has one cognition provider: LivingRuntime ChatGPT. External
+API model pools are not fallback capacity and must never be reconstructed from
+legacy credentials or historical provider-discovery state.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import timedelta
 import math
 import os
 from pathlib import Path
@@ -52,45 +50,6 @@ class ContentBoundedLegacyProviderBackend:
         return await self._backend.run(request)
 
 
-def _public_chat_resource_pool(resources, *, manifest_path: Path):
-    """Build a public-only pool that recovers quickly from transient API wobble.
-
-    Public chat is interactive and already bounds each provider attempt. A
-    multi-minute exponential cooldown for an empty/transport-failed response
-    can otherwise cascade across the whole free pool and create a site-wide
-    outage. Authentication, rate-limit and invalid-model failures retain the
-    Agent Runtime cooldown policy unchanged.
-    """
-    from agent_runtime.llm import ResourcePoolProvider
-
-    class PublicChatResourcePoolProvider(ResourcePoolProvider):
-        _SHORT_COOLDOWN_SECONDS = {
-            "EMPTY_RESPONSE": 15,
-            "REQUEST_FAILED": 20,
-            "TimeoutError": 20,
-        }
-
-        def _record_failure(self, spec, code):
-            super()._record_failure(spec, code)
-            seconds = self._SHORT_COOLDOWN_SECONDS.get(str(code))
-            if seconds is None:
-                return
-            health = self._health.get(spec.resource_id)
-            if health is None:
-                return
-            health.cooldown_until = (
-                self.now() + timedelta(seconds=seconds)
-            ).isoformat()
-            self._persist_health()
-
-    return PublicChatResourcePoolProvider(
-        resources,
-        policy_path=None,
-        state_dir=manifest_path.parent / "public-chat-runtime",
-        manifest_path=manifest_path,
-    )
-
-
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
     env = os.environ if environ is None else environ
     raw = str(env.get("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS") or "45").strip()
@@ -104,20 +63,9 @@ def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) 
 
 
 def runtime_llm_aliases(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return missing Agent Runtime variables derivable from existing VB config."""
-    env = os.environ if environ is None else environ
-    aliases: dict[str, str] = {}
-    pairs = (
-        ("DEEPSEEK_API_KEY", "VIRTUALBRAIN_LLM_API_KEY"),
-        ("DEEPSEEK_MODEL", "VIRTUALBRAIN_LLM_MODEL"),
-    )
-    for target, source in pairs:
-        if str(env.get(target) or "").strip():
-            continue
-        value = str(env.get(source) or "").strip()
-        if value:
-            aliases[target] = value
-    return aliases
+    """Legacy API-provider aliases are intentionally disabled."""
+    del environ
+    return {}
 
 
 @contextmanager
@@ -143,7 +91,13 @@ def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterat
 
 
 def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
-    """True when LivingRuntime ChatGPT is enabled and API/free-model fallback is forbidden."""
+    """Report the configured ChatGPT-exclusive operating mode.
+
+    Executable cognition remains ChatGPT-only regardless of this helper: the
+    main/public backends and resource manifest no longer construct API-provider
+    routes. This flag is retained for non-routing resource-economy simulations
+    and historical tests.
+    """
     env = os.environ if environ is None else environ
     raw_enabled = str(env.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or "").strip()
     if raw_enabled:
@@ -156,90 +110,32 @@ def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
 
 
 def load_optional_advisory_backend(*, state_root: Path | None = None):
-    """Load Ferro's advisory backend.
-
-    ChatGPT-only mode is fail-closed: API/free-model providers are not even
-    constructed. If ChatGPT is temporarily unavailable, the cognition request
-    fails boundedly and can be retried without silently changing the model.
-    """
+    """Load Ferro's only advisory backend: LivingRuntime ChatGPT."""
     from agent_runtime.backends import LegacyProviderBackend
-    from agent_runtime.llm import LLMProviderError, load_llm_provider
     from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 
-    if chatgpt_only_mode():
-        provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
-    else:
-        provider = None
-        with _temporary_runtime_llm_environment(state_root):
-            try:
-                provider = load_llm_provider()
-            except LLMProviderError as exc:
-                if "not configured" not in str(exc).lower():
-                    raise
-        chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(
-            fallback=provider
-        )
-        if chatgpt_provider.enabled:
-            provider = chatgpt_provider
-        elif provider is None:
-            return None
-
-    advisory_timeout = _content_advisory_timeout_seconds()
-    if isinstance(provider, LivingRuntimeChatGPTProvider):
-        advisory_timeout = max(
-            advisory_timeout,
-            provider.timeout_seconds,
-        )
+    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    advisory_timeout = max(
+        _content_advisory_timeout_seconds(),
+        provider.timeout_seconds,
+    )
     if state_root is not None:
         from .llm_audit import audited_provider
         provider = audited_provider(provider, Path(state_root))
-    legacy = LegacyProviderBackend(provider)
     return ContentBoundedLegacyProviderBackend(
-        legacy,
+        LegacyProviderBackend(provider),
         default_duration_seconds=advisory_timeout,
     )
 
-
 def load_public_chat_backend(*, state_root: Path | None = None):
-    """Load an always-on synchronous backend for the public web conversation.
-
-    Ferro's internal/owner cognition may intentionally be CHATGPT_ONLY and
-    durably suspend until a ChatGPT session claims the request. Public HTTP chat
-    cannot use that suspension protocol: a visitor expects an immediate request/
-    response. Keep the authority surfaces separate and route only public chat
-    through the already-provisioned API resource pool.
-    """
-    if state_root is None:
-        return None
-    from agent_runtime.backends import LegacyProviderBackend
-    from agent_runtime.llm import load_resource_pool_manifest
-    from .llm_audit import audited_provider
-
-    root = Path(state_root)
-    manifest_path = root / "application" / "llm_resource_pool" / "resources.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        resources = load_resource_pool_manifest(manifest_path)
-    except (OSError, ValueError, TypeError):
-        return None
-    if not resources:
-        return None
-    # Do not inherit the CHATGPT_ONLY internal-cognition policy. Public chat has
-    # its own bounded resource health/decision state and uses the pool defaults:
-    # synchronous providers, quality floor, provider diversity and failover.
-    provider = _public_chat_resource_pool(resources, manifest_path=manifest_path)
-    provider = audited_provider(provider, root)
-    return ContentBoundedLegacyProviderBackend(
-        LegacyProviderBackend(provider),
-        default_duration_seconds=_content_advisory_timeout_seconds(),
-    )
+    """Use the main ChatGPT backend for public chat; no API-provider side pool."""
+    del state_root
+    return None
 
 
 __all__ = [
     "ContentBoundedLegacyProviderBackend",
     "_content_advisory_timeout_seconds",
-    "_public_chat_resource_pool",
     "load_optional_advisory_backend",
     "load_public_chat_backend",
     "runtime_llm_aliases",

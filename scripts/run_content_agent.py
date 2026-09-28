@@ -419,12 +419,11 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         now=datetime.now(timezone.utc).replace(microsecond=0)
     )
     print(json.dumps({"llm_routing_policy": routing_policy}, sort_keys=True))
-    from wechat_traffic_agent.resource_scout import ContentResourceScout
-    resource_scout = ContentResourceScout(state_root=state_root, capability_runtime=app.runtime)
-    from wechat_traffic_agent.model_reputation import ExternalModelReputationObserver
-    model_reputation = ExternalModelReputationObserver(state_root=state_root)
-    from wechat_traffic_agent.nvidia_catalog import NvidiaCapabilityCatalog
-    nvidia_catalog = NvidiaCapabilityCatalog(state_root=state_root)
+    # Ferro cognition is ChatGPT-only. Keep historical provider-discovery
+    # evidence on disk, but do not instantiate API-provider scouts/catalogs.
+    resource_scout = None
+    model_reputation = None
+    nvidia_catalog = None
     from wechat_traffic_agent.capability_evolution import ContentCapabilityEvolution
     capability_evolution = ContentCapabilityEvolution(
         state_root=state_root,

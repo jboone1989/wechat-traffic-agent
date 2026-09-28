@@ -1308,9 +1308,11 @@ async def _generate_guarded_public_reply(
         "system": _PUBLIC_SYSTEM,
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
-        "_attempt_timeout_seconds": 4,
-        "_reserve_timeout_seconds": 6,
-        "_max_failovers": 3,
+        # Public chat now uses the same LivingRuntime ChatGPT cognition path as
+        # the rest of Ferro. Wait in the foreground for most of the HTTP budget
+        # rather than falling through to external API providers.
+        "_durable_blocking_wait": True,
+        "_durable_blocking_wait_seconds": 20,
     }
 
     async def generate(value: str) -> str:
@@ -1400,6 +1402,7 @@ class LiveAgentService:
         from .channels.operator_audience_page import operator_audience_document
         from .audience_analytics import AudienceAnalytics
         from .llm_audit import LLMRequestAuditStore
+        from .livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
         from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
         from .memory_runtime import OwnerMemoryRuntime
         from .memory_self import ProspectiveSelfMemoryService
@@ -1656,7 +1659,7 @@ class LiveAgentService:
                     ),
                     timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
                 )
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, LivingRuntimeChatGPTPendingError):
                 return JSONResponse(
                     {"error": "chat_model_temporarily_unavailable"},
                     status_code=503,
@@ -1855,7 +1858,7 @@ class LiveAgentService:
                         ),
                         timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
                     )
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, LivingRuntimeChatGPTPendingError):
                     yield sse(
                         "error",
                         {

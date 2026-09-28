@@ -12,11 +12,6 @@ from wechat_traffic_agent.browser_runtime import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _legacy_browser_llm_mode(monkeypatch):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
-
-
 class _FakeAgent:
     def __init__(self, url: str, goal: str) -> None:
         self.url = url
@@ -43,14 +38,13 @@ class _FakeAgent:
         }
 
 
-def test_jev_readiness_reports_missing_account_without_crashing(monkeypatch):
-    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-value")
+def test_jev_readiness_is_disabled_under_chatgpt_only_policy(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "legacy-value-that-must-not-be-used")
     monkeypatch.setenv("CONTENT_JEV_BROWSER_ENABLED", "true")
     row = jev_readiness()
     assert row["provider"] == "JEV"
-    assert row["status"] == "NOT_CONFIGURED"
-    assert row["typesafe_configured"] is False
+    assert row["status"] == "DISABLED"
+    assert row["chatgpt_exclusive"] is True
 
 
 def test_chatgpt_exclusive_disables_external_jev_text_helpers(monkeypatch, tmp_path):

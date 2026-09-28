@@ -608,7 +608,7 @@ def test_nvidia_marks_targets_exhausted_only_after_catalogue_has_no_remaining_mo
     assert any(row.status=="MODEL_TARGETS_INCOMPATIBLE" for row in scout.acquisition_outcomes())
 
 
-def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, monkeypatch):
+def test_high_capability_probe_never_promotes_provider_into_executable_pool(tmp_path, monkeypatch):
     scout=ContentResourceScout(state_root=tmp_path,capability_runtime=Runtime()); _seed(scout)
     _seed_reputation(tmp_path, {"nemotron-3-super-120b-a12b":0.95})
     monkeypatch.setenv("NVIDIA_API_KEY","n-secret")
@@ -649,15 +649,15 @@ def test_high_capability_probe_adds_verified_frontier_free_resource(tmp_path, mo
     assert calls==[(1,12.0),(3,30.0)]
     assert result["capability_tier"]=="FRONTIER"
     assert result["windfall_eligible"] is True
-    assert result["llm_resource_pool"]["windfall_count"]==1
+    assert result["llm_resource_pool"]["windfall_count"]==0
+    assert result["llm_resource_pool"]["resource_count"]==0
     import json
     manifest=json.loads(
         (tmp_path/"application/llm_resource_pool/resources.json").read_text()
     )
-    row=next(x for x in manifest["resources"] if x["provider_id"]=="nvidia")
-    assert row["model"]=="nvidia/nemotron-3-super-120b-a12b"
-    assert row["windfall_eligible"] is True
-    assert "self_upgrade" in row["task_classes"]
+    assert manifest["resources"] == []
+    assert manifest["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert "nvidia" in manifest["disabled_provider_ids"]
 
 
 def test_temporary_windfall_failure_is_cooled_down_instead_of_retried_immediately(tmp_path, monkeypatch):
@@ -1051,25 +1051,22 @@ def test_target_resolution_failure_records_current_resolver_generation(
 
 
 
-def test_newer_runtime_404_invalidates_old_success_and_rotates_model(tmp_path, monkeypatch):
+def test_provider_trial_success_never_enters_executable_llm_manifest(tmp_path, monkeypatch):
     import json
 
     scout = ContentResourceScout(state_root=tmp_path, capability_runtime=Runtime())
     _seed(scout)
     monkeypatch.setenv("OPENROUTER_API_KEY", "o-secret")
-    resolved = []
 
-    def resolve(env, **kwargs):
-        excluded = set(kwargs.get("exclude_models") or ())
-        resolved.append(excluded)
-        model = "old-free" if "old-free" not in excluded else "new-free"
-        return ProviderTrialTarget(env, "https://example/v1", model)
-
-    monkeypatch.setattr(resource_module, "resolve_trial_target", resolve)
-    calls = []
+    monkeypatch.setattr(
+        resource_module,
+        "resolve_trial_target",
+        lambda env, **kwargs: ProviderTrialTarget(
+            env, "https://example/v1", "historical-free-model"
+        ),
+    )
 
     def fake(plan, *, api_key, now, target):
-        calls.append(target.model)
         return [
             ProviderTrialMeasurement(
                 trial_id=f"trial:{target.model}:{i}",
@@ -1090,36 +1087,16 @@ def test_newer_runtime_404_invalidates_old_success_and_rotates_model(tmp_path, m
 
     monkeypatch.setattr(resource_module, "run_bounded_provider_trial", fake)
 
-    first = scout.run_ready_trials(now=NOW, provider_limit=2)
-    assert first["executed_request_count"] == 3
-    manifest_path = tmp_path / "application/llm_resource_pool/resources.json"
-    manifest = json.loads(manifest_path.read_text())
-    old = next(row for row in manifest["resources"] if row["model"] == "old-free")
-    health_path = tmp_path / "application/llm_resource_pool/runtime/health.json"
-    health_path.parent.mkdir(parents=True, exist_ok=True)
-    health_path.write_text(json.dumps({
-        "schema_version": "llm-resource-health.v1",
-        "resources": {
-            old["resource_id"]: {
-                "successes": 3,
-                "failures": 1,
-                "consecutive_failures": 1,
-                "cooldown_until": (NOW + timedelta(hours=7)).isoformat(),
-                "last_error_code": "HTTP_404",
-                "last_success_at": NOW.isoformat(),
-                "last_failure_at": (NOW + timedelta(hours=1)).isoformat(),
-                "consumed_quota": 0.0,
-                "quota_window_signature": "",
-            }
-        },
-    }))
+    result = scout.run_ready_trials(now=NOW, provider_limit=2)
+    assert result["executed_request_count"] == 3
+    assert result["empirical_selection"]["model_id"] == "historical-free-model"
 
-    second = scout.run_ready_trials(now=NOW + timedelta(hours=2), provider_limit=2)
-
-    assert second["executed_request_count"] == 3
-    assert calls == ["old-free", "new-free"]
-    assert resolved[1] == {"old-free"}
-    assert second["empirical_selection"]["model_id"] == "new-free"
+    manifest = json.loads(
+        (tmp_path / "application/llm_resource_pool/resources.json").read_text()
+    )
+    assert manifest["resources"] == []
+    assert manifest["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert "openrouter" in manifest["disabled_provider_ids"]
 
 
 def test_old_executor_failed_provider_is_not_starved_by_successful_higher_priority_providers(tmp_path, monkeypatch):

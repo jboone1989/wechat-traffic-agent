@@ -166,203 +166,44 @@ def sync_llm_resource_pool(
     minimum_quality: float = 0.70,
     minimum_completed: int = 2,
 ) -> dict[str, Any]:
+    """Persist an intentionally empty API-provider pool.
+
+    Ferro cognition is ChatGPT-only. Historical provider discovery/trial records
+    remain evidence, but NVIDIA, Cerebras, OpenRouter and DeepSeek are never
+    promoted into executable LLM resources again.
+    """
+    del minimum_quality, minimum_completed
     state_root = Path(state_root)
     now = now or datetime.now(timezone.utc)
     observed_at = _iso(now)
-    from .model_reputation import load_model_reputation_book
-    reputation_book = load_model_reputation_book(state_root)
-    scout = ResourceScout(
-        state_root / "application",
-        lambda *_args, **_kwargs: {"results": []},
-    )
-    leads = {row.lead_id: row for row in scout.provider_leads()}
-    verifications = {row.lead_id: row for row in scout.provider_verifications()}
-    trials = scout.model_trials()
-    runtime_health = _runtime_health(state_root)
-    resources: list[dict[str, Any]] = []
-    suppressed_runtime_invalid: list[str] = []
-
-    stable_credential = next(
-        (
-            name
-            for name in ("DEEPSEEK_API_KEY", "VIRTUALBRAIN_LLM_API_KEY")
-            if str(os.environ.get(name) or "").strip()
-        ),
-        None,
-    )
-    if stable_credential:
-        model = str(
-            os.environ.get("DEEPSEEK_MODEL")
-            or os.environ.get("VIRTUALBRAIN_LLM_MODEL")
-            or "deepseek-flash"
-        ).strip()
-        resources.append({
-            "resource_id": _resource_id("deepseek", model),
-            "provider_id": "deepseek",
-            "provider_label": "DeepSeek",
-            "model": model,
-            "credential_env": stable_credential,
-            "protocol": "deepseek_anthropic",
-            "base_url": _deepseek_base_url(),
-            "lifecycle": "STABLE_PAID",
-            "pricing_class": "PAID",
-            "reserve": True,
-            "quality_score": 0.80,
-            "success_rate": 0.90,
-            "mean_latency_ms": None,
-            "quota_remaining": None,
-            "quota_limit": None,
-            "quota_unit": "CREDITS",
-            "quota_reset_at": None,
-            "expires_at": None,
-            "task_classes": ["general_text"],
-            "capability_tier": "STANDARD",
-            "capability_score": 0.70,
-            "capability_tags": ["general_text", "stable_reserve"],
-            "capability_source": "CONFIGURED_PRIOR",
-            "windfall_eligible": False,
-            "evidence_refs": [
-                "configured:stable-deepseek-reserve",
-                "bootstrap-prior:stable-paid-resource",
-            ],
-            "include_usage": False,
-            "metrics_source": "CONFIGURED_PRIOR",
-        })
-
-    grouped: dict[tuple[str, str], list[Any]] = defaultdict(list)
-    for row in trials:
-        if row.provider_lead_id and row.model_id:
-            grouped[(row.provider_lead_id, row.model_id)].append(row)
-    for (lead_id, model), rows in sorted(grouped.items()):
-        lead = leads.get(lead_id)
-        verification = verifications.get(lead_id)
-        if lead is None or verification is None:
-            continue
-        if not str(os.environ.get(lead.credential_env) or "").strip():
-            continue
-        target = trial_target_for_credential(lead.credential_env)
-        if target is None:
-            continue
-        completed = [row for row in rows if row.status == "COMPLETED"]
-        if len(completed) < max(1, int(minimum_completed)):
-            continue
-        qualities = [
-            float(row.quality_score)
-            for row in completed
-            if row.quality_score is not None
-        ]
-        if not qualities:
-            continue
-        quality = mean(qualities)
-        success_rate = len(completed) / len(rows)
-        if quality < float(minimum_quality) or success_rate < 0.45:
-            continue
-        free_status = str(verification.free_status or "").upper()
-        if free_status not in {"RECURRING_FREE", "TRIAL_CREDIT"}:
-            continue
-        lifecycle = (
-            "RECURRING_FREE"
-            if free_status == "RECURRING_FREE"
-            else "TEMPORARY_FREE"
-        )
-        latencies = [
-            float(row.latency_ms)
-            for row in completed
-            if row.latency_ms is not None
-        ]
-        provider_id = (
-            "openrouter"
-            if lead.credential_env == "OPENROUTER_API_KEY"
-            else "nvidia"
-            if lead.credential_env == "NVIDIA_API_KEY"
-            else lead.official_root.replace(".", "-").lower()
-        )
-        resource_id = _resource_id(provider_id, model)
-        health = runtime_health.get(resource_id) or {}
-        hard_runtime_error = str(health.get("last_error_code") or "").upper()
-        hard_runtime_failure_at = _parse_time(health.get("last_failure_at"))
-        latest_trial_success_at = max(
-            (
-                parsed
-                for parsed in (
-                    _parse_time(row.completed_at)
-                    for row in completed
-                )
-                if parsed is not None
-            ),
-            default=None,
-        )
-        if (
-            hard_runtime_error in {"HTTP_404", "HTTP_410"}
-            and hard_runtime_failure_at is not None
-            and (
-                latest_trial_success_at is None
-                or hard_runtime_failure_at > latest_trial_success_at
-            )
-        ):
-            suppressed_runtime_invalid.append(resource_id)
-            continue
-        metadata = _env_metadata(lead.credential_env)
-        capability = model_capability_profile(
-            model, reputation_book=reputation_book
-        )
-        resources.append({
-            "resource_id": resource_id,
-            "provider_id": provider_id,
-            "provider_label": lead.provider_label,
-            "model": model,
-            "credential_env": lead.credential_env,
-            "protocol": "openai_chat",
-            "base_url": target.base_url,
-            "lifecycle": lifecycle,
-            "pricing_class": "FREE",
-            "reserve": False,
-            "quality_score": round(quality, 6),
-            "success_rate": round(success_rate, 6),
-            "mean_latency_ms": round(mean(latencies), 3) if latencies else None,
-            **metadata,
-            "task_classes": capability["task_classes"],
-            "capability_tier": capability["capability_tier"],
-            "capability_score": capability["capability_score"],
-            "capability_tags": capability["capability_tags"],
-            "capability_source": capability["capability_source"],
-            "windfall_eligible": capability["windfall_eligible"],
-            "evidence_refs": list(dict.fromkeys(
-                [lead_id, *[row.trial_id for row in rows]]
-            )),
-            "include_usage": bool(target.include_usage),
-            "metrics_source": "EMPIRICAL_TRIALS",
-        })
-
-    resources.sort(
-        key=lambda row: (
-            0 if row["pricing_class"] == "FREE" else 1,
-            row["lifecycle"],
-            -float(row["quality_score"]),
-            row["resource_id"],
-        )
-    )
     payload = {
         "schema_version": "llm-resource-pool.v1",
         "observed_at": observed_at,
-        "resource_count": len(resources),
-        "resources": resources,
+        "resource_count": 0,
+        "resources": [],
+        "provider_mode": "LIVINGRUNTIME_CHATGPT_ONLY",
+        "disabled_provider_ids": [
+            "nvidia",
+            "cerebras",
+            "openrouter",
+            "deepseek",
+        ],
     }
     folder = state_root / "application" / "llm_resource_pool"
     folder.mkdir(parents=True, exist_ok=True)
     _atomic_json(folder / "resources.json", payload)
     return {
-        "status": "SYNCED",
+        "status": "CHATGPT_ONLY",
         "observed_at": observed_at,
-        "resource_count": len(resources),
-        "free_count": sum(1 for row in resources if row["pricing_class"] == "FREE"),
-        "paid_count": sum(1 for row in resources if row["pricing_class"] == "PAID"),
-        "windfall_count": sum(1 for row in resources if row.get("windfall_eligible")),
-        "resource_ids": [row["resource_id"] for row in resources],
-        "suppressed_runtime_invalid_count": len(suppressed_runtime_invalid),
-        "suppressed_runtime_invalid_resource_ids": suppressed_runtime_invalid,
+        "resource_count": 0,
+        "free_count": 0,
+        "paid_count": 0,
+        "windfall_count": 0,
+        "resource_ids": [],
+        "suppressed_runtime_invalid_count": 0,
+        "suppressed_runtime_invalid_resource_ids": [],
+        "disabled_provider_ids": list(payload["disabled_provider_ids"]),
     }
-
 
 
 def eligible_free_resources(state_root: Path, now: datetime) -> list[dict[str, Any]]:

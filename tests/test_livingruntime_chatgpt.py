@@ -262,7 +262,7 @@ def test_runtime_backend_does_not_construct_legacy_provider_in_chatgpt_only_mode
     assert backend.provider.fallback is None
 
 
-def test_runtime_backend_can_opt_in_to_legacy_fallback(tmp_path, monkeypatch):
+def test_runtime_backend_ignores_legacy_fallback_opt_in(tmp_path, monkeypatch):
     fallback = _Fallback()
     cli = tmp_path / "cognitionctl.py"
     _write_fake_cli(cli)
@@ -276,7 +276,8 @@ def test_runtime_backend_can_opt_in_to_legacy_fallback(tmp_path, monkeypatch):
     backend = load_optional_advisory_backend()
 
     assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
-    assert backend.provider.fallback is fallback
+    assert backend.provider.enabled is True
+    assert backend.provider.fallback is None
 
 def test_runtime_backend_can_use_remote_when_legacy_provider_is_unconfigured(
     tmp_path, monkeypatch
@@ -542,7 +543,7 @@ print(json.dumps({
     assert caught.request_id == "llmreq-durable-waiting"
 
 
-def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
+def test_explicit_disable_fails_closed_instead_of_using_legacy_provider(tmp_path, monkeypatch):
     fallback = _Fallback()
     marker = tmp_path / ".livingruntime" / "ferro-chatgpt-provider.enabled"
     marker.parent.mkdir(parents=True)
@@ -555,10 +556,12 @@ def test_explicit_disable_overrides_local_enable_marker(tmp_path, monkeypatch):
 
     backend = load_optional_advisory_backend()
 
-    assert backend.provider is fallback
+    assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
+    assert backend.provider.enabled is False
+    assert backend.provider.fallback is None
 
 
-def test_runtime_backend_preserves_existing_provider_when_remote_disabled(tmp_path, monkeypatch):
+def test_missing_remote_enablement_fails_closed_without_legacy_provider(tmp_path, monkeypatch):
     fallback = _Fallback()
     import agent_runtime.llm as runtime_llm
 
@@ -568,7 +571,9 @@ def test_runtime_backend_preserves_existing_provider_when_remote_disabled(tmp_pa
 
     backend = load_optional_advisory_backend()
 
-    assert backend.provider is fallback
+    assert isinstance(backend.provider, LivingRuntimeChatGPTProvider)
+    assert backend.provider.enabled is False
+    assert backend.provider.fallback is None
 
 
 def test_resume_next_durable_cognition_is_consumed_by_one_provider_call(tmp_path):
