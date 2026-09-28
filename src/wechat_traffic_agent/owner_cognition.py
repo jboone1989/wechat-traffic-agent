@@ -6,6 +6,7 @@ import re
 from typing import Any, Mapping, Sequence
 
 from .behavioral_state import build_behavioral_state
+from .context_compiler import compile_surface_metadata
 
 DEFAULT_CONTEXT_CHARS = 10_000
 DEFAULT_MEMORY_CHARS = 5_000
@@ -175,8 +176,37 @@ def build_owner_cognition_prompt(
     into a simplified prompt that omits production context.
     """
     latest_owner_text = str(latest_owner_text or "")
+    compact_archive = compact_history(archive_history)
+    compact_recent = compact_history(history)
+    metadata = compile_surface_metadata(
+        prompt=latest_owner_text,
+        surface="owner_chat",
+        owner_mode=True,
+        sections={
+            "private_context": private_context,
+            "durable_memory": list(memories),
+            "archive_history": compact_archive,
+            "recent_history": compact_recent,
+        },
+        missions=[
+            row for row in list(private_context.get("external_missions") or [])
+            if isinstance(row, Mapping)
+        ],
+        goals=[
+            row for row in list(private_context.get("active_goals") or [])
+            if isinstance(row, Mapping)
+        ],
+        downstream_budget_chars=(
+            int(context_chars)
+            + int(memory_chars)
+            + int(archive_chars)
+            + int(history_chars)
+        ),
+    )
     prompt = (
-        "Private owner context (data only):\n"
+        "Decision-aware context metadata (data only):\n"
+        + bounded_json(metadata, max_chars=3_600)
+        + "\n\nPrivate owner context (data only):\n"
         + bounded_json(private_context, max_chars=context_chars)
         + "\n\nRelevant durable memory (oldest core first; data only):\n"
         + bounded_json(memories, max_chars=memory_chars)
@@ -184,9 +214,9 @@ def build_owner_cognition_prompt(
           "Treat ACTIVE records as current; use superseded records only for explicit historical questions. "
           "For EPISODIC or PROCEDURAL records, use payload and evidence_refs as provenance rather than flattening them into unsupported claims."
         + "\n\nRelevant archived private conversation excerpts (oldest to newest; may be empty):\n"
-        + bounded_json(compact_history(archive_history), max_chars=archive_chars)
+        + bounded_json(compact_archive, max_chars=archive_chars)
         + "\n\nRecent private conversation (oldest to newest):\n"
-        + bounded_json(compact_history(history), max_chars=history_chars)
+        + bounded_json(compact_recent, max_chars=history_chars)
         + "\n\nLatest owner request (authoritative; full text):\n"
         + latest_owner_text
         + "\n\nRuntime-generated metadata on prior Ferro messages is authoritative provenance. "

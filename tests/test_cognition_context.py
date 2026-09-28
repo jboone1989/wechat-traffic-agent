@@ -191,6 +191,13 @@ def test_cognition_snapshot_unifies_current_harness_state():
     assert "history" not in context["neural_state"]["life"]
     assert context["behavioral_state"]["personality_traits"]["novelty_seeking"] == 0.82
     assert context["behavioral_state"]["dominant_drive"]["name"] == "evolution"
+    assert context["decision_frame"]["decision_type"] == "GENERAL_COGNITION"
+    assert context["context_receipt"]["downstream_budget_chars"] == 60_000
+    assert "recent_experience" in context["context_receipt"]["candidate_counts"]
+    assert (
+        context["epistemic_contract"]["model_inference"]
+        == "unverified_until_observed"
+    )
     assert "not decorative telemetry" in context["behavioral_state"]["control_semantics"]
     assert any(
         "formulaic repetition" in row
@@ -242,6 +249,13 @@ def test_owner_episode_context_filters_noise_and_demotes_neural_control():
     assert {row["goal_id"] for row in context["current_intent"]} == {"goal-owner"}
     assert {row["kind"] for row in context["current_intent"]} == {"GOAL"}
     assert [row["mission_id"] for row in context["missions"]["active"]] == ["mission-x"]
+    assert context["decision_frame"]["decision_type"] == "OWNER_GOAL_ACTION"
+    assert context["open_loops"][0]["kind"] == "MISSION"
+    assert context["open_loops"][0]["id"] == "mission-x"
+    assert any(
+        row["kind"] == "PENDING_PLAN_QUEUE"
+        for row in context["open_loops"]
+    )
     assert len(context["mind"]["interests"]) <= 3
     assert context["mind"]["open_inquiries"] == []
     assert context["mind"]["beliefs"] == []

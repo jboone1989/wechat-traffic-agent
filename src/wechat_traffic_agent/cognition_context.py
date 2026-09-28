@@ -8,6 +8,7 @@ import re
 from typing import Any, Mapping
 
 from .behavioral_state import build_behavioral_state
+from .context_compiler import compile_surface_metadata
 from .memory_self import ProspectiveSelfMemoryService
 
 
@@ -494,6 +495,56 @@ def build_ferro_cognition_context(
         "learning_boundary": _clip(projection.get("learning_boundary"), 1200),
     }
 
+    recent_experience = _relevant_rows(
+        _recent_life_experience(mind),
+        query_context,
+        limit=4 if owner_mode else 8,
+        fallback_to_recent=not owner_mode,
+        min_score=2 if owner_mode else 1,
+    )
+    core_sections = {
+        "continuity": {
+            "application_cycle": int(getattr(app_runtime, "cycle", 0) or 0),
+            "mind_tick": int(projection.get("mind_tick") or 0),
+        },
+        "current_intent": intents[:4] if owner_mode else intents[:8],
+        "missions": mission_state,
+        "mind": mind_section,
+        "recent_experience": recent_experience,
+        "resources": dict(packet.current_resources),
+        "capabilities": capabilities,
+        "operational_state": {
+            "wakeful_state": wake.get("state"),
+            "pending_plan_count": wake.get("pending_plan_count"),
+        },
+    }
+    metadata = compile_surface_metadata(
+        prompt=query_context or prompt,
+        surface="agent_runtime",
+        owner_mode=owner_mode,
+        sections=core_sections,
+        missions=list(mission_state.get("active") or []),
+        goals=[
+            row for row in intents
+            if isinstance(row, Mapping) and str(row.get("kind") or "") == "GOAL"
+        ],
+        inquiries=[
+            row for row in list(mind_section.get("open_inquiries") or [])
+            if isinstance(row, Mapping)
+        ],
+        pending_plan_count=int(wake.get("pending_plan_count") or 0),
+        candidate_counts={
+            "intents": len(packet.current_intent),
+            "missions": len(list(mission_state.get("active") or [])),
+            "interests": len(list(projection.get("interests") or [])),
+            "open_inquiries": len(list(projection.get("open_inquiries") or [])),
+            "beliefs": len(list(projection.get("beliefs") or [])),
+            "recent_experience": len(_recent_life_experience(mind)),
+            "capabilities": len(capabilities),
+        },
+        downstream_budget_chars=60_000,
+    )
+
     return {
         "continuity": {
             "schema_version": "ferro-cognition-snapshot.v1",
@@ -504,16 +555,13 @@ def build_ferro_cognition_context(
             "mind_tick": int(projection.get("mind_tick") or 0),
             "agent_runtime_cycle_is_host_internal": True,
         },
+        "decision_frame": metadata["decision_frame"],
+        "context_receipt": metadata["context_receipt"],
         "current_intent": intents[:4] if owner_mode else intents[:8],
+        "open_loops": metadata["open_loops"],
         "missions": mission_state,
         "mind": mind_section,
-        "recent_experience": _relevant_rows(
-            _recent_life_experience(mind),
-            query_context,
-            limit=4 if owner_mode else 8,
-            fallback_to_recent=not owner_mode,
-            min_score=2 if owner_mode else 1,
-        ),
+        "recent_experience": recent_experience,
         "resources": dict(packet.current_resources),
         "capabilities": {
             "available": capabilities,
@@ -545,6 +593,7 @@ def build_ferro_cognition_context(
             "control_authority": "ADVISORY_SIGNAL_ONLY",
         },
         "behavioral_state": behavioral_state,
+        "epistemic_contract": metadata["epistemic_contract"],
     }
 
 

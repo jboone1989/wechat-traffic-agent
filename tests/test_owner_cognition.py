@@ -38,6 +38,9 @@ def test_owner_cognition_prompt_carries_production_context_and_provenance():
         latest_owner_text="Compare the production harness with the raw model.",
     )
 
+    assert "Decision-aware context metadata (data only):" in prompt
+    assert '"decision_type": "OWNER_DIALOGUE"' in prompt
+    assert '"kind": "MISSION"' in prompt
     assert "Promote LivingRuntime Remote" in prompt
     assert '"mission_id": "mission-x"' in prompt
     assert '"neural_life"' in prompt
