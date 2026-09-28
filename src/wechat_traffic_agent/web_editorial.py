@@ -91,6 +91,48 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
     return snapshot
 
 
+def resolve_rendered_inventory(
+    *,
+    fallback_path: Path,
+    site_root: Path,
+    inventories_dir: Path,
+) -> Path:
+    """Resolve the canonical inventory that exactly matches the live rendered site."""
+    fallback_path = Path(fallback_path)
+    site_root = Path(site_root)
+    inventories_dir = Path(inventories_dir)
+    if not site_root.is_symlink():
+        return fallback_path
+    direct = inventories_dir / (site_root.resolve().name + ".json")
+    if direct.exists():
+        return direct
+    rendered = {
+        "/" + str(path.parent.relative_to(site_root)) + "/"
+        for category in ("articles", "guides", "research", "notes")
+        for path in (site_root / category).glob("*/index.html")
+    }
+    fallback_routes = {
+        _route_for(artifact)
+        for artifact in _load_artifacts(fallback_path)
+    }
+    if fallback_routes == rendered:
+        return fallback_path
+    matches: list[Path] = []
+    for candidate in sorted(inventories_dir.glob("*.json")):
+        candidate_routes = {
+            _route_for(artifact)
+            for artifact in _load_artifacts(candidate)
+        }
+        if candidate_routes == rendered:
+            matches.append(candidate)
+    if len(matches) != 1:
+        raise ValueError(
+            "rendered site requires exactly one matching canonical inventory; "
+            f"found {len(matches)}"
+        )
+    return matches[0]
+
+
 def editorial_prompt_context(snapshot: dict) -> dict:
     context = {
         "version": snapshot["version"],
@@ -169,36 +211,13 @@ class WebEditorialWorker:
         self.inbox = ContentDraftInbox(self.state_root / "content")
 
     def _current_artifacts_path(self) -> Path:
-        """Resolve the canonical inventory for the rendered site now in service."""
-        site_root = Path(self.site_root)
-        if not site_root.is_symlink():
-            return Path(self.artifacts_path)
-        inventories = (
-            self.state_root / "content" / "automatic_website" / "inventories"
+        return resolve_rendered_inventory(
+            fallback_path=self.artifacts_path,
+            site_root=self.site_root,
+            inventories_dir=(
+                self.state_root / "content" / "automatic_website" / "inventories"
+            ),
         )
-        direct = inventories / (site_root.resolve().name + ".json")
-        if direct.exists():
-            return direct
-
-        rendered = {
-            "/" + str(path.parent.relative_to(site_root)) + "/"
-            for category in ("articles", "guides", "research", "notes")
-            for path in (site_root / category).glob("*/index.html")
-        }
-        matches: list[Path] = []
-        for candidate in sorted(inventories.glob("*.json")):
-            candidate_routes = {
-                _route_for(artifact)
-                for artifact in _load_artifacts(candidate)
-            }
-            if candidate_routes == rendered:
-                matches.append(candidate)
-        if len(matches) != 1:
-            raise ValueError(
-                "rendered site requires exactly one matching canonical inventory; "
-                f"found {len(matches)}"
-            )
-        return matches[0]
 
     async def run_once(self, *, now=None):
         now = now or datetime.now(timezone.utc)

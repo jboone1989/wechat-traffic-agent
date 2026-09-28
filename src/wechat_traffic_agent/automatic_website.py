@@ -13,7 +13,7 @@ from .content_artifact import ContentArtifact
 from .content_strategy import ContentStrategyBinding
 from .site_audit import audit_static_site
 from .site_cli import _load_artifacts, _curate_web_taxonomy
-from .web_editorial import digest
+from .web_editorial import digest, resolve_rendered_inventory
 from .content_admission import _write_once
 from .evidence_floor import (
     EvidenceFloorCheck, EvidenceFloorPlan, artifact_risk_cues, verify_evidence_floor_publication,
@@ -39,9 +39,11 @@ class AutomaticWebsitePublisher:
         current = self.public / 'current'
         if not current.is_symlink():
             raise ValueError('operator must initialize current site symlink')
-        revision = current.resolve().name
-        path = self.state / 'inventories' / (revision + '.json')
-        return path if path.exists() else self.starter
+        return resolve_rendered_inventory(
+            fallback_path=self.starter,
+            site_root=current,
+            inventories_dir=self.state / 'inventories',
+        )
 
     def publish(self, *, artifact: ContentArtifact, experience: dict, cycle_root: Path):
         if artifact.public_safe or not experience.get('automated_checks_passed'):
