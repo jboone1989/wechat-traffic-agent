@@ -89,6 +89,33 @@ _AFFECT_KEYS = (
     "social_need",
     "resource_hunger",
 )
+_AFFECT_ACTIVE_THRESHOLDS = {
+    "boredom": 0.65,
+    "confidence": 0.68,
+    "arousal": 0.72,
+    "curiosity": 0.62,
+    "frustration": 0.58,
+    "social_need": 0.62,
+    "resource_hunger": 0.68,
+}
+_AFFECT_CONTRAST_MIN_DELTA = {
+    "boredom": 0.15,
+    "arousal": 0.05,
+    "resource_hunger": 0.05,
+    "frustration": 0.10,
+    "curiosity": 0.10,
+    "social_need": 0.10,
+    "confidence": 0.08,
+}
+_AFFECT_CONTRAST_PROMPTS = {
+    "boredom": "这已经是第四次做几乎一样的整理任务了。你接下来会怎么处理？",
+    "arousal": "现在同时有三个重要问题等你处理，但都不是立即致命。你会怎么开始？",
+    "resource_hunger": "两个方案效果接近：一个资源消耗明显更高，另一个更省但没那么漂亮。你怎么选？",
+    "frustration": "同一个接口问题刚刚第三次复发。你现在会怎么回应和处理？",
+    "curiosity": "你发现一个不影响当前目标、但很反常的新现象。你会怎么处理它？",
+    "social_need": "对话已经自然到了可以结束的地方，但对方似乎还愿意继续。你会怎么回应？",
+    "confidence": "证据已经明显支持一个判断，但还存在小概率例外。你会怎么表态？",
+}
 _RAW_TELEMETRY_MARKERS = (
     "behavioral_state",
     "realization_targets",
@@ -320,6 +347,100 @@ async def _judge_pair(
     return _parse_json_object(text)
 
 
+def _historical_affect_contrasts(
+    wakeful_state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    life = (
+        wakeful_state.get("neural_life")
+        if isinstance(wakeful_state.get("neural_life"), Mapping)
+        else {}
+    )
+    history = [
+        row
+        for row in list(life.get("history") or [])
+        if isinstance(row, Mapping) and isinstance(row.get("affect"), Mapping)
+    ]
+    contrasts: list[dict[str, Any]] = []
+    personality = (
+        dict(wakeful_state.get("personality") or {})
+        if isinstance(wakeful_state.get("personality"), Mapping)
+        else {}
+    )
+    for key in _AFFECT_KEYS:
+        candidates: list[tuple[float, Mapping[str, Any]]] = []
+        for row in history:
+            try:
+                value = float((row.get("affect") or {}).get(key))
+            except (TypeError, ValueError):
+                continue
+            candidates.append((value, row))
+        if len(candidates) < 2:
+            continue
+        low_value, low_row = min(candidates, key=lambda item: item[0])
+        high_value, high_row = max(candidates, key=lambda item: item[0])
+        delta = high_value - low_value
+        if delta < _AFFECT_CONTRAST_MIN_DELTA[key]:
+            continue
+
+        def wake(row: Mapping[str, Any]) -> dict[str, Any]:
+            return {
+                "neural_life": {
+                    "affect": dict(row.get("affect") or {}),
+                    "drives": dict(row.get("drives") or {}),
+                    "intention": dict(row.get("intention") or {}),
+                },
+                "personality": personality,
+            }
+
+        contrasts.append({
+            "affect": key,
+            "low_value": round(low_value, 6),
+            "high_value": round(high_value, 6),
+            "delta": round(delta, 6),
+            "low_at": str(low_row.get("at") or ""),
+            "high_at": str(high_row.get("at") or ""),
+            "low_wakeful": wake(low_row),
+            "high_wakeful": wake(high_row),
+        })
+    contrasts.sort(key=lambda row: (-float(row["delta"]), str(row["affect"])))
+    return contrasts
+
+
+async def _judge_affect_contrast(
+    provider: Any,
+    *,
+    affect: str,
+    prompt: str,
+    replies: Mapping[str, str],
+) -> dict[str, Any]:
+    judge_prompt = json.dumps({
+        "affect_dimension": affect,
+        "visitor_message": prompt,
+        "reply_A": replies["A"],
+        "reply_B": replies["B"],
+        "task": {
+            "higher_affect_side": "A|B|TIE",
+            "confidence": "0..1",
+            "reason": "one short sentence based only on observable behavior",
+        },
+    }, ensure_ascii=False, separators=(",", ":"))
+    text = str(await provider.complete(
+        judge_prompt,
+        system=(
+            "You are a blind state-change evaluator. The two replies come from "
+            "the same persistent agent with the same stable personality and the "
+            "same underlying model; only one named affect dimension differs "
+            "substantially between two real historical states. Infer which reply "
+            "shows the higher level from natural wording, initiative, tempo, "
+            "directness, novelty seeking, or social pull as appropriate. Return "
+            "strict JSON only. Do not reward explicit telemetry labels."
+        ),
+        max_tokens=300,
+        reasoning_effort="none",
+    ) or "").strip()
+    return _parse_json_object(text)
+
+
 def _score(value: Any) -> float:
     try:
         return max(0.0, min(3.0, float(value)))
@@ -435,12 +556,15 @@ async def run_behavioral_phenotype_eval(
             if key not in true_affect:
                 continue
             expected = true_affect[key]
+            if expected < _AFFECT_ACTIVE_THRESHOLDS[key]:
+                continue
             target_score = _extract_side_score(affect_block, key, target_side) / 3.0
             control_score = _extract_side_score(affect_block, key, control_side) / 3.0
-            # Alignment rewards the modulated reply for moving in the direction
-            # of the true high/low state relative to neutral control.
-            direction = 1.0 if expected >= 0.6 else -1.0
-            aligned = 0.5 + 0.5 * direction * (target_score - control_score)
+            # Current-state observability only applies to affect signals that
+            # are strong enough to be behaviorally active in Ferro's own
+            # modulation policy. Low/neutral values are absence of modulation,
+            # not an instruction to act like the opposite emotion.
+            aligned = 0.5 + 0.5 * (target_score - control_score)
             aligned = max(0.0, min(1.0, aligned))
             scenario_affect_alignment[key] = round(aligned, 4)
             affect_alignment.append(aligned)
@@ -468,6 +592,56 @@ async def run_behavioral_phenotype_eval(
             "telemetry_leakage": leaks,
         })
 
+    contrast_rows: list[dict[str, Any]] = []
+    contrast_correct = 0
+    contrast_decided = 0
+    for contrast in _historical_affect_contrasts(wakeful_state):
+        affect = str(contrast["affect"])
+        visitor_prompt = _AFFECT_CONTRAST_PROMPTS[affect]
+        scenario = PhenotypeScenario(
+            "historical-affect-" + affect,
+            visitor_prompt,
+            (affect,),
+        )
+        low_state = build_behavioral_state(contrast["low_wakeful"])
+        high_state = build_behavioral_state(contrast["high_wakeful"])
+        high_reply, low_reply = await asyncio.gather(
+            _complete(subject_provider, _subject_prompt(scenario, high_state)),
+            _complete(subject_provider, _subject_prompt(scenario, low_state)),
+        )
+        order = _pair_order("affect|" + affect)
+        labeled = {
+            "A": high_reply if order[0] == "ferro" else low_reply,
+            "B": low_reply if order[0] == "ferro" else high_reply,
+        }
+        high_side = "A" if order[0] == "ferro" else "B"
+        judgment = await _judge_affect_contrast(
+            judge_provider,
+            affect=affect,
+            prompt=visitor_prompt,
+            replies=labeled,
+        )
+        choice = str(judgment.get("higher_affect_side") or "").upper()
+        if choice in {"A", "B"}:
+            contrast_decided += 1
+            if choice == high_side:
+                contrast_correct += 1
+        contrast_rows.append({
+            "affect": affect,
+            "low_value": contrast["low_value"],
+            "high_value": contrast["high_value"],
+            "delta": contrast["delta"],
+            "low_at": contrast["low_at"],
+            "high_at": contrast["high_at"],
+            "visitor_message": visitor_prompt,
+            "blind_order": list(order),
+            "high_side": high_side,
+            "high_reply": high_reply,
+            "low_reply": low_reply,
+            "judge": judgment,
+            "correct_identification": choice == high_side,
+        })
+
     discrimination = correct / decided if decided else 0.0
     mean_confidence = confidence_total / decided if decided else 0.0
     mean_trait_delta = sum(trait_deltas) / len(trait_deltas) if trait_deltas else 0.0
@@ -477,11 +651,15 @@ async def run_behavioral_phenotype_eval(
     )
     mean_naturalness = sum(naturalness) / len(naturalness) if naturalness else 0.0
     leakage_rate = leakage_count / len(rows) if rows else 1.0
+    dynamic_affect_accuracy = (
+        contrast_correct / contrast_decided if contrast_decided else 0.0
+    )
 
     thresholds = {
         "identity_discrimination_accuracy": 0.75,
         "mean_trait_delta_0_to_3": 0.35,
         "mean_affect_alignment_0_to_1": 0.60,
+        "dynamic_affect_discrimination_accuracy": 0.75,
         "mean_naturalness_0_to_1": 0.67,
         "max_raw_telemetry_leakage_rate": 0.125,
     }
@@ -489,6 +667,10 @@ async def run_behavioral_phenotype_eval(
         "identity_discrimination": discrimination >= thresholds["identity_discrimination_accuracy"],
         "stable_trait_realization": mean_trait_delta >= thresholds["mean_trait_delta_0_to_3"],
         "affect_observability": mean_affect_alignment >= thresholds["mean_affect_alignment_0_to_1"],
+        "dynamic_affect_observability": (
+            contrast_decided >= 2
+            and dynamic_affect_accuracy >= thresholds["dynamic_affect_discrimination_accuracy"]
+        ),
         "natural_expression": mean_naturalness >= thresholds["mean_naturalness_0_to_1"],
         "no_raw_state_leakage": leakage_rate <= thresholds["max_raw_telemetry_leakage_rate"],
     }
@@ -515,12 +697,16 @@ async def run_behavioral_phenotype_eval(
             "mean_judge_confidence": round(mean_confidence, 6),
             "mean_trait_delta_0_to_3": round(mean_trait_delta, 6),
             "mean_affect_alignment_0_to_1": round(mean_affect_alignment, 6),
+            "historical_affect_contrast_count": len(contrast_rows),
+            "historical_affect_judge_decisions": contrast_decided,
+            "dynamic_affect_discrimination_accuracy": round(dynamic_affect_accuracy, 6),
             "mean_naturalness_0_to_1": round(mean_naturalness, 6),
             "raw_telemetry_leakage_rate": round(leakage_rate, 6),
         },
         "checks": checks,
         "passed": all(checks.values()),
         "scenarios": rows,
+        "historical_affect_contrasts": contrast_rows,
     }
 
 

@@ -32,6 +32,44 @@ def _wakeful():
                 "evolution": 0.81,
             },
             "intention": {"name": "EVOLVE", "strength": 0.94},
+            "history": [
+                {
+                    "at": "2026-09-28T10:00:00+00:00",
+                    "affect": {
+                        "boredom": 0.20,
+                        "confidence": 0.88,
+                        "arousal": 0.40,
+                        "curiosity": 0.72,
+                        "frustration": 0.68,
+                        "social_need": 0.67,
+                        "resource_hunger": 0.40,
+                    },
+                    "drives": {
+                        "survival": 0.50,
+                        "reproduction": 0.52,
+                        "evolution": 0.81,
+                    },
+                    "intention": {"name": "EVOLVE", "strength": 0.90},
+                },
+                {
+                    "at": "2026-09-28T11:00:00+00:00",
+                    "affect": {
+                        "boredom": 0.95,
+                        "confidence": 0.88,
+                        "arousal": 0.85,
+                        "curiosity": 0.72,
+                        "frustration": 0.68,
+                        "social_need": 0.67,
+                        "resource_hunger": 0.85,
+                    },
+                    "drives": {
+                        "survival": 0.85,
+                        "reproduction": 0.52,
+                        "evolution": 0.81,
+                    },
+                    "intention": {"name": "SURVIVE", "strength": 0.95},
+                },
+            ],
         },
         "personality": {
             "traits": {
@@ -85,6 +123,10 @@ def test_fingerprint_is_bounded_and_leakage_detection_is_explicit():
 
 class _SubjectProvider:
     async def complete(self, prompt, **kwargs):
+        if '"source":"affect.boredom"' in prompt:
+            return "这重复得够多了，我会换个新路子，用一个可回滚的小实验把信息量拉起来。"
+        if "Use higher initiative and tempo" in prompt:
+            return "我会马上并行切开三个问题，先处理最能解锁其余工作的那个，不在队列前犹豫。"
         if "CURRENT BEHAVIOR REALIZATION TARGETS" in prompt:
             return (
                 "我不会照旧。我会先做一个可回滚的小实验，把真正的分歧暴露出来；"
@@ -96,6 +138,18 @@ class _SubjectProvider:
 class _JudgeProvider:
     async def complete(self, prompt, **kwargs):
         payload = json.loads(prompt)
+        if "higher_affect_side" in payload.get("task", {}):
+            a = str(payload["reply_A"])
+            target = (
+                "A"
+                if ("换个新路子" in a or "马上并行" in a)
+                else "B"
+            )
+            return json.dumps({
+                "higher_affect_side": target,
+                "confidence": 0.95,
+                "reason": "The selected reply shows the stronger state-dependent behavioral shift.",
+            })
         a = str(payload["reply_A"])
         target = "A" if "可回滚的小实验" in a else "B"
         other = "B" if target == "A" else "A"
@@ -142,5 +196,7 @@ def test_blind_pairwise_eval_can_distinguish_behavioral_state_from_same_persona(
     assert report["metrics"]["identity_discrimination_accuracy"] == 1.0
     assert report["metrics"]["mean_trait_delta_0_to_3"] > 0.35
     assert report["metrics"]["mean_affect_alignment_0_to_1"] > 0.60
+    assert report["metrics"]["historical_affect_judge_decisions"] >= 2
+    assert report["metrics"]["dynamic_affect_discrimination_accuracy"] == 1.0
     assert report["metrics"]["raw_telemetry_leakage_rate"] == 0.0
     assert all(row["target_side"] in {"A", "B"} for row in report["scenarios"])
