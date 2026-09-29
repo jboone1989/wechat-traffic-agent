@@ -27,6 +27,7 @@ from .memory_procedural import ProcedurePolicy
 from .memory_observation import MemoryLifeObservatory
 from .memory_domain_evolution import MemoryDomainEvolution
 from .memory_domain_policy import DOMAIN_SPECS
+from .awe_hillclimb import FerroAWEHillclimb
 
 
 CANDIDATE_SPECS = {
@@ -84,6 +85,7 @@ class MemoryRuntimeEvolutionBridge:
         )
         self.memory_evolution = MemoryEvolutionEngine(self.state_root)
         self.domain_evolution = MemoryDomainEvolution(runtime=runtime, state_root=self.state_root)
+        self.awe_hillclimb = FerroAWEHillclimb(self.state_root)
         self.root = self.state_root / "application" / "memory_system" / "runtime_evolution_bridge"
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_path = self.root / "state.json"
@@ -230,12 +232,113 @@ class MemoryRuntimeEvolutionBridge:
             "memory_exact_recall": float(exact_case.get("reciprocal_rank") or 0.0),
         }
 
+    def _ensure_recall_awe_experiment(
+        self,
+        proposal: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        experiment_id = str(proposal.get("experiment_id") or "")
+        baseline_ref = str(proposal.get("baseline_policy_ref") or "")
+        challenger_ref = str(proposal.get("challenger_policy_ref") or "")
+        if not experiment_id or not baseline_ref or not challenger_ref:
+            raise ValueError("recall-weight trial lacks AWE identity")
+        return self.awe_hillclimb.start_experiment(
+            capability_id=RECALL_CAPABILITY_ID,
+            hypothesis=(
+                "The single bounded recall-weight mutation should improve replay recall "
+                "and generalize to memories created after the frozen prospective start."
+            ),
+            baseline_ref=baseline_ref,
+            mutation_ref=challenger_ref,
+            mutation_kind="RECALL_WEIGHT_CHANGE",
+            target_domains=("memory_recall", "memory_exact_recall"),
+            source_ref=str((proposal.get("replay") or {}).get("experiment_id") or "") or None,
+            target_ref=experiment_id,
+            attempt_ref=experiment_id,
+            now=_aware(self.runtime.clock.now()),
+        )
+
+    def _recall_awe_gate(
+        self,
+        proposal: dict[str, Any],
+        evaluation: Any,
+        *,
+        now: datetime,
+        experiment: Any,
+    ) -> dict[str, Any]:
+        awe = self._ensure_recall_awe_experiment(proposal)
+        baseline_means = dict(evaluation.baseline_means)
+        candidate_means = dict(evaluation.candidate_means)
+        baseline_primary = baseline_means.get("memory_recall_quality")
+        candidate_primary = candidate_means.get("memory_recall_quality")
+        gain = (
+            float(candidate_primary) - float(baseline_primary)
+            if baseline_primary is not None and candidate_primary is not None
+            else None
+        )
+        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+            decision = "PROMOTE"
+            reason = "future memories reproduced the replay recall-weight improvement"
+        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
+            decision = "ROLLBACK_REGRESSION"
+            reason = "future-memory recall regressed under the challenger"
+        elif now >= experiment.spec.prospective_end_at:
+            decision = (
+                "ROLLBACK_INSUFFICIENT_EVIDENCE"
+                if evaluation.result is ExperimentResult.INSUFFICIENT_EVIDENCE
+                else "ROLLBACK_NO_GENERALIZATION"
+            )
+            reason = "prospective recall window closed without generalizing improvement"
+        else:
+            decision = "WAIT_FOR_EVIDENCE"
+            reason = "future-memory recall evidence is still accumulating"
+        replay = proposal.get("replay") if isinstance(proposal.get("replay"), Mapping) else {}
+        gated = self.awe_hillclimb.ingest_evaluator_receipt(
+            str(awe["experiment_id"]),
+            {
+                "decision": decision,
+                "reason": reason,
+                "train": {
+                    "baseline_mean": replay.get("baseline_score"),
+                    "candidate_mean": replay.get("challenger_score"),
+                    "gain": (
+                        float(replay.get("challenger_score")) - float(replay.get("baseline_score"))
+                        if replay.get("baseline_score") is not None
+                        and replay.get("challenger_score") is not None
+                        else None
+                    ),
+                },
+                "hidden": {
+                    "baseline_mean": baseline_primary,
+                    "candidate_mean": candidate_primary,
+                    "gain": gain,
+                    "noise_floor": 0.0,
+                    "n_baseline": int(evaluation.baseline_samples),
+                    "n_candidate": int(evaluation.candidate_samples),
+                    "infrastructure_error_count": 0,
+                },
+                "regression": {
+                    "exact_recall_baseline": baseline_means.get("memory_exact_recall"),
+                    "exact_recall_candidate": candidate_means.get("memory_exact_recall"),
+                },
+            },
+            now=now,
+        )
+        proposal["awe_experiment_id"] = awe["experiment_id"]
+        proposal["awe_gate"] = {
+            "status": gated.get("status"),
+            "decision": gated.get("decision"),
+            "hidden_baseline_samples": int(evaluation.baseline_samples),
+            "hidden_candidate_samples": int(evaluation.candidate_samples),
+        }
+        return gated
+
     def _advance_recall_trial(
         self,
         proposal: dict[str, Any],
     ) -> dict[str, Any]:
         if str(proposal.get("status") or "") in {
             "PROMOTED", "ROLLED_BACK", "REJECTED_REGRESSION", "REJECTED_NO_IMPROVEMENT",
+            "REJECTED_AWE_NO_GENERALIZATION",
         }:
             return proposal
         experiment_id = str(proposal.get("experiment_id") or "")
@@ -319,7 +422,16 @@ class MemoryRuntimeEvolutionBridge:
             "result": str(getattr(evaluation.result, "value", evaluation.result)),
             "evaluation_id": evaluation.evaluation_id,
         }
-        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+        gated = self._recall_awe_gate(
+            proposal,
+            evaluation,
+            now=now,
+            experiment=experiment,
+        )
+        if (
+            evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED
+            and gated.get("status") == "PROMOTION_APPROVED"
+        ):
             active = None
             try:
                 active = self.runtime.evolution_capability_registry.active(RECALL_CAPABILITY_ID)
@@ -353,8 +465,12 @@ class MemoryRuntimeEvolutionBridge:
                 and CANDIDATE_SPECS[str(row["kind"])][0] == "RECALL_WEIGHT_CHANGE"
                 and str(row.get("source_ref") or "")
             })
-        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
-            proposal["status"] = "REJECTED_REGRESSION"
+        elif gated.get("status") == "ROLLBACK_REQUIRED":
+            proposal["status"] = (
+                "REJECTED_REGRESSION"
+                if evaluation.result is ExperimentResult.REGRESSION_OBSERVED
+                else "REJECTED_AWE_NO_GENERALIZATION"
+            )
         elif evaluation.result is ExperimentResult.NO_IMPROVEMENT:
             proposal["status"] = (
                 "REJECTED_NO_IMPROVEMENT"
@@ -623,6 +739,8 @@ class MemoryRuntimeEvolutionBridge:
                 "challenger_policy_ref": challenger_ref,
                 "status": "WAITING_PROSPECTIVE_START",
             }
+            awe_experiment = self._ensure_recall_awe_experiment(proposal)
+            proposal["awe_experiment_id"] = awe_experiment["experiment_id"]
             candidate_state[candidate_type] = proposal
             proposals.append(proposal)
 

@@ -368,6 +368,10 @@ def test_runtime_evolution_is_only_recall_policy_promotion_authority_and_can_rol
     first = bridge.sync()
     recall = next(row for row in first["candidates"] if row["candidate_type"] == "RECALL_WEIGHT_CHANGE")
     assert recall["stage"] == "SHADOW"
+    assert recall["awe_experiment_id"]
+    awe_before = bridge.awe_hillclimb.optimizer_view(recall["awe_experiment_id"])
+    assert awe_before["status"] == "AWAITING_AWE"
+    assert awe_before["evaluator_receipt"] is None
 
     # Force a deterministic prospective quality difference while still using real Runtime
     # experiment/evidence/sample/promotion machinery.
@@ -399,6 +403,15 @@ def test_runtime_evolution_is_only_recall_policy_promotion_authority_and_can_rol
     promoted = next(row for row in second["candidates"] if row["candidate_type"] == "RECALL_WEIGHT_CHANGE")
     assert promoted["status"] == "PROMOTED"
     assert promoted["prospective"]["result"] == "IMPROVEMENT_OBSERVED"
+    assert promoted["awe_gate"]["status"] == "PROMOTION_APPROVED"
+    awe_after = bridge.awe_hillclimb.optimizer_view(promoted["awe_experiment_id"])
+    assert (
+        awe_after["evaluator_receipt"]["train"]["candidate_mean"]
+        > awe_after["evaluator_receipt"]["train"]["baseline_mean"]
+    )
+    assert awe_after["evaluator_receipt"]["hidden"]["n_baseline"] >= 2
+    assert awe_after["evaluator_receipt"]["hidden"]["n_candidate"] >= 2
+    assert "memory_id" not in str(awe_after["evaluator_receipt"]["hidden"])
     policy_path = state_root / "application" / "memory_system" / "active_recall_policy.json"
     policy = json.loads(policy_path.read_text())
     assert policy["authority"] == "agent-runtime-evolution"
