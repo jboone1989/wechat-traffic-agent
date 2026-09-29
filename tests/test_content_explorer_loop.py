@@ -11,6 +11,7 @@ from wechat_traffic_agent.content_goal_loop import (
     _market_expression_fingerprint, _candidate_available_for_pool,
     _normalize_mission_discovery, _compact_website_decision_view,
     _compact_writing_experience, _select_evidence_decision_context,
+    _generation_strategy_receipt,
     _resolve_technique_requirements, _required_techniques_applied,
     _owner_focus_anchor_terms, _owner_focus_candidate_matches,
     _owner_focus_search_query,
@@ -312,6 +313,47 @@ def test_writing_experience_projection_drops_large_cycle_payloads():
     assert _compact_writing_experience(compact) == compact
 
 
+def test_generation_strategy_receipt_drops_decision_evidence_ledgers():
+    huge = "evidence-ref-" + ("x" * 20000)
+    strategy = {
+        "strategy_id": "strategy:" + ("a" * 24),
+        "topic": "livingruntime-remote-agent-development",
+        "profile": {
+            "name": "evidence-brief",
+            "reader_intent": "learn",
+            "angle": "evidence",
+            "title_pattern": "direct",
+            "structure_pattern": "evidence-interpretation",
+            "coverage_action": "standalone",
+        },
+        "opening_mode": "evidence_first",
+        "selection_mode": "PREDICTIVE_EXPLOIT",
+        "decision_reason": "Use the selected evidence-first profile.",
+        "memory_prior_applied": True,
+        "mind_strategy_evidence_refs": [huge] * 50,
+        "prediction_evidence_refs": [huge] * 50,
+    }
+    mind_context = {
+        "outcome_count": 9,
+        "evidence_refs": [huge] * 50,
+        "memory_prior": {"giant": huge * 10},
+    }
+
+    receipt = _generation_strategy_receipt(strategy, mind_context)
+    encoded = json.dumps(receipt, ensure_ascii=False)
+
+    assert len(encoded.encode("utf-8")) < 4 * 1024
+    assert huge not in encoded
+    assert '"memory_prior":' not in encoded
+    assert "giant" not in encoded
+    assert receipt["decision_evidence_receipt"] == {
+        "mind_evidence_ref_count": 50,
+        "prediction_evidence_ref_count": 50,
+        "mind_context_persisted": True,
+        "mind_outcome_count": 9,
+    }
+
+
 class V2Runtime(Runtime):
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         if task.startswith("SELECT_EVIDENCE:"):
@@ -368,6 +410,19 @@ def test_goal_without_matching_evidence_falls_back_to_viable_output(tmp_path):
     assert result["traffic_context"]["selection_authority"] == "OUTPUT_FALLBACK"
     assert explorer.collect_calls == explorer.filter_calls == 1
     assert len(worker.inbox.list_records()) == 1
+    receipt = json.loads(
+        (
+            worker.state
+            / "content"
+            / "continuous"
+            / "cycles"
+            / result["cycle"]
+            / "generation_context_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert receipt["status"] == "PASS"
+    assert receipt["editorial_brief_bytes"] <= receipt["editorial_brief_budget_bytes"]
+    assert receipt["strategy_projection_bytes"] < receipt["content_strategy_full_bytes"]
 
 
 def test_unbound_goal_fails_closed_before_evidence(tmp_path):

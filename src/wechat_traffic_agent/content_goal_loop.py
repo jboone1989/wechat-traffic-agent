@@ -782,6 +782,43 @@ def _compact_writing_experience(rows, *, row_limit=4):
     return compact
 
 
+def _generation_strategy_receipt(binding, mind_strategy_context):
+    """Project strategy choice into drafting context without replaying its evidence ledger."""
+    if binding is None:
+        return None
+    payload = (
+        binding.model_dump(mode="json")
+        if hasattr(binding, "model_dump")
+        else dict(binding)
+        if isinstance(binding, dict)
+        else {}
+    )
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    mind = mind_strategy_context if isinstance(mind_strategy_context, dict) else {}
+    return {
+        "strategy_id": str(payload.get("strategy_id") or "")[:120],
+        "topic": str(payload.get("topic") or "")[:200],
+        "profile": {
+            "name": str(profile.get("name") or "")[:80],
+            "reader_intent": str(profile.get("reader_intent") or "")[:80],
+            "angle": str(profile.get("angle") or "")[:80],
+            "title_pattern": str(profile.get("title_pattern") or "")[:80],
+            "structure_pattern": str(profile.get("structure_pattern") or "")[:120],
+            "coverage_action": str(profile.get("coverage_action") or "")[:80],
+        },
+        "opening_mode": payload.get("opening_mode"),
+        "selection_mode": payload.get("selection_mode"),
+        "decision_reason": str(payload.get("decision_reason") or "")[:500],
+        "memory_prior_applied": bool(payload.get("memory_prior_applied")),
+        "decision_evidence_receipt": {
+            "mind_evidence_ref_count": len(payload.get("mind_strategy_evidence_refs") or ()),
+            "prediction_evidence_ref_count": len(payload.get("prediction_evidence_refs") or ()),
+            "mind_context_persisted": bool(mind),
+            "mind_outcome_count": int(mind.get("outcome_count") or 0),
+        },
+    }
+
+
 def _repair_related_ids(selection, snapshot):
     """Keep only real navigation IDs; a newly born Topic does not need a pre-existing member."""
     existing = {row['artifact']['artifact_id'] for row in snapshot['articles']}
@@ -2482,11 +2519,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 'style': 'Write like an expert expressing a considered view, not an academic paper, generic explainer, or institutional press release.',
             },
         } if cognition_decision is not None else None)
+        generation_strategy = _generation_strategy_receipt(
+            content_strategy,
+            mind_strategy_context,
+        )
         brief = {'selection': selection.model_dump(mode='json'), 'learned_techniques': lesson_payload,
                  'technique_requirements': technique_requirements,
                  'social_style_context': social_style_context,
-                 'prospective_experiment': experiment_payload, 'content_strategy': strategy_payload,
-                 'virtualbrain_strategy_context': mind_strategy_context,
+                 'prospective_experiment': experiment_payload, 'content_strategy': generation_strategy,
                  'evidence_floor': floor_plan.model_dump(mode='json'),
                  'agent_expression_context': expression_context,
                  'source_material': {'evidence': selected, 'market_context_evidence': market_companion,
@@ -2541,9 +2581,38 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     evidence_refs=('content-artifact:' + row['artifact']['artifact_id'] + ':sha256:' + row['content_sha256'],)))
         self._activity(cycle, 'CREATE', 'I’m writing the draft',
                        f"Composing {selection.title} from the selected evidence and related site context.")
+        editorial_brief = json.dumps(brief, ensure_ascii=False)
+        editorial_brief_bytes = len(editorial_brief.encode('utf-8'))
+        generation_context_receipt = {
+            'schema_version': 'content-generation-context-receipt.v1',
+            'editorial_brief_bytes': editorial_brief_bytes,
+            'editorial_brief_budget_bytes': 65536,
+            'content_strategy_full_bytes': len(
+                json.dumps(strategy_payload, ensure_ascii=False).encode('utf-8')
+            ),
+            'mind_strategy_context_full_bytes': len(
+                json.dumps(mind_strategy_context, ensure_ascii=False).encode('utf-8')
+            ) if mind_strategy_context is not None else 0,
+            'strategy_projection_bytes': len(
+                json.dumps(generation_strategy, ensure_ascii=False).encode('utf-8')
+            ) if generation_strategy is not None else 0,
+            'omitted_from_model_context': [
+                'content_strategy.mind_strategy_evidence_refs',
+                'content_strategy.prediction_evidence_refs',
+                'virtualbrain_strategy_context.memory_prior',
+                'virtualbrain_strategy_context.evidence_refs',
+            ],
+            'status': 'PASS' if editorial_brief_bytes <= 65536 else 'BUDGET_EXCEEDED',
+        }
+        _put(folder / 'generation_context_receipt.json', generation_context_receipt)
+        if editorial_brief_bytes > 65536:
+            raise ValueError(
+                'generation editorial brief exceeds context budget: '
+                f'{editorial_brief_bytes} bytes > 65536'
+            )
         artifact = await ContentAgent(runtime).compose(topics, default_trading_research_audience(),
               artifact_id='continuous-' + fingerprint[:20], now=datetime.fromisoformat(inputs['now']),
-              editorial_brief=json.dumps(brief, ensure_ascii=False))
+              editorial_brief=editorial_brief)
         self._activity(cycle, 'CREATE', 'The draft is ready',
                        f"Drafted {artifact.title}. Running source, safety, and usefulness checks next.", status='completed')
         artifact = artifact.model_copy(update={
