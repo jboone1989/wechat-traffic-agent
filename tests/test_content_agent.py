@@ -123,3 +123,17 @@ def test_content_agent_rejects_invented_source(tmp_path):
                 slug="why-trends-need-validation",
             )
         )
+
+
+def test_content_agent_repairs_one_non_json_backend_response(tmp_path):
+    responses = iter(["not-json", _response()])
+    runtime, backend = _runtime(tmp_path, lambda _request: next(responses))
+
+    artifact = asyncio.run(
+        ContentAgent(runtime).compose(
+            [_topic()], _audience(), artifact_id="research-json-repair",
+        )
+    )
+
+    assert artifact.title == "热点很高，为什么还不能马上写？"
+    assert len(backend.requests) == 2

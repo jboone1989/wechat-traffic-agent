@@ -61,8 +61,8 @@ class ContentAgent:
         )
         try:
             draft = _GeneratedContent.model_validate_json(_extract_json(raw))
-        except ValidationError as exc:
-            # Only schema failures get one repair; evidence checks below never retry.
+        except (ValidationError, ValueError) as exc:
+            # One bounded repair covers both malformed JSON and schema-invalid JSON.
             raw = await self.runtime.cognitive_probe(
                 _repair_task(task, raw, exc),
                 max_tokens=2400,
@@ -89,8 +89,15 @@ class ContentAgent:
         )
 
 
-def _repair_task(task: str, raw: str, error: ValidationError) -> str:
-    errors = error.json(include_url=False, include_context=False, include_input=False)
+def _repair_task(task: str, raw: str, error: ValidationError | ValueError) -> str:
+    errors = (
+        error.json(include_url=False, include_context=False, include_input=False)
+        if isinstance(error, ValidationError)
+        else json.dumps(
+            [{"type": "invalid_json_object", "msg": str(error)}],
+            ensure_ascii=False,
+        )
+    )
     schema = json.dumps(_GeneratedContent.model_json_schema(), ensure_ascii=False)
     return f"""{task}
 
