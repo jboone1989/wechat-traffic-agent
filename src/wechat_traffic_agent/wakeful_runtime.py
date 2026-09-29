@@ -1912,6 +1912,31 @@ class ContentWakefulRuntime:
             task="RESOURCE_REVIEW",
         ))
 
+    def schedule_self_repair_followup(
+        self,
+        now: datetime,
+        *,
+        seconds: int = 5,
+    ) -> dict[str, object]:
+        """Wake the existing recovery-safe lane for actionable repair backlog."""
+        delay = max(5, min(int(seconds), 300))
+        wake = PlannedWake(
+            wake_id="content:RESOURCE_REVIEW",
+            at=now + timedelta(seconds=delay),
+            reason="advance unresolved self-repair backlog",
+            task="RESOURCE_REVIEW",
+            relevant_refs=("self-repair:startup-backlog",),
+            preemptible=True,
+        )
+        self._enqueue_external_wake(wake)
+        self.core.schedule(wake)
+        return {
+            "status": "SCHEDULED",
+            "task": "RESOURCE_REVIEW",
+            "retry_at": wake.at.isoformat(),
+            "retry_seconds": delay,
+        }
+
     def _active_user_goal_ids(self) -> set[str]:
         path = self.state_root / "application" / "domain_runtime" / "agent_state.json"
         try:

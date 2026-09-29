@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 
+from wechat_traffic_agent.generated_repair import PLANNER_VERSION
 from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
 
 
@@ -143,3 +144,71 @@ def test_capability_contract_problem_routes_to_pi_remote(tmp_path):
     assert payload["sourceProblemId"] == "self-problem:contract123"
     assert payload["failureSite"] == "wakeful_tasks.py:goal_effect_contract"
     assert payload["targetFiles"] == ["src/wechat_traffic_agent/wakeful_tasks.py"]
+
+
+def test_startup_recovery_wakes_unlocalized_problem_after_localizer_upgrade(tmp_path):
+    folder = tmp_path / "application" / "self_maintenance" / "problems"
+    folder.mkdir(parents=True)
+    path = folder / "unlocalized.json"
+    path.write_text(json.dumps({
+        "problem_id": "self-problem:felt-fault",
+        "status": "AUTO_REPAIR_UNLOCALIZED",
+        "error_type": "INTEROCEPTIVE_FAULT",
+        "failure_site": "interoception:network",
+        "task": "CHECK_X",
+        "occurrences": 1,
+        "planner_attempt": {
+            "status": "UNLOCALIZED",
+            "planner_version": "generated-repair.v9",
+            "occurrences_seen": 1,
+        },
+    }))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executor = SelfRepairExecutor(
+        state_root=tmp_path,
+        workspace_root=workspace,
+        deployed_root=None,
+        planner_runtime=object(),
+    )
+
+    summary = executor.startup_recovery_summary(now=NOW)
+
+    assert summary["status"] == "WORK_PENDING"
+    assert summary["actionable_count"] == 1
+    assert summary["problem_ids"] == ["self-problem:felt-fault"]
+    assert summary["reasons"]["self-problem:felt-fault"] == (
+        "LOCALIZER_UPGRADE_OR_NEW_EVIDENCE"
+    )
+    assert summary["planner_version"] == PLANNER_VERSION
+
+
+def test_startup_recovery_does_not_rewake_same_unlocalized_evidence_forever(tmp_path):
+    folder = tmp_path / "application" / "self_maintenance" / "problems"
+    folder.mkdir(parents=True)
+    (folder / "unlocalized.json").write_text(json.dumps({
+        "problem_id": "self-problem:felt-fault",
+        "status": "AUTO_REPAIR_UNLOCALIZED",
+        "error_type": "INTEROCEPTIVE_FAULT",
+        "failure_site": "interoception:network",
+        "task": "CHECK_X",
+        "occurrences": 1,
+        "planner_attempt": {
+            "status": "UNLOCALIZED",
+            "planner_version": PLANNER_VERSION,
+            "occurrences_seen": 1,
+        },
+    }))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    executor = SelfRepairExecutor(
+        state_root=tmp_path,
+        workspace_root=workspace,
+        deployed_root=None,
+        planner_runtime=object(),
+    )
+
+    summary = executor.startup_recovery_summary(now=NOW)
+
+    assert summary["status"] == "NO_REPAIR_WORK"
+    assert summary["actionable_count"] == 0

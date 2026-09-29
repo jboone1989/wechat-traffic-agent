@@ -359,6 +359,86 @@ class SelfRepairExecutor:
             "results": results,
         }
 
+    def startup_recovery_summary(self, *, now: datetime) -> dict[str, Any]:
+        """Report repair work that should wake the recovery lane after startup."""
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("self repair requires timezone-aware time")
+        folder = self.root / "problems"
+        actionable: list[str] = []
+        reasons: dict[str, str] = {}
+        for path in folder.glob("*.json") if folder.exists() else ():
+            try:
+                row = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            problem_id = str(row.get("problem_id") or "").strip()
+            if not problem_id:
+                continue
+            status = str(row.get("status") or "")
+            if status in {
+                "REPAIR_PROPOSED",
+                "REPAIR_PAUSED_BASELINE_UNHEALTHY",
+                "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
+                "OBSERVING_PRODUCTION",
+            }:
+                actionable.append(problem_id)
+                reasons[problem_id] = status
+                continue
+            if status == "DIAGNOSING":
+                if self._planner() is None:
+                    continue
+                attempt = (
+                    row.get("planner_attempt")
+                    if isinstance(row.get("planner_attempt"), dict)
+                    else {}
+                )
+                attempt_status = str(attempt.get("status") or "")
+                retry_after_raw = str(attempt.get("retry_after") or "")
+                if attempt_status.startswith("DEFERRED_") and retry_after_raw:
+                    try:
+                        retry_after = datetime.fromisoformat(retry_after_raw)
+                    except ValueError:
+                        retry_after = now
+                    if retry_after.tzinfo is None:
+                        retry_after = retry_after.replace(tzinfo=timezone.utc)
+                    if now.astimezone(timezone.utc) < retry_after.astimezone(timezone.utc):
+                        continue
+                actionable.append(problem_id)
+                reasons[problem_id] = status
+                continue
+            if status == "AUTO_REPAIR_UNLOCALIZED":
+                if self._planner() is None:
+                    continue
+                attempt = (
+                    row.get("planner_attempt")
+                    if isinstance(row.get("planner_attempt"), dict)
+                    else {}
+                )
+                same_occurrence = (
+                    int(attempt.get("occurrences_seen") or 0)
+                    == int(row.get("occurrences") or 0)
+                )
+                if (
+                    str(attempt.get("status") or "") == "UNLOCALIZED"
+                    and same_occurrence
+                    and str(attempt.get("planner_version") or "") == PLANNER_VERSION
+                ):
+                    continue
+                actionable.append(problem_id)
+                reasons[problem_id] = "LOCALIZER_UPGRADE_OR_NEW_EVIDENCE"
+        return {
+            "status": "WORK_PENDING" if actionable else "NO_REPAIR_WORK",
+            "actionable_count": len(actionable),
+            "problem_ids": actionable[:16],
+            "reasons": {
+                problem_id: reasons[problem_id]
+                for problem_id in actionable[:16]
+            },
+            "planner_version": PLANNER_VERSION,
+        }
+
     def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
         """Submit a LOW-risk request; code changes are exclusively owned by Pi Remote."""
         proposal = problem.get("repair_proposal") or {}

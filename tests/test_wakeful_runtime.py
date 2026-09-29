@@ -1663,6 +1663,26 @@ def test_normal_resource_cadence_does_not_postpone_earlier_followup(tmp_path):
     assert wake.reason == "continue unresolved autonomous resource verification"
 
 
+def test_startup_self_repair_backlog_wakes_recovery_lane_immediately(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    result = runtime.schedule_self_repair_followup(NOW, seconds=5)
+
+    assert result["status"] == "SCHEDULED"
+    assert result["task"] == "RESOURCE_REVIEW"
+    assert result["retry_seconds"] == 5
+    wake = next(
+        row
+        for row in runtime.core.snapshot().pending_plans
+        if row.wake_id == "content:RESOURCE_REVIEW"
+    )
+    assert wake.at == NOW + timedelta(seconds=5)
+    assert wake.reason == "advance unresolved self-repair backlog"
+    assert wake.relevant_refs == ("self-repair:startup-backlog",)
+    requests = list((tmp_path / "application/wake_requests").glob("*.json"))
+    assert len(requests) == 1
+
+
 def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     runtime.core.schedule(PlannedWake(
