@@ -2,9 +2,9 @@
   "agent_id": "ferro",
   "created_at": 1000.0,
   "event": "FERRO_CORTEX_WAKE",
-  "payload_sha256": "4e9d846ccb3ad4eff689b39615502b7af4a2e4e0a276010b26d1434e59bc4333",
-  "purpose": "interactive-fallback",
-  "request_id": "llmreq_claim_extends",
+  "payload_sha256": "2ccd133c7a2fd448bbb1ef32da46c7e085f0b6665a98cda6a2b7fe984bad22af",
+  "purpose": "general_text",
+  "request_id": "llmreq_dispatch_stale",
   "schema_version": "livingruntime-cortex-wake.v1",
-  "wake_sequence": 42
+  "wake_sequence": 43
 }
