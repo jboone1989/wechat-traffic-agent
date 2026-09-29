@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -26,6 +27,7 @@ _DEFAULT_URL = "https://chatgpt.com/"
 _DEFAULT_COOLDOWN_SECONDS = 75
 _PORT_START = 9500
 _PORT_END = 9599
+_BROWSER_MODE = "ozone-headed-v1"
 
 _ACTIVATION_TEMPLATE = """FERRO_CORTEX_ACTIVATE
 request_id={request_id}
@@ -131,12 +133,39 @@ def _chrome_binary() -> str:
     return executable[-1]
 
 
+def _stop_recorded_cortex_browser(runtime: dict[str, Any], state_root: Path) -> None:
+    pid = int(runtime.get("pid") or 0)
+    if pid <= 1:
+        return
+    proc = Path(f"/proc/{pid}/cmdline")
+    if not proc.is_file():
+        return
+    command = proc.read_bytes().replace(b"\\0", b" ").decode("utf-8", errors="replace")
+    profile = str(_browser_profile_dir(state_root))
+    port = int(runtime.get("port") or 0)
+    if profile not in command or f"--remote-debugging-port={port}" not in command:
+        raise RuntimeError("recorded ChatGPT cortex PID does not own the expected browser profile")
+    os.killpg(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not Path(f"/proc/{pid}").exists() and not _port_open(port):
+            return
+        time.sleep(0.1)
+    raise RuntimeError("previous ChatGPT cortex Chromium did not stop")
+
+
 def _ensure_cortex_chromium(state_root: Path) -> str:
     runtime_path = _browser_runtime_path(state_root)
     runtime = _read_json(runtime_path)
     saved_port = int(runtime.get("port") or 0)
-    if _PORT_START <= saved_port <= _PORT_END and _cdp_ready(saved_port):
+    if (
+        _PORT_START <= saved_port <= _PORT_END
+        and _cdp_ready(saved_port)
+        and str(runtime.get("mode") or "") == _BROWSER_MODE
+    ):
         return f"http://127.0.0.1:{saved_port}"
+    if runtime:
+        _stop_recorded_cortex_browser(runtime, state_root)
 
     port = 0
     if _PORT_START <= saved_port <= _PORT_END and not _port_open(saved_port):
@@ -152,21 +181,27 @@ def _ensure_cortex_chromium(state_root: Path) -> str:
     profile = _browser_profile_dir(state_root)
     profile.mkdir(parents=True, exist_ok=True)
     os.chmod(profile, 0o700)
+    log_path = Path(state_root) / "cortex" / "chatgpt-web" / "chromium.log"
+    log_handle = log_path.open("ab", buffering=0)
     process = subprocess.Popen(
         [
             _chrome_binary(),
-            "--headless=new",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--noerrdialogs",
+            "--no-first-run",
+            "--ozone-platform=headless",
+            "--ozone-override-screen-size=1120,780",
             "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile}",
             "about:blank",
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    log_handle.close()
     deadline = time.monotonic() + 12.0
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -176,6 +211,7 @@ def _ensure_cortex_chromium(state_root: Path) -> str:
                 runtime_path,
                 {
                     "schema_version": 1,
+                    "mode": _BROWSER_MODE,
                     "port": port,
                     "pid": int(process.pid),
                 },
