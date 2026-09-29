@@ -522,6 +522,8 @@ def test_owner_goal_scheduler_prevents_priority_starvation(tmp_path):
     )
     assert selected["goal_id"] == "goal-b"
     assert selected["selection_authority"] == "FAIR_OWNER_GOAL_SCHEDULER"
+    assert selected["goal_scheduler_decision_id"]
+    assert selected["goal_scheduler_priority_bonus_seconds"] == 300.0
 
     exact = runner._active_owner_goal_context(
         relevant_refs=("goal-a",),
@@ -529,6 +531,7 @@ def test_owner_goal_scheduler_prevents_priority_starvation(tmp_path):
     )
     assert exact["goal_id"] == "goal-a"
     assert exact["selection_authority"] == "EXACT_OWNER_GOAL_REF"
+    assert exact["goal_scheduler_decision_id"] is None
 
 
 def test_owner_goal_context_uses_specific_active_proposal_over_parent_goal(tmp_path):
