@@ -495,7 +495,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     if int(startup_repair.get("actionable_count") or 0) > 0:
         startup_repair["wake"] = wakeful_runtime.schedule_self_repair_followup(
             self_maintenance_now,
-            seconds=5,
+            seconds=0,
         )
         print(json.dumps(
             {"self_repair_startup": startup_repair},
@@ -732,9 +732,22 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                 }
             }, sort_keys=True), file=sys.stderr)
         wakeful_runtime.refresh_neural_life(now)
+        startup_repair_wake = (
+            wakeful_runtime.claim_startup_self_repair_wake(now)
+            if (
+                int(startup_repair.get("actionable_count") or 0) > 0
+                and not startup_tasks
+                and not args.once
+                and not args.task
+            )
+            else None
+        )
         if startup_tasks:
             reason_task = startup_tasks.pop(0)
             wake_reason = None
+        elif startup_repair_wake is not None:
+            wake_reason = startup_repair_wake
+            reason_task = startup_repair_wake.task
         elif args.once or args.task:
             reason_task = args.task or "CONTENT_COGNITION"
             wake_reason = None

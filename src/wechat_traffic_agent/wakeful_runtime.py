@@ -169,6 +169,7 @@ def _connectome_body_currents(
 _EXTERNAL_WAKE_TASKS = frozenset({
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
+    "SELF_REPAIR",
     "CHECK_OUTCOMES",
     "VERIFY_PREDICTION",
     "CONTENT_COGNITION",
@@ -201,6 +202,7 @@ _OPTIONAL_INTERNAL_TASKS = frozenset({
 
 _OWNER_CONTINUATION_EXEMPT_TASKS = frozenset({
     "RESOURCE_REVIEW",
+    "SELF_REPAIR",
     "NEURAL_INTEROCEPTION",
     "CHECK_OUTCOMES",
 })
@@ -1916,26 +1918,47 @@ class ContentWakefulRuntime:
         self,
         now: datetime,
         *,
-        seconds: int = 5,
+        seconds: int = 0,
     ) -> dict[str, object]:
-        """Wake the existing recovery-safe lane for actionable repair backlog."""
-        delay = max(5, min(int(seconds), 300))
+        """Wake the dedicated repair lane without colliding with other tasks."""
+        delay = max(0, min(int(seconds), 900))
         wake = PlannedWake(
-            wake_id="content:RESOURCE_REVIEW",
+            wake_id="content:SELF_REPAIR",
             at=now + timedelta(seconds=delay),
             reason="advance unresolved self-repair backlog",
-            task="RESOURCE_REVIEW",
+            task="SELF_REPAIR",
             relevant_refs=("self-repair:startup-backlog",),
-            preemptible=True,
+            preemptible=False,
         )
         self._enqueue_external_wake(wake)
         self.core.schedule(wake)
         return {
             "status": "SCHEDULED",
-            "task": "RESOURCE_REVIEW",
+            "task": "SELF_REPAIR",
             "retry_at": wake.at.isoformat(),
             "retry_seconds": delay,
         }
+
+    def claim_startup_self_repair_wake(
+        self,
+        now: datetime,
+    ) -> PlannedWake | None:
+        """Claim the repair wake before ordinary startup cognition."""
+        self._drain_external_wake_requests()
+        wake = next(
+            (
+                row
+                for row in self.core.snapshot().pending_plans
+                if row.wake_id == "content:SELF_REPAIR"
+                and row.task == "SELF_REPAIR"
+                and row.at <= now
+            ),
+            None,
+        )
+        if wake is None:
+            return None
+        self.core.cancel(wake.wake_id)
+        return wake
 
     def _active_user_goal_ids(self) -> set[str]:
         path = self.state_root / "application" / "domain_runtime" / "agent_state.json"
@@ -2072,6 +2095,10 @@ class ContentWakefulRuntime:
             self._write_optional_deferral_state(rows)
 
     def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
+        if wake.task == "SELF_REPAIR":
+            # Repairing a diagnosed capability break is an essential recovery
+            # action, not optional cognition or resource exploration.
+            return None
         active_user_goals = self._active_user_goal_ids()
         owner_goal_wake = self._is_owner_goal_cognition_wake(
             wake,
@@ -2562,7 +2589,13 @@ class ContentWakefulRuntime:
     ) -> dict:
         """Turn meaningful experience into near-term introspection."""
         task = str(task or "").strip().upper()
-        if task in {"", "REFLECT", "EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}:
+        if task in {
+            "",
+            "REFLECT",
+            "EVENT_OBSERVE",
+            "NEURAL_INTEROCEPTION",
+            "SELF_REPAIR",
+        }:
             return {"status": "NOT_SALIENT"}
         primary = str((result or {}).get("status") or "UNKNOWN").upper()
         if primary == "WAITING_FOR_CHATGPT":
@@ -2610,11 +2643,9 @@ class ContentWakefulRuntime:
         )
 
     def schedule_self_maintenance(self, now: datetime, *, seconds: int = 60) -> None:
-        self.schedule_reflection(
+        self.schedule_self_repair_followup(
             now,
             seconds=seconds,
-            reason="diagnose production failure and form bounded self-repair hypothesis",
-            relevant_refs=("self-maintenance:production-failure",),
         )
 
     def schedule_windfall_reflection(

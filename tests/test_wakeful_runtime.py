@@ -1663,24 +1663,68 @@ def test_normal_resource_cadence_does_not_postpone_earlier_followup(tmp_path):
     assert wake.reason == "continue unresolved autonomous resource verification"
 
 
-def test_startup_self_repair_backlog_wakes_recovery_lane_immediately(tmp_path):
+def test_startup_self_repair_backlog_wakes_dedicated_recovery_lane_immediately(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
 
-    result = runtime.schedule_self_repair_followup(NOW, seconds=5)
+    result = runtime.schedule_self_repair_followup(NOW, seconds=0)
 
     assert result["status"] == "SCHEDULED"
-    assert result["task"] == "RESOURCE_REVIEW"
-    assert result["retry_seconds"] == 5
+    assert result["task"] == "SELF_REPAIR"
+    assert result["retry_seconds"] == 0
     wake = next(
         row
         for row in runtime.core.snapshot().pending_plans
-        if row.wake_id == "content:RESOURCE_REVIEW"
+        if row.wake_id == "content:SELF_REPAIR"
     )
-    assert wake.at == NOW + timedelta(seconds=5)
+    assert wake.at == NOW
+    assert wake.task == "SELF_REPAIR"
+    assert wake.preemptible is False
     assert wake.reason == "advance unresolved self-repair backlog"
     assert wake.relevant_refs == ("self-repair:startup-backlog",)
     requests = list((tmp_path / "application/wake_requests").glob("*.json"))
     assert len(requests) == 1
+
+
+def test_self_repair_and_resource_review_use_distinct_durable_wake_ids(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+
+    runtime.schedule_resource_followup(NOW, seconds=300)
+    runtime.schedule_self_repair_followup(NOW, seconds=0)
+
+    pending = {
+        row.wake_id: row
+        for row in runtime.core.snapshot().pending_plans
+        if row.task in {"RESOURCE_REVIEW", "SELF_REPAIR"}
+    }
+    assert pending["content:RESOURCE_REVIEW"].task == "RESOURCE_REVIEW"
+    assert pending["content:SELF_REPAIR"].task == "SELF_REPAIR"
+    assert pending["content:SELF_REPAIR"].at == NOW
+
+
+def test_startup_can_claim_self_repair_before_older_due_cognition(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    runtime.core.schedule(PlannedWake(
+        wake_id="content:CONTENT_COGNITION",
+        at=NOW - timedelta(hours=2),
+        reason="overdue ordinary cognition",
+        task="CONTENT_COGNITION",
+    ))
+    runtime.schedule_self_repair_followup(NOW, seconds=0)
+    runtime.ensure_initial_plans(NOW)
+
+    repair = runtime.claim_startup_self_repair_wake(NOW)
+
+    assert repair is not None
+    assert repair.task == "SELF_REPAIR"
+    assert repair.wake_id == "content:SELF_REPAIR"
+    assert any(
+        row.wake_id == "content:CONTENT_COGNITION"
+        for row in runtime.core.snapshot().pending_plans
+    )
+    assert not any(
+        row.wake_id == "content:SELF_REPAIR"
+        for row in runtime.core.snapshot().pending_plans
+    )
 
 
 def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
@@ -1695,7 +1739,7 @@ def test_schedule_next_can_still_make_existing_plan_earlier(tmp_path):
 
 
 
-def test_external_self_maintenance_request_wakes_live_runtime_without_restart(tmp_path):
+def test_external_self_repair_request_wakes_live_runtime_without_restart(tmp_path):
     live = ContentWakefulRuntime(
         state_root=tmp_path,
         content_interval_hours=6,
@@ -1727,10 +1771,12 @@ def test_external_self_maintenance_request_wakes_live_runtime_without_restart(tm
         watchdog_seconds=60,
     )
     external._enqueue_external_wake(PlannedWake(
-        wake_id="content:REFLECT",
+        wake_id="content:SELF_REPAIR",
         at=datetime.now(timezone.utc) + timedelta(milliseconds=350),
-        reason="diagnose production failure and form bounded self-repair hypothesis",
-        task="REFLECT",
+        reason="advance unresolved self-repair backlog",
+        task="SELF_REPAIR",
+        relevant_refs=("self-repair:test",),
+        preemptible=False,
     ))
 
     thread.join(timeout=3.0)
@@ -1738,8 +1784,8 @@ def test_external_self_maintenance_request_wakes_live_runtime_without_restart(tm
     assert thread.is_alive() is False
     assert len(results) == 1
     assert results[0].kind == "PLAN"
-    assert results[0].wake_id == "content:REFLECT"
-    assert results[0].task == "REFLECT"
+    assert results[0].wake_id == "content:SELF_REPAIR"
+    assert results[0].task == "SELF_REPAIR"
     assert list((tmp_path / "application/wake_requests").glob("*.json")) == []
 
 
@@ -1832,7 +1878,7 @@ def test_external_wake_spool_rejects_unapproved_task(tmp_path):
     )
 
 
-def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
+def test_schedule_self_maintenance_persists_dedicated_self_repair_request(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path)
     now = datetime.now(timezone.utc)
 
@@ -1841,8 +1887,8 @@ def test_schedule_self_maintenance_persists_cross_process_request(tmp_path):
     requests = list((tmp_path / "application/wake_requests").glob("*.json"))
     assert len(requests) == 1
     payload = json.loads(requests[0].read_text(encoding="utf-8"))
-    assert payload["wake_id"] == "content:REFLECT"
-    assert payload["task"] == "REFLECT"
+    assert payload["wake_id"] == "content:SELF_REPAIR"
+    assert payload["task"] == "SELF_REPAIR"
     assert payload["at"] == (now + timedelta(seconds=30)).isoformat()
 
 

@@ -254,7 +254,7 @@ class WakefulContentTaskRunner:
                     task, rows, now=now
                 )
                 rows["capability_contracts"] = task_contract
-                if task in {"NEURAL_INTEROCEPTION", "RESOURCE_REVIEW"}:
+                if task in {"NEURAL_INTEROCEPTION", "RESOURCE_REVIEW", "SELF_REPAIR"}:
                     durable_contract = contract_monitor.observe_durable_state(now=now)
                     rows["durable_capability_contracts"] = durable_contract
                     if list(durable_contract.get("violations") or []):
@@ -643,6 +643,8 @@ class WakefulContentTaskRunner:
         try:
             with resume_context:
                 self._raise_if_stopping()
+                if task == "SELF_REPAIR":
+                    return self._self_repair(now)
                 regulator = getattr(self, "resource_regulator", None)
                 if regulator is not None and not resume_request_id:
                     owner_authorized = (
@@ -1239,19 +1241,6 @@ class WakefulContentTaskRunner:
                 rows["provider_trial_plans"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
-        # Self-repair is part of the recovery lane, not ordinary reflection.
-        # Under sustained host pressure REFLECT may be deferred indefinitely, so
-        # RESOURCE_REVIEW advances at most one repair problem per pass.
-        if getattr(self, "self_repair", None) is not None:
-            try:
-                rows["self_repair_recovery"] = self._self_repair_recovery(
-                    now,
-                    max_items=1,
-                )
-            except Exception as exc:  # noqa: BLE001
-                rows["self_repair_recovery"] = self._error(exc)
-                rows["status"] = "DEGRADED"
-
         initial_rank = pressure_rank.get(str(initial_infrastructure_pressure).upper(), 0)
         final_rank = pressure_rank.get(str(infrastructure_pressure).upper(), 0)
         if initial_rank > 0 and final_rank > 0:
@@ -1269,6 +1258,13 @@ class WakefulContentTaskRunner:
                 "world_grounded": True,
             }
         return rows
+
+    def _self_repair(self, now: datetime) -> dict[str, Any]:
+        result = self._self_repair_recovery(now, max_items=3)
+        return {
+            "task": "SELF_REPAIR",
+            **result,
+        }
 
     def _self_repair_recovery(
         self,
@@ -1368,52 +1364,6 @@ class WakefulContentTaskRunner:
                 rows["self_maintenance"] = self_maintenance.review()
             except Exception as exc:  # noqa: BLE001
                 rows["self_maintenance"] = self._error(exc)
-                rows["status"] = "DEGRADED"
-        self_repair = getattr(self, "self_repair", None)
-        if self_repair is not None:
-            try:
-                run_batch = getattr(self_repair, "run_batch", None)
-                rows["self_repair"] = (
-                    run_batch(now=now, max_items=3)
-                    if callable(run_batch)
-                    else self_repair.run_once(now=now)
-                )
-                repair_status = str(rows["self_repair"].get("status") or "")
-                nested = (
-                    list(rows["self_repair"].get("results") or ())
-                    if repair_status == "BATCH_PROGRESSED"
-                    else [rows["self_repair"]]
-                )
-                repair_statuses = {
-                    str(item.get("status") or "")
-                    for item in nested
-                    if isinstance(item, dict)
-                }
-                schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
-                immediate = {
-                    "GENERATED_REPAIR_PROPOSED",
-                    "REQUESTED_TO_PI_REMOTE",
-                    "CANDIDATE_REJECTED_REPLAN_QUEUED",
-                    "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
-                }
-                if callable(schedule) and repair_statuses & immediate:
-                    retry_values = [
-                        int(item.get("retry_seconds") or 60)
-                        for item in nested
-                        if isinstance(item, dict)
-                        and str(item.get("status") or "") in immediate
-                    ]
-                    schedule(now, seconds=min(retry_values or [60]))
-                elif callable(schedule) and "GENERATED_PLAN_DEFERRED" in repair_statuses:
-                    retry_values = [
-                        int(item.get("retry_seconds") or 900)
-                        for item in nested
-                        if isinstance(item, dict)
-                        and str(item.get("status") or "") == "GENERATED_PLAN_DEFERRED"
-                    ]
-                    schedule(now, seconds=min(retry_values or [900]))
-            except Exception as exc:  # noqa: BLE001
-                rows["self_repair"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         try:
             rows["evolution_deliberation"] = self._evolution_deliberation(now)
