@@ -746,8 +746,12 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             reason_task = startup_tasks.pop(0)
             wake_reason = None
         elif startup_repair_wake is not None:
-            wake_reason = startup_repair_wake
             reason_task = startup_repair_wake.task
+            # PlannedWake is scheduler state, not a WakeReason.  Startup
+            # repair is claimed explicitly for priority, so execute the task
+            # directly instead of leaking a PlannedWake into the main loop's
+            # WakeReason-only control flow.
+            wake_reason = None
         elif args.once or args.task:
             reason_task = args.task or "CONTENT_COGNITION"
             wake_reason = None
