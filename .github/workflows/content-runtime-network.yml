@@ -147,6 +147,7 @@ jobs:
           src/wechat_traffic_agent/live_agent.py
           src/wechat_traffic_agent/wakeful_runtime.py
           src/wechat_traffic_agent/wakeful_tasks.py
+          src/wechat_traffic_agent/goal_scheduler_evolution.py
           src/wechat_traffic_agent/developmental_agency.py
           src/wechat_traffic_agent/developmental_transfer.py
           src/wechat_traffic_agent/neural_dreaming.py
@@ -163,6 +164,16 @@ jobs:
           src/wechat_traffic_agent/website_experiment.py
           src/wechat_traffic_agent/website_experiment_evaluation.py
           src/wechat_traffic_agent/sources/runtime_web.py
+      - name: Build isolated goal scheduler package
+        run: |
+          mkdir -p .goal-scheduler-ci/wechat_traffic_agent
+          printf '%s\n' '"""Isolated goal scheduler tests."""' > .goal-scheduler-ci/wechat_traffic_agent/__init__.py
+          cp src/wechat_traffic_agent/awe_hillclimb.py .goal-scheduler-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/goal_scheduler_evolution.py .goal-scheduler-ci/wechat_traffic_agent/
+      - name: Run AWE goal scheduler regression
+        env:
+          PYTHONPATH: .goal-scheduler-ci
+        run: python -m pytest -q -c /dev/null tests/test_goal_scheduler_evolution.py
       - name: Build isolated runtime package
         run: |
           mkdir -p .runtime-ci/wechat_traffic_agent
