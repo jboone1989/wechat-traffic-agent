@@ -106,6 +106,46 @@ def test_unknown_error_is_preserved_for_diagnosis_without_inventing_repair(tmp_p
     assert result["repair_proposal"] is None
 
 
+def test_interoceptive_failure_preserves_localization_evidence_for_repair_planner(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+
+    result = service.ingest_failure(
+        {
+            "status": "ERROR",
+            "cycle": "interoception:x-fallback",
+            "task": "CONTENT_COGNITION",
+            "error_type": "INTEROCEPTIVE_FAULT",
+            "message": "interoceptive fallback_dependency in network; task=CONTENT_COGNITION",
+            "failure_site": "interoception:network",
+            "interoceptive_episode_id": "fault-episode:x",
+            "symptoms": [{
+                "kind": "fallback_dependency",
+                "severity": 0.34,
+                "path": "result.x_social_expression.transport_failover.status",
+                "detail": "BROWSER_FALLBACK_USED",
+            }],
+            "status_evidence": [{
+                "path": "result.x_social_expression.transport_failover.status",
+                "status": "BROWSER_FALLBACK_USED",
+            }],
+        },
+        now=NOW,
+    )
+
+    assert result["status"] == "RECORDED"
+    stored = json.loads(
+        next((tmp_path / "application/self_maintenance/problems").glob("*.json")).read_text()
+    )
+    assert stored["diagnostic_evidence"]["interoceptive_episode_id"] == "fault-episode:x"
+    symptom = stored["diagnostic_evidence"]["symptoms"][0]
+    assert symptom["path"] == "result.x_social_expression.transport_failover.status"
+    assert symptom["detail"] == "BROWSER_FALLBACK_USED"
+    assert stored["diagnostic_evidence"]["status_evidence"][0]["status"] == "BROWSER_FALLBACK_USED"
+
+
 def test_backfill_imports_historical_failed_cycle(tmp_path):
     result_path = tmp_path / "content/continuous/cycles/v2-9/result.json"
     result_path.parent.mkdir(parents=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 import ast
 from hashlib import sha256
 import json
+import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -45,7 +46,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v8"
+PLANNER_VERSION = "generated-repair.v9"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
@@ -77,6 +78,93 @@ class GeneratedRepairPlanner:
             return False
         lower = text.lower()
         return not any(part in lower for part in FORBIDDEN_TARGET_PARTS)
+
+    @staticmethod
+    def _localization_terms(problem: dict[str, Any]) -> tuple[list[str], list[str]]:
+        diagnostic = (
+            problem.get("diagnostic_evidence")
+            if isinstance(problem.get("diagnostic_evidence"), dict)
+            else {}
+        )
+        details: list[str] = []
+        path_tokens: list[str] = []
+        generic_details = {
+            "", "OK", "ERROR", "FAILED", "DEGRADED", "UNAVAILABLE",
+            "CAPABILITY_UNAVAILABLE", "RETRY", "DEFERRED",
+        }
+        generic_tokens = {
+            "result", "status", "task", "sections", "items", "data",
+            "capability_contracts", "violations", "observation",
+            "maintenance_observation", "interoception",
+        }
+
+        def add_detail(value: object) -> None:
+            text = " ".join(str(value or "").split()).strip()
+            if len(text) < 5 or text.upper() in generic_details:
+                return
+            if text not in details:
+                details.append(text)
+
+        def add_path(value: object) -> None:
+            for token in re.split(r"[.\[\]/:>]+", str(value or "")):
+                token = token.strip().lower().replace("-", "_")
+                if (
+                    len(token) < 4
+                    or token.isdigit()
+                    or token in generic_tokens
+                ):
+                    continue
+                if token not in path_tokens:
+                    path_tokens.append(token)
+
+        for row in diagnostic.get("symptoms") or ():
+            if not isinstance(row, dict):
+                continue
+            add_detail(row.get("detail"))
+            add_path(row.get("path"))
+        for row in diagnostic.get("status_evidence") or ():
+            if not isinstance(row, dict):
+                continue
+            add_detail(row.get("status"))
+            add_path(row.get("path"))
+        return details[:16], path_tokens[:24]
+
+    def _diagnostic_source_paths(self, problem: dict[str, Any]) -> list[str]:
+        details, path_tokens = self._localization_terms(problem)
+        if not details and not path_tokens:
+            return []
+        source_root = self.workspace_root / "src" / "wechat_traffic_agent"
+        scored: list[tuple[int, str]] = []
+        for path in sorted(source_root.glob("*.py")):
+            relative = path.relative_to(self.workspace_root).as_posix()
+            if not self.safe_source_path(relative):
+                continue
+            try:
+                source = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            lower_source = source.lower()
+            stem = path.stem.lower()
+            score = 0
+            exact_detail_hits = 0
+            for detail in details:
+                if detail in source:
+                    exact_detail_hits += 1
+                    score += 14
+                elif detail.lower() in lower_source:
+                    exact_detail_hits += 1
+                    score += 12
+            for token in path_tokens:
+                if token == stem or token.endswith("_" + stem) or stem.endswith("_" + token):
+                    score += 8
+                elif token in stem:
+                    score += 6
+                if token in lower_source:
+                    score += 2
+            if score >= 8 or exact_detail_hits:
+                scored.append((score, relative))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [relative for _score, relative in scored[:2]]
 
     def candidate_source_paths(self, problem: dict[str, Any]) -> list[str]:
         candidates: list[str] = []
@@ -133,6 +221,10 @@ class GeneratedRepairPlanner:
                         break
                 if candidates:
                     return candidates[:2]
+
+        localized = self._diagnostic_source_paths(problem)
+        if localized:
+            return localized[:2]
 
         symptom = " ".join(str(problem.get("symptom") or "").split())
         needles = [symptom]
@@ -239,6 +331,7 @@ class GeneratedRepairPlanner:
         self, problem: dict[str, Any], sources: list[str]
     ) -> list[EditableBlock]:
         symptom = " ".join(str(problem.get("symptom") or "").split())
+        localization_details, localization_tokens = self._localization_terms(problem)
         rows: list[tuple[int, EditableBlock]] = []
         for relative in sources:
             path = self.workspace_root / relative
@@ -262,6 +355,15 @@ class GeneratedRepairPlanner:
                     score += 20
                 if symptom and symptom in old_text:
                     score += 12
+                lower_old = old_text.lower()
+                for detail in localization_details:
+                    if detail in old_text:
+                        score += 14
+                    elif detail.lower() in lower_old:
+                        score += 12
+                for token in localization_tokens:
+                    if token in lower_old:
+                        score += 3
                 if not score:
                     continue
                 digest = sha256((relative + "\0" + old_text).encode("utf-8")).hexdigest()[:24]
@@ -293,11 +395,27 @@ class GeneratedRepairPlanner:
         lines = path.read_text(encoding="utf-8").splitlines()
         index = 0
         symptom = " ".join(str(problem.get("symptom") or "").split())
+        localization_details, localization_tokens = self._localization_terms(problem)
+        found = False
         for i, line in enumerate(lines):
-            if symptom and symptom in line:
+            if any(detail and detail in line for detail in localization_details):
                 index = i
+                found = True
                 break
-        else:
+        if not found:
+            for i, line in enumerate(lines):
+                lower = line.lower()
+                if any(token and token in lower for token in localization_tokens):
+                    index = i
+                    found = True
+                    break
+        if not found:
+            for i, line in enumerate(lines):
+                if symptom and symptom in line:
+                    index = i
+                    found = True
+                    break
+        if not found:
             functions = self._failure_functions(problem, relative)
             for i, line in enumerate(lines):
                 stripped = line.lstrip()

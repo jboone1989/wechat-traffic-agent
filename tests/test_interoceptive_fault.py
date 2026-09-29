@@ -54,6 +54,10 @@ def test_repeated_fallback_becomes_felt_fault_and_requests_diagnosis(tmp_path):
     )
     assert third["should_diagnose"] is True
     assert third["diagnostic_failure"]["error_type"] == "INTEROCEPTIVE_FAULT"
+    assert third["diagnostic_failure"]["symptoms"][0]["kind"] == "fallback_dependency"
+    assert third["diagnostic_failure"]["symptoms"][0]["path"] == "result.composition"
+    assert third["diagnostic_failure"]["symptoms"][0]["detail"] == "FALLBACK_USED"
+    assert third["diagnostic_failure"]["status_evidence"]
     assert third["projection"]["distress"] >= third["observation"]["severity"]
     assert third["projection"]["active_episode_ids"] == [
         third["observation"]["episode_id"]

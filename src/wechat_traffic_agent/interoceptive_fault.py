@@ -591,6 +591,14 @@ class InteroceptiveFaultSystem:
                 "failure_site": f"interoception:{subsystem}",
                 "interoceptive_episode_id": episode_id,
                 "severity": round(severity, 6),
+                # Keep the concrete evidence that produced the body signal.
+                # Self-maintenance and the bounded repair planner need the
+                # original result path/status instead of only the coarse
+                # subsystem label ("network", "provider", ...).
+                "symptoms": [dict(row) for row in classification["symptoms"][:16]],
+                "status_evidence": [
+                    dict(row) for row in classification["status_evidence"][:32]
+                ],
             }
         return {
             "status": "SYMPTOM_OBSERVED" if classification["abnormal"] else "HEALTHY_OBSERVED",

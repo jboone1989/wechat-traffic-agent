@@ -194,6 +194,50 @@ def test_capability_contract_failure_sites_localize_to_affected_modules(tmp_path
     }) == ["src/wechat_traffic_agent/owner_agent_episode.py"]
 
 
+def test_interoceptive_diagnostic_evidence_localizes_status_producer_and_editable_block(tmp_path):
+    workspace = _workspace(tmp_path)
+    x_social = workspace / "src/wechat_traffic_agent/x_social.py"
+    x_social.write_text(
+        "async def publish_social():\n"
+        "    transport_failover = {\n"
+        "        'status': 'BROWSER_FALLBACK_USED',\n"
+        "        'fallback_transport': 'JEV_ACCOUNT_BROWSER',\n"
+        "    }\n"
+        "    return {'transport_failover': transport_failover}\n",
+        encoding="utf-8",
+    )
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+    problem = {
+        "failure_site": "interoception:network",
+        "symptom": "interoceptive fallback_dependency in network; task=CONTENT_COGNITION",
+        "diagnostic_evidence": {
+            "symptoms": [{
+                "kind": "fallback_dependency",
+                "path": "result.x_social_expression.transport_failover.status",
+                "detail": "BROWSER_FALLBACK_USED",
+                "severity": 0.34,
+            }],
+            "status_evidence": [{
+                "path": "result.x_social_expression.transport_failover.status",
+                "status": "BROWSER_FALLBACK_USED",
+            }],
+        },
+    }
+
+    sources = planner.candidate_source_paths(problem)
+    blocks = planner.editable_blocks(problem, sources)
+    context = planner.source_context(problem, sources[0])
+
+    assert sources == ["src/wechat_traffic_agent/x_social.py"]
+    assert blocks
+    assert blocks[0].path == "src/wechat_traffic_agent/x_social.py"
+    assert blocks[0].symbol == "publish_social"
+    assert "BROWSER_FALLBACK_USED" in context["snippet"]
+
+
 def test_generated_repair_requires_two_separate_cycles_before_edit(tmp_path):
     state = tmp_path / "state"
     workspace = _workspace(tmp_path)
@@ -406,8 +450,74 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v8"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
 
+
+
+def test_historical_unlocalized_problem_retries_after_localizer_version_upgrade(tmp_path):
+    state = tmp_path / "state-unlocalized-upgrade"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem.update({
+        "status": "AUTO_REPAIR_UNLOCALIZED",
+        "symptom": "interoceptive fallback_dependency in network; task=CONTENT_COGNITION",
+        "error_type": "INTEROCEPTIVE_FAULT",
+        "failure_site": "interoception:network",
+        "task": "CONTENT_COGNITION",
+    })
+    problem.pop("diagnostic_evidence", None)
+    problem["planner_attempt"] = {
+        "status": "UNLOCALIZED",
+        "planner_version": "generated-repair.v8",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "no bounded candidate source paths for the current failure evidence",
+    }
+    problem_path.write_text(json.dumps(problem))
+    episode_path = (
+        state
+        / "application"
+        / "interoception"
+        / "episodes"
+        / "historical.json"
+    )
+    episode_path.parent.mkdir(parents=True)
+    episode_path.write_text(json.dumps({
+        "episode_id": "fault-episode:historical",
+        "task": "CONTENT_COGNITION",
+        "subsystem": "network",
+        "primary_symptom": "fallback_dependency",
+        "last_seen_at": NOW.isoformat(),
+        "symptoms": [{
+            "kind": "fallback_dependency",
+            "severity": 0.34,
+            "path": "result.topic_normalization",
+            "detail": "Traffic opportunity requires topic: risk",
+        }],
+    }))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "REPAIR_PROPOSED"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert updated["diagnostic_evidence"]["recovered_from_episode"] is True
+    assert (
+        updated["diagnostic_evidence"]["interoceptive_episode_id"]
+        == "fault-episode:historical"
+    )
 
 
 def test_editable_block_id_binds_authoritative_source(tmp_path):
@@ -473,7 +583,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v8"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v9"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -712,7 +822,7 @@ def test_model_selected_unapproved_test_is_ignored_by_authoritative_binding(tmp_
     stored = json.loads(problem_path.read_text())
     recipe = stored["repair_proposal"]["generated_recipe"]
     assert recipe["focused_tests"] == ["tests/test_app_logic.py"]
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v8"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v9"
 
 
 
@@ -872,5 +982,5 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
     assert result["focused_tests"][0] == counter_test
     assert "tests/test_app_logic.py" in result["focused_tests"]
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v8"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
     assert counter_test in updated["planner_attempt"]["allowed_tests"]

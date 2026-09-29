@@ -476,6 +476,73 @@ class SelfRepairExecutor:
             runtime=self.planner_runtime,
         )
 
+    def _hydrate_interoceptive_diagnostic_evidence(
+        self,
+        problem: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Recover localization evidence for problems persisted before v9."""
+        diagnostic = problem.get("diagnostic_evidence")
+        if (
+            isinstance(diagnostic, dict)
+            and list(diagnostic.get("symptoms") or [])
+        ):
+            return problem
+        failure_site = str(problem.get("failure_site") or "")
+        if (
+            str(problem.get("error_type") or "") != "INTEROCEPTIVE_FAULT"
+            or not failure_site.startswith("interoception:")
+        ):
+            return problem
+        subsystem = failure_site.split(":", 1)[1].strip()
+        task = str(problem.get("task") or "").upper()
+        episodes_root = self.state_root / "application" / "interoception" / "episodes"
+        matches: list[dict[str, Any]] = []
+        for path in episodes_root.glob("*.json") if episodes_root.exists() else ():
+            try:
+                episode = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(episode, dict):
+                continue
+            if task and str(episode.get("task") or "").upper() != task:
+                continue
+            if subsystem and str(episode.get("subsystem") or "") != subsystem:
+                continue
+            symptoms = [
+                dict(row)
+                for row in list(episode.get("symptoms") or [])
+                if isinstance(row, dict)
+            ][:16]
+            if not symptoms:
+                continue
+            matches.append({
+                "last_seen_at": str(episode.get("last_seen_at") or ""),
+                "episode_id": str(episode.get("episode_id") or ""),
+                "symptoms": symptoms,
+            })
+        if not matches:
+            return problem
+        match = sorted(
+            matches,
+            key=lambda row: (row["last_seen_at"], row["episode_id"]),
+            reverse=True,
+        )[0]
+        hydrated = dict(problem)
+        hydrated["diagnostic_evidence"] = {
+            "symptoms": match["symptoms"],
+            "interoceptive_episode_id": match["episode_id"],
+            "recovered_from_episode": True,
+        }
+        raw_path = str(problem.get("_path") or "")
+        if raw_path:
+            persisted = {
+                key: value
+                for key, value in hydrated.items()
+                if not str(key).startswith("_")
+            }
+            _atomic_json(Path(raw_path), persisted)
+        return hydrated
+
     def _next_diagnosing_problem(
         self,
         *,
@@ -493,19 +560,26 @@ class SelfRepairExecutor:
                 row = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if not isinstance(row, dict) or str(row.get("status") or "") != "DIAGNOSING":
+            if (
+                not isinstance(row, dict)
+                or str(row.get("status") or "")
+                not in {"DIAGNOSING", "AUTO_REPAIR_UNLOCALIZED"}
+            ):
                 continue
             if str(row.get("problem_id") or "") in excluded:
                 continue
             if row.get("repair_proposal"):
                 continue
+            row["_path"] = str(path)
+            row = self._hydrate_interoceptive_diagnostic_evidence(row)
             attempt = row.get("planner_attempt") if isinstance(row.get("planner_attempt"), dict) else {}
             same_attempt = (
                 int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
                 and str(attempt.get("planner_version") or "") == PLANNER_VERSION
             )
             attempt_status = str(attempt.get("status") or "")
-            row["_path"] = str(path)
+            if attempt_status == "UNLOCALIZED" and same_attempt:
+                continue
             if (
                 attempt_status == "REJECTED"
                 and same_attempt

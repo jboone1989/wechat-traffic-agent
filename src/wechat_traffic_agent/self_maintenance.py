@@ -80,6 +80,72 @@ def _read_last_seen(path: Path) -> str:
     return str(payload.get("last_seen_at") or "") if isinstance(payload, dict) else ""
 
 
+def _merge_diagnostic_evidence(
+    failure: dict[str, Any],
+    previous: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve bounded concrete evidence needed to localize non-throwing faults."""
+    prior = (
+        previous.get("diagnostic_evidence")
+        if isinstance(previous.get("diagnostic_evidence"), dict)
+        else {}
+    )
+    symptoms: list[dict[str, Any]] = []
+    seen_symptoms: set[tuple[str, str, str]] = set()
+    for source in (prior.get("symptoms") or (), failure.get("symptoms") or ()):
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            normalized = {
+                "kind": str(row.get("kind") or "")[:120],
+                "path": str(row.get("path") or "")[:500],
+                "detail": str(row.get("detail") or "")[:500],
+                "severity": row.get("severity"),
+            }
+            key = (
+                normalized["kind"],
+                normalized["path"],
+                normalized["detail"],
+            )
+            if not any(key) or key in seen_symptoms:
+                continue
+            seen_symptoms.add(key)
+            symptoms.append(normalized)
+
+    status_evidence: list[dict[str, str]] = []
+    seen_status: set[tuple[str, str]] = set()
+    for source in (
+        prior.get("status_evidence") or (),
+        failure.get("status_evidence") or (),
+    ):
+        for row in source:
+            if not isinstance(row, dict):
+                continue
+            normalized = {
+                "path": str(row.get("path") or "")[:500],
+                "status": str(row.get("status") or "")[:240],
+            }
+            key = (normalized["path"], normalized["status"])
+            if not any(key) or key in seen_status:
+                continue
+            seen_status.add(key)
+            status_evidence.append(normalized)
+
+    evidence: dict[str, Any] = {}
+    if symptoms:
+        evidence["symptoms"] = symptoms[-16:]
+    if status_evidence:
+        evidence["status_evidence"] = status_evidence[-32:]
+    episode_id = str(
+        failure.get("interoceptive_episode_id")
+        or prior.get("interoceptive_episode_id")
+        or ""
+    ).strip()
+    if episode_id:
+        evidence["interoceptive_episode_id"] = episode_id
+    return evidence
+
+
 class SelfMaintenanceService:
     """Turn production failures into durable diagnosis and evolution evidence."""
 
@@ -321,6 +387,7 @@ class SelfMaintenanceService:
                     previous = loaded
             except (OSError, ValueError, json.JSONDecodeError):
                 previous = {}
+        diagnostic_evidence = _merge_diagnostic_evidence(failure, previous)
         seen_cycles = [str(x) for x in previous.get("cycles") or () if str(x)]
         if cycle in seen_cycles:
             return {
@@ -368,6 +435,7 @@ class SelfMaintenanceService:
             "cycles": cycles,
             "diagnostic_case": str(case_path),
             "evidence_refs": evidence_refs,
+            "diagnostic_evidence": diagnostic_evidence,
             "repair_proposal": proposal,
         }
         _atomic_json(path, payload)
