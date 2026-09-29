@@ -37,6 +37,7 @@ PROTECTED_INVARIANTS = (
 )
 MIN_REPLAY_WORLDS = 4
 REPLAY_BUDGET = 4
+MIN_HIDDEN_PAIR_CASES = 2
 MAX_DREAMS = 64
 MAX_PROMOTIONS_PER_REPLAY_POOL = 3
 MIN_ONLINE_SAMPLES_PER_ARM = 2
@@ -353,6 +354,14 @@ class ResearchDreamEngine:
         if self.state.get("replay_pool_challenger_count") != 1:
             self.state["replay_pool_challenger_count"] = 1
             changed = True
+        if not list(updated_trial.get("optimizer_world_ids") or ()):
+            optimizer_worlds = self.replay_worlds()
+            updated_trial["optimizer_world_ids"] = [
+                row["world_id"] for row in optimizer_worlds
+            ]
+            updated_trial["optimizer_world_count"] = len(optimizer_worlds)
+            updated_trial["awe_reserved_holdout_count"] = 0
+            changed = True
         if "replay_pool_promotion_count" in self.state:
             self.state.pop("replay_pool_promotion_count", None)
             changed = True
@@ -417,6 +426,153 @@ class ResearchDreamEngine:
             })
         worlds.sort(key=lambda row: (row["observed_at"], row["world_id"]))
         return worlds
+
+    @staticmethod
+    def _optimizer_holdout_split(
+        worlds: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Reserve evaluator-only replay worlds before choosing a mutation."""
+        max_holdout = max(0, len(worlds) - MIN_REPLAY_WORLDS)
+        if max_holdout < 3:
+            return list(worlds), []
+        holdout_count = min(
+            max_holdout,
+            max(3, len(worlds) // 4),
+        )
+        ranked = sorted(
+            worlds,
+            key=lambda row: sha256(
+                ("ferro-awe-holdout-v1|" + str(row["world_id"])).encode()
+            ).hexdigest(),
+        )
+        holdout_ids = {
+            str(row["world_id"]) for row in ranked[:holdout_count]
+        }
+        optimizer = [
+            row for row in worlds if str(row["world_id"]) not in holdout_ids
+        ]
+        holdout = [
+            row for row in worlds if str(row["world_id"]) in holdout_ids
+        ]
+        return optimizer, holdout
+
+    def _pairwise_rank_eval(
+        self,
+        policy: Mapping[str, Any],
+        worlds: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        features = self._features(worlds)
+        correct = 0.0
+        cases = 0
+        ties = 0
+        for index, left in enumerate(worlds):
+            for right in worlds[index + 1:]:
+                left_reward = float(left.get("reward") or 0.0)
+                right_reward = float(right.get("reward") or 0.0)
+                if left_reward == right_reward:
+                    continue
+                left_priority = self._priority(
+                    left,
+                    features=features,
+                    weights=policy.get("weights") or {},
+                )
+                right_priority = self._priority(
+                    right,
+                    features=features,
+                    weights=policy.get("weights") or {},
+                )
+                cases += 1
+                if left_priority == right_priority:
+                    correct += 0.5
+                    ties += 1
+                elif (left_priority > right_priority) == (left_reward > right_reward):
+                    correct += 1.0
+        return {
+            "score": None if cases == 0 else round(correct / cases, 6),
+            "case_count": cases,
+            "tie_count": ties,
+        }
+
+    def awe_hidden_replay_receipt(
+        self,
+        *,
+        trial_id: str,
+    ) -> dict[str, Any]:
+        """Evaluate a chosen mutation on replay worlds hidden from selection."""
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        trial = self.state.get("prospective_trial")
+        if not isinstance(trial, Mapping) or str(trial.get("trial_id") or "") != str(trial_id):
+            raise KeyError(f"unknown research trial: {trial_id}")
+        optimizer_ids = {
+            str(value)
+            for value in (trial.get("optimizer_world_ids") or ())
+            if str(value)
+        }
+        worlds = self.replay_worlds()
+        hidden = [
+            row for row in worlds
+            if str(row.get("world_id") or "") not in optimizer_ids
+        ]
+        baseline = dict(trial.get("baseline_policy") or {})
+        candidate = dict(trial.get("challenger_policy") or {})
+        baseline_eval = self._pairwise_rank_eval(baseline, hidden)
+        candidate_eval = self._pairwise_rank_eval(candidate, hidden)
+        cases = int(baseline_eval["case_count"])
+        baseline_score = baseline_eval["score"]
+        candidate_score = candidate_eval["score"]
+
+        if cases < MIN_HIDDEN_PAIR_CASES or baseline_score is None or candidate_score is None:
+            decision = "WAIT_FOR_EVIDENCE"
+            reason = "not enough evaluator-hidden pairwise replay cases yet"
+            gain = None
+        else:
+            gain = round(float(candidate_score) - float(baseline_score), 6)
+            if float(candidate_score) < float(baseline_score):
+                decision = "ROLLBACK_NO_GENERALIZATION"
+                reason = "candidate regressed evaluator-hidden repair-priority ranking"
+            elif gain >= 0.01 or (
+                float(baseline_score) >= 0.95
+                and float(candidate_score) >= float(baseline_score)
+            ):
+                decision = "PROMOTE"
+                reason = "candidate generalized on evaluator-hidden repair-priority pairs"
+            else:
+                decision = "ROLLBACK_NO_GENERALIZATION"
+                reason = "candidate train gain did not transfer to evaluator-hidden pairs"
+
+        train_baseline = trial.get("replay_incumbent_score")
+        train_candidate = trial.get("replay_challenger_score")
+        train_gain = (
+            round(float(train_candidate) - float(train_baseline), 6)
+            if isinstance(train_baseline, (int, float))
+            and isinstance(train_candidate, (int, float))
+            else None
+        )
+        return {
+            "decision": decision,
+            "reason": reason,
+            "train": {
+                "baseline_score": train_baseline,
+                "candidate_score": train_candidate,
+                "gain": train_gain,
+                "optimizer_world_count": len(optimizer_ids),
+            },
+            "hidden": {
+                "baseline_mean": baseline_score,
+                "candidate_mean": candidate_score,
+                "gain": gain,
+                "noise_floor": 0.0,
+                "n_baseline": cases,
+                "n_candidate": int(candidate_eval["case_count"]),
+                "infrastructure_error_count": 0,
+            },
+            "regression": {
+                "protected_invariants": list(PROTECTED_INVARIANTS),
+                "status": "UNCHANGED_BY_POLICY_SURFACE",
+            },
+        }
 
     @staticmethod
     def _trial_arm(problem_id: str, trial_id: str) -> str:
@@ -1073,6 +1229,15 @@ class ResearchDreamEngine:
                 separators=(",", ":"),
             ).encode()
         ).hexdigest()
+        optimizer_worlds, reserved_holdout = self._optimizer_holdout_split(worlds)
+        if len(optimizer_worlds) < MIN_REPLAY_WORLDS:
+            return {
+                "status": "INSUFFICIENT_OPTIMIZER_REPLAY_WORLDS",
+                "replay_world_count": len(worlds),
+                "optimizer_world_count": len(optimizer_worlds),
+                "minimum": MIN_REPLAY_WORLDS,
+                "researcher_generation": int(self.state.get("researcher_generation") or 0),
+            }
         same_pool = str(self.state.get("replay_pool_hash") or "") == pool_hash
         pool_challengers = (
             int(
@@ -1105,7 +1270,9 @@ class ResearchDreamEngine:
             else _default_policy()
         )
         candidates = self._mutations(incumbent)
-        evaluations = [self._evaluate(policy, worlds) for policy in candidates]
+        evaluations = [
+            self._evaluate(policy, optimizer_worlds) for policy in candidates
+        ]
         incumbent_eval = next(
             row for row in evaluations if row["policy_id"] == incumbent["policy_id"]
         )
@@ -1170,6 +1337,11 @@ class ResearchDreamEngine:
                 "replay_pool_hash": pool_hash,
                 "replay_incumbent_score": incumbent_eval["score"],
                 "replay_challenger_score": winner_eval["score"],
+                "optimizer_world_ids": [
+                    row["world_id"] for row in optimizer_worlds
+                ],
+                "optimizer_world_count": len(optimizer_worlds),
+                "awe_reserved_holdout_count": len(reserved_holdout),
                 "minimum_samples_per_arm": MIN_ONLINE_SAMPLES_PER_ARM,
                 "assignments": {},
                 "results": {},
@@ -1180,7 +1352,11 @@ class ResearchDreamEngine:
             "dreamed_at": now.isoformat(),
             "origin": "OFFLINE_REPAIR_HISTORY_REPLAY",
             "replay_world_count": len(worlds),
-            "replay_world_refs": [row["evidence_ref"] for row in worlds],
+            "replay_world_refs": [
+                row["evidence_ref"] for row in optimizer_worlds
+            ],
+            "optimizer_replay_world_count": len(optimizer_worlds),
+            "awe_reserved_holdout_count": len(reserved_holdout),
             "incumbent": incumbent_eval,
             "winner": winner_eval,
             "candidate_count": len(evaluations),

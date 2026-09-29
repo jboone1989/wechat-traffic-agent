@@ -1914,10 +1914,42 @@ class ContentWakefulRuntime:
                     experiment_id=experiment_id,
                     now=now,
                 )
+        research_projection = self.research_dream.projection()
+        research_trial = (
+            research_projection.get("prospective_trial")
+            if isinstance(research_projection.get("prospective_trial"), Mapping)
+            else {}
+        )
+        experiment_id = str(research_trial.get("awe_experiment_id") or "")
+        if experiment_id and awe_experiment is None:
+            awe_experiment = self.awe_hillclimb.optimizer_view(experiment_id)
+
+        awe_evaluation = None
+        if (
+            experiment_id
+            and isinstance(awe_experiment, Mapping)
+            and str(awe_experiment.get("status") or "")
+            in {"AWAITING_AWE", "EVAL_INFRASTRUCTURE_INVALID"}
+            and str(awe_experiment.get("capability_id") or "")
+            == "repair_priority_policy"
+        ):
+            trial_id = str(research_trial.get("trial_id") or "")
+            if not trial_id:
+                raise ValueError("repair-priority AWE experiment lost its research trial")
+            hidden_receipt = self.research_dream.awe_hidden_replay_receipt(
+                trial_id=trial_id,
+            )
+            awe_evaluation = self.record_awe_hillclimb_receipt(
+                experiment_id,
+                hidden_receipt,
+                now=now,
+            )
+            awe_experiment = self.awe_hillclimb.optimizer_view(experiment_id)
         result = {
             **neural_result,
             "research_dream": research_result,
             "awe_hillclimb": awe_experiment,
+            "awe_hillclimb_evaluation": awe_evaluation,
         }
         persist = getattr(self.core, "_persist", None)
         if callable(persist):

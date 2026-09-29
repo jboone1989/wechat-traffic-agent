@@ -527,3 +527,136 @@ def test_wakeful_public_snapshot_exposes_researcher_generation(tmp_path):
     assert "research_dream" in dreaming
     assert dreaming["research_dream"]["researcher_generation"] == 0
     assert "incumbent_policy" in dreaming["research_dream"]
+
+
+
+def test_optimizer_holdout_split_keeps_hidden_worlds_out_of_optimizer():
+    worlds = [
+        {"world_id": f"world:{index}"}
+        for index in range(12)
+    ]
+
+    optimizer, hidden = ResearchDreamEngine._optimizer_holdout_split(worlds)
+
+    optimizer_ids = {row["world_id"] for row in optimizer}
+    hidden_ids = {row["world_id"] for row in hidden}
+    assert len(optimizer) >= 4
+    assert len(hidden) >= 3
+    assert optimizer_ids.isdisjoint(hidden_ids)
+    assert optimizer_ids | hidden_ids == {row["world_id"] for row in worlds}
+
+
+def test_hidden_replay_receipt_exposes_only_aggregate_hidden_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    for index, status in enumerate((
+        "ADOPTED_VERIFIED",
+        "CAPABILITY_UNAVAILABLE",
+        "ADOPTED_VERIFIED",
+        "REJECTED_FULL_TESTS_WORKSPACE_QUARANTINED",
+    )):
+        _world(
+            tmp_path,
+            suffix=f"hidden-{index}",
+            age_minutes=20 - index,
+            status=status,
+            occurrences=index + 1,
+            repair_kind=(
+                "KNOWN_RECIPE"
+                if status == "ADOPTED_VERIFIED"
+                else "GENERATED_BOUNDED_EDIT"
+            ),
+        )
+
+    engine = ResearchDreamEngine(tmp_path)
+    state = engine.state
+    state["prospective_trial"] = {
+        "trial_id": "research-trial:hidden",
+        "status": "AWAITING_AWE_GATE",
+        "baseline_policy": {
+            "policy_id": "policy:baseline",
+            "weights": {"recency": 1.0},
+        },
+        "challenger_policy": {
+            "policy_id": "policy:candidate",
+            "weights": {"known_recipe": 1.0},
+        },
+        "optimizer_world_ids": [],
+        "replay_incumbent_score": 0.4,
+        "replay_challenger_score": 0.7,
+    }
+    _put(engine.path, state)
+
+    seen_world_ids = []
+
+    def fake_eval(policy, worlds):
+        seen_world_ids.extend(row["world_id"] for row in worlds)
+        return {
+            "score": 0.50 if policy["policy_id"] == "policy:baseline" else 0.75,
+            "case_count": 4,
+            "tie_count": 0,
+        }
+
+    monkeypatch.setattr(engine, "_pairwise_rank_eval", fake_eval)
+    receipt = engine.awe_hidden_replay_receipt(
+        trial_id="research-trial:hidden",
+    )
+
+    assert receipt["decision"] == "PROMOTE"
+    assert receipt["hidden"] == {
+        "baseline_mean": 0.5,
+        "candidate_mean": 0.75,
+        "gain": 0.25,
+        "noise_floor": 0.0,
+        "n_baseline": 4,
+        "n_candidate": 4,
+        "infrastructure_error_count": 0,
+    }
+    encoded = json.dumps(receipt, sort_keys=True)
+    assert "hidden-0" not in encoded
+    assert "world_id" not in encoded
+    assert seen_world_ids
+
+
+def test_migrated_trial_marks_existing_worlds_optimizer_visible_not_hidden(tmp_path):
+    for index in range(5):
+        _world(
+            tmp_path,
+            suffix=f"legacy-{index}",
+            age_minutes=30 - index,
+            status="ADOPTED_VERIFIED",
+            occurrences=1,
+            repair_kind="KNOWN_RECIPE",
+        )
+
+    engine = ResearchDreamEngine(tmp_path)
+    state = engine.state
+    state["offline_replay_migration"] = {
+        "status": "MIGRATED",
+        "prospective_trial_id": "research-trial:migrated",
+    }
+    state["prospective_trial"] = {
+        "trial_id": "research-trial:migrated",
+        "status": "ACTIVE",
+        "origin": "MIGRATED_PRE_V2_REPLAY_ONLY_INCUMBENT",
+        "baseline_policy": engine._last_validated_incumbent(),
+        "challenger_policy": {
+            "policy_id": "policy:legacy-challenger",
+            "weights": {"known_recipe": 1.0},
+        },
+    }
+    _put(engine.path, state)
+
+    repaired = ResearchDreamEngine(tmp_path).projection()["prospective_trial"]
+    existing_ids = {
+        row["world_id"]
+        for row in ResearchDreamEngine(tmp_path).replay_worlds()
+    }
+
+    assert set(repaired["optimizer_world_ids"]) == existing_ids
+    receipt = ResearchDreamEngine(tmp_path).awe_hidden_replay_receipt(
+        trial_id="research-trial:migrated",
+    )
+    assert receipt["decision"] == "WAIT_FOR_EVIDENCE"
+    assert receipt["hidden"]["n_baseline"] == 0

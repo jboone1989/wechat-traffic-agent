@@ -180,7 +180,8 @@ class FerroAWEHillclimb:
             capability_id="repair_priority_policy",
             hypothesis=(
                 "The single research-policy weight mutation selected by offline replay "
-                "should improve repair prioritization and transfer to unseen AWE agency cases."
+                "should improve repair prioritization and generalize to evaluator-hidden "
+                "repair-priority replay cases."
             ),
             baseline_ref=baseline_ref,
             mutation_ref=mutation_ref,
@@ -220,7 +221,8 @@ class FerroAWEHillclimb:
             capability_id="repair_priority_policy",
             hypothesis=(
                 "The single research-policy weight mutation should improve repair "
-                "prioritization online and generalize to evaluator-hidden cases."
+                "prioritization online and generalize to evaluator-hidden "
+                "repair-priority replay cases."
             ),
             baseline_ref=baseline_ref,
             mutation_ref=mutation_ref,

@@ -218,3 +218,83 @@ def test_open_research_trial_can_recover_missing_awe_registration(tmp_path):
 
     assert exp["target_ref"] == "research-trial:migrated"
     assert exp["status"] == "AWAITING_AWE"
+
+
+
+def test_wakeful_dream_auto_consumes_repair_policy_hidden_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime
+
+    runtime = ContentWakefulRuntime(state_root=tmp_path)
+    experiment = runtime.awe_hillclimb.start_experiment(
+        capability_id="repair_priority_policy",
+        hypothesis="generalize repair ranking",
+        baseline_ref="policy:a",
+        mutation_ref="policy:b",
+        mutation_kind="RESEARCH_POLICY_WEIGHT_MUTATION",
+        target_ref="research-trial:auto",
+        now=NOW,
+    )
+    monkeypatch.setattr(
+        runtime.dream_engine,
+        "dream",
+        lambda **_kwargs: {"status": "NEURAL_OK"},
+    )
+    monkeypatch.setattr(
+        runtime.research_dream,
+        "dream",
+        lambda **_kwargs: {
+            "status": "RESEARCH_DREAMED",
+            "dream": {"decision": "WAIT_FOR_AWE_GENERALIZATION"},
+        },
+    )
+    monkeypatch.setattr(
+        runtime.research_dream,
+        "projection",
+        lambda: {
+            "prospective_trial": {
+                "trial_id": "research-trial:auto",
+                "status": "AWAITING_AWE_GATE",
+                "awe_experiment_id": experiment["experiment_id"],
+            }
+        },
+    )
+    monkeypatch.setattr(
+        runtime.research_dream,
+        "awe_hidden_replay_receipt",
+        lambda **_kwargs: {
+            "decision": "WAIT_FOR_EVIDENCE",
+            "reason": "new hidden outcomes have not arrived",
+            "train": {"gain": 0.2},
+            "hidden": {
+                "baseline_mean": None,
+                "candidate_mean": None,
+                "gain": None,
+                "noise_floor": 0.0,
+                "n_baseline": 0,
+                "n_candidate": 0,
+                "infrastructure_error_count": 0,
+            },
+        },
+    )
+    gated = []
+    monkeypatch.setattr(
+        runtime.research_dream,
+        "apply_awe_gate",
+        lambda **kwargs: gated.append(kwargs) or {
+            "status": "AWAITING_AWE_GATE",
+            "decision": "WAIT_FOR_AWE_GENERALIZATION",
+        },
+    )
+
+    result = runtime.run_neural_dream(now=NOW)
+
+    assert result["awe_hillclimb_evaluation"]["decision"] == "WAIT_FOR_EVIDENCE"
+    assert result["awe_hillclimb"]["status"] == "AWAITING_AWE"
+    assert gated == [{
+        "experiment_id": experiment["experiment_id"],
+        "decision": "WAIT_FOR_EVIDENCE",
+        "now": NOW,
+    }]
