@@ -1,4 +1,10 @@
-"""Operator login control for Ferro's dedicated ChatGPT cortex browser profile."""
+"""ChatGPT Cortex control over Ferro's existing X persistent browser profile.
+
+Cortex owns no Chromium launcher and no browser profile.  It opens a dedicated
+ChatGPT tab inside the configured X account's persistent Chromium runtime, so
+operator login, profile persistence, CDP streaming, and lifecycle all use the
+same account-scoped browser path as X.
+"""
 from __future__ import annotations
 
 import json
@@ -6,134 +12,83 @@ import os
 from pathlib import Path
 import threading
 from typing import Any
-from urllib.parse import quote, urlparse
-import urllib.request
+from urllib.parse import urlparse
 
-from websockets.sync.client import connect as ws_connect
-
-from .chatgpt_cortex_activator import _ensure_cortex_chromium
-
-
-class ChatGPTCortexBrowserUnavailable(RuntimeError):
-    pass
+from .account_browser_login import (
+    AccountBrowserLoginControl,
+    AccountBrowserLoginUnavailable,
+)
+from .account_registry import AccountRegistry
 
 
-class ChatGPTCortexBrowserControl:
-    def __init__(self, *, state_root: Path) -> None:
-        self.state_root = Path(state_root)
-        self.root = self.state_root / "cortex" / "chatgpt-web"
-        self.state_path = self.root / "login-target.json"
-        self._lock = threading.RLock()
+_DEFAULT_URL = "https://chatgpt.com/"
+_ALLOWED_HOSTS = {"chatgpt.com", "www.chatgpt.com"}
 
-    def cdp_url(self) -> str:
-        return _ensure_cortex_chromium(self.state_root)
+# The shared account control raises this type already.  Keep the Cortex-facing
+# name so callers do not need a second error hierarchy for the same runtime.
+ChatGPTCortexBrowserUnavailable = AccountBrowserLoginUnavailable
 
-    def _read_target(self) -> str:
+
+def _resolve_x_account_id(state_root: Path, requested: str = "") -> str:
+    registry = AccountRegistry(Path(state_root))
+    explicit = str(requested or os.environ.get("CONTENT_X_ACCOUNT_ID", "")).strip()
+    if explicit:
         try:
-            body = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            return ""
-        return str(body.get("target_id") or "") if isinstance(body, dict) else ""
+            record = registry.get(explicit)
+        except (KeyError, ValueError) as exc:
+            raise ChatGPTCortexBrowserUnavailable(
+                "configured X account instance does not exist"
+            ) from exc
+        if record.provider_id != "x":
+            raise ChatGPTCortexBrowserUnavailable(
+                "configured browser account is not an X account"
+            )
+        return record.account_id
 
-    def _write_target(self, target_id: str) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.root, 0o700)
-        tmp = self.state_path.with_suffix(".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"schema_version": 1, "target_id": str(target_id)}, handle)
-            handle.write("\n")
-        os.replace(tmp, self.state_path)
-        os.chmod(self.state_path, 0o600)
+    rows = registry.list(provider_id="x")
+    if not rows:
+        raise ChatGPTCortexBrowserUnavailable(
+            "ChatGPT Cortex requires an existing X account browser profile"
+        )
+    if len(rows) != 1:
+        raise ChatGPTCortexBrowserUnavailable(
+            "multiple X accounts are registered; CONTENT_X_ACCOUNT_ID is required"
+        )
+    return rows[0].account_id
 
-    def _clear_target(self) -> None:
-        try:
-            self.state_path.unlink()
-        except FileNotFoundError:
-            pass
 
-    def _pages(self) -> list[dict[str, Any]]:
-        try:
-            with urllib.request.urlopen(self.cdp_url() + "/json/list", timeout=2) as response:
-                body = json.load(response)
-        except Exception as exc:
-            raise ChatGPTCortexBrowserUnavailable("cortex CDP endpoint unavailable") from exc
-        return body if isinstance(body, list) else []
+class _SharedProfileChatGPTControl(AccountBrowserLoginControl):
+    """ChatGPT tab hosted by an account-scoped persistent browser runtime."""
 
-    def _target_info(self, target_id: str) -> dict[str, Any]:
-        for page in self._pages():
-            if str(page.get("id") or "") == str(target_id):
-                return page
-        raise ChatGPTCortexBrowserUnavailable("cortex browser target no longer exists")
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        account_id: str,
+        profile_manager=None,
+    ) -> None:
+        super().__init__(
+            state_root=state_root,
+            account_id=account_id,
+            profile_manager=profile_manager,
+        )
+        # Keep X's own login tab independent while sharing the same Chrome
+        # process/profile/cookies and the same BrowserSessionStream transport.
+        self.state_path = self.folder / "chatgpt-cortex-target.json"
 
-    def _safe_ws_url(self, page: dict[str, Any]) -> str:
-        value = str(page.get("webSocketDebuggerUrl") or "")
-        parsed = urlparse(value)
-        base = urlparse(self.cdp_url())
+    @staticmethod
+    def _validate_url(url: str) -> str:
+        raw = str(url or _DEFAULT_URL).strip()
+        parsed = urlparse(raw)
         if (
-            parsed.scheme != "ws"
-            or parsed.hostname not in {"127.0.0.1", "localhost"}
-            or parsed.port != base.port
+            parsed.scheme != "https"
+            or (parsed.hostname or "").lower() not in _ALLOWED_HOSTS
         ):
-            raise ChatGPTCortexBrowserUnavailable("unsafe cortex CDP websocket")
-        return value
-
-    def _evaluate(self, page: dict[str, Any], expression: str) -> Any:
-        try:
-            with ws_connect(
-                self._safe_ws_url(page),
-                origin=None,
-                open_timeout=2,
-                close_timeout=1,
-                max_size=2 * 1024 * 1024,
-            ) as cdp:
-                cdp.send(json.dumps({
-                    "id": 1,
-                    "method": "Runtime.evaluate",
-                    "params": {"expression": expression, "returnByValue": True},
-                }))
-                for _ in range(40):
-                    message = json.loads(cdp.recv(timeout=2))
-                    if message.get("id") != 1:
-                        continue
-                    if message.get("error"):
-                        raise ChatGPTCortexBrowserUnavailable("cortex CDP evaluation failed")
-                    return (((message.get("result") or {}).get("result") or {}).get("value"))
-        except ChatGPTCortexBrowserUnavailable:
-            raise
-        except Exception as exc:
-            raise ChatGPTCortexBrowserUnavailable("cortex browser evaluation unavailable") from exc
-        raise ChatGPTCortexBrowserUnavailable("cortex CDP evaluation response missing")
+            raise ValueError("ChatGPT cortex browser is restricted to chatgpt.com")
+        return raw
 
     def start(self) -> dict[str, Any]:
-        with self._lock:
-            self._close_target()
-            request = urllib.request.Request(
-                self.cdp_url() + "/json/new?" + quote("https://chatgpt.com/", safe=""),
-                method="PUT",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=3) as response:
-                    page = json.load(response)
-            except Exception as exc:
-                raise ChatGPTCortexBrowserUnavailable(
-                    "could not create ChatGPT cortex login target"
-                ) from exc
-            target_id = str(page.get("id") or "")
-            if not target_id:
-                raise ChatGPTCortexBrowserUnavailable("cortex target id missing")
-            self._write_target(target_id)
-            return self.status()
-
-    def target_id(self) -> str:
-        with self._lock:
-            target = self._read_target()
-            if not target:
-                raise ChatGPTCortexBrowserUnavailable(
-                    "cortex login browser session is not running"
-                )
-            self._target_info(target)
-            return target
+        return super().start(_DEFAULT_URL)
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -166,36 +121,59 @@ class ChatGPTCortexBrowserControl:
                 "title": str(details.get("title") or page.get("title") or ""),
                 "authenticated": authenticated,
                 "identity": "ChatGPT" if authenticated else "",
+                "account_id": self.account_id,
+                "shared_profile": "x",
             }
+
+
+class ChatGPTCortexBrowserControl:
+    """Lazy Cortex adapter onto the configured X persistent browser profile."""
+
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        account_id: str = "",
+        profile_manager=None,
+    ) -> None:
+        self.state_root = Path(state_root)
+        self.requested_account_id = str(account_id or "")
+        self.profile_manager = profile_manager
+        self._delegate: _SharedProfileChatGPTControl | None = None
+        self._lock = threading.RLock()
+
+    def _control(self) -> _SharedProfileChatGPTControl:
+        with self._lock:
+            if self._delegate is None:
+                account_id = _resolve_x_account_id(
+                    self.state_root,
+                    self.requested_account_id,
+                )
+                self._delegate = _SharedProfileChatGPTControl(
+                    state_root=self.state_root,
+                    account_id=account_id,
+                    profile_manager=self.profile_manager,
+                )
+            return self._delegate
+
+    @property
+    def account_id(self) -> str:
+        return self._control().account_id
+
+    def cdp_url(self) -> str:
+        return self._control().cdp_url()
+
+    def start(self) -> dict[str, Any]:
+        return self._control().start()
+
+    def target_id(self) -> str:
+        return self._control().target_id()
+
+    def status(self) -> dict[str, Any]:
+        return self._control().status()
 
     def stop(self) -> dict[str, Any]:
-        with self._lock:
-            status = None
-            try:
-                status = self.status()
-            except ChatGPTCortexBrowserUnavailable:
-                pass
-            self._close_target()
-            return {
-                "ok": True,
-                "running": False,
-                "authenticated": bool((status or {}).get("authenticated")),
-                "identity": str((status or {}).get("identity") or ""),
-            }
-
-    def _close_target(self) -> None:
-        target = self._read_target()
-        if not target:
-            return
-        try:
-            with urllib.request.urlopen(
-                self.cdp_url() + "/json/close/" + quote(target, safe=""),
-                timeout=2,
-            ):
-                pass
-        except Exception:
-            pass
-        self._clear_target()
+        return self._control().stop()
 
 
 __all__ = [
