@@ -238,6 +238,32 @@ def test_startup_recovery_wakes_requested_rsi_work(tmp_path):
     assert summary["reasons"]["self-problem:abc123"] == "REQUESTED_TO_PI_REMOTE"
 
 
+def test_legacy_repair_requested_state_is_woken_and_polled_not_resubmitted(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REPAIR_REQUESTED"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+    runtime = RsiStatusCapability()
+    executor = _executor(tmp_path, runtime)
+
+    summary = executor.startup_recovery_summary(now=NOW)
+    result = executor.run_once(now=NOW)
+
+    assert summary["status"] == "WORK_PENDING"
+    assert summary["problem_ids"] == ["self-problem:abc123"]
+    assert summary["reasons"]["self-problem:abc123"] == (
+        "LEGACY_REPAIR_REQUEST_MIGRATION"
+    )
+    assert result["status"] == "RRSI_CANDIDATE_SELECTED"
+    assert [call[0] for call in runtime.calls] == ["QUERY_CODE_REPAIR_STATUS"]
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "RRSI_CANDIDATE_SELECTED"
+
+
 def test_startup_recovery_wakes_unlocalized_problem_after_localizer_upgrade(tmp_path):
     folder = tmp_path / "application" / "self_maintenance" / "problems"
     folder.mkdir(parents=True)

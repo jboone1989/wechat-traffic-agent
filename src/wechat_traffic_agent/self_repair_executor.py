@@ -506,7 +506,7 @@ class SelfRepairExecutor:
         excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
 
         requested = self._next_problem(
-            statuses={"REQUESTED_TO_PI_REMOTE"},
+            statuses={"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"},
             exclude_problem_ids=excluded,
         )
         if requested is not None:
@@ -596,12 +596,17 @@ class SelfRepairExecutor:
                 "REPAIR_PROPOSED",
                 "REPAIR_PAUSED_BASELINE_UNHEALTHY",
                 "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
+                "REPAIR_REQUESTED",
                 "REQUESTED_TO_PI_REMOTE",
                 "RRSI_CANDIDATE_SELECTED",
                 "OBSERVING_PRODUCTION",
             }:
                 actionable.append(problem_id)
-                reasons[problem_id] = status
+                reasons[problem_id] = (
+                    "LEGACY_REPAIR_REQUEST_MIGRATION"
+                    if status == "REPAIR_REQUESTED"
+                    else status
+                )
                 continue
             if status == "DIAGNOSING":
                 if self._planner() is None:
