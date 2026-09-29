@@ -48,6 +48,19 @@ class LLMProviderError(RuntimeError):
     pass
 
 
+class LivingRuntimeChatGPTProviderError(RuntimeError):
+    pass
+
+
+class FailingLivingRuntimePlanner:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def cognitive_probe(self, task, max_tokens, output_schema=None):
+        self.calls.append(task)
+        raise LivingRuntimeChatGPTProviderError("LivingRuntime cognition request timed out")
+
+
 class FailingPlannerRuntime:
     def __init__(self):
         self.calls: list[str] = []
@@ -857,6 +870,59 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
 
     assert retried["status"] == "GENERATED_PLAN_DEFERRED"
     assert len(runtime.calls) == 2
+
+
+def test_livingruntime_timeout_is_transient_and_does_not_poison_problem(tmp_path):
+    state = tmp_path / "state-livingruntime-timeout"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    runtime = FailingLivingRuntimePlanner()
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_PLAN_DEFERRED"
+    assert result["planner_status"] == "DEFERRED_RESOURCE"
+    stored = json.loads(problem_path.read_text())
+    assert stored["status"] == "DIAGNOSING"
+    assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
+    assert "LivingRuntime cognition request timed out" in stored["planner_attempt"]["reason"]
+
+
+def test_historical_rejected_github_wake_failure_retries_after_bridge_recovers(tmp_path):
+    state = tmp_path / "state-old-wake-reject"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v11",
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "LivingRuntimeChatGPTProviderError:LivingRuntime cognition CLI failed: RuntimeError: cognition GitHub wake worktree contains unrelated changes",
+    }
+    problem_path.write_text(json.dumps(problem))
+    runtime = PlannerRuntime(_valid_plan())
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=runtime,
+        recipes={},
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "GENERATED_REPAIR_PROPOSED"
+    assert len(runtime.calls) == 1
 
 
 def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occurrence(tmp_path):
