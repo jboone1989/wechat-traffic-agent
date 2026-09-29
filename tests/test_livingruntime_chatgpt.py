@@ -516,6 +516,42 @@ else:
     assert first_id.startswith("llmreq_")
 
 
+def test_durable_resume_explicitly_rearms_pending_wake(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+assert sys.argv[1] == "get"
+request_id = sys.argv[2]
+print(json.dumps({
+  "status":"COMPLETED","request_id":request_id,"created_at":1,"finished_at":2,
+  "response":{"text":json.dumps({"resume_args":sys.argv[3:]}),
+  "provider":"livingruntime-chatgpt","model":"test","session_id":"s",
+  "sha256":"x","completed_at":2}
+}))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=300,
+        dispatch_grace_seconds=17,
+        durable_dispatch=True,
+    )
+
+    with resume_next_durable_cognition("llmreq-rearm-resume"):
+        result = asyncio.run(provider.complete("resume pending request"))
+
+    assert json.loads(result) == {
+        "resume_args": [
+            "--rearm-pending",
+            "--rearm-min-interval-seconds",
+            "17",
+        ]
+    }
+
+
 def test_legacy_unbounded_pending_resume_falls_back_instead_of_waiting_forever(tmp_path):
     cli = tmp_path / "cognitionctl.py"
     cli.write_text(

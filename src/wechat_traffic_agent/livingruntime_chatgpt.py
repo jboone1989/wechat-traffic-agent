@@ -386,13 +386,20 @@ class LivingRuntimeChatGPTProvider:
                 min(cli_timeout_seconds, max(1, requested_blocking_wait)),
             )
         resume_existing = bool(explicit_resume_id)
+        resume_command = [
+            sys.executable,
+            str(self.cli_path),
+            "get",
+            request_id,
+        ]
+        if self.durable_dispatch:
+            resume_command.extend([
+                "--rearm-pending",
+                "--rearm-min-interval-seconds",
+                str(max(15, min(dispatch_timeout_seconds, 300))),
+            ])
         command = (
-            [
-                sys.executable,
-                str(self.cli_path),
-                "get",
-                request_id,
-            ]
+            resume_command
             if resume_existing
             else [
                 sys.executable,
