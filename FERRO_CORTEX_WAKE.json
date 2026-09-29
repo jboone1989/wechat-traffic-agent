@@ -1,10 +1,10 @@
 {
   "agent_id": "ferro",
-  "created_at": 1000.0,
+  "created_at": 123.0,
   "event": "FERRO_CORTEX_WAKE",
-  "payload_sha256": "b6d4f2eecb88ca2fc24a2f2c1e7a6f0e7280e718f27486428fd37499d585bca3",
-  "purpose": "durable-chatgpt",
-  "request_id": "llmreq_durable_dispatch",
+  "payload_sha256": "abc123",
+  "purpose": "content_cognition",
+  "request_id": "llmreq_test",
   "schema_version": "livingruntime-cortex-wake.v1",
-  "wake_sequence": 46
+  "wake_sequence": 47
 }
