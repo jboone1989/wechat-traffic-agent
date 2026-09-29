@@ -3140,24 +3140,6 @@ class WakefulContentTaskRunner:
                     "retry_seconds": retry_seconds,
                 }
 
-    def _settle_goal_scheduler_selection(
-        self,
-        *,
-        owner_goal: dict[str, Any] | None,
-        outcome: dict[str, Any],
-        now: datetime,
-    ) -> dict[str, Any] | None:
-        if not isinstance(owner_goal, dict):
-            return None
-        decision_id = str(owner_goal.get("goal_scheduler_decision_id") or "").strip()
-        if not decision_id:
-            return None
-        scheduler = getattr(self, "goal_scheduler_evolution", None)
-        settle = getattr(scheduler, "settle", None)
-        if not callable(settle):
-            return None
-        return settle(decision_id, outcome=outcome, now=now)
-
     @staticmethod
     def _owner_agent_seed_evidence(control: dict[str, Any]) -> list[dict[str, Any]]:
         """Carry read-only evidence gathered by the controller into its executor."""
@@ -3294,13 +3276,6 @@ class WakefulContentTaskRunner:
                             now=now,
                             goal_id=str(owner_goal.get("goal_id") or ""),
                         )
-                    settled_scheduler = self._settle_goal_scheduler_selection(
-                        owner_goal=owner_goal,
-                        outcome=wait_outcome,
-                        now=now,
-                    )
-                    if settled_scheduler is not None:
-                        rows["goal_scheduler_outcome"] = settled_scheduler
                     rows["status"] = "OWNER_AGENT_WAITING"
                     return rows
                 if action == "RUN_CONTENT_PIPELINE":
@@ -3725,13 +3700,6 @@ class WakefulContentTaskRunner:
                             else None
                         ),
                     )
-                settled_scheduler = self._settle_goal_scheduler_selection(
-                    owner_goal=owner_goal,
-                    outcome=continuous,
-                    now=now,
-                )
-                if settled_scheduler is not None:
-                    rows["goal_scheduler_outcome"] = settled_scheduler
             return rows
         self._run_social_stage(rows=rows, continuous=continuous, now=now)
         followup_identity = None
@@ -3799,13 +3767,6 @@ class WakefulContentTaskRunner:
                         else None
                     ),
                 )
-            settled_scheduler = self._settle_goal_scheduler_selection(
-                owner_goal=owner_goal,
-                outcome=continuous,
-                now=now,
-            )
-            if settled_scheduler is not None:
-                rows["goal_scheduler_outcome"] = settled_scheduler
         self.wakeful.mark_cognition(now)
         return rows
 
