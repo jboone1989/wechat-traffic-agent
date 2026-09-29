@@ -175,6 +175,13 @@ jobs:
         env:
           PYTHONPATH: .goal-scheduler-ci
         run: python -m pytest -q -c /dev/null tests/test_goal_scheduler_evolution.py
+      - name: Run owner goal scheduler resume regressions
+        env:
+          PYTHONPATH: src
+        run: >-
+          python -m pytest -q -c /dev/null
+          tests/test_owner_agent_episode.py
+          tests/test_wakeful_chatgpt_resume.py
       - name: Build isolated runtime package
         run: |
           mkdir -p .runtime-ci/wechat_traffic_agent
