@@ -181,6 +181,36 @@ def test_query_repair_status_reads_rsi_selection():
     assert status["selectedCheckpointId"] == "checkpoint-789"
 
 
+def test_query_repair_status_invokes_real_capability_even_if_inventory_view_is_stale():
+    class Runtime:
+        def __init__(self):
+            self.calls = []
+
+        def available_capabilities(self):
+            return set()
+
+        def invoke(self, capability, payload):
+            self.calls.append((capability, payload))
+            return {
+                "status": "RECEIVED",
+                "requestId": "repair-stale-view",
+                "rsiStatus": "CANDIDATE_SELECTED",
+                "rsiRound": 1,
+                "selectedChildRequestId": "child-real",
+                "selectedCheckpointId": "checkpoint-real",
+                "selectedGitHead": "c" * 40,
+            }
+
+    runtime = Runtime()
+    status = query_repair_status(runtime, "repair-stale-view")
+
+    assert runtime.calls == [
+        ("QUERY_CODE_REPAIR_STATUS", {"requestId": "repair-stale-view"})
+    ]
+    assert status["rsiStatus"] == "CANDIDATE_SELECTED"
+    assert status["selectedCheckpointId"] == "checkpoint-real"
+
+
 def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
     tmp_path, monkeypatch
 ):

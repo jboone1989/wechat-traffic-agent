@@ -89,21 +89,16 @@ def query_repair_status(capability_runtime: Any, request_id: str) -> dict[str, A
     if not request_id:
         raise ValueError("repair status query requires request_id")
     if capability_runtime is None:
-        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
-    available = getattr(capability_runtime, "available_capabilities", None)
-    if callable(available) and "QUERY_CODE_REPAIR_STATUS" not in set(available()):
-        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
+        raise RuntimeError("repair status query requires a live capability runtime")
     invoke = getattr(capability_runtime, "invoke", None)
     if not callable(invoke):
-        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
+        raise RuntimeError("repair status query runtime has no invoke capability")
     try:
         receipt = invoke("QUERY_CODE_REPAIR_STATUS", {"requestId": request_id})
     except Exception as exc:
-        return {
-            "status": "STATUS_QUERY_FAILED",
-            "requestId": request_id,
-            "error_type": type(exc).__name__,
-        }
+        raise RuntimeError(
+            f"repair status query failed for {request_id}: {type(exc).__name__}: {exc}"
+        ) from exc
     body = getattr(receipt, "payload", receipt)
     if not isinstance(body, dict):
         return {
