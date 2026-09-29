@@ -347,6 +347,14 @@ class WakefulContentTaskRunner:
             contract_subsystem = str(top_contract.get("subsystem") or "capability")
             diagnostic_failure = {
                 **diagnostic_failure,
+                "cycle": (
+                    str(contract_report.get("observation_id") or "")
+                    if (
+                        str(contract_report.get("surface") or "") == "durable_state"
+                        and str(contract_report.get("observation_id") or "")
+                    )
+                    else diagnostic_failure.get("cycle")
+                ),
                 "error_type": "CAPABILITY_CONTRACT_VIOLATION",
                 "failure_site": (
                     str(top_contract.get("failure_site") or "")
