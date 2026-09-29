@@ -133,6 +133,7 @@ def test_one_mutation_then_real_prospective_awe_gate(tmp_path):
 
     projection = engine.projection()
     assert projection["trial"]["status"] == "PROMOTION_APPROVED"
+    assert projection["status"] == "PROMOTION_APPROVED"
     assert projection["active_priority_bonus_seconds"] == 420.0
 
     awe = engine.awe.optimizer_view(projection["trial"]["awe_experiment_id"])
@@ -222,4 +223,6 @@ def test_expired_trial_with_too_few_real_samples_rolls_back(tmp_path):
     )
     assert result["awe_gate"]["status"] == "ROLLBACK_REQUIRED"
     assert result["awe_gate"]["decision"] == "ROLLBACK_INSUFFICIENT_EVIDENCE"
-    assert engine.projection()["trial"]["status"] == "ROLLBACK_REQUIRED"
+    projection = engine.projection()
+    assert projection["trial"]["status"] == "ROLLBACK_REQUIRED"
+    assert projection["status"] == "ROLLBACK_REQUIRED"
