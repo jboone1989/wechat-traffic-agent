@@ -303,7 +303,7 @@ function renderBrowserRuntime(data){
   head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
   if(row.provider==='JEV'){
-   c.append(node('p','用于自适应网页操作；ChatGPT Cortex 使用独立持久浏览器 profile，只需登录一次。','muted'));
+   c.append(node('p','用于自适应网页操作；ChatGPT Cortex 复用 X 账号的持久浏览器 profile/login/stream，不再启动独立 browser。','muted'));
    const result=node('div','Cortex 激活不读取模型输出；真正 cognition 仍经 LivingRuntime Remote。','mono muted'),
          actions=node('div',undefined,'row'),
          login=node('button','登录 ChatGPT Cortex','primary'),
@@ -469,9 +469,9 @@ async function beginAccountInstanceLogin(acct){
 async function beginCortexLogin(){
  activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('resources');
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
- el('accountLoginTitle').textContent='ChatGPT Cortex · JEV 持久会话登录';
+ el('accountLoginTitle').textContent='ChatGPT Cortex · 复用 X 持久浏览器会话';
  const status=el('localBrowserStatus');
- status.textContent='正在启动 ChatGPT Cortex 独立浏览器 profile…';
+ status.textContent='正在复用 X 账号的持久浏览器 profile…';
  try{
   await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
   await openAccountStream(activeAccountProvider,0,'')
