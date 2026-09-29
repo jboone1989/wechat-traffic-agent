@@ -505,19 +505,24 @@ class SelfRepairExecutor:
             raise ValueError("self repair requires timezone-aware time")
         excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
 
-        requested = self._next_problem(
-            statuses={"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"},
-            exclude_problem_ids=excluded,
-        )
-        if requested is not None:
-            return self._poll_requested_repair(requested, now)
-
+        # Every repair phase, including durable Pi/RRSI status polling, is
+        # source-authoritative.  The RRSI worker creates isolated candidate
+        # worktrees from this base repository, so the base must match the
+        # currently deployed Ferro commit before we let a pending repair
+        # advance to candidate selection or execution.
         workspace_sync = self._sync_workspace_to_deployed(now=now)
         if not bool(workspace_sync.get("ok")):
             return {
                 "status": "SELF_REPAIR_WORKSPACE_STALE",
                 "workspace_sync": workspace_sync,
             }
+
+        requested = self._next_problem(
+            statuses={"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"},
+            exclude_problem_ids=excluded,
+        )
+        if requested is not None:
+            return self._poll_requested_repair(requested, now)
 
         problem = self._next_problem(
             statuses={

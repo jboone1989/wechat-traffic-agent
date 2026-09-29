@@ -266,6 +266,42 @@ def test_legacy_repair_requested_state_is_woken_and_polled_not_resubmitted(tmp_p
     assert updated["status"] == "RRSI_CANDIDATE_SELECTED"
 
 
+def test_requested_repair_syncs_source_authority_before_status_poll(tmp_path):
+    events = []
+
+    class OrderedExecutor(SelfRepairExecutor):
+        def _sync_workspace_to_deployed(self, *, now):
+            events.append("sync")
+            return {"ok": True, "status": "ALREADY_SYNCED"}
+
+        def _next_problem(self, *, statuses, exclude_problem_ids=None):
+            if statuses == {"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"}:
+                return {
+                    "problem_id": "self-problem:ordered",
+                    "status": "REQUESTED_TO_PI_REMOTE",
+                }
+            return None
+
+        def _poll_requested_repair(self, problem, now):
+            assert events == ["sync"]
+            events.append("poll")
+            return {
+                "status": "REQUESTED_TO_PI_REMOTE",
+                "problem_id": problem["problem_id"],
+            }
+
+    executor = OrderedExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=None,
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["problem_id"] == "self-problem:ordered"
+    assert events == ["sync", "poll"]
+
+
 def test_startup_recovery_wakes_unlocalized_problem_after_localizer_upgrade(tmp_path):
     folder = tmp_path / "application" / "self_maintenance" / "problems"
     folder.mkdir(parents=True)
