@@ -234,10 +234,31 @@ class GoalSchedulerEvolution:
 
     def _maybe_start_trial(self, state: dict[str, Any], *, now: datetime) -> dict[str, Any]:
         trial = state.get("trial")
-        if isinstance(trial, Mapping) and str(trial.get("status") or "") in {
-            "AWAITING_PROSPECTIVE", "PROMOTION_APPROVED", "ROLLBACK_REQUIRED",
-        }:
-            return state
+        if isinstance(trial, Mapping):
+            trial_status = str(trial.get("status") or "")
+            if trial_status == "AWAITING_PROSPECTIVE":
+                return state
+            if trial_status in {"PROMOTION_APPROVED", "ROLLBACK_REQUIRED"}:
+                completed_raw = str(trial.get("completed_at") or "")
+                try:
+                    completed_at = datetime.fromisoformat(
+                        completed_raw.replace("Z", "+00:00")
+                    ).astimezone(timezone.utc)
+                except ValueError:
+                    completed_at = now
+                has_new_evidence = any(
+                    isinstance(row, Mapping)
+                    and isinstance(row.get("outcome"), Mapping)
+                    and row["outcome"].get("valid")
+                    and str(row.get("settled_at") or "")
+                    and datetime.fromisoformat(
+                        str(row["settled_at"]).replace("Z", "+00:00")
+                    ).astimezone(timezone.utc) > completed_at
+                    for row in state.get("decisions") or ()
+                )
+                if not has_new_evidence:
+                    return state
+                state["trial"] = None
         decisions = [
             dict(row) for row in state.get("decisions") or ()
             if isinstance(row, Mapping)
@@ -364,13 +385,24 @@ class GoalSchedulerEvolution:
         bonus = baseline
         awe_experiment_id = None
         if trial and str(trial.get("status") or "") == "AWAITING_PROSPECTIVE":
-            awe_experiment_id = str(trial.get("awe_experiment_id") or "")
-            arm = self._assign_arm(state, signature)
-            bonus = (
-                float(trial["challenger_bonus_seconds"])
-                if arm == "CANDIDATE"
-                else float(trial["baseline_bonus_seconds"])
+            baseline_choice = _rank(
+                candidates, float(trial["baseline_bonus_seconds"])
             )
+            candidate_choice = _rank(
+                candidates, float(trial["challenger_bonus_seconds"])
+            )
+            if (
+                len(candidates) >= 2
+                and str(baseline_choice.get("goal_id") or "")
+                != str(candidate_choice.get("goal_id") or "")
+            ):
+                awe_experiment_id = str(trial.get("awe_experiment_id") or "")
+                arm = self._assign_arm(state, signature)
+                bonus = (
+                    float(trial["challenger_bonus_seconds"])
+                    if arm == "CANDIDATE"
+                    else float(trial["baseline_bonus_seconds"])
+                )
         selected = _rank(candidates, bonus)
         decision_id = "goal-scheduler:" + sha256(
             f"{now.isoformat()}|{signature}|{arm}|{bonus:.6f}".encode()
@@ -456,14 +488,21 @@ class GoalSchedulerEvolution:
                     infra_errors += 1
             nb = len(scores["BASELINE"])
             nc = len(scores["CANDIDATE"])
-            if nb >= MIN_PROSPECTIVE_PER_ARM and nc >= MIN_PROSPECTIVE_PER_ARM:
+            expires = datetime.fromisoformat(
+                str(trial["expires_at"]).replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+            enough = (
+                nb >= MIN_PROSPECTIVE_PER_ARM
+                and nc >= MIN_PROSPECTIVE_PER_ARM
+            )
+            if enough:
                 baseline_mean = sum(scores["BASELINE"]) / nb
                 candidate_mean = sum(scores["CANDIDATE"]) / nc
                 gain = candidate_mean - baseline_mean
-                expires = datetime.fromisoformat(
-                    str(trial["expires_at"]).replace("Z", "+00:00")
-                ).astimezone(timezone.utc)
-                saturated = nb >= MAX_PROSPECTIVE_PER_ARM and nc >= MAX_PROSPECTIVE_PER_ARM
+                saturated = (
+                    nb >= MAX_PROSPECTIVE_PER_ARM
+                    and nc >= MAX_PROSPECTIVE_PER_ARM
+                )
                 if gain >= MIN_GAIN:
                     decision = "PROMOTE"
                     reason = "prospective real goal effects improved under the scheduler mutation"
@@ -477,6 +516,25 @@ class GoalSchedulerEvolution:
                 else:
                     decision = "WAIT_FOR_EVIDENCE"
                     reason = "prospective effect difference is not yet decisive"
+            elif now >= expires:
+                baseline_mean = (
+                    sum(scores["BASELINE"]) / nb if nb else None
+                )
+                candidate_mean = (
+                    sum(scores["CANDIDATE"]) / nc if nc else None
+                )
+                gain = (
+                    candidate_mean - baseline_mean
+                    if baseline_mean is not None and candidate_mean is not None
+                    else None
+                )
+                decision = "ROLLBACK_INSUFFICIENT_EVIDENCE"
+                reason = "prospective scheduler window expired before both arms reached minimum evidence"
+            else:
+                decision = None
+                baseline_mean = candidate_mean = gain = None
+
+            if decision is not None:
                 gate = self.awe.ingest_evaluator_receipt(
                     experiment_id,
                     {
@@ -484,9 +542,17 @@ class GoalSchedulerEvolution:
                         "reason": reason,
                         "train": dict(trial.get("train") or {}),
                         "hidden": {
-                            "baseline_mean": round(baseline_mean, 6),
-                            "candidate_mean": round(candidate_mean, 6),
-                            "gain": round(gain, 6),
+                            "baseline_mean": (
+                                round(baseline_mean, 6)
+                                if baseline_mean is not None else None
+                            ),
+                            "candidate_mean": (
+                                round(candidate_mean, 6)
+                                if candidate_mean is not None else None
+                            ),
+                            "gain": (
+                                round(gain, 6) if gain is not None else None
+                            ),
                             "noise_floor": 0.0,
                             "n_baseline": nb,
                             "n_candidate": nc,
