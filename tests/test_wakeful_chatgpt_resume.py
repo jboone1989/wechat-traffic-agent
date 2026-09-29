@@ -9,6 +9,7 @@ from wechat_traffic_agent.livingruntime_chatgpt import (
     LivingRuntimeChatGPTProviderError,
 )
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
+from wechat_traffic_agent.goal_scheduler_evolution import GoalSchedulerEvolution
 
 
 class _Wakeful:
@@ -771,6 +772,107 @@ def test_owner_external_mission_defers_prediction_task_even_without_due_rows(
     assert result["deferred_count"] == 0
     assert result["retry_after"] is None
     assert loop.called is False
+
+
+class _FinishedOwnerContentLoop:
+    def preflight(self, *, now, cycle_id=None):
+        return {
+            "cycle": cycle_id or "v2-owner-resume",
+            "status": "READY",
+        }
+
+    async def run_once(self, **kwargs):
+        return {
+            "status": "PUBLISHED",
+            "cycle": kwargs.get("cycle_id") or "v2-owner-resume",
+            "world_utility": 0.7,
+        }
+
+
+def test_resumed_owner_content_completes_durable_scheduler_receipt(
+    monkeypatch, tmp_path
+):
+    wakeful = _Wakeful()
+    wakeful.mark_cognition = lambda now: None
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        continuous_loop=_FinishedOwnerContentLoop(),
+        resource_economy=_NoCostEconomy(),
+        web_worker=None,
+        gsc_collector=None,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_runtime_tick",
+        lambda now: (_GenerationReady(), {"application": {}}),
+    )
+
+    scheduler = GoalSchedulerEvolution(tmp_path)
+    selected = scheduler.select(
+        [
+            {
+                "goal_id": "goal-owner",
+                "priority": 0.9,
+                "age_seconds": 100.0,
+                "created_at": "2026-09-29T00:00:00+00:00",
+            },
+            {
+                "goal_id": "goal-other",
+                "priority": 0.5,
+                "age_seconds": 90.0,
+                "created_at": "2026-09-29T00:00:00+00:00",
+            },
+        ],
+        now=datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc),
+    )
+    episode_state = runner.owner_agent_episode._state_for(
+        {
+            "goal_id": selected["goal_id"],
+            "description": "Advance owner mission",
+            "goal_scheduler_decision_id": selected["decision_id"],
+        },
+        datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc),
+    )
+    runner.owner_agent_episode._write({
+        **episode_state,
+        "status": "DECIDED",
+        "decision": {
+            "action": "RUN_CONTENT_PIPELINE",
+            "topic": "livingruntime-remote",
+            "rationale": "Execute the already-decided bounded owner action.",
+        },
+    })
+
+    monkeypatch.setattr(
+        runner,
+        "_active_owner_goal_context",
+        lambda **_kwargs: {
+            "goal_id": selected["goal_id"],
+            "origin": "EXTERNAL_MISSION",
+            "description": "Advance owner mission",
+            "priority": 0.9,
+            "goal_scheduler_decision_id": None,
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_pending_chatgpt_cycle",
+        lambda: {"cycle": "v2-owner-resume", "request_id": "llmreq-inner-content"},
+    )
+
+    result = runner._content(
+        datetime(2026, 9, 29, 10, 5, tzinfo=timezone.utc),
+        focus_topic=None,
+        relevant_refs=("cognition-request:llmreq-inner-content", "goal-owner"),
+    )
+
+    assert result["continuous_content"]["status"] == "PUBLISHED"
+    completion = result["owner_agent_episode_completion"]
+    assert completion["status"] == "COMPLETED"
+    assert completion["goal_scheduler_outcome"]["status"] == "SETTLED"
+    assert completion["goal_scheduler_outcome"]["outcome"]["valid"] is True
+    assert GoalSchedulerEvolution(tmp_path).projection()["settled_valid_count"] == 1
 
 
 def test_legacy_content_resume_is_consumed_before_new_owner_episode(
