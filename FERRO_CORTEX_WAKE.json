@@ -1,7 +1,10 @@
 {
-  "schema_version": "livingruntime-cortex-wake.v1",
   "agent_id": "ferro",
-  "request_id": null,
-  "purpose": "bootstrap",
-  "wake_sequence": 0
+  "created_at": 1790645659.5025887,
+  "event": "FERRO_CORTEX_WAKE",
+  "payload_sha256": "cdce3d2fb791fd43b62ecb942f0167d8964ec8ddf47b06fa88f63fde64b8535e",
+  "purpose": "github_wake_smoke",
+  "request_id": "llmreq_github_wake_smoke_20260929",
+  "schema_version": "livingruntime-cortex-wake.v1",
+  "wake_sequence": 1
 }
