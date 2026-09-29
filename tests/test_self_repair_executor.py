@@ -162,6 +162,37 @@ def test_requested_repair_advances_to_rsi_selected_checkpoint(tmp_path):
     ]
 
 
+def test_orphaned_requested_repair_is_restored_from_durable_trial(tmp_path):
+    problem_path = _problem(tmp_path)
+    problem = json.loads(problem_path.read_text())
+    problem["status"] = "DIAGNOSING"
+    problem["repair_proposal"] = None
+    problem.pop("repair_request", None)
+    problem_path.write_text(json.dumps(problem))
+    trials = tmp_path / "application/self_maintenance/repair_trials"
+    trials.mkdir(parents=True, exist_ok=True)
+    (trials / "self-problem-abc123.json").write_text(json.dumps({
+        "schema_version": "self-repair-trial.v1",
+        "problem_id": "self-problem:abc123",
+        "status": "REQUESTED_TO_PI_REMOTE",
+        "receipt": {
+            "status": "RECEIVED",
+            "requestId": "pi-repair-rsi-123",
+        },
+    }))
+    runtime = RsiStatusCapability()
+
+    result = _executor(tmp_path, runtime).run_once(now=NOW)
+
+    assert result["status"] == "RRSI_CANDIDATE_SELECTED"
+    restored = json.loads(problem_path.read_text())
+    assert restored["repair_request"]["requestId"] == "pi-repair-rsi-123"
+    assert restored["repair_state_recovery_reason"].startswith(
+        "durable repair trial retained"
+    )
+    assert runtime.calls[0][0] == "QUERY_CODE_REPAIR_STATUS"
+
+
 def test_stale_rsi_selected_checkpoint_requeues_diagnosis(tmp_path):
     problem_path = _problem(tmp_path)
     payload = json.loads(problem_path.read_text())

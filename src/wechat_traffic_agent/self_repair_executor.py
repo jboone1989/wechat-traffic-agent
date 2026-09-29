@@ -504,6 +504,7 @@ class SelfRepairExecutor:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
         excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
+        self._recover_orphaned_requested_repairs(now=now)
 
         # Every repair phase, including durable Pi/RRSI status polling, is
         # source-authoritative.  The RRSI worker creates isolated candidate
@@ -586,6 +587,7 @@ class SelfRepairExecutor:
         """Report repair work that should wake the recovery lane after startup."""
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
+        self._recover_orphaned_requested_repairs(now=now)
         source_commit = self._source_authority_commit()
         folder = self.root / "problems"
         actionable: list[str] = []
@@ -703,6 +705,80 @@ class SelfRepairExecutor:
             },
             "planner_version": PLANNER_VERSION,
             "source_commit": source_commit,
+        }
+
+    def _recover_orphaned_requested_repairs(self, *, now: datetime) -> dict[str, Any]:
+        """Restore durable Pi requests that recurrence overwrote in the problem row."""
+        problems = self.root / "problems"
+        trials = self.root / "repair_trials"
+        recovered: list[str] = []
+        terminal = {
+            "VERIFIED",
+            "CLOSED",
+            "REJECTED",
+            "LEGACY_AGGREGATE",
+            "LEGACY_DUPLICATE",
+            "LEGACY_UNRESOLVED",
+        }
+        for path in sorted(problems.glob("*.json")) if problems.exists() else ():
+            try:
+                problem = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(problem, dict):
+                continue
+            problem_id = str(problem.get("problem_id") or "").strip()
+            if not problem_id or str(problem.get("status") or "") in terminal:
+                continue
+            current_request = (
+                problem.get("repair_request")
+                if isinstance(problem.get("repair_request"), dict)
+                else {}
+            )
+            if str(
+                current_request.get("requestId")
+                or current_request.get("request_id")
+                or ""
+            ).strip():
+                continue
+            trial_path = trials / f"{problem_id.replace(':', '-')}.json"
+            try:
+                trial = json.loads(trial_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if (
+                not isinstance(trial, dict)
+                or str(trial.get("status") or "") != "REQUESTED_TO_PI_REMOTE"
+            ):
+                continue
+            receipt = (
+                trial.get("receipt")
+                if isinstance(trial.get("receipt"), dict)
+                else {}
+            )
+            request_id = str(
+                receipt.get("requestId")
+                or receipt.get("request_id")
+                or ""
+            ).strip()
+            if not request_id:
+                continue
+            problem["status"] = "REQUESTED_TO_PI_REMOTE"
+            problem["repair_request"] = dict(receipt)
+            problem["repair_trial"] = dict(trial)
+            problem["repair_state_recovered_at"] = (
+                now.astimezone(timezone.utc).isoformat()
+            )
+            problem["repair_state_recovery_reason"] = (
+                "durable repair trial retained an active Pi request after "
+                "the problem row lost its treatment state"
+            )
+            _atomic_json(path, problem)
+            recovered.append(problem_id)
+        return {
+            "status": "RECOVERED" if recovered else "NO_ORPHANED_REQUESTS",
+            "recovered_count": len(recovered),
+            "problem_ids": recovered,
         }
 
     def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -990,7 +1066,16 @@ class SelfRepairExecutor:
                 continue
             if str(row.get("problem_id") or "") in excluded:
                 continue
-            if not isinstance(row.get("repair_proposal"), dict):
+            row_status = str(row.get("status") or "")
+            polling_statuses = {
+                "REQUESTED_TO_PI_REMOTE",
+                "REPAIR_REQUESTED",
+                "RRSI_CANDIDATE_SELECTED",
+            }
+            if (
+                row_status not in polling_statuses
+                and not isinstance(row.get("repair_proposal"), dict)
+            ):
                 continue
             row["_path"] = str(path)
             rows.append(row)

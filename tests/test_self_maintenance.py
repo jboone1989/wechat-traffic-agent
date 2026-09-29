@@ -86,6 +86,48 @@ def test_recurring_signature_across_cycles_increments_problem_and_preserves_iden
     assert latest["cycles"] == ["v2-1", "v2-2"]
 
 
+def test_recurrence_preserves_active_durable_repair_state(tmp_path):
+    service = SelfMaintenanceService(
+        state_root=tmp_path,
+        evolution_runtime=EvolutionRuntime(),
+    )
+    first = service.ingest_failure(_failure("v2-1"), now=NOW)
+    problem_path = next(
+        (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    )
+    problem = json.loads(problem_path.read_text())
+    problem["status"] = "REQUESTED_TO_PI_REMOTE"
+    problem["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "repair-active-1",
+    }
+    problem["repair_rsi"] = {
+        "rsiStatus": "CANDIDATES_BUILT",
+        "rsiRound": 1,
+    }
+    problem["repair_trial"] = {
+        "status": "REQUESTED_TO_PI_REMOTE",
+        "receipt": {
+            "status": "RECEIVED",
+            "requestId": "repair-active-1",
+        },
+    }
+    problem["planner_attempt"] = {"status": "PROPOSED"}
+    problem_path.write_text(json.dumps(problem))
+
+    second = service.ingest_failure(_failure("v2-2"), now=NOW + timedelta(minutes=1))
+
+    assert first["problem_id"] == second["problem_id"]
+    stored = json.loads(problem_path.read_text())
+    assert stored["status"] == "REQUESTED_TO_PI_REMOTE"
+    assert stored["occurrences"] == 2
+    assert stored["cycles"] == ["v2-1", "v2-2"]
+    assert stored["repair_request"]["requestId"] == "repair-active-1"
+    assert stored["repair_rsi"]["rsiStatus"] == "CANDIDATES_BUILT"
+    assert stored["repair_trial"]["status"] == "REQUESTED_TO_PI_REMOTE"
+    assert stored["planner_attempt"]["status"] == "PROPOSED"
+
+
 def test_unknown_error_is_preserved_for_diagnosis_without_inventing_repair(tmp_path):
     service = SelfMaintenanceService(
         state_root=tmp_path,

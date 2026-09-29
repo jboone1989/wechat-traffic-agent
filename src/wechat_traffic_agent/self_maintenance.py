@@ -432,6 +432,18 @@ class SelfMaintenanceService:
             failure_site=failure_site,
         ) if task == "CONTENT_COGNITION" else None
         status = "REPAIR_PROPOSED" if proposal is not None else "DIAGNOSING"
+        previous_status = str(previous.get("status") or "")
+        active_treatment_statuses = {
+            "REPAIR_REQUESTED",
+            "REQUESTED_TO_PI_REMOTE",
+            "RRSI_CANDIDATE_SELECTED",
+            "OBSERVING_PRODUCTION",
+        }
+        if previous_status in active_treatment_statuses:
+            status = previous_status
+            previous_proposal = previous.get("repair_proposal")
+            if isinstance(previous_proposal, dict):
+                proposal = dict(previous_proposal)
         cycles = [*seen_cycles, cycle][-32:]
         payload = {
             "schema_version": "self-problem.v1",
@@ -452,11 +464,22 @@ class SelfMaintenanceService:
             "diagnostic_evidence": diagnostic_evidence,
             "repair_proposal": proposal,
         }
+        if previous_status in active_treatment_statuses:
+            for key in (
+                "repair_request",
+                "repair_rsi",
+                "repair_trial",
+                "planner_attempt",
+                "superseded_repair_proposals",
+                "superseded_repair_requests",
+            ):
+                if key in previous:
+                    payload[key] = previous[key]
         _atomic_json(path, payload)
         _atomic_json(self.root / "latest.json", payload)
         evolution = self._observe_evolution(payload)
         research_dispatch: dict[str, Any] | None = None
-        if proposal is not None:
+        if proposal is not None and previous_status not in active_treatment_statuses:
             # Repair authority is unchanged, but scarce LOW-risk repair slots
             # are allocated by the validated Researcher policy.  Outside a
             # prospective trial this preserves legacy recency-first behavior;
@@ -479,6 +502,13 @@ class SelfMaintenanceService:
                     "research_policy_id": research_dispatch.get("research_policy_id"),
                     "prospective_trial_id": research_dispatch.get("prospective_trial_id"),
                 }
+        elif previous_status in active_treatment_statuses:
+            stored_request = (
+                payload.get("repair_request")
+                if isinstance(payload.get("repair_request"), dict)
+                else {}
+            )
+            repair_request = dict(stored_request)
         else:
             repair_request = {"status": "NOT_ELIGIBLE"}
         return {
