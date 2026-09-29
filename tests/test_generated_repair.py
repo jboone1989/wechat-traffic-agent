@@ -359,6 +359,152 @@ def test_repair_authority_files_are_never_generated_targets(tmp_path):
     assert planner.safe_source_path("src/wechat_traffic_agent/repair_request.py") is False
 
 
+def _stale_repair_workspace_fixture(tmp_path: Path):
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ("git", "init", "--bare", "--initial-branch=main", str(origin)),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "-b", "main")
+    _git(seed, "config", "user.email", "ferro@example.invalid")
+    _git(seed, "config", "user.name", "Ferro Test")
+    (seed / "src/wechat_traffic_agent").mkdir(parents=True)
+    source = seed / "src/wechat_traffic_agent/app_logic.py"
+    source.write_text("def value():\n    return 'A'\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "base")
+    base_sha = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-u", "origin", "main")
+
+    workspace = tmp_path / "repair-workspace"
+    subprocess.run(
+        ("git", "clone", str(origin), str(workspace)),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    _git(workspace, "config", "user.email", "ferro@example.invalid")
+    _git(workspace, "config", "user.name", "Ferro Self Repair")
+    _git(workspace, "switch", "-c", "agent/repair-old")
+    workspace_source = workspace / "src/wechat_traffic_agent/app_logic.py"
+    workspace_source.write_text(
+        "def value():\n    return 'repair-candidate'\n",
+        encoding="utf-8",
+    )
+    _git(workspace, "add", ".")
+    _git(workspace, "commit", "-m", "old repair candidate")
+    candidate_sha = _git(workspace, "rev-parse", "HEAD")
+
+    source.write_text("def value():\n    return 'B'\n", encoding="utf-8")
+    _git(seed, "add", ".")
+    _git(seed, "commit", "-m", "deployed update")
+    deployed_sha = _git(seed, "rev-parse", "HEAD")
+    _git(seed, "push", "origin", "main")
+
+    deployed = tmp_path / "deployed"
+    deployed.mkdir()
+    (deployed / ".ferro-release.json").write_text(
+        json.dumps({
+            "schema": "pi-remote.ferro-release.v1",
+            "gitCommit": deployed_sha,
+        }),
+        encoding="utf-8",
+    )
+    return workspace, deployed, base_sha, candidate_sha, deployed_sha
+
+
+def test_self_repair_workspace_syncs_to_exact_deployed_commit_and_preserves_old_branch(tmp_path):
+    workspace, deployed, _base_sha, candidate_sha, deployed_sha = (
+        _stale_repair_workspace_fixture(tmp_path)
+    )
+    executor = SelfRepairExecutor(
+        state_root=tmp_path / "state",
+        workspace_root=workspace,
+        deployed_root=deployed,
+        planner_runtime=object(),
+    )
+
+    result = executor._sync_workspace_to_deployed(now=NOW)
+
+    assert result["ok"] is True
+    assert result["status"] == "SYNCED_TO_DEPLOYED"
+    assert result["previous_sha"] == candidate_sha
+    assert result["deployed_sha"] == deployed_sha
+    assert result["workspace_sha"] == deployed_sha
+    assert result["preserved_branch"] == "agent/repair-old"
+    assert result["fetched"] is True
+    assert _git(workspace, "rev-parse", "HEAD") == deployed_sha
+    assert _git(workspace, "branch", "--show-current") == ""
+    assert _git(workspace, "status", "--porcelain") == ""
+    assert _git(workspace, "rev-parse", "agent/repair-old") == candidate_sha
+
+
+def test_self_repair_workspace_sync_refuses_dirty_source_instead_of_overwriting(tmp_path):
+    workspace, deployed, _base_sha, candidate_sha, _deployed_sha = (
+        _stale_repair_workspace_fixture(tmp_path)
+    )
+    (workspace / "src/wechat_traffic_agent/app_logic.py").write_text(
+        "def value():\n    return 'dirty-local-change'\n",
+        encoding="utf-8",
+    )
+    executor = SelfRepairExecutor(
+        state_root=tmp_path / "state",
+        workspace_root=workspace,
+        deployed_root=deployed,
+        planner_runtime=object(),
+    )
+
+    result = executor._sync_workspace_to_deployed(now=NOW)
+
+    assert result["ok"] is False
+    assert result["status"] == "WORKSPACE_DIRTY"
+    assert _git(workspace, "rev-parse", "HEAD") == candidate_sha
+    assert _git(workspace, "branch", "--show-current") == "agent/repair-old"
+
+
+def test_source_commit_change_reopens_same_unlocalized_problem(tmp_path):
+    workspace, deployed, base_sha, _candidate_sha, deployed_sha = (
+        _stale_repair_workspace_fixture(tmp_path)
+    )
+    state = tmp_path / "state"
+    problem_path = state / "application/self_maintenance/problems/felt.json"
+    problem_path.parent.mkdir(parents=True)
+    problem_path.write_text(json.dumps({
+        "problem_id": "self-problem:source-drift",
+        "status": "AUTO_REPAIR_UNLOCALIZED",
+        "error_type": "INTEROCEPTIVE_FAULT",
+        "failure_site": "interoception:network",
+        "task": "CHECK_X",
+        "occurrences": 1,
+        "planner_attempt": {
+            "status": "UNLOCALIZED",
+            "planner_version": "generated-repair.v11",
+            "source_commit": base_sha,
+            "occurrences_seen": 1,
+        },
+    }), encoding="utf-8")
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=deployed,
+        planner_runtime=object(),
+    )
+
+    summary = executor.startup_recovery_summary(now=NOW)
+
+    assert summary["status"] == "WORK_PENDING"
+    assert summary["source_commit"] == deployed_sha
+    assert summary["problem_ids"] == ["self-problem:source-drift"]
+    assert summary["reasons"]["self-problem:source-drift"] == (
+        "LOCALIZER_SOURCE_OR_EVIDENCE_CHANGED"
+    )
+
+
 def test_repair_authority_and_sensor_files_are_never_generated_targets(tmp_path):
     planner = GeneratedRepairPlanner(
         workspace_root=_workspace(tmp_path),
@@ -563,7 +709,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v11"
 
 
 
@@ -625,7 +771,7 @@ def test_historical_unlocalized_problem_retries_after_localizer_version_upgrade(
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
     assert updated["status"] == "REPAIR_PROPOSED"
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v11"
     assert updated["diagnostic_evidence"]["recovered_from_episode"] is True
     assert (
         updated["diagnostic_evidence"]["interoceptive_episode_id"]
@@ -696,7 +842,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v10"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v11"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -935,7 +1081,7 @@ def test_model_selected_unapproved_test_is_ignored_by_authoritative_binding(tmp_
     stored = json.loads(problem_path.read_text())
     recipe = stored["repair_proposal"]["generated_recipe"]
     assert recipe["focused_tests"] == ["tests/test_app_logic.py"]
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v10"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v11"
 
 
 
@@ -1055,6 +1201,8 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
         "def test_preserved_contract():\n    assert True\n",
         encoding="utf-8",
     )
+    _git(workspace, "add", counter_test)
+    _git(workspace, "commit", "-m", "add counterevidence contract")
     state = tmp_path / "state-counter-plan"
     problem_path = _problem(state)
     problem = json.loads(problem_path.read_text())
@@ -1095,5 +1243,5 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
     assert result["focused_tests"][0] == counter_test
     assert "tests/test_app_logic.py" in result["focused_tests"]
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v11"
     assert counter_test in updated["planner_attempt"]["allowed_tests"]

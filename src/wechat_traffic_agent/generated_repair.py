@@ -46,7 +46,7 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v10"
+PLANNER_VERSION = "generated-repair.v11"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",

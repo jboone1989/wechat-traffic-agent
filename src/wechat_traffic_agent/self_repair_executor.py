@@ -294,6 +294,194 @@ class SelfRepairExecutor:
         if "\n" in self.test_pythonpath or "\0" in self.test_pythonpath:
             raise ValueError("self repair test_pythonpath must be a single-line path list")
         self.root = self.state_root / "application" / "self_maintenance"
+        # Authority is established once per runtime process. After that, a
+        # candidate branch created by self-repair must remain intact until the
+        # process restarts or production moves to a new release.
+        self._workspace_authority_commit: str | None = None
+
+    def _deployed_source_commit(self) -> str | None:
+        git_sha = self._git_sha(self.deployed_root)
+        if git_sha:
+            return git_sha
+        if self.deployed_root is None:
+            return None
+        marker = self.deployed_root / ".ferro-release.json"
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        commit = str(payload.get("gitCommit") or "").strip().lower()
+        if (
+            len(commit) < 40
+            or len(commit) > 64
+            or any(char not in "0123456789abcdef" for char in commit)
+        ):
+            return None
+        return commit
+
+    def _source_authority_commit(self) -> str | None:
+        return self._deployed_source_commit() or self._git_sha(self.workspace_root)
+
+    def _workspace_git(
+        self,
+        *args: str,
+        timeout: int = 60,
+    ) -> subprocess.CompletedProcess[str]:
+        if self.workspace_root is None:
+            raise ValueError("self repair workspace is unavailable")
+        return subprocess.run(
+            ("git", *args),
+            cwd=self.workspace_root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
+    def _record_workspace_sync(self, payload: dict[str, Any]) -> dict[str, Any]:
+        _atomic_json(self.root / "workspace_sync.json", payload)
+        return payload
+
+    def _sync_workspace_to_deployed(self, *, now: datetime) -> dict[str, Any]:
+        """Require repair planning to inspect the exact deployed source commit."""
+        deployed_sha = self._deployed_source_commit()
+        if self.workspace_root is None or deployed_sha is None:
+            return {
+                "ok": True,
+                "status": "SOURCE_AUTHORITY_NOT_REQUIRED",
+                "deployed_sha": deployed_sha,
+            }
+        if self._workspace_authority_commit == deployed_sha:
+            return {
+                "ok": True,
+                "status": "SOURCE_AUTHORITY_ALREADY_ESTABLISHED",
+                "deployed_sha": deployed_sha,
+            }
+
+        current_sha = self._git_sha(self.workspace_root)
+        if not current_sha:
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "WORKSPACE_NOT_GIT",
+                "deployed_sha": deployed_sha,
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+        status = self._workspace_git(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+        if status.returncode != 0:
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "WORKSPACE_STATUS_FAILED",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": current_sha,
+                "detail": (status.stderr or status.stdout or "git status failed")[:800],
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+        if status.stdout.strip():
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "WORKSPACE_DIRTY",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": current_sha,
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+        branch_result = self._workspace_git("branch", "--show-current")
+        preserved_branch = (
+            branch_result.stdout.strip()
+            if branch_result.returncode == 0
+            else ""
+        )
+        if current_sha == deployed_sha:
+            self._workspace_authority_commit = deployed_sha
+            return self._record_workspace_sync({
+                "ok": True,
+                "status": "ALREADY_SYNCED",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": current_sha,
+                "preserved_branch": preserved_branch or None,
+                "fetched": False,
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+
+        fetched = False
+        has_commit = self._workspace_git(
+            "cat-file",
+            "-e",
+            deployed_sha + "^{commit}",
+        )
+        if has_commit.returncode != 0:
+            fetch = self._workspace_git("fetch", "--quiet", "origin", "main")
+            fetched = True
+            if fetch.returncode != 0:
+                return self._record_workspace_sync({
+                    "ok": False,
+                    "status": "DEPLOYED_COMMIT_FETCH_FAILED",
+                    "deployed_sha": deployed_sha,
+                    "workspace_sha": current_sha,
+                    "preserved_branch": preserved_branch or None,
+                    "detail": (fetch.stderr or fetch.stdout or "git fetch failed")[:800],
+                    "observed_at": now.astimezone(timezone.utc).isoformat(),
+                })
+            has_commit = self._workspace_git(
+                "cat-file",
+                "-e",
+                deployed_sha + "^{commit}",
+            )
+        if has_commit.returncode != 0:
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "DEPLOYED_COMMIT_UNAVAILABLE",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": current_sha,
+                "preserved_branch": preserved_branch or None,
+                "fetched": fetched,
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+
+        switched = self._workspace_git("switch", "--detach", deployed_sha)
+        if switched.returncode != 0:
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "WORKSPACE_SYNC_FAILED",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": current_sha,
+                "preserved_branch": preserved_branch or None,
+                "fetched": fetched,
+                "detail": (switched.stderr or switched.stdout or "git switch failed")[:800],
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+        synchronized_sha = self._git_sha(self.workspace_root)
+        clean = self._workspace_git(
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        )
+        if synchronized_sha != deployed_sha or clean.returncode != 0 or clean.stdout.strip():
+            return self._record_workspace_sync({
+                "ok": False,
+                "status": "WORKSPACE_SYNC_VERIFICATION_FAILED",
+                "deployed_sha": deployed_sha,
+                "workspace_sha": synchronized_sha,
+                "previous_sha": current_sha,
+                "preserved_branch": preserved_branch or None,
+                "fetched": fetched,
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+            })
+
+        self._workspace_authority_commit = deployed_sha
+        return self._record_workspace_sync({
+            "ok": True,
+            "status": "SYNCED_TO_DEPLOYED",
+            "deployed_sha": deployed_sha,
+            "workspace_sha": synchronized_sha,
+            "previous_sha": current_sha,
+            "preserved_branch": preserved_branch or None,
+            "fetched": fetched,
+            "observed_at": now.astimezone(timezone.utc).isoformat(),
+        })
 
     def run_once(
         self,
@@ -303,6 +491,12 @@ class SelfRepairExecutor:
     ) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
+        workspace_sync = self._sync_workspace_to_deployed(now=now)
+        if not bool(workspace_sync.get("ok")):
+            return {
+                "status": "SELF_REPAIR_WORKSPACE_STALE",
+                "workspace_sync": workspace_sync,
+            }
         excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
 
         problem = self._next_problem(
@@ -363,6 +557,7 @@ class SelfRepairExecutor:
         """Report repair work that should wake the recovery lane after startup."""
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
+        source_commit = self._source_authority_commit()
         folder = self.root / "problems"
         actionable: list[str] = []
         reasons: dict[str, str] = {}
@@ -424,10 +619,11 @@ class SelfRepairExecutor:
                     str(attempt.get("status") or "") == "UNLOCALIZED"
                     and same_occurrence
                     and str(attempt.get("planner_version") or "") == PLANNER_VERSION
+                    and str(attempt.get("source_commit") or "") == str(source_commit or "")
                 ):
                     continue
                 actionable.append(problem_id)
-                reasons[problem_id] = "LOCALIZER_UPGRADE_OR_NEW_EVIDENCE"
+                reasons[problem_id] = "LOCALIZER_SOURCE_OR_EVIDENCE_CHANGED"
         return {
             "status": "WORK_PENDING" if actionable else "NO_REPAIR_WORK",
             "actionable_count": len(actionable),
@@ -437,6 +633,7 @@ class SelfRepairExecutor:
                 for problem_id in actionable[:16]
             },
             "planner_version": PLANNER_VERSION,
+            "source_commit": source_commit,
         }
 
     def _run_proposal(self, problem: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -632,6 +829,7 @@ class SelfRepairExecutor:
         planner = self._planner()
         if planner is None:
             return None
+        source_commit = self._source_authority_commit()
         excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
         rows: list[dict[str, Any]] = []
         folder = self.root / "problems"
@@ -656,6 +854,7 @@ class SelfRepairExecutor:
             same_attempt = (
                 int(attempt.get("occurrences_seen") or 0) == int(row.get("occurrences") or 0)
                 and str(attempt.get("planner_version") or "") == PLANNER_VERSION
+                and str(attempt.get("source_commit") or "") == str(source_commit or "")
             )
             attempt_status = str(attempt.get("status") or "")
             if attempt_status == "UNLOCALIZED" and same_attempt:
@@ -725,6 +924,7 @@ class SelfRepairExecutor:
         attempt = {
             "status": status,
             "planner_version": PLANNER_VERSION,
+            "source_commit": self._source_authority_commit(),
             "observed_at": now.astimezone(timezone.utc).isoformat(),
             "occurrences_seen": int(problem.get("occurrences") or 0),
             **details,
@@ -798,6 +998,8 @@ class SelfRepairExecutor:
                     int(previous.get("occurrences_seen") or 0)
                     == int(problem.get("occurrences") or 0)
                     and str(previous.get("planner_version") or "") == PLANNER_VERSION
+                    and str(previous.get("source_commit") or "")
+                    == str(self._source_authority_commit() or "")
                     and str(previous.get("status") or "").startswith("DEFERRED_")
                 )
                 retry_count = (
@@ -886,6 +1088,7 @@ class SelfRepairExecutor:
         updated["planner_attempt"] = {
             "status": "PROPOSED",
             "planner_version": PLANNER_VERSION,
+            "source_commit": self._source_authority_commit(),
             "observed_at": now.astimezone(timezone.utc).isoformat(),
             "occurrences_seen": int(problem.get("occurrences") or 0),
             "source_paths": source_paths,
@@ -899,6 +1102,7 @@ class SelfRepairExecutor:
             {
                 "schema_version": "generated-repair-plan.v1",
                 "planner_version": PLANNER_VERSION,
+                "source_commit": self._source_authority_commit(),
                 "problem_id": problem.get("problem_id"),
                 "proposal_id": proposal_id,
                 "status": "PROPOSED",

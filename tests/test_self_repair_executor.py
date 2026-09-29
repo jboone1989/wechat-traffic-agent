@@ -178,7 +178,7 @@ def test_startup_recovery_wakes_unlocalized_problem_after_localizer_upgrade(tmp_
     assert summary["actionable_count"] == 1
     assert summary["problem_ids"] == ["self-problem:felt-fault"]
     assert summary["reasons"]["self-problem:felt-fault"] == (
-        "LOCALIZER_UPGRADE_OR_NEW_EVIDENCE"
+        "LOCALIZER_SOURCE_OR_EVIDENCE_CHANGED"
     )
     assert summary["planner_version"] == PLANNER_VERSION
 
