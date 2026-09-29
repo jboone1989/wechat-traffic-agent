@@ -569,19 +569,39 @@ class OwnerAgentEpisode:
         state = self._read(goal_id)
         if state.get("schema_version") != self.SCHEMA:
             return {"status": "NO_EPISODE"}
+        stamp = now.astimezone(timezone.utc)
+        scheduler_outcome = None
+        goal_context = (
+            state.get("goal")
+            if isinstance(state.get("goal"), Mapping)
+            else {}
+        )
+        scheduler_decision_id = str(
+            goal_context.get("goal_scheduler_decision_id") or ""
+        ).strip()
+        if scheduler_decision_id:
+            from .goal_scheduler_evolution import GoalSchedulerEvolution
+
+            scheduler_outcome = GoalSchedulerEvolution(self.state_root).settle(
+                scheduler_decision_id,
+                outcome=dict(outcome),
+                now=stamp,
+            )
         completed = {
             **state,
             "status": "COMPLETED",
             "outcome": self._compact(dict(outcome)),
+            "goal_scheduler_outcome": self._compact(scheduler_outcome),
             "pending_request_id": None,
             "pending_step_index": None,
-            "updated_at": now.astimezone(timezone.utc).isoformat(),
-            "completed_at": now.astimezone(timezone.utc).isoformat(),
+            "updated_at": stamp.isoformat(),
+            "completed_at": stamp.isoformat(),
         }
         self._write(completed)
         return {
             "status": "COMPLETED",
             "episode_id": completed.get("episode_id"),
+            "goal_scheduler_outcome": scheduler_outcome,
         }
 
 
