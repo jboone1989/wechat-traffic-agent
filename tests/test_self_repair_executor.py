@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import ast
 import json
+from pathlib import Path
 
 from wechat_traffic_agent.generated_repair import PLANNER_VERSION
 from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
@@ -330,3 +332,24 @@ def test_startup_recovery_does_not_rewake_same_unlocalized_evidence_forever(tmp_
 
     assert summary["status"] == "NO_REPAIR_WORK"
     assert summary["actionable_count"] == 0
+
+
+def test_run_content_agent_wires_application_runtime_into_self_repair():
+    root = Path(__file__).resolve().parents[1]
+    tree = ast.parse(
+        (root / "scripts/run_content_agent.py").read_text(encoding="utf-8")
+    )
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "SelfRepairExecutor"
+    ]
+    assert len(calls) == 1
+    keywords = {row.arg: row.value for row in calls[0].keywords if row.arg}
+    capability_runtime = keywords.get("capability_runtime")
+    assert isinstance(capability_runtime, ast.Attribute)
+    assert isinstance(capability_runtime.value, ast.Name)
+    assert capability_runtime.value.id == "app"
+    assert capability_runtime.attr == "runtime"

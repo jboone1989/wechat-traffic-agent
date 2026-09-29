@@ -496,6 +496,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         deployed_root=ROOT,
         python_executable=sys.executable,
         planner_runtime=app.domain_runtime,
+        capability_runtime=app.runtime,
         test_pythonpath=repair_test_pythonpath,
     )
     from wechat_traffic_agent.wakeful_runtime import ContentWakefulRuntime, WakefulState
