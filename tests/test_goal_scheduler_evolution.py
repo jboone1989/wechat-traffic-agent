@@ -143,3 +143,83 @@ def test_one_mutation_then_real_prospective_awe_gate(tmp_path):
     assert hidden["n_candidate"] >= 3
     assert hidden["candidate_mean"] > hidden["baseline_mean"]
     assert "goal_id" not in str(hidden)
+
+
+
+def test_active_trial_ignores_single_or_non_differentiating_choice(tmp_path):
+    engine = GoalSchedulerEvolution(tmp_path)
+    awe = engine.awe.start_experiment(
+        capability_id="owner_goal_scheduler",
+        hypothesis="bounded scheduler test",
+        baseline_ref="baseline:300",
+        mutation_ref="candidate:420",
+        mutation_kind="GOAL_SCHEDULER_PRIORITY_BONUS_CHANGE",
+        attempt_ref="single-candidate-test",
+        now=NOW,
+    )
+    state = engine._state()
+    state["trial"] = {
+        "status": "AWAITING_PROSPECTIVE",
+        "awe_experiment_id": awe["experiment_id"],
+        "baseline_bonus_seconds": 300.0,
+        "challenger_bonus_seconds": 420.0,
+        "frozen_at": NOW.isoformat(),
+        "expires_at": (NOW + timedelta(days=7)).isoformat(),
+        "train": {"baseline_mean": 0.4, "candidate_mean": 0.7, "gain": 0.3},
+    }
+    engine._save(state)
+
+    one = engine.select([c("a", 1.0, 100.0)], now=NOW + timedelta(minutes=1))
+    assert one["arm"] == "ACTIVE"
+    assert one["awe_experiment_id"] is None
+
+    same = engine.select(
+        [c("a", 1.0, 500.0), c("b", 0.0, 100.0)],
+        now=NOW + timedelta(minutes=2),
+    )
+    assert same["arm"] == "ACTIVE"
+    assert same["awe_experiment_id"] is None
+
+
+def test_expired_trial_with_too_few_real_samples_rolls_back(tmp_path):
+    engine = GoalSchedulerEvolution(tmp_path)
+    awe = engine.awe.start_experiment(
+        capability_id="owner_goal_scheduler",
+        hypothesis="bounded scheduler expiry test",
+        baseline_ref="baseline:300",
+        mutation_ref="candidate:420",
+        mutation_kind="GOAL_SCHEDULER_PRIORITY_BONUS_CHANGE",
+        attempt_ref="expiry-test",
+        now=NOW,
+    )
+    state = engine._state()
+    state["trial"] = {
+        "status": "AWAITING_PROSPECTIVE",
+        "awe_experiment_id": awe["experiment_id"],
+        "baseline_bonus_seconds": 300.0,
+        "challenger_bonus_seconds": 420.0,
+        "frozen_at": (NOW - timedelta(days=8)).isoformat(),
+        "expires_at": (NOW - timedelta(days=1)).isoformat(),
+        "train": {"baseline_mean": 0.4, "candidate_mean": 0.7, "gain": 0.3},
+    }
+    state["decisions"] = [{
+        "decision_id": "expired-baseline-one",
+        "selected_at": (NOW - timedelta(days=2)).isoformat(),
+        "arm": "BASELINE",
+        "awe_experiment_id": awe["experiment_id"],
+        "priority_bonus_seconds": 300.0,
+        "selected_goal_id": "a",
+        "candidates": [c("a", 1.0, 100.0), c("b", 0.0, 450.0)],
+        "outcome": None,
+        "settled_at": None,
+    }]
+    engine._save(state)
+
+    result = engine.settle(
+        "expired-baseline-one",
+        outcome={"status": "PUBLISHED", "world_utility": 0.2},
+        now=NOW,
+    )
+    assert result["awe_gate"]["status"] == "ROLLBACK_REQUIRED"
+    assert result["awe_gate"]["decision"] == "ROLLBACK_INSUFFICIENT_EVIDENCE"
+    assert engine.projection()["trial"]["status"] == "ROLLBACK_REQUIRED"
