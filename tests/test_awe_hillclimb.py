@@ -335,3 +335,59 @@ def test_same_mutation_can_be_retried_only_with_new_attempt_ref(tmp_path):
     assert second["experiment_id"] != first["experiment_id"]
     assert first["attempt_ref"] == "evidence-epoch:1"
     assert second["attempt_ref"] == "evidence-epoch:2"
+
+
+
+def test_multiple_awe_instances_refresh_shared_ledger_before_writes(tmp_path):
+    first = FerroAWEHillclimb(tmp_path)
+    second = FerroAWEHillclimb(tmp_path)
+
+    exp_a = first.start_experiment(
+        capability_id="context_builder",
+        hypothesis="first bounded mutation",
+        baseline_ref="context:base",
+        mutation_ref="context:challenger",
+        mutation_kind="CONTEXT_POLICY_CHANGE",
+        attempt_ref="attempt-a",
+        now=NOW,
+    )
+    exp_b = second.start_experiment(
+        capability_id="owner_goal_scheduler",
+        hypothesis="second bounded mutation",
+        baseline_ref="goal:base",
+        mutation_ref="goal:challenger",
+        mutation_kind="GOAL_SCHEDULER_PRIORITY_BONUS_CHANGE",
+        attempt_ref="attempt-b",
+        now=NOW,
+    )
+
+    projection = first.projection()
+    ids = {
+        row["experiment_id"]
+        for row in projection["recent_experiments"]
+    }
+    assert exp_a["experiment_id"] in ids
+    assert exp_b["experiment_id"] in ids
+
+    second.ingest_evaluator_receipt(
+        exp_a["experiment_id"],
+        {
+            "decision": "PROMOTE",
+            "reason": "hidden generalization passed",
+            "train": {"gain": 0.1},
+            "hidden": {
+                "baseline_mean": 0.5,
+                "candidate_mean": 0.7,
+                "gain": 0.2,
+                "noise_floor": 0.0,
+                "n_baseline": 4,
+                "n_candidate": 4,
+                "infrastructure_error_count": 0,
+            },
+            "regression": {},
+        },
+        now=NOW,
+    )
+
+    assert first.optimizer_view(exp_a["experiment_id"])["status"] == "PROMOTION_APPROVED"
+    assert first.optimizer_view(exp_b["experiment_id"])["status"] == "AWAITING_AWE"
