@@ -113,6 +113,7 @@ class OwnerChatGPTCognitionRuntime:
             max_tokens=int(max_tokens),
             reasoning_effort="low",
             system=system,
+            _routing_task_class="owner_dialogue",
         )
 
 

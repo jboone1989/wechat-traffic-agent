@@ -247,6 +247,11 @@ class LivingRuntimeChatGPTProvider:
                 options["temperature"] = max(0.0, min(value, 2.0))
 
         task_class = str(kwargs.get("_routing_task_class") or "content_cognition").strip()
+        if (
+            "GENERATE_BOUNDED_SELF_REPAIR_PLAN" in str(prompt)[:4096]
+            and task_class in {"", "general_text", "content_cognition"}
+        ):
+            task_class = "self_repair"
         one_shot_state = _NEXT_DURABLE_REQUEST_STATE.get()
         one_shot_resume_id = ""
         if isinstance(one_shot_state, dict) and not bool(

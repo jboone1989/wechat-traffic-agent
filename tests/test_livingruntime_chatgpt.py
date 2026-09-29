@@ -86,6 +86,50 @@ def test_remote_complete_is_preferred_and_records_provenance(tmp_path):
         "response_sha256": "abc123",
     }
 
+def test_self_repair_prompt_is_routed_as_self_repair_even_from_general_text(tmp_path):
+    cli = tmp_path / "cognitionctl.py"
+    cli.write_text(
+        """from __future__ import annotations
+import json, sys
+payload = json.load(sys.stdin)
+print(json.dumps({
+  "status": "COMPLETED",
+  "request_id": "llmreq_self_repair_route",
+  "created_at": 100.0,
+  "finished_at": 101.0,
+  "response": {
+    "text": json.dumps({
+      "purpose": payload["purpose"],
+      "routing_task_class": payload["metadata"]["routing_task_class"],
+    }, separators=(",", ":")),
+    "provider": "livingruntime-chatgpt",
+    "model": "gpt-5.6-sol",
+    "session_id": "session-route",
+    "sha256": "route123",
+    "completed_at": 101.0
+  }
+}, separators=(",", ":")))
+""",
+        encoding="utf-8",
+    )
+    provider = LivingRuntimeChatGPTProvider(
+        cli_path=cli,
+        enabled=True,
+        timeout_seconds=10,
+    )
+
+    result = asyncio.run(
+        provider.complete(
+            "GENERATE_BOUNDED_SELF_REPAIR_PLAN. Return JSON only.",
+            _routing_task_class="general_text",
+        )
+    )
+
+    assert json.loads(result) == {
+        "purpose": "self_repair",
+        "routing_task_class": "self_repair",
+    }
+
 
 def test_remote_structured_uses_json_schema(tmp_path):
     cli = tmp_path / "cognitionctl.py"

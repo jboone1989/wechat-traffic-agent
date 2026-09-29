@@ -201,6 +201,7 @@ def test_owner_chatgpt_cognition_carries_always_on_phenotype():
     assert "always-on individual prior" in provider.kwargs["system"]
     assert "must affect every meaningful choice" in provider.kwargs["system"]
     assert provider.kwargs["reasoning_effort"] == "low"
+    assert provider.kwargs["_routing_task_class"] == "owner_dialogue"
 
 
 def test_owner_chatgpt_cognition_refuses_to_drop_phenotype_silently():
