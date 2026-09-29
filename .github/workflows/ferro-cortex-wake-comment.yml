@@ -28,80 +28,45 @@ jobs:
           accept_header="Accept: application/vnd.github+json"
 
           marker_payload="$(
-            curl -fsSL \
-              -H "${auth_header}" \
-              -H "${accept_header}" \
-              "${api_base}/contents/FERRO_CORTEX_WAKE.json?ref=${HEAD_SHA}"
+            curl -fsSL               -H "${auth_header}"               -H "${accept_header}"               "${api_base}/contents/FERRO_CORTEX_WAKE.json?ref=${HEAD_SHA}"
           )"
+          marker_encoded="$(jq -er '.content' <<<"${marker_payload}")"
+          marker="$(printf '%s' "${marker_encoded}" | base64 --decode)"
 
-          marker="$(
-            python3 -c '
-import base64, json, sys
-payload = json.load(sys.stdin)
-content = payload.get("content")
-if not isinstance(content, str):
-    raise SystemExit("wake marker content missing")
-sys.stdout.write(base64.b64decode(content).decode("utf-8"))
-' <<<"${marker_payload}"
-          )"
+          schema_version="$(jq -r '.schema_version // empty' <<<"${marker}")"
+          event_name="$(jq -r '.event // empty' <<<"${marker}")"
+          agent_id="$(jq -r '.agent_id // empty' <<<"${marker}")"
+          request_id="$(jq -r '.request_id // empty' <<<"${marker}")"
 
-          request_id="$(
-            python3 -c '
-import json, re, sys
-marker = json.load(sys.stdin)
-if marker.get("schema_version") != "livingruntime-cortex-wake.v1":
-    raise SystemExit("unexpected wake schema")
-if marker.get("event") != "FERRO_CORTEX_WAKE":
-    raise SystemExit("unexpected wake event")
-if marker.get("agent_id") != "ferro":
-    raise SystemExit("unexpected wake agent")
-request_id = str(marker.get("request_id") or "")
-if not re.fullmatch(r"llmreq_[A-Za-z0-9._-]{1,120}", request_id):
-    raise SystemExit("invalid request_id")
-sys.stdout.write(request_id)
-' <<<"${marker}"
-          )"
+          [[ "${schema_version}" == "livingruntime-cortex-wake.v1" ]] || {
+            echo "unexpected wake schema" >&2
+            exit 1
+          }
+          [[ "${event_name}" == "FERRO_CORTEX_WAKE" ]] || {
+            echo "unexpected wake event" >&2
+            exit 1
+          }
+          [[ "${agent_id}" == "ferro" ]] || {
+            echo "unexpected wake agent" >&2
+            exit 1
+          }
+          [[ "${request_id}" =~ ^llmreq_[A-Za-z0-9._-]{1,120}$ ]] || {
+            echo "invalid request_id" >&2
+            exit 1
+          }
 
           comments="$(
-            curl -fsSL \
-              -H "${auth_header}" \
-              -H "${accept_header}" \
-              "${api_base}/issues/${PR_NUMBER}/comments?per_page=100"
+            curl -fsSL               -H "${auth_header}"               -H "${accept_header}"               "${api_base}/issues/${PR_NUMBER}/comments?per_page=100"
           )"
-
-          if python3 -c '
-import json, os, sys
-comments = json.load(sys.stdin)
-needle = "wake_commit=" + os.environ["HEAD_SHA"]
-raise SystemExit(0 if any(needle in str(row.get("body") or "") for row in comments) else 1)
-' <<<"${comments}"
+          if jq -e --arg needle "wake_commit=${HEAD_SHA}"             'any(.[]; ((.body // "") | contains($needle)))'             <<<"${comments}" >/dev/null
           then
             echo "Wake comment already exists for ${HEAD_SHA}"
             exit 0
           fi
 
           comment="$(
-            printf '%s\n' \
-              'FERRO_CORTEX_WAKE' \
-              'agent_id=ferro' \
-              "request_id=${request_id}" \
-              'source=github-action-comment-bridge' \
-              "wake_commit=${HEAD_SHA}" \
-              '' \
-              'Activation only. Authoritative cognition content remains in LivingRuntime.'
+            printf '%s\n'               'FERRO_CORTEX_WAKE'               'agent_id=ferro'               "request_id=${request_id}"               'source=github-action-comment-bridge'               "wake_commit=${HEAD_SHA}"               ''               'Activation only. Authoritative cognition content remains in LivingRuntime.'
           )"
+          body="$(jq -n --arg body "${comment}" '{body: $body}')"
 
-          body="$(
-            python3 -c '
-import json, sys
-print(json.dumps({"body": sys.stdin.read()}))
-' <<<"${comment}"
-          )"
-
-          curl -fsSL \
-            -X POST \
-            -H "${auth_header}" \
-            -H "${accept_header}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -d "${body}" \
-            "${api_base}/issues/${PR_NUMBER}/comments" >/dev/null
+          curl -fsSL             -X POST             -H "${auth_header}"             -H "${accept_header}"             -H "X-GitHub-Api-Version: 2022-11-28"             -d "${body}"             "${api_base}/issues/${PR_NUMBER}/comments" >/dev/null
