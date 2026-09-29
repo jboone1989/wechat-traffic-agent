@@ -10,6 +10,7 @@ import pytest
 from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
 from wechat_traffic_agent.openai_public_chat import OpenAIPublicChatError
 from wechat_traffic_agent.owner_agent_episode import OwnerAgentEpisode
+from wechat_traffic_agent.goal_scheduler_evolution import GoalSchedulerEvolution
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
 
@@ -532,6 +533,47 @@ def test_owner_goal_scheduler_prevents_priority_starvation(tmp_path):
     assert exact["goal_id"] == "goal-a"
     assert exact["selection_authority"] == "EXACT_OWNER_GOAL_REF"
     assert exact["goal_scheduler_decision_id"] is None
+
+
+def test_owner_episode_completion_settles_original_scheduler_receipt(tmp_path):
+    scheduler = GoalSchedulerEvolution(tmp_path)
+    choice = scheduler.select(
+        [
+            {
+                "goal_id": "goal-owner",
+                "priority": 0.9,
+                "age_seconds": 100.0,
+                "created_at": NOW.isoformat(),
+            },
+            {
+                "goal_id": "goal-other",
+                "priority": 0.4,
+                "age_seconds": 90.0,
+                "created_at": NOW.isoformat(),
+            },
+        ],
+        now=NOW,
+    )
+    episode = OwnerAgentEpisode(tmp_path)
+    episode._state_for(
+        {
+            "goal_id": choice["goal_id"],
+            "description": "Advance the selected owner goal",
+            "goal_scheduler_decision_id": choice["decision_id"],
+        },
+        NOW,
+    )
+
+    completed = episode.complete(
+        outcome={"status": "PUBLISHED", "world_utility": 0.6},
+        now=NOW + timedelta(minutes=1),
+        goal_id=choice["goal_id"],
+    )
+
+    assert completed["status"] == "COMPLETED"
+    assert completed["goal_scheduler_outcome"]["status"] == "SETTLED"
+    assert completed["goal_scheduler_outcome"]["outcome"]["valid"] is True
+    assert GoalSchedulerEvolution(tmp_path).projection()["settled_valid_count"] == 1
 
 
 def test_owner_goal_context_uses_specific_active_proposal_over_parent_goal(tmp_path):
