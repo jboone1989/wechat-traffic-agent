@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -9,6 +11,7 @@ import sys
 
 import pytest
 
+import wechat_traffic_agent.generated_repair as generated_repair_module
 from wechat_traffic_agent.generated_repair import (
     GeneratedRepairPlan,
     GeneratedRepairPlanner,
@@ -205,6 +208,32 @@ def test_capability_contract_failure_sites_localize_to_affected_modules(tmp_path
         "failure_site": "owner_agent_episode.py:tool_effect_contract",
         "symptom": "CAPABILITY_CONTRACT_VIOLATION: repeated tool has no new evidence",
     }) == ["src/wechat_traffic_agent/owner_agent_episode.py"]
+
+
+def test_generated_repair_declares_self_repair_routing_explicitly(tmp_path, monkeypatch):
+    workspace = _workspace(tmp_path)
+    runtime = PlannerRuntime(_valid_plan())
+    planner = GeneratedRepairPlanner(workspace_root=workspace, runtime=runtime)
+    events = []
+
+    @contextmanager
+    def routing(task_class):
+        events.append(("enter", task_class))
+        try:
+            yield
+        finally:
+            events.append(("exit", task_class))
+
+    monkeypatch.setattr(
+        generated_repair_module,
+        "cognition_routing_task_class",
+        routing,
+    )
+
+    result = asyncio.run(planner._ask("runtime-context " * 1200))
+
+    assert result.confidence == 0.91
+    assert events == [("enter", "self_repair"), ("exit", "self_repair")]
 
 
 def test_interoceptive_diagnostic_evidence_localizes_status_producer_and_editable_block(tmp_path):

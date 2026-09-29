@@ -24,6 +24,10 @@ _NEXT_DURABLE_REQUEST_STATE: ContextVar[dict[str, Any] | None] = ContextVar(
     "livingruntime_chatgpt_next_durable_request_state",
     default=None,
 )
+_ROUTING_TASK_CLASS: ContextVar[str] = ContextVar(
+    "livingruntime_chatgpt_routing_task_class",
+    default="",
+)
 
 
 @contextmanager
@@ -35,6 +39,19 @@ def durable_cognition_phase(phase_id: str, *, request_id: str | None = None):
     finally:
         _DURABLE_REQUEST_ID.reset(request_token)
         _DURABLE_PHASE_ID.reset(phase_token)
+
+
+@contextmanager
+def cognition_routing_task_class(task_class: str):
+    """Bind an explicit durable-queue routing class to nested cognition."""
+    normalized = str(task_class or "").strip()
+    if not normalized:
+        raise ValueError("cognition routing task class is required")
+    token = _ROUTING_TASK_CLASS.set(normalized)
+    try:
+        yield
+    finally:
+        _ROUTING_TASK_CLASS.reset(token)
 
 
 @contextmanager
@@ -246,12 +263,11 @@ class LivingRuntimeChatGPTProvider:
             if value is not None and math.isfinite(value):
                 options["temperature"] = max(0.0, min(value, 2.0))
 
-        task_class = str(kwargs.get("_routing_task_class") or "content_cognition").strip()
-        if (
-            "GENERATE_BOUNDED_SELF_REPAIR_PLAN" in str(prompt)[:4096]
-            and task_class in {"", "general_text", "content_cognition"}
-        ):
-            task_class = "self_repair"
+        task_class = str(
+            kwargs.get("_routing_task_class")
+            or _ROUTING_TASK_CLASS.get()
+            or "content_cognition"
+        ).strip()
         one_shot_state = _NEXT_DURABLE_REQUEST_STATE.get()
         one_shot_resume_id = ""
         if isinstance(one_shot_state, dict) and not bool(
@@ -548,6 +564,7 @@ class LivingRuntimeChatGPTProvider:
 
 
 __all__ = [
+    "cognition_routing_task_class",
     "durable_cognition_phase",
     "resume_next_durable_cognition",
     "LivingRuntimeChatGPTProvider",

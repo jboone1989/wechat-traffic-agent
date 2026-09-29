@@ -10,6 +10,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .livingruntime_chatgpt import cognition_routing_task_class
+
 
 class GeneratedRepairEdit(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -530,16 +532,18 @@ class GeneratedRepairPlanner:
         probe = getattr(self.runtime, "cognitive_probe", None)
         if not callable(probe):
             raise ValueError("repair planner runtime capability unavailable")
-        raw = await probe(prompt, max_tokens=3000)
+        with cognition_routing_task_class("self_repair"):
+            raw = await probe(prompt, max_tokens=3000)
         try:
             return GeneratedRepairPlan.model_validate_json(self._extract_json(raw))
         except Exception as exc:
-            raw = await probe(
-                prompt
-                + "\nReturn ONE corrected JSON object only. Validation error: "
-                + str(exc)[:1200],
-                max_tokens=3000,
-            )
+            with cognition_routing_task_class("self_repair"):
+                raw = await probe(
+                    prompt
+                    + "\nReturn ONE corrected JSON object only. Validation error: "
+                    + str(exc)[:1200],
+                    max_tokens=3000,
+                )
             return GeneratedRepairPlan.model_validate_json(self._extract_json(raw))
 
     def _bind_authoritative_boundaries(

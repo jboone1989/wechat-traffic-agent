@@ -7,6 +7,7 @@ from pathlib import Path
 from wechat_traffic_agent.livingruntime_chatgpt import (
     LivingRuntimeChatGPTPendingError,
     LivingRuntimeChatGPTProvider,
+    cognition_routing_task_class,
     durable_cognition_phase,
     resume_next_durable_cognition,
 )
@@ -86,7 +87,7 @@ def test_remote_complete_is_preferred_and_records_provenance(tmp_path):
         "response_sha256": "abc123",
     }
 
-def test_self_repair_prompt_is_routed_as_self_repair_even_from_general_text(tmp_path):
+def test_explicit_routing_context_survives_large_context_prefix(tmp_path):
     cli = tmp_path / "cognitionctl.py"
     cli.write_text(
         """from __future__ import annotations
@@ -117,13 +118,13 @@ print(json.dumps({
         enabled=True,
         timeout_seconds=10,
     )
+    prompt = ("runtime-context " * 1200) + "\nGENERATE_BOUNDED_SELF_REPAIR_PLAN"
 
-    result = asyncio.run(
-        provider.complete(
-            "GENERATE_BOUNDED_SELF_REPAIR_PLAN. Return JSON only.",
-            _routing_task_class="general_text",
-        )
-    )
+    async def run():
+        with cognition_routing_task_class("self_repair"):
+            return await provider.complete(prompt)
+
+    result = asyncio.run(run())
 
     assert json.loads(result) == {
         "purpose": "self_repair",
