@@ -168,6 +168,7 @@ def test_query_repair_status_reads_rsi_selection():
                 "selectedChildRequestId": "child-456",
                 "selectedCheckpointId": "checkpoint-789",
                 "selectedGitHead": "a" * 40,
+                "selectedBaseCommit": "b" * 40,
             }
 
     runtime = Runtime()
@@ -179,6 +180,7 @@ def test_query_repair_status_reads_rsi_selection():
     assert status["rsiStatus"] == "CANDIDATE_SELECTED"
     assert status["selectedChildRequestId"] == "child-456"
     assert status["selectedCheckpointId"] == "checkpoint-789"
+    assert status["selectedBaseCommit"] == "b" * 40
 
 
 def test_query_repair_status_invokes_real_capability_even_if_inventory_view_is_stale():
@@ -232,10 +234,18 @@ def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
                     "status": "CANDIDATE_SELECTED",
                     "roundIndex": 1,
                     "selection": {
+                        "candidateId": "candidate-1",
                         "childRequestId": "child-1",
                         "checkpointId": "checkpoint-1",
                         "gitHead": "b" * 40,
                     },
+                    "candidates": [{
+                        "candidateId": "candidate-1",
+                        "childRequestId": "child-1",
+                        "checkpoint": {
+                            "baseCommit": "c" * 40,
+                        },
+                    }],
                 },
             }),
             stderr="",
@@ -255,6 +265,7 @@ def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
 
     assert result["rsiStatus"] == "CANDIDATE_SELECTED"
     assert result["selectedCheckpointId"] == "checkpoint-1"
+    assert result["selectedBaseCommit"] == "c" * 40
     payload = json.loads(seen["argv"][2])
     assert payload == {
         "action": "status",

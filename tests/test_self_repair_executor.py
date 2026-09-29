@@ -53,9 +53,15 @@ class RequestCapability:
 
 
 class RsiStatusCapability:
-    def __init__(self, *, rsi_status="CANDIDATE_SELECTED"):
+    def __init__(
+        self,
+        *,
+        rsi_status="CANDIDATE_SELECTED",
+        selected_base_commit=None,
+    ):
         self.calls = []
         self.rsi_status = rsi_status
+        self.selected_base_commit = selected_base_commit
 
     def available_capabilities(self):
         return {"REQUEST_CODE_REPAIR", "QUERY_CODE_REPAIR_STATUS"}
@@ -81,6 +87,8 @@ class RsiStatusCapability:
                 "selectedCheckpointId": "checkpoint-1",
                 "selectedGitHead": "a" * 40,
             })
+            if self.selected_base_commit is not None:
+                result["selectedBaseCommit"] = self.selected_base_commit
         if self.rsi_status == "FAILED":
             result["lastError"] = {
                 "type": "Error",
@@ -138,6 +146,152 @@ def test_requested_repair_advances_to_rsi_selected_checkpoint(tmp_path):
         "REQUEST_CODE_REPAIR",
         "QUERY_CODE_REPAIR_STATUS",
     ]
+
+
+def test_stale_rsi_selected_checkpoint_requeues_diagnosis(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REQUESTED_TO_PI_REMOTE"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+    current_commit = "b" * 40
+    runtime = RsiStatusCapability(
+        selected_base_commit="a" * 40,
+    )
+
+    class SourceBoundExecutor(SelfRepairExecutor):
+        def _sync_workspace_to_deployed(self, *, now):
+            return {
+                "ok": True,
+                "status": "ALREADY_SYNCED",
+                "deployed_sha": current_commit,
+            }
+
+        def _source_authority_commit(self):
+            return current_commit
+
+    executor = SourceBoundExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=None,
+        capability_runtime=runtime,
+    )
+
+    result = executor.run_once(now=NOW)
+
+    assert result["status"] == "DIAGNOSING"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "DIAGNOSING"
+    assert updated["repair_proposal"] is None
+    assert updated["repair_rsi"]["selectedBaseCommit"] == "a" * 40
+    assert updated["planner_attempt"]["status"] == "RRSI_STALE_BASE_COMMIT"
+    assert updated["planner_attempt"]["source_commit"] == current_commit
+    assert updated["planner_attempt"]["selected_base_commit"] == "a" * 40
+
+
+def test_rsi_selected_checkpoint_without_base_fails_closed_when_source_known(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REQUESTED_TO_PI_REMOTE"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+    current_commit = "b" * 40
+    runtime = RsiStatusCapability()
+
+    class SourceBoundExecutor(SelfRepairExecutor):
+        def _sync_workspace_to_deployed(self, *, now):
+            return {"ok": True, "status": "ALREADY_SYNCED"}
+
+        def _source_authority_commit(self):
+            return current_commit
+
+    result = SourceBoundExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=None,
+        capability_runtime=runtime,
+    ).run_once(now=NOW)
+
+    assert result["status"] == "DIAGNOSING"
+    updated = json.loads(problem_path.read_text())
+    assert updated["planner_attempt"]["status"] == "RRSI_STALE_BASE_COMMIT"
+    assert updated["planner_attempt"]["selected_base_commit"] is None
+
+
+def test_matching_rsi_selected_checkpoint_remains_selected(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REQUESTED_TO_PI_REMOTE"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+    current_commit = "b" * 40
+    runtime = RsiStatusCapability(
+        selected_base_commit=current_commit,
+    )
+
+    class SourceBoundExecutor(SelfRepairExecutor):
+        def _sync_workspace_to_deployed(self, *, now):
+            return {"ok": True, "status": "ALREADY_SYNCED"}
+
+        def _source_authority_commit(self):
+            return current_commit
+
+    result = SourceBoundExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=None,
+        capability_runtime=runtime,
+    ).run_once(now=NOW)
+
+    assert result["status"] == "RRSI_CANDIDATE_SELECTED"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "RRSI_CANDIDATE_SELECTED"
+    assert updated["repair_rsi"]["selectedBaseCommit"] == current_commit
+
+
+def test_startup_revalidates_selected_rsi_only_until_source_matches(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "RRSI_CANDIDATE_SELECTED"
+    payload["repair_rsi"] = {
+        "rsiStatus": "CANDIDATE_SELECTED",
+        "selectedBaseCommit": "a" * 40,
+    }
+    problem_path.write_text(json.dumps(payload))
+    current_commit = "b" * 40
+
+    class SourceBoundExecutor(SelfRepairExecutor):
+        def _source_authority_commit(self):
+            return current_commit
+
+    executor = SourceBoundExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=None,
+    )
+
+    stale = executor.startup_recovery_summary(now=NOW)
+    assert stale["problem_ids"] == ["self-problem:abc123"]
+    assert stale["reasons"]["self-problem:abc123"] == (
+        "RRSI_SELECTION_SOURCE_REVALIDATION"
+    )
+
+    payload = json.loads(problem_path.read_text())
+    payload["repair_rsi"]["selectedBaseCommit"] = current_commit
+    problem_path.write_text(json.dumps(payload))
+
+    matched = executor.startup_recovery_summary(now=NOW)
+    assert matched["status"] == "NO_REPAIR_WORK"
+    assert matched["actionable_count"] == 0
 
 
 def test_failed_rsi_round_requeues_same_evidence_bound_repair(tmp_path):
@@ -275,7 +429,11 @@ def test_requested_repair_syncs_source_authority_before_status_poll(tmp_path):
             return {"ok": True, "status": "ALREADY_SYNCED"}
 
         def _next_problem(self, *, statuses, exclude_problem_ids=None):
-            if statuses == {"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"}:
+            if statuses == {
+                "REQUESTED_TO_PI_REMOTE",
+                "REPAIR_REQUESTED",
+                "RRSI_CANDIDATE_SELECTED",
+            }:
                 return {
                     "problem_id": "self-problem:ordered",
                     "status": "REQUESTED_TO_PI_REMOTE",

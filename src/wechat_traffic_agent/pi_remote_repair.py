@@ -149,6 +149,23 @@ class PiRemoteRepairProvider:
             if not isinstance(request_id, str):
                 raise RuntimeError("Pi Remote returned an incomplete repair status receipt")
             selection = rsi.get("selection") if isinstance(rsi.get("selection"), dict) else {}
+            selected_candidate: dict[str, Any] = {}
+            selected_candidate_id = str(selection.get("candidateId") or "")
+            selected_child_id = str(selection.get("childRequestId") or "")
+            for row in list(rsi.get("candidates") or []):
+                if not isinstance(row, dict):
+                    continue
+                if (
+                    (selected_candidate_id and str(row.get("candidateId") or "") == selected_candidate_id)
+                    or (selected_child_id and str(row.get("childRequestId") or "") == selected_child_id)
+                ):
+                    selected_candidate = row
+                    break
+            selected_checkpoint = (
+                selected_candidate.get("checkpoint")
+                if isinstance(selected_candidate.get("checkpoint"), dict)
+                else {}
+            )
             rejected = []
             for row in list(rsi.get("proposalRejections") or []):
                 if not isinstance(row, dict):
@@ -173,6 +190,7 @@ class PiRemoteRepairProvider:
                 "selectedChildRequestId": selection.get("childRequestId"),
                 "selectedCheckpointId": selection.get("checkpointId"),
                 "selectedGitHead": selection.get("gitHead"),
+                "selectedBaseCommit": selected_checkpoint.get("baseCommit"),
                 "recentRejectedHypotheses": rejected[-8:],
                 "rsiAutoResumed": bool(response.get("rsiAutoResumed")),
                 "lastError": (

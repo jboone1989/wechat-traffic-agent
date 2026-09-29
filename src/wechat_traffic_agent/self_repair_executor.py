@@ -518,7 +518,11 @@ class SelfRepairExecutor:
             }
 
         requested = self._next_problem(
-            statuses={"REQUESTED_TO_PI_REMOTE", "REPAIR_REQUESTED"},
+            statuses={
+                "REQUESTED_TO_PI_REMOTE",
+                "REPAIR_REQUESTED",
+                "RRSI_CANDIDATE_SELECTED",
+            },
             exclude_problem_ids=excluded,
         )
         if requested is not None:
@@ -603,7 +607,6 @@ class SelfRepairExecutor:
                 "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
                 "REPAIR_REQUESTED",
                 "REQUESTED_TO_PI_REMOTE",
-                "RRSI_CANDIDATE_SELECTED",
                 "OBSERVING_PRODUCTION",
             }:
                 actionable.append(problem_id)
@@ -612,6 +615,25 @@ class SelfRepairExecutor:
                     if status == "REPAIR_REQUESTED"
                     else status
                 )
+                continue
+            if status == "RRSI_CANDIDATE_SELECTED":
+                repair_rsi = (
+                    row.get("repair_rsi")
+                    if isinstance(row.get("repair_rsi"), dict)
+                    else {}
+                )
+                selected_base = str(
+                    repair_rsi.get("selectedBaseCommit") or ""
+                ).strip()
+                # A selected checkpoint is stable only when it proves the same
+                # source authority as the currently deployed Ferro release.
+                # Older receipts did not include baseCommit, so re-poll them
+                # once after this contract upgrade instead of trusting them.
+                if source_commit and selected_base == source_commit:
+                    continue
+                if source_commit:
+                    actionable.append(problem_id)
+                    reasons[problem_id] = "RRSI_SELECTION_SOURCE_REVALIDATION"
                 continue
             if status == "DIAGNOSING":
                 if self._planner() is None:
@@ -785,10 +807,32 @@ class SelfRepairExecutor:
         }
 
         if rsi_status == "CANDIDATE_SELECTED":
-            updated["status"] = "RRSI_CANDIDATE_SELECTED"
-            proposal = dict(updated.get("repair_proposal") or {})
-            proposal["status"] = "RRSI_CANDIDATE_SELECTED"
-            updated["repair_proposal"] = proposal
+            source_commit = str(self._source_authority_commit() or "").strip()
+            selected_base = str(status.get("selectedBaseCommit") or "").strip()
+            if source_commit and selected_base != source_commit:
+                updated["status"] = "DIAGNOSING"
+                updated["repair_proposal"] = None
+                updated["planner_attempt"] = {
+                    "status": "RRSI_STALE_BASE_COMMIT",
+                    "planner_version": PLANNER_VERSION,
+                    "source_commit": source_commit,
+                    "selected_base_commit": selected_base or None,
+                    "selected_checkpoint_id": status.get("selectedCheckpointId"),
+                    "selected_git_head": status.get("selectedGitHead"),
+                    "observed_at": now.astimezone(timezone.utc).isoformat(),
+                    "occurrences_seen": int(problem.get("occurrences") or 0),
+                    "reason": (
+                        "selected RRSI checkpoint was built from a different "
+                        "source authority"
+                        if selected_base
+                        else "selected RRSI checkpoint did not report its base commit"
+                    ),
+                }
+            else:
+                updated["status"] = "RRSI_CANDIDATE_SELECTED"
+                proposal = dict(updated.get("repair_proposal") or {})
+                proposal["status"] = "RRSI_CANDIDATE_SELECTED"
+                updated["repair_proposal"] = proposal
         elif rsi_status in {"FAILED", "EXPLORATION_EXHAUSTED"}:
             updated["status"] = "DIAGNOSING"
             updated["repair_proposal"] = None

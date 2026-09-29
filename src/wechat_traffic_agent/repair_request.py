@@ -116,6 +116,7 @@ def query_repair_status(capability_runtime: Any, request_id: str) -> dict[str, A
         "selectedChildRequestId",
         "selectedCheckpointId",
         "selectedGitHead",
+        "selectedBaseCommit",
         "recentRejectedHypotheses",
         "rsiAutoResumed",
         "lastError",
