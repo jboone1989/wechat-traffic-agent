@@ -12,7 +12,12 @@ import sys
 from typing import Any, Iterable
 
 from .generated_repair import GeneratedRepairPlan, GeneratedRepairPlanner, PLANNER_VERSION
-from .repair_request import RepairEvidenceRef, RepairRequest, submit_repair_request
+from .repair_request import (
+    RepairEvidenceRef,
+    RepairRequest,
+    query_repair_status,
+    submit_repair_request,
+)
 
 from agent_runtime.coding import (
     BoundedCodingProvider,
@@ -491,13 +496,21 @@ class SelfRepairExecutor:
     ) -> dict[str, Any]:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("self repair requires timezone-aware time")
+        excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
+
+        requested = self._next_problem(
+            statuses={"REQUESTED_TO_PI_REMOTE"},
+            exclude_problem_ids=excluded,
+        )
+        if requested is not None:
+            return self._poll_requested_repair(requested, now)
+
         workspace_sync = self._sync_workspace_to_deployed(now=now)
         if not bool(workspace_sync.get("ok")):
             return {
                 "status": "SELF_REPAIR_WORKSPACE_STALE",
                 "workspace_sync": workspace_sync,
             }
-        excluded = {str(value) for value in (exclude_problem_ids or set()) if str(value)}
 
         problem = self._next_problem(
             statuses={
@@ -576,6 +589,8 @@ class SelfRepairExecutor:
                 "REPAIR_PROPOSED",
                 "REPAIR_PAUSED_BASELINE_UNHEALTHY",
                 "REPAIR_PAUSED_WORKSPACE_RESTORE_FAILED",
+                "REQUESTED_TO_PI_REMOTE",
+                "RRSI_CANDIDATE_SELECTED",
                 "OBSERVING_PRODUCTION",
             }:
                 actionable.append(problem_id)
@@ -656,6 +671,16 @@ class SelfRepairExecutor:
             str(item) for item in (trial.get("failed_tests") or [])
             if str(item).strip()
         ][:32] if isinstance(trial, dict) else []
+        generated_recipe = (
+            proposal.get("generated_recipe")
+            if isinstance(proposal.get("generated_recipe"), dict)
+            else {}
+        )
+        evaluation_tests = [
+            str(item)
+            for item in (generated_recipe.get("focused_tests") or failed_tests)
+            if str(item).strip()
+        ][:32]
         impact = str(problem.get("observed_world_impact") or "").strip()
         if not impact:
             impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
@@ -666,6 +691,7 @@ class SelfRepairExecutor:
             failure_site=str(problem.get("failure_site") or "unknown"),
             evidence=evidence,
             failed_tests=failed_tests,
+            evaluation_tests=evaluation_tests,
             severity=str(problem.get("severity") or "LOW").upper(),
             risk="LOW",
             observed_world_impact=impact,
@@ -691,6 +717,69 @@ class SelfRepairExecutor:
             "problem_id": problem_id,
             "repair_request": receipt,
             "trial_ref": f"self-repair-trial:{problem_id.replace(':', '-')}",
+        }
+
+    def _poll_requested_repair(
+        self,
+        problem: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        problem_id = str(problem.get("problem_id") or "unknown")
+        receipt = (
+            problem.get("repair_request")
+            if isinstance(problem.get("repair_request"), dict)
+            else {}
+        )
+        request_id = str(
+            receipt.get("requestId")
+            or receipt.get("request_id")
+            or ""
+        ).strip()
+        if not request_id:
+            raise ValueError(
+                f"requested repair {problem_id} has no durable Pi Remote request id"
+            )
+        status = query_repair_status(self.capability_runtime, request_id)
+        rsi_status = str(status.get("rsiStatus") or "NOT_STARTED")
+        path = Path(str(problem["_path"]))
+        updated = {
+            key: value
+            for key, value in problem.items()
+            if not str(key).startswith("_")
+        }
+        updated["repair_rsi"] = {
+            "observed_at": now.astimezone(timezone.utc).isoformat(),
+            **status,
+        }
+
+        if rsi_status == "CANDIDATE_SELECTED":
+            updated["status"] = "RRSI_CANDIDATE_SELECTED"
+            proposal = dict(updated.get("repair_proposal") or {})
+            proposal["status"] = "RRSI_CANDIDATE_SELECTED"
+            updated["repair_proposal"] = proposal
+        elif rsi_status in {"FAILED", "EXPLORATION_EXHAUSTED"}:
+            updated["status"] = "DIAGNOSING"
+            updated["repair_proposal"] = None
+            updated["planner_attempt"] = {
+                "status": "RRSI_COUNTEREVIDENCE_READY",
+                "planner_version": PLANNER_VERSION,
+                "source_commit": self._source_authority_commit(),
+                "observed_at": now.astimezone(timezone.utc).isoformat(),
+                "occurrences_seen": int(problem.get("occurrences") or 0),
+                "rsi_status": rsi_status,
+                "rejected_hypotheses": list(
+                    status.get("recentRejectedHypotheses") or ()
+                )[:8],
+            }
+        else:
+            updated["status"] = "REQUESTED_TO_PI_REMOTE"
+
+        _atomic_json(path, updated)
+        return {
+            "status": updated["status"],
+            "problem_id": problem_id,
+            "repair_request_id": request_id,
+            "repair_rsi": updated["repair_rsi"],
         }
 
     @staticmethod
@@ -1705,6 +1794,12 @@ class SelfRepairExecutor:
                 "observed_at": payload["observed_at"],
                 "trial_ref": f"self-repair-trial:{safe}",
             }
+            receipt = extra.get("receipt")
+            if isinstance(receipt, dict):
+                updated["repair_request"] = dict(receipt)
+                for key in ("requestId", "request_id", "rsiAutoStarted"):
+                    if receipt.get(key) is not None:
+                        updated["repair_trial"][key] = receipt.get(key)
             _atomic_json(path, updated)
         return payload
 

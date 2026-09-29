@@ -24,6 +24,7 @@ class RepairRequest(BaseModel):
     failure_site: str = Field(min_length=1, max_length=1_000)
     evidence: list[RepairEvidenceRef] = Field(default_factory=list, max_length=32)
     failed_tests: list[str] = Field(default_factory=list, max_length=32)
+    evaluation_tests: list[str] = Field(default_factory=list, max_length=32)
     severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     risk: Literal["LOW", "MEDIUM", "HIGH"]
     observed_world_impact: str = Field(min_length=1, max_length=2_000)
@@ -39,6 +40,7 @@ class RepairRequest(BaseModel):
             "failureSite": self.failure_site,
             "evidence": [item.model_dump(exclude_none=True) for item in self.evidence],
             "failedTests": self.failed_tests,
+            "evaluationTests": self.evaluation_tests,
             "severity": self.severity,
             "risk": self.risk,
             "observedWorldImpact": self.observed_world_impact,
@@ -80,4 +82,58 @@ def submit_repair_request(capability_runtime: Any, request: RepairRequest) -> di
     return result
 
 
-__all__ = ["RepairEvidenceRef", "RepairRequest", "submit_repair_request"]
+
+def query_repair_status(capability_runtime: Any, request_id: str) -> dict[str, Any]:
+    """Read the durable Pi Remote/RRSI receipt for one submitted repair."""
+    request_id = str(request_id or "").strip()
+    if not request_id:
+        raise ValueError("repair status query requires request_id")
+    if capability_runtime is None:
+        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
+    available = getattr(capability_runtime, "available_capabilities", None)
+    if callable(available) and "QUERY_CODE_REPAIR_STATUS" not in set(available()):
+        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
+    invoke = getattr(capability_runtime, "invoke", None)
+    if not callable(invoke):
+        return {"status": "CAPABILITY_UNAVAILABLE", "requestId": request_id}
+    try:
+        receipt = invoke("QUERY_CODE_REPAIR_STATUS", {"requestId": request_id})
+    except Exception as exc:
+        return {
+            "status": "STATUS_QUERY_FAILED",
+            "requestId": request_id,
+            "error_type": type(exc).__name__,
+        }
+    body = getattr(receipt, "payload", receipt)
+    if not isinstance(body, dict):
+        return {
+            "status": "STATUS_QUERY_FAILED",
+            "requestId": request_id,
+            "error_type": "InvalidCapabilityReceipt",
+        }
+    result = {
+        "status": str(body.get("status") or "UNKNOWN"),
+        "requestId": str(body.get("requestId") or request_id),
+        "rsiStatus": str(body.get("rsiStatus") or "NOT_STARTED"),
+        "rsiRound": int(body.get("rsiRound") or 0),
+    }
+    for key in (
+        "selectedChildRequestId",
+        "selectedCheckpointId",
+        "selectedGitHead",
+        "recentRejectedHypotheses",
+        "rsiAutoResumed",
+        "lastError",
+    ):
+        value = body.get(key)
+        if value is not None:
+            result[key] = value
+    return result
+
+
+__all__ = [
+    "RepairEvidenceRef",
+    "RepairRequest",
+    "submit_repair_request",
+    "query_repair_status",
+]

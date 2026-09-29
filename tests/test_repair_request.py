@@ -5,7 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from wechat_traffic_agent.repair_request import RepairRequest, submit_repair_request
+from wechat_traffic_agent.repair_request import (
+    RepairRequest,
+    query_repair_status,
+    submit_repair_request,
+)
 from wechat_traffic_agent.pi_remote_repair import (
     PiRemoteRepairProvider,
     configured_pi_remote_repair_provider,
@@ -99,12 +103,11 @@ def test_pi_remote_provider_invokes_only_fixed_request_cli_without_shell(tmp_pat
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-pi-remote-request-process")
     provider = PiRemoteRepairProvider(root=tmp_path)
     manifest = provider.manifest()
-    assert manifest["capabilities"] == [{
-        "capability_id": "REQUEST_CODE_REPAIR",
-        "description": "Submit an evidence-bounded Ferro repair request to Pi Remote.",
-        "side_effect_level": "LOCAL_STATE",
-        "required_permissions": ["repair.request"],
-    }]
+    assert [row["capability_id"] for row in manifest["capabilities"]] == [
+        "REQUEST_CODE_REPAIR",
+        "QUERY_CODE_REPAIR_STATUS",
+    ]
+    assert manifest["capabilities"][1]["side_effect_level"] == "READ_ONLY"
 
     result = provider.invoke("REQUEST_CODE_REPAIR", sample_request().to_pi_remote_payload())
 
@@ -144,3 +147,87 @@ def test_configured_provider_does_not_autodiscover_without_self_repair_opt_in(mo
     monkeypatch.delenv("PI_REMOTE_ROOT", raising=False)
     monkeypatch.delenv("CONTENT_SELF_REPAIR_WORKSPACE", raising=False)
     assert configured_pi_remote_repair_provider() is None
+
+
+
+def test_query_repair_status_reads_rsi_selection():
+    class Runtime:
+        def __init__(self):
+            self.calls = []
+
+        def available_capabilities(self):
+            return {"QUERY_CODE_REPAIR_STATUS"}
+
+        def invoke(self, capability, payload):
+            self.calls.append((capability, payload))
+            return {
+                "status": "RECEIVED",
+                "requestId": "repair-123",
+                "rsiStatus": "CANDIDATE_SELECTED",
+                "rsiRound": 2,
+                "selectedChildRequestId": "child-456",
+                "selectedCheckpointId": "checkpoint-789",
+                "selectedGitHead": "a" * 40,
+            }
+
+    runtime = Runtime()
+    status = query_repair_status(runtime, "repair-123")
+
+    assert runtime.calls == [
+        ("QUERY_CODE_REPAIR_STATUS", {"requestId": "repair-123"})
+    ]
+    assert status["rsiStatus"] == "CANDIDATE_SELECTED"
+    assert status["selectedChildRequestId"] == "child-456"
+    assert status["selectedCheckpointId"] == "checkpoint-789"
+
+
+def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "cli.js").write_text("// fixture")
+    (tmp_path / "repair-request-cli.js").write_text("// fixture")
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen["argv"] = argv
+        seen["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "request": {
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "status": "RECEIVED",
+                },
+                "rsi": {
+                    "status": "CANDIDATE_SELECTED",
+                    "roundIndex": 1,
+                    "selection": {
+                        "childRequestId": "child-1",
+                        "checkpointId": "checkpoint-1",
+                        "gitHead": "b" * 40,
+                    },
+                },
+            }),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.pi_remote_repair.subprocess.run",
+        fake_run,
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-status-process")
+    provider = PiRemoteRepairProvider(root=tmp_path)
+
+    result = provider.invoke(
+        "QUERY_CODE_REPAIR_STATUS",
+        {"requestId": "00000000-0000-4000-8000-000000000001"},
+    )
+
+    assert result["rsiStatus"] == "CANDIDATE_SELECTED"
+    assert result["selectedCheckpointId"] == "checkpoint-1"
+    payload = json.loads(seen["argv"][2])
+    assert payload == {
+        "action": "status",
+        "requestId": "00000000-0000-4000-8000-000000000001",
+    }
+    assert "OPENAI_API_KEY" not in seen["kwargs"]["env"]

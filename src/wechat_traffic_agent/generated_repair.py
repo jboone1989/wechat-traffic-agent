@@ -670,10 +670,12 @@ class GeneratedRepairPlanner:
                         "occurrences", "cycles", "evidence_refs",
                     )},
                     "prior_repair_trial": problem.get("repair_trial"),
+                    "prior_rsi_counterevidence": problem.get("repair_rsi"),
                     "instruction_from_counterevidence": (
-                        "If prior_repair_trial is present, treat its failed tests and assertion evidence "
-                        "as counterevidence against the previous hypothesis. Do not repeat the rejected edit; "
-                        "propose a materially different bounded fix that preserves the failed contracts."
+                        "Treat prior_repair_trial failed tests/assertions and prior_rsi_counterevidence "
+                        "rejected hypotheses as falsification evidence. Do not repeat the rejected edit, "
+                        "hypothesis, or edit shape; propose a materially different bounded fix that preserves the "
+                        "failed contracts and addresses the measured world symptom."
                     ),
                     "allowed_source_paths": sources,
                     "allowed_test_paths": tests,

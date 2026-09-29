@@ -50,6 +50,43 @@ class RequestCapability:
         return {"status": "RECEIVED", "requestId": "pi-repair-123"}
 
 
+class RsiStatusCapability:
+    def __init__(self, *, rsi_status="CANDIDATE_SELECTED"):
+        self.calls = []
+        self.rsi_status = rsi_status
+
+    def available_capabilities(self):
+        return {"REQUEST_CODE_REPAIR", "QUERY_CODE_REPAIR_STATUS"}
+
+    def invoke(self, capability_id, payload):
+        self.calls.append((capability_id, payload))
+        if capability_id == "REQUEST_CODE_REPAIR":
+            return {
+                "status": "RECEIVED",
+                "requestId": "pi-repair-rsi-123",
+                "rsiAutoStarted": True,
+            }
+        assert capability_id == "QUERY_CODE_REPAIR_STATUS"
+        result = {
+            "status": "RECEIVED",
+            "requestId": "pi-repair-rsi-123",
+            "rsiStatus": self.rsi_status,
+            "rsiRound": 1,
+        }
+        if self.rsi_status == "CANDIDATE_SELECTED":
+            result.update({
+                "selectedChildRequestId": "pi-repair-child-1",
+                "selectedCheckpointId": "checkpoint-1",
+                "selectedGitHead": "a" * 40,
+            })
+        if self.rsi_status == "FAILED":
+            result["lastError"] = {
+                "type": "Error",
+                "message": "planner cognition failed",
+            }
+        return result
+
+
 def _executor(state_root, capability_runtime=None):
     return SelfRepairExecutor(
         state_root=state_root,
@@ -77,6 +114,44 @@ def test_executor_submits_request_only_and_records_receipt(tmp_path):
     updated = json.loads(problem_path.read_text())
     assert updated["status"] == "REQUESTED_TO_PI_REMOTE"
     assert updated["repair_trial"]["status"] == "REQUESTED_TO_PI_REMOTE"
+
+
+def test_requested_repair_advances_to_rsi_selected_checkpoint(tmp_path):
+    problem_path = _problem(tmp_path)
+    runtime = RsiStatusCapability()
+
+    submitted = _executor(tmp_path, runtime).run_once(now=NOW)
+    assert submitted["status"] == "REQUESTED_TO_PI_REMOTE"
+
+    polled = _executor(tmp_path, runtime).run_once(now=NOW)
+
+    assert polled["status"] == "RRSI_CANDIDATE_SELECTED"
+    assert polled["repair_rsi"]["rsiStatus"] == "CANDIDATE_SELECTED"
+    assert polled["repair_rsi"]["selectedCheckpointId"] == "checkpoint-1"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "RRSI_CANDIDATE_SELECTED"
+    assert updated["repair_request"]["requestId"] == "pi-repair-rsi-123"
+    assert updated["repair_rsi"]["selectedGitHead"] == "a" * 40
+    assert [call[0] for call in runtime.calls] == [
+        "REQUEST_CODE_REPAIR",
+        "QUERY_CODE_REPAIR_STATUS",
+    ]
+
+
+def test_failed_rsi_round_requeues_same_evidence_bound_repair(tmp_path):
+    problem_path = _problem(tmp_path)
+    runtime = RsiStatusCapability(rsi_status="FAILED")
+
+    submitted = _executor(tmp_path, runtime).run_once(now=NOW)
+    assert submitted["status"] == "REQUESTED_TO_PI_REMOTE"
+
+    polled = _executor(tmp_path, runtime).run_once(now=NOW)
+    assert polled["status"] == "DIAGNOSING"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "DIAGNOSING"
+    assert updated["repair_proposal"] is None
+    assert updated["planner_attempt"]["status"] == "RRSI_COUNTEREVIDENCE_READY"
+    assert updated["repair_rsi"]["lastError"]["message"] == "planner cognition failed"
 
 
 def test_executor_fails_closed_when_request_capability_is_missing(tmp_path):
@@ -144,6 +219,23 @@ def test_capability_contract_problem_routes_to_pi_remote(tmp_path):
     assert payload["sourceProblemId"] == "self-problem:contract123"
     assert payload["failureSite"] == "wakeful_tasks.py:goal_effect_contract"
     assert payload["targetFiles"] == ["src/wechat_traffic_agent/wakeful_tasks.py"]
+
+
+def test_startup_recovery_wakes_requested_rsi_work(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REQUESTED_TO_PI_REMOTE"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+
+    summary = _executor(tmp_path).startup_recovery_summary(now=NOW)
+
+    assert summary["status"] == "WORK_PENDING"
+    assert summary["problem_ids"] == ["self-problem:abc123"]
+    assert summary["reasons"]["self-problem:abc123"] == "REQUESTED_TO_PI_REMOTE"
 
 
 def test_startup_recovery_wakes_unlocalized_problem_after_localizer_upgrade(tmp_path):
