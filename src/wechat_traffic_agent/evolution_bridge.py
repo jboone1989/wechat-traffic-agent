@@ -32,6 +32,7 @@ from agent_runtime.evolution import (
 from .content_action_prediction import ActionPredictionOutcome, ContentActionPrediction
 from .context_builder_evolution import ContextBuilderEvolution
 from .memory_evolution_bridge import MemoryRuntimeEvolutionBridge
+from .awe_hillclimb import FerroAWEHillclimb
 from .content_strategy import (
     ContentStrategyBinding,
     PROFILE_BY_NAME,
@@ -96,6 +97,7 @@ class ContentEvolutionBridge:
             runtime=self.runtime, state_root=self.state_root
         )
         self.context_builder_evolution = ContextBuilderEvolution(self.state_root)
+        self.awe_hillclimb = FerroAWEHillclimb(self.state_root)
 
     def sync_memory_evolution(self) -> dict[str, Any]:
         return self.memory_evolution_bridge.sync()
@@ -361,17 +363,32 @@ class ContentEvolutionBridge:
                         "baseline_samples": evaluation.baseline_samples,
                         "candidate_samples": evaluation.candidate_samples,
                     })
-                    if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
-                        capability = self._promote_strategy_experiment(
-                            experiment_id=experiment_id,
-                            evaluation_id=evaluation.evaluation_id,
+                    state = _read_json(self.trial_path)
+                    if str(state.get("experiment_id") or "") == experiment_id:
+                        gated = self._strategy_awe_gate(
+                            state=state,
+                            evaluation=evaluation,
+                            known_at=outcome.observed_at,
                         )
-                        if capability is not None:
-                            capability_updates.append({
-                                "status": "PROMOTED",
-                                "version_id": capability.version_id,
-                                "implementation_ref": capability.implementation_ref,
-                            })
+                        experiment_updates[-1]["awe_gate"] = {
+                            "status": gated.get("status"),
+                            "decision": gated.get("decision"),
+                        }
+                        if (
+                            evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED
+                            and gated.get("status") == "PROMOTION_APPROVED"
+                        ):
+                            capability = self._promote_strategy_experiment(
+                                experiment_id=experiment_id,
+                                evaluation_id=evaluation.evaluation_id,
+                            )
+                            if capability is not None:
+                                capability_updates.append({
+                                    "status": "PROMOTED",
+                                    "version_id": capability.version_id,
+                                    "implementation_ref": capability.implementation_ref,
+                                    "awe_experiment_id": state.get("awe_experiment_id"),
+                                })
                 except ValueError as exc:
                     experiment_updates.append({
                         "status": "SAMPLE_REJECTED",
@@ -408,6 +425,120 @@ class ContentEvolutionBridge:
             "experiment_updates": experiment_updates,
             "capability_updates": capability_updates,
         }
+    def _ensure_strategy_awe_experiment(
+        self,
+        state: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        experiment_id = str(state.get("experiment_id") or "")
+        candidate_profile = str(state.get("candidate_profile") or "")
+        baseline_ref = str(
+            state.get("baseline_version_id")
+            or state.get("baseline_impl")
+            or STRATEGY_BASELINE_IMPL
+        )
+        mutation_ref = PROFILE_IMPL_PREFIX + candidate_profile
+        if not experiment_id or candidate_profile not in PROFILE_BY_NAME:
+            raise ValueError("content strategy trial lacks bounded AWE identity")
+        return self.awe_hillclimb.start_experiment(
+            capability_id=STRATEGY_CAPABILITY_ID,
+            hypothesis=(
+                f"The single profile mutation to {candidate_profile} should reproduce "
+                "its historical pageview advantage on future prospective 24h outcomes."
+            ),
+            baseline_ref=baseline_ref,
+            mutation_ref=mutation_ref,
+            mutation_kind="CONTENT_STRATEGY_PROFILE_CHANGE",
+            target_domains=("content_strategy", "world_outcome", "pageviews_24h"),
+            source_ref=str(state.get("diagnosis_id") or "") or None,
+            target_ref=experiment_id,
+            attempt_ref=experiment_id,
+            now=_aware(self.runtime.clock.now()),
+        )
+
+    def _strategy_awe_gate(
+        self,
+        *,
+        state: dict[str, Any],
+        evaluation: Any,
+        known_at: datetime,
+    ) -> dict[str, Any]:
+        experiment = self.runtime.evolution_experiment_manager.get(
+            str(state["experiment_id"])
+        )
+        awe = self._ensure_strategy_awe_experiment(state)
+        baseline_mean = dict(evaluation.baseline_means).get("pageviews_24h")
+        candidate_mean = dict(evaluation.candidate_means).get("pageviews_24h")
+        gain = (
+            float(candidate_mean) - float(baseline_mean)
+            if baseline_mean is not None and candidate_mean is not None
+            else None
+        )
+        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+            decision = "PROMOTE"
+            reason = (
+                "future prospective 24h world outcomes reproduced the historical "
+                "content-strategy advantage"
+            )
+        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
+            decision = "ROLLBACK_REGRESSION"
+            reason = "future prospective 24h outcomes regressed under the challenger"
+        elif _aware(known_at) >= experiment.spec.prospective_end_at:
+            decision = (
+                "ROLLBACK_INSUFFICIENT_EVIDENCE"
+                if evaluation.result is ExperimentResult.INSUFFICIENT_EVIDENCE
+                else "ROLLBACK_NO_GENERALIZATION"
+            )
+            reason = "prospective content-strategy window closed without generalizing improvement"
+        else:
+            decision = "WAIT_FOR_EVIDENCE"
+            reason = "future prospective 24h outcomes are still accumulating"
+
+        train_baseline = state.get("baseline_historical_mean_pageviews_24h")
+        train_candidate = state.get("candidate_historical_mean_pageviews_24h")
+        train_gain = (
+            float(train_candidate) - float(train_baseline)
+            if isinstance(train_baseline, (int, float))
+            and isinstance(train_candidate, (int, float))
+            else None
+        )
+        gated = self.awe_hillclimb.ingest_evaluator_receipt(
+            str(awe["experiment_id"]),
+            {
+                "decision": decision,
+                "reason": reason,
+                "train": {
+                    "baseline_mean": train_baseline,
+                    "candidate_mean": train_candidate,
+                    "gain": train_gain,
+                    "historical_sample_count": state.get("historical_sample_count"),
+                },
+                "hidden": {
+                    "baseline_mean": baseline_mean,
+                    "candidate_mean": candidate_mean,
+                    "gain": gain,
+                    "noise_floor": 0.0,
+                    "n_baseline": int(evaluation.baseline_samples),
+                    "n_candidate": int(evaluation.candidate_samples),
+                    "infrastructure_error_count": 0,
+                },
+                "regression": {
+                    "metric": "pageviews_24h",
+                    "world_outcomes_only": True,
+                    "publication_boundary_preserved": True,
+                },
+            },
+            now=_aware(known_at),
+        )
+        state["awe_experiment_id"] = awe["experiment_id"]
+        state["awe_gate"] = {
+            "status": gated.get("status"),
+            "decision": gated.get("decision"),
+            "hidden_baseline_samples": int(evaluation.baseline_samples),
+            "hidden_candidate_samples": int(evaluation.candidate_samples),
+        }
+        _atomic_json(self.trial_path, state)
+        return gated
+
     def _promote_strategy_experiment(self, *, experiment_id: str, evaluation_id: str):
         state = _read_json(self.trial_path)
         if str(state.get("experiment_id") or "") != experiment_id:
@@ -919,6 +1050,21 @@ class ContentEvolutionBridge:
                 "strategy-override-candidate-arm-only",
             ],
         )
+        awe_experiment = self.awe_hillclimb.start_experiment(
+            capability_id=STRATEGY_CAPABILITY_ID,
+            hypothesis=(
+                f"The single profile mutation to {candidate_profile} should reproduce "
+                "its historical pageview advantage on future prospective 24h outcomes."
+            ),
+            baseline_ref=str(getattr(baseline, "version_id", STRATEGY_BASELINE_IMPL)),
+            mutation_ref=PROFILE_IMPL_PREFIX + candidate_profile,
+            mutation_kind="CONTENT_STRATEGY_PROFILE_CHANGE",
+            target_domains=("content_strategy", "world_outcome", "pageviews_24h"),
+            source_ref=diagnosis.diagnosis_id,
+            target_ref=experiment.spec.experiment_id,
+            attempt_ref=experiment.spec.experiment_id,
+            now=trial_now,
+        )
         payload = {
             "schema_version": TRIAL_SCHEMA,
             "status": "SHADOW",
@@ -931,6 +1077,7 @@ class ContentEvolutionBridge:
             "historical_sample_count": len(mature),
             "minimum_samples_per_profile": EVOLUTION_MIN_HISTORICAL_PROFILE_SAMPLES,
             "experiment_id": experiment.spec.experiment_id,
+            "awe_experiment_id": awe_experiment["experiment_id"],
             "prospective_start_at": experiment.spec.prospective_start_at.isoformat(),
             "prospective_end_at": experiment.spec.prospective_end_at.isoformat(),
             "diagnosis_id": diagnosis.diagnosis_id,

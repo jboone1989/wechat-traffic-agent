@@ -777,3 +777,138 @@ def test_historical_bootstrap_never_backdates_new_prospective_window(tmp_path):
     )
     assert experiment.spec.frozen_at == NOW
     assert experiment.spec.prospective_start_at > NOW
+
+
+
+def test_content_strategy_trial_registers_awe_before_future_outcomes(tmp_path):
+    import json
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    rt = AgentRuntime.bootstrap(runtime_root, clock=FrozenClock(NOW))
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=3)
+    for i, (profile, views) in enumerate([
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("follow-up-update", 7.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+        ("comparison-guide", 17.0),
+    ]):
+        _write_history(
+            state_root,
+            cycle=f"awe-hist-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+
+    result = bridge.bootstrap_historical_learning(as_of=NOW)
+    trial = json.loads(bridge.trial_path.read_text(encoding="utf-8"))
+    awe = bridge.awe_hillclimb.optimizer_view(trial["awe_experiment_id"])
+
+    assert result["candidate"]["status"] == "PROSPECTIVE_TRIAL_CREATED"
+    assert awe["status"] == "AWAITING_AWE"
+    assert awe["capability_id"] == STRATEGY_CAPABILITY_ID
+    assert awe["target_ref"] == trial["experiment_id"]
+    assert awe["attempt_ref"] == trial["experiment_id"]
+    assert awe["hidden_cases_stored_in_ferro"] is False
+    assert awe["evaluator_receipt"] is None
+
+
+def test_content_strategy_awe_receipt_separates_historical_train_from_future_hidden(
+    tmp_path,
+):
+    import json
+
+    runtime_root = tmp_path / "runtime"
+    state_root = tmp_path / "state"
+    clock = FrozenClock(NOW)
+    rt = AgentRuntime.bootstrap(runtime_root, clock=clock)
+    bridge = ContentEvolutionBridge(
+        runtime=rt,
+        state_root=state_root,
+        account="https://example.test",
+    )
+    base = NOW - timedelta(days=3)
+    historical = [
+        ("follow-up-update", 5.0),
+        ("follow-up-update", 6.0),
+        ("follow-up-update", 7.0),
+        ("comparison-guide", 20.0),
+        ("comparison-guide", 18.0),
+        ("comparison-guide", 17.0),
+    ]
+    for i, (profile, views) in enumerate(historical):
+        _write_history(
+            state_root,
+            cycle=f"awe-separation-{i}",
+            profile=profile,
+            pageviews=views,
+            created_at=base + timedelta(minutes=i),
+        )
+    bootstrap = bridge.bootstrap_historical_learning(as_of=NOW)
+    trial = json.loads(bridge.trial_path.read_text(encoding="utf-8"))
+    candidate_profile = bootstrap["candidate"]["candidate_profile"]
+    clock.advance(61)
+
+    arm_counts = {"BASELINE": 0, "CANDIDATE": 0}
+    created = []
+    index = 0
+    while min(arm_counts.values()) < 3 and index < 100:
+        created_at = clock.now() + timedelta(minutes=index)
+        context, prediction, strategy = _live_decision(
+            bridge,
+            state_root,
+            cycle=f"awe-future-{index}",
+            created_at=created_at,
+        )
+        arm = context["arm"]
+        if arm_counts[arm] >= 3:
+            index += 1
+            continue
+        arm_counts[arm] += 1
+        created.append((context, prediction, strategy, created_at))
+        index += 1
+
+    for context, prediction, strategy, created_at in created:
+        expected = float(prediction.selected.mature.expected_pageviews)
+        actual = (
+            max(12.0, expected * 1.2)
+            if context["arm"] == "CANDIDATE"
+            else max(0.0, expected * 0.2)
+        )
+        outcome = ActionPredictionOutcome(
+            prediction_id=prediction.prediction_id,
+            publication_id=f"pub-{prediction.cycle}",
+            topic=prediction.topic,
+            profile_name=strategy.profile.name,
+            window="24h",
+            maturity="MATURE",
+            expected_pageviews=expected,
+            actual_pageviews=actual,
+            prediction_error=abs(actual - expected) / (actual + expected + 1.0),
+            reliability=1.0,
+            observed_at=created_at + timedelta(hours=24),
+            evidence_refs=(f"world:{prediction.cycle}",),
+        )
+        bridge.record_action_outcomes([outcome.model_dump(mode="json")])
+
+    awe = bridge.awe_hillclimb.optimizer_view(trial["awe_experiment_id"])
+    receipt = awe["evaluator_receipt"]
+    assert awe["status"] == "PROMOTION_APPROVED"
+    assert receipt["train"]["historical_sample_count"] == len(historical)
+    assert receipt["train"]["candidate_mean"] > receipt["train"]["baseline_mean"]
+    assert receipt["hidden"]["n_baseline"] == 3
+    assert receipt["hidden"]["n_candidate"] == 3
+    assert receipt["hidden"]["candidate_mean"] > receipt["hidden"]["baseline_mean"]
+    encoded_hidden = str(receipt["hidden"])
+    assert "prediction_id" not in encoded_hidden
+    assert "cycle" not in encoded_hidden
+    active = rt.evolution_capability_registry.active(STRATEGY_CAPABILITY_ID)
+    assert active.implementation_ref == PROFILE_IMPL_PREFIX + candidate_profile
