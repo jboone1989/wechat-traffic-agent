@@ -13,6 +13,7 @@ class _Wakeful:
     def __init__(self):
         self.signals = []
         self.reflections = []
+        self.repairs = []
 
     def emit_interoceptive_fault(self, fault, *, observed_at=None):
         self.signals.append((dict(fault), observed_at))
@@ -33,12 +34,22 @@ class _Wakeful:
         self.reflections.append(row)
         return row
 
+    def schedule_self_maintenance(self, now, *, seconds=60):
+        row = {
+            "status": "SCHEDULED",
+            "at": now.isoformat(),
+            "seconds": seconds,
+            "task": "SELF_REPAIR",
+        }
+        self.repairs.append(row)
+        return row
+
 
 def test_run_wrapper_turns_chronic_fallback_into_neural_signal_and_diagnosis(tmp_path):
     wakeful = _Wakeful()
     runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
 
-    cycles = iter(["c1", "c2", "c3"])
+    cycles = iter(["c1", "c2", "c3", "c4"])
 
     def run_unobserved(*_args, **_kwargs):
         return {
@@ -65,6 +76,23 @@ def test_run_wrapper_turns_chronic_fallback_into_neural_signal_and_diagnosis(tmp
         "ALREADY_RECORDED",
     }
     assert runner.self_maintenance.review()["open_count"] >= 1
+    first_problem = third["maintenance_observation"]["problem_id"]
+
+    fourth = runner.run(
+        "CONTENT_COGNITION",
+        now=NOW + timedelta(minutes=3),
+    )
+    assert fourth["interoception"]["diagnosis_active"] is True
+    assert fourth["maintenance_observation"]["status"] == "RECORDED"
+    assert fourth["maintenance_observation"]["problem_id"] == first_problem
+    stored = next(
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+        if json.loads(path.read_text()).get("problem_id") == first_problem
+    )
+    assert stored["occurrences"] == 2
+    assert wakeful.repairs[-1]["task"] == "SELF_REPAIR"
+    assert wakeful.repairs[-1]["seconds"] == 0
 
 
 def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
@@ -106,6 +134,47 @@ def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
     assert contract_problem["status"] == "DIAGNOSING"
     assert len(wakeful.signals) == 1
     assert len(wakeful.reflections) == 1
+
+
+def test_repeated_contract_no_effect_updates_one_problem_and_wakes_repair(tmp_path):
+    wakeful = _Wakeful()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    streaks = iter([35, 36])
+    cycles = iter(["resource-no-effect-35", "resource-no-effect-36"])
+
+    runner._run_unobserved = lambda *_args, **_kwargs: {
+        "task": "RESOURCE_REVIEW",
+        "status": "OK",
+        "cycle": next(cycles),
+        "autonomous_goal_outcome": {
+            "status": "EXECUTED",
+            "world_utility": 0.0,
+            "drive_feedback": {
+                "no_effect_streak": next(streaks),
+                "last_outcome_status": "EXECUTED",
+            },
+        },
+    }
+
+    first = runner.run("RESOURCE_REVIEW", now=NOW)
+    second = runner.run("RESOURCE_REVIEW", now=NOW + timedelta(minutes=1))
+
+    assert first["maintenance_observation"]["status"] == "RECORDED"
+    assert second["maintenance_observation"]["status"] == "RECORDED"
+    assert (
+        first["maintenance_observation"]["problem_id"]
+        == second["maintenance_observation"]["problem_id"]
+    )
+    problem_id = first["maintenance_observation"]["problem_id"]
+    problems = [
+        json.loads(path.read_text())
+        for path in (tmp_path / "application/self_maintenance/problems").glob("*.json")
+    ]
+    matches = [row for row in problems if row.get("problem_id") == problem_id]
+    assert len(matches) == 1
+    assert matches[0]["occurrences"] == 2
+    assert wakeful.repairs[-1]["task"] == "SELF_REPAIR"
+    assert wakeful.repairs[-1]["seconds"] == 0
 
 
 def test_settled_autonomous_goal_no_effect_is_felt_in_production_path(tmp_path):

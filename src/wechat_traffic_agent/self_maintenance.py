@@ -374,8 +374,22 @@ class SelfMaintenanceService:
         task = str(failure.get("task") or "CONTENT_COGNITION").upper()
         self._reset_task_success(task)
         failure_site = str(failure.get("failure_site") or _stable_failure_site(self.state_root, cycle))
+        signature_message = message
+        if error_type == "CAPABILITY_CONTRACT_VIOLATION":
+            symptom_kinds = [
+                str(row.get("kind") or "")
+                for row in list(failure.get("symptoms") or [])
+                if isinstance(row, dict) and str(row.get("kind") or "")
+            ]
+            stable_kind = next(
+                (kind for kind in symptom_kinds if kind.startswith("contract_")),
+                "capability_contract_violation",
+            )
+            # Changing observations such as no_effect_streak=35/36 are
+            # recurrence evidence for one disease, not new disease identities.
+            signature_message = stable_kind
         signature = sha256(
-            f"{task}\0{error_type}\0{message}\0{failure_site}".encode("utf-8")
+            f"{task}\0{error_type}\0{signature_message}\0{failure_site}".encode("utf-8")
         ).hexdigest()
         problem_id = "self-problem:" + signature[:24]
         path = self.root / "problems" / f"{signature[:24]}.json"

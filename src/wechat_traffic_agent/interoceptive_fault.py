@@ -581,7 +581,11 @@ class InteroceptiveFaultSystem:
         _atomic_json(self.root / "latest_observation.json", observation)
 
         diagnostic_failure = None
-        if should_diagnose and episode_id:
+        diagnosis_active = bool(
+            episode_payload
+            and episode_payload.get("diagnosis_requested_at")
+        )
+        if diagnosis_active and episode_id:
             diagnostic_failure = {
                 "status": "ERROR",
                 "task": task,
@@ -599,6 +603,7 @@ class InteroceptiveFaultSystem:
                 "status_evidence": [
                     dict(row) for row in classification["status_evidence"][:32]
                 ],
+                "diagnostic_recurrence": not should_diagnose,
             }
         return {
             "status": "SYMPTOM_OBSERVED" if classification["abnormal"] else "HEALTHY_OBSERVED",
@@ -606,6 +611,7 @@ class InteroceptiveFaultSystem:
             "projection": new_state,
             "episode": episode_payload,
             "should_diagnose": should_diagnose,
+            "diagnosis_active": diagnosis_active,
             "diagnostic_failure": diagnostic_failure,
         }
 

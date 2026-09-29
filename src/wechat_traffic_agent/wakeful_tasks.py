@@ -318,6 +318,7 @@ class WakefulContentTaskRunner:
             "episode_id": observation.get("episode_id"),
             "severity": observation.get("severity"),
             "primary_symptom": observation.get("primary_symptom"),
+            "diagnosis_active": bool(sensed.get("diagnosis_active")),
         }
 
         maintenance = getattr(self, "self_maintenance", None)
@@ -364,8 +365,7 @@ class WakefulContentTaskRunner:
                 ),
             }
         if (
-            bool(sensed.get("should_diagnose"))
-            and isinstance(diagnostic_failure, dict)
+            isinstance(diagnostic_failure, dict)
             and maintenance is not None
             and str((maintenance_result or {}).get("status") or "") not in {
                 "RECORDED", "ALREADY_RECORDED",
@@ -377,6 +377,27 @@ class WakefulContentTaskRunner:
                 )
             except Exception as exc:  # noqa: BLE001
                 rows["maintenance_observation"] = self._error(exc)
+
+        maintenance_observation = (
+            rows.get("maintenance_observation")
+            if isinstance(rows.get("maintenance_observation"), dict)
+            else {}
+        )
+        if (
+            isinstance(diagnostic_failure, dict)
+            and str(maintenance_observation.get("status") or "") == "RECORDED"
+        ):
+            schedule_repair = getattr(self.wakeful, "schedule_self_maintenance", None)
+            if callable(schedule_repair):
+                try:
+                    schedule_repair(now, seconds=0)
+                    rows["interoception"]["repair_wake"] = {
+                        "status": "SCHEDULED",
+                        "task": "SELF_REPAIR",
+                        "problem_id": maintenance_observation.get("problem_id"),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    rows["interoception"]["repair_wake"] = self._error(exc)
 
         if observation.get("abnormal"):
             emit = getattr(self.wakeful, "emit_interoceptive_fault", None)
