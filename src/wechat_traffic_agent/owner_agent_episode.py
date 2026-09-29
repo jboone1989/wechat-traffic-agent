@@ -569,6 +569,13 @@ class OwnerAgentEpisode:
         state = self._read(goal_id)
         if state.get("schema_version") != self.SCHEMA:
             return {"status": "NO_EPISODE"}
+        if str(state.get("status") or "") == "COMPLETED":
+            return {
+                "status": "COMPLETED",
+                "episode_id": state.get("episode_id"),
+                "goal_scheduler_outcome": state.get("goal_scheduler_outcome"),
+                "duplicate": True,
+            }
         stamp = now.astimezone(timezone.utc)
         scheduler_outcome = None
         goal_context = (
