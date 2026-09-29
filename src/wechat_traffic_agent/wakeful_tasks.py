@@ -57,6 +57,10 @@ class WakefulContentTaskRunner:
             from .owner_agent_episode import OwnerAgentEpisode
 
             self.owner_agent_episode = OwnerAgentEpisode(Path(state_root))
+        if state_root is not None and getattr(self, "goal_scheduler_evolution", None) is None:
+            from .goal_scheduler_evolution import GoalSchedulerEvolution
+
+            self.goal_scheduler_evolution = GoalSchedulerEvolution(Path(state_root))
         if (
             state_root is not None
             and components.get("repair_planner_runtime") is not None
@@ -2670,8 +2674,8 @@ class WakefulContentTaskRunner:
         projection_for = getattr(episode, "projection_for", None)
         stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
-        scored: list[tuple[float, float, str, Any, str]] = []
-        non_pending: list[tuple[float, float, str, Any, str]] = []
+        scored: list[dict[str, Any]] = []
+        non_pending: list[dict[str, Any]] = []
         for goal, origin in candidates:
             goal_id = str(getattr(goal, "goal_id", "") or "").strip()
             priority = float(getattr(goal, "priority", 0.0) or 0.0)
@@ -2699,16 +2703,14 @@ class WakefulContentTaskRunner:
             except ValueError:
                 # Never-run goals must get a turn before already-active goals.
                 age_seconds = 10**9
-            # Priority is useful for ordering near-equal goals, but cannot
-            # permanently starve another active owner commitment.
-            fairness_score = age_seconds + max(0.0, min(1.0, priority)) * 300.0
-            row = (
-                fairness_score,
-                priority,
-                str(getattr(goal, "created_at", "") or ""),
-                goal,
-                origin,
-            )
+            row = {
+                "goal_id": goal_id,
+                "priority": priority,
+                "age_seconds": age_seconds,
+                "created_at": str(getattr(goal, "created_at", "") or ""),
+                "goal": goal,
+                "origin": origin,
+            }
             scored.append(row)
             pending = bool(
                 str(state.get("status") or "") == "RUNNING"
@@ -2717,8 +2719,52 @@ class WakefulContentTaskRunner:
             if not pending:
                 non_pending.append(row)
         pool = non_pending or scored
-        pool.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-        _, _, _, goal, origin = pool[0]
+        scheduler_receipt: dict[str, Any] | None = None
+        if preferred_ids:
+            # Explicit owner wake references are authority, not a policy trial.
+            pool.sort(
+                key=lambda row: (
+                    float(row["age_seconds"])
+                    + max(0.0, min(1.0, float(row["priority"]))) * 300.0,
+                    float(row["priority"]),
+                    str(row["created_at"]),
+                ),
+                reverse=True,
+            )
+            chosen = pool[0]
+        else:
+            scheduler = getattr(self, "goal_scheduler_evolution", None)
+            if scheduler is not None:
+                scheduler_receipt = scheduler.select(
+                    [
+                        {
+                            "goal_id": row["goal_id"],
+                            "priority": row["priority"],
+                            "age_seconds": row["age_seconds"],
+                            "created_at": row["created_at"],
+                        }
+                        for row in pool
+                    ],
+                    now=stamp,
+                )
+                selected_goal_id = str(scheduler_receipt.get("goal_id") or "")
+                chosen = next(
+                    row for row in pool
+                    if str(row["goal_id"]) == selected_goal_id
+                )
+            else:
+                pool.sort(
+                    key=lambda row: (
+                        float(row["age_seconds"])
+                        + max(0.0, min(1.0, float(row["priority"]))) * 300.0,
+                        float(row["priority"]),
+                        str(row["created_at"]),
+                    ),
+                    reverse=True,
+                )
+                chosen = pool[0]
+        goal = chosen["goal"]
+        origin = str(chosen["origin"])
         parent_description = str(
             getattr(goal, "description", "") or ""
         ).strip()
@@ -2751,6 +2797,26 @@ class WakefulContentTaskRunner:
                 "EXACT_OWNER_GOAL_REF"
                 if goal_id in preferred_ids
                 else "FAIR_OWNER_GOAL_SCHEDULER"
+            ),
+            "goal_scheduler_decision_id": (
+                str(scheduler_receipt.get("decision_id") or "")
+                if scheduler_receipt is not None
+                else None
+            ),
+            "goal_scheduler_arm": (
+                str(scheduler_receipt.get("arm") or "")
+                if scheduler_receipt is not None
+                else None
+            ),
+            "goal_scheduler_priority_bonus_seconds": (
+                float(scheduler_receipt.get("priority_bonus_seconds"))
+                if scheduler_receipt is not None
+                else None
+            ),
+            "goal_scheduler_awe_experiment_id": (
+                (str(scheduler_receipt.get("awe_experiment_id") or "") or None)
+                if scheduler_receipt is not None
+                else None
             ),
         }
 
@@ -3074,6 +3140,24 @@ class WakefulContentTaskRunner:
                     "retry_seconds": retry_seconds,
                 }
 
+    def _settle_goal_scheduler_selection(
+        self,
+        *,
+        owner_goal: dict[str, Any] | None,
+        outcome: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        if not isinstance(owner_goal, dict):
+            return None
+        decision_id = str(owner_goal.get("goal_scheduler_decision_id") or "").strip()
+        if not decision_id:
+            return None
+        scheduler = getattr(self, "goal_scheduler_evolution", None)
+        settle = getattr(scheduler, "settle", None)
+        if not callable(settle):
+            return None
+        return settle(decision_id, outcome=outcome, now=now)
+
     @staticmethod
     def _owner_agent_seed_evidence(control: dict[str, Any]) -> list[dict[str, Any]]:
         """Carry read-only evidence gathered by the controller into its executor."""
@@ -3199,16 +3283,24 @@ class WakefulContentTaskRunner:
                                 seconds=max(60, min(wait_seconds, 21600)),
                                 relevant_refs=(str(owner_goal.get("goal_id") or ""),),
                             )
+                    wait_outcome = {
+                        "status": "WAIT_SCHEDULED",
+                        "wait_seconds": wait_seconds,
+                    }
                     complete = getattr(self.owner_agent_episode, "complete", None)
                     if callable(complete):
                         rows["owner_agent_episode_completion"] = complete(
-                            outcome={
-                                "status": "WAIT_SCHEDULED",
-                                "wait_seconds": wait_seconds,
-                            },
+                            outcome=wait_outcome,
                             now=now,
                             goal_id=str(owner_goal.get("goal_id") or ""),
                         )
+                    settled_scheduler = self._settle_goal_scheduler_selection(
+                        owner_goal=owner_goal,
+                        outcome=wait_outcome,
+                        now=now,
+                    )
+                    if settled_scheduler is not None:
+                        rows["goal_scheduler_outcome"] = settled_scheduler
                     rows["status"] = "OWNER_AGENT_WAITING"
                     return rows
                 if action == "RUN_CONTENT_PIPELINE":
@@ -3627,7 +3719,19 @@ class WakefulContentTaskRunner:
                     rows["owner_agent_episode_completion"] = complete(
                         outcome=continuous,
                         now=now,
+                        goal_id=(
+                            str(owner_goal.get("goal_id") or "")
+                            if isinstance(owner_goal, dict)
+                            else None
+                        ),
                     )
+                settled_scheduler = self._settle_goal_scheduler_selection(
+                    owner_goal=owner_goal,
+                    outcome=continuous,
+                    now=now,
+                )
+                if settled_scheduler is not None:
+                    rows["goal_scheduler_outcome"] = settled_scheduler
             return rows
         self._run_social_stage(rows=rows, continuous=continuous, now=now)
         followup_identity = None
@@ -3689,7 +3793,19 @@ class WakefulContentTaskRunner:
                 rows["owner_agent_episode_completion"] = complete(
                     outcome=continuous,
                     now=now,
+                    goal_id=(
+                        str(owner_goal.get("goal_id") or "")
+                        if isinstance(owner_goal, dict)
+                        else None
+                    ),
                 )
+            settled_scheduler = self._settle_goal_scheduler_selection(
+                owner_goal=owner_goal,
+                outcome=continuous,
+                now=now,
+            )
+            if settled_scheduler is not None:
+                rows["goal_scheduler_outcome"] = settled_scheduler
         self.wakeful.mark_cognition(now)
         return rows
 
