@@ -581,11 +581,13 @@ class GoalSchedulerEvolution:
                         **dict(trial), "status": "PROMOTION_APPROVED",
                         "decision": gate.get("decision"), "completed_at": now.isoformat(),
                     }
+                    state["status"] = "PROMOTION_APPROVED"
                 elif gate["status"] == "ROLLBACK_REQUIRED":
                     trial = {
                         **dict(trial), "status": "ROLLBACK_REQUIRED",
                         "decision": gate.get("decision"), "completed_at": now.isoformat(),
                     }
+                    state["status"] = "ROLLBACK_REQUIRED"
                 state["trial"] = trial
         state["updated_at"] = now.isoformat()
         self._save(state)
