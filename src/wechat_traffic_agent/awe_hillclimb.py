@@ -86,8 +86,12 @@ class FerroAWEHillclimb:
     def __init__(self, state_root: Path) -> None:
         self.state_root = Path(state_root)
         self.path = self.state_root / "application" / "awe_hillclimb.json"
-        raw = _read(self.path)
-        self.state = raw if raw.get("schema_version") == SCHEMA else {
+        self.state: dict[str, Any] = {}
+        self._reload()
+
+    @staticmethod
+    def _empty_state() -> dict[str, Any]:
+        return {
             "schema_version": SCHEMA,
             "updated_at": None,
             "experiments": {},
@@ -95,6 +99,14 @@ class FerroAWEHillclimb:
             "rollback_count": 0,
             "infrastructure_invalid_count": 0,
         }
+
+    def _reload(self) -> None:
+        raw = _read(self.path)
+        self.state = (
+            raw
+            if raw.get("schema_version") == SCHEMA
+            else self._empty_state()
+        )
 
     def start_experiment(
         self,
@@ -110,6 +122,7 @@ class FerroAWEHillclimb:
         attempt_ref: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
+        self._reload()
         now = _utc(now)
         capability_id = str(capability_id).strip()
         hypothesis = str(hypothesis).strip()
@@ -255,6 +268,7 @@ class FerroAWEHillclimb:
         *,
         now: datetime | None = None,
     ) -> dict[str, Any]:
+        self._reload()
         now = _utc(now)
         experiments = dict(self.state.get("experiments") or {})
         if experiment_id not in experiments:
@@ -313,6 +327,7 @@ class FerroAWEHillclimb:
         return dict(row)
 
     def optimizer_view(self, experiment_id: str) -> dict[str, Any]:
+        self._reload()
         row = (self.state.get("experiments") or {}).get(experiment_id)
         if not isinstance(row, Mapping):
             raise KeyError(f"unknown AWE hillclimb experiment: {experiment_id}")
@@ -326,9 +341,7 @@ class FerroAWEHillclimb:
         return value
 
     def projection(self) -> dict[str, Any]:
-        raw = _read(self.path)
-        if raw.get("schema_version") == SCHEMA:
-            self.state = raw
+        self._reload()
         experiments = [
             dict(value)
             for value in (self.state.get("experiments") or {}).values()
