@@ -629,9 +629,9 @@ class MemoryRuntimeEvolutionBridge:
             if candidate_type == "SKILL_VARIANT_PROMOTION":
                 proposal = {
                     "candidate_type": candidate_type,
-                    "status": "PROSPECTIVE_POLICY_OWNS_EVALUATION",
-                    "evaluation_mode": "VERIFIED_PROSPECTIVE_EXECUTION",
-                    "promotion_authority": "memory.procedure.policy",
+                    "status": "AWE_GATED_PROSPECTIVE_POLICY",
+                    "evaluation_mode": "VERIFIED_PROSPECTIVE_EXECUTION_THEN_AWE_HIDDEN",
+                    "promotion_authority": "AWE_HILLCLIMB_GATE",
                     "minimum_samples_per_variant": ProcedurePolicy.MIN_SAMPLES,
                     "replay_required": False,
                     "evidence_refs": known_evidence[-32:],

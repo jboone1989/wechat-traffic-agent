@@ -3,11 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .memory_formation import FormationContext, MemoryFormationPipeline
 from .memory_retrieval import MemoryRouter
 from .memory_system import CanonicalMemoryStore
+from .awe_hillclimb import FerroAWEHillclimb
 
 
 def _variant_id(steps: Iterable[str], capabilities: Iterable[str]) -> str:
@@ -32,6 +34,7 @@ class ProcedurePolicy:
 
     MIN_SAMPLES = 3
     EXPLORATION_PERCENT = 20
+    HIDDEN_CONFIRMATION_SAMPLES = 2
 
     @classmethod
     def select_variant(
@@ -97,9 +100,11 @@ class ProceduralMemoryService:
         store: CanonicalMemoryStore | None = None,
         formation: MemoryFormationPipeline | None = None,
     ) -> None:
-        self.store = store or CanonicalMemoryStore(state_root)
-        self.formation = formation or MemoryFormationPipeline(state_root, store=self.store)
-        self.router = MemoryRouter(state_root, store=self.store)
+        self.state_root = Path(state_root)
+        self.store = store or CanonicalMemoryStore(self.state_root)
+        self.formation = formation or MemoryFormationPipeline(self.state_root, store=self.store)
+        self.router = MemoryRouter(self.state_root, store=self.store)
+        self.awe_hillclimb = FerroAWEHillclimb(self.state_root)
 
     @staticmethod
     def _initial_variant(
@@ -131,6 +136,7 @@ class ProceduralMemoryService:
             "last_outcome": "",
             "policy_action": str(policy_action or "DIRECT"),
             "evidence_refs": list(dict.fromkeys(str(item) for item in evidence_refs if str(item))),
+            "outcome_records": [],
         }
 
     def learn_procedure(
@@ -155,6 +161,7 @@ class ProceduralMemoryService:
         variants: Iterable[Mapping[str, Any]] | None = None,
         default_variant_id: str = "",
         variant_policy_status: str = "",
+        variant_promotion_trial: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         name = str(name).strip()
         if not name:
@@ -193,6 +200,11 @@ class ProceduralMemoryService:
             "variants": variant_rows,
             "default_variant_id": default_id,
             "variant_policy_status": str(variant_policy_status or "BASELINE"),
+            "variant_promotion_trial": (
+                dict(variant_promotion_trial)
+                if isinstance(variant_promotion_trial, Mapping)
+                else None
+            ),
             "variant_min_samples": ProcedurePolicy.MIN_SAMPLES,
             "derived_from": evidence,
         }
@@ -218,6 +230,166 @@ class ProceduralMemoryService:
         if not result["saved"]:
             raise ValueError(str(result["decisions"][0].get("reason") or "procedure_rejected"))
         return dict(result["saved"][0])
+
+    @staticmethod
+    def _procedure_capability_id(name: str) -> str:
+        digest = hashlib.sha256(str(name).casefold().encode("utf-8")).hexdigest()[:16]
+        return "memory.procedure.policy:" + digest
+
+    def _freeze_variant_trial(
+        self,
+        *,
+        name: str,
+        variants: list[dict[str, Any]],
+        baseline_variant_id: str,
+        challenger_variant_id: str,
+        evidence_ref: str,
+    ) -> dict[str, Any]:
+        baseline = next(
+            row for row in variants
+            if str(row.get("variant_id") or "") == str(baseline_variant_id)
+        )
+        challenger = next(
+            row for row in variants
+            if str(row.get("variant_id") or "") == str(challenger_variant_id)
+        )
+        frozen_refs = sorted({
+            str(ref)
+            for row in variants
+            for ref in (row.get("evidence_refs") or ())
+            if str(ref)
+        })
+        attempt_ref = hashlib.sha256(
+            (
+                str(baseline_variant_id)
+                + "|"
+                + str(challenger_variant_id)
+                + "|"
+                + "|".join(frozen_refs)
+            ).encode("utf-8")
+        ).hexdigest()
+        awe = self.awe_hillclimb.start_experiment(
+            capability_id=self._procedure_capability_id(name),
+            hypothesis=(
+                "The mature skill-variant challenger should retain its measured advantage "
+                "on verified executions that occur only after the promotion candidate is frozen."
+            ),
+            baseline_ref=str(baseline_variant_id),
+            mutation_ref=str(challenger_variant_id),
+            mutation_kind="SKILL_VARIANT_PROMOTION",
+            target_domains=("procedure_success", "procedure_cost", "procedure_latency"),
+            source_ref=str(evidence_ref),
+            target_ref="procedure:" + str(name).casefold(),
+            attempt_ref=attempt_ref,
+        )
+        return {
+            "status": "AWAITING_AWE_HIDDEN",
+            "awe_experiment_id": awe["experiment_id"],
+            "baseline_variant_id": str(baseline_variant_id),
+            "challenger_variant_id": str(challenger_variant_id),
+            "baseline_score": _variant_score(baseline),
+            "challenger_train_score": _variant_score(challenger),
+            "frozen_evidence_refs": frozen_refs,
+            "hidden_confirmation_samples": ProcedurePolicy.HIDDEN_CONFIRMATION_SAMPLES,
+        }
+
+    def _advance_variant_trial(
+        self,
+        *,
+        trial: Mapping[str, Any],
+        variants: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str | None]:
+        row = dict(trial)
+        if str(row.get("status") or "") in {
+            "PROMOTION_APPROVED",
+            "ROLLBACK_REQUIRED",
+        }:
+            return row, (
+                str(row.get("challenger_variant_id") or "")
+                if row.get("status") == "PROMOTION_APPROVED"
+                else None
+            )
+        challenger_id = str(row.get("challenger_variant_id") or "")
+        challenger = next(
+            (item for item in variants if str(item.get("variant_id") or "") == challenger_id),
+            None,
+        )
+        if challenger is None:
+            raise ValueError("procedure promotion challenger disappeared")
+        frozen_refs = set(str(ref) for ref in row.get("frozen_evidence_refs") or ())
+        hidden_records = [
+            record for record in (challenger.get("outcome_records") or ())
+            if str(record.get("evidence_ref") or "")
+            and str(record.get("evidence_ref") or "") not in frozen_refs
+        ]
+        required = int(
+            row.get("hidden_confirmation_samples")
+            or ProcedurePolicy.HIDDEN_CONFIRMATION_SAMPLES
+        )
+        if len(hidden_records) < required:
+            row["status"] = "AWAITING_AWE_HIDDEN"
+            row["hidden_sample_count"] = len(hidden_records)
+            return row, None
+
+        hidden_success_rate = sum(
+            1 for record in hidden_records if bool(record.get("success"))
+        ) / len(hidden_records)
+        hidden_cost = sum(
+            max(0.0, float(record.get("observed_cost") or 0.0))
+            for record in hidden_records
+        ) / len(hidden_records)
+        hidden_latency = sum(
+            max(0.0, float(record.get("latency_ms") or 0.0))
+            for record in hidden_records
+        ) / len(hidden_records)
+        hidden_score = (
+            hidden_success_rate
+            - min(0.15, math.log1p(hidden_cost) * 0.02)
+            - min(0.10, hidden_latency / 120000.0)
+        )
+        baseline_score = float(row.get("baseline_score") or 0.0)
+        decision = (
+            "PROMOTE"
+            if hidden_score >= baseline_score
+            else "ROLLBACK_NO_GENERALIZATION"
+        )
+        gated = self.awe_hillclimb.ingest_evaluator_receipt(
+            str(row["awe_experiment_id"]),
+            {
+                "decision": decision,
+                "reason": (
+                    "post-freeze verified executions preserved the skill-variant advantage"
+                    if decision == "PROMOTE"
+                    else "skill-variant train advantage did not generalize after freeze"
+                ),
+                "train": {
+                    "baseline_mean": baseline_score,
+                    "candidate_mean": row.get("challenger_train_score"),
+                    "gain": (
+                        float(row.get("challenger_train_score") or 0.0)
+                        - baseline_score
+                    ),
+                },
+                "hidden": {
+                    "baseline_mean": baseline_score,
+                    "candidate_mean": hidden_score,
+                    "gain": hidden_score - baseline_score,
+                    "noise_floor": 0.0,
+                    "n_baseline": 0,
+                    "n_candidate": len(hidden_records),
+                    "infrastructure_error_count": 0,
+                },
+                "regression": {
+                    "verified_execution_only": True,
+                    "post_freeze_only": True,
+                },
+            },
+        )
+        row["status"] = str(gated.get("status") or "")
+        row["decision"] = str(gated.get("decision") or "")
+        row["hidden_sample_count"] = len(hidden_records)
+        row["hidden_score"] = hidden_score
+        return row, challenger_id if gated.get("status") == "PROMOTION_APPROVED" else None
 
     def record_outcome(
         self,
@@ -288,6 +460,17 @@ class ProceduralMemoryService:
         variant["evidence_refs"] = list(dict.fromkeys([
             *(variant.get("evidence_refs") or []), evidence_ref,
         ]))
+        outcome_records = [
+            dict(row) for row in (variant.get("outcome_records") or ())
+            if isinstance(row, Mapping)
+        ]
+        outcome_records.append({
+            "evidence_ref": evidence_ref,
+            "success": bool(success),
+            "observed_cost": float(observed_cost),
+            "latency_ms": float(latency_ms),
+        })
+        variant["outcome_records"] = outcome_records[-64:]
 
         # A verified failure may create one bounded challenger for the *next* execution.
         # We never credit the failed outcome to the challenger because it was not executed.
@@ -308,7 +491,61 @@ class ProceduralMemoryService:
                 ))
 
         old_default = str(payload.get("default_variant_id") or variants[0].get("variant_id") or "")
-        new_default, policy_status = ProcedurePolicy.promote_best(variants, old_default)
+        best_default, best_status = ProcedurePolicy.promote_best(variants, old_default)
+        trial = (
+            dict(payload.get("variant_promotion_trial"))
+            if isinstance(payload.get("variant_promotion_trial"), Mapping)
+            else None
+        )
+        # A completed promotion is already durable in the AWE ledger. Do not
+        # keep that terminal trial as a permanent blocker for later variants.
+        if (
+            trial is not None
+            and str(trial.get("status") or "") == "PROMOTION_APPROVED"
+            and str(trial.get("challenger_variant_id") or "") == old_default
+        ):
+            trial = None
+
+        new_default = old_default
+        policy_status = "BASELINE_RETAINED"
+        if trial is not None:
+            trial, approved_variant = self._advance_variant_trial(
+                trial=trial,
+                variants=variants,
+            )
+            if approved_variant:
+                new_default = approved_variant
+                policy_status = "PROMOTED_BETTER_VARIANT"
+            elif trial.get("status") == "ROLLBACK_REQUIRED":
+                # A different mature challenger may start a later experiment;
+                # the rejected challenger itself is not immediately retried.
+                if (
+                    best_default != old_default
+                    and best_default != str(trial.get("challenger_variant_id") or "")
+                    and best_status.startswith("PROMOTED_")
+                ):
+                    trial = self._freeze_variant_trial(
+                        name=name,
+                        variants=variants,
+                        baseline_variant_id=old_default,
+                        challenger_variant_id=best_default,
+                        evidence_ref=evidence_ref,
+                    )
+                    policy_status = "AWE_HIDDEN_PENDING"
+                else:
+                    policy_status = "AWE_ROLLBACK_NO_GENERALIZATION"
+            else:
+                policy_status = "AWE_HIDDEN_PENDING"
+        elif best_default != old_default and best_status.startswith("PROMOTED_"):
+            trial = self._freeze_variant_trial(
+                name=name,
+                variants=variants,
+                baseline_variant_id=old_default,
+                challenger_variant_id=best_default,
+                evidence_ref=evidence_ref,
+            )
+            policy_status = "AWE_HIDDEN_PENDING"
+
         revised = self.learn_procedure(
             name=name,
             description=description,
@@ -329,6 +566,7 @@ class ProceduralMemoryService:
             variants=variants,
             default_variant_id=new_default,
             variant_policy_status=policy_status,
+            variant_promotion_trial=trial,
         )
         stored = self.store.get_memory(revised["memory_id"])
         if stored is None:

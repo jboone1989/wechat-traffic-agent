@@ -218,15 +218,36 @@ def test_procedure_variants_promote_mature_better_path_and_preserve_history(tmp_
 
     payload = current["payload"]
     assert payload["procedure_schema"] == 2
+    assert payload["default_variant_id"] == baseline_id
+    assert payload["variant_policy_status"] == "AWE_HIDDEN_PENDING"
+    challenger = next(
+        row for row in payload["variants"]
+        if row["variant_id"] != baseline_id
+    )
+    assert challenger["execution_count"] == 3
+    assert challenger["success_count"] == 3
+
+    for index in range(2):
+        current = service.record_outcome(
+            current["memory_id"],
+            success=True,
+            evidence_ref=f"receipt:better:hidden:{index}",
+            variant_steps=better_steps,
+            observed_cost=0.1,
+            latency_ms=100.0,
+        )
+
+    payload = current["payload"]
     assert payload["default_variant_id"] != baseline_id
     assert payload["variant_policy_status"] == "PROMOTED_BETTER_VARIANT"
+    assert payload["variant_promotion_trial"]["status"] == "PROMOTION_APPROVED"
     selected = service.select_variant(
         current["memory_id"],
         context={"satisfied_preconditions": ["owner read-only"]},
     )
     assert selected["steps"] == better_steps
-    assert selected["execution_count"] == 3
-    assert selected["success_count"] == 3
+    assert selected["execution_count"] == 5
+    assert selected["success_count"] == 5
 
 
 def _seed_benchmark_memories(root):
@@ -283,8 +304,9 @@ def test_procedure_failures_route_to_verified_prospective_policy_not_fake_replay
         row for row in result["candidates"]
         if row.get("candidate_type") == "SKILL_VARIANT_PROMOTION"
     )
-    assert skill["status"] == "PROSPECTIVE_POLICY_OWNS_EVALUATION"
-    assert skill["evaluation_mode"] == "VERIFIED_PROSPECTIVE_EXECUTION"
+    assert skill["status"] == "AWE_GATED_PROSPECTIVE_POLICY"
+    assert skill["promotion_authority"] == "AWE_HILLCLIMB_GATE"
+    assert skill["evaluation_mode"] == "VERIFIED_PROSPECTIVE_EXECUTION_THEN_AWE_HIDDEN"
     assert skill["replay_required"] is False
     assert skill["minimum_samples_per_variant"] == 3
 

@@ -126,3 +126,86 @@ def test_verified_failure_creates_uncredited_bounded_recovery_challenger(tmp_pat
     assert retry["success_count"] == 0
     assert retry["failure_count"] == 0
     assert revised["payload"]["failure_count"] == 1
+
+
+
+def test_skill_variant_requires_post_freeze_awe_hidden_confirmation(tmp_path):
+    service = ProceduralMemoryService(tmp_path)
+    baseline_steps = ["invoke web.fetch"]
+    recovery = "inspect required invocation parameters and retry once when the retry is bounded and safe"
+    current = service.learn_procedure(
+        name="owner-readonly:web.fetch:awe",
+        description="Fetch safely with evidence-gated skill evolution.",
+        preconditions=["ready"],
+        capabilities=["web.fetch"],
+        steps=baseline_steps,
+        verification=["receipt"],
+        recovery=[recovery],
+        source_type="VERIFIED_EXECUTION_OUTCOME",
+        source_ref="receipt:baseline:start",
+        evidence_refs=["receipt:baseline:start"],
+        success_count=3,
+    )
+    baseline_id = current["payload"]["default_variant_id"]
+
+    current = service.record_outcome(
+        current["memory_id"],
+        success=False,
+        evidence_ref="receipt:baseline:failure",
+        failure_mode="INVOCATION_FAILED",
+        recovery_step=recovery,
+        variant_steps=baseline_steps,
+    )
+    challenger = next(
+        row for row in current["payload"]["variants"]
+        if row.get("policy_action") == "RETRY_ONCE_SAFE"
+    )
+    challenger_id = challenger["variant_id"]
+    challenger_steps = [*baseline_steps, recovery]
+
+    for index in range(3):
+        current = service.record_outcome(
+            current["memory_id"],
+            success=True,
+            evidence_ref=f"receipt:challenger:train:{index}",
+            variant_steps=challenger_steps,
+        )
+
+    payload = current["payload"]
+    assert payload["default_variant_id"] == baseline_id
+    assert payload["variant_policy_status"] == "AWE_HIDDEN_PENDING"
+    trial = payload["variant_promotion_trial"]
+    assert trial["challenger_variant_id"] == challenger_id
+    assert trial["status"] == "AWAITING_AWE_HIDDEN"
+    awe_before = service.awe_hillclimb.optimizer_view(trial["awe_experiment_id"])
+    assert awe_before["status"] == "AWAITING_AWE"
+    assert awe_before["evaluator_receipt"] is None
+
+    current = service.record_outcome(
+        current["memory_id"],
+        success=True,
+        evidence_ref="receipt:challenger:hidden:1",
+        variant_steps=challenger_steps,
+    )
+    assert current["payload"]["default_variant_id"] == baseline_id
+    assert current["payload"]["variant_policy_status"] == "AWE_HIDDEN_PENDING"
+    assert current["payload"]["variant_promotion_trial"]["hidden_sample_count"] == 1
+
+    current = service.record_outcome(
+        current["memory_id"],
+        success=True,
+        evidence_ref="receipt:challenger:hidden:2",
+        variant_steps=challenger_steps,
+    )
+    payload = current["payload"]
+    assert payload["default_variant_id"] == challenger_id
+    assert payload["variant_policy_status"] == "PROMOTED_BETTER_VARIANT"
+    assert payload["variant_promotion_trial"]["status"] == "PROMOTION_APPROVED"
+
+    awe_after = service.awe_hillclimb.optimizer_view(
+        payload["variant_promotion_trial"]["awe_experiment_id"]
+    )
+    assert awe_after["status"] == "PROMOTION_APPROVED"
+    assert awe_after["evaluator_receipt"]["hidden"]["n_candidate"] == 2
+    assert awe_after["evaluator_receipt"]["hidden"]["n_baseline"] == 0
+    assert "evidence_ref" not in str(awe_after["evaluator_receipt"]["hidden"])
