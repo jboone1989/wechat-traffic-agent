@@ -388,6 +388,18 @@ def main() -> int:
 
 
 def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
+    repair_workspace_raw = os.environ.get(
+        "CONTENT_SELF_REPAIR_WORKSPACE", ""
+    ).strip()
+    if repair_workspace_raw:
+        # Bind the request-only Pi RRSI worker to the same source authority and
+        # Python environment used by this Ferro process before capabilities are
+        # composed. No model API credential is introduced: cognition still goes
+        # through the LivingRuntime ChatGPT provider.
+        os.environ.setdefault("PI_REMOTE_REPAIR_REPO_ROOT", repair_workspace_raw)
+        os.environ.setdefault("PI_REMOTE_REPAIR_PYTHON", sys.executable)
+        os.environ.setdefault("CONTENT_SELF_REPAIR_PYTHON", sys.executable)
+
     from wechat_traffic_agent.llm_resources import sync_llm_resource_pool
     try:
         pool_bootstrap = sync_llm_resource_pool(
@@ -475,7 +487,6 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     ):
         print(json.dumps({"self_maintenance_review": self_maintenance_review}, sort_keys=True))
     from wechat_traffic_agent.self_repair_executor import SelfRepairExecutor
-    repair_workspace_raw = os.environ.get("CONTENT_SELF_REPAIR_WORKSPACE", "").strip()
     repair_test_pythonpath = os.environ.get(
         "CONTENT_SELF_REPAIR_TEST_PYTHONPATH", ""
     ).strip()

@@ -192,3 +192,15 @@ def test_entrypoint_does_not_double_ingest_completed_task_outcome():
     # WakefulContentTaskRunner._finalize_task_result owns normal task
     # self-maintenance. The supervisor only records exceptions.
     assert "maintenance.ingest_task_outcome(task, task_result, now=now)" not in text
+
+
+def test_entrypoint_binds_rsi_worker_before_runtime_capability_composition():
+    text = ENTRYPOINT.read_text(encoding="utf-8")
+    section = text.split("def _run_initialized_agent", 1)[1]
+    workspace_bind = 'os.environ.setdefault("PI_REMOTE_REPAIR_REPO_ROOT", repair_workspace_raw)'
+    python_bind = 'os.environ.setdefault("PI_REMOTE_REPAIR_PYTHON", sys.executable)'
+    build = "app = build_content_application("
+    assert workspace_bind in section
+    assert python_bind in section
+    assert section.index(workspace_bind) < section.index(build)
+    assert section.index(python_bind) < section.index(build)

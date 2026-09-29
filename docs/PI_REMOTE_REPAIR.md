@@ -1,22 +1,41 @@
-# Pi Remote repair capability
+# Pi Remote repair and Harness-RSI capability
 
-`REQUEST_CODE_REPAIR` is registered by the Content Agent composition root only
-when `PI_REMOTE_REPAIR_ROOT` points to a trusted Pi Remote checkout containing
-`cli.js`. `PI_REMOTE_NODE` optionally selects the Node executable. The
-capability has the `LOCAL_STATE` side-effect level and requires
-`repair.request`; the runtime raises its ceiling only while this opt-in is
-configured.
+`REQUEST_CODE_REPAIR` and `QUERY_CODE_REPAIR_STATUS` are registered by the
+Content Agent composition root when Pi Remote is available beside the configured
+self-repair workspace (or `PI_REMOTE_REPAIR_ROOT` points at a trusted checkout).
 
-The provider uses a fixed argv invocation of the Pi Remote `repair-request`
-command with no shell. Ferro's SelfMaintenance and SelfRepairExecutor submit
-only the versioned RepairRequest payload. Neither receives source edit, Git,
-merge, or deploy capabilities. Pi Remote returns a durable request id and
-idempotently accepts repeated delivery.
+The production composition root binds the current Ferro Python interpreter and
+`CONTENT_SELF_REPAIR_WORKSPACE` to the request-only Pi worker before runtime
+capabilities are composed. Ferro does not receive Git, merge, deploy, or model
+API credentials. ChatGPT cognition is requested through LivingRuntime's durable
+cognition provider.
 
-A request reaching Pi Remote is not yet a completed repair. The detached
-Planner/Coder/Reviewer worker that creates a separate worktree, validates only
-approved target paths, runs focused tests, captures a checkpoint, performs
-independent Reviewer verification, and advances the request from real session
-evidence still needs to be implemented and configured. Until that worker is
-available, the request remains visible as `RECEIVED` for a controller to
-process. Merge and deployment remain separate human approvals.
+## Repair-RSI loop
+
+A LOW-risk `RepairRequest` now drives this durable sequence:
+
+1. Reproduce the authoritative evaluator baseline.
+2. Give the ChatGPT proposer the bounded source/evaluator evidence, prior rejected
+   hypotheses, and an annealed edit budget.
+3. Produce multiple independent hypotheses.
+4. Run an independent ChatGPT critic before code execution.
+5. Create one child RepairRequest and isolated Git worktree per admitted candidate.
+6. When the existing evaluator already passes, require an evaluator/regression
+   edit that fails on the old source before the source repair is applied.
+7. Apply the source repair, require the focused evaluator to pass, commit the
+   candidate, and rerun it in the detached Reviewer worktree.
+8. Select only candidates with measured gain above the configured noise/cost
+   floor and required guards.
+9. Persist selected and rejected hypotheses in `repair-rsi/history.jsonl`.
+10. If a round is rejected, retry with the failed hypothesis history. After the
+    round budget is exhausted, return that counterevidence to Ferro's
+    `DIAGNOSING` state instead of silently stopping.
+
+Each request has a single-instance worker lock. Status queries may recover a
+stale or failed worker, but cannot run two RRSI workers for the same request.
+
+An `APPROVED_CHECKPOINT` is still not a production deployment. It becomes the
+input to the existing Guardian canary and A/B release path; promotion requires
+that separate release authority. This keeps candidate generation/evaluation
+separate from deployment while allowing the entire research loop before
+promotion to run unattended.
