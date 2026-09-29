@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 
-from wechat_traffic_agent.browser_session_stream import BrowserSessionStream
+from wechat_traffic_agent.browser_session_stream import (
+    BrowserSessionStream,
+    _cdp_target_websocket,
+)
+import wechat_traffic_agent.browser_session_stream as stream_module
 
 
 class FakeControl:
@@ -100,3 +104,55 @@ def test_live_input_is_constrained_to_allowed_cdp_events():
     assert "Input.insertText" in methods
     assert methods.count("Input.dispatchKeyEvent") == 2
     assert all("webSocketDebuggerUrl" not in json.dumps(row) for row in sent)
+
+
+def test_status_supports_generic_non_x_authentication_shape():
+    class CortexControl:
+        def status(self):
+            return {
+                "url": "https://chatgpt.com/",
+                "title": "ChatGPT",
+                "authenticated": True,
+                "identity": "ChatGPT",
+            }
+
+    client = FakeClient()
+    asyncio.run(BrowserSessionStream(CortexControl())._send_status(client))
+    assert client.sent == [{
+        "type": "status",
+        "url": "https://chatgpt.com/",
+        "title": "ChatGPT",
+        "authenticated": True,
+        "identity": "ChatGPT",
+        "width": 1120,
+        "height": 780,
+    }]
+
+
+def test_cortex_cdp_port_range_is_allowed(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b""
+
+    pages = [{
+        "id": "cortex-target",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9500/devtools/page/cortex-target",
+    }]
+
+    def fake_urlopen(url, timeout=2):
+        assert url == "http://127.0.0.1:9500/json/list"
+        response = Response()
+        stream_module.json.load = lambda _response: pages
+        return response
+
+    monkeypatch.setattr(stream_module.urllib.request, "urlopen", fake_urlopen)
+    assert _cdp_target_websocket(
+        "cortex-target",
+        "http://127.0.0.1:9500",
+    ) == "ws://127.0.0.1:9500/devtools/page/cortex-target"

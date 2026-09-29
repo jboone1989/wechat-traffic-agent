@@ -41,7 +41,7 @@ def _cdp_target_websocket(
         base.scheme != "http"
         or base.hostname not in {"127.0.0.1", "localhost"}
         or base.port is None
-        or base.port not in {9333, *range(9400, 9500)}
+        or base.port not in {9333, *range(9400, 9600)}
     ):
         raise BrowserStreamUnavailable("unsafe CDP endpoint")
     root = f"http://127.0.0.1:{base.port}"
@@ -103,8 +103,12 @@ class BrowserSessionStream:
             "type": "status",
             "url": str(status.get("url") or ""),
             "title": str(status.get("title") or ""),
-            "authenticated": bool(status.get("x_authenticated")),
-            "identity": str(status.get("account_identity") or ""),
+            "authenticated": bool(
+                status.get("authenticated", status.get("x_authenticated"))
+            ),
+            "identity": str(
+                status.get("identity") or status.get("account_identity") or ""
+            ),
             "width": _VIEWPORT_WIDTH,
             "height": _VIEWPORT_HEIGHT,
         })

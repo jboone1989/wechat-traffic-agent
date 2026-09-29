@@ -122,3 +122,14 @@ def test_x_account_card_offers_account_scoped_web_login():
     assert "/browser/login/connect" in page
     assert "/browser/login/stream" in page
     assert "/browser/login/stop" in page
+
+
+def test_jev_card_offers_chatgpt_cortex_login():
+    page = operator_console_document()
+
+    assert "登录 ChatGPT Cortex" in page
+    assert "ChatGPT Cortex · JEV 持久会话登录" in page
+    assert "/operator/api/cortex/browser/login/connect" in page
+    assert "/operator/api/cortex/browser/login/stream" in page
+    assert "/operator/api/cortex/browser/login/stop" in page
+    assert "Cortex 激活不读取模型输出" in page

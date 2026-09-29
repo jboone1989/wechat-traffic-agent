@@ -1457,6 +1457,10 @@ class LiveAgentService:
             AccountBrowserLoginControl,
             AccountBrowserLoginUnavailable,
         )
+        from .chatgpt_cortex_browser_control import (
+            ChatGPTCortexBrowserControl,
+            ChatGPTCortexBrowserUnavailable,
+        )
         from .browser_session_stream import BrowserSessionStream, BrowserStreamUnavailable
         from .operator_private_chat import (
             OWNER_ENVELOPE_SCHEMA,
@@ -1472,6 +1476,10 @@ class LiveAgentService:
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
         x_oauth_manager = XOAuthHeadlessManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
+        chatgpt_cortex_browser_control = (
+            ChatGPTCortexBrowserControl(state_root=self.state_root)
+            if operator_console is not None else None
+        )
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
         if operator_chat is not None:
             runtime = getattr(self.application, "domain_runtime", None)
@@ -3546,6 +3554,95 @@ class LiveAgentService:
                 except Exception:
                     pass
 
+        async def operator_cortex_browser_login_connect(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse(
+                    {"error": "authentication_required"}, status_code=401
+                )
+            if not operator_write_allowed(request):
+                return JSONResponse(
+                    {"error": "operator_header_required"}, status_code=403
+                )
+            try:
+                result = await asyncio.to_thread(
+                    chatgpt_cortex_browser_control.start
+                )
+            except ChatGPTCortexBrowserUnavailable as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return JSONResponse(
+                {"browser": result},
+                headers={"Cache-Control": "no-store"},
+            )
+
+        async def operator_cortex_browser_login_stop(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse(
+                    {"error": "authentication_required"}, status_code=401
+                )
+            if not operator_write_allowed(request):
+                return JSONResponse(
+                    {"error": "operator_header_required"}, status_code=403
+                )
+            try:
+                result = await asyncio.to_thread(
+                    chatgpt_cortex_browser_control.stop
+                )
+            except ChatGPTCortexBrowserUnavailable as exc:
+                return JSONResponse(
+                    {"error": str(exc)[:240]},
+                    status_code=503,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+        async def operator_cortex_browser_login_stream(websocket: WebSocket):
+            if operator_console is None:
+                await websocket.close(code=4404)
+                return
+            session_id = websocket.cookies.get("ferro_operator_session")
+            if not operator_console.auth.valid(session_id):
+                await websocket.close(code=4401)
+                return
+            origin = str(websocket.headers.get("origin") or "")
+            host = str(websocket.headers.get("host") or "")
+            if origin:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(origin)
+                if parsed.netloc and parsed.netloc != host:
+                    await websocket.close(code=4403)
+                    return
+            try:
+                chatgpt_cortex_browser_control.target_id()
+            except ChatGPTCortexBrowserUnavailable:
+                await websocket.close(code=4409)
+                return
+            await websocket.accept()
+            try:
+                stream = BrowserSessionStream(chatgpt_cortex_browser_control)
+                await stream.run(
+                    websocket,
+                    authorize=lambda: operator_console.auth.valid(session_id),
+                )
+            except WebSocketDisconnect:
+                return
+            except BrowserStreamUnavailable as exc:
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": str(exc)[:160],
+                    })
+                except Exception:
+                    pass
+                try:
+                    await websocket.close(code=1011)
+                except Exception:
+                    pass
+
 
         async def operator_account_stream(websocket: WebSocket):
             if operator_console is None:
@@ -4107,6 +4204,9 @@ class LiveAgentService:
                 Route("/operator/api/account-instances/{account_id}/browser/login/connect", operator_account_instance_login_connect, methods=["POST"]),
                 WebSocketRoute("/operator/api/account-instances/{account_id}/browser/login/stream", operator_account_instance_login_stream),
                 Route("/operator/api/account-instances/{account_id}/browser/login/stop", operator_account_instance_login_stop, methods=["POST"]),
+                Route("/operator/api/cortex/browser/login/connect", operator_cortex_browser_login_connect, methods=["POST"]),
+                WebSocketRoute("/operator/api/cortex/browser/login/stream", operator_cortex_browser_login_stream),
+                Route("/operator/api/cortex/browser/login/stop", operator_cortex_browser_login_stop, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
