@@ -470,9 +470,16 @@ async function beginCortexLogin(){
  activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('resources');
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
  el('accountLoginTitle').textContent='ChatGPT Cortex · JEV 持久会话登录';
- el('localBrowserStatus').textContent='正在启动 ChatGPT Cortex 独立浏览器 profile…';
- await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
- await openAccountStream(activeAccountProvider,0,'')
+ const status=el('localBrowserStatus');
+ status.textContent='正在启动 ChatGPT Cortex 独立浏览器 profile…';
+ try{
+  await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
+  await openAccountStream(activeAccountProvider,0,'')
+ }catch(e){
+  status.textContent='ChatGPT Cortex 启动失败 · '+e.message;
+  status.classList.remove('live');
+  flash('ChatGPT Cortex 启动失败 · '+e.message,true)
+ }
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
