@@ -807,6 +807,33 @@ class SelfRepairExecutor:
         }
 
         if rsi_status == "CANDIDATE_SELECTED":
+            if self._rrsi_selected_candidate_present(status):
+                evaluator = self._run_rrsi_selected_evaluator(status)
+                if evaluator.get("ok"):
+                    adopted_problem = dict(problem)
+                    adopted_problem["repair_rsi"] = updated["repair_rsi"]
+                    trial = self._record_trial(
+                        adopted_problem,
+                        status="ADOPTED_VERIFIED",
+                        now=now,
+                        extra={
+                            "repair_kind": "RRSI_SELECTED_CANDIDATE",
+                            "selected_candidate_id": status.get("selectedCandidateId"),
+                            "selected_fingerprint": status.get("selectedFingerprint"),
+                            "selected_checkpoint_id": status.get("selectedCheckpointId"),
+                            "selected_git_head": status.get("selectedGitHead"),
+                            "selected_base_commit": status.get("selectedBaseCommit"),
+                            "evaluator": evaluator,
+                        },
+                        update_problem=True,
+                    )
+                    return {
+                        "status": "ADOPTED_VERIFIED",
+                        "problem_id": problem_id,
+                        "repair_request_id": request_id,
+                        "repair_rsi": updated["repair_rsi"],
+                        "trial": trial,
+                    }
             source_commit = str(self._source_authority_commit() or "").strip()
             selected_base = str(status.get("selectedBaseCommit") or "").strip()
             if source_commit and selected_base != source_commit:
@@ -856,6 +883,72 @@ class SelfRepairExecutor:
             "problem_id": problem_id,
             "repair_request_id": request_id,
             "repair_rsi": updated["repair_rsi"],
+        }
+
+    def _rrsi_selected_candidate_present(self, status: dict[str, Any]) -> bool:
+        root = self.deployed_root
+        if root is None or not root.is_dir():
+            return False
+        edits = [
+            row
+            for row in list(status.get("selectedEdits") or [])
+            if isinstance(row, dict)
+        ]
+        if not edits:
+            return False
+        test_edits = [
+            row
+            for row in list(status.get("selectedTestEdits") or [])
+            if isinstance(row, dict)
+        ]
+        for row in [*edits, *test_edits]:
+            relative = Path(str(row.get("path") or ""))
+            marker = str(row.get("newText") or "")
+            if (
+                not marker
+                or relative.is_absolute()
+                or ".." in relative.parts
+            ):
+                return False
+            try:
+                text = (root / relative).read_text(encoding="utf-8")
+            except OSError:
+                return False
+            if marker not in text:
+                return False
+        return True
+
+    def _run_rrsi_selected_evaluator(
+        self,
+        status: dict[str, Any],
+    ) -> dict[str, Any]:
+        root = self.deployed_root
+        tests = tuple(
+            str(value)
+            for value in list(status.get("selectedTestPaths") or [])
+            if str(value).strip()
+        )
+        if root is None or not root.is_dir() or not tests:
+            return {
+                "ok": False,
+                "returncode": None,
+                "test_paths": list(tests),
+                "reason": "deployed root or selected evaluator tests unavailable",
+            }
+        completed = subprocess.run(
+            self._test_command(*tests),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=240,
+            check=False,
+        )
+        return {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "test_paths": list(tests),
+            "stdout": completed.stdout[-4000:],
+            "stderr": completed.stderr[-4000:],
         }
 
     @staticmethod

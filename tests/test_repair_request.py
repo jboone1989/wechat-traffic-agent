@@ -242,6 +242,16 @@ def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
                     "candidates": [{
                         "candidateId": "candidate-1",
                         "childRequestId": "child-1",
+                        "fingerprint": "d" * 64,
+                        "edits": [{
+                            "path": "src/wechat_traffic_agent/content_service.py",
+                            "newText": "except (ValidationError, ValueError)",
+                        }],
+                        "testEdits": [{
+                            "path": "tests/test_content_agent.py",
+                            "newText": "def test_content_agent_repairs_one_non_json_backend_response",
+                        }],
+                        "testPaths": ["tests/test_content_agent.py"],
                         "checkpoint": {
                             "baseCommit": "c" * 40,
                         },
@@ -266,6 +276,12 @@ def test_pi_remote_provider_reads_durable_rsi_status_without_credentials(
     assert result["rsiStatus"] == "CANDIDATE_SELECTED"
     assert result["selectedCheckpointId"] == "checkpoint-1"
     assert result["selectedBaseCommit"] == "c" * 40
+    assert result["selectedFingerprint"] == "d" * 64
+    assert result["selectedEdits"][0]["path"] == (
+        "src/wechat_traffic_agent/content_service.py"
+    )
+    assert result["selectedTestEdits"][0]["path"] == "tests/test_content_agent.py"
+    assert result["selectedTestPaths"] == ["tests/test_content_agent.py"]
     payload = json.loads(seen["argv"][2])
     assert payload == {
         "action": "status",

@@ -58,10 +58,16 @@ class RsiStatusCapability:
         *,
         rsi_status="CANDIDATE_SELECTED",
         selected_base_commit=None,
+        selected_edits=None,
+        selected_test_edits=None,
+        selected_test_paths=None,
     ):
         self.calls = []
         self.rsi_status = rsi_status
         self.selected_base_commit = selected_base_commit
+        self.selected_edits = selected_edits or []
+        self.selected_test_edits = selected_test_edits or []
+        self.selected_test_paths = selected_test_paths or []
 
     def available_capabilities(self):
         return {"REQUEST_CODE_REPAIR", "QUERY_CODE_REPAIR_STATUS"}
@@ -89,6 +95,14 @@ class RsiStatusCapability:
             })
             if self.selected_base_commit is not None:
                 result["selectedBaseCommit"] = self.selected_base_commit
+            if self.selected_edits:
+                result["selectedEdits"] = self.selected_edits
+            if self.selected_test_edits:
+                result["selectedTestEdits"] = self.selected_test_edits
+            if self.selected_test_paths:
+                result["selectedTestPaths"] = self.selected_test_paths
+            result["selectedCandidateId"] = "rrsi-candidate-1"
+            result["selectedFingerprint"] = "f" * 64
         if self.rsi_status == "FAILED":
             result["lastError"] = {
                 "type": "Error",
@@ -190,6 +204,68 @@ def test_stale_rsi_selected_checkpoint_requeues_diagnosis(tmp_path):
     assert updated["planner_attempt"]["status"] == "RRSI_STALE_BASE_COMMIT"
     assert updated["planner_attempt"]["source_commit"] == current_commit
     assert updated["planner_attempt"]["selected_base_commit"] == "a" * 40
+
+
+def test_stale_rsi_checkpoint_already_present_in_deployed_release_is_adopted_verified(tmp_path):
+    problem_path = _problem(tmp_path)
+    payload = json.loads(problem_path.read_text())
+    payload["status"] = "REQUESTED_TO_PI_REMOTE"
+    payload["repair_request"] = {
+        "status": "RECEIVED",
+        "requestId": "pi-repair-rsi-123",
+    }
+    problem_path.write_text(json.dumps(payload))
+
+    deployed = tmp_path / "release"
+    (deployed / "src/wechat_traffic_agent").mkdir(parents=True)
+    (deployed / "tests").mkdir(parents=True)
+    (deployed / "src/wechat_traffic_agent/example.py").write_text(
+        "VALUE = 'rrsi-adopted'\n",
+        encoding="utf-8",
+    )
+    (deployed / "tests/test_rrsi_selected.py").write_text(
+        "def test_rrsi_selected():\n    assert True\n",
+        encoding="utf-8",
+    )
+
+    runtime = RsiStatusCapability(
+        selected_base_commit="a" * 40,
+        selected_edits=[{
+            "path": "src/wechat_traffic_agent/example.py",
+            "newText": "VALUE = 'rrsi-adopted'",
+        }],
+        selected_test_edits=[{
+            "path": "tests/test_rrsi_selected.py",
+            "newText": "def test_rrsi_selected():\n    assert True",
+        }],
+        selected_test_paths=["tests/test_rrsi_selected.py"],
+    )
+
+    class SourceBoundExecutor(SelfRepairExecutor):
+        def _sync_workspace_to_deployed(self, *, now):
+            return {"ok": True, "status": "ALREADY_SYNCED"}
+
+        def _source_authority_commit(self):
+            return "b" * 40
+
+    result = SourceBoundExecutor(
+        state_root=tmp_path,
+        workspace_root=None,
+        deployed_root=deployed,
+        capability_runtime=runtime,
+    ).run_once(now=NOW)
+
+    assert result["status"] == "ADOPTED_VERIFIED"
+    updated = json.loads(problem_path.read_text())
+    assert updated["status"] == "VERIFIED"
+    assert updated["repair_trial"]["status"] == "ADOPTED_VERIFIED"
+    trial_path = (
+        tmp_path
+        / "application/self_maintenance/repair_trials/self-problem-abc123.json"
+    )
+    trial = json.loads(trial_path.read_text())
+    assert trial["selected_fingerprint"] == "f" * 64
+    assert trial["evaluator"]["ok"] is True
 
 
 def test_rsi_selected_checkpoint_without_base_fails_closed_when_source_known(tmp_path):

@@ -166,6 +166,31 @@ class PiRemoteRepairProvider:
                 if isinstance(selected_candidate.get("checkpoint"), dict)
                 else {}
             )
+            selected_edits = [
+                {
+                    "path": str(row.get("path") or "")[:240],
+                    "newText": str(row.get("newText") or "")[:12000],
+                }
+                for row in list(selected_candidate.get("edits") or [])[:8]
+                if isinstance(row, dict)
+                and str(row.get("path") or "").strip()
+                and str(row.get("newText") or "")
+            ]
+            selected_test_edits = [
+                {
+                    "path": str(row.get("path") or "")[:240],
+                    "newText": str(row.get("newText") or "")[:12000],
+                }
+                for row in list(selected_candidate.get("testEdits") or [])[:8]
+                if isinstance(row, dict)
+                and str(row.get("path") or "").strip()
+                and str(row.get("newText") or "")
+            ]
+            selected_test_paths = [
+                str(value)[:240]
+                for value in list(selected_candidate.get("testPaths") or [])[:16]
+                if str(value).strip()
+            ]
             rejected = []
             for row in list(rsi.get("proposalRejections") or []):
                 if not isinstance(row, dict):
@@ -191,6 +216,11 @@ class PiRemoteRepairProvider:
                 "selectedCheckpointId": selection.get("checkpointId"),
                 "selectedGitHead": selection.get("gitHead"),
                 "selectedBaseCommit": selected_checkpoint.get("baseCommit"),
+                "selectedCandidateId": selected_candidate.get("candidateId"),
+                "selectedFingerprint": selected_candidate.get("fingerprint"),
+                "selectedEdits": selected_edits,
+                "selectedTestEdits": selected_test_edits,
+                "selectedTestPaths": selected_test_paths,
                 "recentRejectedHypotheses": rejected[-8:],
                 "rsiAutoResumed": bool(response.get("rsiAutoResumed")),
                 "lastError": (
