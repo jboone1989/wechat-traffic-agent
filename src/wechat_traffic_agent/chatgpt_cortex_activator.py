@@ -51,9 +51,12 @@ def _state_root() -> Path:
 
 
 def _enabled() -> bool:
-    return str(
-        os.environ.get("FERRO_CHATGPT_WEB_CORTEX_ENABLED") or ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    raw = os.environ.get("FERRO_CHATGPT_WEB_CORTEX_ENABLED")
+    if raw is None or not str(raw).strip():
+        return True
+    return str(raw).strip().lower() not in {
+        "0", "false", "no", "off",
+    }
 
 
 def _paths(state_root: Path) -> tuple[Path, Path, Path]:

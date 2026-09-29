@@ -25,8 +25,28 @@ def test_activation_prompt_is_bounded_to_request_id():
         activation_prompt("not-a-request")
 
 
-def test_schedule_is_disabled_without_explicit_enable(tmp_path, monkeypatch):
+def test_schedule_is_enabled_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("FERRO_CHATGPT_WEB_CORTEX_ENABLED", raising=False)
+    calls = []
+
+    class _Proc:
+        pid = 4321
+
+    monkeypatch.setattr(
+        activator_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: calls.append((command, kwargs)) or _Proc(),
+    )
+    result = schedule_chatgpt_web_cortex_activation(
+        "llmreq_12345678abcdef",
+        state_root=tmp_path,
+    )
+    assert result["status"] == "STARTED"
+    assert len(calls) == 1
+
+
+def test_schedule_can_be_explicitly_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("FERRO_CHATGPT_WEB_CORTEX_ENABLED", "0")
     result = schedule_chatgpt_web_cortex_activation(
         "llmreq_12345678abcdef",
         state_root=tmp_path,
