@@ -901,6 +901,7 @@ def test_historical_rejected_github_wake_failure_retries_after_bridge_recovers(t
     workspace = _workspace(tmp_path)
     problem_path = _problem(state)
     problem = json.loads(problem_path.read_text())
+    problem["status"] = "AUTO_REPAIR_REJECTED"
     problem["planner_attempt"] = {
         "status": "REJECTED",
         "planner_version": "generated-repair.v11",
@@ -923,6 +924,39 @@ def test_historical_rejected_github_wake_failure_retries_after_bridge_recovers(t
 
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
+
+
+def test_startup_recovery_reopens_only_transient_auto_repair_rejections(tmp_path):
+    state = tmp_path / "state-startup-transient-reject"
+    workspace = _workspace(tmp_path)
+    problem_path = _problem(state)
+    problem = json.loads(problem_path.read_text())
+    problem["status"] = "AUTO_REPAIR_REJECTED"
+    problem["planner_attempt"] = {
+        "status": "REJECTED",
+        "planner_version": "generated-repair.v11",
+        "source_commit": _git(workspace, "rev-parse", "HEAD"),
+        "occurrences_seen": 1,
+        "observed_at": NOW.isoformat(),
+        "reason": "LivingRuntimeChatGPTProviderError:LivingRuntime cognition request timed out",
+    }
+    problem_path.write_text(json.dumps(problem))
+    executor = SelfRepairExecutor(
+        state_root=state,
+        workspace_root=workspace,
+        deployed_root=workspace,
+        python_executable=sys.executable,
+        planner_runtime=PlannerRuntime(_valid_plan()),
+        recipes={},
+    )
+
+    summary = executor.startup_recovery_summary(now=NOW)
+
+    assert summary["status"] == "WORK_PENDING"
+    assert summary["problem_ids"] == ["self-problem:traffic-topic"]
+    assert summary["reasons"]["self-problem:traffic-topic"] == (
+        "TRANSIENT_PLANNER_FAILURE_RECOVERABLE"
+    )
 
 
 def test_historical_rejected_llm_resource_failure_is_retryable_without_new_occurrence(tmp_path):

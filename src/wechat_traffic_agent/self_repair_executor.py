@@ -630,6 +630,21 @@ class SelfRepairExecutor:
                 actionable.append(problem_id)
                 reasons[problem_id] = status
                 continue
+            if status == "AUTO_REPAIR_REJECTED":
+                if self._planner() is None:
+                    continue
+                attempt = (
+                    row.get("planner_attempt")
+                    if isinstance(row.get("planner_attempt"), dict)
+                    else {}
+                )
+                if (
+                    str(attempt.get("status") or "") == "REJECTED"
+                    and _transient_planner_reason(attempt.get("reason"))
+                ):
+                    actionable.append(problem_id)
+                    reasons[problem_id] = "TRANSIENT_PLANNER_FAILURE_RECOVERABLE"
+                continue
             if status == "AUTO_REPAIR_UNLOCALIZED":
                 if self._planner() is None:
                     continue
@@ -942,7 +957,7 @@ class SelfRepairExecutor:
             if (
                 not isinstance(row, dict)
                 or str(row.get("status") or "")
-                not in {"DIAGNOSING", "AUTO_REPAIR_UNLOCALIZED"}
+                not in {"DIAGNOSING", "AUTO_REPAIR_UNLOCALIZED", "AUTO_REPAIR_REJECTED"}
             ):
                 continue
             if str(row.get("problem_id") or "") in excluded:
@@ -958,6 +973,14 @@ class SelfRepairExecutor:
                 and str(attempt.get("source_commit") or "") == str(source_commit or "")
             )
             attempt_status = str(attempt.get("status") or "")
+            if (
+                str(row.get("status") or "") == "AUTO_REPAIR_REJECTED"
+                and not (
+                    attempt_status == "REJECTED"
+                    and _transient_planner_reason(attempt.get("reason"))
+                )
+            ):
+                continue
             if attempt_status == "UNLOCALIZED" and same_attempt:
                 continue
             if (
