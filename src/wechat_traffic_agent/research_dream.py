@@ -42,6 +42,7 @@ MAX_PROMOTIONS_PER_REPLAY_POOL = 3
 MIN_ONLINE_SAMPLES_PER_ARM = 2
 ONLINE_TRIAL_MAX_DAYS = 14
 TRIAL_SINGLE_CANDIDATE_MAX_WAIT_SECONDS = 600
+OPEN_TRIAL_STATUSES = frozenset({"ACTIVE", "AWAITING_AWE_GATE"})
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -453,6 +454,45 @@ class ResearchDreamEngine:
             "evidence_ref": f"self-repair-trial:{safe}",
         }
 
+    def _promote_prospective_trial(
+        self,
+        row: dict[str, Any],
+        *,
+        now: datetime,
+    ) -> dict[str, Any]:
+        if str(row.get("status") or "") == "PROMOTED":
+            return row
+        challenger = dict(row.get("challenger_policy") or {})
+        generation = int(self.state.get("researcher_generation") or 0) + 1
+        challenger.update({
+            "generation": generation,
+            "origin": f"PROSPECTIVE_RESEARCH_TRIAL:{row.get('trial_id')}",
+            "replay_promoted": True,
+            "promoted_at": now.isoformat(),
+            "promotion_evidence_ref": str(row.get("trial_id") or ""),
+            "online_validation_required": False,
+            "awe_generalization_validated": True,
+            "awe_experiment_id": row.get("awe_experiment_id"),
+        })
+        previous = dict(self.state.get("incumbent_policy") or _default_policy())
+        history = [
+            dict(item) for item in self.state.get("incumbent_history") or ()
+            if isinstance(item, Mapping)
+        ]
+        history.append(previous)
+        self.state["incumbent_history"] = history[-32:]
+        self.state["incumbent_policy"] = challenger
+        self.state["researcher_generation"] = generation
+        self.state["validated_generation_count"] = generation
+        self.state["promotion_count"] = int(
+            self.state.get("promotion_count") or 0
+        ) + 1
+        row["status"] = "PROMOTED"
+        row["decided_at"] = now.isoformat()
+        row["decision"] = "PROMOTE_AFTER_ONLINE_AND_AWE_GENERALIZATION"
+        row["awe_gate_status"] = "PROMOTED"
+        return row
+
     def _refresh_prospective_trial(
         self,
         *,
@@ -515,33 +555,21 @@ class ResearchDreamEngine:
                 float(candidate["mean_reward"]) >= float(baseline["mean_reward"])
                 and int(candidate["negative_count"]) <= int(baseline["negative_count"])
             )
+            row["online_validation"] = {
+                "passed": bool(non_degrading),
+                "baseline": dict(baseline),
+                "candidate": dict(candidate),
+                "evaluated_at": now.isoformat(),
+            }
             if non_degrading:
-                challenger = dict(row.get("challenger_policy") or {})
-                generation = int(self.state.get("researcher_generation") or 0) + 1
-                challenger.update({
-                    "generation": generation,
-                    "origin": f"PROSPECTIVE_RESEARCH_TRIAL:{row.get('trial_id')}",
-                    "replay_promoted": True,
-                    "promoted_at": now.isoformat(),
-                    "promotion_evidence_ref": str(row.get("trial_id") or ""),
-                    "online_validation_required": False,
-                })
-                previous = dict(self.state.get("incumbent_policy") or _default_policy())
-                history = [
-                    dict(item) for item in self.state.get("incumbent_history") or ()
-                    if isinstance(item, Mapping)
-                ]
-                history.append(previous)
-                self.state["incumbent_history"] = history[-32:]
-                self.state["incumbent_policy"] = challenger
-                self.state["researcher_generation"] = generation
-                self.state["validated_generation_count"] = generation
-                self.state["promotion_count"] = int(
-                    self.state.get("promotion_count") or 0
-                ) + 1
-                row["status"] = "PROMOTED"
-                row["decided_at"] = now.isoformat()
-                row["decision"] = "PROMOTE_AFTER_PROSPECTIVE_NON_DEGRADATION"
+                if str(row.get("awe_gate_decision") or "") == "PROMOTE":
+                    row = self._promote_prospective_trial(row, now=now)
+                else:
+                    row["status"] = "AWAITING_AWE_GATE"
+                    row["decision"] = "WAIT_FOR_AWE_GENERALIZATION"
+                    row["awe_gate_status"] = str(
+                        row.get("awe_gate_status") or "PENDING"
+                    )
             else:
                 row["status"] = "REJECTED"
                 row["decided_at"] = now.isoformat()
@@ -554,6 +582,91 @@ class ResearchDreamEngine:
             row["decided_at"] = now.isoformat()
             row["decision"] = "KEEP_INCUMBENT_INSUFFICIENT_ONLINE_EVIDENCE"
         self.state["prospective_trial"] = row
+        return row
+
+    def bind_awe_experiment(
+        self,
+        *,
+        trial_id: str,
+        experiment_id: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        trial = self.state.get("prospective_trial")
+        if not isinstance(trial, Mapping) or str(trial.get("trial_id") or "") != str(trial_id):
+            raise KeyError(f"unknown research trial: {trial_id}")
+        row = dict(trial)
+        existing = str(row.get("awe_experiment_id") or "")
+        if existing and existing != str(experiment_id):
+            raise ValueError("research trial is already bound to a different AWE experiment")
+        if str(row.get("status") or "") not in OPEN_TRIAL_STATUSES:
+            raise ValueError("terminal research trial cannot be rebound to AWE")
+        row["awe_experiment_id"] = str(experiment_id)
+        row["awe_gate_status"] = str(row.get("awe_gate_status") or "PENDING")
+        row["awe_bound_at"] = now.isoformat()
+        self.state["prospective_trial"] = row
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
+        return row
+
+    def apply_awe_gate(
+        self,
+        *,
+        experiment_id: str,
+        decision: str,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        raw = _read(self.path)
+        if raw.get("schema_version") == SCHEMA:
+            self.state = raw
+        trial = self.state.get("prospective_trial")
+        if not isinstance(trial, Mapping):
+            raise KeyError(f"no research trial for AWE experiment: {experiment_id}")
+        row = dict(trial)
+        if str(row.get("awe_experiment_id") or "") != str(experiment_id):
+            raise KeyError(f"unknown AWE experiment for research trial: {experiment_id}")
+        normalized = str(decision or "").upper()
+        status = str(row.get("status") or "")
+        if status in {"PROMOTED", "REJECTED", "EXPIRED"}:
+            return row
+
+        row["awe_gate_decision"] = normalized
+        row["awe_gate_decided_at"] = now.isoformat()
+        if normalized == "PROMOTE":
+            row["awe_gate_status"] = "APPROVED"
+            online = (
+                row.get("online_validation")
+                if isinstance(row.get("online_validation"), Mapping)
+                else {}
+            )
+            if status == "AWAITING_AWE_GATE" and bool(online.get("passed")):
+                row = self._promote_prospective_trial(row, now=now)
+            else:
+                row["decision"] = "AWE_APPROVED_AWAITING_ONLINE_VALIDATION"
+        elif normalized.startswith("ROLLBACK"):
+            row["awe_gate_status"] = "REJECTED"
+            row["status"] = "REJECTED"
+            row["decided_at"] = now.isoformat()
+            row["decision"] = "KILL_CHALLENGER_AFTER_AWE_NO_GENERALIZATION"
+            self.state["online_rejection_count"] = int(
+                self.state.get("online_rejection_count") or 0
+            ) + 1
+        elif normalized == "INVALID_INFRASTRUCTURE":
+            row["awe_gate_status"] = "INFRASTRUCTURE_INVALID"
+            row["decision"] = "WAIT_FOR_VALID_AWE_EVIDENCE"
+        elif normalized.startswith("WAIT"):
+            row["awe_gate_status"] = "PENDING"
+            row["decision"] = "WAIT_FOR_AWE_GENERALIZATION"
+        else:
+            raise ValueError(f"unsupported AWE gate decision: {decision}")
+
+        self.state["prospective_trial"] = row
+        self.state["updated_at"] = now.isoformat()
+        _write(self.path, self.state)
         return row
 
     @staticmethod
@@ -936,13 +1049,14 @@ class ResearchDreamEngine:
         if raw.get("schema_version") == SCHEMA:
             self.state = raw
         prior_trial = self.state.get("prospective_trial")
-        trial_was_active = (
+        trial_was_open = (
             isinstance(prior_trial, Mapping)
-            and str(prior_trial.get("status") or "") == "ACTIVE"
+            and str(prior_trial.get("status") or "") in OPEN_TRIAL_STATUSES
         )
         trial_state = self._refresh_prospective_trial(now=now)
         trial_resolved_this_dream = bool(
-            trial_was_active and str((trial_state or {}).get("status") or "") != "ACTIVE"
+            trial_was_open
+            and str((trial_state or {}).get("status") or "") not in OPEN_TRIAL_STATUSES
         )
         worlds = self.replay_worlds()
         if len(worlds) < MIN_REPLAY_WORLDS:
@@ -1019,7 +1133,8 @@ class ResearchDreamEngine:
         active_trial = (
             dict(self.state.get("prospective_trial"))
             if isinstance(self.state.get("prospective_trial"), Mapping)
-            and str(self.state.get("prospective_trial", {}).get("status") or "") == "ACTIVE"
+            and str(self.state.get("prospective_trial", {}).get("status") or "")
+            in OPEN_TRIAL_STATUSES
             else None
         )
         start_trial = bool(
@@ -1079,7 +1194,12 @@ class ResearchDreamEngine:
             "decision": (
                 "START_RESEARCH_POLICY_TRIAL"
                 if start_trial else (
-                    "WAIT_FOR_PROSPECTIVE_RESULTS"
+                    (
+                        "WAIT_FOR_AWE_GENERALIZATION"
+                        if active_trial is not None
+                        and str(active_trial.get("status") or "") == "AWAITING_AWE_GATE"
+                        else "WAIT_FOR_PROSPECTIVE_RESULTS"
+                    )
                     if active_trial is not None or trial_resolved_this_dream
                     else (
                     "WAIT_FOR_NEW_REPLAY_WORLD"

@@ -219,7 +219,7 @@ def test_active_prospective_trial_blocks_more_same_pool_challengers(tmp_path):
     assert blocked["incumbent_policy"]["generation"] == 0
 
 
-def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
+def test_researcher_promotes_only_after_online_and_awe_generalization(tmp_path):
     for suffix, age, status, kind in (
         ("old-a", 90, "ADOPTED_VERIFIED", "KNOWN_A"),
         ("old-b", 80, "ADOPTED_VERIFIED", "KNOWN_B"),
@@ -244,6 +244,12 @@ def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
     trial_state = engine.projection()["prospective_trial"]
     trial_id = trial_state["trial_id"]
     challenger_id = trial_state["challenger_policy"]["policy_id"]
+    experiment_id = "awe-hillclimb:test-research-policy"
+    engine.bind_awe_experiment(
+        trial_id=trial_id,
+        experiment_id=experiment_id,
+        now=NOW,
+    )
 
     remaining = [
         {
@@ -295,11 +301,21 @@ def test_researcher_promotes_only_after_future_online_non_degradation(tmp_path):
         now=NOW + timedelta(minutes=6)
     )
     projection = ResearchDreamEngine(tmp_path).projection()
-    assert projection["prospective_trial"]["status"] == "PROMOTED"
+    assert projection["prospective_trial"]["status"] == "AWAITING_AWE_GATE"
+    assert projection["researcher_generation"] == 0
+    assert settled["dream"]["decision"] == "WAIT_FOR_AWE_GENERALIZATION"
+
+    gated = ResearchDreamEngine(tmp_path).apply_awe_gate(
+        experiment_id=experiment_id,
+        decision="PROMOTE",
+        now=NOW + timedelta(minutes=7),
+    )
+    projection = ResearchDreamEngine(tmp_path).projection()
+    assert gated["status"] == "PROMOTED"
     assert projection["researcher_generation"] == 1
     assert projection["incumbent_policy"]["policy_id"] == challenger_id
     assert projection["incumbent_policy"]["online_validation_required"] is False
-    assert settled["dream"]["decision"] == "WAIT_FOR_PROSPECTIVE_RESULTS"
+    assert projection["incumbent_policy"]["awe_generalization_validated"] is True
 
 
 def test_legacy_replay_only_incumbent_is_demoted_into_prospective_trial(tmp_path):

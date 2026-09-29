@@ -274,6 +274,8 @@ class ContentWakefulRuntime:
         )
         from .research_dream import ResearchDreamEngine
         self.research_dream = ResearchDreamEngine(self.state_root)
+        from .awe_hillclimb import FerroAWEHillclimb
+        self.awe_hillclimb = FerroAWEHillclimb(self.state_root)
         from .neural_identity import (
             BrainCortexLedger,
             NeuralPersonality,
@@ -1877,9 +1879,45 @@ class ContentWakefulRuntime:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         neural_result = self.dream_engine.dream(now=now, replay_count=replay_count)
         research_result = self.research_dream.dream(now=now)
+        awe_experiment = self.awe_hillclimb.observe_research_dream(
+            research_result,
+            now=now,
+        )
+        research_projection = self.research_dream.projection()
+        research_trial = (
+            research_projection.get("prospective_trial")
+            if isinstance(research_projection.get("prospective_trial"), Mapping)
+            else {}
+        )
+        if (
+            awe_experiment is None
+            and str(research_trial.get("status") or "")
+            in {"ACTIVE", "AWAITING_AWE_GATE"}
+            and not str(research_trial.get("awe_experiment_id") or "")
+        ):
+            dream = (
+                research_result.get("dream")
+                if isinstance(research_result.get("dream"), Mapping)
+                else {}
+            )
+            awe_experiment = self.awe_hillclimb.ensure_research_trial_experiment(
+                research_trial,
+                source_ref=str(dream.get("dream_id") or "") or None,
+                now=now,
+            )
+        if awe_experiment is not None:
+            trial_id = str(awe_experiment.get("target_ref") or "")
+            experiment_id = str(awe_experiment.get("experiment_id") or "")
+            if trial_id and experiment_id:
+                self.research_dream.bind_awe_experiment(
+                    trial_id=trial_id,
+                    experiment_id=experiment_id,
+                    now=now,
+                )
         result = {
             **neural_result,
             "research_dream": research_result,
+            "awe_hillclimb": awe_experiment,
         }
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
@@ -1901,6 +1939,31 @@ class ContentWakefulRuntime:
         return {
             **self.dream_engine.projection(),
             "research_dream": self.research_dream.projection(),
+            "awe_hillclimb": self.awe_hillclimb.projection(),
+        }
+
+    def record_awe_hillclimb_receipt(
+        self,
+        experiment_id: str,
+        receipt: Mapping[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        evaluated = self.awe_hillclimb.ingest_evaluator_receipt(
+            experiment_id,
+            receipt,
+            now=now,
+        )
+        research_trial = None
+        if str(evaluated.get("capability_id") or "") == "repair_priority_policy":
+            research_trial = self.research_dream.apply_awe_gate(
+                experiment_id=experiment_id,
+                decision=str(evaluated.get("decision") or ""),
+                now=now,
+            )
+        return {
+            **evaluated,
+            "research_trial": research_trial,
         }
 
     def schedule_resource_followup(self, now: datetime, *, seconds: int = 300) -> None:

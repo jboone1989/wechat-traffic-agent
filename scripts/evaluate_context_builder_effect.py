@@ -419,6 +419,29 @@ def structural_only_report(
     }
 
 
+def ablation_summary(by_mode: dict[str, dict[str, Any]]) -> dict[str, float]:
+    current = by_mode["current"]
+    full = by_mode["full"]
+    builder = by_mode["builder"]
+    oracle = by_mode["oracle"]
+    full_chars = float(full["avg_context_chars"])
+    return {
+        "accuracy_gain_vs_current": round(
+            float(builder["accuracy"]) - float(current["accuracy"]), 4
+        ),
+        "accuracy_gain_vs_full": round(
+            float(builder["accuracy"]) - float(full["accuracy"]), 4
+        ),
+        "accuracy_gap_to_oracle": round(
+            float(builder["accuracy"]) - float(oracle["accuracy"]), 4
+        ),
+        "context_char_reduction_vs_full": round(
+            1.0 - float(builder["avg_context_chars"]) / max(1.0, full_chars),
+            4,
+        ),
+    }
+
+
 async def run() -> dict[str, Any]:
     cases = [make_case(spec, variant) for spec in PAIRS for variant in ("a", "b")]
     provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
@@ -594,6 +617,7 @@ async def run() -> dict[str, Any]:
         "cases": len(cases),
         "pairs": len(PAIRS),
         "summary": by_mode,
+        "ablations": ablation_summary(by_mode),
         "structural": {
             "critical_fact_recall": round(
                 sum(row["critical_selected"] for row in structural)
