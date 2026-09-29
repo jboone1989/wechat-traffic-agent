@@ -3216,6 +3216,21 @@ class WakefulContentTaskRunner:
                 str(owner_goal.get("goal_id") or "")
             )
         )
+        owner_episode_state = (
+            self.owner_agent_episode.projection_for(
+                str(owner_goal.get("goal_id") or "")
+            )
+            if (
+                owner_goal is not None
+                and getattr(self, "owner_agent_episode", None) is not None
+            )
+            else {}
+        )
+        owner_episode_bound = bool(
+            isinstance(owner_episode_state, dict)
+            and str(owner_episode_state.get("status") or "")
+            in {"RUNNING", "DECIDED"}
+        )
         if (
             owner_goal is not None
             and focus_topic is None
@@ -3688,7 +3703,7 @@ class WakefulContentTaskRunner:
                             "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
                         }
                         self.wakeful.mark_cognition(now)
-            if owner_episode_active:
+            if owner_episode_active or owner_episode_bound:
                 complete = getattr(self.owner_agent_episode, "complete", None)
                 if callable(complete):
                     rows["owner_agent_episode_completion"] = complete(
@@ -3755,7 +3770,7 @@ class WakefulContentTaskRunner:
                         or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"
                     ),
                 }
-        if owner_episode_active:
+        if owner_episode_active or owner_episode_bound:
             complete = getattr(self.owner_agent_episode, "complete", None)
             if callable(complete):
                 rows["owner_agent_episode_completion"] = complete(
