@@ -172,7 +172,12 @@ PAIRS = [
 ]
 
 
-def make_case(spec: PairSpec, variant: str) -> dict[str, Any]:
+def make_case(
+    spec: PairSpec,
+    variant: str,
+    *,
+    selection_policy: dict[str, float] | None = None,
+) -> dict[str, Any]:
     goal_id = f"goal:{spec.pair_id}"
     mission_id = f"mission:{spec.pair_id}"
     critical_id = f"critical:{spec.pair_id}:{variant}"
@@ -277,6 +282,7 @@ def make_case(spec: PairSpec, variant: str) -> dict[str, Any]:
         resource_pressure="NORMAL",
         budget_chars=5200,
         max_facts=12,
+        selection_policy=selection_policy,
     )
     return {
         "case_id": f"{spec.pair_id}:{variant}",

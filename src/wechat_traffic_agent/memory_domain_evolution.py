@@ -19,6 +19,7 @@ from agent_runtime.evolution import (
     ExperimentStage, MetricDirection, MutationRequirement,
 )
 
+from .awe_hillclimb import FerroAWEHillclimb
 from .memory_domain_policy import DOMAIN_SPECS, challenger_policies, load_policies, policy_ref
 from .memory_evolution import architecture_fingerprint
 from .memory_observation import MemoryLifeObservatory
@@ -30,7 +31,8 @@ MIN_REPLAY = 4
 MIN_PROSPECTIVE = 4
 MIN_GAIN = 0.01
 TERMINAL = {"ROLLED_BACK", "REJECTED_REGRESSION", "REJECTED_NO_IMPROVEMENT",
-            "EXPIRED_INSUFFICIENT_EVIDENCE", "INVALIDATED_POLICY_DRIFT"}
+            "REJECTED_AWE_NO_GENERALIZATION", "EXPIRED_INSUFFICIENT_EVIDENCE",
+            "INVALIDATED_POLICY_DRIFT"}
 INVARIANTS = ["canonical-memory-and-event-ledger-unchanged", "scope-and-status-boundaries",
               "exact-and-historical-recall-non-regression", "derived-index-rebuildability",
               "no-authority-or-confidence-mutation"]
@@ -181,6 +183,7 @@ class MemoryDomainEvolution:
             self.state_root,
             now_provider=self.runtime.clock.now,
         )
+        self.awe = FerroAWEHillclimb(self.state_root)
 
     def cases(self, now: datetime) -> list[dict]:
         rows = self.observatory.rows(limit=10000)
@@ -271,6 +274,110 @@ class MemoryDomainEvolution:
             "experiment_id": capability.experiment_id, "parameters": parameters, "status": status,
             "architecture_fingerprint": architecture_fingerprint(),
         })
+
+    def _ensure_awe_experiment(self, kind: str, row: dict) -> dict[str, Any]:
+        existing = str(row.get("awe_experiment_id") or "")
+        if existing:
+            return self.awe.optimizer_view(existing)
+        domain, capability_id = DOMAIN_SPECS[kind]
+        if not isinstance(row.get("baseline"), dict) or not isinstance(row.get("challenger"), dict):
+            raise ValueError("memory AWE experiment requires frozen baseline and challenger")
+        experiment = self.awe.start_experiment(
+            capability_id=capability_id,
+            hypothesis=(
+                f"The single bounded {kind} mutation should preserve protected memory "
+                "invariants and improve independently settled future recall evidence."
+            ),
+            baseline_ref=policy_ref(domain, row["baseline"]),
+            mutation_ref=policy_ref(domain, row["challenger"]),
+            mutation_kind=kind,
+            target_domains=(domain, "memory_recall", "memory_integrity"),
+            source_ref=str(row.get("replay_ref") or "") or None,
+            target_ref=capability_id,
+            attempt_ref=str(row.get("experiment_id") or "") or None,
+            now=aware(self.runtime.clock.now()),
+        )
+        row["awe_experiment_id"] = experiment["experiment_id"]
+        return experiment
+
+    def _awe_prospective_gate(
+        self,
+        *,
+        kind: str,
+        evaluator: DomainEvaluator,
+        row: dict,
+        evaluation: Any,
+        now: datetime,
+        experiment: Any,
+    ) -> dict[str, Any]:
+        awe_experiment = self._ensure_awe_experiment(kind, row)
+        baseline_means = dict(evaluation.baseline_means)
+        candidate_means = dict(evaluation.candidate_means)
+        baseline_primary = baseline_means.get(evaluator.primary)
+        candidate_primary = candidate_means.get(evaluator.primary)
+        hidden_gain = None
+        if baseline_primary is not None and candidate_primary is not None:
+            hidden_gain = (
+                float(baseline_primary) - float(candidate_primary)
+                if evaluator.lower_better
+                else float(candidate_primary) - float(baseline_primary)
+            )
+
+        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+            decision = "PROMOTE"
+            reason = "future settled-use prospective evidence improved the primary metric without protected regression"
+        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
+            decision = "ROLLBACK_REGRESSION"
+            reason = "future settled-use prospective evidence regressed a protected or primary metric"
+        elif now >= experiment.spec.prospective_end_at:
+            decision = (
+                "ROLLBACK_INSUFFICIENT_EVIDENCE"
+                if evaluation.result is ExperimentResult.INSUFFICIENT_EVIDENCE
+                else "ROLLBACK_NO_GENERALIZATION"
+            )
+            reason = "prospective window closed without generalizing improvement"
+        else:
+            decision = "WAIT_FOR_EVIDENCE"
+            reason = "prospective window is still collecting independently settled future uses"
+
+        replay = row.get("replay") if isinstance(row.get("replay"), dict) else {}
+        receipt = {
+            "decision": decision,
+            "reason": reason,
+            "train": {
+                "baseline_mean": (replay.get("baseline") or {}).get(evaluator.primary),
+                "candidate_mean": (replay.get("candidate") or {}).get(evaluator.primary),
+                "gain": replay.get("gain"),
+                "protected_regression_count": len(replay.get("protected_regressions") or []),
+            },
+            "hidden": {
+                "baseline_mean": baseline_primary,
+                "candidate_mean": candidate_primary,
+                "gain": hidden_gain,
+                "noise_floor": 0.0,
+                "n_baseline": int(evaluation.baseline_samples),
+                "n_candidate": int(evaluation.candidate_samples),
+                "infrastructure_error_count": 0,
+            },
+            "regression": {
+                "improved_metrics": list(evaluation.improved_metrics),
+                "regressed_metrics": list(evaluation.regressed_metrics),
+                "protected_invariants": list(INVARIANTS),
+            },
+        }
+        gated = self.awe.ingest_evaluator_receipt(
+            awe_experiment["experiment_id"],
+            receipt,
+            now=now,
+        )
+        row["awe_gate"] = {
+            "experiment_id": awe_experiment["experiment_id"],
+            "decision": gated.get("decision"),
+            "status": gated.get("status"),
+            "hidden_baseline_samples": int(evaluation.baseline_samples),
+            "hidden_candidate_samples": int(evaluation.candidate_samples),
+        }
+        return gated
 
     def _evidence(self, ref: str, effective_at: datetime, metrics: dict, refs: list[str], *, settled_at=None):
         now = aware(settled_at or self.runtime.clock.now())
@@ -386,6 +493,7 @@ class MemoryDomainEvolution:
         experiment_id = experiment.spec.experiment_id
         row.update(status="WAITING_PROSPECTIVE_START", candidate_id=candidate.candidate_id,
                    experiment_id=experiment_id)
+        self._ensure_awe_experiment(kind, row)
         self._persist(domain, row)
         if experiment.stage is ExperimentStage.PROPOSED:
             experiment = self.runtime.validate_evolution_replay(experiment_id, evidence_refs=[evidence.evidence_id])
@@ -412,6 +520,14 @@ class MemoryDomainEvolution:
         domain, capability_id = DOMAIN_SPECS[kind]
         now = aware(self.runtime.clock.now())
         active = self.runtime.evolution_capability_registry.active(capability_id)
+        if (
+            row.get("status") not in {"PROMOTED", "ROLLED_BACK"}
+            and isinstance(row.get("baseline"), dict)
+            and isinstance(row.get("challenger"), dict)
+            and not row.get("awe_experiment_id")
+        ):
+            self._ensure_awe_experiment(kind, row)
+            self._persist(domain, row)
         contradicted_samples = self._sample_counterevidence(row, now)
         if active.candidate_id == row["candidate_id"] and contradicted_samples:
             capability = self.runtime.rollback_evolution_capability(
@@ -491,16 +607,32 @@ class MemoryDomainEvolution:
         evaluation = self.runtime.evaluate_evolution_experiment(row["experiment_id"])
         row["prospective"] = {"result": evaluation.result.value, "evaluation_id": evaluation.evaluation_id,
                               "baseline_samples": evaluation.baseline_samples, "candidate_samples": evaluation.candidate_samples}
-        if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+        gated = self._awe_prospective_gate(
+            kind=kind,
+            evaluator=evaluator,
+            row=row,
+            evaluation=evaluation,
+            now=now,
+            experiment=experiment,
+        )
+        if (
+            evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED
+            and gated.get("status") == "PROMOTION_APPROVED"
+        ):
             capability = self.runtime.promote_evolution_candidate(
                 capability_id=capability_id, candidate_id=row["candidate_id"], experiment_id=row["experiment_id"],
                 evaluation_id=evaluation.evaluation_id, applicability_context=["memory-router"], confidence=0.9)
             self._materialize(domain, row["challenger"], capability, "PROMOTED")
             row.update(status="PROMOTED", promoted_at=now.isoformat(), capability_version_id=capability.version_id)
-        elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
-            row["status"] = "REJECTED_REGRESSION"
-        elif now >= experiment.spec.prospective_end_at:
-            row["status"] = "EXPIRED_INSUFFICIENT_EVIDENCE" if evaluation.result is ExperimentResult.INSUFFICIENT_EVIDENCE else "REJECTED_NO_IMPROVEMENT"
+        elif gated.get("status") == "ROLLBACK_REQUIRED":
+            if evaluation.result is ExperimentResult.IMPROVEMENT_OBSERVED:
+                row["status"] = "REJECTED_AWE_NO_GENERALIZATION"
+            elif evaluation.result is ExperimentResult.REGRESSION_OBSERVED:
+                row["status"] = "REJECTED_REGRESSION"
+            elif evaluation.result is ExperimentResult.INSUFFICIENT_EVIDENCE:
+                row["status"] = "EXPIRED_INSUFFICIENT_EVIDENCE"
+            else:
+                row["status"] = "REJECTED_NO_IMPROVEMENT"
         else:
             row["status"] = "PROSPECTIVE_TRIAL"
         return row
@@ -608,8 +740,11 @@ class MemoryDomainEvolution:
                     if len(cases) >= MIN_REPLAY and len(source_refs) >= 2:
                         row = self._start(kind, evaluator, row, cases[-24:], weights, policies, source_refs[-32:])
             self._persist(domain, row)
-            summary = {key: row[key] for key in ("candidate_type", "evaluator", "status", "experiment_id",
-                       "replay_case_count", "unique_failure_evidence", "prospective") if key in row}
+            summary = {key: row[key] for key in (
+                "candidate_type", "evaluator", "status", "experiment_id",
+                "awe_experiment_id", "awe_gate", "replay_case_count",
+                "unique_failure_evidence", "prospective",
+            ) if key in row}
             summaries.append(summary)
             if old_status != row.get("status"):
                 print(json.dumps({"memory_domain_evaluator_routed": summary}, sort_keys=True), flush=True)

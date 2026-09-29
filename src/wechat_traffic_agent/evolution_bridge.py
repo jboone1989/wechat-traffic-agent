@@ -30,6 +30,7 @@ from agent_runtime.evolution import (
 )
 
 from .content_action_prediction import ActionPredictionOutcome, ContentActionPrediction
+from .context_builder_evolution import ContextBuilderEvolution
 from .memory_evolution_bridge import MemoryRuntimeEvolutionBridge
 from .content_strategy import (
     ContentStrategyBinding,
@@ -94,9 +95,13 @@ class ContentEvolutionBridge:
         self.memory_evolution_bridge = MemoryRuntimeEvolutionBridge(
             runtime=self.runtime, state_root=self.state_root
         )
+        self.context_builder_evolution = ContextBuilderEvolution(self.state_root)
 
     def sync_memory_evolution(self) -> dict[str, Any]:
         return self.memory_evolution_bridge.sync()
+
+    def sync_context_builder_evolution(self) -> dict[str, Any]:
+        return self.context_builder_evolution.sync()
 
     def _decision_path(self, prediction_id: str) -> Path:
         digest = sha256(str(prediction_id).encode("utf-8")).hexdigest()[:24]

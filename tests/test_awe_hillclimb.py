@@ -298,3 +298,40 @@ def test_wakeful_dream_auto_consumes_repair_policy_hidden_receipt(
         "decision": "WAIT_FOR_EVIDENCE",
         "now": NOW,
     }]
+
+
+
+def test_same_mutation_can_be_retried_only_with_new_attempt_ref(tmp_path):
+    bridge = _bridge(tmp_path)
+    first = bridge.start_experiment(
+        capability_id="context_builder",
+        hypothesis="retry lifecycle",
+        baseline_ref="context:a",
+        mutation_ref="context:b",
+        mutation_kind="ONE_CHANGE",
+        attempt_ref="evidence-epoch:1",
+        now=NOW,
+    )
+    duplicate = bridge.start_experiment(
+        capability_id="context_builder",
+        hypothesis="retry lifecycle",
+        baseline_ref="context:a",
+        mutation_ref="context:b",
+        mutation_kind="ONE_CHANGE",
+        attempt_ref="evidence-epoch:1",
+        now=NOW,
+    )
+    second = bridge.start_experiment(
+        capability_id="context_builder",
+        hypothesis="retry lifecycle",
+        baseline_ref="context:a",
+        mutation_ref="context:b",
+        mutation_kind="ONE_CHANGE",
+        attempt_ref="evidence-epoch:2",
+        now=NOW,
+    )
+
+    assert duplicate["experiment_id"] == first["experiment_id"]
+    assert second["experiment_id"] != first["experiment_id"]
+    assert first["attempt_ref"] == "evidence-epoch:1"
+    assert second["attempt_ref"] == "evidence-epoch:2"

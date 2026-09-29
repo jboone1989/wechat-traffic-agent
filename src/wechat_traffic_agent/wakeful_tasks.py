@@ -20,6 +20,10 @@ class WakefulContentTaskRunner:
 
     def __init__(self, **components: Any) -> None:
         self.__dict__.update(components)
+        # wakeful is an optional scheduling/signal hook for unit-sized task
+        # runners. Keep the attribute explicit so absence does not turn an
+        # otherwise valid interoception result into AttributeError.
+        self.wakeful = components.get("wakeful")
         self.stop_requested = components.get("stop_requested") or (lambda: False)
         state_root = components.get("state_root")
         app = components.get("app")
@@ -1829,6 +1833,15 @@ class WakefulContentTaskRunner:
                     rows["memory_evolution_learning"] = evolution_bridge.sync_memory_evolution()
             except Exception as exc:  # noqa: BLE001
                 rows["content_action_prediction_learning"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+        evolution_bridge = getattr(self, "evolution_bridge", None)
+        if evolution_bridge is not None:
+            try:
+                rows["context_builder_evolution"] = (
+                    evolution_bridge.sync_context_builder_evolution()
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["context_builder_evolution"] = self._error(exc)
                 rows["status"] = "DEGRADED"
         if self.website_experiment_evaluator is not None:
             try:

@@ -12,6 +12,9 @@ import json
 import re
 from typing import Any, Iterable, Mapping, Sequence
 
+from .context_selection_policy import load_policy as load_context_selection_policy
+from .context_selection_policy import policy_ref as context_selection_policy_ref
+from .context_selection_policy import validate_policy as validate_context_selection_policy
 from .memory_retrieval import MemoryRouter
 
 
@@ -520,10 +523,16 @@ def build_decision_context(
     resource_pressure: Any = None,
     budget_chars: int = 22_000,
     max_facts: int = 28,
+    selection_policy: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Retrieve and select decision-changing context across all known sources."""
 
     current_time = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    policy = (
+        load_context_selection_policy(state_root)
+        if selection_policy is None
+        else validate_context_selection_policy(selection_policy)
+    )
     needs = plan_information_needs(
         prompt=prompt,
         decision_frame=decision_frame,
@@ -623,7 +632,7 @@ def build_decision_context(
                 recall_rank=recall_ranks.get((need.need_id, cid)),
                 now=current_time,
             )
-            if score > 0.6:
+            if score > float(policy["relevance_floor"]):
                 scored.append((score, cid, reasons))
         scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
         scored_by_need[need.need_id] = scored
@@ -650,7 +659,10 @@ def build_decision_context(
         for need in ordered_needs
     }
     coverage_floor = {
-        need.need_id: max(0.78, 0.68 * top_score[need.need_id])
+        need.need_id: max(
+            float(policy["coverage_floor_min"]),
+            float(policy["coverage_ratio"]) * top_score[need.need_id],
+        )
         for need in ordered_needs
         if top_score[need.need_id] > 0.0
     }
@@ -774,8 +786,8 @@ def build_decision_context(
             # compact fact wins when decision utility is otherwise equivalent.
             utility = (
                 marginal
-                + 0.16 * max(0, len(matched) - 1)
-                - 0.12 * min(1.0, row_chars / max(1, budget_chars))
+                + float(policy["multi_need_bonus"]) * max(0, len(matched) - 1)
+                - float(policy["size_tax"]) * min(1.0, row_chars / max(1, budget_chars))
             )
             item = (utility, strongest, cid, matched)
             if best is None or item[:3] > best[:3]:
@@ -930,7 +942,7 @@ def build_decision_context(
             "best_need_id": best_need or None,
             "reason": (
                 "budget_or_lower_decision_utility"
-                if best_score > 0.6
+                if best_score > float(policy["relevance_floor"])
                 else "below_decision_relevance_floor"
             ),
             "signals": best_reasons[:8],
@@ -951,6 +963,8 @@ def build_decision_context(
         "selected_sources": selected_sources,
         "selected_chars_estimate": selected_chars,
         "budget_chars": int(budget_chars),
+        "selection_policy": dict(policy),
+        "selection_policy_ref": context_selection_policy_ref(policy),
         "need_coverage": {
             "covered": sorted(
                 {

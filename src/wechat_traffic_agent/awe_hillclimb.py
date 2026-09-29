@@ -58,9 +58,14 @@ def _utc(now: datetime | None) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _experiment_id(capability_id: str, baseline_ref: str, mutation_ref: str) -> str:
+def _experiment_id(
+    capability_id: str,
+    baseline_ref: str,
+    mutation_ref: str,
+    attempt_ref: str | None = None,
+) -> str:
     digest = sha256(
-        f"{capability_id}\0{baseline_ref}\0{mutation_ref}".encode("utf-8")
+        f"{capability_id}\0{baseline_ref}\0{mutation_ref}\0{attempt_ref or ''}".encode("utf-8")
     ).hexdigest()[:24]
     return f"awe-hillclimb:{digest}"
 
@@ -102,6 +107,7 @@ class FerroAWEHillclimb:
         target_domains: tuple[str, ...] = (),
         source_ref: str | None = None,
         target_ref: str | None = None,
+        attempt_ref: str | None = None,
         now: datetime | None = None,
     ) -> dict[str, Any]:
         now = _utc(now)
@@ -115,7 +121,13 @@ class FerroAWEHillclimb:
         if baseline_ref == mutation_ref:
             raise ValueError("AWE mutation must differ from the baseline")
 
-        experiment_id = _experiment_id(capability_id, baseline_ref, mutation_ref)
+        attempt_ref = str(attempt_ref or "").strip() or None
+        experiment_id = _experiment_id(
+            capability_id,
+            baseline_ref,
+            mutation_ref,
+            attempt_ref,
+        )
         existing = (self.state.get("experiments") or {}).get(experiment_id)
         if isinstance(existing, Mapping):
             return dict(existing)
@@ -133,6 +145,7 @@ class FerroAWEHillclimb:
             "mutation_count": 1,
             "source_ref": source_ref,
             "target_ref": target_ref,
+            "attempt_ref": attempt_ref,
             "target_domains": [str(value) for value in target_domains if str(value)],
             "train_visibility": "FAILURE_DETAILS_ALLOWED",
             "hidden_visibility": "AGGREGATE_ONLY",
@@ -189,6 +202,7 @@ class FerroAWEHillclimb:
             target_domains=("recovery", "learning", "efficiency", "goal_pursuit"),
             source_ref=str(dream.get("dream_id") or "") or None,
             target_ref=trial_id,
+            attempt_ref=trial_id,
             now=now,
         )
 
@@ -230,6 +244,7 @@ class FerroAWEHillclimb:
             target_domains=("recovery", "learning", "efficiency", "goal_pursuit"),
             source_ref=source_ref,
             target_ref=trial_id,
+            attempt_ref=trial_id,
             now=now,
         )
 

@@ -106,6 +106,8 @@ def test_real_replay_prospective_promotion_and_live_reload(tmp_path, domain):
     state = engine._load(domain)
     assert summary["status"] == "WAITING_PROSPECTIVE_START", state
     assert state["replay"]["passed"] is True
+    assert state["awe_experiment_id"]
+    assert engine.awe.optimizer_view(state["awe_experiment_id"])["status"] == "AWAITING_AWE"
     assert load_policies(root)[domain] == DEFAULTS[domain]
     assert (store.list_memories(limit=None), store.events()) == canonical
     runtime.clock.advance(180)
@@ -119,6 +121,12 @@ def test_real_replay_prospective_promotion_and_live_reload(tmp_path, domain):
     assert summary["status"] == "PROMOTED", state
     assert summary["prospective"]["baseline_samples"] == 4
     assert summary["prospective"]["candidate_samples"] == 4
+    assert summary["awe_gate"]["status"] == "PROMOTION_APPROVED"
+    awe = engine.awe.optimizer_view(state["awe_experiment_id"])
+    assert awe["decision"] == "PROMOTE"
+    assert awe["evaluator_receipt"]["hidden"]["n_baseline"] == 4
+    assert awe["evaluator_receipt"]["hidden"]["n_candidate"] == 4
+    assert "outcome:10" not in json.dumps(awe["evaluator_receipt"], sort_keys=True)
     assert load_policies(root)[domain] == state["challenger"]
     after = router.recall(query, limit=5, now=NOW, access_scope="PRIVATE_OWNER")
     if domain == "index":
@@ -172,7 +180,10 @@ def test_evidence_dedupe_expiry_and_no_future_leakage(tmp_path, domain):
     assert engine._load(domain)["prospective"]["baseline_samples"] == 1
     runtime.clock.advance(8 * 86400)
     engine.sync(sources)
-    assert engine._load(domain)["status"] == "EXPIRED_INSUFFICIENT_EVIDENCE"
+    state = engine._load(domain)
+    assert state["status"] == "EXPIRED_INSUFFICIENT_EVIDENCE"
+    assert state["awe_gate"]["status"] == "ROLLBACK_REQUIRED"
+    assert engine.awe.optimizer_view(state["awe_experiment_id"])["decision"].startswith("ROLLBACK")
     assert load_policies(root)[domain] == DEFAULTS[domain]
 
 
@@ -389,3 +400,28 @@ def test_terminal_state_reconciles_runtime_abort_after_persist_crash(tmp_path, m
     state = engine._load("decay")
     assert state["experiment_id"] != old
     assert state["status"] == "WAITING_PROSPECTIVE_START"
+
+
+
+def test_awe_gate_is_authoritative_over_runtime_improvement(tmp_path, monkeypatch):
+    root, _, query, runtime, engine, kind, sources = setup(tmp_path, "decay")
+    engine.sync(sources)
+    runtime.clock.advance(180)
+    for index in range(4):
+        settled(root, query, index + 10, NOW + timedelta(seconds=90 + index * 5))
+
+    monkeypatch.setattr(
+        engine,
+        "_awe_prospective_gate",
+        lambda **_kwargs: {
+            "status": "ROLLBACK_REQUIRED",
+            "decision": "ROLLBACK_NO_GENERALIZATION",
+        },
+    )
+    engine.sync(sources)
+
+    state = engine._load("decay")
+    assert state["prospective"]["result"] == "IMPROVEMENT_OBSERVED"
+    assert state["status"] == "REJECTED_AWE_NO_GENERALIZATION"
+    assert load_policies(root)["decay"] == DEFAULTS["decay"]
+    assert not runtime.evolution_capability_activations
