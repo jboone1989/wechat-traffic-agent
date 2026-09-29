@@ -575,6 +575,14 @@ def test_owner_episode_completion_settles_original_scheduler_receipt(tmp_path):
     assert completed["goal_scheduler_outcome"]["outcome"]["valid"] is True
     assert GoalSchedulerEvolution(tmp_path).projection()["settled_valid_count"] == 1
 
+    duplicate = episode.complete(
+        outcome={"status": "PUBLISHED", "world_utility": 0.9},
+        now=NOW + timedelta(minutes=2),
+        goal_id=choice["goal_id"],
+    )
+    assert duplicate["duplicate"] is True
+    assert GoalSchedulerEvolution(tmp_path).projection()["settled_valid_count"] == 1
+
 
 def test_owner_goal_context_uses_specific_active_proposal_over_parent_goal(tmp_path):
     proposals = (
