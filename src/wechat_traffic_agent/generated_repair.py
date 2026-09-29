@@ -46,11 +46,14 @@ class EditableBlock(BaseModel):
     old_text: str
 
 
-PLANNER_VERSION = "generated-repair.v9"
+PLANNER_VERSION = "generated-repair.v10"
 
 FORBIDDEN_TARGET_PARTS = (
     "self_repair", "self_maintenance", "generated_repair",
     "pi_remote_repair", "repair_request",
+    # Sensors may diagnose faults but must never be edited to make symptoms
+    # disappear. Repairs target the capability that produced the evidence.
+    "interoceptive_fault", "capability_contracts",
     "credential", "secret", "operator", "network", "auth", "deploy",
 )
 FORBIDDEN_GENERATED_TEXT = (
@@ -146,6 +149,14 @@ class GeneratedRepairPlanner:
             lower_source = source.lower()
             stem = path.stem.lower()
             score = 0
+            # Interoceptive task statuses are normalized by wakeful orchestration.
+            # Prefer that producer over secondary consumers that merely repeat the
+            # same status string (for example resource projections).
+            if (
+                str(problem.get("failure_site") or "").startswith("interoception:")
+                and relative == "src/wechat_traffic_agent/wakeful_tasks.py"
+            ):
+                score += 4
             exact_detail_hits = 0
             for detail in details:
                 if detail in source:
@@ -333,6 +344,58 @@ class GeneratedRepairPlanner:
         symptom = " ".join(str(problem.get("symptom") or "").split())
         localization_details, localization_tokens = self._localization_terms(problem)
         rows: list[tuple[int, EditableBlock]] = []
+
+        def block_score(text: str, *, function_name: str = "") -> int:
+            score = 0
+            if function_name and function_name in failure_functions:
+                score += 20
+            if symptom and symptom in text:
+                score += 12
+            lower_text = text.lower()
+            for detail in localization_details:
+                if detail in text:
+                    score += 14
+                elif detail.lower() in lower_text:
+                    score += 12
+            for token in localization_tokens:
+                if token in lower_text:
+                    score += 3
+            return score
+
+        def add_block(
+            *,
+            relative: str,
+            source: str,
+            lines: list[str],
+            node: ast.AST,
+            symbol: str,
+            score: int,
+        ) -> None:
+            start = getattr(node, "lineno", None)
+            end = getattr(node, "end_lineno", None)
+            if not isinstance(start, int) or not isinstance(end, int):
+                return
+            old_text = "".join(lines[start - 1 : end])
+            if (
+                not old_text
+                or len(old_text) > 5000
+                or source.count(old_text) != 1
+                or score <= 0
+            ):
+                return
+            digest = sha256((relative + "\0" + old_text).encode("utf-8")).hexdigest()[:24]
+            rows.append((
+                score,
+                EditableBlock(
+                    block_id=f"block:{digest}",
+                    path=relative,
+                    symbol=symbol,
+                    start_line=start,
+                    end_line=end,
+                    old_text=old_text,
+                ),
+            ))
+
         for relative in sources:
             path = self.workspace_root / relative
             try:
@@ -347,37 +410,56 @@ class GeneratedRepairPlanner:
                     continue
                 if node.end_lineno is None:
                     continue
-                old_text = "".join(lines[node.lineno - 1 : node.end_lineno])
-                if not old_text or len(old_text) > 5000 or source.count(old_text) != 1:
+                function_text = "".join(lines[node.lineno - 1 : node.end_lineno])
+                function_score = block_score(
+                    function_text,
+                    function_name=node.name,
+                )
+                if function_score <= 0:
                     continue
-                score = 0
-                if node.name in failure_functions:
-                    score += 20
-                if symptom and symptom in old_text:
-                    score += 12
-                lower_old = old_text.lower()
-                for detail in localization_details:
-                    if detail in old_text:
-                        score += 14
-                    elif detail.lower() in lower_old:
-                        score += 12
-                for token in localization_tokens:
-                    if token in lower_old:
-                        score += 3
-                if not score:
-                    continue
-                digest = sha256((relative + "\0" + old_text).encode("utf-8")).hexdigest()[:24]
-                rows.append((
-                    score,
-                    EditableBlock(
-                        block_id=f"block:{digest}",
-                        path=relative,
+                if len(function_text) <= 5000 and source.count(function_text) == 1:
+                    add_block(
+                        relative=relative,
+                        source=source,
+                        lines=lines,
+                        node=node,
                         symbol=node.name,
-                        start_line=node.lineno,
-                        end_line=node.end_lineno,
-                        old_text=old_text,
-                    ),
-                ))
+                        score=function_score,
+                    )
+                    continue
+
+                # Large orchestration functions are common in the wakeful loop.
+                # Do not make the whole function editable. Expose only a unique,
+                # bounded control-flow statement that itself contains the
+                # localization evidence. This keeps the edit surface narrow while
+                # still allowing faults such as a provider exception branch to be
+                # repaired.
+                for child in ast.walk(node):
+                    if not isinstance(
+                        child,
+                        (ast.ExceptHandler, ast.If, ast.Try, ast.Match),
+                    ):
+                        continue
+                    if getattr(child, "end_lineno", None) is None:
+                        continue
+                    child_text = "".join(
+                        lines[child.lineno - 1 : child.end_lineno]
+                    )
+                    child_score = block_score(child_text)
+                    if child_score <= 0:
+                        continue
+                    add_block(
+                        relative=relative,
+                        source=source,
+                        lines=lines,
+                        node=child,
+                        symbol=(
+                            f"{node.name}:{type(child).__name__}"
+                            f"@{child.lineno}"
+                        ),
+                        score=child_score + 4,
+                    )
+
         rows.sort(key=lambda item: (-item[0], item[1].path, item[1].start_line))
         seen: set[str] = set()
         result: list[EditableBlock] = []

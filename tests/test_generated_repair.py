@@ -359,6 +359,119 @@ def test_repair_authority_files_are_never_generated_targets(tmp_path):
     assert planner.safe_source_path("src/wechat_traffic_agent/repair_request.py") is False
 
 
+def test_repair_authority_and_sensor_files_are_never_generated_targets(tmp_path):
+    planner = GeneratedRepairPlanner(
+        workspace_root=_workspace(tmp_path),
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+
+    assert planner.safe_source_path(
+        "src/wechat_traffic_agent/interoceptive_fault.py"
+    ) is False
+    assert planner.safe_source_path(
+        "src/wechat_traffic_agent/capability_contracts.py"
+    ) is False
+
+
+def test_cognition_provider_fault_prefers_status_producer_not_sensor(tmp_path):
+    workspace = _workspace(tmp_path)
+    (workspace / "src/wechat_traffic_agent/interoceptive_fault.py").write_text(
+        "def classify():\n    return 'CHATGPT_UNAVAILABLE'\n",
+        encoding="utf-8",
+    )
+    (workspace / "src/wechat_traffic_agent/resource_economy.py").write_text(
+        "def resource_projection():\n    return 'CHATGPT_UNAVAILABLE'\n",
+        encoding="utf-8",
+    )
+    (workspace / "src/wechat_traffic_agent/wakeful_tasks.py").write_text(
+        "async def dispatch():\n"
+        "    try:\n"
+        "        return await run_task()\n"
+        "    except ProviderError:\n"
+        "        return {'status': 'CHATGPT_UNAVAILABLE', 'retryable': True}\n",
+        encoding="utf-8",
+    )
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+    problem = {
+        "task": "CONTENT_COGNITION",
+        "failure_site": "interoception:cognition_provider",
+        "symptom": "interoceptive unavailable in cognition_provider; task=CONTENT_COGNITION",
+        "diagnostic_evidence": {
+            "symptoms": [{
+                "kind": "unavailable",
+                "path": "result",
+                "detail": "CHATGPT_UNAVAILABLE",
+                "severity": 0.5,
+            }],
+        },
+    }
+
+    sources = planner.candidate_source_paths(problem)
+
+    assert sources[0] == "src/wechat_traffic_agent/wakeful_tasks.py"
+    assert "src/wechat_traffic_agent/interoceptive_fault.py" not in sources
+
+
+def test_large_orchestrator_exposes_only_bounded_localized_control_block(tmp_path):
+    workspace = _workspace(tmp_path)
+    wakeful = workspace / "src/wechat_traffic_agent/wakeful_tasks.py"
+    padding = "".join(
+        f"        value_{index} = {index}\n"
+        for index in range(450)
+    )
+    wakeful.write_text(
+        "async def dispatch():\n"
+        "    try:\n"
+        "        result = await run_task()\n"
+        + padding
+        + "        return result\n"
+        "    except ProviderError:\n"
+        "        return {\n"
+        "            'status': 'CHATGPT_UNAVAILABLE',\n"
+        "            'retryable': True,\n"
+        "        }\n",
+        encoding="utf-8",
+    )
+    planner = GeneratedRepairPlanner(
+        workspace_root=workspace,
+        runtime=PlannerRuntime(_valid_plan()),
+    )
+    problem = {
+        "task": "CONTENT_COGNITION",
+        "failure_site": "interoception:cognition_provider",
+        "symptom": "interoceptive unavailable in cognition_provider; task=CONTENT_COGNITION",
+        "diagnostic_evidence": {
+            "symptoms": [{
+                "kind": "unavailable",
+                "path": "result",
+                "detail": "CHATGPT_UNAVAILABLE",
+                "severity": 0.5,
+            }],
+        },
+    }
+
+    sources = planner.candidate_source_paths(problem)
+    blocks = planner.editable_blocks(problem, sources)
+
+    assert sources[0] == "src/wechat_traffic_agent/wakeful_tasks.py"
+    assert blocks
+    assert all(len(block.old_text) <= 5000 for block in blocks)
+    assert any(
+        block.path == "src/wechat_traffic_agent/wakeful_tasks.py"
+        and "CHATGPT_UNAVAILABLE" in block.old_text
+        and block.symbol.startswith("dispatch:")
+        for block in blocks
+    )
+    assert not any(
+        block.symbol == "dispatch"
+        for block in blocks
+        if block.path == "src/wechat_traffic_agent/wakeful_tasks.py"
+    )
+
+
 def test_planner_rejects_generated_network_or_process_capability(tmp_path):
     workspace = _workspace(tmp_path)
     runtime = PlannerRuntime(_valid_plan())
@@ -450,7 +563,7 @@ def test_rejected_problem_is_retryable_after_planner_version_upgrade(tmp_path):
     assert result["status"] == "GENERATED_REPAIR_PROPOSED"
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
 
 
 
@@ -512,7 +625,7 @@ def test_historical_unlocalized_problem_retries_after_localizer_version_upgrade(
     assert len(runtime.calls) == 1
     updated = json.loads(problem_path.read_text())
     assert updated["status"] == "REPAIR_PROPOSED"
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
     assert updated["diagnostic_evidence"]["recovered_from_episode"] is True
     assert (
         updated["diagnostic_evidence"]["interoceptive_episode_id"]
@@ -583,7 +696,7 @@ def test_transient_llm_failure_defers_without_poisoning_problem(tmp_path):
     stored = json.loads(problem_path.read_text())
     assert stored["status"] == "DIAGNOSING"
     assert stored["planner_attempt"]["status"] == "DEFERRED_RESOURCE"
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v10"
     assert stored["planner_attempt"]["retry_after"] == (
         NOW + timedelta(seconds=900)
     ).isoformat()
@@ -822,7 +935,7 @@ def test_model_selected_unapproved_test_is_ignored_by_authoritative_binding(tmp_
     stored = json.loads(problem_path.read_text())
     recipe = stored["repair_proposal"]["generated_recipe"]
     assert recipe["focused_tests"] == ["tests/test_app_logic.py"]
-    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert stored["planner_attempt"]["planner_version"] == "generated-repair.v10"
 
 
 
@@ -982,5 +1095,5 @@ def test_planner_can_select_counterevidence_test_that_scoring_would_not_discover
     assert result["focused_tests"][0] == counter_test
     assert "tests/test_app_logic.py" in result["focused_tests"]
     updated = json.loads(problem_path.read_text())
-    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v9"
+    assert updated["planner_attempt"]["planner_version"] == "generated-repair.v10"
     assert counter_test in updated["planner_attempt"]["allowed_tests"]
