@@ -237,9 +237,12 @@ def _planner_retry_policy(value: object) -> tuple[str, int] | None:
     name = type(value).__name__
     message = str(value)
     if (
-        name == "LLMProviderError"
+        name in {"LLMProviderError", "LivingRuntimeChatGPTProviderError"}
         or "all eligible LLM resources failed" in message
         or "no eligible LLM resources" in message
+        or "LivingRuntime cognition request timed out" in message
+        or "LivingRuntime cognition CLI failed" in message
+        or "cognition GitHub wake" in message
     ):
         return "DEFERRED_RESOURCE", _GENERATED_REPAIR_RESOURCE_RETRY_SECONDS
     if (
@@ -255,9 +258,13 @@ def _transient_planner_reason(value: object) -> bool:
     text = str(value or "")
     return (
         text.startswith("LLMProviderError:")
+        or text.startswith("LivingRuntimeChatGPTProviderError:")
         or text.startswith("ValidationError:")
         or "all eligible LLM resources failed" in text
         or "no eligible LLM resources" in text
+        or "LivingRuntime cognition request timed out" in text
+        or "LivingRuntime cognition CLI failed" in text
+        or "cognition GitHub wake" in text
         or "repair planner did not return a JSON object" in text
         or "Invalid JSON:" in text
     )
