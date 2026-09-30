@@ -11,8 +11,6 @@ from pathlib import Path
 import sys
 from typing import Any, AsyncIterator
 
-from .chatgpt_cortex_activator import schedule_chatgpt_web_cortex_activation
-
 
 _DURABLE_PHASE_ID: ContextVar[str] = ContextVar(
     "livingruntime_chatgpt_durable_phase_id",
@@ -200,27 +198,6 @@ class LivingRuntimeChatGPTProvider:
     @property
     def available(self) -> bool:
         return self.enabled and self.cli_path.is_file()
-
-    def _activate_pending_cortex(
-        self,
-        request_id: str,
-        *,
-        task_class: str,
-    ) -> None:
-        # Public Chat is intentionally outside the browser-cortex path. The
-        # activator exists for Ferro's background/owner cognition surfaces.
-        if str(task_class or "").strip() == "simple_public_text":
-            return
-        event = schedule_chatgpt_web_cortex_activation(request_id)
-        if str(event.get("status") or "") not in {"DISABLED", "COALESCED"}:
-            print(
-                json.dumps(
-                    {"chatgpt_web_cortex_activation": event},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                flush=True,
-            )
 
     def _request_id(
         self,
@@ -451,10 +428,6 @@ class LivingRuntimeChatGPTProvider:
             proc.kill()
             await proc.wait()
             if self.durable_dispatch:
-                self._activate_pending_cortex(
-                    request_id,
-                    task_class=task_class,
-                )
                 raise LivingRuntimeChatGPTPendingError(request_id) from exc
             raise LivingRuntimeChatGPTProviderError(
                 "LivingRuntime ChatGPT cognition timed out"
@@ -478,19 +451,11 @@ class LivingRuntimeChatGPTProvider:
                 # terminate the short-lived status subprocess with SIGTERM;
                 # keep the cognition resumable instead of recording a false
                 # model/content failure.
-                self._activate_pending_cortex(
-                    request_id,
-                    task_class=task_class,
-                )
                 raise LivingRuntimeChatGPTPendingError(request_id)
             if (
                 self.durable_dispatch
                 and "waiting for cognition response exceeded timeout" in detail
             ):
-                self._activate_pending_cortex(
-                    request_id,
-                    task_class=task_class,
-                )
                 raise LivingRuntimeChatGPTPendingError(request_id)
             raise LivingRuntimeChatGPTProviderError(
                 "LivingRuntime cognition CLI failed"
@@ -526,10 +491,6 @@ class LivingRuntimeChatGPTProvider:
             # Durable resume is a state check, not another blocking wait. The
             # exact request remains authoritative and will be retried by the
             # wakeful scheduler when ChatGPT has written its response.
-            self._activate_pending_cortex(
-                request_id,
-                task_class=task_class,
-            )
             raise LivingRuntimeChatGPTPendingError(request_id)
         if result_status == "TIMED_OUT":
             raise LivingRuntimeChatGPTProviderError(

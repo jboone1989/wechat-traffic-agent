@@ -301,14 +301,12 @@ function renderBrowserRuntime(data){
   head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
   if(row.provider==='JEV'){
-   c.append(node('p','用于自适应网页操作；ChatGPT Cortex 复用 X 账号的持久浏览器 profile/login/stream，不再启动独立 browser。','muted'));
-   const result=node('div','Cortex 激活不读取模型输出；真正 cognition 仍经 LivingRuntime Remote。','mono muted'),
+   c.append(node('p','用于 X 等网页自动化；复用账号自己的持久浏览器 profile/login。ChatGPT cognition 由 LivingRuntime MCP Events 独立激活。','muted'));
+   const result=node('div','JEV 只负责浏览器执行，不负责登录或唤醒 ChatGPT。','mono muted'),
          actions=node('div',undefined,'row'),
-         login=node('button','登录 ChatGPT Cortex','primary'),
          test=node('button','测试 Jev');
-   login.onclick=()=>beginCortexLogin();
    test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};
-   actions.append(login,test);c.append(actions,result)
+   actions.append(test);c.append(actions,result)
   }
   if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
@@ -395,12 +393,10 @@ function drawAccountFrame(data){
 }
 function accountStreamUrl(provider,accountId=''){
  const scheme=location.protocol==='https:'?'wss:':'ws:';
- if(provider==='chatgpt-cortex')return scheme+'//'+location.host+'/operator/api/cortex/browser/login/stream';
  if(accountId)return scheme+'//'+location.host+'/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stream';
  return scheme+'//'+location.host+'/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stream'
 }
 function accountConnectUrl(provider,accountId=''){
- if(provider==='chatgpt-cortex')return '/operator/api/cortex/browser/login/connect';
  if(accountId)return '/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/connect';
  return '/operator/api/accounts/'+encodeURIComponent(provider)+'/connect'
 }
@@ -422,7 +418,7 @@ async function openAccountStream(provider,recovery=0,accountId=''){
     drawAccountFrame(msg.data);
     if(!settled){settled=true;clearTimeout(timer);resolve()}
    }else if(msg.type==='status'){
-    const identity=msg.identity?(provider==='chatgpt-cortex'?' · '+msg.identity:' · @'+msg.identity):'';
+    const identity=msg.identity?' · @'+msg.identity:'';
     const prefix=msg.authenticated?'已登录'+identity:'实时';
     status.textContent=prefix+' · '+fmt(msg.url)+' · '+fmt(msg.title);
     status.classList.add('live');
@@ -463,21 +459,6 @@ async function beginAccountInstanceLogin(acct){
  await api(accountConnectUrl(activeAccountProvider,activeAccountId),{method:'POST',body:'{}'});
  await openAccountStream(activeAccountProvider,0,activeAccountId);
  await refresh()
-}
-async function beginCortexLogin(){
- activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('resources');
- el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
- el('accountLoginTitle').textContent='ChatGPT Cortex · 复用 X 持久浏览器会话';
- const status=el('localBrowserStatus');
- status.textContent='正在复用 X 账号的持久浏览器 profile…';
- try{
-  await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
-  await openAccountStream(activeAccountProvider,0,'')
- }catch(e){
-  status.textContent='ChatGPT Cortex 启动失败 · '+e.message;
-  status.classList.remove('live');
-  flash('ChatGPT Cortex 启动失败 · '+e.message,true)
- }
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
@@ -607,7 +588,6 @@ el('accountLoginClose').onclick=async()=>{
  const provider=activeAccountProvider,accountId=activeAccountId;closeAccountStream();activeAccountProvider='';activeAccountId='';
  try{
   if(accountId)await api('/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stop',{method:'POST',body:'{}'});
-  else if(provider==='chatgpt-cortex')await api('/operator/api/cortex/browser/login/stop',{method:'POST',body:'{}'});
   else if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})
  }catch{}
  el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');el('liveBrowserCanvas').classList.add('hidden');
