@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from wechat_traffic_agent.okx_ai_marketplace import (
     OnchainOSCLI,
     OnchainOSCommandError,
     ferro_registration_argv,
+    ferro_validate_listing_argv,
 )
 from wechat_traffic_agent.resource_regulation import ESSENTIAL_TASKS
 
@@ -18,15 +20,13 @@ from wechat_traffic_agent.resource_regulation import ESSENTIAL_TASKS
 class FakeRunner:
     def __init__(self, responses):
         self.responses = list(responses)
-        self.calls = []
+        self.calls: list[list[str]] = []
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
         if not self.responses:
             raise AssertionError(f"unexpected command: {argv}")
         response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
         return SimpleNamespace(
             returncode=response.get("returncode", 0),
             stdout=response.get("stdout", "{}"),
@@ -37,16 +37,14 @@ class FakeRunner:
 NOW = datetime(2026, 9, 30, 7, 0, tzinfo=timezone.utc)
 
 
-def test_marketplace_sync_is_an_essential_task():
-    assert "OKX_AI_MARKETPLACE" in ESSENTIAL_TASKS
-
-
 def _cli(*payloads):
-    import json
-
     return OnchainOSCLI(
         runner=FakeRunner([{"stdout": json.dumps(row)} for row in payloads])
     )
+
+
+def test_marketplace_sync_is_an_essential_task():
+    assert "OKX_AI_MARKETPLACE" in ESSENTIAL_TASKS
 
 
 def test_disabled_tick_does_not_touch_cli(tmp_path: Path):
@@ -60,123 +58,220 @@ def test_disabled_tick_does_not_touch_cli(tmp_path: Path):
     assert runner.calls == []
 
 
-def test_tick_mirrors_active_task_without_mutating_it(tmp_path: Path):
+def test_tick_reports_not_registered_without_legacy_gate_check(tmp_path: Path):
+    cli = _cli({"data": {"list": []}})
+    market = OKXAIMarketplace(state_root=tmp_path, cli=cli, enabled=True)
+    result = market.tick(now=NOW)
+    assert result["status"] == "NOT_REGISTERED"
+    assert cli.runner.calls == [
+        ["onchainos", "agent", "get-my-agents", "--role", "asp"]
+    ]
+
+
+def test_tick_uses_v463_asp_list_and_status_read_only(tmp_path: Path):
     cli = _cli(
-        {"data": {"ready": True}},
-        {"data": {"list": [{"agentList": [{"agentId": "asp_ferro", "name": "Ferro"}]}]}},
-        {"data": {"tasks": [{"jobId": "job_1"}]}},
-        {"data": {"jobId": "job_1", "status": "IN_PROGRESS"}},
+        {
+            "data": {
+                "list": [
+                    {
+                        "agentList": [
+                            {"agentId": "9967", "name": "Ferro"}
+                        ]
+                    }
+                ]
+            }
+        },
+        {"data": {"payload": {"items": [{"jobId": "job_1"}]}}},
+        {"data": {"payload": {"task": {"jobId": "job_1", "status": 1}}}},
     )
-    runner = cli.runner
     market = OKXAIMarketplace(
         state_root=tmp_path, cli=cli, enabled=True, writes_enabled=False
     )
     result = market.tick(now=NOW)
     assert result["status"] == "OK"
     assert result["active_task_count"] == 1
-    assert (tmp_path / "application/okx_ai_marketplace/tasks/job_1.json").exists()
-    commands = [" ".join(call) for call in runner.calls]
-    assert not any(" agent apply " in f" {command} " for command in commands)
-    assert not any(" agent deliver " in f" {command} " for command in commands)
+    assert (
+        tmp_path / "application/okx_ai_marketplace/tasks/job_1.json"
+    ).exists()
+    assert cli.runner.calls[1] == [
+        "onchainos", "agent", "asp", "list-tasks",
+        "--agent-id", "9967", "--page", "1", "--limit", "20",
+    ]
+    assert cli.runner.calls[2] == [
+        "onchainos", "agent", "asp", "status", "job_1",
+        "--agent-id", "9967",
+    ]
+    assert all("apply" not in call for call in cli.runner.calls)
 
 
-def test_notification_is_resolved_only_through_next_action(tmp_path: Path):
+def test_notification_requires_trusted_envelope_and_uses_next_action_once(tmp_path: Path):
     inbox = tmp_path / "application/okx_ai_marketplace/notifications/inbox"
     inbox.mkdir(parents=True)
     (inbox / "wake.json").write_text(
-        '{"message":{"event":"TASK_ASSIGNED","jobId":"job_9"}}', encoding="utf-8"
+        json.dumps(
+            {
+                "agentId": "9967",
+                "message": {
+                    "source": "system",
+                    "event": "job_asp_selected",
+                    "jobId": "job_9",
+                },
+            }
+        ),
+        encoding="utf-8",
     )
-    cli = _cli(
-        {"data": {"ready": True}},
-        {"data": {"tasks": []}},
-        {"data": {"action": "WAIT_FOR_ESCROW", "jobId": "job_9"}},
+    runner = FakeRunner(
+        [
+            {"stdout": json.dumps({"data": {"payload": {"items": []}}})},
+            {"stdout": "### Provider assignment\nRun the assignment decision flow."},
+        ]
     )
-    runner = cli.runner
     market = OKXAIMarketplace(
         state_root=tmp_path,
-        cli=cli,
-        agent_id="asp_ferro",
+        cli=OnchainOSCLI(runner=runner),
+        agent_id="9967",
         enabled=True,
         writes_enabled=True,
     )
     result = market.tick(now=NOW)
-    assert result["notification_results"][0]["status"] == "RESOLVED"
+    notification = result["notification_results"][0]
+    assert notification["status"] == "RESOLVED"
+    assert notification["event"] == "job_asp_selected"
+    assert "playbook" in notification["next_action"]
     assert not (inbox / "wake.json").exists()
-    assert (
-        tmp_path / "application/okx_ai_marketplace/notifications/processed/wake.json"
-    ).exists()
-    assert any("next-action" in call for call in runner.calls)
+    assert sum("next-action" in call for call in runner.calls) == 1
     assert not any("deliver" in call for call in runner.calls)
 
 
-def test_quote_requires_write_authority(tmp_path: Path):
+def test_invalid_notification_remains_for_recovery(tmp_path: Path):
+    inbox = tmp_path / "application/okx_ai_marketplace/notifications/inbox"
+    inbox.mkdir(parents=True)
+    path = inbox / "bad.json"
+    path.write_text('{"message":{"event":"job_asp_selected"}}', encoding="utf-8")
     market = OKXAIMarketplace(
         state_root=tmp_path,
-        cli=_cli(),
-        agent_id="asp_ferro",
+        cli=_cli({"data": {"payload": {"items": []}}}),
+        agent_id="9967",
         enabled=True,
-        writes_enabled=False,
     )
-    with pytest.raises(PermissionError):
-        market.quote("job_1", amount="8")
+    result = market.tick(now=NOW)
+    assert result["notification_results"][0]["status"] == "ERROR"
+    assert path.exists()
+    assert (
+        tmp_path / "application/okx_ai_marketplace/notifications/failed/bad.json"
+    ).exists()
 
 
-def test_quote_uses_only_supported_settlement_tokens(tmp_path: Path):
-    cli = _cli({"data": {"ok": True}})
+def test_accept_job_uses_current_provider_command(tmp_path: Path):
     market = OKXAIMarketplace(
         state_root=tmp_path,
-        cli=cli,
-        agent_id="asp_ferro",
-        enabled=True,
+        cli=_cli({"data": {"success": True}}),
+        agent_id="9967",
         writes_enabled=True,
     )
-    with pytest.raises(ValueError):
-        market.quote("job_1", amount="8", symbol="BTC")
-    result = market.quote("job_1", amount="8", symbol="USDT")
-    assert result["data"]["ok"] is True
-
-
-def test_non_json_cli_output_is_fail_loud():
-    cli = OnchainOSCLI(runner=FakeRunner([{"stdout": "not-json"}]))
-    with pytest.raises(OnchainOSCommandError):
-        cli.run("agent", "gate-check", "--role", "asp")
-
-
-def test_next_action_preserves_script_output(tmp_path: Path):
-    runner = FakeRunner([{"stdout": "onchainos agent status job_1 --agent-id asp_ferro"}])
-    market = OKXAIMarketplace(
-        state_root=tmp_path,
-        cli=OnchainOSCLI(runner=runner),
-        agent_id="asp_ferro",
-        enabled=True,
-    )
-    result = market.next_action(
-        message={"source": "system", "event": "job_created", "jobId": "job_1"}
-    )
-    assert result["script"].startswith("onchainos agent status job_1")
-
-
-def test_claim_rewards_is_account_level(tmp_path: Path):
-    cli = _cli({"data": {"claimed": "4.2"}})
-    runner = cli.runner
-    market = OKXAIMarketplace(
-        state_root=tmp_path,
-        cli=cli,
-        agent_id="asp_ferro",
-        enabled=True,
-        writes_enabled=True,
-    )
-    market.claim_rewards()
-    assert runner.calls[-1] == [
-        "onchainos", "agent", "asp-claim-rewards", "--agent-id", "asp_ferro"
+    market.accept_job("job_1")
+    assert market.cli.runner.calls[-1] == [
+        "onchainos", "agent", "accept-job-by-provider", "job_1",
+        "--agent-id", "9967",
     ]
 
 
-def test_registration_profile_contains_three_a2a_services():
-    argv = ferro_registration_argv(picture_url="https://example.com/ferro.png")
-    service_json = argv[argv.index("--service") + 1]
-    import json
+def test_provider_mutations_require_write_authority(tmp_path: Path):
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=_cli(),
+        agent_id="9967",
+        writes_enabled=False,
+    )
+    with pytest.raises(PermissionError):
+        market.accept_job("job_1")
+    with pytest.raises(PermissionError):
+        market.deliver_text("job_1", text="done")
 
-    services = json.loads(service_json)
+
+def test_decline_job_requires_bounded_reason(tmp_path: Path):
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=_cli({"data": {"success": True}}),
+        agent_id="9967",
+        writes_enabled=True,
+    )
+    with pytest.raises(ValueError):
+        market.decline_job("job_1", reason="")
+    market.decline_job("job_1", reason="Requested work is outside the registered service.")
+    assert market.cli.runner.calls[-1][:4] == [
+        "onchainos", "agent", "decline-job-by-provider", "job_1"
+    ]
+
+
+def test_subscription_accept_uses_current_provider_command(tmp_path: Path):
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=_cli({"data": {"success": True}}),
+        agent_id="9967",
+        writes_enabled=True,
+    )
+    market.accept_subscription("sub_1")
+    assert market.cli.runner.calls[-1] == [
+        "onchainos", "agent", "accept-subscription", "sub_1",
+        "--agent-id", "9967",
+    ]
+
+
+def test_delivery_uses_single_authoritative_deliver_command(tmp_path: Path):
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=_cli({"data": {"success": True}}),
+        agent_id="9967",
+        writes_enabled=True,
+    )
+    market.deliver_text("job_1", text="finished result")
+    assert market.cli.runner.calls[-1] == [
+        "onchainos", "agent", "deliver", "job_1",
+        "--agent-id", "9967", "--deliverable-text", "finished result",
+    ]
+
+
+def test_json_command_fails_loud_on_non_json():
+    cli = OnchainOSCLI(runner=FakeRunner([{"stdout": "not-json"}]))
+    with pytest.raises(OnchainOSCommandError):
+        cli.run("agent", "asp", "list-tasks", "--agent-id", "9967")
+
+
+def test_next_action_preserves_markdown_playbook(tmp_path: Path):
+    runner = FakeRunner([{"stdout": "### Provider assignment\nUse the provider router."}])
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=OnchainOSCLI(runner=runner),
+        agent_id="9967",
+    )
+    result = market.next_action(
+        message={
+            "source": "system",
+            "event": "job_asp_selected",
+            "jobId": "job_1",
+        }
+    )
+    assert result["playbook"].startswith("### Provider assignment")
+    assert runner.calls[-1][0:3] == ["onchainos", "agent", "next-action"]
+
+
+def test_next_action_rejects_eventless_message(tmp_path: Path):
+    market = OKXAIMarketplace(
+        state_root=tmp_path,
+        cli=_cli(),
+        agent_id="9967",
+    )
+    with pytest.raises(ValueError):
+        market.next_action(message={"source": "system"})
+
+
+def test_registration_services_match_v463_a2a_contract():
+    argv = ferro_registration_argv(
+        picture_url="https://static.okx.com/cdn/ferro.png"
+    )
+    services = json.loads(argv[argv.index("--service") + 1])
     assert [row["serviceType"] for row in services] == ["A2A", "A2A", "A2A"]
     assert [row["fee"] for row in services] == ["8", "12", "20"]
+    assert [row["subscription"] for row in services] == [[], [], []]
+    assert "validate-listing" in ferro_validate_listing_argv()
