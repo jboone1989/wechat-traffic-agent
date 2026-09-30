@@ -253,19 +253,20 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
         }
         _write_json(state_path, state)
 
-        from .chatgpt_cortex_browser_control import ChatGPTCortexBrowserControl
-
-        cortex_browser = ChatGPTCortexBrowserControl(state_root=state_root)
-        os.environ["BU_CDP_URL"] = cortex_browser.cdp_url()
-        os.environ["BU_NAME"] = (
-            "ferro_chatgpt_cortex_" + cortex_browser.account_id[-20:]
-        )[:64]
-        from browser_harness.admin import ensure_daemon
-        from jev_ultrafast.browser import Browser
-
-        ensure_daemon()
-        browser = Browser(_DEFAULT_URL)
+        browser = None
         try:
+            from .chatgpt_cortex_browser_control import ChatGPTCortexBrowserControl
+
+            cortex_browser = ChatGPTCortexBrowserControl(state_root=state_root)
+            os.environ["BU_CDP_URL"] = cortex_browser.cdp_url()
+            os.environ["BU_NAME"] = (
+                "ferro_chatgpt_cortex_" + cortex_browser.account_id[-20:]
+            )[:64]
+            from browser_harness.admin import ensure_daemon
+            from jev_ultrafast.browser import Browser
+
+            ensure_daemon()
+            browser = Browser(_DEFAULT_URL)
             deadline = time.monotonic() + 25.0
             login_required = False
             while time.monotonic() < deadline:
@@ -367,10 +368,11 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             }
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
-            try:
-                browser.close()
-            except (OSError, RuntimeError, ValueError):
-                pass
+            if browser is not None:
+                try:
+                    browser.close()
+                except (OSError, RuntimeError, ValueError):
+                    pass
             return result
 
 

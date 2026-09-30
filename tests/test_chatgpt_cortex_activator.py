@@ -12,6 +12,7 @@ from wechat_traffic_agent.chatgpt_cortex_activator import (
 )
 from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTProvider
 import wechat_traffic_agent.chatgpt_cortex_activator as activator_module
+import wechat_traffic_agent.chatgpt_cortex_browser_control as cortex_module
 import wechat_traffic_agent.livingruntime_chatgpt as provider_module
 
 
@@ -137,3 +138,27 @@ def test_visible_login_control_takes_precedence_over_composer():
 
     assert activator_module._login_required(_Browser(True)) is True
     assert activator_module._login_required(_Browser(False)) is False
+
+
+def test_activation_setup_failure_finishes_state_instead_of_staying_running(
+    tmp_path,
+    monkeypatch,
+):
+    class _BrokenControl:
+        def __init__(self, *, state_root):
+            self.account_id = "acct_x_test"
+
+        def cdp_url(self):
+            raise RuntimeError("shared browser unavailable")
+
+    monkeypatch.setattr(
+        cortex_module,
+        "ChatGPTCortexBrowserControl",
+        _BrokenControl,
+    )
+    result = activator_module._send_activation(
+        "llmreq_12345678abcdef",
+        state_root=tmp_path,
+    )
+    assert result["status"] == "ACTIVATION_FAILED"
+    assert result["detail"] == "shared browser unavailable"
