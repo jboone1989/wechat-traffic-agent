@@ -53,7 +53,11 @@ def test_screencast_pump_sends_live_frame_and_ack():
         "params": {
             "data": "ZmFrZS1qcGVn",
             "sessionId": 7,
-            "metadata": {"timestamp": 1.0},
+            "metadata": {
+                "timestamp": 1.0,
+                "deviceWidth": 800,
+                "deviceHeight": 600,
+            },
         },
     }])
     stream = BrowserSessionStream(FakeControl())
@@ -70,6 +74,8 @@ def test_screencast_pump_sends_live_frame_and_ack():
         "Page.screencastFrameAck",
     ]
     assert cdp.sent[-1]["params"]["sessionId"] == 7
+    assert stream._viewport_width == 800
+    assert stream._viewport_height == 600
 
 
 def test_live_input_is_constrained_to_allowed_cdp_events():
@@ -104,6 +110,33 @@ def test_live_input_is_constrained_to_allowed_cdp_events():
     assert "Input.insertText" in methods
     assert methods.count("Input.dispatchKeyEvent") == 2
     assert all("webSocketDebuggerUrl" not in json.dumps(row) for row in sent)
+
+
+def test_click_uses_live_screencast_viewport_dimensions():
+    messages = [{"type": "click", "x_ratio": 0.5, "y_ratio": 0.25}]
+
+    class InputClient:
+        async def receive_json(self):
+            if messages:
+                return messages.pop(0)
+            await asyncio.Event().wait()
+
+    async def run():
+        cdp = FakeCDP()
+        stream = BrowserSessionStream(FakeControl())
+        stream._viewport_width = 800
+        stream._viewport_height = 600
+        task = asyncio.create_task(stream._handle_input(InputClient(), cdp))
+        await asyncio.sleep(0.02)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return cdp.sent
+
+    sent = asyncio.run(run())
+    clicks = [row for row in sent if row["method"] == "Input.dispatchMouseEvent"]
+    assert len(clicks) == 2
+    assert all(row["params"]["x"] == 400 for row in clicks)
+    assert all(row["params"]["y"] == 150 for row in clicks)
 
 
 def test_status_supports_generic_non_x_authentication_shape():

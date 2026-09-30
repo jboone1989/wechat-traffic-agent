@@ -68,6 +68,8 @@ class BrowserSessionStream:
         self.control = control
         self._command_id = 0
         self._send_lock = asyncio.Lock()
+        self._viewport_width = _VIEWPORT_WIDTH
+        self._viewport_height = _VIEWPORT_HEIGHT
 
     def target_id(self) -> str:
         value = str(self.control.target_id() or "")
@@ -132,8 +134,8 @@ class BrowserSessionStream:
                         cdp,
                         "Input.dispatchMouseEvent",
                         type=event,
-                        x=x * _VIEWPORT_WIDTH,
-                        y=y * _VIEWPORT_HEIGHT,
+                        x=x * self._viewport_width,
+                        y=y * self._viewport_height,
                         button="left",
                         clickCount=1,
                     )
@@ -145,8 +147,8 @@ class BrowserSessionStream:
                     cdp,
                     "Input.dispatchMouseEvent",
                     type="mouseWheel",
-                    x=float(message.get("x_ratio") or 0.5) * _VIEWPORT_WIDTH,
-                    y=float(message.get("y_ratio") or 0.5) * _VIEWPORT_HEIGHT,
+                    x=float(message.get("x_ratio") or 0.5) * self._viewport_width,
+                    y=float(message.get("y_ratio") or 0.5) * self._viewport_height,
                     deltaX=dx,
                     deltaY=dy,
                 )
@@ -201,11 +203,18 @@ class BrowserSessionStream:
             session_id = params.get("sessionId")
             if not data or session_id is None:
                 continue
+            metadata = params.get("metadata") or {}
+            device_width = metadata.get("deviceWidth")
+            device_height = metadata.get("deviceHeight")
+            if isinstance(device_width, (int, float)) and device_width > 0:
+                self._viewport_width = float(device_width)
+            if isinstance(device_height, (int, float)) and device_height > 0:
+                self._viewport_height = float(device_height)
             frames += 1
             await client.send_json({
                 "type": "frame",
                 "data": data,
-                "metadata": params.get("metadata") or {},
+                "metadata": metadata,
                 "sequence": frames,
             })
             await self._send(
