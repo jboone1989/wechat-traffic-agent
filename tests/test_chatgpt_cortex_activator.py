@@ -124,3 +124,16 @@ def test_provider_activates_background_cognition_but_not_public_chat(
         task_class="simple_public_text",
     )
     assert seen == ["llmreq_background123"]
+
+
+def test_visible_login_control_takes_precedence_over_composer():
+    class _Browser:
+        def __init__(self, value):
+            self.value = value
+
+        def evaluate(self, expression):
+            assert "log in" in expression
+            return self.value
+
+    assert activator_module._login_required(_Browser(True)) is True
+    assert activator_module._login_required(_Browser(False)) is False

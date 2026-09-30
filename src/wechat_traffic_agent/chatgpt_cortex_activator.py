@@ -184,6 +184,15 @@ def _composer_present(browser: Any) -> bool:
     ))
 
 
+def _login_required(browser: Any) -> bool:
+    return bool(browser.evaluate(
+        """(() => [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
+          const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+          return text === 'log in' && Boolean(el.getClientRects().length);
+        }))()"""
+    ))
+
+
 def _focus_composer(browser: Any) -> bool:
     return bool(browser.evaluate(
         """(() => {
@@ -258,14 +267,42 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
         browser = Browser(_DEFAULT_URL)
         try:
             deadline = time.monotonic() + 25.0
+            login_required = False
             while time.monotonic() < deadline:
                 try:
+                    if _login_required(browser):
+                        login_required = True
+                        break
                     if _composer_present(browser):
                         break
                 except (OSError, RuntimeError, ValueError):
                     pass
                 time.sleep(0.25)
-            else:
+            if login_required:
+                url = str(browser.evaluate("location.href") or "")
+                result = {
+                    **state,
+                    "status": "LOGIN_REQUIRED",
+                    "url": url[:240],
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+                _write_json(state_path, result)
+                _append_event(events_path, {**result, "at": result["finished_at"]})
+                browser.close()
+                return result
+            if time.monotonic() >= deadline:
+                url = str(browser.evaluate("location.href") or "")
+                result = {
+                    **state,
+                    "status": "LOGIN_REQUIRED",
+                    "url": url[:240],
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+                _write_json(state_path, result)
+                _append_event(events_path, {**result, "at": result["finished_at"]})
+                browser.close()
+                return result
+            if _login_required(browser):
                 url = str(browser.evaluate("location.href") or "")
                 result = {
                     **state,

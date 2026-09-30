@@ -103,18 +103,25 @@ class _SharedProfileChatGPTControl(AccountBrowserLoginControl):
                 """JSON.stringify({
                   url: location.href,
                   title: document.title,
-                  authenticated: Boolean(
+                  composer: Boolean(
                     document.querySelector('#prompt-textarea') ||
                     document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
                     document.querySelector('main [contenteditable="true"]')
-                  )
+                  ),
+                  loginRequired: [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
+                    const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                    return text === 'log in' && Boolean(el.getClientRects().length);
+                  })
                 })""",
             )
             try:
                 details = json.loads(value) if isinstance(value, str) else {}
             except json.JSONDecodeError:
                 details = {}
-            authenticated = bool(details.get("authenticated"))
+            authenticated = (
+                bool(details.get("composer"))
+                and not bool(details.get("loginRequired"))
+            )
             return {
                 "running": True,
                 "url": str(details.get("url") or page.get("url") or ""),
