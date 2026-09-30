@@ -346,8 +346,7 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             from .chatgpt_cortex_browser_control import ChatGPTCortexBrowserControl
 
             cortex_browser = ChatGPTCortexBrowserControl(state_root=state_root)
-            os.environ.pop("BU_CDP_URL", None)
-            os.environ["BU_CDP_WS"] = cortex_browser.cdp_url()
+            os.environ["BU_CDP_URL"] = cortex_browser.cdp_url()
             os.environ["BU_NAME"] = (
                 "ferro_chatgpt_cortex_" + cortex_browser.account_id[-20:]
             )[:64]
