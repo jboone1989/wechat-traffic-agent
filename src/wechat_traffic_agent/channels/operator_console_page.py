@@ -149,7 +149,13 @@ const el=id=>document.getElementById(id);
 const fmt=v=>v===null||v===undefined||v===''?'—':String(v);
 const num=v=>typeof v==='number'?Math.round(v*1000)/1000:v;
 function showLogin(){el('login').classList.remove('hidden');el('dash').classList.add('hidden')}
-function showDash(){el('login').classList.add('hidden');el('dash').classList.remove('hidden')}
+function showDash(){
+ el('login').classList.add('hidden');el('dash').classList.remove('hidden');
+ if(!el('summary').children.length){
+  el('summary').append(metricCard('会话','已登录','正在加载后台状态'));
+  el('domains').replaceChildren(node('div','正在加载资源状态…','card muted'))
+ }
+}
 function flash(s,bad=false){el('flash').className=bad?'error':'success';el('flash').textContent=s||''}
 async function api(path,opts={}){
  const r=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json','X-Operator-Request':'1'},...opts});

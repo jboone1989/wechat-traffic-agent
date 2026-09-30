@@ -142,3 +142,10 @@ def test_operator_console_restores_session_without_using_heavy_status_as_auth_pr
     assert "if(e.status===401)return" in page
     assert "后台状态加载失败" in page
 
+
+def test_operator_console_never_shows_an_empty_dashboard_while_status_loads():
+    page = operator_console_document()
+
+    assert "正在加载后台状态" in page
+    assert "正在加载资源状态" in page
+    assert "metricCard('会话','已登录','正在加载后台状态')" in page

@@ -293,6 +293,21 @@ def test_provider_discovery_does_not_claim_credential_verification(tmp_path):
     assert row["verification_status"] is None
 
 
+def test_survival_status_does_not_run_live_remote_observation(tmp_path, monkeypatch):
+    import wechat_traffic_agent.survival_resources as survival_module
+
+    def fail_observe(self, *, now):
+        raise AssertionError("operator status must not perform live survival observation")
+
+    monkeypatch.setattr(survival_module.SurvivalResourceManager, "observe", fail_observe)
+    status = OperatorConsole(tmp_path).survival_status()
+
+    assert status["domains"]
+    assert {row["domain"] for row in status["domains"]} == {
+        "LLM", "STORAGE", "COMPUTE", "HOSTING", "REMOTE_MACHINE", "SERVICE"
+    }
+
+
 def test_survival_status_unifies_llm_storage_compute_and_hosting(tmp_path):
     status = OperatorConsole(tmp_path).survival_status()
     domains = {row["domain"]: row for row in status["domains"]}

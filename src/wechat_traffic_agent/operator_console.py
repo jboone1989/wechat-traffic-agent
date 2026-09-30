@@ -501,10 +501,36 @@ class OperatorConsole:
         return SurvivalResourceManager(self.state_root)
 
     def survival_status(self) -> dict[str, Any]:
+        """Project the latest survival snapshot without performing live network probes."""
         llm = self.resource_status()
         manager = self._survival_manager()
-        observed = manager.observe(now=datetime.now(timezone.utc))
-        resources = list(observed.get("resources") or [])
+        snapshot = manager.status()
+        resources = list(snapshot.get("resources") or [])
+
+        # A brand-new state root has no persisted observation yet. Seed only cheap
+        # local facts here; remote/service liveness belongs to the background
+        # survival observer and must never block the operator console.
+        if not resources:
+            disk = shutil.disk_usage(self.state_root)
+            resources = [
+                {
+                    "domain": "STORAGE",
+                    "status": "ACTIVE",
+                    "total_gib": round(disk.total / 1024**3, 3),
+                    "free_gib": round(disk.free / 1024**3, 3),
+                    "used_ratio": round(disk.used / disk.total, 4) if disk.total else 0.0,
+                },
+                {
+                    "domain": "COMPUTE",
+                    "status": "ACTIVE",
+                    "cpu_count": max(1, int(os.cpu_count() or 1)),
+                },
+                {
+                    "domain": "HOSTING",
+                    "status": "LOCAL_PRIMARY",
+                },
+            ]
+
         by_domain: dict[str, list[dict[str, Any]]] = {}
         for row in resources:
             by_domain.setdefault(str(row.get("domain") or "UNKNOWN"), []).append(row)
@@ -514,8 +540,10 @@ class OperatorConsole:
         hosting = next(iter(by_domain.get("HOSTING", [])), {})
         remote = by_domain.get("REMOTE_MACHINE", [])
         services = by_domain.get("SERVICE", [])
+        policy = snapshot.get("policy") or {}
         return {
-            "pressure": observed.get("pressure"),
+            "pressure": policy.get("pressure") or "UNKNOWN",
+            "snapshot_observed_at": policy.get("observed_at"),
             "domains": [
                 {
                     "domain": "LLM",
