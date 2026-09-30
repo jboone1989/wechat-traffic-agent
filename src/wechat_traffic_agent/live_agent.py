@@ -1430,6 +1430,7 @@ class LiveAgentService:
     def _app(self):
         from starlette.applications import Starlette
         from starlette.requests import Request
+        from starlette.middleware.sessions import SessionMiddleware
         from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
         from starlette.routing import Route, WebSocketRoute
         from starlette.websockets import WebSocket, WebSocketDisconnect
@@ -2078,7 +2079,12 @@ class LiveAgentService:
         def operator_authorized(request: Request) -> bool:
             if operator_console is None:
                 return False
-            return operator_console.auth.valid(request.cookies.get("ferro_operator_session"))
+            return bool(request.session.get("operator"))
+
+        def operator_websocket_authorized(websocket: WebSocket) -> bool:
+            if operator_console is None:
+                return False
+            return bool((websocket.scope.get("session") or {}).get("operator"))
 
         def operator_write_allowed(request: Request) -> bool:
             return request.headers.get("x-operator-request") == "1"
@@ -2982,19 +2988,12 @@ class LiveAgentService:
                 "proposals": operator_chat.proposals(limit=40),
             }, headers={"Cache-Control": "no-store"})
 
-        def operator_session_response(request: Request, session_id: str):
+        def operator_session_response(request: Request):
+            request.session.clear()
+            request.session["operator"] = True
             response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
             forwarded_https = request.headers.get("x-forwarded-proto") == "https"
             secure_cookie = request.url.scheme == "https" or forwarded_https
-            response.set_cookie(
-                "ferro_operator_session",
-                session_id,
-                max_age=1800,
-                httponly=True,
-                secure=secure_cookie,
-                samesite="strict",
-                path="/operator",
-            )
             response.set_cookie(
                 "ferro_operator_audience",
                 audience_analytics.store.operator_audience_marker(),
@@ -3128,12 +3127,12 @@ class LiveAgentService:
             except Exception:
                 return JSONResponse({"error": "invalid_json"}, status_code=400)
             token = str(body.get("token") or "") if isinstance(body, dict) else ""
-            session_id = operator_console.auth.login(token)
-            if session_id is None:
-                session_id = operator_console.auth.consume_one_time_access(token)
-            if session_id is None:
+            authenticated = operator_console.auth.verify_static_token(token)
+            if not authenticated:
+                authenticated = operator_console.auth.consume_one_time_access(token)
+            if not authenticated:
                 return JSONResponse({"error": "invalid_or_expired_operator_token"}, status_code=401)
-            return operator_session_response(request, session_id)
+            return operator_session_response(request)
 
         async def operator_status(request: Request):
             if not operator_authorized(request):
@@ -3489,8 +3488,7 @@ class LiveAgentService:
             if operator_console is None:
                 await websocket.close(code=4404)
                 return
-            session_id = websocket.cookies.get("ferro_operator_session")
-            if not operator_console.auth.valid(session_id):
+            if not operator_websocket_authorized(websocket):
                 await websocket.close(code=4401)
                 return
             origin = str(websocket.headers.get("origin") or "")
@@ -3514,7 +3512,7 @@ class LiveAgentService:
                 stream = BrowserSessionStream(control)
                 await stream.run(
                     websocket,
-                    authorize=lambda: operator_console.auth.valid(session_id),
+                    authorize=lambda: operator_websocket_authorized(websocket),
                 )
             except WebSocketDisconnect:
                 return
@@ -3580,8 +3578,7 @@ class LiveAgentService:
             if operator_console is None:
                 await websocket.close(code=4404)
                 return
-            session_id = websocket.cookies.get("ferro_operator_session")
-            if not operator_console.auth.valid(session_id):
+            if not operator_websocket_authorized(websocket):
                 await websocket.close(code=4401)
                 return
             origin = str(websocket.headers.get("origin") or "")
@@ -3603,7 +3600,7 @@ class LiveAgentService:
                 stream = BrowserSessionStream(chatgpt_cortex_browser_control)
                 await stream.run(
                     websocket,
-                    authorize=lambda: operator_console.auth.valid(session_id),
+                    authorize=lambda: operator_websocket_authorized(websocket),
                 )
             except WebSocketDisconnect:
                 return
@@ -3625,8 +3622,7 @@ class LiveAgentService:
             if operator_console is None:
                 await websocket.close(code=4404)
                 return
-            session_id = websocket.cookies.get("ferro_operator_session")
-            if not operator_console.auth.valid(session_id):
+            if not operator_websocket_authorized(websocket):
                 await websocket.close(code=4401)
                 return
             origin = str(websocket.headers.get("origin") or "")
@@ -3651,7 +3647,7 @@ class LiveAgentService:
                 stream = BrowserSessionStream(local_browser_control)
                 await stream.run(
                     websocket,
-                    authorize=lambda: operator_console.auth.valid(session_id),
+                    authorize=lambda: operator_websocket_authorized(websocket),
                 )
             except WebSocketDisconnect:
                 return
@@ -4116,9 +4112,8 @@ class LiveAgentService:
                 return JSONResponse({"error": "not_found"}, status_code=404)
             if not operator_write_allowed(request):
                 return JSONResponse({"error": "operator_header_required"}, status_code=403)
-            operator_console.auth.logout(request.cookies.get("ferro_operator_session"))
+            request.session.clear()
             response = JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
-            response.delete_cookie("ferro_operator_session", path="/operator")
             response.delete_cookie("ferro_operator_audience", path="/")
             return response
 
@@ -4209,7 +4204,19 @@ class LiveAgentService:
                 Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
                 Route("/operator/api/logout", operator_logout, methods=["POST"]),
             ])
-        return Starlette(routes=routes)
+        app = Starlette(routes=routes)
+        if operator_console is not None:
+            public_url = str(os.environ.get("CONTENT_OPERATOR_PUBLIC_URL") or "").strip()
+            app.add_middleware(
+                SessionMiddleware,
+                secret_key=operator_console.auth.session_secret,
+                session_cookie="ferro_operator_session",
+                max_age=1800,
+                path="/operator",
+                same_site="strict",
+                https_only=public_url.startswith("https://"),
+            )
+        return app
 
     def start(self) -> None:
         if self._thread is not None:

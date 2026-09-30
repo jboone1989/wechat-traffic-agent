@@ -68,16 +68,27 @@ def test_secret_vault_rejects_unknown_names_and_multiline_values(tmp_path):
         vault.put("CEREBRAS_API_KEY", "abcd\nefgh")
 
 
-def test_operator_auth_uses_short_lived_server_session(tmp_path):
-    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=1))
-    token = auth.token_path.read_text().strip()
-    assert oct(auth.token_path.stat().st_mode & 0o777) == "0o600"
-    assert auth.login("wrong", now=NOW) is None
+def test_operator_auth_uses_static_and_signed_one_time_tokens(tmp_path):
+    auth = OperatorAuthenticator(tmp_path)
+    static_token = auth.token_path.read_text().strip()
 
-    session = auth.login(token, now=NOW)
-    assert session
-    assert auth.valid(session, now=NOW + timedelta(seconds=59))
-    assert not auth.valid(session, now=NOW + timedelta(minutes=2))
+    assert oct(auth.token_path.stat().st_mode & 0o777) == "0o600"
+    assert auth.verify_static_token(static_token)
+    assert not auth.verify_static_token("wrong")
+
+    one_time = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=1))
+    assert one_time != static_token
+    assert auth.consume_one_time_access(
+        one_time, now=NOW + timedelta(seconds=59)
+    )
+    assert not auth.consume_one_time_access(
+        one_time, now=NOW + timedelta(seconds=59)
+    )
+
+    expired = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=1))
+    assert not auth.consume_one_time_access(
+        expired, now=NOW + timedelta(minutes=2)
+    )
 
 
 def test_resource_request_requires_explicit_authorization_before_secret(tmp_path):
@@ -481,19 +492,14 @@ def test_deepseek_stable_reserve_key_is_write_only(tmp_path):
     assert row["quota_supported"] is False
 
 
-def test_one_time_operator_access_persists_only_digest_and_is_single_use(tmp_path):
-    from datetime import timedelta
-    auth=OperatorAuthenticator(tmp_path,ttl=timedelta(minutes=30))
-    token=auth.issue_one_time_access(now=NOW,ttl=timedelta(hours=2))
-    raw=auth.bootstrap_path.read_text()
-    assert token not in raw
-    assert "token_sha256" in raw
+def test_one_time_operator_access_is_signed_and_replay_protected_by_sqlite(tmp_path):
+    auth = OperatorAuthenticator(tmp_path)
+    token = auth.issue_one_time_access(now=NOW, ttl=timedelta(hours=2))
 
-    session=auth.consume_one_time_access(token,now=NOW+timedelta(minutes=1))
-    assert session
-    assert auth.valid(session,now=NOW+timedelta(minutes=2))
-    assert not auth.bootstrap_path.exists()
-    assert auth.consume_one_time_access(token,now=NOW+timedelta(minutes=3)) is None
+    assert token not in auth.replay_db_path.read_bytes().decode("latin1", errors="ignore")
+    assert oct(auth.replay_db_path.stat().st_mode & 0o777) == "0o600"
+    assert auth.consume_one_time_access(token, now=NOW + timedelta(minutes=1))
+    assert not auth.consume_one_time_access(token, now=NOW + timedelta(minutes=2))
 
 
 def test_operator_one_time_token_delivered_via_wecom_logs_in_once(tmp_path, monkeypatch):
@@ -1099,22 +1105,30 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
     assert unsupported.json()["error"] == "account adapter is not installed"
 
 
-def test_operator_session_survives_authenticator_restart_without_persisting_raw_secret(tmp_path):
-    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
-    token = auth.token_path.read_text().strip()
-    session = auth.login(token, now=NOW)
-    assert session
+def test_starlette_session_survives_app_restart_without_server_session_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    monkeypatch.delenv("CONTENT_OPERATOR_PUBLIC_URL", raising=False)
 
-    persisted = auth.sessions_path.read_text()
-    assert session not in persisted
-    assert oct(auth.sessions_path.stat().st_mode & 0o777) == "0o600"
+    service_one = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )
+    client_one = TestClient(service_one._app())
+    token = (tmp_path / "secrets" / "operator-console.token").read_text().strip()
+    login = client_one.post(
+        "/operator/api/session",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert login.status_code == 200
+    assert "ferro_operator_session" in client_one.cookies
+    assert not (tmp_path / "secrets" / "operator-console-sessions.json").exists()
 
-    restarted = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
-    assert restarted.valid(session, now=NOW + timedelta(minutes=1))
-
-    restarted.logout(session)
-    again = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=5))
-    assert not again.valid(session, now=NOW + timedelta(minutes=1))
+    service_two = LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )
+    client_two = TestClient(service_two._app())
+    client_two.cookies.update(client_one.cookies)
+    assert client_two.get("/operator/api/status").status_code == 200
 
 
 def test_operator_live_browser_websocket_requires_auth_and_same_origin(tmp_path, monkeypatch):
@@ -1267,31 +1281,23 @@ def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_pat
 
 
 def test_one_time_operator_tokens_can_coexist_and_are_independently_single_use(tmp_path):
-    from datetime import timedelta
-
-    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=30))
+    auth = OperatorAuthenticator(tmp_path)
     first = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
     second = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
 
-    raw = auth.bootstrap_path.read_text()
-    assert first not in raw
-    assert second not in raw
-    assert raw.count("token_sha256") == 2
-
-    session_one = auth.consume_one_time_access(
+    assert first != second
+    assert auth.consume_one_time_access(
         first, now=NOW + timedelta(minutes=1)
     )
-    assert session_one
-    assert auth.bootstrap_path.exists()
-    assert auth.consume_one_time_access(
+    assert not auth.consume_one_time_access(
         first, now=NOW + timedelta(minutes=2)
-    ) is None
-
-    session_two = auth.consume_one_time_access(
+    )
+    assert auth.consume_one_time_access(
         second, now=NOW + timedelta(minutes=2)
     )
-    assert session_two
-    assert not auth.bootstrap_path.exists()
+    assert not auth.consume_one_time_access(
+        second, now=NOW + timedelta(minutes=3)
+    )
 
 
 def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, monkeypatch):
