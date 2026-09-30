@@ -1,57 +1,113 @@
 from __future__ import annotations
 
-from wechat_traffic_agent.account_browser_profiles import AccountBrowserProfileManager
+from wechat_traffic_agent.account_browser_profiles import (
+    AccountBrowserProfileError,
+    AccountBrowserProfileManager,
+)
 from wechat_traffic_agent.account_registry import AccountRegistry
-
-
-class FakeProcess:
-    def __init__(self):
-        self.pid = 4242
-        self._returncode = None
-
-    def poll(self):
-        return self._returncode
-
-    def terminate(self):
-        self._returncode = 0
 
 
 def test_account_browser_profile_is_account_scoped_and_persistent(tmp_path, monkeypatch):
     registry = AccountRegistry(tmp_path)
     account = registry.ensure(provider_id="x", identity="alice_one")
-    launched = []
-    process = FakeProcess()
+    manager = AccountBrowserProfileManager(tmp_path)
+    session_id = "11111111-1111-4111-8111-111111111111"
+    calls = []
 
-    def fake_popen(command, **kwargs):
-        launched.append((list(command), dict(kwargs)))
-        return process
+    def fake_request(method, path, body=None, timeout=8.0):
+        calls.append((method, path, body))
+        if method == "GET" and path == "health":
+            return {"status": "ok"}
+        if method == "POST" and path == "sessions":
+            return {
+                "id": session_id,
+                "status": "live",
+                "websocketUrl": "ws://127.0.0.1:3000/",
+                "debugUrl": "http://127.0.0.1:3000/v1/sessions/debug",
+            }
+        if method == "GET" and path == f"sessions/{session_id}":
+            return {
+                "id": session_id,
+                "status": "live",
+                "websocketUrl": "ws://127.0.0.1:3000/",
+                "debugUrl": "http://127.0.0.1:3000/v1/sessions/debug",
+            }
+        if method == "POST" and path == f"sessions/{session_id}/release":
+            return {"success": True, "id": session_id, "status": "released"}
+        raise AssertionError((method, path, body))
 
-    manager = AccountBrowserProfileManager(tmp_path, popen_factory=fake_popen)
-    monkeypatch.setattr(manager, "_chrome_binary", lambda: "/fake/chrome")
-    monkeypatch.setattr(manager, "_port_open", lambda port: False)
-    monkeypatch.setattr(manager, "_cdp_ready", lambda port: bool(launched))
+    monkeypatch.setattr(manager, "_request_json", fake_request)
 
     runtime = manager.ensure(account.account_id)
     assert runtime.running is True
-    assert runtime.port == 9400
-    assert runtime.profile_id == f"browser_{account.account_id}"
-    command = launched[0][0]
-    assert "--remote-debugging-address=127.0.0.1" in command
-    assert "--remote-debugging-port=9400" in command
-    assert "--headless=new" not in command
-    assert "--ozone-platform=headless" in command
-    assert "--ozone-override-screen-size=1120,780" in command
-    assert "--no-first-run" in command
-    profile_arg = next(x for x in command if x.startswith("--user-data-dir="))
-    assert account.account_id in profile_arg
-    assert registry.get(account.account_id).browser_profile_id == runtime.profile_id
+    assert runtime.session_id == session_id
+    assert runtime.cdp_ws == "ws://127.0.0.1:3000/"
+    assert runtime.provider == "STEEL_SELF_HOSTED"
+    assert runtime.profile_id == f"steel_{account.account_id}"
+    create = next(
+        row for row in calls
+        if row[0] == "POST" and row[1] == "sessions"
+    )
+    assert create[2]["persist"] is True
+    assert create[2]["headless"] is True
+    assert create[2]["userDataDir"].endswith(
+        f"accounts/browser-profiles/{account.account_id}/chrome-profile"
+    )
 
     state = tmp_path / "accounts" / "browser-profiles" / account.account_id / "runtime.json"
     profile = tmp_path / "accounts" / "browser-profiles" / account.account_id / "chrome-profile"
+    active = tmp_path / "browser" / "steel-active.json"
     assert state.exists()
+    assert active.exists()
     assert profile.exists()
     assert oct(state.stat().st_mode & 0o777) == "0o600"
     assert oct(profile.stat().st_mode & 0o777) == "0o700"
+
+    stopped = manager.stop(account.account_id)
+    assert stopped.running is False
+    assert not state.exists()
+    assert not active.exists()
+    assert any(
+        method == "POST" and path == f"sessions/{session_id}/release"
+        for method, path, _ in calls
+    )
+
+
+def test_steel_runtime_refuses_to_steal_another_account_session(tmp_path, monkeypatch):
+    registry = AccountRegistry(tmp_path)
+    first = registry.ensure(provider_id="x", identity="alice_one")
+    second = registry.ensure(provider_id="x", identity="bob_two")
+    manager = AccountBrowserProfileManager(tmp_path)
+    session_id = "22222222-2222-4222-8222-222222222222"
+
+    manager._write_private_json(
+        manager._active_path(),
+        {
+            "schema_version": 1,
+            "account_id": first.account_id,
+            "session_id": session_id,
+        },
+    )
+
+    def fake_request(method, path, body=None, timeout=8.0):
+        if method == "GET" and path == "health":
+            return {"status": "ok"}
+        assert method == "GET"
+        assert path == f"sessions/{session_id}"
+        return {
+            "id": session_id,
+            "status": "live",
+            "websocketUrl": "ws://127.0.0.1:3000/",
+        }
+
+    monkeypatch.setattr(manager, "_request_json", fake_request)
+
+    try:
+        manager.ensure(second.account_id)
+    except AccountBrowserProfileError as exc:
+        assert "busy with account" in str(exc)
+    else:
+        raise AssertionError("Steel active session was silently stolen")
 
 
 def test_delete_profile_removes_only_target_account_directory(tmp_path, monkeypatch):

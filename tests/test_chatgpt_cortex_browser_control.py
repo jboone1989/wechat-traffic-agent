@@ -36,9 +36,7 @@ def test_cortex_reuses_x_account_profile_runtime(tmp_path):
     runtime = SimpleNamespace(
         account_id=record.account_id,
         profile_id=f"browser_{record.account_id}",
-        port=9407,
-        pid=123,
-        cdp_url="http://127.0.0.1:9407",
+        cdp_ws="ws://127.0.0.1:3000/",
         running=True,
     )
     manager = FakeProfileManager(runtime)
@@ -48,7 +46,7 @@ def test_cortex_reuses_x_account_profile_runtime(tmp_path):
     )
 
     assert control.account_id == record.account_id
-    assert control.cdp_url() == runtime.cdp_url
+    assert control.cdp_url() == runtime.cdp_ws
 
     shared = control._control()
     assert shared.state_path == (
@@ -104,9 +102,7 @@ def test_cortex_status_does_not_treat_anonymous_composer_as_authenticated(
     runtime = SimpleNamespace(
         account_id=record.account_id,
         profile_id=f"browser_{record.account_id}",
-        port=9407,
-        pid=123,
-        cdp_url="http://127.0.0.1:9407",
+        cdp_ws="ws://127.0.0.1:3000/",
         running=True,
     )
     control = cortex_module._SharedProfileChatGPTControl(

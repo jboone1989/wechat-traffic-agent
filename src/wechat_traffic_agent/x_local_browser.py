@@ -380,9 +380,10 @@ class AccountJevXTransport:
         return rows[0]
 
     @staticmethod
-    def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
+    def _worker_env(*, account_id: str, cdp_ws: str) -> dict[str, str]:
         env = dict(os.environ)
-        env["BU_CDP_URL"] = cdp_url
+        env.pop("BU_CDP_URL", None)
+        env["BU_CDP_WS"] = cdp_ws
         env["BU_NAME"] = ("x_" + account_id[-24:])[:64]
         src_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = (
@@ -406,43 +407,44 @@ class AccountJevXTransport:
             ) from exc
         started = time.perf_counter()
         try:
-            completed = self.runner(
-                [sys.executable, "-m", "wechat_traffic_agent.account_x_publish_worker"],
-                input=json.dumps(
-                    {
-                        "state_root": str(self.state_root),
-                        "text": text,
-
-                        "expected_handle": record.identity,
-                    }
-                ),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                env=self._worker_env(
+            try:
+                completed = self.runner(
+                    [sys.executable, "-m", "wechat_traffic_agent.account_x_publish_worker"],
+                    input=json.dumps(
+                        {
+                            "state_root": str(self.state_root),
+                            "text": text,
+                            "expected_handle": record.identity,
+                        }
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    env=self._worker_env(
+                        account_id=record.account_id,
+                        cdp_ws=runtime.cdp_ws,
+                    ),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                result = BrowserTaskResult(
+                    provider="JEV_STEEL",
+                    status="FAILED",
+                    elapsed_ms=round((time.perf_counter() - started) * 1000),
+                    action_count=0,
+                    failure_reason="WORKER_TIMEOUT",
+                )
+                self.telemetry.append(
+                    task_type="X_PUBLISH",
+                    site="x.com",
+                    result=result,
                     account_id=record.account_id,
-                    cdp_url=runtime.cdp_url,
-                ),
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            result = BrowserTaskResult(
-                provider="JEV_ACCOUNT",
-                status="FAILED",
-                elapsed_ms=round((time.perf_counter() - started) * 1000),
-                action_count=0,
-                failure_reason="WORKER_TIMEOUT",
-            )
-            self.telemetry.append(
-                task_type="X_PUBLISH",
-                site="x.com",
-                result=result,
-                account_id=record.account_id,
-            )
-
-            raise XBrowserPublicationUnverified(
-                "account JEV publish worker timed out; refusing cross-provider retry"
-            ) from exc
+                )
+                raise XBrowserPublicationUnverified(
+                    "account JEV publish worker timed out; refusing cross-provider retry"
+                ) from exc
+        finally:
+            self.profile_manager.stop(record.account_id)
 
         output = completed.stdout.strip().splitlines()
         try:
@@ -455,7 +457,7 @@ class AccountJevXTransport:
             or round((time.perf_counter() - started) * 1000)
         )
         result = BrowserTaskResult(
-            provider="JEV_ACCOUNT",
+            provider="JEV_STEEL",
             status="COMPLETED" if status == "POSTED" else "FAILED",
             elapsed_ms=elapsed_ms,
             action_count=int(body.get("action_count") or 0),
@@ -479,7 +481,7 @@ class AccountJevXTransport:
                 url=str(body.get("url") or ""),
                 handle=str(body.get("handle") or ""),
                 duplicate_found=bool(body.get("duplicate_found")),
-                provider="JEV_ACCOUNT",
+                provider="JEV_STEEL",
             )
         detail = str(
             body.get("message") or body.get("error_type") or status

@@ -1,0 +1,14 @@
+diff --git a/api/src/services/session.service.ts b/api/src/services/session.service.ts
+index 2c89e1c..0000000 100644
+--- a/api/src/services/session.service.ts
++++ b/api/src/services/session.service.ts
+@@ -166,9 +166,11 @@ export class SessionService {
+-    const userDataDir =
+-      options.userDataDir || options.persist === true
+-        ? path.join(dirname(fileURLToPath(import.meta.url)), "..", "..", "user-data-dir")
+-        : env.CHROME_USER_DATA_DIR || path.join(os.tmpdir(), "steel-chrome");
++    const userDataDir =
++      options.userDataDir ||
++      (options.persist === true
++        ? path.join(dirname(fileURLToPath(import.meta.url)), "..", "..", "user-data-dir")
++        : env.CHROME_USER_DATA_DIR || path.join(os.tmpdir(), "steel-chrome"));

@@ -85,16 +85,45 @@ class BrowserSessionStream:
                 return value
         return "http://127.0.0.1:9333"
 
-    async def _send(self, cdp, method: str, **params: Any) -> int:
+    async def _send(
+        self,
+        cdp,
+        method: str,
+        *,
+        session_id: str = "",
+        **params: Any,
+    ) -> int:
         async with self._send_lock:
             self._command_id += 1
             command_id = self._command_id
-            await cdp.send(json.dumps({
+            command = {
                 "id": command_id,
                 "method": method,
                 "params": params,
-            }))
+            }
+            if session_id:
+                command["sessionId"] = session_id
+            await cdp.send(json.dumps(command))
             return command_id
+
+    async def _attach_target(self, cdp, target_id: str) -> str:
+        command_id = await self._send(
+            cdp,
+            "Target.attachToTarget",
+            targetId=target_id,
+            flatten=True,
+        )
+        for _ in range(120):
+            message = json.loads(await cdp.recv())
+            if message.get("id") != command_id:
+                continue
+            if message.get("error"):
+                raise BrowserStreamUnavailable("Steel target attach failed")
+            session_id = str((message.get("result") or {}).get("sessionId") or "")
+            if not session_id:
+                raise BrowserStreamUnavailable("Steel target session id missing")
+            return session_id
+        raise BrowserStreamUnavailable("Steel target attach response missing")
 
     async def _send_status(self, client) -> None:
         try:
@@ -115,7 +144,7 @@ class BrowserSessionStream:
             "height": _VIEWPORT_HEIGHT,
         })
 
-    async def _handle_input(self, client, cdp) -> None:
+    async def _handle_input(self, client, cdp, session_id: str = "") -> None:
         while True:
             message = await client.receive_json()
             if not isinstance(message, dict):
@@ -133,6 +162,7 @@ class BrowserSessionStream:
                     await self._send(
                         cdp,
                         "Input.dispatchMouseEvent",
+                        session_id=session_id,
                         type=event,
                         x=x * self._viewport_width,
                         y=y * self._viewport_height,
@@ -146,6 +176,7 @@ class BrowserSessionStream:
                 await self._send(
                     cdp,
                     "Input.dispatchMouseEvent",
+                    session_id=session_id,
                     type="mouseWheel",
                     x=float(message.get("x_ratio") or 0.5) * self._viewport_width,
                     y=float(message.get("y_ratio") or 0.5) * self._viewport_height,
@@ -157,7 +188,12 @@ class BrowserSessionStream:
                 value = str(message.get("text") or "")
                 if not value or len(value) > 1024 or "\r" in value or "\n" in value:
                     continue
-                await self._send(cdp, "Input.insertText", text=value)
+                await self._send(
+                    cdp,
+                    "Input.insertText",
+                    session_id=session_id,
+                    text=value,
+                )
                 continue
             if kind == "click_text":
                 value = str(message.get("text") or "").strip()
@@ -181,6 +217,7 @@ class BrowserSessionStream:
                 await self._send(
                     cdp,
                     "Runtime.evaluate",
+                    session_id=session_id,
                     expression=expression,
                     returnByValue=True,
                 )
@@ -194,6 +231,7 @@ class BrowserSessionStream:
                     await self._send(
                         cdp,
                         "Input.dispatchKeyEvent",
+                        session_id=session_id,
                         type=event,
                         key=key_name,
                         code=code,
@@ -201,13 +239,22 @@ class BrowserSessionStream:
                 continue
 
     async def _pump_frames(
-        self, client, cdp, authorize: Callable[[], bool] | None = None
+        self,
+        client,
+        cdp,
+        authorize: Callable[[], bool] | None = None,
+        target_session_id: str = "",
     ) -> None:
         await self._send_status(client)
-        await self._send(cdp, "Page.enable")
+        await self._send(
+            cdp,
+            "Page.enable",
+            session_id=target_session_id,
+        )
         await self._send(
             cdp,
             "Page.startScreencast",
+            session_id=target_session_id,
             format="jpeg",
             quality=68,
             maxWidth=_VIEWPORT_WIDTH,
@@ -222,12 +269,17 @@ class BrowserSessionStream:
                     raise BrowserStreamUnavailable("operator session expired")
                 next_auth_check = time.monotonic() + 5
             message = json.loads(raw)
+            if (
+                target_session_id
+                and str(message.get("sessionId") or "") != target_session_id
+            ):
+                continue
             if message.get("method") != "Page.screencastFrame":
                 continue
             params = message.get("params") or {}
             data = str(params.get("data") or "")
-            session_id = params.get("sessionId")
-            if not data or session_id is None:
+            frame_session_id = params.get("sessionId")
+            if not data or frame_session_id is None:
                 continue
             metadata = params.get("metadata") or {}
             device_width = metadata.get("deviceWidth")
@@ -246,17 +298,25 @@ class BrowserSessionStream:
             await self._send(
                 cdp,
                 "Page.screencastFrameAck",
-                sessionId=session_id,
+                session_id=target_session_id,
+                sessionId=frame_session_id,
             )
             if frames % 15 == 0:
                 await self._send_status(client)
     async def run(
         self, client, *, authorize: Callable[[], bool] | None = None
     ) -> None:
-        ws_url = await asyncio.to_thread(
-            _cdp_target_websocket,
-            self.target_id(),
-            self.cdp_url(),
+        target_id = self.target_id()
+        endpoint = self.cdp_url()
+        browser_level = endpoint.startswith(("ws://", "wss://"))
+        ws_url = (
+            endpoint
+            if browser_level
+            else await asyncio.to_thread(
+                _cdp_target_websocket,
+                target_id,
+                endpoint,
+            )
         )
         try:
             async with ws_connect(
@@ -266,11 +326,21 @@ class BrowserSessionStream:
                 ping_interval=20,
                 ping_timeout=20,
             ) as cdp:
+                target_session = (
+                    await self._attach_target(cdp, target_id)
+                    if browser_level
+                    else ""
+                )
                 input_task = asyncio.create_task(
-                    self._handle_input(client, cdp)
+                    self._handle_input(client, cdp, target_session)
                 )
                 frame_task = asyncio.create_task(
-                    self._pump_frames(client, cdp, authorize)
+                    self._pump_frames(
+                        client,
+                        cdp,
+                        authorize,
+                        target_session,
+                    )
                 )
                 done, pending = await asyncio.wait(
                     {input_task, frame_task},

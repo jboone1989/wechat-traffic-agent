@@ -365,9 +365,15 @@ def test_account_jev_x_transport_uses_registered_account_profile(tmp_path, monke
             return record
 
     class Profiles:
+        def __init__(self):
+            self.stopped = []
+
         def ensure(self, account_id):
             assert account_id == record.account_id
-            return SimpleNamespace(cdp_url="http://127.0.0.1:9444")
+            return SimpleNamespace(cdp_ws="ws://127.0.0.1:3000/")
+
+        def stop(self, account_id):
+            self.stopped.append(account_id)
 
     calls = []
 
@@ -395,11 +401,12 @@ def test_account_jev_x_transport_uses_registered_account_profile(tmp_path, monke
         runner=runner,
     )
     result = asyncio.run(transport.publish(text="hello"))
-    assert result.provider == "JEV_ACCOUNT"
+    assert result.provider == "JEV_STEEL"
     assert result.handle == "ferro"
     command, kwargs = calls[0]
     assert command[-1] == "wechat_traffic_agent.account_x_publish_worker"
-    assert kwargs["env"]["BU_CDP_URL"] == "http://127.0.0.1:9444"
+    assert kwargs["env"]["BU_CDP_WS"] == "ws://127.0.0.1:3000/"
+    assert "BU_CDP_URL" not in kwargs["env"]
     assert kwargs["env"]["BU_NAME"].startswith("x_")
     request = json.loads(kwargs["input"])
     assert request["expected_handle"] == "ferro"
@@ -407,7 +414,7 @@ def test_account_jev_x_transport_uses_registered_account_profile(tmp_path, monke
 
     raw = (tmp_path / "browser/runtime-events.jsonl").read_text()
     event = json.loads(raw)
-    assert event["provider"] == "JEV_ACCOUNT"
+    assert event["provider"] == "JEV_STEEL"
     assert event["account_id"] == record.account_id
     assert "hello" not in raw
 
