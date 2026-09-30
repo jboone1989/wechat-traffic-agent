@@ -163,11 +163,14 @@ class OperatorEmailNotifier:
         status = self.status()
         if not status["configured"]:
             raise OperatorEmailError("operator email delivery is not configured")
-        subject = "Ferro 管理后台一次性登录 Token"
+        token_hint = str(token)[-4:].upper()
+        subject = f"LivingRuntime 登录 Token · {token_hint}"
         text = (
-            "Ferro Operator Console 登录请求\n\n"
-            f"一次性登录 Token，{expires_minutes} 分钟内有效且仅可使用一次：\n"
+            "LivingRuntime Operator 登录请求\n\n"
+            f"你的一次性登录 Token（{expires_minutes} 分钟内有效，仅可使用一次）：\n\n"
             f"{token}\n\n"
+            f"校验尾号：{token_hint}\n\n"
+            "将上面的 Token 粘贴到 Operator 登录页即可。\n"
             "如果这不是你发起的请求，请忽略这封邮件。"
         )
         if cfg.provider == "RESEND":
@@ -186,7 +189,7 @@ class OperatorEmailNotifier:
                         "Content-Type": "application/json",
                     },
                     json={
-                        "from": cfg.sender,
+                        "from": f"LivingRuntime <{cfg.sender}>",
                         "to": [cfg.recipient],
                         "subject": subject,
                         "text": text,
@@ -198,14 +201,23 @@ class OperatorEmailNotifier:
             raise OperatorEmailError(
                 f"email provider rejected delivery ({response.status_code})"
             )
-        return {"status": "SENT", "provider": "RESEND"}
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        delivery_id = str(payload.get("id") or "")
+        return {
+            "status": "SENT",
+            "provider": "RESEND",
+            "delivery_id": delivery_id or None,
+        }
 
     def _send_smtp(
         self, cfg: OperatorEmailConfig, *, subject: str, text: str
     ) -> dict[str, Any]:
         password = os.environ.get("CONTENT_OPERATOR_SMTP_PASSWORD", "")
         message = EmailMessage()
-        message["From"] = cfg.sender
+        message["From"] = f"LivingRuntime <{cfg.sender}>"
         message["To"] = cfg.recipient
         message["Subject"] = subject
         message.set_content(text)

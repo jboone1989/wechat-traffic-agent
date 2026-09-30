@@ -564,7 +564,7 @@ def test_operator_one_time_token_can_be_delivered_by_email(tmp_path, monkeypatch
 
         def send_login_token(self, *, token, expires_minutes=10):
             self.__class__.tokens.append(token)
-            return {"status": "SENT", "provider": "TEST"}
+            return {"status": "SENT", "provider": "TEST", "delivery_id": "email-test-123"}
 
     monkeypatch.setattr(email_module, "OperatorEmailNotifier", FakeEmailNotifier)
     client = TestClient(LiveAgentService(
@@ -578,6 +578,7 @@ def test_operator_one_time_token_can_be_delivered_by_email(tmp_path, monkeypatch
     )
     assert response.status_code == 202
     assert response.json()["channel"] == "EMAIL"
+    assert response.json()["delivery_id"] == "email-test-123"
     assert len(FakeEmailNotifier.tokens) == 1
 
     accepted = client.post(

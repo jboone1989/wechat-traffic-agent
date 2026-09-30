@@ -3085,6 +3085,7 @@ class LiveAgentService:
                     "status": "SENT",
                     "channel": channel.upper(),
                     "expires_in_seconds": 600,
+                    "delivery_id": delivered.get("delivery_id"),
                 },
                 status_code=202,
                 headers={"Cache-Control": "no-store"},

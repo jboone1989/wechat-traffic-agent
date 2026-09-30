@@ -41,6 +41,9 @@ def test_email_settings_reject_invalid_addresses(tmp_path):
 class FakeResponse:
     status_code = 200
 
+    def json(self):
+        return {"id": "email-test-123"}
+
 
 class FakeHttp:
     def __init__(self, **kwargs):
@@ -70,11 +73,13 @@ def test_resend_delivery_uses_secret_from_environment_without_exposing_token(tmp
         token="secret-one-time-token",
     )
 
-    assert result == {"status": "SENT", "provider": "RESEND"}
+    assert result == {"status": "SENT", "provider": "RESEND", "delivery_id": "email-test-123"}
     url, kwargs = FakeHttp.last_call
     assert url == "https://api.resend.com/emails"
     assert kwargs["headers"]["Authorization"] == "Bearer re_test_secret"
     assert kwargs["json"]["to"] == ["owner@example.com"]
+    assert kwargs["json"]["from"] == "LivingRuntime <login@livingruntime.com>"
+    assert kwargs["json"]["subject"].startswith("LivingRuntime 登录 Token · ")
     assert "secret-one-time-token" in kwargs["json"]["text"]
     assert "#bootstrap=" not in kwargs["json"]["text"]
     assert "re_test_secret" not in json.dumps(kwargs["json"])
