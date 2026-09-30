@@ -96,19 +96,32 @@ def test_initial_plans_are_explicit_and_restart_safe(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
     runtime.ensure_initial_plans(NOW)
     tasks = {wake.task for wake in runtime.core.snapshot().pending_plans}
-    assert {"OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"} <= tasks
+    assert {"OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "FAST_DECISION", "REFLECT"} <= tasks
+    assert "CONTENT_COGNITION" not in tasks
     restored = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
     before = len(restored.core.snapshot().pending_plans)
     restored.ensure_initial_plans(NOW)
     assert len(restored.core.snapshot().pending_plans) == before
 
 
-def test_content_cognition_is_scheduled_by_semantic_interval(tmp_path):
+def test_background_content_cognition_does_not_create_periodic_deep_loop(tmp_path):
     runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
     runtime.schedule_next("CONTENT_COGNITION", NOW)
-    snapshot = runtime.core.snapshot()
-    wake = next(row for row in snapshot.pending_plans if row.task == "CONTENT_COGNITION")
-    assert wake.at == NOW + timedelta(hours=6)
+    assert not any(
+        row.task == "CONTENT_COGNITION"
+        for row in runtime.core.snapshot().pending_plans
+    )
+
+
+def test_fast_decision_runs_on_short_background_cadence(tmp_path):
+    runtime = ContentWakefulRuntime(state_root=tmp_path, content_interval_hours=6)
+    runtime.schedule_next("FAST_DECISION", NOW)
+    wake = next(
+        row
+        for row in runtime.core.snapshot().pending_plans
+        if row.task == "FAST_DECISION"
+    )
+    assert wake.at == NOW + timedelta(seconds=300)
 
 
 def test_autonomous_goal_requires_positive_world_utility_to_be_satisfied(tmp_path):

@@ -699,6 +699,11 @@ class WakefulContentTaskRunner:
                             "status": "RESOURCE_DEFERRED",
                             "resource_admission": admission,
                         }
+                if task == "FAST_DECISION":
+                    return self._fast_decision(
+                        now,
+                        relevant_refs=relevant_refs,
+                    )
                 if task == "NEURAL_INTEROCEPTION":
                     return self._neural_interoception(now)
                 if task == "NEURAL_PLAY":
@@ -821,6 +826,48 @@ class WakefulContentTaskRunner:
                 "task": task,
                 "reason": "SIGTERM_OR_SIGINT",
             }
+
+    def _fast_decision(
+        self,
+        now: datetime,
+        *,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Run L1 and schedule exactly the bounded action it selected."""
+        if self.wakeful is None:
+            raise RuntimeError("FAST_DECISION requires a live wakeful runtime")
+        from .fast_decision import FastDecisionError
+
+        decide = getattr(self.wakeful, "fast_decide_next_action", None)
+        schedule = getattr(self.wakeful, "schedule_fast_decision_action", None)
+        if not callable(decide) or not callable(schedule):
+            raise RuntimeError("wakeful runtime does not expose FAST_DECISION")
+        try:
+            decision = decide(
+                now=now,
+                relevant_refs=relevant_refs,
+            )
+            action = schedule(decision, now=now)
+        except FastDecisionError as exc:
+            repair = getattr(self.wakeful, "schedule_self_repair_followup", None)
+            repair_result = (
+                repair(now, seconds=0)
+                if callable(repair)
+                else None
+            )
+            return {
+                "task": "FAST_DECISION",
+                "status": "ERROR",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:500],
+                "self_repair": repair_result,
+            }
+        return {
+            "task": "FAST_DECISION",
+            "status": "OK",
+            "decision": decision,
+            "action": action,
+        }
 
     def _neural_interoception(self, now: datetime) -> dict[str, Any]:
         fault_projection = (

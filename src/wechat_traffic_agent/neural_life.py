@@ -331,19 +331,15 @@ class FerroNeuralLife:
         last = _dt(self.state.get("last_authority_action_at"))
         if last is not None and (now.astimezone(timezone.utc) - last).total_seconds() < self.DRIVE_ACTION_COOLDOWN_SECONDS:
             return None
-        task = {
-            "SURVIVE": "RESOURCE_REVIEW",
-            "REPRODUCE": "CHECK_X",
-            "EVOLVE": "REFLECT",
-        }.get(name)
-        if not task:
-            return None
         return {
             "authority": "NEURAL_DRIVE",
             "intention": name,
             "strength": round(strength, 6),
-            "task": task,
-            "reason": f"endogenous {name.lower()} drive crossed neural authority threshold",
+            "task": "FAST_DECISION",
+            "reason": (
+                f"endogenous {name.lower()} drive crossed neural authority threshold; "
+                "L1 must choose the concrete action"
+            ),
         }
 
     def mark_authority_action(self, now: datetime, recommendation: Mapping[str, Any]) -> None:

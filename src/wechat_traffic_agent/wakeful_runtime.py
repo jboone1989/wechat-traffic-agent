@@ -17,6 +17,7 @@ from virtualbrain.research.neural_graph import LIFNeuralGraph
 
 
 _DEFAULT_INTERVALS = {
+    "FAST_DECISION": 300,
     "OBSERVE_WORLD": 3600,
     "RESOURCE_REVIEW": 3600,
     "CHECK_OUTCOMES": 3600,
@@ -168,6 +169,7 @@ def _connectome_body_currents(
 
 
 _EXTERNAL_WAKE_TASKS = frozenset({
+    "FAST_DECISION",
     "OBSERVE_WORLD",
     "RESOURCE_REVIEW",
     "SELF_REPAIR",
@@ -214,6 +216,8 @@ _OWNER_CONTINUATION_EXEMPT_TASKS = frozenset({
 class ContentWakefulRuntime:
     def __init__(self, *, state_root: Path, content_interval_hours: int = 6, watchdog_seconds: int = 1800) -> None:
         self.state_root = Path(state_root)
+        self._fast_decision_provider = None
+        self._last_fast_decision: dict[str, Any] | None = None
         self.content_interval_hours = max(1, int(content_interval_hours))
         self.watchdog_seconds = max(60, int(watchdog_seconds))
         from .neural_life import FerroNeuralLife
@@ -701,7 +705,7 @@ class ContentWakefulRuntime:
         # the runtime eventually reaches wait().
         self._drain_external_wake_requests()
         existing = {wake.task for wake in self.core.snapshot().pending_plans}
-        for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "NEURAL_TRANSFER", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "CONTENT_COGNITION", "REFLECT"):
+        for task in ("NEURAL_INTEROCEPTION", "NEURAL_PLAY", "NEURAL_DREAM", "NEURAL_TRANSFER", "OBSERVE_WORLD", "RESOURCE_REVIEW", "CHECK_OUTCOMES", "FAST_DECISION", "REFLECT"):
             if task not in existing:
                 refs = (
                     (f"reflection-trigger:startup:{int(now.timestamp())}",)
@@ -781,8 +785,11 @@ class ContentWakefulRuntime:
             self.core.cancel("content:OKX_AI_MARKETPLACE")
             return
         if task == "CONTENT_COGNITION":
-            at = now + timedelta(hours=self.content_interval_hours)
-        elif task == "REFLECT":
+            # Background deep cognition is admitted by FAST_DECISION. Owner
+            # continuations and explicit deep-cognition wakes schedule their
+            # own CONTENT_COGNITION and must not create a second Sol cadence.
+            return
+        if task == "REFLECT":
             at = now + timedelta(minutes=self._reflection_interval_minutes())
             relevant_refs = (
                 f"reflection-trigger:periodic:{int(at.timestamp())}",
@@ -1279,6 +1286,184 @@ class ContentWakefulRuntime:
             social=self.neural_social.projection(),
         )
         return relation
+
+    def fast_decide_next_action(
+        self,
+        *,
+        now: datetime | None = None,
+        relevant_refs: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """Run bounded L1 action selection over live neural/world state.
+
+        This is the autonomous bridge from LIF impulses to a concrete runtime
+        task. It never generates text and never silently substitutes Sol when
+        Jev is unavailable.
+        """
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        if self._fast_decision_provider is None:
+            from .fast_decision import load_fast_decision_provider
+
+            self._fast_decision_provider = load_fast_decision_provider(
+                state_root=self.state_root,
+            )
+        projection = self.neural_life.projection()
+        snapshot = self.core.snapshot()
+        pending = tuple(snapshot.pending_plans)
+        owner_goal_ids = tuple(self._active_user_goal_ids())
+        neural = {
+            "drives": dict(projection.get("drives") or {}),
+            "affect": dict(projection.get("affect") or {}),
+            "intention": dict(projection.get("intention") or {}),
+            "body": dict(projection.get("body") or {}),
+        }
+        state = {
+            "now": now.isoformat(),
+            "neural": neural,
+            "resource_pressure": self.resource_regulator.pressure(now),
+            "x_enabled": os.environ.get("CONTENT_X_ENABLED", "").lower()
+            in {"1", "true", "yes", "on"},
+            "owner_goal_count": len(owner_goal_ids),
+            "pending_tasks": sorted({str(wake.task) for wake in pending}),
+            "pending_deep_cognition": any(
+                wake.task in _CHATGPT_COGNITIVE_TASKS
+                and any(
+                    str(ref).startswith("cognition-request:")
+                    for ref in wake.relevant_refs
+                )
+                for wake in pending
+            ),
+            "last_cognition_at": (
+                snapshot.last_cognition_at.isoformat()
+                if snapshot.last_cognition_at
+                else None
+            ),
+            "recent_stimulus_kinds": [
+                event.kind for event in snapshot.recent_stimuli[-8:]
+            ],
+            "trigger_refs": [str(ref)[:160] for ref in relevant_refs[:8]],
+        }
+        choices = {
+            "RESOURCE_REVIEW": (
+                "Inspect and act on resource pressure, runway, or survival needs."
+            ),
+            "CHECK_X": (
+                "Read current X social evidence and advance an existing X growth "
+                "loop without requiring open-ended prose reasoning."
+            ),
+            "CHECK_OUTCOMES": (
+                "Settle due world outcomes and feed real evidence back into learning."
+            ),
+            "REFLECT": (
+                "Run a bounded reflection because recent evidence warrants learning."
+            ),
+            "NEURAL_PLAY": (
+                "Practice the production nervous system when learning value dominates."
+            ),
+            "CONTENT_COGNITION": (
+                "Escalate to Sol only when the next useful step requires open-ended "
+                "reasoning, planning, research synthesis, or language generation."
+            ),
+            "REST": (
+                "Take no new external action this cycle because another action is not "
+                "currently justified."
+            ),
+        }
+        if not state["x_enabled"]:
+            choices.pop("CHECK_X")
+        result = self._fast_decision_provider.choose(
+            decision="next_action",
+            state=state,
+            choices=choices,
+            instructions={
+                "objective": (
+                    "Choose the single next Ferro action that best advances current "
+                    "goals and endogenous drives while preserving real-world evidence."
+                ),
+                "rules": [
+                    "Use CONTENT_COGNITION only for work that actually needs open-ended reasoning or generation.",
+                    "Prefer direct bounded tasks when they can change or observe goal-relevant world state.",
+                    "Do not choose a task merely because it is already pending.",
+                    "REST is valid when no new action is justified.",
+                ],
+            },
+        )
+        receipt = {
+            "schema_version": "ferro-fast-decision.v1",
+            "status": "SELECTED",
+            "decision_id": result.decision_id,
+            "provider": result.provider,
+            "model": result.model,
+            "selected_task": result.choice,
+            "confidence": result.confidence,
+            "probabilities": dict(result.probabilities),
+            "latency_ms": result.latency_ms,
+            "decided_at": result.decided_at,
+            "neural_intention": (neural.get("intention") or {}).get("name"),
+            "owner_goal_count": len(owner_goal_ids),
+        }
+        self._last_fast_decision = dict(receipt)
+        return receipt
+
+    def schedule_fast_decision_action(
+        self,
+        decision: Mapping[str, Any],
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        task = str(decision.get("selected_task") or "").strip()
+        decision_id = str(decision.get("decision_id") or "").strip()
+        if task == "REST":
+            return {
+                "status": "REST",
+                "decision_id": decision_id,
+                "task": None,
+            }
+        if task not in {
+            "RESOURCE_REVIEW",
+            "CHECK_X",
+            "CHECK_OUTCOMES",
+            "REFLECT",
+            "NEURAL_PLAY",
+            "CONTENT_COGNITION",
+        }:
+            raise ValueError(f"unsupported fast-decision task: {task!r}")
+        existing = next(
+            (
+                wake
+                for wake in self.core.snapshot().pending_plans
+                if wake.task == task
+                and wake.at <= now + timedelta(minutes=15)
+            ),
+            None,
+        )
+        if existing is not None:
+            return {
+                "status": "COALESCED",
+                "decision_id": decision_id,
+                "task": task,
+                "wake_id": existing.wake_id,
+                "at": existing.at.isoformat(),
+            }
+        wake_id = f"fast-decision:{decision_id}"
+        self.core.schedule(PlannedWake(
+            wake_id=wake_id,
+            at=now + timedelta(seconds=1),
+            reason=(
+                f"Jev L1 selected {task} "
+                f"(confidence={float(decision.get('confidence') or 0.0):.3f})"
+            ),
+            task=task,
+            relevant_refs=(f"fast-decision:{decision_id}",),
+            preemptible=True,
+        ))
+        return {
+            "status": "SCHEDULED",
+            "decision_id": decision_id,
+            "task": task,
+            "wake_id": wake_id,
+            "at": (now + timedelta(seconds=1)).isoformat(),
+        }
 
     def choose_brain_or_cortex(
         self,
@@ -3066,6 +3251,11 @@ class ContentWakefulRuntime:
             "last_action_at": snap.last_action_at.isoformat() if snap.last_action_at else None,
             "pending_plan_count": len(snap.pending_plans),
             "cognition_threshold_crossed": bool(snap.cognition_triggers),
+            "fast_decision": (
+                dict(self._last_fast_decision)
+                if self._last_fast_decision is not None
+                else None
+            ),
             "recent_stimulus_kinds": [event.kind for event in snap.recent_stimuli[-8:]],
             "neural_life": self.neural_life.projection() if self.neural_life_enabled else {"status": "DISABLED"},
             "brain_lab": self.brain_lab.projection(),
@@ -3112,6 +3302,7 @@ class ContentWakefulRuntime:
     @staticmethod
     def _reason(task: str) -> str:
         return {
+            "FAST_DECISION": "choose the next bounded action from live neural and world state",
             "OBSERVE_WORLD": "observe current world state",
             "RESOURCE_REVIEW": "review resource runway and pressure",
             "CHECK_OUTCOMES": "review matured website outcomes",

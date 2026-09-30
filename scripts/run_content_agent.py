@@ -788,7 +788,9 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             heartbeat.task = task
             active_cycle = runtime_event_cycle
             wakeful_runtime.core.set_state(
-                WakefulState.THINKING if task in {"CONTENT_COGNITION", "OBSERVE_WORLD"} else WakefulState.OBSERVING
+                WakefulState.THINKING
+                if task in {"FAST_DECISION", "CONTENT_COGNITION", "OBSERVE_WORLD"}
+                else WakefulState.OBSERVING
             )
             emit_public_activity(
                 state_root, cycle=runtime_event_cycle, phase=task,

@@ -94,7 +94,8 @@ def test_strong_endogenous_drive_can_request_real_runtime_work(tmp_path):
     recommendation = life.authority_recommendation(NOW)
     assert recommendation is not None
     assert recommendation["authority"] == "NEURAL_DRIVE"
-    assert recommendation["task"] == "RESOURCE_REVIEW"
+    assert recommendation["task"] == "FAST_DECISION"
+    assert "L1 must choose the concrete action" in recommendation["reason"]
 
     life.mark_authority_action(NOW, recommendation)
     assert life.authority_recommendation(NOW + timedelta(minutes=5)) is None
