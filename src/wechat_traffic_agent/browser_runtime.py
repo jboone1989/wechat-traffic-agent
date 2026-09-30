@@ -106,20 +106,6 @@ def local_cdp_readiness() -> dict[str, Any]:
     }
 
 
-def steel_readiness() -> dict[str, Any]:
-    from .account_browser_profiles import AccountBrowserProfileManager
-    state_root = Path(
-        os.environ.get("CONTENT_APPLICATION_ROOT")
-        or "/home/ubuntu/content-agent-state"
-    )
-    manager = AccountBrowserProfileManager(state_root)
-    return {
-        "provider": "STEEL_SELF_HOSTED",
-        "status": "READY" if manager._health_ready() else "NOT_RUNNING",
-        "api_base": manager.api_base,
-    }
-
-
 def browser_runtime_status() -> dict[str, Any]:
     tinyfish = bool(
         os.environ.get("TINYFISH_API_KEY", "").strip()
@@ -127,11 +113,10 @@ def browser_runtime_status() -> dict[str, Any]:
     )
     return {
         "schema_version": "content-browser-runtime-status.v1",
-        "routing_policy": "DETERMINISTIC_SKILL_THEN_JEV_OVER_STEEL",
-        "x_fallback_policy": "OFFICIAL_API_THEN_ACCOUNT_STEEL_JEV_THEN_EXISTING_PROFILE_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP",
+        "routing_policy": "DETERMINISTIC_SKILL_THEN_JEV_THEN_TINYFISH",
+        "x_fallback_policy": "OFFICIAL_API_THEN_ACCOUNT_JEV_THEN_EXISTING_PROFILE_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP",
         "adaptive_default": "JEV",
         "providers": [
-            steel_readiness(),
             local_cdp_readiness(),
             jev_readiness(),
             {
@@ -244,7 +229,7 @@ class JevBrowserExecutor:
 
 
 class AccountJevExecutor:
-    """Run Jev against one account's persistent Steel browser profile."""
+    """Run Jev against one account's isolated persistent Chromium profile."""
 
     def __init__(self, *, state_root: Path, profile_manager=None) -> None:
         self.state_root = Path(state_root)
@@ -262,10 +247,9 @@ class AccountJevExecutor:
         return cls(state_root=state_root)
 
     @staticmethod
-    def _worker_env(*, account_id: str, cdp_ws: str) -> dict[str, str]:
+    def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
         env = dict(os.environ)
-        env.pop("BU_CDP_URL", None)
-        env["BU_CDP_WS"] = cdp_ws
+        env["BU_CDP_URL"] = cdp_url
         env["BU_NAME"] = ("acct_" + account_id[-20:])[:64]
         src_root = str(Path(__file__).resolve().parents[1])
         env["PYTHONPATH"] = (
@@ -308,28 +292,23 @@ class AccountJevExecutor:
         runtime = self.profile_manager.ensure(account_id)
         site = urlparse(url).hostname or "unknown"
         started = time.perf_counter()
-        env = self._worker_env(account_id=account_id, cdp_ws=runtime.cdp_ws)
-        try:
-            completed = subprocess.run(
-                [sys.executable, "-m", "wechat_traffic_agent.account_jev_worker"],
-                input=json.dumps({"url": url, "goal": goal}),
-                capture_output=True,
-                text=True,
-                timeout=float(timeout_seconds),
-                env=env,
-                check=False,
-            )
-        finally:
-            # Self-hosted Steel 0.5.x owns one active browser. Release it after
-            # every autonomous task; the account's user-data-dir persists.
-            self.profile_manager.stop(account_id)
+        env = self._worker_env(account_id=account_id, cdp_url=runtime.cdp_url)
+        completed = subprocess.run(
+            [sys.executable, "-m", "wechat_traffic_agent.account_jev_worker"],
+            input=json.dumps({"url": url, "goal": goal}),
+            capture_output=True,
+            text=True,
+            timeout=float(timeout_seconds),
+            env=env,
+            check=False,
+        )
         output = completed.stdout.strip().splitlines()
         try:
             body = json.loads(output[-1]) if output else {}
         except json.JSONDecodeError:
             body = {}
         result = BrowserTaskResult(
-            provider="JEV_STEEL",
+            provider="JEV_ACCOUNT",
             status=str(body.get("status") or "FAILED"),
             elapsed_ms=int(
                 body.get("elapsed_ms")
@@ -360,5 +339,4 @@ __all__ = [
     "browser_runtime_status",
     "jev_readiness",
     "local_cdp_readiness",
-    "steel_readiness",
 ]
