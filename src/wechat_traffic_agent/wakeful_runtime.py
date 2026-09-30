@@ -21,6 +21,7 @@ _DEFAULT_INTERVALS = {
     "RESOURCE_REVIEW": 3600,
     "CHECK_OUTCOMES": 3600,
     "CHECK_X": 1800,
+    "OKX_AI_MARKETPLACE": 300,
     "NEURAL_INTEROCEPTION": 300,
     "NEURAL_PLAY": 300,
     "NEURAL_DREAM": 21600,
@@ -175,6 +176,7 @@ _EXTERNAL_WAKE_TASKS = frozenset({
     "CONTENT_COGNITION",
     "REFLECT",
     "CHECK_X",
+    "OKX_AI_MARKETPLACE",
     "NEURAL_INTEROCEPTION",
     "NEURAL_PLAY",
     "NEURAL_DREAM",
@@ -205,6 +207,7 @@ _OWNER_CONTINUATION_EXEMPT_TASKS = frozenset({
     "SELF_REPAIR",
     "NEURAL_INTEROCEPTION",
     "CHECK_OUTCOMES",
+    "OKX_AI_MARKETPLACE",
 })
 
 
@@ -713,6 +716,17 @@ class ContentWakefulRuntime:
             self.core.schedule(PlannedWake(
                 wake_id="content:CHECK_X", at=now, reason=self._reason("CHECK_X"), task="CHECK_X",
             ))
+        if (
+            os.environ.get("CONTENT_OKX_AI_MARKETPLACE_ENABLED", "").lower()
+            in {"1", "true", "yes", "on"}
+            and "OKX_AI_MARKETPLACE" not in existing
+        ):
+            self.core.schedule(PlannedWake(
+                wake_id="content:OKX_AI_MARKETPLACE",
+                at=now,
+                reason=self._reason("OKX_AI_MARKETPLACE"),
+                task="OKX_AI_MARKETPLACE",
+            ))
         self.sync_prediction_wakes(now)
 
     def sync_prediction_wakes(self, now: datetime) -> None:
@@ -759,6 +773,13 @@ class ContentWakefulRuntime:
 
     def schedule_next(self, task: str, now: datetime) -> None:
         relevant_refs: tuple[str, ...] = ()
+        if (
+            task == "OKX_AI_MARKETPLACE"
+            and os.environ.get("CONTENT_OKX_AI_MARKETPLACE_ENABLED", "").lower()
+            not in {"1", "true", "yes", "on"}
+        ):
+            self.core.cancel("content:OKX_AI_MARKETPLACE")
+            return
         if task == "CONTENT_COGNITION":
             at = now + timedelta(hours=self.content_interval_hours)
         elif task == "REFLECT":
@@ -3096,6 +3117,7 @@ class ContentWakefulRuntime:
             "CHECK_OUTCOMES": "review matured website outcomes",
             "CONTENT_COGNITION": "run the next due content cognition cycle",
             "CHECK_X": "check X for new social evidence",
+            "OKX_AI_MARKETPLACE": "synchronize OKX.AI A2A work and platform-directed next actions",
             "REFLECT": "periodic or event-driven self-reflection",
             "NEURAL_INTEROCEPTION": "sense body state and update endogenous drives",
             "NEURAL_PLAY": "develop the production nervous system through a sensorimotor world",

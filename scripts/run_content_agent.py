@@ -22,6 +22,7 @@ from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker
 from wechat_traffic_agent.public_activity import emit_public_activity  # noqa: E402
 from wechat_traffic_agent.social_expression import SocialExpressionDraftWorker  # noqa: E402
 from wechat_traffic_agent.okx_orbit import OKXOrbitPublisher  # noqa: E402
+from wechat_traffic_agent.okx_ai_marketplace import OKXAIMarketplace  # noqa: E402
 from wechat_traffic_agent.x_browser import XBrowserPublisher  # noqa: E402
 
 
@@ -50,6 +51,7 @@ _ONE_SHOT_TASKS = (
     "CONTENT_COGNITION",
     "REFLECT",
     "CHECK_X",
+    "OKX_AI_MARKETPLACE",
     "NEURAL_INTEROCEPTION",
     "NEURAL_PLAY",
     "NEURAL_DREAM",
@@ -76,6 +78,7 @@ _DOMAIN_EXPERIENCE_TASKS = frozenset({
     "VERIFY_PREDICTION",
     "CONTENT_COGNITION",
     "CHECK_X",
+    "OKX_AI_MARKETPLACE",
 })
 
 _TASK_RESULT_LOG_MAX_BYTES = 16 * 1024
@@ -527,6 +530,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         print(json.dumps({"public_persona": {"status": "UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}}, ensure_ascii=False), file=sys.stderr)
     social_expression_loop = SocialExpressionDraftWorker(runtime=app.domain_runtime, state_root=state_root)
     okx_orbit_publisher = OKXOrbitPublisher(state_root=state_root)
+    okx_ai_marketplace = OKXAIMarketplace(state_root=state_root)
     x_growth_mission = None
     x_loop = None
     if _enabled("CONTENT_X_ENABLED"):
@@ -694,6 +698,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         x_loop=x_loop,
         x_browser_publisher=x_browser_publisher,
         okx_orbit_publisher=okx_orbit_publisher,
+        okx_ai_marketplace=okx_ai_marketplace,
         web_outcome_collector=web_outcome_collector,
         engagement_outcome_collector=engagement_outcome_collector,
         website_experiment_evaluator=website_experiment_evaluator,

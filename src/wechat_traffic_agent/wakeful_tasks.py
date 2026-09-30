@@ -722,6 +722,8 @@ class WakefulContentTaskRunner:
                     )
                 if task == "CHECK_X":
                     return self._x(now)
+                if task == "OKX_AI_MARKETPLACE":
+                    return self._okx_ai_marketplace(now)
                 if task == "CHECK_OUTCOMES":
                     return self._outcomes(now)
                 if task == "OBSERVE_WORLD":
@@ -1603,6 +1605,17 @@ class WakefulContentTaskRunner:
             return {"task": "CHECK_X", "status": "OK", "x_social_observation": result}
         except Exception as exc:  # noqa: BLE001
             return {"task": "CHECK_X", "status": "DEGRADED", "x_social_observation": self._error(exc)}
+
+    def _okx_ai_marketplace(self, now: datetime) -> dict[str, Any]:
+        marketplace = getattr(self, "okx_ai_marketplace", None)
+        if marketplace is None:
+            return {
+                "task": "OKX_AI_MARKETPLACE",
+                "status": "ERROR",
+                "error_type": "OKXAIMarketplaceUnavailable",
+                "message": "OKX.AI marketplace component is not initialized",
+            }
+        return marketplace.tick(now=now)
 
     def _runtime_tick(self, now: datetime) -> tuple[Any | None, dict[str, Any]]:
         try:
