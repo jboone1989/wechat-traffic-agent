@@ -74,6 +74,10 @@ def test_schedule_spawns_once_then_coalesces(tmp_path, monkeypatch):
         state_root=tmp_path,
     )
     second = schedule_chatgpt_web_cortex_activation(
+        "llmreq_12345678abcdef",
+        state_root=tmp_path,
+    )
+    third = schedule_chatgpt_web_cortex_activation(
         "llmreq_abcdef12345678",
         state_root=tmp_path,
     )
@@ -81,11 +85,12 @@ def test_schedule_spawns_once_then_coalesces(tmp_path, monkeypatch):
     assert first["status"] == "STARTED"
     assert first["pid"] == 4321
     assert second["status"] == "COALESCED"
-    assert len(calls) == 1
+    assert third["status"] == "STARTED"
+    assert len(calls) == 2
     state = json.loads(
         (tmp_path / "cortex" / "chatgpt-web" / "activation-state.json").read_text()
     )
-    assert state["request_id"] == "llmreq_12345678abcdef"
+    assert state["request_id"] == "llmreq_abcdef12345678"
 
 
 def _provider(tmp_path: Path) -> LivingRuntimeChatGPTProvider:

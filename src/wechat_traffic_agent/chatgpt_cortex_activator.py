@@ -165,7 +165,12 @@ def schedule_chatgpt_web_cortex_activation(
     )
     last_started = float(previous.get("started_at_epoch") or 0.0)
     last_status = str(previous.get("status") or "")
-    if last_started and now - last_started < max(10, cooldown):
+    previous_request_id = str(previous.get("request_id") or "")
+    if (
+        previous_request_id == rid
+        and last_started
+        and now - last_started < max(10, cooldown)
+    ):
         status = "COALESCED"
         event = {
             "at": datetime.now(timezone.utc).isoformat(),
