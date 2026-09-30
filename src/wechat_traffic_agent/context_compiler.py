@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
@@ -36,6 +37,8 @@ def infer_decision_frame(
     *,
     surface: str,
     owner_mode: bool = False,
+    state_root: Path | str | None = None,
+    l1_provider: Any | None = None,
 ) -> dict[str, Any]:
     """Describe the decision being delegated without adding hidden reasoning."""
 
@@ -45,6 +48,28 @@ def infer_decision_frame(
     match = re.match(r"\s*([A-Z][A-Z0-9_]{2,})\s*:", text)
     if match:
         prefix = match.group(1)
+
+    if state_root is not None:
+        from .l1_decisions import FerroL1Decisions
+
+        route = FerroL1Decisions(
+            state_root=Path(state_root),
+            provider=l1_provider,
+        ).route_context(
+            prompt=text,
+            surface=surface,
+            owner_mode=owner_mode,
+        )
+        return {
+            "schema_version": _SCHEMA,
+            "surface": str(surface),
+            "decision_type": str(route["decision_type"]),
+            "task_prefix": route.get("task_prefix") or prefix or None,
+            "decision_question": _clip(text, 700),
+            "time_horizon": str(route["time_horizon"]),
+            "owner_authority_scope": bool(owner_mode or surface == "owner_chat"),
+            "l1_route": dict(route),
+        }
 
     if surface == "public_chat":
         decision_type = "PUBLIC_DIALOGUE"
@@ -263,6 +288,9 @@ def compile_surface_metadata(
     surface: str,
     sections: Mapping[str, Any],
     owner_mode: bool = False,
+    state_root: Path | str | None = None,
+    l1_provider: Any | None = None,
+    decision_frame: Mapping[str, Any] | None = None,
     missions: Sequence[Mapping[str, Any]] = (),
     goals: Sequence[Mapping[str, Any]] = (),
     inquiries: Sequence[Mapping[str, Any]] = (),
@@ -271,10 +299,16 @@ def compile_surface_metadata(
     downstream_budget_chars: int | None = None,
     selection_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    decision = infer_decision_frame(
-        prompt,
-        surface=surface,
-        owner_mode=owner_mode,
+    decision = (
+        dict(decision_frame)
+        if decision_frame is not None
+        else infer_decision_frame(
+            prompt,
+            surface=surface,
+            owner_mode=owner_mode,
+            state_root=state_root,
+            l1_provider=l1_provider,
+        )
     )
     loops = extract_open_loops(
         missions=missions,

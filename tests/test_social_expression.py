@@ -14,12 +14,38 @@ from wechat_traffic_agent.social_expression import (
 NOW = datetime(2026, 9, 16, 13, 20, tzinfo=timezone.utc)
 
 
+class _L1:
+    def __init__(self, *, post_timing="POST_NOW", x_format="SHORT_POST"):
+        self.post_timing = post_timing
+        self.x_format = x_format
+        self.calls = []
+
+    def choose_x_strategy(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "schema_version": "ferro-l1-x-strategy.v1",
+            "status": "SELECTED",
+            "post_timing": self.post_timing,
+            "x_format": self.x_format,
+            "exploration_mode": "EXPLOIT",
+            "angle": "EVIDENCE_FIRST",
+            "interaction_mode": "ORIGINAL",
+            "decision_ids": {"post_timing": "fastdec-test"},
+            "provider": "TEST",
+            "model": "test",
+            "confidence": {"post_timing": 1.0},
+            "latency_ms": 0,
+            "decided_at": NOW.isoformat(),
+        }
+
+
 class Runtime:
     agent_manifest = SimpleNamespace(agent_type="content-agent")
 
     def __init__(self, mode="ready"):
         self.mode = mode
         self.calls = []
+        self.l1_decisions = _L1()
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
@@ -462,3 +488,21 @@ def test_invalid_draft_projection_is_retryable(tmp_path):
     )
     assert saved["status"] == "DRAFT_READY"
     assert saved["drafts"]["x"]["channel"] == "X"
+
+
+
+def test_l1_x_strategy_is_persisted_and_controls_publication_intent(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    runtime = Runtime()
+    runtime.l1_decisions = _L1(post_timing="HOLD", x_format="SHORT_POST")
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state)
+
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+
+    assert value["status"] == "DRAFTED"
+    saved = json.loads(
+        (state / "content/continuous/cycles" / cycle / "social_expression_drafts.json").read_text()
+    )
+    assert saved["x_strategy"]["post_timing"] == "HOLD"
+    assert saved["x_strategy"]["interaction_mode"] == "ORIGINAL"
+    assert runtime.l1_decisions.calls

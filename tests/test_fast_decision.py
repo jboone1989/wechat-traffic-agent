@@ -169,3 +169,45 @@ def test_lif_state_flows_through_l1_into_real_scheduled_action(tmp_path, monkeyp
     assert wake.task == "CHECK_X"
     assert wake.relevant_refs == ("fast-decision:fastdec_test",)
     assert runtime.public_snapshot()["fast_decision"]["selected_task"] == "CHECK_X"
+
+
+
+def test_jev_fast_decision_batches_independent_bounded_questions(tmp_path):
+    client = _Client({
+        "model": "jev-test",
+        "answers": {
+            "post_timing": {
+                "choice": "POST_NOW",
+                "confidence": 0.8,
+                "probabilities": {"POST_NOW": 0.8, "HOLD": 0.2},
+            },
+            "x_format": {
+                "choice": "SHORT_POST",
+                "confidence": 0.7,
+                "probabilities": {"SHORT_POST": 0.7, "LONG_POST": 0.3},
+            },
+        },
+    })
+    provider = JevFastDecisionProvider(
+        api_key="test-key",
+        state_root=tmp_path,
+        client=client,
+    )
+
+    results = provider.choose_many(
+        state={"mission": {"status": "ACTIVE"}},
+        decisions={
+            "post_timing": {"POST_NOW": "post", "HOLD": "hold"},
+            "x_format": {"SHORT_POST": "short", "LONG_POST": "long"},
+        },
+    )
+
+    assert results["post_timing"].choice == "POST_NOW"
+    assert results["x_format"].choice == "SHORT_POST"
+    assert len(client.calls) == 1
+    assert set(client.calls[0][1]["questions"]) == {"post_timing", "x_format"}
+    receipts = [
+        json.loads(line)
+        for line in (tmp_path / "application" / "fast_decisions.jsonl").read_text().splitlines()
+    ]
+    assert {row["decision"] for row in receipts} == {"post_timing", "x_format"}

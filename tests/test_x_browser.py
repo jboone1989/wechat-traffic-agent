@@ -20,6 +20,17 @@ def _draft(root: Path, cycle: str = "v2-browser", *, fmt: str = "LONG_POST", tex
     value = text or ("A premium X post can be longer than 280 characters while remaining bound to one persisted cognition. " * 4)
     (folder / "social_expression_drafts.json").write_text(json.dumps({
         "schema_version": "content-social-expression-drafts.v2", "status": "DRAFT_READY", "cycle": cycle,
+        "x_strategy": {
+            "schema_version": "ferro-l1-x-strategy.v1",
+            "status": "SELECTED",
+            "post_timing": "POST_NOW",
+            "x_format": "LONG_POST" if fmt == "LONG_POST" else "SHORT_POST",
+            "exploration_mode": "EXPLOIT",
+            "angle": "EVIDENCE_FIRST",
+            "interaction_mode": "ORIGINAL",
+            "provider": "TEST",
+            "model": "test",
+        },
         "drafts": {"x": {"channel": "X", "format": fmt, "intent": "OBSERVATION", "text": value,
                          "style_observation_ids": [], "rationale": "Persisted channel draft."}},
     }), encoding="utf-8")
@@ -259,3 +270,25 @@ def test_browser_publication_is_blocked_by_active_mission_hard_stop(tmp_path: Pa
         tmp_path
         / "content/continuous/cycles/v2-browser/x_browser_publication.json"
     ).exists()
+
+
+
+def test_l1_hold_prevents_browser_publication(tmp_path: Path):
+    folder = _draft(tmp_path, cycle="hold", fmt="SHORT_POST", text="A grounded short post that should be held.")
+    payload = json.loads((folder / "social_expression_drafts.json").read_text())
+    payload["x_strategy"]["post_timing"] = "HOLD"
+    (folder / "social_expression_drafts.json").write_text(json.dumps(payload))
+    transport = _Transport()
+
+    result = asyncio.run(
+        XBrowserPublisher(
+            state_root=tmp_path,
+            transport=transport,
+            enabled=True,
+            writes_enabled=True,
+        ).after_content_cycle(cycle="hold", now=NOW)
+    )
+
+    assert result["status"] == "SKIPPED"
+    assert result["reason"] == "L1_X_STRATEGY"
+    assert transport.calls == []

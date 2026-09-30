@@ -15,6 +15,7 @@ from .social_evidence import EvidenceCollector, resolve_social_evidence
 from .social_performance import okx_social_performance_context, x_social_performance_context
 from .x_growth_mission import x_growth_mission_context
 from .public_persona import public_persona_projection
+from .l1_decisions import FerroL1Decisions
 
 OKX_SHORT_POST_MAX_CHARS = 500
 SOCIAL_LONG_TEXT_MAX_CHARS = 8000
@@ -91,12 +92,24 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+
 class SocialExpressionDraftWorker:
-    def __init__(self, *, runtime: Any, state_root: Path,
-                 evidence_collector: EvidenceCollector | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runtime: Any,
+        state_root: Path,
+        evidence_collector: EvidenceCollector | None = None,
+        l1_decisions: Any | None = None,
+    ) -> None:
         self.runtime = runtime
         self.state_root = Path(state_root)
         self.evidence_collector = evidence_collector
+        self.l1_decisions = (
+            l1_decisions
+            if l1_decisions is not None
+            else getattr(runtime, "l1_decisions", None)
+        )
 
     async def after_content_cycle(self, *, result: dict[str, Any], now: datetime) -> dict[str, Any]:
         cycle = str(result.get("cycle") or "")
@@ -109,9 +122,14 @@ class SocialExpressionDraftWorker:
             existing_status = str(existing.get("status") or "")
             if existing_status == "SKIPPED":
                 return {"status": "ALREADY_SKIPPED", "cycle": cycle, "drafts": existing}
-            if existing_status == "DRAFT_READY":
+            if (
+                existing_status == "DRAFT_READY"
+                and isinstance(existing.get("x_strategy"), dict)
+                and str((existing.get("x_strategy") or {}).get("schema_version") or "")
+                == "ferro-l1-x-strategy.v1"
+            ):
                 return {"status": "ALREADY_DRAFTED", "cycle": cycle, "drafts": existing}
-            # INVALID_DRAFTS and malformed partial artifacts are retryable.
+            # INVALID_DRAFTS, pre-L1 drafts, and malformed partial artifacts are retryable.
             # Preserve their bytes under a content-addressed audit filename
             # before recreating the canonical projection.
             try:
@@ -171,6 +189,15 @@ class SocialExpressionDraftWorker:
             )
             return {"status": "SKIPPED", "cycle": cycle, "drafts": payload}
 
+        if self.l1_decisions is None:
+            self.l1_decisions = FerroL1Decisions(state_root=self.state_root)
+        x_strategy = self.l1_decisions.choose_x_strategy(
+            cycle=cycle,
+            cognition=cognition,
+            evidence=evidence,
+            mission=x_mission,
+            performance=x_performance,
+        )
         allowed_style_ids = {
             str(row.get("observation_id")) for row in style.get("observations", []) if isinstance(row, dict)
         }
@@ -187,7 +214,8 @@ class SocialExpressionDraftWorker:
             "social_performance_context is DESCRIPTIVE_STYLE_ONLY and OKX_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the OKX draft among evidence-compatible format, pacing, and presentation patterns. The X draft must ignore this OKX performance context. "
             "x_performance_context is DESCRIPTIVE_STYLE_ONLY and X_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the X draft among evidence-compatible format, pacing, and presentation patterns. The OKX draft must ignore this X performance context. "
             "Both performance contexts are observational, not causal; neither may change factual certainty, evidence_action, topic, grounding, or publication authority. When a context says INSUFFICIENT_SAMPLES, ignore it. "
-            "x_growth_mission is MISSION_STRATEGY_ONLY. It may guide the X draft's evidence-compatible format, emphasis, and presentation when that helps the active experiment, but it is not factual evidence and cannot change topic, certainty, evidence_action, safety, publication authority, or force a post. Ignore any mission strategy that conflicts with its constraints or current X policy. "
+            "x_growth_mission is MISSION_STRATEGY_ONLY. It may guide the X draft's evidence-compatible emphasis and presentation when that helps the active experiment, but it is not factual evidence and cannot change topic, certainty, evidence_action, safety, publication authority, or force a post. "
+            "x_l1_strategy is the bounded JEV strategy decision. For the X draft, obey its x_format when post_timing=POST_NOW and interaction_mode=ORIGINAL; use its angle and exploration_mode only as presentation strategy, never as factual evidence. HOLD means the draft may be retained for lineage but must not be treated as publication authority. Reply-vs-ignore routing is handled separately at the live mention boundary. "
             "public_persona is durable identity: write in that agent's voice and preserve its LivingRuntime affiliation. public_persona.identity_anchor is IDENTITY_ONLY metadata: it may ground who the agent says it is, but it is never a social-performance sample, popularity signal, factual-world evidence, or content-strategy outcome. persona.learning is only STYLE_AND_TOPIC_INTEREST_ONLY: recurring questions may suggest what needs clearer explanation, but cannot change facts, identity, mission, safety, or authority. "
             "Identity expression policy: when the subject is the agent itself, its learning, persistence, public operation, or LivingRuntime, explicitly use public_persona.name in first person at least once so the audience can connect the work to the durable agent identity. For ordinary market observations, do not force a self-introduction or signature. "
             "Promote LivingRuntime by showing concrete work and continuity when relevant; do not append repetitive promotional slogans or force a link into every post. "
@@ -204,6 +232,7 @@ class SocialExpressionDraftWorker:
                 "social_performance_context": performance,
                 "x_performance_context": x_performance,
                 "x_growth_mission": x_mission,
+                "x_l1_strategy": x_strategy,
                 "public_persona": persona,
                 "social_evidence_decision": evidence,
             }, ensure_ascii=False)
@@ -229,6 +258,15 @@ class SocialExpressionDraftWorker:
                 if evidence_action == "QUESTION" and channel.intent != "QUESTION":
                     raise ValueError(
                         "QUESTION evidence resolution requires QUESTION social intent"
+                    )
+                if (
+                    key == "x"
+                    and str(x_strategy.get("post_timing") or "") == "POST_NOW"
+                    and str(x_strategy.get("interaction_mode") or "ORIGINAL") == "ORIGINAL"
+                    and channel.format != str(x_strategy.get("x_format") or "")
+                ):
+                    raise ValueError(
+                        "X draft format must match the bounded JEV L1 strategy"
                     )
                 valid_drafts[key] = channel.model_dump(mode="json")
             except ValueError as exc:
@@ -263,6 +301,7 @@ class SocialExpressionDraftWorker:
             "performance_context": performance,
             "x_performance_context": x_performance,
             "x_growth_mission": x_mission,
+            "x_strategy": x_strategy,
             "public_persona": persona,
             "evidence_decision": evidence,
             "draft_errors": draft_errors,

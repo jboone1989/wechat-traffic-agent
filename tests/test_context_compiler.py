@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from wechat_traffic_agent.fast_decision import FastDecisionResult
 from wechat_traffic_agent.context_compiler import (
     compile_surface_metadata,
     extract_open_loops,
@@ -171,3 +172,38 @@ def test_context_receipt_records_decision_conditioned_selection_summary():
     assert receipt["selection_policy"].startswith(
         "information_need_global_retrieval"
     )
+
+
+
+def test_context_compiler_uses_l1_route_when_runtime_state_root_is_available(tmp_path):
+    class Provider:
+        provider_name = "TEST"
+
+        def choose(self, *, decision, state, choices, instructions=None):
+            assert decision == "context_route"
+            assert "REPAIR" in choices
+            probabilities = {key: 0.0 for key in choices}
+            probabilities["REPAIR"] = 1.0
+            return FastDecisionResult(
+                decision_id="fastdec-context",
+                provider="TEST",
+                model="test",
+                choice="REPAIR",
+                confidence=1.0,
+                probabilities=probabilities,
+                latency_ms=1,
+                decided_at="2026-09-30T09:00:00+00:00",
+            )
+
+    metadata = compile_surface_metadata(
+        prompt="The browser loop keeps returning success without changing X state.",
+        surface="agent_runtime",
+        state_root=tmp_path,
+        l1_provider=Provider(),
+        sections={"operational_state": {"status": "stuck"}},
+    )
+
+    frame = metadata["decision_frame"]
+    assert frame["decision_type"] == "REPAIR"
+    assert frame["l1_route"]["route"] == "REPAIR"
+    assert metadata["context_receipt"]["decision_type"] == "REPAIR"

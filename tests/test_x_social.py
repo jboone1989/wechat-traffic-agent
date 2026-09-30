@@ -12,6 +12,52 @@ from wechat_traffic_agent.interoceptive_fault import classify_task_result
 NOW = datetime(2026, 9, 16, 6, 0, tzinfo=timezone.utc)
 
 
+def _x_strategy(**overrides):
+    row = {
+        "schema_version": "ferro-l1-x-strategy.v1",
+        "status": "SELECTED",
+        "post_timing": "POST_NOW",
+        "x_format": "SHORT_POST",
+        "exploration_mode": "EXPLOIT",
+        "angle": "EVIDENCE_FIRST",
+        "interaction_mode": "ORIGINAL",
+        "provider": "TEST",
+        "model": "test",
+    }
+    row.update(overrides)
+    return row
+
+
+class _L1:
+    def __init__(self, attention=None):
+        self.attention = attention or {
+            "action": "IGNORE",
+            "category": "REACTION",
+            "valuable_evidence": False,
+        }
+        self.calls = []
+        self.strategy_calls = []
+
+    def choose_x_strategy(self, **kwargs):
+        self.strategy_calls.append(kwargs)
+        return _x_strategy()
+
+    def choose_social_attention(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "schema_version": "ferro-l1-social-attention.v1",
+            "status": "ROUTED",
+            "action": self.attention["action"],
+            "category": self.attention["category"],
+            "valuable_evidence": bool(self.attention["valuable_evidence"]),
+            "provider": "TEST",
+            "model": "test",
+            "confidence": {"social_action": 1.0},
+            "latency_ms": 0,
+            "decided_at": NOW.isoformat(),
+        }
+
+
 class _Runtime:
     def __init__(self, *, mentions_ok=True, post_ok=True, post_status=None):
         self.calls = []
@@ -89,11 +135,25 @@ class _ModelRuntime:
     def __init__(self, responses):
         self.responses = list(responses)
         self.tasks = []
+        attention = None
+        if self.responses and isinstance(self.responses[0], dict):
+            candidate = self.responses[0]
+            if {"action", "category", "valuable_evidence"} <= set(candidate):
+                attention = self.responses.pop(0)
+                if attention.get("action") == "REPLY":
+                    self.responses.insert(0, {
+                        "reply_text": attention.get("reply_text") or "Thanks for the question.",
+                        "rationale": attention.get("rationale") or "A direct grounded reply is useful here.",
+                    })
+        self.l1_decisions = _L1(attention)
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         assert self.responses
         self.tasks.append(task)
-        return json.dumps(self.responses.pop(0))
+        response = dict(self.responses.pop(0))
+        if task.startswith("X_EXPRESSION_DRAFT"):
+            response.pop("action", None)
+        return json.dumps(response)
 
     def persist(self):
         pass
@@ -138,9 +198,10 @@ def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_pa
         "signal": "EVIDENCE",
         "now": NOW,
     }]
-    assert '"relationship_context"' in model.tasks[0]
-    assert '"interactions": 4' in model.tasks[0]
-    assert '"familiarity": 0.55' in model.tasks[0]
+    assert model.tasks == []
+    l1_call = model.l1_decisions.calls[0]
+    assert l1_call["relationship"]["interactions"] == 4
+    assert l1_call["relationship"]["familiarity"] == 0.55
 
 
 def test_read_only_x_observation_never_replies_or_bookmarks(tmp_path: Path, monkeypatch):
@@ -187,6 +248,14 @@ def _write_cycle(tmp_path: Path, cycle: str) -> None:
         "rationale": "This is a concise evidence-grounded thought rather than a quota post.",
     }))
     (folder / "mind_plan.json").write_text(json.dumps({"goal": {"inquiry_refs": ["inq-1"]}}))
+    (folder / "social_expression_drafts.json").write_text(json.dumps({
+        "schema_version": "content-social-expression-drafts.v2",
+        "status": "DRAFT_READY",
+        "cycle": cycle,
+        "publication_authority": False,
+        "x_strategy": _x_strategy(),
+        "drafts": {},
+    }))
 
 
 def test_x_mission_can_express_grounded_held_website_cycle(tmp_path: Path, monkeypatch):
@@ -571,3 +640,52 @@ def test_official_x_post_is_blocked_by_active_mission_hard_stop(tmp_path: Path, 
     assert not any(capability == "x.post" for capability, _ in runtime.calls)
     assert growth.calls == []
     assert XHistoryLedger(tmp_path).recent() == []
+
+
+
+def test_x_only_cycle_without_social_draft_gets_real_l1_strategy_before_l2_text(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-x-l1-direct"
+    _write_cycle(tmp_path, cycle)
+    folder = tmp_path / "content/continuous/cycles" / cycle
+    (folder / "social_expression_drafts.json").unlink()
+    model = _ModelRuntime([
+        {
+            "action": "POST",
+            "post_text": "Jev chose the action; Sol only wrote this grounded sentence.",
+            "rationale": "The persisted cognition is worth a concise trace.",
+        },
+        {
+            "safe": True,
+            "no_private_data": True,
+            "no_impersonation": True,
+            "no_harassment": True,
+            "no_investment_advice": True,
+            "no_fabricated_facts": True,
+            "attribution_ok": True,
+            "rationale": "Grounded and safe.",
+        },
+    ])
+    loop = XAutonomyLoop(
+        runtime=_Runtime(post_ok=True),
+        model_runtime=model,
+        state_root=tmp_path,
+        base_url="",
+        growth_mission=_XOnlyGrowthMission(),
+    )
+
+    result = asyncio.run(
+        loop.after_content_cycle(
+            result={"status": "HELD_BY_CHECKS", "cycle": cycle, "publication": {}},
+            now=NOW,
+        )
+    )
+
+    assert result["status"] == "POSTED"
+    assert model.l1_decisions.strategy_calls
+    strategy = json.loads((folder / "x_l1_strategy.json").read_text())
+    assert strategy["post_timing"] == "POST_NOW"
+    assert model.tasks[0].startswith("X_EXPRESSION_DRAFT")
+    assert "Decide whether" not in model.tasks[0]

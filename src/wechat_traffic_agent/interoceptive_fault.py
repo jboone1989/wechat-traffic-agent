@@ -330,11 +330,24 @@ def read_interoceptive_projection(state_root: Path | str | None) -> dict[str, An
 class InteroceptiveFaultSystem:
     """Persistent body-sense layer for capability pathology."""
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        *,
+        l1_decisions: Any | None = None,
+    ) -> None:
         self.state_root = Path(state_root)
         self.root = self.state_root / "application" / "interoception"
         self.state_path = self.root / "state.json"
         self.episodes_root = self.root / "episodes"
+        self._l1_decisions = l1_decisions
+
+    def _l1(self):
+        if self._l1_decisions is None:
+            from .l1_decisions import FerroL1Decisions
+
+            self._l1_decisions = FerroL1Decisions(state_root=self.state_root)
+        return self._l1_decisions
 
     def projection(self, *, now: datetime | None = None) -> dict[str, Any]:
         payload = _read_json(self.state_path)
@@ -384,6 +397,94 @@ class InteroceptiveFaultSystem:
         classification = classify_task_result(task, result)
         state = self.projection(now=now)
         recent_same_task = self._same_task_recent(state, task)
+
+        from .fast_decision import FastDecisionError
+
+        try:
+            l1_health = self._l1().assess_health(
+                task=task,
+                deterministic=classification,
+                recent_observations=recent_same_task,
+            )
+        except FastDecisionError as exc:
+            l1_health = {
+                "schema_version": "ferro-l1-health.v1",
+                "status": "ERROR",
+                "health_state": "UNKNOWN",
+                "subsystem": "interoception",
+                "error_type": type(exc).__name__,
+                "message": str(exc)[:400],
+            }
+            symptoms = list(classification.get("symptoms") or [])
+            symptoms.append({
+                "kind": "l1_diagnosis_failure",
+                "severity": 0.48,
+                "path": "interoception.l1_health",
+                "detail": str(exc)[:240],
+            })
+            classification = {
+                **classification,
+                "abnormal": True,
+                "primary_symptom": (
+                    classification.get("primary_symptom")
+                    if classification.get("primary_symptom") != "healthy"
+                    else "l1_diagnosis_failure"
+                ),
+                "subsystem": (
+                    classification.get("subsystem")
+                    if classification.get("primary_symptom") != "healthy"
+                    else "interoception"
+                ),
+                "base_severity": max(
+                    float(classification.get("base_severity") or 0.0),
+                    0.48,
+                ),
+                "symptoms": symptoms[:16],
+            }
+        else:
+            health_state = str(l1_health.get("health_state") or "UNKNOWN")
+            if health_state in {"DEGRADED", "STUCK", "BROKEN"}:
+                severity_floor = {
+                    "DEGRADED": 0.42,
+                    "STUCK": 0.58,
+                    "BROKEN": 0.82,
+                }[health_state]
+                symptom_name = "l1_" + health_state.lower()
+                symptoms = list(classification.get("symptoms") or [])
+                if not any(
+                    str(row.get("kind") or "") == symptom_name
+                    for row in symptoms
+                    if isinstance(row, Mapping)
+                ):
+                    symptoms.append({
+                        "kind": symptom_name,
+                        "severity": severity_floor,
+                        "path": "interoception.l1_health",
+                        "detail": (
+                            f"{health_state}: "
+                            f"{str(l1_health.get('subsystem') or 'unknown')}"
+                        ),
+                    })
+                classification = {
+                    **classification,
+                    "abnormal": True,
+                    "primary_symptom": (
+                        classification.get("primary_symptom")
+                        if classification.get("primary_symptom") != "healthy"
+                        else symptom_name
+                    ),
+                    "subsystem": str(
+                        l1_health.get("subsystem")
+                        or classification.get("subsystem")
+                        or "unknown"
+                    ),
+                    "base_severity": max(
+                        float(classification.get("base_severity") or 0.0),
+                        severity_floor,
+                    ),
+                    "symptoms": symptoms[:16],
+                }
+
         consecutive_abnormal = 0
         for row in reversed(recent_same_task):
             if not bool(row.get("abnormal")):
@@ -455,6 +556,7 @@ class InteroceptiveFaultSystem:
                 "current_severity": round(severity, 6),
                 "healthy_streak": 0,
                 "symptoms": classification["symptoms"],
+                "l1_health": dict(l1_health),
                 "latest_observation_id": observation_id,
                 "evidence_refs": list(dict.fromkeys([
                     *[str(x) for x in previous.get("evidence_refs") or () if str(x)],
@@ -506,6 +608,7 @@ class InteroceptiveFaultSystem:
             "episode_id": episode_id,
             "symptoms": classification["symptoms"],
             "primary_status": classification["primary_status"],
+            "l1_health": dict(l1_health),
         }
 
         recent = [
@@ -575,6 +678,7 @@ class InteroceptiveFaultSystem:
             "suspected_faults": suspected,
             "symptoms": symptom_names,
             "latest_observation_id": observation_id,
+            "l1_health": dict(l1_health),
             "recent_observations": recent,
         }
         _atomic_json(self.state_path, new_state)

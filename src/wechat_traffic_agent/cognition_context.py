@@ -252,6 +252,7 @@ def build_ferro_cognition_context(
     wakeful: Any,
     prompt: str = "",
     now: datetime | None = None,
+    l1_provider: Any | None = None,
 ) -> dict[str, Any]:
     """Build the one current Ferro snapshot presented to every LLM cognition call.
 
@@ -447,18 +448,20 @@ def build_ferro_cognition_context(
             "recent_experiments": compact_experiments,
         }
 
-    decision_frame = infer_decision_frame(
-        query_context or prompt,
-        surface="agent_runtime",
-        owner_mode=owner_mode,
-    )
-    all_life_experience = _recent_life_experience(mind, limit=None)
-    commitments = extract_commitments(domain_runtime)
     state_root = (
         getattr(mind, "state_root", None)
         or getattr(wakeful, "state_root", None)
         or getattr(application, "state_root", None)
     )
+    decision_frame = infer_decision_frame(
+        query_context or prompt,
+        surface="agent_runtime",
+        owner_mode=owner_mode,
+        state_root=state_root,
+        l1_provider=l1_provider,
+    )
+    all_life_experience = _recent_life_experience(mind, limit=None)
+    commitments = extract_commitments(domain_runtime)
     decision_context = build_ferro_decision_context(
         prompt=query_context or prompt,
         decision_frame=decision_frame,
@@ -698,6 +701,9 @@ def build_ferro_cognition_context(
         prompt=query_context or prompt,
         surface="agent_runtime",
         owner_mode=owner_mode,
+        state_root=state_root,
+        l1_provider=l1_provider,
+        decision_frame=decision_frame,
         sections=core_sections,
         missions=list(selected_mission_state.get("active") or []),
         goals=[

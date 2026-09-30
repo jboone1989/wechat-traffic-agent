@@ -16,6 +16,7 @@ from .sources.runtime_x import first_post_id, first_user, normalize_posts
 from .x_mcp import x_publication_enabled, x_writes_enabled
 from .public_persona import public_persona_projection, record_public_interaction
 from .x_growth_mission import follower_count_from_user, x_growth_mission_context
+from .l1_decisions import FerroL1Decisions
 
 
 class SocialAttentionDecision(BaseModel):
@@ -33,6 +34,18 @@ class SocialAttentionDecision(BaseModel):
         if self.action != "REPLY" and self.reply_text is not None:
             raise ValueError("reply_text is only valid for REPLY")
         return self
+
+
+class XReplyDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reply_text: str = Field(min_length=1, max_length=280)
+    rationale: str = Field(min_length=10, max_length=500)
+
+
+class XPostDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    post_text: str = Field(min_length=1, max_length=280)
+    rationale: str = Field(min_length=10, max_length=500)
 
 
 class XExpressionDecision(BaseModel):
@@ -143,7 +156,8 @@ class XAutonomyLoop:
                  browser_publish_transport: Any | None = None,
                  growth_mission: Any | None = None,
                  social_observer: Any | None = None,
-                 social_context_provider: Any | None = None) -> None:
+                 social_context_provider: Any | None = None,
+                 l1_decisions: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
@@ -151,10 +165,20 @@ class XAutonomyLoop:
         self.growth_mission = growth_mission
         self.social_observer = social_observer
         self.social_context_provider = social_context_provider
+        self.l1_decisions = (
+            l1_decisions
+            if l1_decisions is not None
+            else getattr(model_runtime, "l1_decisions", None)
+        )
         self.state_root = Path(state_root)
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
         self.history = XHistoryLedger(self.state_root)
+    def _l1(self):
+        if self.l1_decisions is None:
+            self.l1_decisions = FerroL1Decisions(state_root=self.state_root)
+        return self.l1_decisions
+
     @property
     def profile_path(self) -> Path:
         return self.root / "public_profile.json"
@@ -395,17 +419,49 @@ class XAutonomyLoop:
                     )
                     if candidate.get(key) is not None
                 }
-        prompt = (
-            "X_SOCIAL_ATTENTION: Classify this public X mention. Decide IGNORE, INVESTIGATE, or REPLY. "
-            "Questions, substantive rebuttals, or evidence may deserve attention. Spam and low-information reactions should not. "
-            "valuable_evidence means the content could materially change an inquiry or worldview after verification; it does NOT mean it is already true or adopted. "
-            "A reply must be <=280 characters, contain no private data, impersonation, harassment, investment advice, fabricated facts, or unsupported factual assertions. "
-            "If factual verification is needed before replying, choose INVESTIGATE instead. Return JSON only.\n"
-            + json.dumps({"mention": row, "agent_handle": me.get("username"),
-                          "public_persona": public_persona_projection(self.state_root),
-                          "relationship_context": relationship_context}, ensure_ascii=False)
+        l1_attention = self._l1().choose_social_attention(
+            mention=row,
+            relationship=relationship_context,
+            mission=x_growth_mission_context(self.state_root),
         )
-        decision = await _structured(model_runtime, prompt, SocialAttentionDecision)
+        _write_json(folder / "l1_social_attention.json", l1_attention)
+        action = str(l1_attention["action"])
+        category = str(l1_attention["category"])
+        valuable_evidence = bool(l1_attention["valuable_evidence"])
+        summary = str(row.get("summary") or "Public X mention").strip()
+        if len(summary) < 5:
+            summary = "Public X mention: " + summary
+        reply_text = None
+        rationale = (
+            f"Jev L1 routed this mention to {action} as {category}; "
+            "no reply wording was generated."
+        )
+        if action == "REPLY":
+            prompt = (
+                "X_REPLY_DRAFT: The bounded JEV L1 router has already decided to REPLY. "
+                "Write only the reply wording; do not reconsider IGNORE/INVESTIGATE/REPLY. "
+                "Keep it <=280 characters. Use only the supplied public mention and durable public persona. "
+                "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported factual assertions. "
+                "If the mention asserts an unverified fact, phrase the reply so it does not adopt that fact as true. Return JSON only.\n"
+                + json.dumps({
+                    "mention": row,
+                    "agent_handle": me.get("username"),
+                    "public_persona": public_persona_projection(self.state_root),
+                    "relationship_context": relationship_context,
+                    "l1_attention": l1_attention,
+                }, ensure_ascii=False)
+            )
+            drafted = await _structured(model_runtime, prompt, XReplyDraft)
+            reply_text = drafted.reply_text
+            rationale = drafted.rationale
+        decision = SocialAttentionDecision(
+            action=action,
+            category=category,
+            valuable_evidence=valuable_evidence,
+            summary=summary[:400],
+            reply_text=reply_text,
+            rationale=rationale[:500],
+        )
         if decision.category != "SPAM":
             record_public_interaction(
                 state_root=self.state_root, source="X", message=str(row.get("summary") or ""),
@@ -456,6 +512,68 @@ class XAutonomyLoop:
                 "lineage": {"source": "mention", "attention": decision.category, "future_cognition": bool(decision.valuable_evidence)},
             })
             self._activity(cycle=cycle, title="Replied on X", detail=decision.reply_text)
+
+    def _l1_x_strategy(
+        self,
+        *,
+        folder: Path,
+        context: dict[str, Any],
+        now: datetime,
+    ) -> dict[str, Any]:
+        social_payload = _read_json(folder / "social_expression_drafts.json")
+        strategy = (
+            social_payload.get("x_strategy")
+            if isinstance(social_payload.get("x_strategy"), dict)
+            else {}
+        )
+        if (
+            strategy
+            and str(strategy.get("schema_version") or "")
+            == "ferro-l1-x-strategy.v1"
+        ):
+            return dict(strategy)
+        strategy_path = folder / "x_l1_strategy.json"
+        persisted = _read_json(strategy_path)
+        if (
+            persisted
+            and str(persisted.get("schema_version") or "")
+            == "ferro-l1-x-strategy.v1"
+        ):
+            return persisted
+
+        l1 = self._l1()
+        evidence = (
+            social_payload.get("evidence_decision")
+            if isinstance(social_payload.get("evidence_decision"), dict)
+            else {
+                "resolution": {
+                    "action": "DRAFT",
+                    "rationale": (
+                        "Persisted cognition has already been admitted to the "
+                        "mission-bound X expression lane."
+                    ),
+                    "useful_facts": [],
+                }
+            }
+        )
+        from .social_performance import x_social_performance_context
+
+        strategy = l1.choose_x_strategy(
+            cycle=str(context.get("cycle") or folder.name),
+            cognition=(
+                context.get("cognition")
+                if isinstance(context.get("cognition"), dict)
+                else {}
+            ),
+            evidence=evidence,
+            mission=x_growth_mission_context(self.state_root),
+            performance=x_social_performance_context(
+                state_root=self.state_root,
+                as_of=now,
+            ),
+        )
+        _write_json(strategy_path, strategy)
+        return strategy
 
     def _cycle_context(self, result: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
         cycle = str(result.get("cycle") or "")
@@ -509,24 +627,49 @@ class XAutonomyLoop:
         if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
         context["x_mission_binding"] = mission_binding
+        x_strategy = self._l1_x_strategy(
+            folder=folder,
+            context=context,
+            now=now,
+        )
+        if (
+            str(x_strategy.get("post_timing") or "") == "HOLD"
+            or str(x_strategy.get("interaction_mode") or "ORIGINAL") != "ORIGINAL"
+        ):
+            return {
+                "status": "SKIPPED",
+                "cycle": cycle,
+                "reason": "L1_X_STRATEGY",
+                "x_strategy": x_strategy,
+            }
+        if (
+            x_strategy
+            and str(x_strategy.get("x_format") or "SHORT_POST") != "SHORT_POST"
+            and not self.history.has_event(cycle=cycle, event_type="EXPRESSION")
+        ):
+            return {
+                "status": "X_LONGFORM_TRANSPORT_REQUIRED",
+                "cycle": cycle,
+                "x_strategy": x_strategy,
+            }
         model_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle)
         public_url = _find_url(context.get("publication"))
         x_mission = x_growth_mission_context(self.state_root)
         prompt = (
-            "X_EXPRESSION: Decide whether this already-completed cognition deserves an X post now. Do not post to satisfy a quota. "
+            "X_EXPRESSION_DRAFT: Jev L1 has already selected POST_NOW and SHORT_POST. "
+            "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format. "
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
             "For METHOD_NOTE, describe the method/tool only as a candidate being tested unless adoption is separately proven. "
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
-            "x_growth_mission is MISSION_STRATEGY_ONLY. It may influence whether this evidence-compatible expression is a useful instance of the active experiment, but it is not factual evidence and cannot override safety, grounding, X policy, or the rule against posting to satisfy a quota. "
+            "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
             "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported certainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**context, "public_url": public_url,
                           "public_persona": public_persona_projection(self.state_root),
-                          "x_growth_mission": x_mission}, ensure_ascii=False)
+                          "x_growth_mission": x_mission,
+                          "x_l1_strategy": x_strategy}, ensure_ascii=False)
         )
-        decision = await _structured(model_runtime, prompt, XExpressionDecision)
-        if decision.action != "POST" or not decision.post_text:
-            return {"status": "SKIPPED", "cycle": cycle, "reason": decision.rationale}
+        decision = await _structured(model_runtime, prompt, XPostDraft)
         safety = await self._safety_check(model_runtime=model_runtime, text=decision.post_text, context=context)
         if not _safety_passes(safety):
             return {"status": "HELD_BY_X_SAFETY", "cycle": cycle, "reason": safety.rationale}

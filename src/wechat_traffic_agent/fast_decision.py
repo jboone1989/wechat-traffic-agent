@@ -52,6 +52,14 @@ class FastDecisionProvider(Protocol):
         instructions: Mapping[str, Any] | None = None,
     ) -> FastDecisionResult: ...
 
+    def choose_many(
+        self,
+        *,
+        state: Mapping[str, Any],
+        decisions: Mapping[str, Mapping[str, str]],
+        instructions: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, FastDecisionResult]: ...
+
 
 class FastDecisionLedger:
     """Persist bounded receipts without prompts, secrets, or free-form state."""
@@ -170,35 +178,46 @@ class JevFastDecisionProvider:
             raise FastDecisionError("Jev returned an invalid bounded choice")
         return choice, confidence, probabilities
 
-    def choose(
+    def choose_many(
         self,
         *,
-        decision: str,
         state: Mapping[str, Any],
-        choices: Mapping[str, str],
-        instructions: Mapping[str, Any] | None = None,
-    ) -> FastDecisionResult:
-        if len(choices) < 2:
-            raise ValueError("fast decision requires at least two choices")
-        decision = str(decision or "").strip()
-        if not decision:
-            raise ValueError("decision name is required")
-        normalized_choices = {
-            str(key): str(value)
-            for key, value in choices.items()
-            if str(key).strip() and str(value).strip()
-        }
-        if len(normalized_choices) != len(choices):
-            raise ValueError("fast decision choices must be non-empty strings")
+        decisions: Mapping[str, Mapping[str, str]],
+        instructions: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, FastDecisionResult]:
+        if not decisions:
+            raise ValueError("fast decision batch requires at least one decision")
+        normalized: dict[str, dict[str, str]] = {}
+        for decision, choices in decisions.items():
+            decision_name = str(decision or "").strip()
+            if not decision_name:
+                raise ValueError("decision name is required")
+            if len(choices) < 2:
+                raise ValueError(
+                    f"fast decision {decision_name!r} requires at least two choices"
+                )
+            normalized_choices = {
+                str(key): str(value)
+                for key, value in choices.items()
+                if str(key).strip() and str(value).strip()
+            }
+            if len(normalized_choices) != len(choices):
+                raise ValueError(
+                    f"fast decision {decision_name!r} choices must be non-empty strings"
+                )
+            normalized[decision_name] = normalized_choices
+
+        question_instructions = instructions or {}
         body = {
             "model": self.model,
             "state": dict(state),
             "questions": {
                 decision: {
                     "type": "choice",
-                    "criteria": normalized_choices,
-                    "instructions": dict(instructions or {}),
+                    "criteria": choices,
+                    "instructions": dict(question_instructions.get(decision) or {}),
                 }
+                for decision, choices in normalized.items()
             },
         }
         started = time.perf_counter()
@@ -223,39 +242,59 @@ class JevFastDecisionProvider:
         answers = payload.get("answers") if isinstance(payload, Mapping) else None
         if not isinstance(answers, Mapping):
             raise FastDecisionError("Jev response omitted answers")
-        answer = answers.get(decision)
-        if not isinstance(answer, Mapping):
-            raise FastDecisionError(f"Jev response omitted {decision!r}")
-        choice, confidence, probabilities = self._validate_answer(
-            answer,
-            normalized_choices,
-        )
+
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
         now = datetime.now(timezone.utc)
-        identity = json.dumps(
-            {
-                "decision": decision,
-                "choice": choice,
-                "at": now.isoformat(),
-                "probabilities": probabilities,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        result = FastDecisionResult(
-            decision_id="fastdec_" + hashlib.sha256(identity).hexdigest()[:24],
-            provider=self.provider_name,
-            model=str(payload.get("model") or self.model),
-            choice=choice,
-            confidence=round(confidence, 6),
-            probabilities={
-                key: round(value, 6)
-                for key, value in probabilities.items()
-            },
-            latency_ms=round((time.perf_counter() - started) * 1000),
-            decided_at=now.isoformat(),
-        )
-        self.ledger.append(result, decision=decision, state=state)
-        return result
+        results: dict[str, FastDecisionResult] = {}
+        for decision, choices in normalized.items():
+            answer = answers.get(decision)
+            if not isinstance(answer, Mapping):
+                raise FastDecisionError(f"Jev response omitted {decision!r}")
+            choice, confidence, probabilities = self._validate_answer(
+                answer,
+                choices,
+            )
+            identity = json.dumps(
+                {
+                    "decision": decision,
+                    "choice": choice,
+                    "at": now.isoformat(),
+                    "probabilities": probabilities,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            result = FastDecisionResult(
+                decision_id="fastdec_" + hashlib.sha256(identity).hexdigest()[:24],
+                provider=self.provider_name,
+                model=str(payload.get("model") or self.model),
+                choice=choice,
+                confidence=round(confidence, 6),
+                probabilities={
+                    key: round(value, 6)
+                    for key, value in probabilities.items()
+                },
+                latency_ms=elapsed_ms,
+                decided_at=now.isoformat(),
+            )
+            self.ledger.append(result, decision=decision, state=state)
+            results[decision] = result
+        return results
+
+    def choose(
+        self,
+        *,
+        decision: str,
+        state: Mapping[str, Any],
+        choices: Mapping[str, str],
+        instructions: Mapping[str, Any] | None = None,
+    ) -> FastDecisionResult:
+        decision_name = str(decision or "").strip()
+        return self.choose_many(
+            state=state,
+            decisions={decision_name: choices},
+            instructions={decision_name: dict(instructions or {})},
+        )[decision_name]
 
 
 def load_fast_decision_provider(*, state_root: Path) -> FastDecisionProvider:

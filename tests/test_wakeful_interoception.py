@@ -3,10 +3,39 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 
+from wechat_traffic_agent.interoceptive_fault import InteroceptiveFaultSystem
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
 
 NOW = datetime(2026, 9, 28, 14, 0, tzinfo=timezone.utc)
+
+
+class _NeutralL1:
+    def assess_health(self, *, task, deterministic, recent_observations=()):
+        abnormal = bool(deterministic.get("abnormal"))
+        return {
+            "schema_version": "ferro-l1-health.v1",
+            "status": "ASSESSED",
+            "health_state": "UNKNOWN" if abnormal else "HEALTHY",
+            "subsystem": deterministic.get("subsystem") if abnormal else None,
+            "provider": "TEST",
+            "model": "test",
+            "confidence": 1.0,
+            "probabilities": {},
+            "latency_ms": 0,
+            "decided_at": NOW.isoformat(),
+        }
+
+
+def _runner(tmp_path, wakeful):
+    return WakefulContentTaskRunner(
+        state_root=tmp_path,
+        wakeful=wakeful,
+        interoceptive_faults=InteroceptiveFaultSystem(
+            tmp_path,
+            l1_decisions=_NeutralL1(),
+        ),
+    )
 
 
 class _Wakeful:
@@ -47,7 +76,7 @@ class _Wakeful:
 
 def test_run_wrapper_turns_chronic_fallback_into_neural_signal_and_diagnosis(tmp_path):
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
 
     cycles = iter(["c1", "c2", "c3", "c4"])
 
@@ -97,7 +126,7 @@ def test_run_wrapper_turns_chronic_fallback_into_neural_signal_and_diagnosis(tmp
 
 def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
 
     runner._run_unobserved = lambda *_args, **_kwargs: {
         "task": "RESOURCE_REVIEW",
@@ -138,7 +167,7 @@ def test_silent_no_effect_contract_becomes_repair_diagnosis(tmp_path):
 
 def test_repeated_contract_no_effect_updates_one_problem_and_wakes_repair(tmp_path):
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
     streaks = iter([35, 36])
     cycles = iter(["resource-no-effect-35", "resource-no-effect-36"])
 
@@ -179,7 +208,7 @@ def test_repeated_contract_no_effect_updates_one_problem_and_wakes_repair(tmp_pa
 
 def test_settled_autonomous_goal_no_effect_is_felt_in_production_path(tmp_path):
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
 
     result = runner.observe_settled_capability_outcome(
         "RESOURCE_REVIEW",
@@ -219,7 +248,7 @@ def test_settled_autonomous_goal_no_effect_is_felt_in_production_path(tmp_path):
 
 def test_settled_world_outcome_can_expose_silent_goal_disease(tmp_path):
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
 
     result = runner.observe_settled_capability_outcome(
         "RESOURCE_REVIEW",
@@ -257,7 +286,7 @@ def test_neural_interoception_feels_persisted_chronic_no_effect(tmp_path):
         },
     }))
     wakeful = _Wakeful()
-    runner = WakefulContentTaskRunner(state_root=tmp_path, wakeful=wakeful)
+    runner = _runner(tmp_path, wakeful)
 
     result = runner._finalize_task_result(
         "NEURAL_INTEROCEPTION",

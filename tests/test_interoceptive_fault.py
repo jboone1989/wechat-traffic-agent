@@ -14,8 +14,29 @@ from wechat_traffic_agent.interoceptive_fault import (
 NOW = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
 
 
+class _NeutralL1:
+    def assess_health(self, *, task, deterministic, recent_observations=()):
+        abnormal = bool(deterministic.get("abnormal"))
+        return {
+            "schema_version": "ferro-l1-health.v1",
+            "status": "ASSESSED",
+            "health_state": "UNKNOWN" if abnormal else "HEALTHY",
+            "subsystem": deterministic.get("subsystem") if abnormal else None,
+            "provider": "TEST",
+            "model": "test",
+            "confidence": 1.0,
+            "probabilities": {},
+            "latency_ms": 0,
+            "decided_at": NOW.isoformat(),
+        }
+
+
+def _system(tmp_path):
+    return InteroceptiveFaultSystem(tmp_path, l1_decisions=_NeutralL1())
+
+
 def test_repeated_fallback_becomes_felt_fault_and_requests_diagnosis(tmp_path):
-    system = InteroceptiveFaultSystem(tmp_path)
+    system = _system(tmp_path)
 
     first = system.observe(
         "CONTENT_COGNITION",
@@ -72,7 +93,7 @@ def test_repeated_fallback_becomes_felt_fault_and_requests_diagnosis(tmp_path):
 
 
 def test_recovery_requires_sustained_healthy_evidence(tmp_path):
-    system = InteroceptiveFaultSystem(tmp_path)
+    system = _system(tmp_path)
     sick = system.observe(
         "NEURAL_PLAY",
         {"status": "DEGRADED", "brain_lab": {"status": "ERROR"}, "cycle": "bad"},
@@ -106,7 +127,7 @@ def test_recovery_requires_sustained_healthy_evidence(tmp_path):
 
 
 def test_retry_breaks_recovery_and_remains_pathological(tmp_path):
-    system = InteroceptiveFaultSystem(tmp_path)
+    system = _system(tmp_path)
     system.observe(
         "OBSERVE_WORLD",
         {"status": "ERROR", "cycle": "bad"},
@@ -157,7 +178,7 @@ def test_prediction_error_and_negative_world_utility_are_body_signals():
 
 
 def test_persisted_projection_is_readable_by_cognition(tmp_path):
-    system = InteroceptiveFaultSystem(tmp_path)
+    system = _system(tmp_path)
     observed = system.observe(
         "CONTENT_COGNITION",
         {"status": "DEGRADED", "cycle": "c1"},
@@ -167,3 +188,34 @@ def test_persisted_projection_is_readable_by_cognition(tmp_path):
     assert projection["latest_observation_id"] == observed["observation"]["observation_id"]
     assert projection["status"] in {"WATCH", "ILL"}
     assert projection["suspected_faults"]
+
+
+
+def test_l1_can_detect_stuck_without_a_hard_error(tmp_path):
+    class StuckL1:
+        def assess_health(self, *, task, deterministic, recent_observations=()):
+            return {
+                "schema_version": "ferro-l1-health.v1",
+                "status": "ASSESSED",
+                "health_state": "STUCK",
+                "subsystem": "goal_execution",
+                "provider": "TEST",
+                "model": "test",
+                "confidence": 0.92,
+                "probabilities": {"STUCK__goal_execution": 0.92},
+                "latency_ms": 1,
+                "decided_at": NOW.isoformat(),
+            }
+
+    system = InteroceptiveFaultSystem(tmp_path, l1_decisions=StuckL1())
+    observed = system.observe(
+        "CONTENT_COGNITION",
+        {"status": "OK", "cycle": "looks-successful-but-no-progress"},
+        now=NOW,
+    )
+
+    assert observed["status"] == "SYMPTOM_OBSERVED"
+    assert observed["observation"]["l1_health"]["health_state"] == "STUCK"
+    assert observed["observation"]["primary_symptom"] == "l1_stuck"
+    assert observed["observation"]["subsystem"] == "goal_execution"
+    assert observed["projection"]["status"] in {"WATCH", "ILL"}

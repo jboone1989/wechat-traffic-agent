@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from wechat_traffic_agent.fast_decision import FastDecisionResult
 from wechat_traffic_agent.cognition_context import (
     build_ferro_cognition_context,
     owner_cognition_scope,
@@ -85,6 +86,26 @@ class _Mind:
             "strategy_learning": {"outcome_count": 2, "topics": ["remote-agent-debugging"]},
             "learning_boundary": "world feedback changes future choices",
         }
+
+
+class _ContextL1Provider:
+    provider_name = "TEST"
+
+    def choose(self, *, decision, state, choices, instructions=None):
+        assert decision == "context_route"
+        choice = "ACT"
+        probabilities = {key: 0.0 for key in choices}
+        probabilities[choice] = 1.0
+        return FastDecisionResult(
+            decision_id="fastdec-context-test",
+            provider="TEST",
+            model="test",
+            choice=choice,
+            confidence=1.0,
+            probabilities=probabilities,
+            latency_ms=0,
+            decided_at="2026-09-28T15:00:00+00:00",
+        )
 
 
 class _Wakeful:
@@ -586,6 +607,7 @@ def test_interoception_is_always_on_cognition_context(tmp_path):
         mind=mind,
         wakeful=_Wakeful(),
         prompt="choose the next action",
+        l1_provider=_ContextL1Provider(),
     )
 
     assert context["interoception"]["status"] in {"WATCH", "ILL"}
@@ -634,6 +656,7 @@ def test_context_contract_violation_enters_self_maintenance(monkeypatch, tmp_pat
             2026, 9, 28, 16, 30,
             tzinfo=__import__("datetime").timezone.utc,
         ),
+        l1_provider=_ContextL1Provider(),
     )
 
     assert context["capability_contracts"]["status"] == "VIOLATED"

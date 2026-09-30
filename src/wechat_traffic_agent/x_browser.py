@@ -393,6 +393,26 @@ class XBrowserPublisher:
         payload = _read_json(folder / "social_expression_drafts.json")
         if payload.get("status") != "DRAFT_READY":
             return {"status": "NO_READY_DRAFT", "cycle": cycle}
+        strategy = (
+            payload.get("x_strategy")
+            if isinstance(payload.get("x_strategy"), dict)
+            else {}
+        )
+        if not strategy:
+            return {
+                "status": "L1_X_STRATEGY_MISSING",
+                "cycle": cycle,
+            }
+        if (
+            str(strategy.get("post_timing") or "") == "HOLD"
+            or str(strategy.get("interaction_mode") or "ORIGINAL") != "ORIGINAL"
+        ):
+            return {
+                "status": "SKIPPED",
+                "cycle": cycle,
+                "reason": "L1_X_STRATEGY",
+                "x_strategy": strategy,
+            }
         drafts = payload.get("drafts") if isinstance(payload.get("drafts"), dict) else {}
         draft = drafts.get("x") if isinstance(drafts.get("x"), dict) else {}
         if draft.get("channel") != "X":

@@ -223,7 +223,7 @@ def plan_information_needs(
 
     if decision_type in {
         "OWNER_GOAL_ACTION", "PLANNING", "SELECTION", "VERIFICATION",
-        "PREDICTION", "LEARNING_UPDATE", "RESEARCH",
+        "PREDICTION", "LEARNING_UPDATE", "RESEARCH", "REPAIR",
     }:
         needs.append(
             InformationNeed(
@@ -267,6 +267,21 @@ def plan_information_needs(
                 0.95,
             )
         )
+    elif decision_type == "REPAIR":
+        needs.extend([
+            InformationNeed(
+                "failure_evidence",
+                f"What exact observed failure, recurrence pattern, capability contract, and last-known-good evidence localize the broken or stuck capability? {objective}",
+                ("operational", "experience", "memory", "capability"),
+                1.0,
+            ),
+            InformationNeed(
+                "repair_history",
+                f"What prior repair attempts, regressions, and verified recoveries constrain the next repair? {objective}",
+                ("experience", "memory", "belief_change", "experiment"),
+                0.95,
+            ),
+        ])
     elif decision_type in {"LEARNING_UPDATE", "RESEARCH"}:
         needs.append(
             InformationNeed(
