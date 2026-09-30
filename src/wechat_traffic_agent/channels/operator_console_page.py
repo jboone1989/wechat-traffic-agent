@@ -313,7 +313,7 @@ function renderBrowserRuntime(data){
          actions=node('div',undefined,'row'),
          login=node('button','登录 ChatGPT Cortex','primary'),
          test=node('button','测试 Jev');
-   login.onclick=()=>beginCortexLogin();
+   login.onclick=()=>beginCortexLogin().catch(e=>flash('ChatGPT Cortex 启动失败 · '+e.message,true));
    test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};
    actions.append(login,test);c.append(actions,result)
   }
@@ -472,7 +472,7 @@ async function beginAccountInstanceLogin(acct){
  await refresh()
 }
 async function beginCortexLogin(){
- activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('resources');
+ activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts');
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
  el('accountLoginTitle').textContent='ChatGPT Cortex · JEV 激活备用通路';
  const status=el('localBrowserStatus');
