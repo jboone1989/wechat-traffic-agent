@@ -481,6 +481,162 @@ def test_deepseek_stable_reserve_key_is_write_only(tmp_path):
     assert row["quota_supported"] is False
 
 
+def test_one_time_operator_access_persists_only_digest_and_is_single_use(tmp_path):
+    from datetime import timedelta
+    auth=OperatorAuthenticator(tmp_path,ttl=timedelta(minutes=30))
+    token=auth.issue_one_time_access(now=NOW,ttl=timedelta(hours=2))
+    raw=auth.bootstrap_path.read_text()
+    assert token not in raw
+    assert "token_sha256" in raw
+
+    session=auth.consume_one_time_access(token,now=NOW+timedelta(minutes=1))
+    assert session
+    assert auth.valid(session,now=NOW+timedelta(minutes=2))
+    assert not auth.bootstrap_path.exists()
+    assert auth.consume_one_time_access(token,now=NOW+timedelta(minutes=3)) is None
+
+
+def test_operator_one_time_token_delivered_via_wecom_logs_in_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeNotifier:
+        def __init__(self):
+            self.messages = []
+        def send_text(self, text):
+            self.messages.append(text)
+            return {"status": "SENT"}
+
+    notifier = FakeNotifier()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: notifier,
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={"channel": "wecom"},
+    )
+    assert response.status_code == 202
+    assert len(notifier.messages) == 1
+    assert "#bootstrap=" not in notifier.messages[0]
+    token = notifier.messages[0].split("仅可使用一次：\n", 1)[1].splitlines()[0].strip()
+
+    accepted = client.post(
+        "/operator/api/session",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert accepted.status_code == 200
+
+    replay = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app()).post(
+        "/operator/api/session",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert replay.status_code == 401
+
+
+def test_operator_one_time_token_can_be_delivered_by_email(tmp_path, monkeypatch):
+    import wechat_traffic_agent.operator_email as email_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeEmailNotifier:
+        tokens = []
+
+        def __init__(self, state_root):
+            self.state_root = state_root
+
+        def status(self):
+            return {"configured": True, "provider": "TEST"}
+
+        def send_login_token(self, *, token, expires_minutes=10):
+            self.__class__.tokens.append(token)
+            return {"status": "SENT", "provider": "TEST"}
+
+    monkeypatch.setattr(email_module, "OperatorEmailNotifier", FakeEmailNotifier)
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={"channel": "email"},
+    )
+    assert response.status_code == 202
+    assert response.json()["channel"] == "EMAIL"
+    assert len(FakeEmailNotifier.tokens) == 1
+
+    accepted = client.post(
+        "/operator/api/session",
+        headers={"X-Operator-Request": "1"},
+        json={"token": FakeEmailNotifier.tokens[0]},
+    )
+    assert accepted.status_code == 200
+
+
+def test_operator_login_request_is_rate_limited(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FakeNotifier:
+        def __init__(self):
+            self.count = 0
+        def send_text(self, text):
+            self.count += 1
+            return {"status": "SENT"}
+
+    notifier = FakeNotifier()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: notifier,
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    headers = {"X-Operator-Request": "1"}
+    for _ in range(3):
+        assert client.post(
+            "/operator/api/request-login", headers=headers, json={}
+        ).status_code == 202
+    blocked = client.post(
+        "/operator/api/request-login", headers=headers, json={}
+    )
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"] == "30"
+    assert notifier.count == 3
+
+
+def test_failed_operator_login_delivery_revokes_one_time_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+
+    class FailedNotifier:
+        def send_text(self, text):
+            return {"status": "NOT_CONFIGURED"}
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: FailedNotifier(),
+    )
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    response = client.post(
+        "/operator/api/request-login",
+        headers={"X-Operator-Request": "1"},
+        json={},
+    )
+    assert response.status_code == 503
+    assert response.json() == {"error": "login_delivery_unavailable"}
+    assert not (tmp_path / "secrets" / "operator-console-bootstrap.json").exists()
+
+
 def test_survival_control_http_registers_verifies_and_executes_signed_offload(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
     from agent_network.crypto import Identity
@@ -1078,6 +1234,132 @@ def test_operator_multi_x_oauth_endpoints_are_authenticated_and_non_secret(tmp_p
     assert completed.json()["identity"] == "second_x"
     assert callback not in completed.text
     assert calls[-1] == ("complete", "oauth-session-1", callback)
+
+
+def test_operator_email_settings_require_auth_and_persist_without_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    payload = {"recipient": "owner@example.com"}
+
+    unauthorized = client.post(
+        "/operator/api/login-delivery/email",
+        headers={"X-Operator-Request": "1"},
+        json=payload,
+    )
+    assert unauthorized.status_code == 401
+
+    _login_operator(client, tmp_path)
+    saved = client.post(
+        "/operator/api/login-delivery/email",
+        headers={"X-Operator-Request": "1"},
+        json=payload,
+    )
+    assert saved.status_code == 200
+    path = tmp_path / "operator" / "email-delivery.json"
+    raw = path.read_text()
+    assert "owner@example.com" in raw
+    assert "login@livingruntime.com" in raw
+    assert '"provider": "RESEND"' in raw
+    assert "password" not in raw.lower()
+    assert "api_key" not in raw.lower()
+
+
+def test_one_time_operator_tokens_can_coexist_and_are_independently_single_use(tmp_path):
+    from datetime import timedelta
+
+    auth = OperatorAuthenticator(tmp_path, ttl=timedelta(minutes=30))
+    first = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
+    second = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=10))
+
+    raw = auth.bootstrap_path.read_text()
+    assert first not in raw
+    assert second not in raw
+    assert raw.count("token_sha256") == 2
+
+    session_one = auth.consume_one_time_access(
+        first, now=NOW + timedelta(minutes=1)
+    )
+    assert session_one
+    assert auth.bootstrap_path.exists()
+    assert auth.consume_one_time_access(
+        first, now=NOW + timedelta(minutes=2)
+    ) is None
+
+    session_two = auth.consume_one_time_access(
+        second, now=NOW + timedelta(minutes=2)
+    )
+    assert session_two
+    assert not auth.bootstrap_path.exists()
+
+
+def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, monkeypatch):
+    import wechat_traffic_agent.operator_email as email_module
+
+    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
+    monkeypatch.setenv(
+        "CONTENT_OPERATOR_PUBLIC_URL",
+        "https://livingruntime.com/operator/",
+    )
+
+    class FakeNotifier:
+        def send_text(self, text):
+            return {"status": "SENT"}
+
+    class FakeEmailNotifier:
+        def __init__(self, state_root):
+            self.state_root = state_root
+
+        def status(self):
+            return {"configured": True}
+
+        def send_login_token(self, *, token, expires_minutes=10):
+            return {"status": "SENT", "provider": "TEST"}
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.human_assistance.operator_notifier",
+        lambda: FakeNotifier(),
+    )
+    monkeypatch.setattr(email_module, "OperatorEmailNotifier", FakeEmailNotifier)
+
+    client = TestClient(LiveAgentService(
+        state_root=tmp_path, application=None, backend=None, mind=None,
+    )._app())
+    headers = {"X-Operator-Request": "1"}
+
+    for _ in range(3):
+        wecom = client.post(
+            "/operator/api/request-login",
+            headers=headers,
+            json={"channel": "wecom"},
+        )
+        assert wecom.status_code == 202
+
+        email = client.post(
+            "/operator/api/request-login",
+            headers=headers,
+            json={"channel": "email"},
+        )
+        assert email.status_code == 202
+
+    fourth_wecom = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "wecom"},
+    )
+    assert fourth_wecom.status_code == 429
+    assert fourth_wecom.json()["channel"] == "WECOM"
+    assert fourth_wecom.json()["scope"] == "GLOBAL_CHANNEL"
+
+    fourth_email = client.post(
+        "/operator/api/request-login",
+        headers=headers,
+        json={"channel": "email"},
+    )
+    assert fourth_email.status_code == 429
+    assert fourth_email.json()["channel"] == "EMAIL"
+
 
 
 def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_path, monkeypatch):

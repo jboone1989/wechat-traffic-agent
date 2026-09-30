@@ -86,17 +86,18 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "调用 X API 时显式使用该账号" in page
 
 
-def test_operator_login_page_uses_operator_token_only():
+def test_operator_login_page_offers_one_time_token_delivery():
     page = operator_console_document()
 
+    assert 'id="emailSignin"' in page
+    assert 'id="wecomSignin"' in page
+    assert "一次性 Token" in page
     assert 'id="token"' in page
-    assert 'id="signin"' in page
-    assert "Operator Token" in page
-    assert "发送到 Email" not in page
-    assert "发送到企业微信" not in page
-    assert "/operator/api/request-login" not in page
+    assert "/operator/api/request-login" in page
     assert "/operator/api/bootstrap" not in page
-    assert "/operator/api/login-delivery/email" not in page
+    assert "#bootstrap=" not in page
+    assert 'id="operatorEmailRecipient"' in page
+    assert "/operator/api/login-delivery/email" in page
 
 
 def test_account_cards_offer_confirmed_delete_action():
@@ -125,7 +126,7 @@ def test_jev_card_offers_chatgpt_cortex_login():
     page = operator_console_document()
 
     assert "登录 ChatGPT Cortex" in page
-    assert "ChatGPT Cortex · JEV 持久会话登录" in page
+    assert "ChatGPT Cortex · 复用 X 持久浏览器会话" in page
     assert "/operator/api/cortex/browser/login/connect" in page
     assert "/operator/api/cortex/browser/login/stream" in page
     assert "/operator/api/cortex/browser/login/stop" in page
