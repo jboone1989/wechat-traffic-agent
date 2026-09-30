@@ -148,12 +148,15 @@ class AccountBrowserProfileManager:
         port = self._allocate_port(account_id)
         command = [
             self._chrome_binary(),
-            "--headless=new",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--remote-debugging-address=127.0.0.1",
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile}",
+            "--noerrdialogs",
+            "--no-first-run",
+            "--ozone-platform=headless",
+            "--ozone-override-screen-size=1120,780",
             "about:blank",
         ]
         process = self.popen_factory(

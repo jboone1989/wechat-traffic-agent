@@ -38,6 +38,10 @@ def test_account_browser_profile_is_account_scoped_and_persistent(tmp_path, monk
     command = launched[0][0]
     assert "--remote-debugging-address=127.0.0.1" in command
     assert "--remote-debugging-port=9400" in command
+    assert "--headless=new" not in command
+    assert "--ozone-platform=headless" in command
+    assert "--ozone-override-screen-size=1120,780" in command
+    assert "--no-first-run" in command
     profile_arg = next(x for x in command if x.startswith("--user-data-dir="))
     assert account.account_id in profile_arg
     assert registry.get(account.account_id).browser_profile_id == runtime.profile_id
