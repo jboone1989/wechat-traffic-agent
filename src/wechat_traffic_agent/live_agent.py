@@ -3303,49 +3303,51 @@ class LiveAgentService:
                 headers={"Cache-Control": "no-store"},
             )
 
-        async def operator_account_browser_jev_test(request: Request):
+        async def operator_account_browser_use_test(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
             if not operator_write_allowed(request):
                 return JSONResponse({"error": "operator_header_required"}, status_code=403)
             account_id = str(request.path_params["account_id"]).strip()
             try:
-                from .browser_runtime import AccountJevExecutor, BrowserRuntimeUnavailable
-                executor = AccountJevExecutor.from_environment(state_root=self.state_root)
+                from .browser_use_cli import (
+                    AccountBrowserUseExecutor,
+                    BrowserUseUnavailable,
+                )
+                executor = AccountBrowserUseExecutor(state_root=self.state_root)
                 result = await asyncio.wait_for(
-                    executor.run(
+                    asyncio.to_thread(
+                        executor.inspect,
                         account_id=account_id,
                         url="https://example.com",
-                        goal=(
-                            "Observe this page. If the title and main heading say Example Domain, "
-                            "finish without typing or navigating away."
-                        ),
-                        task_type="ACCOUNT_JEV_OPERATOR_SMOKE",
                     ),
-                    timeout=80,
+                    timeout=40,
                 )
             except (ValueError, KeyError) as exc:
                 return JSONResponse({"error": str(exc)[:240]}, status_code=404)
-            except BrowserRuntimeUnavailable as exc:
+            except BrowserUseUnavailable as exc:
                 return JSONResponse({"error": str(exc)[:240]}, status_code=409)
             except asyncio.TimeoutError:
-                return JSONResponse({"error": "account_jev_test_timeout"}, status_code=504)
+                return JSONResponse({"error": "account_browser_use_test_timeout"}, status_code=504)
             except Exception as exc:
                 return JSONResponse(
-                    {"error": "account_jev_test_failed", "error_type": type(exc).__name__},
+                    {"error": "account_browser_use_test_failed", "error_type": type(exc).__name__},
                     status_code=502,
                 )
+            ok = (
+                result.url.startswith("https://example.com")
+                and "Example Domain" in result.title
+            )
             return JSONResponse(
                 {
-                    "ok": result.status == "COMPLETED",
+                    "ok": ok,
                     "account_id": account_id,
                     "provider": result.provider,
-                    "status": result.status,
+                    "status": "COMPLETED" if ok else "FAILED",
                     "elapsed_ms": result.elapsed_ms,
-                    "action_count": result.action_count,
-                    "final_url": result.final_url,
+                    "final_url": result.url,
                 },
-                status_code=200 if result.status == "COMPLETED" else 502,
+                status_code=200 if ok else 502,
                 headers={"Cache-Control": "no-store"},
             )
 
@@ -4184,7 +4186,7 @@ class LiveAgentService:
                 Route("/operator/api/accounts/x/oauth/complete", operator_x_oauth_complete, methods=["POST"]),
                 Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/provision", operator_account_browser_provision, methods=["POST"]),
-                Route("/operator/api/account-instances/{account_id}/browser/jev-test", operator_account_browser_jev_test, methods=["POST"]),
+                Route("/operator/api/account-instances/{account_id}/browser/browser-use-test", operator_account_browser_use_test, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}/browser/login/connect", operator_account_instance_login_connect, methods=["POST"]),
                 WebSocketRoute("/operator/api/account-instances/{account_id}/browser/login/stream", operator_account_instance_login_stream),
                 Route("/operator/api/account-instances/{account_id}/browser/login/stop", operator_account_instance_login_stop, methods=["POST"]),

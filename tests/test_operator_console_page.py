@@ -66,10 +66,10 @@ def test_x_account_ui_uses_account_scoped_oauth_and_jev():
     assert "OAuth 身份独立绑定到这个账号" in page
     assert "长期执行器：" in page
     assert "每个账号拥有独立 Chrome profile/cookie" in page
-    assert "JEV 可直接复用该登录会话，无需重复登录" in page
+    assert "Browser Use 通过本机 CDP 复用它" in page
     assert "当前兼容 fallback：" in page
     assert "创建独立浏览器环境" in page
-    assert "测试该账号 Jev" in page
+    assert "测试该账号 Browser Use" in page
     assert "网页登录（网页自动化）" not in page
 
 
@@ -82,7 +82,7 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "/operator/api/accounts/x/oauth/start" in page
     assert "/operator/api/accounts/x/oauth/complete" in page
     assert "每个账号拥有独立 Chrome profile/cookie" in page
-    assert "测试该账号 Jev" in page
+    assert "测试该账号 Browser Use" in page
     assert "调用 X API 时显式使用该账号" in page
 
 
@@ -118,10 +118,12 @@ def test_account_cards_offer_confirmed_delete_action():
 def test_x_account_card_offers_account_scoped_web_login():
     page = operator_console_document()
 
-    assert "登录 / 更换 JEV 网页会话" in page
-    assert "现有 TinyFish 登录态可以继续复用" in page
-    assert page.index("登录 / 更换 JEV 网页会话") < page.index("高级操作 / 技术信息")
+    assert "登录 / 更换网页会话" in page
+    assert "不再启动第二套浏览器" in page
+    assert "持久网页登录" in page
+    assert page.index("登录 / 更换网页会话") < page.index("高级操作 / 技术信息")
     assert "/operator/api/account-instances/" in page
+    assert "/browser/browser-use-test" in page
     assert "/browser/login/connect" in page
     assert "/browser/login/stream" in page
     assert "/browser/login/stop" in page

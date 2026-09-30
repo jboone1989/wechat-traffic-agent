@@ -65,9 +65,13 @@ def test_browser_runtime_keeps_tinyfish_as_fallback(monkeypatch):
     monkeypatch.setenv("TINYFISH_API_KEY", "tinyfish-test-key")
     monkeypatch.setenv("TINYFISH_X_PROFILE_ID", "prof_test")
     status = browser_runtime_status()
-    assert status["adaptive_default"] == "JEV"
-    assert status["routing_policy"] == "DETERMINISTIC_SKILL_THEN_JEV_THEN_TINYFISH"
+    assert status["adaptive_default"] == "BROWSER_USE_CLI"
+    assert status["routing_policy"] == "DETERMINISTIC_SKILL_OR_BROWSER_USE"
     assert status["x_fallback_policy"] == "OFFICIAL_API_THEN_ACCOUNT_JEV_THEN_EXISTING_PROFILE_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP"
+    browser_use = next(
+        row for row in status["providers"] if row["provider"] == "BROWSER_USE_CLI"
+    )
+    assert browser_use["browser_owner"] == "FERRO_NATIVE_CHROMIUM"
     tinyfish = next(row for row in status["providers"] if row["provider"] == "TINYFISH")
     assert tinyfish == {"provider": "TINYFISH", "status": "READY", "fallback_only": True}
 

@@ -1,8 +1,9 @@
 """Provider-neutral browser runtime for Ferro/Content Agent.
 
-Known, deterministic site skills should use CDP/Playwright directly. Jev is the
-adaptive controller for unfamiliar or changed pages. TinyFish remains a
-temporary provider fallback while the local browser runtime is being adopted.
+Ferro owns native persistent Chromium profiles. Browser Use attaches to those
+profiles through localhost CDP for general web operations. Known deterministic
+site skills can continue to use direct CDP/Browser Harness when that is simpler.
+Jev remains only for legacy/specialized flows that still require it.
 """
 from __future__ import annotations
 
@@ -13,8 +14,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import time
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -106,6 +105,20 @@ def local_cdp_readiness() -> dict[str, Any]:
     }
 
 
+def browser_use_readiness() -> dict[str, Any]:
+    cli = Path(
+        os.environ.get("CONTENT_BROWSER_USE_CLI")
+        or "/home/ubuntu/browser-use-venv/bin/browser-use"
+    )
+    return {
+        "provider": "BROWSER_USE_CLI",
+        "status": "READY" if cli.is_file() else "NOT_INSTALLED",
+        "cli_path": str(cli),
+        "browser_owner": "FERRO_NATIVE_CHROMIUM",
+        "adaptive_default": True,
+    }
+
+
 def browser_runtime_status() -> dict[str, Any]:
     tinyfish = bool(
         os.environ.get("TINYFISH_API_KEY", "").strip()
@@ -113,10 +126,11 @@ def browser_runtime_status() -> dict[str, Any]:
     )
     return {
         "schema_version": "content-browser-runtime-status.v1",
-        "routing_policy": "DETERMINISTIC_SKILL_THEN_JEV_THEN_TINYFISH",
+        "routing_policy": "DETERMINISTIC_SKILL_OR_BROWSER_USE",
         "x_fallback_policy": "OFFICIAL_API_THEN_ACCOUNT_JEV_THEN_EXISTING_PROFILE_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP",
-        "adaptive_default": "JEV",
+        "adaptive_default": "BROWSER_USE_CLI",
         "providers": [
+            browser_use_readiness(),
             local_cdp_readiness(),
             jev_readiness(),
             {
@@ -228,115 +242,13 @@ class JevBrowserExecutor:
         )
 
 
-class AccountJevExecutor:
-    """Run Jev against one account's isolated persistent Chromium profile."""
-
-    def __init__(self, *, state_root: Path, profile_manager=None) -> None:
-        self.state_root = Path(state_root)
-        if profile_manager is None:
-            from .account_browser_profiles import AccountBrowserProfileManager
-            profile_manager = AccountBrowserProfileManager(self.state_root)
-        self.profile_manager = profile_manager
-        self.telemetry = BrowserTelemetryLedger(self.state_root)
-
-    @classmethod
-    def from_environment(cls, *, state_root: Path) -> "AccountJevExecutor":
-        readiness = jev_readiness()
-        if readiness["status"] != "READY":
-            raise BrowserRuntimeUnavailable(str(readiness["reason"] or readiness["status"]))
-        return cls(state_root=state_root)
-
-    @staticmethod
-    def _worker_env(*, account_id: str, cdp_url: str) -> dict[str, str]:
-        env = dict(os.environ)
-        env["BU_CDP_URL"] = cdp_url
-        env["BU_NAME"] = ("acct_" + account_id[-20:])[:64]
-        src_root = str(Path(__file__).resolve().parents[1])
-        env["PYTHONPATH"] = (
-            src_root
-            if not env.get("PYTHONPATH")
-            else src_root + os.pathsep + env["PYTHONPATH"]
-        )
-        return env
-
-    async def run(
-        self,
-        *,
-        account_id: str,
-        url: str,
-        goal: str,
-        task_type: str = "GENERAL",
-        timeout_seconds: float = 75.0,
-    ) -> BrowserTaskResult:
-        return await asyncio.to_thread(
-            self._run_sync,
-            account_id,
-            url,
-            goal,
-            task_type,
-            timeout_seconds,
-        )
-
-    def _run_sync(
-        self,
-        account_id: str,
-        url: str,
-        goal: str,
-        task_type: str,
-        timeout_seconds: float,
-    ) -> BrowserTaskResult:
-        if not url.startswith(("https://", "http://")):
-            raise ValueError("browser URL must be http(s)")
-        if not goal.strip():
-            raise ValueError("browser goal must be non-empty")
-        runtime = self.profile_manager.ensure(account_id)
-        site = urlparse(url).hostname or "unknown"
-        started = time.perf_counter()
-        env = self._worker_env(account_id=account_id, cdp_url=runtime.cdp_url)
-        completed = subprocess.run(
-            [sys.executable, "-m", "wechat_traffic_agent.account_jev_worker"],
-            input=json.dumps({"url": url, "goal": goal}),
-            capture_output=True,
-            text=True,
-            timeout=float(timeout_seconds),
-            env=env,
-            check=False,
-        )
-        output = completed.stdout.strip().splitlines()
-        try:
-            body = json.loads(output[-1]) if output else {}
-        except json.JSONDecodeError:
-            body = {}
-        result = BrowserTaskResult(
-            provider="JEV_ACCOUNT",
-            status=str(body.get("status") or "FAILED"),
-            elapsed_ms=int(
-                body.get("elapsed_ms")
-                or round((time.perf_counter() - started) * 1000)
-            ),
-            action_count=int(body.get("action_count") or 0),
-            final_url=str(body.get("final_url") or "") or None,
-            failure_reason=(
-                str(body.get("failure_reason") or "")
-                or (None if completed.returncode == 0 else "WORKER_FAILED")
-            ),
-        )
-        self.telemetry.append(
-            task_type=task_type,
-            site=site,
-            result=result,
-            account_id=account_id,
-        )
-        return result
-
-
 __all__ = [
     "BrowserRuntimeUnavailable",
     "BrowserTaskResult",
     "BrowserTelemetryLedger",
-    "AccountJevExecutor",
     "JevBrowserExecutor",
     "browser_runtime_status",
+    "browser_use_readiness",
     "jev_readiness",
     "local_cdp_readiness",
 ]

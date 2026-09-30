@@ -29,8 +29,8 @@ class AccountRecord:
     oauth_user: str = ""
     oauth_status: str = "UNKNOWN"
     browser_profile_id: str = ""
-    automation_engine: str = "JEV"
-    web_fallback_provider: str = "LOCAL_JEV"
+    automation_engine: str = "BROWSER_USE"
+    web_fallback_provider: str = "LOCAL_BROWSER_USE"
     created_at: str = ""
     updated_at: str = ""
 
@@ -108,11 +108,11 @@ class AccountRegistry:
             oauth_user=str(oauth_user or current.get("oauth_user") or clean_identity)[:160],
             oauth_status=str(oauth_status or current.get("oauth_status") or "UNKNOWN")[:40],
             browser_profile_id=str(current.get("browser_profile_id") or "")[:160],
-            automation_engine=str(current.get("automation_engine") or "JEV")[:40],
+            automation_engine=str(current.get("automation_engine") or "BROWSER_USE")[:40],
             web_fallback_provider=str(
                 web_fallback_provider
                 or current.get("web_fallback_provider")
-                or "LOCAL_JEV"
+                or "LOCAL_BROWSER_USE"
             )[:40],
             created_at=created_at,
             updated_at=instant.isoformat(),
