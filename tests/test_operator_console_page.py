@@ -122,14 +122,15 @@ def test_x_account_card_offers_account_scoped_web_login():
     assert "/browser/login/stop" in page
 
 
-def test_jev_card_is_browser_execution_only():
+def test_jev_card_offers_chatgpt_cortex_login():
     page = operator_console_document()
 
-    assert "测试 Jev" in page
-    assert "JEV 只负责浏览器执行，不负责登录或唤醒 ChatGPT" in page
-    assert "LivingRuntime MCP Events" in page
-    assert "登录 ChatGPT Cortex" not in page
-    assert "/operator/api/cortex/browser/login/" not in page
+    assert "登录 ChatGPT Cortex" in page
+    assert "ChatGPT Cortex · JEV 激活备用通路" in page
+    assert "/operator/api/cortex/browser/login/connect" in page
+    assert "/operator/api/cortex/browser/login/stream" in page
+    assert "/operator/api/cortex/browser/login/stop" in page
+    assert "JEV 只发送 request_id 激活消息，不读取模型输出" in page
 
 
 def test_operator_console_restores_session_without_using_heavy_status_as_auth_probe():
