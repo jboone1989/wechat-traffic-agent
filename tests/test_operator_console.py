@@ -157,6 +157,10 @@ def test_operator_http_flow_never_echoes_secret(tmp_path, monkeypatch):
     assert login.status_code == 200
     assert "ferro_operator_session" in login.cookies
 
+    session = client.get("/operator/api/session")
+    assert session.status_code == 200
+    assert session.json() == {"ok": True, "authenticated": True}
+
     value = "csk-http-secret-value"
     stored = client.post(
         "/operator/api/secrets/CEREBRAS_API_KEY",

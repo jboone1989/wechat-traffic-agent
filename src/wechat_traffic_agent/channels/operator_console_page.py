@@ -154,7 +154,7 @@ function flash(s,bad=false){el('flash').className=bad?'error':'success';el('flas
 async function api(path,opts={}){
  const r=await fetch(path,{credentials:'same-origin',headers:{'Content-Type':'application/json','X-Operator-Request':'1'},...opts});
  let body={};try{body=await r.json()}catch{}
- if(r.status===401){showLogin();throw new Error('authentication required')}
+ if(r.status===401){showLogin();const e=new Error('authentication required');e.status=401;e.body=body;throw e}
  if(!r.ok){const e=new Error(body.error||'request failed');e.status=r.status;e.body=body;throw e}return body;
 }
 function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n}
@@ -518,7 +518,18 @@ function renderSecrets(rows){
    const meta=node('button','保存额度','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' 额度已更新');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};box.append(meta);details.append(box);c.append(details)}
   root.append(c)}
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderOperatorLoginDelivery(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderOperatorLoginDelivery(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function restoreSession(){
+ try{
+  await api('/operator/api/session',{method:'GET'});
+  showDash();
+  refresh().catch(e=>flash('后台状态加载失败 · '+e.message,true))
+ }catch(e){
+  if(e.status===401)return;
+  showDash();
+  flash('会话检查失败 · '+e.message,true)
+ }
+}
 for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
@@ -647,10 +658,10 @@ async function requestLoginDelivery(channel,btn){
 }
 el('wecomSignin').onclick=()=>requestLoginDelivery('wecom',el('wecomSignin'));
 el('emailSignin').onclick=()=>requestLoginDelivery('email',el('emailSignin'));
-el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';showDash();refresh().catch(e=>flash(e.message,true))}catch(e){flash(e.message,true)}};
+el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';showDash();refresh().catch(e=>flash('后台状态加载失败 · '+e.message,true))}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
-refresh().catch(()=>showLogin())
+restoreSession()
 </script></main></body></html>"""
 
 

@@ -3135,6 +3135,16 @@ class LiveAgentService:
                 return JSONResponse({"error": "invalid_or_expired_operator_token"}, status_code=401)
             return operator_session_response(request)
 
+        async def operator_session_status(request: Request):
+            if operator_console is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            return JSONResponse(
+                {"ok": True, "authenticated": True},
+                headers={"Cache-Control": "no-store"},
+            )
+
         async def operator_status(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -4166,6 +4176,7 @@ class LiveAgentService:
                 Route("/operator/api/chat/goals/{proposal_id:path}/activate", operator_chat_goal_activate, methods=["POST"]),
                 Route("/operator/api/request-login", operator_request_login, methods=["POST"]),
                 Route("/operator/api/login-delivery/email", operator_email_settings, methods=["POST"]),
+                Route("/operator/api/session", operator_session_status, methods=["GET"]),
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
                 Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
