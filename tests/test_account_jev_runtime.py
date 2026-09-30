@@ -9,17 +9,11 @@ from wechat_traffic_agent.browser_runtime import AccountJevExecutor
 
 
 class FakeProfiles:
-    def __init__(self):
-        self.stopped = []
-
     def ensure(self, account_id):
         return SimpleNamespace(
             account_id=account_id,
-            cdp_ws="ws://127.0.0.1:3000/",
+            cdp_url="http://127.0.0.1:9444",
         )
-
-    def stop(self, account_id):
-        self.stopped.append(account_id)
 
 
 def test_account_jev_runs_in_isolated_worker_with_account_cdp(tmp_path, monkeypatch):
@@ -51,16 +45,15 @@ def test_account_jev_runs_in_isolated_worker_with_account_cdp(tmp_path, monkeypa
         task_type="ACCOUNT_TEST",
     ))
     assert result.status == "COMPLETED"
-    assert result.provider == "JEV_STEEL"
+    assert result.provider == "JEV_ACCOUNT"
     command, kwargs = calls[0]
     assert command[-1] == "wechat_traffic_agent.account_jev_worker"
-    assert kwargs["env"]["BU_CDP_WS"] == "ws://127.0.0.1:3000/"
-    assert "BU_CDP_URL" not in kwargs["env"]
+    assert kwargs["env"]["BU_CDP_URL"] == "http://127.0.0.1:9444"
     assert kwargs["env"]["BU_NAME"].startswith("acct_")
     assert "Observe Example Domain" in kwargs["input"]
 
     raw = (tmp_path / "browser" / "runtime-events.jsonl").read_text()
     row = json.loads(raw)
     assert row["account_id"] == "acct_x_123456789abc"
-    assert row["provider"] == "JEV_STEEL"
+    assert row["provider"] == "JEV_ACCOUNT"
     assert "Observe Example Domain" not in raw
