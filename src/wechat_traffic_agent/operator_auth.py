@@ -1,22 +1,21 @@
-"""Operator authentication built on standard signing, sessions, and SQLite replay protection."""
+"""Operator authentication with short one-time codes and SQLite replay protection."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import hmac
 import os
 from pathlib import Path
+import re
 import secrets
 import sqlite3
-from typing import Any
 
-from itsdangerous import BadSignature, URLSafeSerializer
-
-_ONE_TIME_SALT = "ferro-operator-login-v1"
-_ONE_TIME_PURPOSE = "operator-login"
+_ONE_TIME_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_ONE_TIME_CODE_LENGTH = 8
 
 
 class OperatorAuthenticator:
-    """Issue/consume signed one-time login tokens; browser sessions are Starlette-managed."""
+    """Issue/consume short one-time login codes; browser sessions are Starlette-managed."""
 
     def __init__(self, state_root: Path) -> None:
         self.secret_root = Path(state_root) / "secrets"
@@ -24,10 +23,6 @@ class OperatorAuthenticator:
         self.replay_db_path = self.secret_root / "operator-login-replay.sqlite3"
         self._ensure_static_token()
         self._ensure_replay_store()
-        self._serializer = URLSafeSerializer(
-            self.session_secret,
-            salt=_ONE_TIME_SALT,
-        )
 
     def _ensure_static_token(self) -> None:
         self.secret_root.mkdir(parents=True, exist_ok=True)
@@ -52,9 +47,10 @@ class OperatorAuthenticator:
         with sqlite3.connect(self.replay_db_path) as db:
             db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS consumed_operator_tokens (
-                    nonce TEXT PRIMARY KEY,
-                    consumed_at TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS operator_one_time_codes (
+                    code_hash TEXT PRIMARY KEY,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT
                 )
                 """
             )
@@ -69,43 +65,27 @@ class OperatorAuthenticator:
     ) -> str:
         instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         if ttl <= timedelta(0) or ttl > timedelta(hours=24):
-            raise ValueError("one-time token ttl must be within 24 hours")
-        payload: dict[str, Any] = {
-            "purpose": _ONE_TIME_PURPOSE,
-            "nonce": secrets.token_urlsafe(18),
-            "issued_at": instant.isoformat(),
-            "expires_at": (instant + ttl).isoformat(),
-        }
-        return self._serializer.dumps(payload)
-
-    def _decode_one_time_access(self, token: str) -> dict[str, Any] | None:
-        supplied = str(token or "").strip()
-        if not supplied:
-            return None
-        try:
-            payload = self._serializer.loads(supplied)
-        except BadSignature:
-            return None
-        if not isinstance(payload, dict) or payload.get("purpose") != _ONE_TIME_PURPOSE:
-            return None
-        nonce = str(payload.get("nonce") or "").strip()
-        expires_raw = str(payload.get("expires_at") or "").strip()
-        if not nonce or not expires_raw:
-            return None
-        return payload
-
-    def _consume_nonce(self, nonce: str, *, consumed_at: datetime) -> bool:
-        try:
-            with sqlite3.connect(self.replay_db_path, timeout=5) as db:
-                db.execute(
-                    "INSERT INTO consumed_operator_tokens(nonce, consumed_at) VALUES (?, ?)",
-                    (nonce, consumed_at.astimezone(timezone.utc).isoformat()),
-                )
-                db.commit()
-        except sqlite3.IntegrityError:
-            return False
+            raise ValueError("one-time code ttl must be within 24 hours")
+        compact = "".join(
+            secrets.choice(_ONE_TIME_CODE_ALPHABET)
+            for _ in range(_ONE_TIME_CODE_LENGTH)
+        )
+        code = compact[:4] + "-" + compact[4:]
+        digest = sha256(compact.encode()).hexdigest()
+        with sqlite3.connect(self.replay_db_path, timeout=5) as db:
+            db.execute(
+                "INSERT INTO operator_one_time_codes(code_hash, expires_at, consumed_at) "
+                "VALUES (?, ?, NULL)",
+                (digest, (instant + ttl).isoformat()),
+            )
+            db.commit()
         os.chmod(self.replay_db_path, 0o600)
-        return True
+        return code
+
+    @staticmethod
+    def _normalize_one_time_code(token: str) -> str:
+        compact = re.sub(r"[\s-]+", "", str(token or "").upper())
+        return compact.translate(str.maketrans({"O": "0", "I": "1", "L": "1"}))
 
     def consume_one_time_access(
         self,
@@ -114,29 +94,56 @@ class OperatorAuthenticator:
         now: datetime | None = None,
     ) -> bool:
         instant = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        payload = self._decode_one_time_access(token)
-        if payload is None:
+        compact = self._normalize_one_time_code(token)
+        if (
+            len(compact) != _ONE_TIME_CODE_LENGTH
+            or any(ch not in _ONE_TIME_CODE_ALPHABET for ch in compact)
+        ):
             return False
-        try:
-            expires = datetime.fromisoformat(
-                str(payload["expires_at"]).replace("Z", "+00:00")
-            )
-        except (KeyError, ValueError):
-            return False
-        if expires.tzinfo is None or expires.astimezone(timezone.utc) <= instant:
-            return False
-        return self._consume_nonce(str(payload["nonce"]), consumed_at=instant)
+        digest = sha256(compact.encode()).hexdigest()
+        with sqlite3.connect(self.replay_db_path, timeout=5) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT expires_at, consumed_at FROM operator_one_time_codes "
+                "WHERE code_hash=?",
+                (digest,),
+            ).fetchone()
+            if row is None or row[1]:
+                db.rollback()
+                return False
+            try:
+                expires = datetime.fromisoformat(str(row[0]).replace("Z", "+00:00"))
+            except ValueError:
+                db.rollback()
+                return False
+            if expires.tzinfo is None or expires.astimezone(timezone.utc) <= instant:
+                db.rollback()
+                return False
+            updated = db.execute(
+                "UPDATE operator_one_time_codes SET consumed_at=? "
+                "WHERE code_hash=? AND consumed_at IS NULL",
+                (instant.isoformat(), digest),
+            ).rowcount
+            db.commit()
+            return updated == 1
 
     def revoke_one_time_access(self, token: str | None = None) -> None:
         if not token:
             return
-        payload = self._decode_one_time_access(token)
-        if payload is None:
+        compact = self._normalize_one_time_code(token)
+        if (
+            len(compact) != _ONE_TIME_CODE_LENGTH
+            or any(ch not in _ONE_TIME_CODE_ALPHABET for ch in compact)
+        ):
             return
-        self._consume_nonce(
-            str(payload["nonce"]),
-            consumed_at=datetime.now(timezone.utc),
-        )
+        digest = sha256(compact.encode()).hexdigest()
+        with sqlite3.connect(self.replay_db_path, timeout=5) as db:
+            db.execute(
+                "UPDATE operator_one_time_codes SET consumed_at=? "
+                "WHERE code_hash=? AND consumed_at IS NULL",
+                (datetime.now(timezone.utc).isoformat(), digest),
+            )
+            db.commit()
 
 
 __all__ = ["OperatorAuthenticator"]

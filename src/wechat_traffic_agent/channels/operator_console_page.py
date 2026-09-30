@@ -39,10 +39,11 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
 
 <section id="login" class="card">
  <h2>管理员登录</h2>
- <p class="muted">可发送 10 分钟有效的一次性 Token，也可直接使用固定 Operator Token。</p>
- <div class="row"><button id="wecomSignin" class="primary">发送一次性 Token 到企业微信</button><button id="emailSignin">发送一次性 Token 到 Email</button><span id="loginStatus" class="muted"></span></div>
+ <p class="muted">可发送 10 分钟有效的 8 位一次性登录码，也可直接使用固定 Operator Token。</p>
+ <div class="row"><button id="wecomSignin" class="primary">发送登录码到企业微信</button><button id="emailSignin">发送登录码到 Email</button><span id="loginStatus" class="muted"></span></div>
  <div class="divider"></div>
- <div class="row"><input id="token" class="grow" type="password" autocomplete="one-time-code" placeholder="输入固定或一次性 Operator Token"><button id="signin" class="primary">登录</button></div>
+ <div class="row"><input id="token" class="grow mono" type="text" autocomplete="one-time-code" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="8 位登录码，例如 ABCD-EFGH"><button id="signin" class="primary">登录</button></div>
+ <p class="muted">登录码会自动忽略空格、连字符和大小写；固定 Operator Token 仍可直接粘贴。</p>
 </section>
 
 <section id="dash" class="hidden">
@@ -654,10 +655,10 @@ for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{tr
 async function requestLoginDelivery(channel,btn){
  const status=el('loginStatus'),controller=new AbortController();
  const timer=setTimeout(()=>controller.abort(),15000);
- btn.disabled=true;status.textContent='正在发送一次性 Token…';
+ btn.disabled=true;status.textContent='正在发送登录码…';
  try{
   const out=await api('/operator/api/request-login',{method:'POST',signal:controller.signal,body:JSON.stringify({channel})});
-  status.textContent=out.channel==='EMAIL'?'一次性 Token 已发送到邮箱。':'一次性 Token 已发送到企业微信。'
+  status.textContent=out.channel==='EMAIL'?'登录码已发送到邮箱。':'登录码已发送到企业微信。'
  }catch(e){
   status.textContent=e.name==='AbortError'?'发送超时，请重试。':(e.message==='email_delivery_not_configured'?'Email 尚未配置，请先用企业微信登录后到“配置”设置。':e.message)
  }finally{clearTimeout(timer);btn.disabled=false}
@@ -665,6 +666,7 @@ async function requestLoginDelivery(channel,btn){
 el('wecomSignin').onclick=()=>requestLoginDelivery('wecom',el('wecomSignin'));
 el('emailSignin').onclick=()=>requestLoginDelivery('email',el('emailSignin'));
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';showDash();refresh().catch(e=>flash('后台状态加载失败 · '+e.message,true))}catch(e){flash(e.message,true)}};
+el('token').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('signin').click()}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
 restoreSession()

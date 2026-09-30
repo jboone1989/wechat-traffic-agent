@@ -3059,7 +3059,7 @@ class LiveAgentService:
                     from .human_assistance import operator_notifier
                     message = (
                         "Ferro Operator Console 登录请求\n"
-                        "一次性登录 Token，10 分钟内有效且仅可使用一次：\n"
+                        "一次性登录码，10 分钟内有效且仅可使用一次：\n"
                         + token
                         + "\n如果这不是你发起的请求，请忽略。"
                     )

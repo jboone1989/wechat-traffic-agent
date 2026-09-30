@@ -86,13 +86,18 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "调用 X API 时显式使用该账号" in page
 
 
-def test_operator_login_page_offers_one_time_token_delivery():
+def test_operator_login_page_offers_mobile_friendly_one_time_code_delivery():
     page = operator_console_document()
 
     assert 'id="emailSignin"' in page
     assert 'id="wecomSignin"' in page
-    assert "一次性 Token" in page
+    assert "8 位一次性登录码" in page
     assert 'id="token"' in page
+    assert 'autocomplete="one-time-code"' in page
+    assert 'autocapitalize="characters"' in page
+    assert 'placeholder="8 位登录码，例如 ABCD-EFGH"' in page
+    assert "自动忽略空格、连字符和大小写" in page
+    assert "el('token').onkeydown" in page
     assert "/operator/api/request-login" in page
     assert "/operator/api/bootstrap" not in page
     assert "#bootstrap=" not in page

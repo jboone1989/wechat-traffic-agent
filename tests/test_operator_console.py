@@ -68,7 +68,7 @@ def test_secret_vault_rejects_unknown_names_and_multiline_values(tmp_path):
         vault.put("CEREBRAS_API_KEY", "abcd\nefgh")
 
 
-def test_operator_auth_uses_static_and_signed_one_time_tokens(tmp_path):
+def test_operator_auth_uses_static_token_and_short_one_time_codes(tmp_path):
     auth = OperatorAuthenticator(tmp_path)
     static_token = auth.token_path.read_text().strip()
 
@@ -78,8 +78,10 @@ def test_operator_auth_uses_static_and_signed_one_time_tokens(tmp_path):
 
     one_time = auth.issue_one_time_access(now=NOW, ttl=timedelta(minutes=1))
     assert one_time != static_token
+    assert len(one_time) == 9
+    assert one_time[4] == "-"
     assert auth.consume_one_time_access(
-        one_time, now=NOW + timedelta(seconds=59)
+        one_time.lower().replace("-", " "), now=NOW + timedelta(seconds=59)
     )
     assert not auth.consume_one_time_access(
         one_time, now=NOW + timedelta(seconds=59)
@@ -511,13 +513,17 @@ def test_deepseek_stable_reserve_key_is_write_only(tmp_path):
     assert row["quota_supported"] is False
 
 
-def test_one_time_operator_access_is_signed_and_replay_protected_by_sqlite(tmp_path):
+def test_one_time_operator_access_is_short_hashed_and_replay_protected_by_sqlite(tmp_path):
     auth = OperatorAuthenticator(tmp_path)
     token = auth.issue_one_time_access(now=NOW, ttl=timedelta(hours=2))
 
+    assert len(token) == 9
+    assert token[4] == "-"
     assert token not in auth.replay_db_path.read_bytes().decode("latin1", errors="ignore")
     assert oct(auth.replay_db_path.stat().st_mode & 0o777) == "0o600"
-    assert auth.consume_one_time_access(token, now=NOW + timedelta(minutes=1))
+    assert auth.consume_one_time_access(
+        token.lower().replace("-", " "), now=NOW + timedelta(minutes=1)
+    )
     assert not auth.consume_one_time_access(token, now=NOW + timedelta(minutes=2))
 
 
@@ -549,11 +555,13 @@ def test_operator_one_time_token_delivered_via_wecom_logs_in_once(tmp_path, monk
     assert len(notifier.messages) == 1
     assert "#bootstrap=" not in notifier.messages[0]
     token = notifier.messages[0].split("仅可使用一次：\n", 1)[1].splitlines()[0].strip()
+    assert len(token) == 9
+    assert token[4] == "-"
 
     accepted = client.post(
         "/operator/api/session",
         headers={"X-Operator-Request": "1"},
-        json={"token": token},
+        json={"token": token.lower().replace("-", " ")},
     )
     assert accepted.status_code == 200
 
