@@ -3137,7 +3137,8 @@ class LiveAgentService:
         async def operator_status(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
-            return JSONResponse(operator_console.status(), headers={"Cache-Control": "no-store"})
+            payload = await asyncio.to_thread(operator_console.status)
+            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def operator_test_jev(request: Request):
             if not operator_authorized(request):

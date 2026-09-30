@@ -647,7 +647,7 @@ async function requestLoginDelivery(channel,btn){
 }
 el('wecomSignin').onclick=()=>requestLoginDelivery('wecom',el('wecomSignin'));
 el('emailSignin').onclick=()=>requestLoginDelivery('email',el('emailSignin'));
-el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
+el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';showDash();refresh().catch(e=>flash(e.message,true))}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
 refresh().catch(()=>showLogin())
