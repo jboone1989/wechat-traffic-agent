@@ -3146,6 +3146,14 @@ class LiveAgentService:
                 return JSONResponse({"error": "not_found"}, status_code=404)
             if not operator_write_allowed(request):
                 return JSONResponse({"error": "operator_header_required"}, status_code=403)
+            if operator_authorized(request):
+                return JSONResponse(
+                    {
+                        "ok": True,
+                        "already_authenticated": True,
+                    },
+                    headers={"Cache-Control": "no-store"},
+                )
             if int(request.headers.get("content-length") or 0) > 4096:
                 return JSONResponse({"error": "request_too_large"}, status_code=413)
             try:

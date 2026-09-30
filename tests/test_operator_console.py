@@ -496,7 +496,7 @@ def test_one_time_operator_access_persists_only_digest_and_is_single_use(tmp_pat
     assert auth.consume_one_time_access(token,now=NOW+timedelta(minutes=3)) is None
 
 
-def test_operator_http_one_time_bootstrap_sets_session_and_cannot_replay(tmp_path, monkeypatch):
+def test_operator_http_one_time_bootstrap_is_idempotent_for_authenticated_browser_but_not_replayable(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED","true")
     service=LiveAgentService(state_root=tmp_path,application=None,backend=None,mind=None)
     client=TestClient(service._app())
@@ -518,7 +518,16 @@ def test_operator_http_one_time_bootstrap_sets_session_and_cannot_replay(tmp_pat
         headers={"X-Operator-Request":"1"},
         json={"token":token},
     )
-    assert replay.status_code==401
+    assert replay.status_code==200
+    assert replay.json()["already_authenticated"] is True
+
+    fresh_client=TestClient(service._app())
+    replay_without_session=fresh_client.post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request":"1"},
+        json={"token":token},
+    )
+    assert replay_without_session.status_code==401
 
 
 def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypatch):
@@ -580,7 +589,14 @@ def test_operator_login_page_requests_one_time_link_via_wecom(tmp_path, monkeypa
         headers={"X-Operator-Request": "1"},
         json={"token": token},
     )
-    assert replay.status_code == 401
+    assert replay.status_code == 200
+    assert replay.json()["already_authenticated"] is True
+    replay_without_session = TestClient(service._app()).post(
+        "/operator/api/bootstrap",
+        headers={"X-Operator-Request": "1"},
+        json={"token": token},
+    )
+    assert replay_without_session.status_code == 401
 
 
 def test_operator_login_request_is_rate_limited(tmp_path, monkeypatch):
