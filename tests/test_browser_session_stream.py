@@ -83,6 +83,7 @@ def test_live_input_is_constrained_to_allowed_cdp_events():
         {"type": "click", "x_ratio": 0.5, "y_ratio": 0.25},
         {"type": "wheel", "x_ratio": 0.5, "y_ratio": 0.5, "delta_y": 120},
         {"type": "text", "text": "user@example.com"},
+        {"type": "click_text", "text": "Try another method"},
         {"type": "key", "key": "Enter"},
     ]
 
@@ -108,6 +109,7 @@ def test_live_input_is_constrained_to_allowed_cdp_events():
     methods = [row["method"] for row in sent]
     assert methods.count("Input.dispatchMouseEvent") == 3
     assert "Input.insertText" in methods
+    assert "Runtime.evaluate" in methods
     assert methods.count("Input.dispatchKeyEvent") == 2
     assert all("webSocketDebuggerUrl" not in json.dumps(row) for row in sent)
 

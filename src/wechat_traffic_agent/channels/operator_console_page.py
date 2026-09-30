@@ -104,7 +104,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
     <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
     <div class="browser-controls">
      <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
-     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
+     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="cortexOtherMethod" class="ghost">ChatGPT：其他验证方式</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
      <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
     </div>
    </div>
@@ -649,6 +649,10 @@ liveCanvas.onwheel=ev=>{
 el('localBrowserSend').onclick=()=>{
  const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;
  try{accountStreamSend({type:'text',text:value})}catch(e){flash(e.message,true)}
+};
+el('cortexOtherMethod').onclick=()=>{
+ if(activeAccountProvider!=='chatgpt-cortex'){flash('这个按钮只用于 ChatGPT Cortex 登录',true);return}
+ try{accountStreamSend({type:'click_text',text:'Try another method'})}catch(e){flash(e.message,true)}
 };
 el('localBrowserText').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('localBrowserSend').click()}};
 for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{try{accountStreamSend({type:'key',key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};

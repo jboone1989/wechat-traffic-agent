@@ -159,6 +159,32 @@ class BrowserSessionStream:
                     continue
                 await self._send(cdp, "Input.insertText", text=value)
                 continue
+            if kind == "click_text":
+                value = str(message.get("text") or "").strip()
+                if not value or len(value) > 120:
+                    continue
+                expression = """(() => {
+                  const wanted = %s.toLowerCase();
+                  const nodes = [...document.querySelectorAll(
+                    'button,a,[role="button"],input[type="button"],input[type="submit"]'
+                  )];
+                  const node = nodes.find(el => {
+                    const text = (
+                      el.innerText || el.textContent || el.value || ''
+                    ).trim().replace(/\\s+/g, ' ').toLowerCase();
+                    return text === wanted && Boolean(el.getClientRects().length);
+                  });
+                  if (!node) return false;
+                  node.click();
+                  return true;
+                })()""" % json.dumps(value)
+                await self._send(
+                    cdp,
+                    "Runtime.evaluate",
+                    expression=expression,
+                    returnByValue=True,
+                )
+                continue
             if kind == "key":
                 key = str(message.get("key") or "")
                 if key not in _ALLOWED_KEYS:

@@ -138,6 +138,8 @@ def test_jev_card_offers_chatgpt_cortex_login():
     assert "JEV 只发送 request_id 激活消息，不读取模型输出" in page
     assert "activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts')" in page
     assert "beginCortexLogin().catch" in page
+    assert 'id="cortexOtherMethod"' in page
+    assert "type:'click_text',text:'Try another method'" in page
 
 
 def test_operator_console_restores_session_without_using_heavy_status_as_auth_probe():
