@@ -39,12 +39,8 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
 
 <section id="login" class="card">
  <h2>管理员登录</h2>
- <p class="muted">获取 10 分钟内有效、仅可使用一次的登录链接。</p>
- <div class="row"><button id="wecomSignin" class="primary">发送到企业微信</button><button id="emailSignin">发送到 Email</button><span id="loginStatus" class="muted"></span></div>
- <div class="divider"></div>
- <details><summary class="muted">备用 Token 登录</summary>
-  <div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin">登录</button></div>
- </details>
+ <p class="muted">使用 Operator Token 登录。</p>
+ <div class="row"><input id="token" class="grow" type="password" autocomplete="off" placeholder="Operator token"><button id="signin" class="primary">登录</button></div>
 </section>
 
 <section id="dash" class="hidden">
@@ -135,13 +131,6 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
    <label>HTTPS 健康检查 URL<input id="hostHealth" placeholder="https://node.example.com/health"></label><label>部署控制 URL<input id="hostControl" placeholder="https://node.example.com/v1/workloads"></label>
    <div class="two"><label>CPU<input id="hostCpu" type="number" min="1" placeholder="2"></label><label>内存 GiB<input id="hostMem" type="number" min="0" step="0.1" placeholder="4"></label></div><button id="addHost">添加候选主机</button>
   </div></details>
-  <div class="section"><div class="section-title"><div><h3>管理员登录邮箱</h3><p class="muted">登录链接由 LivingRuntime 发送，你只需要维护收件邮箱。</p></div></div>
-   <div class="card">
-    <label>收件邮箱<input id="operatorEmailRecipient" type="email" autocomplete="email" placeholder="you@example.com"></label>
-    <div class="row"><button id="saveOperatorEmail" class="primary">保存登录邮箱</button><span id="operatorEmailStatus" class="muted"></span></div>
-    <p class="muted">系统发件地址：login@livingruntime.com</p>
-   </div>
-  </div>
   <div class="section"><div class="section-title"><div><h3>API 与密钥</h3><p class="muted">密钥只写入，不会在页面回显。</p></div></div><div id="secrets" class="grid"></div></div>
  </section>
 </section>
@@ -501,13 +490,6 @@ function renderRequests(rows){
 }
 function field(labelText,input){const l=node('label');l.append(node('span',labelText),input);return l}
 function input(type,placeholder,value=''){const x=document.createElement('input');x.type=type;x.placeholder=placeholder;x.value=value??'';return x}
-function renderOperatorLoginDelivery(data){
- const email=((data.operator_login_delivery||{}).email)||{};
- el('operatorEmailRecipient').value=email.recipient||'';
- const status=el('operatorEmailStatus');
- status.textContent=email.configured?'邮件登录已可用':'邮件登录尚未配置完成';
- status.className=email.configured?'success':'muted'
-}
 function renderSecrets(rows){
  const root=el('secrets');root.replaceChildren();
  if(!rows.length){root.append(node('div','暂无可配置密钥','card muted'));return}
@@ -520,21 +502,11 @@ function renderSecrets(rows){
    const meta=node('button','保存额度','ghost');meta.onclick=async()=>{meta.disabled=true;try{await api('/operator/api/resources/'+encodeURIComponent(row.env_name),{method:'POST',body:JSON.stringify({quota_remaining:rem.value,quota_limit:lim.value,quota_unit:unit.value,quota_reset_at:reset.value,expires_at:expires.value})});flash(row.label+' 额度已更新');await refresh()}catch(e){flash(e.message,true)}finally{meta.disabled=false}};box.append(meta);details.append(box);c.append(details)}
   root.append(c)}
 }
-async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderOperatorLoginDelivery(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
+async function refresh(){const data=await api('/operator/api/status');showDash();renderSummary(data);renderDashboardHealth(data);renderDashboardActivity(data);renderDomains(data);renderSurvivalControl(data);renderRemoteHosts(data);renderServicePlacements(data);renderRouting(data);renderAccounts(data);renderBrowserRuntime(data);renderResources(data);renderSecrets(data.secrets||[]);renderRequests(data.resource_requests||[])}
 for(const tab of document.querySelectorAll('.nav-tab'))tab.onclick=()=>selectPanel(tab.dataset.panelTarget);
 selectPanel(rememberedPanel(),false);
 el('bootstrapHost').onclick=async()=>{const btn=el('bootstrapHost'),status=el('bootstrapStatus'),password=el('sshPassword');const host=el('sshHost').value.trim();if(!host||!password.value){status.textContent='IP/hostname and password are required.';return}btn.disabled=true;status.textContent='Connecting, auditing and installing Ferro key…';try{const out=await api('/operator/api/survival/hosts/bootstrap',{method:'POST',body:JSON.stringify({host,port:Number(el('sshPort').value||22),username:el('sshUser').value.trim()||'root',password:password.value,name:el('sshName').value.trim()})});password.value='';status.textContent='Managed with SSH key. Password discarded. Receiver onboarding scheduled.';flash((out.name||host)+' is now a managed remote body.');await refresh()}catch(e){password.value='';status.textContent=e.message;flash(e.message,true)}finally{btn.disabled=false}};
 el('addHost').onclick=async()=>{const btn=el('addHost');btn.disabled=true;try{const cpu=Number(el('hostCpu').value||0),memory=Number(el('hostMem').value||0);await api('/operator/api/survival/hosts',{method:'POST',body:JSON.stringify({name:el('hostName').value,health_url:el('hostHealth').value,control_url:el('hostControl').value,reliability:el('hostReliability').value,capacity:{cpu_count:cpu||null,memory_gib:memory||null}})});el('hostName').value='';el('hostHealth').value='';el('hostControl').value='';el('hostCpu').value='';el('hostMem').value='';flash('Remote host candidate registered. Verify it before use.');await refresh()}catch(e){flash(e.message,true)}finally{btn.disabled=false}};
-el('saveOperatorEmail').onclick=async()=>{
- const btn=el('saveOperatorEmail');btn.disabled=true;
- try{
-  const payload={recipient:el('operatorEmailRecipient').value.trim()};
-  await api('/operator/api/login-delivery/email',{method:'POST',body:JSON.stringify(payload)});
-  flash('管理员登录邮箱已保存');
-  await refresh()
- }catch(e){flash(e.message,true)}
- finally{btn.disabled=false}
-};
 let xOAuthSessionId='';
 function closeXOAuthModal(){
  el('xOAuthShell').classList.add('hidden');
@@ -636,33 +608,10 @@ el('localBrowserSend').onclick=()=>{
 };
 el('localBrowserText').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('localBrowserSend').click()}};
 for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{try{accountStreamSend({type:'key',key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
-async function requestLoginDelivery(channel,btn){
- const status=el('loginStatus');btn.disabled=true;status.textContent='正在发送…';
- try{
-  const out=await api('/operator/api/request-login',{method:'POST',body:JSON.stringify({channel})});
-  status.textContent=out.channel==='EMAIL'?'已发送到邮箱，请直接在电脑上打开链接。':'已发送到企业微信。'
- }catch(e){
-  status.textContent=e.message==='email_delivery_not_configured'?'Email 尚未配置，请先用企业微信登录后到“配置”设置。':e.message
- }finally{setTimeout(()=>{btn.disabled=false},45000)}
-}
-el('wecomSignin').onclick=()=>requestLoginDelivery('wecom',el('wecomSignin'));
-el('emailSignin').onclick=()=>requestLoginDelivery('email',el('emailSignin'));
 el('signin').onclick=async()=>{const token=el('token').value.trim();if(!token)return;try{await api('/operator/api/session',{method:'POST',body:JSON.stringify({token})});el('token').value='';await refresh()}catch(e){flash(e.message,true)}};
 el('refresh').onclick=()=>refresh().catch(e=>flash(e.message,true));
 el('logout').onclick=async()=>{try{await api('/operator/api/logout',{method:'POST',body:'{}'})}catch{}showLogin()};
-async function bootstrapFromHash(){
- const params=new URLSearchParams((location.hash||'').replace(/^#/,''));
- const token=params.get('bootstrap');
- if(!token)return false;
- history.replaceState(null,'',location.pathname+location.search);
- try{
-  await api('/operator/api/bootstrap',{method:'POST',body:JSON.stringify({token})});
-  flash('One-time access accepted.');
-  await refresh();
-  return true;
- }catch(e){flash(e.message,true);showLogin();return false}
-}
-(async()=>{if(!(await bootstrapFromHash()))refresh().catch(()=>showLogin())})();
+refresh().catch(()=>showLogin())
 </script></main></body></html>"""
 
 
