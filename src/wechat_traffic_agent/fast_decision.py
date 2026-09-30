@@ -110,7 +110,6 @@ class JevFastDecisionProvider:
         if not 0.5 <= self.timeout_seconds <= 30.0:
             raise ValueError("fast decision timeout must be within 0.5..30 seconds")
         self.client = client or httpx.Client(
-            http2=True,
             timeout=self.timeout_seconds,
         )
         self.ledger = FastDecisionLedger(Path(state_root))
