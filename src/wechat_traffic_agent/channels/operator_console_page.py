@@ -308,8 +308,8 @@ function renderBrowserRuntime(data){
   head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
   if(row.provider==='JEV'){
-   c.append(node('p','MCP Events 仍是首选激活通路；当前 Work 宿主未开放 events/subscribe 时，JEV 复用 X 账号的持久浏览器 profile，仅补 ChatGPT 激活缺口。','muted'));
-   const result=node('div','JEV 只发送 request_id 激活消息，不读取模型输出；真正 cognition 仍经 LivingRuntime Remote。','mono muted'),
+   c.append(node('p','MCP Events 仍是首选激活通路；网页激活使用 ChatGPT 自己的持久 Chrome profile，与 X 登录完全独立。','muted'));
+   const result=node('div','网页激活只发送 request_id，不读取模型输出；真正 cognition 仍经 LivingRuntime Remote。','mono muted'),
          actions=node('div',undefined,'row'),
          login=node('button','登录 ChatGPT Cortex','primary'),
          test=node('button','测试 Jev');
@@ -474,9 +474,9 @@ async function beginAccountInstanceLogin(acct){
 async function beginCortexLogin(){
  activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts');
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
- el('accountLoginTitle').textContent='ChatGPT Cortex · JEV 激活备用通路';
+ el('accountLoginTitle').textContent='ChatGPT Cortex · 持久网页登录';
  const status=el('localBrowserStatus');
- status.textContent='正在复用 X 账号的持久浏览器 profile…';
+ status.textContent='正在启动 ChatGPT 专用持久 Chrome profile…';
  try{
   await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
   await openAccountStream(activeAccountProvider,0,'')

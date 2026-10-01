@@ -5,10 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 import wechat_traffic_agent.chatgpt_cortex_browser_control as cortex_module
-from wechat_traffic_agent.account_registry import AccountRegistry
 from wechat_traffic_agent.chatgpt_cortex_browser_control import (
     ChatGPTCortexBrowserControl,
-    ChatGPTCortexBrowserUnavailable,
 )
 
 
@@ -27,15 +25,10 @@ class FakeProfileManager:
         return self.runtime
 
 
-def test_cortex_reuses_x_account_profile_runtime(tmp_path):
-    record = AccountRegistry(tmp_path).ensure(
-        provider_id="x",
-        identity="ferro",
-        oauth_status="CONNECTED",
-    )
+def test_cortex_uses_dedicated_chatgpt_profile_runtime(tmp_path):
     runtime = SimpleNamespace(
-        account_id=record.account_id,
-        profile_id=f"browser_{record.account_id}",
+        account_id="cortex_chatgpt",
+        profile_id="browser_cortex_chatgpt",
         port=9407,
         pid=123,
         cdp_url="http://127.0.0.1:9407",
@@ -47,7 +40,7 @@ def test_cortex_reuses_x_account_profile_runtime(tmp_path):
         profile_manager=manager,
     )
 
-    assert control.account_id == record.account_id
+    assert control.account_id == "cortex_chatgpt"
     assert control.cdp_url() == runtime.cdp_url
 
     shared = control._control()
@@ -55,63 +48,39 @@ def test_cortex_reuses_x_account_profile_runtime(tmp_path):
         tmp_path
         / "accounts"
         / "browser-profiles"
-        / record.account_id
+        / "cortex_chatgpt"
         / "chatgpt-cortex-target.json"
     )
-    assert "cortex/chatgpt-web" not in str(shared.state_path)
-    assert manager.status_calls == [record.account_id]
+    assert manager.status_calls == ["cortex_chatgpt"]
 
 
-def test_cortex_requires_explicit_x_account_when_multiple_exist(
-    tmp_path,
-    monkeypatch,
-):
-    registry = AccountRegistry(tmp_path)
-    first = registry.ensure(
-        provider_id="x",
-        identity="one",
-        oauth_status="CONNECTED",
-    )
-    registry.ensure(
-        provider_id="x",
-        identity="two",
-        oauth_status="CONNECTED",
-    )
-    monkeypatch.delenv("CONTENT_X_ACCOUNT_ID", raising=False)
+def test_cortex_does_not_require_x_account(tmp_path):
+    control = ChatGPTCortexBrowserControl(state_root=tmp_path)
+    assert control.account_id == "cortex_chatgpt"
 
-    with pytest.raises(
-        ChatGPTCortexBrowserUnavailable,
-        match="CONTENT_X_ACCOUNT_ID",
-    ):
-        ChatGPTCortexBrowserControl(state_root=tmp_path).account_id
 
-    monkeypatch.setenv("CONTENT_X_ACCOUNT_ID", first.account_id)
-    assert (
-        ChatGPTCortexBrowserControl(state_root=tmp_path).account_id
-        == first.account_id
-    )
+def test_cortex_rejects_foreign_account_id(tmp_path):
+    with pytest.raises(ValueError, match="dedicated persistent profile"):
+        ChatGPTCortexBrowserControl(
+            state_root=tmp_path,
+            account_id="acct_x_deadbeef0000",
+        )
 
 
 def test_cortex_status_does_not_treat_anonymous_composer_as_authenticated(
     tmp_path,
     monkeypatch,
 ):
-    record = AccountRegistry(tmp_path).ensure(
-        provider_id="x",
-        identity="ferro",
-        oauth_status="CONNECTED",
-    )
     runtime = SimpleNamespace(
-        account_id=record.account_id,
-        profile_id=f"browser_{record.account_id}",
+        account_id="cortex_chatgpt",
+        profile_id="browser_cortex_chatgpt",
         port=9407,
         pid=123,
         cdp_url="http://127.0.0.1:9407",
         running=True,
     )
-    control = cortex_module._SharedProfileChatGPTControl(
+    control = cortex_module._ChatGPTProfileControl(
         state_root=tmp_path,
-        account_id=record.account_id,
         profile_manager=FakeProfileManager(runtime),
     )
     control._write_target("target-1")
@@ -128,4 +97,6 @@ def test_cortex_status_does_not_treat_anonymous_composer_as_authenticated(
             '"composer":true,"loginRequired":true}'
         ),
     )
-    assert control.status()["authenticated"] is False
+    status = control.status()
+    assert status["authenticated"] is False
+    assert status["profile"] == "chatgpt-cortex"

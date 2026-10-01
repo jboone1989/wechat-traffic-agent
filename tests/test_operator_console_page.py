@@ -133,11 +133,13 @@ def test_jev_card_offers_chatgpt_cortex_login():
     page = operator_console_document()
 
     assert "登录 ChatGPT Cortex" in page
-    assert "ChatGPT Cortex · JEV 激活备用通路" in page
+    assert "ChatGPT Cortex · 持久网页登录" in page
+    assert "正在启动 ChatGPT 专用持久 Chrome profile" in page
     assert "/operator/api/cortex/browser/login/connect" in page
     assert "/operator/api/cortex/browser/login/stream" in page
     assert "/operator/api/cortex/browser/login/stop" in page
-    assert "JEV 只发送 request_id 激活消息，不读取模型输出" in page
+    assert "网页激活只发送 request_id，不读取模型输出" in page
+    assert "与 X 登录完全独立" in page
     assert "activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts')" in page
     assert "beginCortexLogin().catch" in page
     assert 'id="cortexOtherMethod"' in page

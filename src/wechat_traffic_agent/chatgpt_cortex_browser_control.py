@@ -1,14 +1,13 @@
-"""ChatGPT Cortex control over Ferro's existing X persistent browser profile.
+"""Persistent ChatGPT browser control for Ferro Cortex.
 
-Cortex owns no Chromium launcher and no browser profile.  It opens a dedicated
-ChatGPT tab inside the configured X account's persistent Chromium runtime, so
-operator login, profile persistence, CDP streaming, and lifecycle all use the
-same account-scoped browser path as X.
+ChatGPT owns its own persistent Chromium profile.  It does not depend on an X
+account or X cookies.  The existing native Chromium/profile manager is reused,
+and Browser Use/Browser Harness can attach through the resulting localhost CDP.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
-import os
 from pathlib import Path
 import threading
 from typing import Any
@@ -18,62 +17,57 @@ from .account_browser_login import (
     AccountBrowserLoginControl,
     AccountBrowserLoginUnavailable,
 )
-from .account_registry import AccountRegistry
+from .account_browser_profiles import AccountBrowserProfileManager
 
 
 _DEFAULT_URL = "https://chatgpt.com/"
 _ALLOWED_HOSTS = {"chatgpt.com", "www.chatgpt.com"}
+_CORTEX_ACCOUNT_ID = "cortex_chatgpt"
+_CORTEX_PROFILE_ID = "browser_cortex_chatgpt"
 
-# The shared account control raises this type already.  Keep the Cortex-facing
-# name so callers do not need a second error hierarchy for the same runtime.
 ChatGPTCortexBrowserUnavailable = AccountBrowserLoginUnavailable
 
 
-def _resolve_x_account_id(state_root: Path, requested: str = "") -> str:
-    registry = AccountRegistry(Path(state_root))
-    explicit = str(requested or os.environ.get("CONTENT_X_ACCOUNT_ID", "")).strip()
-    if explicit:
-        try:
-            record = registry.get(explicit)
-        except (KeyError, ValueError) as exc:
-            raise ChatGPTCortexBrowserUnavailable(
-                "configured X account instance does not exist"
-            ) from exc
-        if record.provider_id != "x":
-            raise ChatGPTCortexBrowserUnavailable(
-                "configured browser account is not an X account"
-            )
-        return record.account_id
-
-    rows = registry.list(provider_id="x")
-    if not rows:
-        raise ChatGPTCortexBrowserUnavailable(
-            "ChatGPT Cortex requires an existing X account browser profile"
-        )
-    if len(rows) != 1:
-        raise ChatGPTCortexBrowserUnavailable(
-            "multiple X accounts are registered; CONTENT_X_ACCOUNT_ID is required"
-        )
-    return rows[0].account_id
+@dataclass(frozen=True)
+class _CortexRecord:
+    account_id: str = _CORTEX_ACCOUNT_ID
+    browser_profile_id: str = _CORTEX_PROFILE_ID
 
 
-class _SharedProfileChatGPTControl(AccountBrowserLoginControl):
-    """ChatGPT tab hosted by an account-scoped persistent browser runtime."""
+class _CortexRegistry:
+    """Minimal registry contract required by AccountBrowserProfileManager."""
 
+    def __init__(self) -> None:
+        self.record = _CortexRecord()
+
+    def get(self, account_id: str) -> _CortexRecord:
+        if str(account_id) != self.record.account_id:
+            raise KeyError(str(account_id))
+        return self.record
+
+    def set_browser_profile(self, account_id: str, profile_id: str):
+        if str(account_id) != self.record.account_id:
+            raise KeyError(str(account_id))
+        return self.record
+
+
+class _ChatGPTProfileControl(AccountBrowserLoginControl):
     def __init__(
         self,
         *,
         state_root: Path,
-        account_id: str,
         profile_manager=None,
     ) -> None:
+        if profile_manager is None:
+            profile_manager = AccountBrowserProfileManager(
+                state_root,
+                registry=_CortexRegistry(),
+            )
         super().__init__(
             state_root=state_root,
-            account_id=account_id,
+            account_id=_CORTEX_ACCOUNT_ID,
             profile_manager=profile_manager,
         )
-        # Keep X's own login tab independent while sharing the same Chrome
-        # process/profile/cookies and the same BrowserSessionStream transport.
         self.state_path = self.folder / "chatgpt-cortex-target.json"
 
     @staticmethod
@@ -98,26 +92,33 @@ class _SharedProfileChatGPTControl(AccountBrowserLoginControl):
                     "cortex login browser session is not running"
                 )
             page = self._target_info(target)
-            value = self._evaluate(
-                page,
-                """JSON.stringify({
-                  url: location.href,
-                  title: document.title,
-                  composer: Boolean(
-                    document.querySelector('#prompt-textarea') ||
-                    document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
-                    document.querySelector('main [contenteditable="true"]')
-                  ),
-                  loginRequired: [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
-                    const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-                    return text === 'log in' && Boolean(el.getClientRects().length);
-                  })
-                })""",
-            )
+            details: dict[str, Any] = {}
             try:
-                details = json.loads(value) if isinstance(value, str) else {}
-            except json.JSONDecodeError:
-                details = {}
+                value = self._evaluate(
+                    page,
+                    """JSON.stringify({
+                      url: location.href,
+                      title: document.title,
+                      composer: Boolean(
+                        document.querySelector('#prompt-textarea') ||
+                        document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
+                        document.querySelector('main [contenteditable="true"]')
+                      ),
+                      loginRequired: [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
+                        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                        return text === 'log in' && Boolean(el.getClientRects().length);
+                      })
+                    })""",
+                )
+                parsed = json.loads(value) if isinstance(value, str) else {}
+                if isinstance(parsed, dict):
+                    details = parsed
+            except (ChatGPTCortexBrowserUnavailable, json.JSONDecodeError):
+                # A newly created ChatGPT target can briefly reject Runtime.evaluate
+                # while navigation initializes. Keep the live session available so
+                # the operator stream can render it instead of turning startup into
+                # a false login failure.
+                pass
             authenticated = (
                 bool(details.get("composer"))
                 and not bool(details.get("loginRequired"))
@@ -129,12 +130,12 @@ class _SharedProfileChatGPTControl(AccountBrowserLoginControl):
                 "authenticated": authenticated,
                 "identity": "ChatGPT" if authenticated else "",
                 "account_id": self.account_id,
-                "shared_profile": "x",
+                "profile": "chatgpt-cortex",
             }
 
 
 class ChatGPTCortexBrowserControl:
-    """Lazy Cortex adapter onto the configured X persistent browser profile."""
+    """Lazy adapter for Ferro's dedicated persistent ChatGPT browser."""
 
     def __init__(
         self,
@@ -143,22 +144,18 @@ class ChatGPTCortexBrowserControl:
         account_id: str = "",
         profile_manager=None,
     ) -> None:
+        if account_id and str(account_id) != _CORTEX_ACCOUNT_ID:
+            raise ValueError("ChatGPT Cortex uses its dedicated persistent profile")
         self.state_root = Path(state_root)
-        self.requested_account_id = str(account_id or "")
         self.profile_manager = profile_manager
-        self._delegate: _SharedProfileChatGPTControl | None = None
+        self._delegate: _ChatGPTProfileControl | None = None
         self._lock = threading.RLock()
 
-    def _control(self) -> _SharedProfileChatGPTControl:
+    def _control(self) -> _ChatGPTProfileControl:
         with self._lock:
             if self._delegate is None:
-                account_id = _resolve_x_account_id(
-                    self.state_root,
-                    self.requested_account_id,
-                )
-                self._delegate = _SharedProfileChatGPTControl(
+                self._delegate = _ChatGPTProfileControl(
                     state_root=self.state_root,
-                    account_id=account_id,
                     profile_manager=self.profile_manager,
                 )
             return self._delegate

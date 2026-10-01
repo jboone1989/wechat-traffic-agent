@@ -37,9 +37,9 @@ class AccountBrowserProfileManager:
     PORT_START = 9400
     PORT_END = 9499
 
-    def __init__(self, state_root: Path, *, popen_factory=None) -> None:
+    def __init__(self, state_root: Path, *, popen_factory=None, registry=None) -> None:
         self.state_root = Path(state_root)
-        self.registry = AccountRegistry(self.state_root)
+        self.registry = registry if registry is not None else AccountRegistry(self.state_root)
         self.root = self.state_root / "accounts" / "browser-profiles"
         self.popen_factory = popen_factory or subprocess.Popen
 
