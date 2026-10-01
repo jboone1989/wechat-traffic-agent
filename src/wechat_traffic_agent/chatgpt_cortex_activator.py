@@ -226,7 +226,7 @@ def schedule_chatgpt_web_cortex_activation(
     return state
 
 
-_BROWSER_SESSION_ID = "ferro-chatgpt-cortex"
+_BROWSER_SESSION_ID = "ferro-chatgpt-cortex-agent-runtime"
 _COMPOSER_SELECTORS = (
     'main [contenteditable="true"]',
     '[contenteditable="true"][role="textbox"]',
