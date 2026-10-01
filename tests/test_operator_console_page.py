@@ -45,6 +45,18 @@ def test_operator_console_compacts_account_browser_controls_on_mobile():
     assert ".browser-controls>.row>button{flex:0 0 auto!important" in page
     assert ".browser-keys button{flex:0 0 auto!important" in page
     assert ".account-login-dialog{width:100%;max-height:calc(100dvh - 16px)" in page
+    assert ".account-login-dialog h3+p{display:none}" in page
+    assert ".browser-live{border-radius:6px;max-height:52dvh;object-fit:contain}" in page
+
+
+def test_live_browser_status_never_renders_full_oauth_url_inline():
+    page = operator_console_document()
+
+    assert "function shortBrowserLocation(url)" in page
+    assert "status.title=fmt(msg.url)" in page
+    assert "status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'')" in page
+    assert "status.textContent=prefix+' · '+fmt(msg.url)" not in page
+    assert "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" in page
 
 
 def test_browser_login_uses_modal_overlay_instead_of_inline_expansion():
