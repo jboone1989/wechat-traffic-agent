@@ -258,6 +258,7 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
         "browser.inspect",
         "browser.click",
         "browser.inspect",
+        "browser.inspect",
         "close",
     ]
 

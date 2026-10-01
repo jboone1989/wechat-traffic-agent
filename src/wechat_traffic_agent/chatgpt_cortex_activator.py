@@ -460,13 +460,36 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             if not _draft_contains(filled, request_id):
                 raise RuntimeError("ChatGPT activation fill verification failed")
 
+            send_selector = 'button[type="submit"][aria-label="Send"]'
             provider.invoke(
                 "browser.click",
                 {
                     "session_id": _BROWSER_SESSION_ID,
-                    "selector": 'button[type="submit"][aria-label="Send"]',
+                    "selector": send_selector,
                 },
             )
+
+            time.sleep(1.0)
+            post_click = provider.invoke(
+                "browser.inspect",
+                {
+                    "session_id": _BROWSER_SESSION_ID,
+                    "max_chars": 50_000,
+                    "max_elements": 250,
+                },
+            )
+            if (
+                not _activation_visible(post_click, request_id)
+                and _draft_contains(post_click, request_id)
+            ):
+                provider.invoke(
+                    "browser.press",
+                    {
+                        "session_id": _BROWSER_SESSION_ID,
+                        "selector": send_selector,
+                        "key": "Enter",
+                    },
+                )
 
             verify_deadline = time.monotonic() + 12.0
             final_snapshot: dict[str, Any] = {}
