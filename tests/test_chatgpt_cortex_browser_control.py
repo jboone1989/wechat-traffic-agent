@@ -94,9 +94,44 @@ def test_cortex_status_does_not_treat_anonymous_composer_as_authenticated(
         "_evaluate",
         lambda page, expression: (
             '{"url":"https://chatgpt.com/","title":"ChatGPT",'
-            '"composer":true,"loginRequired":true}'
+            '"composer":true,"loginRequired":true,"accountControl":false}'
         ),
     )
     status = control.status()
     assert status["authenticated"] is False
     assert status["profile"] == "chatgpt-cortex"
+
+
+def test_cortex_status_recognizes_authenticated_non_composer_page(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = SimpleNamespace(
+        account_id="cortex_chatgpt",
+        profile_id="browser_cortex_chatgpt",
+        port=9407,
+        pid=123,
+        cdp_url="http://127.0.0.1:9407",
+        running=True,
+    )
+    control = cortex_module._ChatGPTProfileControl(
+        state_root=tmp_path,
+        profile_manager=FakeProfileManager(runtime),
+    )
+    control._write_target("target-1")
+    monkeypatch.setattr(
+        control,
+        "_target_info",
+        lambda target: {"id": target, "url": "https://chatgpt.com/scheduled"},
+    )
+    monkeypatch.setattr(
+        control,
+        "_evaluate",
+        lambda page, expression: (
+            '{"url":"https://chatgpt.com/scheduled","title":"ChatGPT",'
+            '"composer":false,"loginRequired":false,"accountControl":true}'
+        ),
+    )
+    status = control.status()
+    assert status["authenticated"] is True
+    assert status["identity"] == "ChatGPT"

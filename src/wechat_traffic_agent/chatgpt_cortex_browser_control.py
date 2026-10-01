@@ -107,7 +107,14 @@ class _ChatGPTProfileControl(AccountBrowserLoginControl):
                       loginRequired: [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
                         const text = (el.innerText || el.textContent || '').trim().toLowerCase();
                         return text === 'log in' && Boolean(el.getClientRects().length);
-                      })
+                      }),
+                      accountControl: Boolean(
+                        document.querySelector(
+                          '[data-testid*="user"],'
+                          + '[aria-label*="profile" i],'
+                          + '[aria-label*="account" i]'
+                        )
+                      )
                     })""",
                 )
                 parsed = json.loads(value) if isinstance(value, str) else {}
@@ -120,7 +127,10 @@ class _ChatGPTProfileControl(AccountBrowserLoginControl):
                 # a false login failure.
                 pass
             authenticated = (
-                bool(details.get("composer"))
+                bool(
+                    details.get("composer")
+                    or details.get("accountControl")
+                )
                 and not bool(details.get("loginRequired"))
             )
             return {
