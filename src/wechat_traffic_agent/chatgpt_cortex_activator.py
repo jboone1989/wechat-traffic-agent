@@ -358,7 +358,10 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             try:
                 existing = cortex_browser.status()
                 current_url = str(existing.get("url") or "").strip()
-                if existing.get("authenticated") and current_url.startswith("https://chatgpt.com/"):
+                if (
+                    not existing.get("authenticated")
+                    and current_url.startswith("https://chatgpt.com/")
+                ):
                     target_url = current_url
             except ChatGPTCortexBrowserUnavailable:
                 pass
