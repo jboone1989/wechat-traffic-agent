@@ -132,17 +132,126 @@ def test_provider_activates_background_cognition_but_not_public_chat(
     assert seen == ["llmreq_background123"]
 
 
-def test_visible_login_control_takes_precedence_over_composer():
-    class _Browser:
-        def __init__(self, value):
-            self.value = value
+def test_visible_login_control_is_detected_from_runtime_snapshot():
+    assert activator_module._login_required(
+        {"elements": [{"name": "Log in"}]}
+    ) is True
+    assert activator_module._login_required(
+        {"elements": [{"name": "New chat"}]}
+    ) is False
 
-        def evaluate(self, expression):
-            assert "log in" in expression
-            return self.value
 
-    assert activator_module._login_required(_Browser(True)) is True
-    assert activator_module._login_required(_Browser(False)) is False
+def test_chatgpt_activation_uses_agent_runtime_browser_contract(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(activator_module, "_event_grace_seconds", lambda: 0)
+    monkeypatch.setattr(
+        activator_module,
+        "_request_state",
+        lambda request_id: {
+            "status": "PENDING",
+            "activation_event": {"event_forwarded_at": None},
+        },
+    )
+
+    class _Control:
+        def __init__(self, *, state_root):
+            self.state_root = state_root
+
+        def cdp_url(self):
+            return "http://127.0.0.1:9401"
+
+    monkeypatch.setattr(
+        cortex_module,
+        "ChatGPTCortexBrowserControl",
+        _Control,
+    )
+
+    request_id = "llmreq_12345678abcdef"
+    calls = []
+
+    class _Provider:
+        def __init__(self):
+            self.typed = False
+            self.sent = False
+
+        def invoke(self, capability_id, payload):
+            calls.append((capability_id, dict(payload)))
+            if capability_id == "browser.navigate":
+                return {"ok": True, "url": "https://chatgpt.com/"}
+            if capability_id == "browser.type":
+                assert payload["selector"] == "#prompt-textarea"
+                assert request_id in payload["text"]
+                self.typed = True
+                return {"ok": True}
+            if capability_id == "browser.press":
+                assert self.typed is True
+                assert payload["key"] == "Enter"
+                self.sent = True
+                return {"ok": True}
+            if capability_id == "browser.inspect":
+                if self.sent:
+                    return {
+                        "url": "https://chatgpt.com/",
+                        "text": f"user message {request_id}",
+                        "elements": [
+                            {
+                                "name": "Message ChatGPT",
+                                "value": "",
+                            }
+                        ],
+                    }
+                if self.typed:
+                    return {
+                        "url": "https://chatgpt.com/",
+                        "text": "",
+                        "elements": [
+                            {
+                                "name": "Message ChatGPT",
+                                "value": request_id,
+                            }
+                        ],
+                    }
+                return {
+                    "url": "https://chatgpt.com/",
+                    "text": "",
+                    "elements": [
+                        {
+                            "name": "Message ChatGPT",
+                            "value": "",
+                        }
+                    ],
+                }
+            raise AssertionError(capability_id)
+
+        def close(self):
+            calls.append(("close", {}))
+
+    provider = _Provider()
+    monkeypatch.setattr(
+        activator_module,
+        "_runtime_browser_provider",
+        lambda **kwargs: provider,
+    )
+
+    result = activator_module._send_activation(
+        request_id,
+        state_root=tmp_path,
+    )
+
+    assert result["status"] == "ACTIVATED"
+    assert result["activation_transport"] == "AGENT_RUNTIME_BROWSER_HARNESS"
+    assert result["browser_provider"] == "browser-harness"
+    assert [row[0] for row in calls] == [
+        "browser.navigate",
+        "browser.inspect",
+        "browser.type",
+        "browser.inspect",
+        "browser.press",
+        "browser.inspect",
+        "close",
+    ]
 
 
 def test_activation_setup_failure_finishes_state_instead_of_staying_running(
