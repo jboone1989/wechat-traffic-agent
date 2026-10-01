@@ -145,6 +145,12 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
     tmp_path,
     monkeypatch,
 ):
+    target = tmp_path / "cortex" / "chatgpt-web" / "target.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        json.dumps({"url": "https://chatgpt.com/c/cortex-test"}),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(activator_module, "_event_grace_seconds", lambda: 0)
     monkeypatch.setattr(
         activator_module,
@@ -179,7 +185,8 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
         def invoke(self, capability_id, payload):
             calls.append((capability_id, dict(payload)))
             if capability_id == "browser.navigate":
-                return {"ok": True, "url": "https://chatgpt.com/"}
+                assert payload["url"] == "https://chatgpt.com/c/cortex-test"
+                return {"ok": True, "url": payload["url"]}
             if capability_id == "browser.type":
                 assert payload["selector"] == 'main [contenteditable="true"]'
                 assert request_id in payload["text"]
@@ -243,6 +250,7 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
     assert result["status"] == "ACTIVATED"
     assert result["activation_transport"] == "AGENT_RUNTIME_BROWSER_HARNESS"
     assert result["browser_provider"] == "browser-harness"
+    assert result["target_url"] == "https://chatgpt.com/c/cortex-test"
     assert [row[0] for row in calls] == [
         "browser.navigate",
         "browser.inspect",

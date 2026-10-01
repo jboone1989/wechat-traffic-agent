@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 _REQUEST_ID = re.compile(r"^llmreq[-_][A-Za-z0-9_-]{4,160}$")
 _DEFAULT_URL = "https://chatgpt.com/"
@@ -138,6 +139,22 @@ def _event_grace_seconds() -> float:
     except ValueError as exc:
         raise ValueError("FERRO_CHATGPT_JEV_EVENT_GRACE_SECONDS must be numeric") from exc
     return max(0.0, min(value, 30.0))
+
+
+def _activation_url(state_root: Path) -> str:
+    configured = str(os.environ.get("FERRO_CHATGPT_CORTEX_URL") or "").strip()
+    if not configured:
+        target_path = Path(state_root) / "cortex" / "chatgpt-web" / "target.json"
+        target = _read_json(target_path)
+        configured = str(target.get("url") or "").strip()
+    raw = configured or _DEFAULT_URL
+    parsed = urlparse(raw)
+    if (
+        parsed.scheme != "https"
+        or (parsed.hostname or "").lower() not in {"chatgpt.com", "www.chatgpt.com"}
+    ):
+        raise ValueError("FERRO ChatGPT Cortex target must be a chatgpt.com HTTPS URL")
+    return raw
 
 
 def schedule_chatgpt_web_cortex_activation(
@@ -384,11 +401,12 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
                 cdp_url=cortex_browser.cdp_url(),
                 state_root=state_root,
             )
+            target_url = _activation_url(state_root)
             provider.invoke(
                 "browser.navigate",
                 {
                     "session_id": _BROWSER_SESSION_ID,
-                    "url": _DEFAULT_URL,
+                    "url": target_url,
                 },
             )
 
@@ -481,6 +499,7 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
                 "browser_provider": "browser-harness",
                 "browser_session_id": _BROWSER_SESSION_ID,
                 "url": str(final_snapshot.get("url") or "")[:240],
+                "target_url": target_url[:240],
             }
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
