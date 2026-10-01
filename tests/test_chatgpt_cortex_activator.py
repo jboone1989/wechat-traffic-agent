@@ -181,7 +181,7 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
             if capability_id == "browser.navigate":
                 return {"ok": True, "url": "https://chatgpt.com/"}
             if capability_id == "browser.type":
-                assert payload["selector"] == "#prompt-textarea"
+                assert payload["selector"] == 'main [contenteditable="true"]'
                 assert request_id in payload["text"]
                 self.typed = True
                 return {"ok": True}

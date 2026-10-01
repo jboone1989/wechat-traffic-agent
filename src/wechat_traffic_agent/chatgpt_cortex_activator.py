@@ -228,10 +228,11 @@ def schedule_chatgpt_web_cortex_activation(
 
 _BROWSER_SESSION_ID = "ferro-chatgpt-cortex"
 _COMPOSER_SELECTORS = (
+    'main [contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[contenteditable="true"][data-lexical-editor="true"]',
     "#prompt-textarea",
     "textarea[placeholder]",
-    '[contenteditable="true"][data-lexical-editor="true"]',
-    'main [contenteditable="true"]',
 )
 
 
