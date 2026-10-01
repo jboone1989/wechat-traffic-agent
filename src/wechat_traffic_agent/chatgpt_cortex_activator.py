@@ -226,62 +226,91 @@ def schedule_chatgpt_web_cortex_activation(
     return state
 
 
-def _composer_present(browser: Any) -> bool:
-    return bool(browser.evaluate(
-        """(() => Boolean(
-          document.querySelector('#prompt-textarea') ||
-          document.querySelector('textarea[placeholder]') ||
-          document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
-          document.querySelector('main [contenteditable="true"]')
-        ))()"""
-    ))
+_BROWSER_SESSION_ID = "ferro-chatgpt-cortex"
+_COMPOSER_SELECTORS = (
+    "#prompt-textarea",
+    "textarea[placeholder]",
+    '[contenteditable="true"][data-lexical-editor="true"]',
+    'main [contenteditable="true"]',
+)
 
 
-def _login_required(browser: Any) -> bool:
-    return bool(browser.evaluate(
-        """(() => [...document.querySelectorAll('button,a,[role="button"]')].some(el => {
-          const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-          return text === 'log in' && Boolean(el.getClientRects().length);
-        }))()"""
-    ))
+def _runtime_browser_provider(*, cdp_url: str, state_root: Path):
+    """Bind Ferro to Agent Runtime's single persistent BrowserSession backend."""
+    from agent_runtime.integrations import (
+        BrowserHarnessProvider,
+        BrowserHarnessRuntime,
+        BrowserPolicy,
+    )
+
+    return BrowserHarnessProvider(
+        policy=BrowserPolicy(
+            max_sessions=1,
+            timeout_seconds=25.0,
+            max_text_chars=50_000,
+            max_elements=250,
+            max_input_chars=20_000,
+            allowed_hosts=frozenset({"chatgpt.com"}),
+        ),
+        runtime=BrowserHarnessRuntime(
+            executable=(
+                os.environ.get("AGENT_RUNTIME_BROWSER_HARNESS")
+                or "/home/ubuntu/browser-use-venv/bin/browser-harness"
+            ),
+            state_dir=Path(state_root)
+            / "browser-runtime"
+            / "chatgpt-cortex",
+            cdp_url=str(cdp_url),
+        ),
+    )
 
 
-def _focus_composer(browser: Any) -> bool:
-    return bool(browser.evaluate(
-        """(() => {
-          const el =
-            document.querySelector('#prompt-textarea') ||
-            document.querySelector('textarea[placeholder]') ||
-            document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
-            document.querySelector('main [contenteditable="true"]');
-          if (!el) return false;
-          el.focus();
-          return document.activeElement === el || el.contains(document.activeElement);
-        })()"""
-    ))
+def _login_required(snapshot: dict[str, Any]) -> bool:
+    for element in snapshot.get("elements") or ():
+        name = str(element.get("name") or "").strip().lower()
+        if name in {"log in", "login"}:
+            return True
+    return False
 
 
-def _composer_text(browser: Any) -> str:
-    return str(browser.evaluate(
-        """(() => {
-          const el =
-            document.querySelector('#prompt-textarea') ||
-            document.querySelector('textarea[placeholder]') ||
-            document.querySelector('[contenteditable="true"][data-lexical-editor="true"]') ||
-            document.querySelector('main [contenteditable="true"]');
-          if (!el) return '';
-          return typeof el.value === 'string' ? el.value : (el.innerText || el.textContent || '');
-        })()"""
-    ) or "")
+def _draft_contains(snapshot: dict[str, Any], marker: str) -> bool:
+    for element in snapshot.get("elements") or ():
+        if marker in str(element.get("value") or ""):
+            return True
+    return False
 
 
-def _user_message_visible(browser: Any, request_id: str) -> bool:
-    marker = json.dumps(request_id)
-    return bool(browser.evaluate(
-        f"""(() => [...document.querySelectorAll('[data-message-author-role="user"], article')].some(
-          el => (el.innerText || el.textContent || '').includes({marker})
-        ))()"""
-    ))
+def _activation_visible(snapshot: dict[str, Any], request_id: str) -> bool:
+    return (
+        request_id in str(snapshot.get("text") or "")
+        and not _draft_contains(snapshot, request_id)
+    )
+
+
+def _fill_activation(
+    provider: Any,
+    *,
+    request_id: str,
+    prompt: str,
+) -> str:
+    failures: list[str] = []
+    for selector in _COMPOSER_SELECTORS:
+        try:
+            provider.invoke(
+                "browser.type",
+                {
+                    "session_id": _BROWSER_SESSION_ID,
+                    "selector": selector,
+                    "text": prompt,
+                },
+            )
+            return selector
+        except RuntimeError as exc:
+            failures.append(f"{selector}:{type(exc).__name__}")
+    raise RuntimeError(
+        "ChatGPT composer was not available through BrowserSession: "
+        + ",".join(failures)
+    )
 
 
 def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
@@ -309,7 +338,7 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
         )
         if request_status in {"COMPLETED", "TIMED_OUT"}:
             result = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "NOT_REQUIRED",
                 "request_id": request_id,
                 "request_status": request_status,
@@ -318,9 +347,12 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
             return result
-        if request_status == "DISPATCHED" or activation_event.get("event_forwarded_at") is not None:
+        if (
+            request_status == "DISPATCHED"
+            or activation_event.get("event_forwarded_at") is not None
+        ):
             result = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "status": "MCP_EVENT_HANDLED",
                 "request_id": request_id,
                 "request_status": request_status,
@@ -330,133 +362,130 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
             return result
+
         state = {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "RUNNING",
             "request_id": request_id,
             "started_at": datetime.now(timezone.utc).isoformat(),
             "started_at_epoch": started,
-            "activation_transport": "JEV_CHATGPT_WEB",
+            "activation_transport": "AGENT_RUNTIME_BROWSER_HARNESS",
             "mcp_event_forwarded": False,
         }
         _write_json(state_path, state)
 
-        browser = None
+        provider = None
         try:
             from .chatgpt_cortex_browser_control import ChatGPTCortexBrowserControl
 
             cortex_browser = ChatGPTCortexBrowserControl(state_root=state_root)
-            os.environ["BU_CDP_URL"] = cortex_browser.cdp_url()
-            os.environ["BU_NAME"] = (
-                "ferro_chatgpt_cortex_" + cortex_browser.account_id[-20:]
-            )[:64]
-            from browser_harness.admin import ensure_daemon
-            from jev_ultrafast.browser import Browser
+            provider = _runtime_browser_provider(
+                cdp_url=cortex_browser.cdp_url(),
+                state_root=state_root,
+            )
+            provider.invoke(
+                "browser.navigate",
+                {
+                    "session_id": _BROWSER_SESSION_ID,
+                    "url": _DEFAULT_URL,
+                },
+            )
 
-            ensure_daemon()
-            target_url = _DEFAULT_URL
-            try:
-                existing = cortex_browser.status()
-                current_url = str(existing.get("url") or "").strip()
-                if (
-                    not existing.get("authenticated")
-                    and current_url.startswith("https://chatgpt.com/")
-                ):
-                    target_url = current_url
-            except ChatGPTCortexBrowserUnavailable:
-                pass
-            browser = Browser(target_url)
             deadline = time.monotonic() + 25.0
-            login_required = False
+            snapshot: dict[str, Any] = {}
+            selector = ""
             while time.monotonic() < deadline:
-                try:
-                    if _login_required(browser):
-                        login_required = True
-                        break
-                    if _composer_present(browser):
-                        break
-                except (OSError, RuntimeError, ValueError):
-                    pass
-                time.sleep(0.25)
-            if login_required:
-                url = str(browser.evaluate("location.href") or "")
-                result = {
-                    **state,
-                    "status": "LOGIN_REQUIRED",
-                    "url": url[:240],
-                    "finished_at": datetime.now(timezone.utc).isoformat(),
-                }
-                _write_json(state_path, result)
-                _append_event(events_path, {**result, "at": result["finished_at"]})
-                browser.close()
-                return result
-            if time.monotonic() >= deadline:
-                url = str(browser.evaluate("location.href") or "")
-                result = {
-                    **state,
-                    "status": "LOGIN_REQUIRED",
-                    "url": url[:240],
-                    "finished_at": datetime.now(timezone.utc).isoformat(),
-                }
-                _write_json(state_path, result)
-                _append_event(events_path, {**result, "at": result["finished_at"]})
-                browser.close()
-                return result
-            if _login_required(browser):
-                url = str(browser.evaluate("location.href") or "")
-                result = {
-                    **state,
-                    "status": "LOGIN_REQUIRED",
-                    "url": url[:240],
-                    "finished_at": datetime.now(timezone.utc).isoformat(),
-                }
-                _write_json(state_path, result)
-                _append_event(events_path, {**result, "at": result["finished_at"]})
-                browser.close()
-                return result
+                snapshot = provider.invoke(
+                    "browser.inspect",
+                    {
+                        "session_id": _BROWSER_SESSION_ID,
+                        "max_chars": 50_000,
+                        "max_elements": 250,
+                    },
+                )
+                if _login_required(snapshot):
+                    result = {
+                        **state,
+                        "status": "LOGIN_REQUIRED",
+                        "url": str(snapshot.get("url") or "")[:240],
+                        "finished_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    _write_json(state_path, result)
+                    _append_event(
+                        events_path,
+                        {**result, "at": result["finished_at"]},
+                    )
+                    return result
 
-            if not _focus_composer(browser):
-                raise RuntimeError("ChatGPT composer could not be focused")
-            prompt = activation_prompt(request_id)
-            browser.call("Input.insertText", text=prompt)
-            rendered = _composer_text(browser)
-            if request_id not in rendered:
+                prompt = activation_prompt(request_id)
+                try:
+                    selector = _fill_activation(
+                        provider,
+                        request_id=request_id,
+                        prompt=prompt,
+                    )
+                    break
+                except RuntimeError:
+                    time.sleep(0.25)
+            if not selector:
+                raise RuntimeError("ChatGPT composer did not become available")
+
+            filled = provider.invoke(
+                "browser.inspect",
+                {
+                    "session_id": _BROWSER_SESSION_ID,
+                    "max_chars": 50_000,
+                    "max_elements": 250,
+                },
+            )
+            if not _draft_contains(filled, request_id):
                 raise RuntimeError("ChatGPT activation fill verification failed")
 
-            for kind in ("keyDown", "keyUp"):
-                browser.call(
-                    "Input.dispatchKeyEvent",
-                    type=kind,
-                    key="Enter",
-                    code="Enter",
-                )
+            provider.invoke(
+                "browser.press",
+                {
+                    "session_id": _BROWSER_SESSION_ID,
+                    "selector": selector,
+                    "key": "Enter",
+                },
+            )
 
             verify_deadline = time.monotonic() + 12.0
-            sent = False
+            final_snapshot: dict[str, Any] = {}
             while time.monotonic() < verify_deadline:
                 try:
-                    if _user_message_visible(browser, request_id):
-                        sent = True
-                        break
-                except (OSError, RuntimeError, ValueError):
-                    pass
+                    final_snapshot = provider.invoke(
+                        "browser.inspect",
+                        {
+                            "session_id": _BROWSER_SESSION_ID,
+                            "max_chars": 50_000,
+                            "max_elements": 250,
+                        },
+                    )
+                except RuntimeError:
+                    time.sleep(0.2)
+                    continue
+                if _activation_visible(final_snapshot, request_id):
+                    break
                 time.sleep(0.2)
-            if not sent:
-                raise RuntimeError("ChatGPT activation message was not observed after send")
+            else:
+                raise RuntimeError(
+                    "ChatGPT activation message was not observed after send"
+                )
 
             result = {
                 **state,
                 "status": "ACTIVATED",
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "elapsed_ms": round((time.time() - started) * 1000),
-                "target_id": str(getattr(browser, "target", "") or "")[:160],
+                "browser_provider": "browser-harness",
+                "browser_session_id": _BROWSER_SESSION_ID,
+                "url": str(final_snapshot.get("url") or "")[:240],
             }
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
-            # Deliberately leave the target alive. The ChatGPT turn may continue
-            # using LivingRuntime Remote after this activator process exits.
             return result
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
             result = {
                 **state,
                 "status": "ACTIVATION_FAILED",
@@ -467,13 +496,10 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
             }
             _write_json(state_path, result)
             _append_event(events_path, {**result, "at": result["finished_at"]})
-            if browser is not None:
-                try:
-                    browser.close()
-                except (OSError, RuntimeError, ValueError):
-                    pass
             return result
-
+        finally:
+            if provider is not None:
+                provider.close()
 
 def main() -> int:
     parser = argparse.ArgumentParser()
