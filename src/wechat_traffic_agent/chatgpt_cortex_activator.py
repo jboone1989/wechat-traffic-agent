@@ -443,11 +443,10 @@ def _send_activation(request_id: str, *, state_root: Path) -> dict[str, Any]:
                 raise RuntimeError("ChatGPT activation fill verification failed")
 
             provider.invoke(
-                "browser.press",
+                "browser.click",
                 {
                     "session_id": _BROWSER_SESSION_ID,
-                    "selector": selector,
-                    "key": "Enter",
+                    "selector": 'button[type="submit"][aria-label="Send"]',
                 },
             )
 

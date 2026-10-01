@@ -185,9 +185,9 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
                 assert request_id in payload["text"]
                 self.typed = True
                 return {"ok": True}
-            if capability_id == "browser.press":
+            if capability_id == "browser.click":
                 assert self.typed is True
-                assert payload["key"] == "Enter"
+                assert payload["selector"] == 'button[type="submit"][aria-label="Send"]'
                 self.sent = True
                 return {"ok": True}
             if capability_id == "browser.inspect":
@@ -248,7 +248,7 @@ def test_chatgpt_activation_uses_agent_runtime_browser_contract(
         "browser.inspect",
         "browser.type",
         "browser.inspect",
-        "browser.press",
+        "browser.click",
         "browser.inspect",
         "close",
     ]
