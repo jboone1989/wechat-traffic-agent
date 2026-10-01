@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import threading
+import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
@@ -58,6 +60,7 @@ class _ChatGPTProfileControl(AccountBrowserLoginControl):
         state_root: Path,
         profile_manager=None,
     ) -> None:
+        self._explicit_profile_manager = profile_manager is not None
         if profile_manager is None:
             profile_manager = AccountBrowserProfileManager(
                 state_root,
@@ -69,6 +72,39 @@ class _ChatGPTProfileControl(AccountBrowserLoginControl):
             profile_manager=profile_manager,
         )
         self.state_path = self.folder / "chatgpt-cortex-target.json"
+
+    def cdp_url(self) -> str:
+        if self._explicit_profile_manager:
+            return super().cdp_url()
+        state_root = Path(
+            os.environ.get("AGENT_RUNTIME_STATE_ROOT")
+            or (Path.home() / ".local" / "state" / "agent-runtime")
+        ).expanduser()
+        runtime_path = state_root / "browser" / "profiles" / "chatgpt" / "runtime.json"
+        try:
+            body = json.loads(runtime_path.read_text(encoding="utf-8"))
+            port = int(body.get("cdp_port") or 0)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise ChatGPTCortexBrowserUnavailable(
+                "Agent Runtime ChatGPT browser runtime is unavailable"
+            ) from exc
+        if not 9600 <= port <= 9699:
+            raise ChatGPTCortexBrowserUnavailable(
+                "Agent Runtime ChatGPT browser CDP port is invalid"
+            )
+        base = f"http://127.0.0.1:{port}"
+        try:
+            with urllib.request.urlopen(base + "/json/version", timeout=1.0) as response:
+                version = json.load(response)
+        except Exception as exc:
+            raise ChatGPTCortexBrowserUnavailable(
+                "Agent Runtime ChatGPT browser is not running"
+            ) from exc
+        if not isinstance(version, dict) or not version.get("webSocketDebuggerUrl"):
+            raise ChatGPTCortexBrowserUnavailable(
+                "Agent Runtime ChatGPT browser CDP endpoint is unhealthy"
+            )
+        return base
 
     @staticmethod
     def _validate_url(url: str) -> str:

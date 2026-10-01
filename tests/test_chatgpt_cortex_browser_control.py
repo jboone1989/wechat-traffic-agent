@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import io
+import json
 
 import pytest
 
@@ -57,6 +59,28 @@ def test_cortex_uses_dedicated_chatgpt_profile_runtime(tmp_path):
 def test_cortex_does_not_require_x_account(tmp_path):
     control = ChatGPTCortexBrowserControl(state_root=tmp_path)
     assert control.account_id == "cortex_chatgpt"
+
+
+def test_cortex_reuses_agent_runtime_takeover_cdp(tmp_path, monkeypatch):
+    runtime_root = tmp_path / "agent-runtime"
+    runtime_path = runtime_root / "browser" / "profiles" / "chatgpt" / "runtime.json"
+    runtime_path.parent.mkdir(parents=True)
+    runtime_path.write_text(
+        json.dumps({"cdp_port": 9600, "chrome_pid": 123}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENT_RUNTIME_STATE_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        cortex_module.urllib.request,
+        "urlopen",
+        lambda url, timeout=1.0: io.BytesIO(
+            json.dumps({"webSocketDebuggerUrl": "ws://127.0.0.1:9600/devtools/browser/test"}).encode()
+        ),
+    )
+
+    control = ChatGPTCortexBrowserControl(state_root=tmp_path)
+
+    assert control.cdp_url() == "http://127.0.0.1:9600"
 
 
 def test_cortex_rejects_foreign_account_id(tmp_path):
