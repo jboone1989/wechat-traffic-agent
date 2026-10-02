@@ -350,3 +350,17 @@ def test_owner_goal_context_uses_specific_active_proposal_over_parent_goal(tmp_p
     assert context["parent_goal_description"] == "Grow X followers to 5000"
     assert context["owner_proposal_id"] == "goal-proposal:remote"
     assert context["owner_commitment_kind"] == "EXTERNAL_MISSION"
+
+
+def test_long_rationale_keeps_valid_owner_action_and_complete_explanation(tmp_path):
+    rationale = "Reality checks support the bounded publication attempt. " * 30
+    runtime = Runtime([{"action":"RUN_CONTENT_PIPELINE", "topic":"livingruntime-remote", "rationale":rationale}])
+    async def execute(_decision):
+        raise AssertionError("terminal delegation must not execute an inspection")
+    episode = OwnerAgentEpisode(tmp_path)
+    result = asyncio.run(episode.run(runtime=runtime, owner_goal={"goal_id":"goal-owner","description":"Publish the authorized Remote experiment"}, mission_context={}, tool_executor=execute, now=NOW))
+    assert result["status"] == "DECIDED"
+    assert result["decision"]["action"] == "RUN_CONTENT_PIPELINE"
+    assert result["decision"]["rationale"] == rationale
+    assert episode.projection_for("goal-owner")["decision"]["rationale"] == rationale
+    assert len(runtime.prompts) == 1

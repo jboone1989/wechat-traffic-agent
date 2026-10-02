@@ -35,7 +35,9 @@ class OwnerAgentDecision(BaseModel):
         pattern=r"^[a-z0-9][a-z0-9-]{1,63}$",
     )
     wait_seconds: int | None = Field(default=None, ge=60, le=21600)
-    rationale: str = Field(min_length=8, max_length=700)
+    # The provider already bounds the response. A valid action must not be
+    # rejected because its explanatory text crosses an arbitrary UI budget.
+    rationale: str = Field(min_length=8)
 
     @model_validator(mode="after")
     def _validate_action_arguments(self) -> "OwnerAgentDecision":
