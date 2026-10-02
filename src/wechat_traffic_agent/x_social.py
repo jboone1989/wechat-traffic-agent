@@ -788,7 +788,9 @@ class XAutonomyLoop:
                 "Write in the supplied public persona from persisted cognition and attributed source only. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
                 "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
-                "An original illustrated cover will be generated; never claim it is a real product screenshot. "
+                "For ARTICLE, choose images: each has role COVER or INLINE, mode GRAPHIC/GENERATE/SEARCH, alt_text, caption, "
+                "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
+                "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
                 "Preserve uncertainty and source attribution. Owner quantities are optional advice, not quotas.\n"
                 +json.dumps({**context,"persona":public_persona_projection(self.state_root),
                     "mission":x_growth_mission_context(self.state_root)},ensure_ascii=False))
@@ -821,6 +823,8 @@ class XAutonomyLoop:
             "evidence":_read_json(folder/"social_expression_drafts.json").get("evidence_decision") or {},
             "public_persona":public_persona_projection(self.state_root)}
         text="\n".join(str(draft.get(key) or "") for key in ("title","text","cover_caption"))
+        if draft.get("images"):
+            text += "\nIMAGE_PLAN:\n" + json.dumps(draft["images"], ensure_ascii=False)
         runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle)
         safety=await self._safety_check(model_runtime=runtime,text=text,context=context)
         payload={**safety.model_dump(mode="json"),"passed":_safety_passes(safety)}

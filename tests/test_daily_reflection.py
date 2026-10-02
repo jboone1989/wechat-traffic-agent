@@ -200,3 +200,22 @@ def test_wecom_notifier_rejects_non_wecom_secret_endpoints():
         assert "WeCom" in str(exc)
     else:
         raise AssertionError("non-WeCom endpoint should be rejected")
+
+def test_reflection_evidence_is_bounded_without_changing_persisted_snapshot():
+    from copy import deepcopy
+    snapshot = {
+        key: {"events": [
+            {"id": str(i), "description": "Large evidence " * 1000, "confidence": 1}
+            for i in range(50)
+        ]}
+        for key in ("autobiography", "worldview", "goals", "interests",
+                    "predictive_learning", "resource_awareness", "identity")
+    }
+    snapshot["tick"] = 42
+    before = deepcopy(snapshot)
+    context = DailyReflectionService._mind_context(snapshot)
+    assert snapshot == before
+    assert context["tick"] == 42
+    assert len(json.dumps(context, ensure_ascii=False)) < 12000
+    assert context["evidence_scope"]["persisted_snapshot_changed"] is False
+    assert context["autobiography"]["events"][-1]["id"] == "49"

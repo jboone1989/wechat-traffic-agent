@@ -158,9 +158,13 @@ class LocalHarnessXTransport:
         session_id = "ferro-x-publish"
         try:
             # Reuse the user's authenticated tab without forcing a home reload.
-            self.browser.adopt_existing_tab(
-                session_id, "https://x.com/", open_if_missing=True
-            )
+            # A persisted, live target needs no legacy page-script probe. That
+            # probe can retain a stale evaluation session after a host restart;
+            # Jev attaches a fresh CDP session and verifies the page/account.
+            if not self._bound_x_tab_is_live(session_id):
+                self.browser.adopt_existing_tab(
+                    session_id, "https://x.com/", open_if_missing=True
+                )
             spec = importlib.util.find_spec("jev_ultrafast")
             if spec is None or spec.origin is None:
                 raise BrowserRuntimeUnavailable("jev-ultrafast is unavailable in the X execution environment")
@@ -176,12 +180,32 @@ class LocalHarnessXTransport:
             ) from exc
         return body
 
-    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False):
+    def _bound_x_tab_is_live(self, session_id: str) -> bool:
+        import urllib.request
+        from urllib.parse import urlsplit
+        load_target = getattr(self.browser, "_load_target_id", None)
+        if not callable(load_target):
+            return False
+        target_id = load_target(session_id)
+        if not target_id:
+            return False
+        try:
+            with urllib.request.urlopen(self._cdp_url()+"/json/list", timeout=5) as response:
+                targets = json.load(response)
+            return any(row.get("id")==target_id and row.get("type")=="page"
+                and urlsplit(str(row.get("url") or "")).scheme=="https"
+                and urlsplit(str(row.get("url") or "")).hostname in {"x.com","www.x.com"}
+                for row in targets)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
+
+    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False, inline_images=()):
         from .x_jev_article import jev_x_article, jev_x_article_reconcile
         from .x_browser import _read_json, _write_json
         import hashlib
         transaction_path=Path(transaction_path)
-        digest=hashlib.sha256((title+"\n"+text+"\n"+hashlib.sha256(Path(image_path).read_bytes()).hexdigest()).encode()).hexdigest()
+        hashes=[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [image_path,*[r['path'] for r in inline_images]]]
+        digest=hashlib.sha256(json.dumps([title,text,hashes],ensure_ascii=False).encode()).hexdigest()
         previous=_read_json(transaction_path)
         if previous and previous.get("digest")!=digest:
             raise ValueError("Article transaction draft binding mismatch")
@@ -190,14 +214,14 @@ class LocalHarnessXTransport:
         if previous.get("attempted") or previous.get("status")=="SUBMIT_PENDING":
             body=await asyncio.to_thread(self._run_jev_sync,jev_x_article_reconcile(title=title,text=text,
                 draft_url=str(previous.get("draft_url") or ""),cover_source=previous.get("cover_source") or [],
-                expected_handle=self.expected_handle))
+                expected_handle=self.expected_handle,public_url=str(previous.get("public_url") or "")))
             _write_json(transaction_path,{**previous,**body,"digest":digest})
             return self._verified_result(body)
-        _write_json(transaction_path,{**previous,"digest":digest,"status":"SUBMIT_PENDING" if not prepare_only else "PREPARING"})
+        _write_json(transaction_path,{**previous,"digest":digest,"status":"PREPARING"})
         body=await asyncio.to_thread(self._run_jev_sync,jev_x_article(title=title,text=text,image_path=str(image_path),
             expected_handle=self.expected_handle,draft_url=str(previous.get("draft_url") or ""),prepare_only=prepare_only,
-            checkpoint_path=str(transaction_path)))
-        _write_json(transaction_path,{**body,"digest":digest})
+            checkpoint_path=str(transaction_path),inline_images=inline_images))
+        _write_json(transaction_path,{**_read_json(transaction_path),**body,"digest":digest})
         if prepare_only and body.get("status")=="DRAFT_PREPARED":
             return body
         return self._verified_result(body)
@@ -227,9 +251,9 @@ class LocalHarnessXTransport:
         if prior.get("status")=="POSTED":
             return self._verified_result(prior)
         reconcile_only=bool(prior.get("attempted") or prior.get("status")=="SUBMIT_PENDING")
-        _write_json(path,{**prior,"status":"SUBMIT_PENDING","text":text,"target_url":target_url})
-        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only))
-        _write_json(path,{**body,"text":text,"target_url":target_url})
+        _write_json(path,{**prior,"status":"PREPARING","text":text,"target_url":target_url})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only,checkpoint_path=str(path)))
+        _write_json(path,{**_read_json(path),**body,"text":text,"target_url":target_url})
         return self._verified_result(body)
 
     def _verified_result(self, body):

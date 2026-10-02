@@ -39,10 +39,24 @@ except Exception as exc:
 '''
 
 
-def jev_x_reply(text, target_url, expected_handle='', reconcile_only=False):
+def jev_x_reply(text, target_url, expected_handle='', reconcile_only=False, checkpoint_path=''):
     return ('outbound = ' + json.dumps(text, ensure_ascii=False) + '\ntarget_url = ' + json.dumps(target_url)
-            + '\nexpected_handle = ' + json.dumps(expected_handle) + '\nreconcile_only = ' + repr(reconcile_only) + '\n' + helpers() + r'''
+            + '\nexpected_handle = ' + json.dumps(expected_handle) + '\nreconcile_only = ' + repr(reconcile_only)
+            + '\ncheckpoint_path = ' + repr(checkpoint_path) + '\n' + helpers() + r'''
+def checkpoint_submit(submitted=True):
+    if not checkpoint_path:
+        return
+    import json
+    from pathlib import Path
+    path=Path(checkpoint_path)
+    previous=json.loads(path.read_text())
+    previous.update({'status':'SUBMIT_PENDING' if submitted else 'PREPARING','attempted':submitted})
+    pending=path.with_suffix('.tmp')
+    pending.write_text(json.dumps(previous,ensure_ascii=False))
+    pending.replace(path)
+
 def reply_action(kind, submit=False):
+    global attempted
     deadline = time.monotonic()+20
     while time.monotonic()<deadline:
         page = browser.observe(screenshot=False)
@@ -53,7 +67,7 @@ def reply_action(kind, submit=False):
             label=str(a.get('label') or '').strip().casefold()
             node=int(a['node'])
             if kind == 'fill':
-                if a.get('role')=='textbox' and not any(w in label for w in ('search','搜索')):
+                if a.get('role')=='textbox' and not any(w in label for w in ('search','搜索')) and browser.evaluate('Boolean(window.__jevFast.nodes.get('+str(node)+')?.closest("[role=dialog]"))'):
                     candidates.append(a)
             elif submit:
                 if label in {'reply','回复'} and browser.evaluate('Boolean(window.__jevFast.nodes.get('+str(node)+')?.closest("[role=dialog]"))'):
@@ -64,9 +78,15 @@ def reply_action(kind, submit=False):
                     candidates.append(a)
         if len(candidates)==1:
             try:
+                if submit:
+                    checkpoint_submit()
+                    attempted=True
                 browser.act(candidates[0],page,text=outbound if kind=='fill' else None)
                 return candidates[0]
             except StalePage:
+                if submit:
+                    attempted=False
+                    checkpoint_submit(False)
                 continue
         time.sleep(.15)
     raise RuntimeError('Jev reply control unavailable or ambiguous')
@@ -106,7 +126,6 @@ try:
         rendered=browser.evaluate('window.__jevFast.nodes.get('+str(editor['node'])+')?.innerText')
         if norm(rendered)!=norm(outbound):
             raise RuntimeError('Reply fill mismatch')
-        attempted=True
         reply_action('click',submit=True)
         for _ in range(4):
             time.sleep(.8)
