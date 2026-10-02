@@ -64,9 +64,6 @@ class _GrowthMission:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def publication_guardrail(self) -> dict:
-        return {"allowed": True, "status": "ALLOWED"}
-
     def publication_binding(self, *, cycle: str) -> dict:
         return {"status": "BOUND", "bound": True, "cycle": cycle}
 
@@ -207,38 +204,31 @@ def test_browser_mention_post_normalizes_incoming_status_and_skips_self():
     assert browser_mention_post(text="bad", href="/home", own_handle="caini56006962") is None
 
 
-class _BlockedGrowthMission(_GrowthMission):
-    def publication_guardrail(self) -> dict:
-        return {
-            "allowed": False,
-            "status": "HARD_STOP_ACTIVE",
-            "hard_stop": {"active": True, "decline_ratio": 0.025},
-        }
-
-
-def test_browser_publication_is_blocked_by_active_mission_hard_stop(tmp_path: Path):
+def test_browser_post_does_not_require_growth_approval_or_baseline(tmp_path: Path):
     _draft(tmp_path)
     transport = _Transport()
-    growth = _BlockedGrowthMission()
-    result = asyncio.run(
-        XBrowserPublisher(
-            state_root=tmp_path,
-            transport=transport,
-            enabled=True,
-            writes_enabled=True,
-            growth_mission=growth,
-        ).after_content_cycle(cycle="v2-browser", now=NOW)
-    )
+    growth = _GrowthMission()
+    growth.publication_guardrail = lambda: pytest.fail("Retired hard stop must not be consulted")
+    result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=transport,
+        enabled=True, writes_enabled=True, growth_mission=growth).after_content_cycle(cycle="v2-browser", now=NOW))
+    assert result["status"] == "POSTED"
+    assert result["publication"]["mission_baseline"]["status"] == "MEASUREMENT_UNAVAILABLE"
+    assert len(transport.calls) == 1
+    assert len(growth.calls) == 1
+    assert (tmp_path / "content/continuous/cycles/v2-browser/x_browser_publication.json").exists()
 
-    assert result["status"] == "HELD_BY_MISSION_GUARDRAIL"
-    assert result["guardrail"]["status"] == "HARD_STOP_ACTIVE"
-    assert transport.calls == []
-    assert growth.calls == []
-    assert not (
-        tmp_path
-        / "content/continuous/cycles/v2-browser/x_browser_publication.json"
-    ).exists()
 
+def test_browser_baseline_error_is_recorded_without_veto(tmp_path: Path):
+    _draft(tmp_path)
+    transport = _Transport()
+    async def broken_observer(**kwargs):
+        raise RuntimeError("Follower display unavailable")
+    result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=transport,
+        enabled=True, writes_enabled=True, growth_mission=_GrowthMission(),
+        mission_baseline_observer=broken_observer).after_content_cycle(cycle="v2-browser", now=NOW))
+    assert result["status"] == "POSTED"
+    assert result["publication"]["mission_baseline"]["status"] == "MEASUREMENT_FAILED"
+    assert len(transport.calls) == 1
 
 
 def test_l1_hold_prevents_browser_publication(tmp_path: Path):

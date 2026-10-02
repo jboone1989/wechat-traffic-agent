@@ -204,3 +204,26 @@ def test_entrypoint_binds_rsi_worker_before_runtime_capability_composition():
     assert python_bind in section
     assert section.index(workspace_bind) < section.index(build)
     assert section.index(python_bind) < section.index(build)
+
+
+def test_startup_wires_x_publisher_against_its_real_constructor(tmp_path):
+    import ast
+    from types import SimpleNamespace
+    from wechat_traffic_agent.x_browser import XBrowserPublisher
+
+    tree = ast.parse(ENTRYPOINT.read_text(encoding="utf-8"))
+    assignments = [node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "x_browser_publisher"
+            for target in node.targets)]
+    assert len(assignments) == 1
+    async def baseline_observer(**kwargs):
+        return {"status": "RECORDED"}
+    namespace = {"XBrowserPublisher": XBrowserPublisher, "state_root": tmp_path,
+        "x_growth_mission": None, "x_loop": SimpleNamespace(
+            capture_mission_publication_baseline=baseline_observer)}
+    module = ast.Module(body=assignments, type_ignores=[])
+    exec(compile(module, str(ENTRYPOINT), "exec"), namespace)
+    publisher = namespace["x_browser_publisher"]
+    assert publisher.state_root == tmp_path
+    assert publisher.mission_baseline_observer is baseline_observer

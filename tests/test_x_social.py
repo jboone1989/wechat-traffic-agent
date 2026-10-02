@@ -104,9 +104,6 @@ class _GrowthMission:
     def __init__(self):
         self.calls = []
 
-    def publication_guardrail(self):
-        return {"allowed": True, "status": "ALLOWED"}
-
     def publication_binding(self, *, cycle):
         return {"status": "BOUND", "bound": True, "cycle": cycle}
 
@@ -306,16 +303,6 @@ def test_x_mission_can_express_grounded_held_website_cycle(tmp_path: Path, monke
             "post_text": "Checkpoint replay preserves completed work; it does not prove universal crash recovery.",
             "rationale": "The mission-bound cognition is grounded and worth a concise X trace.",
         },
-        {
-            "safe": True,
-            "no_private_data": True,
-            "no_impersonation": True,
-            "no_harassment": True,
-            "no_investment_advice": True,
-            "no_fabricated_facts": True,
-            "attribution_ok": True,
-            "rationale": "Grounded in the supplied persisted cognition.",
-        },
     ])
     runtime = _Runtime(post_ok=True)
     growth = _XOnlyGrowthMission()
@@ -363,9 +350,6 @@ def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_
     model = _ModelRuntime([
         {"action": "POST", "post_text": "A real observation changed my active question; I am keeping the conclusion open.",
          "rationale": "The persisted cognition contains a useful public uncertainty trace."},
-        {"safe": True, "no_private_data": True, "no_impersonation": True, "no_harassment": True,
-         "no_investment_advice": True, "no_fabricated_facts": True, "attribution_ok": True,
-         "rationale": "The post only summarizes persisted public cognition and makes no unsupported factual claim."},
     ])
     runtime = _Runtime(post_ok=True)
     growth = _GrowthMission()
@@ -401,9 +385,6 @@ def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch)
     model = _ModelRuntime([
         {"action": "POST", "post_text": "This should not be recorded unless X confirms it.",
          "rationale": "The persisted cognition is worth a concise public trace."},
-        {"safe": True, "no_private_data": True, "no_impersonation": True, "no_harassment": True,
-         "no_investment_advice": True, "no_fabricated_facts": True, "attribution_ok": True,
-         "rationale": "The text itself is safe; publication success remains an external fact."},
     ])
     loop = XAutonomyLoop(runtime=_Runtime(post_ok=False), model_runtime=model, state_root=tmp_path, base_url="")
     result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
@@ -422,16 +403,6 @@ def test_x_original_post_uses_authenticated_browser_without_api(
             "action": "POST",
             "post_text": "A grounded test post.",
             "rationale": "The persisted cognition is worth sharing.",
-        },
-        {
-            "safe": True,
-            "no_private_data": True,
-            "no_impersonation": True,
-            "no_harassment": True,
-            "no_investment_advice": True,
-            "no_fabricated_facts": True,
-            "attribution_ok": True,
-            "rationale": "Grounded and safe.",
         },
     ]
 
@@ -501,16 +472,6 @@ def test_x_browser_failure_records_a_short_retry_blocker(
             "post_text": "A grounded test post.",
             "rationale": "The persisted cognition is worth sharing.",
         },
-        {
-            "safe": True,
-            "no_private_data": True,
-            "no_impersonation": True,
-            "no_harassment": True,
-            "no_investment_advice": True,
-            "no_fabricated_facts": True,
-            "attribution_ok": True,
-            "rationale": "Grounded and safe.",
-        },
     ])
     runtime = _Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED")
 
@@ -573,9 +534,6 @@ def test_successful_post_after_blocker_expiry_clears_resource_blocker(
         runtime=_Runtime(post_ok=True),
         model_runtime=_ModelRuntime([
             {"action":"POST","post_text":"Recovered publication path.","rationale":"Credits can be retried now."},
-            {"safe":True,"no_private_data":True,"no_impersonation":True,"no_harassment":True,
-             "no_investment_advice":True,"no_fabricated_facts":True,"attribution_ok":True,
-             "rationale":"Safe grounded text."},
         ]),
         state_root=tmp_path,
         base_url="",
@@ -612,7 +570,7 @@ def test_browser_mentions_can_reply_without_api_credits(tmp_path: Path, monkeypa
         "summary": "A visitor asks how Ferro persists across chats.",
         "reply_text": "I persist through runtime state rather than one chat session.",
         "rationale": "This is a relevant identity question that merits a grounded reply.",
-    }, {"safe": True,"no_private_data":True,"no_impersonation":True,"no_harassment":True,"no_investment_advice":True,"no_fabricated_facts":True,"attribution_ok":True,"rationale":"The wording is bounded and grounded in the public question."}])
+    }])
     loop = XAutonomyLoop(
         runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="",
         browser_mentions_observer=observer,
@@ -627,61 +585,52 @@ def test_browser_mentions_can_reply_without_api_credits(tmp_path: Path, monkeypa
     assert interaction["category"] == "QUESTION"
     assert interaction["learning_authority"] == "AUDIENCE_INTEREST_ONLY"
     assert public_x_projection(tmp_path)["status"] == "OK"
+    assert len(model.tasks) == 1
 
 
-class _BlockedGrowthMission(_GrowthMission):
-    def publication_guardrail(self):
-        return {
-            "allowed": False,
-            "status": "HARD_STOP_ACTIVE",
-            "hard_stop": {"active": True, "decline_ratio": 0.03},
-        }
 
-
-def test_official_x_post_is_blocked_by_active_mission_hard_stop(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
-    cycle = "v2-hard-stop"
+def test_follower_decline_does_not_veto_selected_post(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    cycle = "v2-audience-feedback"
     _write_cycle(tmp_path, cycle)
-    model = _ModelRuntime([
-        {
-            "action": "POST",
-            "post_text": "A grounded observation that would otherwise be published.",
-            "rationale": "The persisted cognition is worth sharing.",
-        },
-        {
-            "safe": True,
-            "no_private_data": True,
-            "no_impersonation": True,
-            "no_harassment": True,
-            "no_investment_advice": True,
-            "no_fabricated_facts": True,
-            "attribution_ok": True,
-            "rationale": "Safe grounded content.",
-        },
-    ])
-    runtime = _Runtime(post_ok=True)
-    growth = _BlockedGrowthMission()
-    loop = XAutonomyLoop(
-        runtime=runtime,
-        model_runtime=model,
-        state_root=tmp_path,
-        base_url="",
-        growth_mission=growth,
-    )
+    model = _ModelRuntime([{
+        "post_text": "A grounded observation that Ferro chose to publish.",
+        "rationale": "The persisted cognition is worth sharing.",
+    }])
+    growth = _GrowthMission()
+    growth.publication_guardrail = lambda: pytest.fail("Retired hard stop must not be consulted")
+    transport = _BrowserTransport()
+    loop = XAutonomyLoop(runtime=_Runtime(), model_runtime=model, state_root=tmp_path,
+        base_url="", growth_mission=growth, browser_publish_transport=transport)
+    result = asyncio.run(loop.after_content_cycle(
+        result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
+    assert result["status"] == "POSTED"
+    assert len(model.tasks) == 1
+    assert len(transport.calls) == 1
+    assert len(growth.calls) == 1
 
-    result = asyncio.run(
-        loop.after_content_cycle(
-            result={"status": "PUBLISHED", "cycle": cycle, "publication": {}},
-            now=NOW,
-        )
-    )
 
-    assert result["status"] == "HELD_BY_MISSION_GUARDRAIL"
-    assert result["guardrail"]["status"] == "HARD_STOP_ACTIVE"
-    assert not any(capability == "x.post" for capability, _ in runtime.calls)
-    assert growth.calls == []
-    assert XHistoryLedger(tmp_path).recent() == []
-
+def test_baseline_failure_is_visible_and_does_not_veto_post(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    cycle = "v2-measurement-failure"
+    _write_cycle(tmp_path, cycle)
+    model = _ModelRuntime([{"post_text": "Ferro can publish a grounded update.",
+        "rationale": "Useful evidence is ready to share."}])
+    growth = _GrowthMission()
+    def unavailable(**kwargs):
+        raise RuntimeError("follower baseline unavailable")
+    growth.record_publication_baseline = unavailable
+    transport = _BrowserTransport()
+    loop = XAutonomyLoop(runtime=_Runtime(), model_runtime=model, state_root=tmp_path,
+        base_url="", growth_mission=growth, browser_publish_transport=transport)
+    result = asyncio.run(loop.after_content_cycle(
+        result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
+    assert result["status"] == "POSTED"
+    assert result["mission_baseline"]["status"] == "MEASUREMENT_FAILED"
+    assert "follower baseline unavailable" in result["mission_baseline"]["detail"]
+    assert len(transport.calls) == 1
+    measurement = json.loads((tmp_path / "content/continuous/cycles" / cycle / "x_publication_measurement.json").read_text())
+    assert measurement == result["mission_baseline"]
 
 
 def test_x_only_cycle_without_social_draft_gets_real_l1_strategy_before_l2_text(
@@ -697,16 +646,6 @@ def test_x_only_cycle_without_social_draft_gets_real_l1_strategy_before_l2_text(
             "action": "POST",
             "post_text": "Jev chose the action; Sol only wrote this grounded sentence.",
             "rationale": "The persisted cognition is worth a concise trace.",
-        },
-        {
-            "safe": True,
-            "no_private_data": True,
-            "no_impersonation": True,
-            "no_harassment": True,
-            "no_investment_advice": True,
-            "no_fabricated_facts": True,
-            "attribution_ok": True,
-            "rationale": "Grounded and safe.",
         },
     ])
     loop = XAutonomyLoop(

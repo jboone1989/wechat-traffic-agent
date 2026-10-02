@@ -285,8 +285,6 @@ def test_writing_experience_projection_drops_large_cycle_payloads():
         "self_check": {
             "grounded": True,
             "useful": False,
-            "no_private_data": True,
-            "no_investment_advice": True,
             "next_practice": "Make the next note more specific. " + huge,
             "rationale": "The prior note was too diffuse. " + huge,
             "support": [{"source_quote": huge}],
@@ -506,9 +504,7 @@ class NewTopicRuntime(V2Runtime):
         if task.startswith("CHECK_ARTICLE:"):
             self.calls.append(task)
             return json.dumps({
-                "grounded": True, "useful": True, "no_private_data": True,
-                "no_investment_advice": True,
-                "applications": [{
+                "grounded": True, "useful": True, "applications": [{
                     "technique_index": 0,
                     "article_quote": "Explanation of supplied evidence",
                     "explanation": "The article visibly separates evidence from interpretation.",
@@ -1061,8 +1057,7 @@ class MethodExpressionRuntime(Runtime):
             })
         if task.startswith("CHECK_ARTICLE:"):
             return json.dumps({
-                "grounded": True, "useful": True, "no_private_data": True, "no_investment_advice": True,
-                "applications": [{
+                "grounded": True, "useful": True, "applications": [{
                     "technique_index": 0, "article_quote": "I found a candidate method worth testing.",
                     "explanation": "The note explicitly separates discovery from adoption.",
                 }],
@@ -1169,7 +1164,8 @@ def test_one_shot_crypto_bootstrap_sets_direction_without_replacing_future_auton
     assert published["tags"] == ["crypto-market"]
     check_call = next(call for call in runtime.calls if call.startswith("CHECK_ARTICLE:"))
     assert '"public_safe"' not in check_call
-    assert "workflow/admission metadata is not private data" in check_call
+    assert "no_private_data" not in check_call
+    assert "no_investment_advice" not in check_call
 
 
 class OwnerSeedExplorer(CryptoMissionExplorer):
@@ -1662,7 +1658,7 @@ def test_running_external_mission_gets_bounded_priority_until_experiment_starts(
     assert any(call.startswith("MISSION_DISCOVERY:") for call in runtime.calls)
 
 
-def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
+def test_audience_decline_does_not_disable_proactive_mission_discovery(tmp_path):
     from wechat_traffic_agent.content_goal_loop import _active_mission_discovery_context
 
     value = {
@@ -1677,7 +1673,7 @@ def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
         },
         "active_experiment": {"status": "PROPOSED"},
     }
-    assert _active_mission_discovery_context(value) is None
+    assert _active_mission_discovery_context(value) is not None
 
 
 @pytest.mark.parametrize(

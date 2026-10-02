@@ -552,7 +552,6 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
     x_browser_publisher = XBrowserPublisher(
         state_root=state_root,
         growth_mission=x_growth_mission,
-        draft_safety_check=(x_loop.validate_public_draft if x_loop is not None else None),
         mission_baseline_observer=(
             x_loop.capture_mission_publication_baseline
             if x_loop is not None

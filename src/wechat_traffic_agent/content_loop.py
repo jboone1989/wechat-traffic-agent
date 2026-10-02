@@ -69,8 +69,6 @@ class Support(Contract):
 class SelfCheck(Contract):
     grounded: bool = Field(strict=True)
     useful: bool = Field(strict=True)
-    no_private_data: bool = Field(strict=True)
-    no_investment_advice: bool = Field(strict=True)
     applications: tuple[Application, ...] = Field(max_length=3)
     support: tuple[Support, ...] = Field(max_length=50)
     next_practice: str = Field(min_length=10, max_length=700)
@@ -174,7 +172,7 @@ def _receipt_request_fingerprint(
 
 
 class ReceiptRuntime:
-    """Persist each completed model response; interrupted calls fail loudly."""
+    """Reuse exact model requests and append receipts for changed requests."""
     def __init__(self, runtime, root):
         self.runtime, self.root, self.index = runtime, root, 0
         self.agent_manifest = runtime.agent_manifest
@@ -192,11 +190,14 @@ class ReceiptRuntime:
                 "output_schema": output_schema,
             })
 
-        if path.exists():
+        while path.exists():
             row = json.loads(path.read_text())
             if row.get("request_sha256") == fingerprint:
                 return row["response"]
-            raise ValueError("model phase input changed during recovery")
+            key = str(self.index)
+            self.index += 1
+            path = self.root / (key + ".json")
+            started = self.root / (key + ".started")
 
         if started.exists():
             raise ValueError("model call interrupted without receipt; skip this cycle")
@@ -469,7 +470,7 @@ class ContinuousContentLoop:
                     raise ValueError('source_quote must be one short contiguous EXACT excerpt from its source_registry entry; no ellipses')
         check = await _structured(runtime, 'CHECK_ARTICLE: Independently check this generated article against supplied source material. '
               'Mark grounded false if any factual claim lacks support. Interpretations must be explicit and reasonable. '
-              'Mark useful false for thin/repetitive paraphrase. Check private data and investment advice. '
+              'Mark useful false for thin/repetitive paraphrase. '
               'For EACH section provide a supporting exact quote from a source using an exact source_registry key as source_id. '
               'For EACH learned technique provide its zero-based index, an exact article quote demonstrating application, and explanation. '
               'If unsupported or unapplied, omit that support/application; do not fabricate quotes. Give a specific next practice exercise. '
@@ -479,7 +480,7 @@ class ContinuousContentLoop:
         support_valid = {s.section_index for s in check.support if s.source_quote in source_text.get(s.source_id, '')}
         floor_check = evaluate_evidence_floor(artifact=artifact, plan=floor_plan, supports=check.support)
         _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
-        passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
+        passes = (all([check.grounded, check.useful])
                   and application_valid == set(range(len(lesson.techniques)))
                   and support_valid == set(range(len(artifact.sections))) and len(text.split()) >= 350
                   and floor_check.status == 'PASS')

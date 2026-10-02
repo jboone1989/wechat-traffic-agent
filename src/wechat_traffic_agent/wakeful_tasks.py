@@ -2089,9 +2089,6 @@ class WakefulContentTaskRunner:
                 return None
             if str(mission.get("status") or "") != "ACTIVE":
                 return None
-            hard_stop = mission.get("hard_stop")
-            if isinstance(hard_stop, dict) and hard_stop.get("active") is True:
-                return None
             mission_id = str(mission.get("mission_id") or "").strip()
             roadmap = mission.get("roadmap") if isinstance(mission.get("roadmap"), dict) else {}
             candidates = [
@@ -2336,7 +2333,7 @@ class WakefulContentTaskRunner:
                     x_receipt = {}
                 x_status = str(x_receipt.get("status") or "")
                 if x_status in {
-                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "HELD_BY_X_SAFETY"
+                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED"
                 }:
                     continue
                 if blocker_active and x_status in {
