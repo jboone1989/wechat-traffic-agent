@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .editorial_policy import editorial_scope
+
 from .fast_decision import (
     FastDecisionError,
     FastDecisionProvider,
@@ -407,13 +409,11 @@ class FerroL1Decisions:
 
     def choose_x_discovery(self, *, mission, persona, previous=None):
         results = self.provider.choose_many(
-            state={"mission": mission, "persona": persona, "previous_discovery":previous or {}},
+            state={"mission": mission, "persona": persona, "editorial_scope": editorial_scope(), "previous_discovery":previous or {}},
             decisions={"source": {
                 "MENTIONS": "Read direct questions and responses to Ferro.",
                 "HOME": "Explore the personalized following/recommendation timeline.",
-                "AGENT_RUNTIME": "Search public discussion of persistent agents and runtime state.",
-                "LIVINGRUNTIME": "Search public discussion of LivingRuntime Remote.",
-                "AGENT_MEMORY": "Search public discussion of agent memory and continuity.",
+                "SEARCH": "Investigate any self-chosen cryptocurrency, AI, or finance question with an agent-generated query.",
             }},
             instructions={"source": {"objective": "Choose public conversations Ferro wants to read and potentially join.",
                 "rules": ["Owner suggested quantities are optional advice, never quotas.",

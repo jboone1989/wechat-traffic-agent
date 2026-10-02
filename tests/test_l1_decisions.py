@@ -220,3 +220,14 @@ def test_x_strategy_bounds_information_without_losing_the_fact_count(tmp_path):
     assert state["evidence"]["useful_fact_count"] == 20
     assert len(state["evidence"]["useful_facts"]) == 6
     assert all(len(fact) <= 500 for fact in state["evidence"]["useful_facts"])
+
+
+def test_x_discovery_routes_search_without_restricting_subjects(tmp_path):
+    provider = _Provider({"source": "SEARCH"})
+    l1 = FerroL1Decisions(state_root=tmp_path, provider=provider)
+    result = l1.choose_x_discovery(mission={}, persona={"name": "Ferro"}, previous={"post_count": 0})
+    assert result["source"] == "SEARCH"
+    call = provider.calls[0]
+    assert set(call[2]["source"]) == {"HOME", "MENTIONS", "SEARCH"}
+    assert call[1]["editorial_scope"]["domains"] == ["CRYPTOCURRENCY", "AI", "FINANCE"]
+    assert call[1]["previous_discovery"]["post_count"] == 0
