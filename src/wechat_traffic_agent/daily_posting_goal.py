@@ -198,7 +198,7 @@ class DailyPostingGoal:
                     marker = str(value.get("status") or "")
                     if marker in {"ERROR", "DEGRADED", "RESOURCE_DEFERRED", "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
                                   "X_PUBLICATION_CAPABILITY_UNAVAILABLE", "PUBLICATION_UNVERIFIED",
-                                  "X_RESOURCE_BLOCKED", "HELD_BY_X_SAFETY", "X_OBSERVATION_FAILED"}:
+                                  "X_RESOURCE_BLOCKED", "HELD_BY_X_SAFETY", "X_OBSERVATION_FAILED"} or marker.endswith(("_UNAVAILABLE", "_FAILED", "_ERROR", "_BLOCKED")):
                         errors.append({"status": marker, "error_type": value.get("error_type"),
                             "message": str(value.get("detail") or value.get("message") or value.get("reason") or marker)[:500]})
                     for item in value.values():

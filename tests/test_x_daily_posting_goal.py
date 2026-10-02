@@ -154,3 +154,8 @@ def test_met_goal_does_not_raise_shortfall_from_later_unproductive_cognition(tmp
     for n in range(20): post(tmp_path,n)
     for n in range(3): goal.observe("CONTENT_COGNITION",{"status":"OK"},NOW+timedelta(minutes=5*n))
     assert not list((goal.root/"notifications").glob("*.json"))
+
+def test_provider_unavailable_notifies_on_first_failed_attempt(tmp_path):
+    goal=configured(tmp_path)
+    goal.observe("CONTENT_COGNITION",{"status":"CHATGPT_UNAVAILABLE","error_type":"AgentRuntimeChatGPTProviderError","message":"model browser request timed out"},NOW)
+    assert len(goal.reconcile(NOW)["deliveries"])==1
