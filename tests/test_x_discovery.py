@@ -85,3 +85,26 @@ class TestDomainSearch(unittest.TestCase):
         persona = public_persona_projection(self.root)
         self.assertEqual(persona["editorial_scope"]["domains"], ["CRYPTOCURRENCY", "AI", "FINANCE"])
         self.assertEqual(persona["editorial_scope"]["search_queries"], "AGENT_GENERATED")
+
+    def test_zero_results_require_an_autonomous_new_query_before_browser_execution(self):
+        original = {"domain": "CRYPTOCURRENCY", "query": "crypto drawdown regime clustering evidence",
+                    "question": "Do drawdowns cluster?", "rationale": "A durable question deserves investigation."}
+        revised = {**original, "query": "BTC volatility"}
+        runtime = SimpleNamespace(agent_manifest=None,
+                                  cognitive_probe=AsyncMock(side_effect=[json.dumps(original), json.dumps(revised)]))
+        result = asyncio.run(plan_x_search(runtime=runtime, state_root=self.root, folder=self.root / "refine",
+            mission={}, persona={}, previous={"decision": original, "post_count": 0, "posts": []}))
+        self.assertEqual(result.query, revised["query"])
+        self.assertEqual(runtime.cognitive_probe.await_count, 2)
+        self.assertIn("previous query returned zero posts", runtime.cognitive_probe.await_args.args[0])
+        self.assertIn("crypto drawdown regime clustering evidence", runtime.cognitive_probe.await_args.args[0])
+
+    def test_repeating_an_empty_query_after_repair_is_an_explicit_failure(self):
+        plan = {"domain": "FINANCE", "query": "bond inflation expectations",
+                "question": "How are expectations measured?", "rationale": "The market mechanism deserves study."}
+        runtime = SimpleNamespace(agent_manifest=None, cognitive_probe=AsyncMock(return_value=json.dumps(plan)))
+        with self.assertRaisesRegex(ValueError, "previous query returned zero posts"):
+            asyncio.run(plan_x_search(runtime=runtime, state_root=self.root, folder=self.root / "repeat",
+                mission={}, persona={}, previous={"decision": plan, "post_count": 0, "posts": []}))
+        self.assertEqual(runtime.cognitive_probe.await_count, 2)
+        self.assertFalse((self.root / "repeat/search_plan.json").exists())

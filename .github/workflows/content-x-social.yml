@@ -6,6 +6,8 @@ on:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/x_discovery.py"
+      - "src/wechat_traffic_agent/agent_runtime_chatgpt.py"
+      - "tests/test_agent_runtime_chatgpt_format.py"
       - "src/wechat_traffic_agent/editorial_policy.py"
       - "src/wechat_traffic_agent/l1_decisions.py"
       - "tests/test_l1_decisions.py"
@@ -56,6 +58,8 @@ on:
       - "src/wechat_traffic_agent/x_mcp.py"
       - "src/wechat_traffic_agent/x_social.py"
       - "src/wechat_traffic_agent/x_discovery.py"
+      - "src/wechat_traffic_agent/agent_runtime_chatgpt.py"
+      - "tests/test_agent_runtime_chatgpt_format.py"
       - "src/wechat_traffic_agent/editorial_policy.py"
       - "src/wechat_traffic_agent/l1_decisions.py"
       - "tests/test_l1_decisions.py"
@@ -119,6 +123,7 @@ jobs:
           src/wechat_traffic_agent/x_mcp.py
           src/wechat_traffic_agent/x_social.py
           src/wechat_traffic_agent/x_discovery.py
+          src/wechat_traffic_agent/agent_runtime_chatgpt.py
           src/wechat_traffic_agent/editorial_policy.py
           src/wechat_traffic_agent/l1_decisions.py
           src/wechat_traffic_agent/x_growth_mission.py
@@ -240,7 +245,7 @@ jobs:
           python -m pytest -q -c /dev/null
           tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_agent_runtime_browser_path.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
           tests/test_x_article_media.py tests/test_x_transport_transactions.py tests/test_x_owner_progress.py
-          tests/test_x_discovery.py tests/test_l1_decisions.py
+          tests/test_x_discovery.py tests/test_l1_decisions.py tests/test_agent_runtime_chatgpt_format.py
           tests/test_x_jev_social_native.py tests/test_x_jev_transaction_native.py tests/test_x_growth_loop_native.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
