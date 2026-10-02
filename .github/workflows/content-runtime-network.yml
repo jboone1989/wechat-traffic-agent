@@ -209,6 +209,17 @@ jobs:
           tests/test_x_owner_progress.py
       - name: Build isolated runtime package
         run: |
+          mkdir -p .runtime-ci
+          cp -r src/wechat_traffic_agent .runtime-ci/
+          mkdir -p .owner-runtime-ci/agent_runtime/llm
+          cat > .owner-runtime-ci/agent_runtime/llm/__init__.py <<'PY'
+          class ChatGPTBrowserProviderError(RuntimeError):
+              pass
+          class ChatGPTBrowserProvider:
+              @classmethod
+              def from_environment(cls):
+                  raise ChatGPTBrowserProviderError("CI browser I/O must be substituted by the test")
+          PY
           mkdir -p .runtime-ci/wechat_traffic_agent
           printf '%s\n' '"""Isolated persistent Content Agent tests."""' > .runtime-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/runtime_app.py .runtime-ci/wechat_traffic_agent/
@@ -238,7 +249,7 @@ jobs:
           cp src/wechat_traffic_agent/sources/trading_network.py .draft-ci/wechat_traffic_agent/sources/
       - name: Run persistent application boundary tests
         env:
-          PYTHONPATH: .runtime-ci
+          PYTHONPATH: .owner-runtime-ci:.runtime-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_content_runtime_app.py
@@ -263,7 +274,7 @@ jobs:
           printf '%s\n' 'class AgentRuntime: pass' > .editorial-ci/agent_runtime/runtime.py
       - name: Run Website editorial and scoped feedback regressions
         env:
-          PYTHONPATH: .editorial-ci
+          PYTHONPATH: .owner-runtime-ci:.editorial-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_web_editorial.py tests/test_channel_evidence.py tests/test_website_experiment.py
@@ -273,7 +284,7 @@ jobs:
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
       - name: Run Ferro open-development state-machine regressions
         env:
-          PYTHONPATH: .editorial-ci
+          PYTHONPATH: .owner-runtime-ci:.editorial-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_developmental_agency.py
