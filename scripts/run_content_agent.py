@@ -444,6 +444,8 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         state_root=state_root,
         capability_runtime=app.runtime,
     )
+    from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
+    posting_goal = DailyPostingGoal(state_root)
     private_notifier = operator_notifier()
     human_assistance = HumanAssistanceService(
         state_root=state_root,
@@ -819,6 +821,8 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                         ),
                     )
                 except Exception as exc:
+                    posting_goal.observe(task, {"status": "ERROR", "error_type": type(exc).__name__, "message": str(exc)}, datetime.now(timezone.utc))
+                    posting_goal.reconcile(datetime.now(timezone.utc))
                     maintenance = getattr(task_runner, "self_maintenance", None)
                     if maintenance is not None:
                         try:
@@ -829,6 +833,10 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                         except Exception:
                             pass  # Preserve the original task failure for the supervisor.
                     raise
+            posting_goal.observe(task, task_result, datetime.now(timezone.utc))
+            posting_report = posting_goal.reconcile(datetime.now(timezone.utc))
+            if posting_report.get("status") != "DISABLED":
+                print(json.dumps({"daily_posting_goal": posting_report}, ensure_ascii=False, sort_keys=True))
             try:
                 reflection_schedule = wakeful_runtime.schedule_reflection_from_outcome(
                     task,

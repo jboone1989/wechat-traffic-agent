@@ -2562,6 +2562,10 @@ class WakefulContentTaskRunner:
         relevant_refs: tuple[str, ...] = (),
         now: datetime | None = None,
     ) -> dict[str, Any] | None:
+        from .daily_posting_goal import DailyPostingGoal
+        daily_goal = DailyPostingGoal(self.state_root).owner_goal(now or datetime.now(timezone.utc))
+        if daily_goal is not None:
+            return daily_goal
         runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
         goals = list(getattr(runtime, "active_goals", ()) or ())
         seen_goal_ids = {

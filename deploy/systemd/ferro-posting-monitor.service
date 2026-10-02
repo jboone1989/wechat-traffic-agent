@@ -1,0 +1,12 @@
+[Unit]
+Description=Ferro original publication and WeCom delivery monitor
+Wants=agent-runtime-operator.service network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=PYTHONPATH=/home/ubuntu/agent-runtime/current/src:/home/ubuntu/virtualbrain/current/src
+ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python /home/ubuntu/content-agent/current/scripts/monitor_x_posting.py --state-root /home/ubuntu/content-agent-state
+TimeoutStartSec=45

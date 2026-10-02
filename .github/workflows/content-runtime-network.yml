@@ -27,6 +27,8 @@ on:
       - "docs/adr/0011-ferro-memory-system.md"
       - "src/wechat_traffic_agent/wakeful_runtime.py"
       - "src/wechat_traffic_agent/wakeful_tasks.py"
+      - "src/wechat_traffic_agent/daily_posting_goal.py"
+      - "scripts/monitor_x_posting.py"
       - "src/wechat_traffic_agent/developmental_agency.py"
       - "src/wechat_traffic_agent/developmental_transfer.py"
       - "src/wechat_traffic_agent/neural_dreaming.py"
@@ -148,6 +150,8 @@ jobs:
           src/wechat_traffic_agent/live_agent.py
           src/wechat_traffic_agent/wakeful_runtime.py
           src/wechat_traffic_agent/wakeful_tasks.py
+          src/wechat_traffic_agent/daily_posting_goal.py
+          scripts/monitor_x_posting.py
           src/wechat_traffic_agent/owner_agent_episode.py
           src/wechat_traffic_agent/goal_scheduler_evolution.py
           src/wechat_traffic_agent/developmental_agency.py

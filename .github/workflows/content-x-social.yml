@@ -15,6 +15,8 @@ on:
       - "src/wechat_traffic_agent/x_goal_progress.py"
       - "src/wechat_traffic_agent/owner_agent_episode.py"
       - "src/wechat_traffic_agent/wakeful_tasks.py"
+      - "src/wechat_traffic_agent/daily_posting_goal.py"
+      - "scripts/monitor_x_posting.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
@@ -67,6 +69,8 @@ on:
       - "src/wechat_traffic_agent/x_goal_progress.py"
       - "src/wechat_traffic_agent/owner_agent_episode.py"
       - "src/wechat_traffic_agent/wakeful_tasks.py"
+      - "src/wechat_traffic_agent/daily_posting_goal.py"
+      - "scripts/monitor_x_posting.py"
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
@@ -130,6 +134,8 @@ jobs:
           src/wechat_traffic_agent/x_goal_progress.py
           src/wechat_traffic_agent/owner_agent_episode.py
           src/wechat_traffic_agent/wakeful_tasks.py
+          src/wechat_traffic_agent/daily_posting_goal.py
+          scripts/monitor_x_posting.py
           src/wechat_traffic_agent/x_browser.py
           src/wechat_traffic_agent/local_browser_control.py
           src/wechat_traffic_agent/x_local_browser.py
@@ -245,7 +251,7 @@ jobs:
           python -m pytest -q -c /dev/null
           tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_agent_runtime_browser_path.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
           tests/test_x_article_media.py tests/test_x_transport_transactions.py tests/test_x_owner_progress.py
-          tests/test_x_discovery.py tests/test_l1_decisions.py tests/test_agent_runtime_chatgpt_format.py
+          tests/test_x_discovery.py tests/test_l1_decisions.py tests/test_agent_runtime_chatgpt_format.py tests/test_x_daily_posting_goal.py
           tests/test_x_jev_social_native.py tests/test_x_jev_transaction_native.py tests/test_x_growth_loop_native.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
