@@ -325,7 +325,7 @@ def test_public_chat_routes_ordinary_conversation_through_model(tmp_path):
     assert "open public conversation surface" in kwargs["system"]
     assert kwargs["_routing_task_class"] == "simple_public_text"
     assert kwargs["_minimum_quality"] == 0.7
-    assert kwargs["timeout_seconds"] == 18
+    assert kwargs["timeout_seconds"] == 90
     assert "_durable_blocking_wait" not in kwargs
     assert "_durable_blocking_wait_seconds" not in kwargs
     assert "_attempt_timeout_seconds" not in kwargs

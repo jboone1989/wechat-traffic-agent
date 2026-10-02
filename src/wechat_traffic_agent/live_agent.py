@@ -26,7 +26,7 @@ DEFAULT_PORT = 8104
 MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
-PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 24
+PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 120
 _PUBLIC_BACKEND_UNSET = object()
 PUBLIC_CHAT_STATE_TIMEOUT_SECONDS = 2.0
 
@@ -1340,7 +1340,7 @@ async def _generate_guarded_public_reply(
         "system": _PUBLIC_SYSTEM,
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
-        "timeout_seconds": 18,
+        "timeout_seconds": 90,
     }
 
     async def generate(value: str) -> str:
@@ -1714,7 +1714,13 @@ class LiveAgentService:
                     status_code=503,
                     headers={"Cache-Control": "no-store", "Retry-After": "2"},
                 )
-            except Exception:
+            except Exception as exc:
+                print(json.dumps({
+                    "public_chat_output_rejected": {
+                        "error_type": type(exc).__name__,
+                        "message": str(exc)[:1000],
+                    }
+                }, ensure_ascii=False), flush=True)
                 return JSONResponse(
                     {"error": "chat_model_temporarily_unavailable"},
                     status_code=503,
