@@ -27,7 +27,7 @@ try:
     if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
         raise RuntimeError('Pending Article is not publicly verified; no repeated submission')
     images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
-    if not cover_source or not all(any(image.split('?',1)[0]==item['src'].split('?',1)[0] for image in images) for item in cover_source):
+    if not cover_source or not all(any(media_key(image)==media_key(item['src']) for image in images) for item in cover_source):
         raise RuntimeError('Pending Article images have not been publicly verified')
     result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
             'draft_url':draft_url,'cover':images,'duplicate_found':True}
@@ -37,6 +37,10 @@ except Exception as exc:
 
 
 PUBLIC_TEXT=r'''
+def media_key(source):
+    value=urlsplit(str(source))
+    return (value.netloc, re.sub(r'\.(?:png|jpe?g|webp)$','',value.path,flags=re.I))
+
 def wait_public_text(title,body):
     deadline=time.monotonic()+30
     while time.monotonic()<deadline:
@@ -49,6 +53,7 @@ def wait_public_text(title,body):
 '''
 
 ARTICLE=r'''
+import json
 
 def checkpoint(status,submitted,cover=None):
     if not checkpoint_path:
@@ -64,12 +69,18 @@ def checkpoint(status,submitted,cover=None):
     pending.write_text(json.dumps(previous,ensure_ascii=False))
     pending.replace(path)
 
-def observed(labels, kind='click', text=None, preferred=()):
+def observed(labels, kind='click', text=None, preferred=(), selector=None):
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
+        browser.evaluate('(() => {const labels='+json.dumps(sorted(preferred or labels))+';'
+          'const selector='+json.dumps(selector)+'; const kind='+json.dumps(kind)+';'
+          'const nodes=[...document.querySelectorAll(selector || (kind==="fill"?"textarea,input,[contenteditable=true]":"button,a,[role=button]"))]'
+          '.filter(e=>e.getClientRects().length && (selector || labels.includes((e.getAttribute("aria-label") || e.getAttribute("placeholder") || e.innerText || "").trim().toLowerCase())));'
+          'if(nodes.length===1) nodes[0].scrollIntoView({block:"center"});})()')
         page=browser.observe(screenshot=False)
         candidates=[a for a in page.get('actions') or [] if a.get('kind')==kind
-            and str(a.get('label') or '').strip().casefold() in labels]
+            and (str(a.get('label') or '').strip().casefold() in labels
+                 or (selector and browser.evaluate('Boolean(window.__jevFast.nodes.get('+str(a['node'])+')?.matches('+json.dumps(selector)+'))')))]
         preferred_candidates=[a for a in candidates
             if str(a.get('label') or '').strip().casefold() in preferred]
         if preferred_candidates:
@@ -83,7 +94,12 @@ def observed(labels, kind='click', text=None, preferred=()):
         time.sleep(.15)
     raise RuntimeError('Article control missing or ambiguous: '+str(labels))
 
+def fill_body():
+    selector='[data-testid="composer"][contenteditable="true"]'
+    return observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=outbound,selector=selector)
+
 def upload_cover():
+    previous_cover=browser.evaluate("(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.closest('[contenteditable]') && e.src.startsWith('https://pbs.twimg.com/media/')).map(e=>e.src))()") or []
     browser.call('Page.setInterceptFileChooserDialog',enabled=True)
     try:
         observed({'add photos or video','添加照片或视频'})
@@ -117,27 +133,25 @@ def upload_cover():
             break
         time.sleep(.2)
     # Profile avatars cannot establish cover-upload success.
-    cover=wait_value(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && e.src.startsWith('https://pbs.twimg.com/media/')).map(e=>({src:e.src,width:e.naturalWidth,height:e.naturalHeight})))()''' + "'''" + r''',25)
+    cover=wait_value("(() => {const previousCover="+json.dumps(previous_cover)+"; return [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.closest('[contenteditable]') && e.src.startsWith('https://pbs.twimg.com/media/') && !previousCover.includes(e.src)).map(e=>({src:e.src,width:e.naturalWidth,height:e.naturalHeight}));})()",30)
     if not cover:
         raise RuntimeError('Article uploaded cover not observed')
     return cover
 
-def upload_inline_images():
+
+def upload_inline_images(cover):
     if not inline_images:
         return []
-    # Refill once before inserting media to restore the body selection at its end.
-    # No text fill is performed after an image has been inserted.
-    observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=outbound)
+    fill_body()
     inserted=[]
     for image in inline_images:
         browser.call('Page.setInterceptFileChooserDialog',enabled=True)
         try:
             observed({'add media','添加媒体内容'})
-            spec=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''') or []
-            if not spec:
-                observed({'upload media','upload files','upload image','upload images','上传媒体','上传文件','上传图片','上传照片或视频','上传照片和视频'})
-                spec=wait_value(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''',10) or []
-            candidates=[index for index,item in enumerate(spec) if any(word in item.get('accept','') for word in ('image/','.png','.jpg'))]
+            observed({'media','媒体','upload media','upload files','upload image','upload images','上传媒体','上传文件','上传图片','上传照片或视频','上传照片和视频'})
+            spec=wait_value("(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple,dialog:!!e.closest('[role=dialog]')})))()",10) or []
+            candidates=[index for index,item in enumerate(spec) if item.get('dialog')
+                        and any(word in item.get('accept','') for word in ('image/','.png','.jpg'))]
             if len(candidates)!=1:
                 raise RuntimeError('Inline image file input unavailable or ambiguous')
             doc=browser.call('DOM.getDocument',depth=-1,pierce=True)
@@ -145,16 +159,30 @@ def upload_inline_images():
             browser.call('DOM.setFileInputFiles',nodeId=nodes[candidates[0]],files=[image['path']])
         finally:
             browser.call('Page.setInterceptFileChooserDialog',enabled=False)
-        deadline=time.monotonic()+30
+        deadline=time.monotonic()+60
         while time.monotonic()<deadline:
-            hosted=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('[contenteditable=true] img')].filter(i=>i.src.startsWith('https://pbs.twimg.com/media/')).map(i=>({src:i.src,width:i.naturalWidth,height:i.naturalHeight})))()''' + "'''" + r''') or []
-            if len(hosted)>len(inserted):
-                inserted=hosted
+            previews=browser.evaluate("(() => [...document.querySelectorAll('[contenteditable=true] img')].filter(i=>i.naturalWidth>=500 && (i.src.startsWith('https://pbs.twimg.com/media/') || i.src.startsWith('blob:'))).map(i=>({src:i.src,width:i.naturalWidth,height:i.naturalHeight})))()") or []
+            processing=browser.evaluate("(() => {const t=document.querySelector('main')?.innerText || '';return /正在处理媒体|取消上传|Processing media|Cancel upload/i.test(t);})()")
+            if len(previews)>len(inserted) and not processing:
+                inserted=previews
                 break
             time.sleep(.25)
         else:
             raise RuntimeError('Native Article inline image did not upload')
-    return inserted
+    # Preview exposes durable asset identities; the editor retains blob previews.
+    # This is still an unpublished draft.
+    observed({'preview','预览'})
+    visible=wait_public_text(title,outbound)
+    if norm(outbound) not in norm(visible):
+        raise RuntimeError('Native Preview body text not verified')
+    saved=wait_value("(() => [...document.querySelectorAll('main img')].filter(i=>i.naturalWidth>=500 && i.src.startsWith('https://pbs.twimg.com/media/')).map(i=>({src:i.src,width:i.naturalWidth,height:i.naturalHeight})))()",30) or []
+    if not all(any(media_key(item['src'])==media_key(image['src']) for image in saved) for item in cover):
+        raise RuntimeError('Native Preview cover differs from uploaded cover')
+    inline=[image for image in saved if not any(media_key(image['src'])==media_key(item['src']) for item in cover)]
+    if len(inline)!=len(inline_images):
+        raise RuntimeError('Native Preview body images not verified')
+    navigate(draft_url)
+    return inline
 
 try:
     navigate(draft_url or 'https://x.com/compose/articles')
@@ -173,14 +201,14 @@ try:
     checkpoint('DRAFT_EDITING',False)
     stage='article_title'
     title_editor=observed({'add a title','添加标题',title.casefold()},kind='fill',text=title)
-    body_editor=observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=outbound)
+    body_editor=fill_body()
     for editor,expected in [(title_editor,title),(body_editor,outbound)]:
         value=browser.evaluate('(() => {const e=window.__jevFast.nodes.get('+str(editor['node'])+');return e?.value || e?.innerText || "";})()')
         if norm(value)!=norm(expected):
             raise RuntimeError('Native Article fill mismatch')
     stage='article_cover'
     cover=upload_cover()
-    inline=upload_inline_images()
+    inline=upload_inline_images(cover)
     images_to_verify=cover+inline
     if prepare_only:
         result={'status':'DRAFT_PREPARED','draft_url':draft_url,'article_id':article_id,
@@ -216,7 +244,7 @@ try:
         images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
         if not images:
             raise RuntimeError('Public Article image not verified')
-        if not all(any(image.split('?',1)[0] == item['src'].split('?',1)[0] for image in images) for item in images_to_verify):
+        if not all(any(media_key(image)==media_key(item['src']) for image in images) for item in images_to_verify):
             raise RuntimeError('Public Article images differ from uploaded cover/body images')
         result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
                 'draft_url':draft_url,'cover':images,'duplicate_found':False}

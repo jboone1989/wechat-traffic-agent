@@ -17,28 +17,37 @@ class Browser:
         self.kind,self.verify,self.parent,self.fill,self.handle,self.existing=kind,verify,parent,fill,handle,existing
         self.url='https://x.com/home';self.submitted=False;self.dialog=False
         self.values={};self.actions=[];self.uploads=[]
+        self.inline_dialog=False;self.upload_nodes=[]
 
     def call(self,method,**params):
         if method=='Page.navigate':self.url=params['url'];return {}
         if method=='Page.setInterceptFileChooserDialog':return {}
         if method=='DOM.getDocument':return {'root':{'nodeId':1}}
         if method=='DOM.querySelector':return {'nodeId':55}
-        if method=='DOM.querySelectorAll':return {'nodeIds':[55]}
-        if method=='DOM.setFileInputFiles':self.uploads.append(params['files']);return {}
+        if method=='DOM.querySelectorAll':return {'nodeIds':[55,56] if self.inline_dialog else [55]}
+        if method=='DOM.setFileInputFiles':
+            self.uploads.append(params['files']);self.upload_nodes.append(params['nodeId']);self.inline_dialog=False;return {}
         raise AssertionError(method)
 
     def evaluate(self,expression):
+        if 'scrollIntoView' in expression:return None
+        if '?.matches(' in expression:return 'get(11)' in expression
+        if 'Processing media|Cancel upload' in expression:return False
         if expression=='location.href':return self.url
         if 'ready:document.readyState' in expression:return {'url':self.url,'ready':'complete'}
         if 'AppTabBar_Profile_Link' in expression:return '/'+self.handle
         if 'location.href.includes' in expression:return self.url if '/compose/articles/edit/' in self.url else None
         if 'document.querySelector("main")?.innerText' in expression:
-            return 'Durable agents\nThe complete verified article body.' if self.submitted and self.verify else 'Unavailable'
-        if 'input[type=file]' in expression:return [{'accept':'image/png,image/jpeg','multiple':False}]
+            return 'Durable agents\nThe complete verified article body.' if self.verify and (self.submitted or self.values) else 'Unavailable'
+        if 'input[type=file]' in expression:
+            return [{'accept':'image/png,image/jpeg','multiple':False,'dialog':False},
+                    *([{'accept':'image/png,image/jpeg','multiple':True,'dialog':True}] if self.inline_dialog else [])]
         if '[contenteditable=true] img' in expression:
             return [{'src':'https://pbs.twimg.com/media/inline.png','width':1024,'height':600}] if len(self.uploads)>1 else []
+        if ".map(e=>e.src)" in expression and "!e.closest('[contenteditable]')" in expression:
+            return []
         if 'naturalWidth>=500' in expression:
-            return ['https://pbs.twimg.com/media/cover.png?name=large',*(['https://pbs.twimg.com/media/inline.png'] if len(self.uploads)>1 else [])] if 'map(e=>e.src)' in expression else [{'src':'https://pbs.twimg.com/media/cover.png','width':1500,'height':600}]
+            return ['https://pbs.twimg.com/media/cover.png?name=large',*(['https://pbs.twimg.com/media/inline.png'] if len(self.uploads)>1 else [])] if 'map(e=>e.src)' in expression else [{'src':'https://pbs.twimg.com/media/cover.png','width':1500,'height':600},*([{'src':'https://pbs.twimg.com/media/inline.png','width':1024,'height':600}] if len(self.uploads)>1 else [])]
         if 'main img[src*=pbs][src*=media]' in expression:return bool(self.uploads)
         if 'Boolean(document.querySelector("[role=dialog]"))' in expression:return False
         if 'closest("[role=dialog]")' in expression:return self.dialog
@@ -64,7 +73,9 @@ class Browser:
                      {'kind':'click','label':'发布','node':12},
                      {'kind':'click','label':'撰写','node':13},
                      {'kind':'click','label':'添加照片或视频','node':14},
-                     {'kind':'click','label':'添加媒体内容','node':15}]
+                     {'kind':'click','label':'添加媒体内容','node':15},
+                     {'kind':'click','role':'menuitem','label':'媒体','node':16},
+                     {'kind':'click','role':'link','label':'预览','node':17}]
         elif self.dialog:
             actions=[{'kind':'fill','role':'textbox','label':'帖子文本','node':10},
                      {'kind':'click','label':'回复','node':12}]
@@ -75,6 +86,8 @@ class Browser:
         self.actions.append(action)
         if action['kind']=='fill':self.values[action['node']]=text
         elif action['node'] in {14,15}:pass
+        elif action['node']==16:self.inline_dialog=True
+        elif action['node']==17:self.url='https://x.com/compose/articles/edit/789/preview'
         elif action['node']==13:
             if self.kind=='article':self.url='https://x.com/compose/articles/edit/789'
             else:self.dialog=True
@@ -166,6 +179,7 @@ class TestJevNativeSocial(unittest.TestCase):
             image_path='/tmp/cover.png',expected_handle='ferro',inline_images=[{'path':'/tmp/body.png'}]))
         self.assertEqual(result['status'],'POSTED')
         self.assertEqual(browser.uploads,[['/tmp/cover.png'],['/tmp/body.png']])
+        self.assertEqual(browser.upload_nodes,[55,56])
         self.assertIn('https://pbs.twimg.com/media/inline.png',result['cover'])
 
     def test_public_article_waits_for_content_after_layout_renders(self):

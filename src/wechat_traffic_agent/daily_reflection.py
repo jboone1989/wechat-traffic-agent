@@ -393,6 +393,34 @@ class DailyReflectionService:
         return str(value)[:240]
 
     @classmethod
+    def _limit_context(cls, value: Any, budget: int) -> Any:
+        """Bound the serialized evidence, leaving the persisted snapshot intact."""
+        encode = lambda item: json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        if len(encode(value)) <= budget:
+            return value
+        if isinstance(value, str):
+            text = value[:max(0, budget - 20)]
+            while len(encode(text + " [truncated]")) > budget and text:
+                text = text[:-1]
+            return text + " [truncated]"
+        if isinstance(value, dict):
+            items = list(value.items())[-12:]
+            overhead = sum(len(encode(str(key))) + 2 for key, _ in items) + 2
+            share = max(16, (budget - overhead) // max(1, len(items)))
+            result = {key: cls._limit_context(item, share) for key, item in items}
+            while len(encode(result)) > budget and result:
+                result.pop(next(iter(result)))
+            return result
+        if isinstance(value, (list, tuple)):
+            items = list(value)[-12:]
+            share = max(16, (budget - len(items) - 2) // max(1, len(items)))
+            result = [cls._limit_context(item, share) for item in items]
+            while len(encode(result)) > budget and result:
+                result.pop(0)
+            return result
+        return str(value)[:max(0, budget - 2)]
+
+    @classmethod
     def _mind_context(cls, snapshot: dict[str, Any]) -> dict[str, Any]:
         context: dict[str, Any] = {}
         for key in (
@@ -406,7 +434,12 @@ class DailyReflectionService:
             "identity",
         ):
             if key in snapshot:
-                context[key] = cls._compact(snapshot[key])
+                context[key] = cls._limit_context(cls._compact(snapshot[key]), 1400)
+        context["evidence_scope"] = {
+            "kind": "bounded_recent_projection",
+            "max_chars_per_section": 1400,
+            "persisted_snapshot_changed": False,
+        }
         return context
 
     @staticmethod
