@@ -1308,3 +1308,49 @@ def test_resource_review_advances_one_self_repair_item_on_recovery_lane(tmp_path
     assert result["status"] == "BATCH_PROGRESSED"
     assert repair.calls == [(NOW, 1)]
     assert wakeful.self_maintenance_retries == [(NOW, 120)]
+
+def test_published_social_failure_keeps_final_cause_in_cycle(tmp_path):
+    class BrokenSocial:
+        async def after_content_cycle(self, **kwargs):
+            raise RuntimeError("browser stack:" + "x" * 1600 + ": final cause: target closed")
+    runner = WakefulContentTaskRunner(state_root=tmp_path, social_expression_loop=BrokenSocial())
+    rows = {"status":"OK"}
+    runner._run_social_stage(rows=rows, continuous={"status":"PUBLISHED","cycle":"c"}, now=NOW)
+    path = tmp_path / "content/continuous/cycles/c/social_expression_drafts.error.json"
+    error = json.loads(path.read_text())
+    assert error["error_detail"].endswith("final cause: target closed")
+    assert rows["social_expression_drafts"] == error
+    assert rows["status"] == "DEGRADED"
+
+
+def test_missing_published_social_draft_recovers_before_explicit_owner_focus(tmp_path):
+    state_root = tmp_path / "state"
+    cycle = "published-before-owner-focus"
+    folder = state_root / "content/continuous/cycles" / cycle
+    folder.mkdir(parents=True)
+    published = {"status":"PUBLISHED","cycle":cycle}
+    (folder / "result.json").write_text(json.dumps(published))
+    (folder / "cognition.json").write_text(json.dumps({"worth_saying":True}))
+    order = []
+    class Social:
+        async def after_content_cycle(self, *, result, now):
+            if result.get("status") != "PUBLISHED":
+                return {"status":"NO_EXPRESSION"}
+            order.append("recover")
+            (folder / "social_expression_drafts.json").write_text(json.dumps({"status":"DRAFT_READY"}))
+            return {"status":"DRAFTED"}
+    class NewLoop(Loop):
+        async def run_once(self, **kwargs):
+            order.append("new-cognition")
+            return await super().run_once(**kwargs)
+    runner = WakefulContentTaskRunner(
+        app=App(), state_root=state_root, wakeful=Wakeful(),
+        network_service=None, web_worker=None, gsc_collector=None,
+        x_loop=None, x_browser_publisher=None, okx_orbit_publisher=None,
+        continuous_loop=NewLoop(state_root), resource_economy=Economy(),
+        social_expression_loop=Social(),
+    )
+    result = runner.run("CONTENT_COGNITION", now=NOW, focus_topic="new-owner-topic")
+    assert order == ["recover","new-cognition"]
+    assert result["social_stage_backlog_recovery"]["cycle"] == cycle
+    assert json.loads((folder / "result.json").read_text()) == published

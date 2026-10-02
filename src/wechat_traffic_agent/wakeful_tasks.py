@@ -2389,7 +2389,9 @@ class WakefulContentTaskRunner:
                     social_loop.after_content_cycle(result=continuous, now=now)
                 )
             except Exception as exc:  # noqa: BLE001
-                rows["social_expression_drafts"] = self._error(exc)
+                rows["social_expression_drafts"] = self._social_stage_error(
+                    exc, stage="social_expression_drafts", continuous=continuous, now=now
+                )
                 rows["status"] = "DEGRADED"
         for name, publisher in (
             ("x_browser_publication", getattr(self, "x_browser_publisher", None)),
@@ -2405,7 +2407,9 @@ class WakefulContentTaskRunner:
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                rows[name] = self._error(exc)
+                rows[name] = self._social_stage_error(
+                    exc, stage=name, continuous=continuous, now=now
+                )
                 rows["status"] = "DEGRADED"
         x_loop = getattr(self, "x_loop", None)
         if x_loop is not None:
@@ -2429,8 +2433,29 @@ class WakefulContentTaskRunner:
                     )
                     tmp.replace(receipt)
             except Exception as exc:  # noqa: BLE001
-                rows["x_social_expression"] = self._error(exc)
+                rows["x_social_expression"] = self._social_stage_error(
+                    exc, stage="x_social_expression", continuous=continuous, now=now
+                )
                 rows["status"] = "DEGRADED"
+
+    def _social_stage_error(self, exc: Exception, *, stage: str, continuous: dict[str, Any], now: datetime) -> dict[str, Any]:
+        """Keep the final browser cause beside the failed cycle for recovery."""
+        from .llm_audit import _redact
+
+        error = {
+            **self._error(exc),
+            "error_detail": _redact(str(exc)),
+            "observed_at": now.isoformat(),
+            "cycle": str(continuous.get("cycle") or ""),
+        }
+        state_root = getattr(self, "state_root", None)
+        if state_root is not None and error["cycle"]:
+            path = Path(state_root) / "content" / "continuous" / "cycles" / error["cycle"] / f"{stage}.error.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(error, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+            tmp.replace(path)
+        return error
 
     def _recover_social_stage_backlog(
         self,
@@ -3108,7 +3133,6 @@ class WakefulContentTaskRunner:
             self._recover_social_stage_backlog(
                 rows=rows,
                 now=now,
-                x_mission_only=True,
             )
         owner_goal = self._active_owner_goal_context(
             relevant_refs=relevant_refs,
@@ -3210,11 +3234,6 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         if self.continuous_loop is None:
             return rows
-        if focus_topic is None:
-            self._recover_social_stage_backlog(
-                rows=rows,
-                now=now,
-            )
         # Strategy selection consumes traffic context, so refresh GSC immediately before it.
         # This preserves the pre-Wakeful ordering contract without restoring a monolithic poll loop.
         if self.gsc_collector is not None:
