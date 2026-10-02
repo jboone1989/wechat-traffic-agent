@@ -301,13 +301,17 @@ class FerroL1Decisions:
         state = {
             "cycle": str(cycle),
             "cognition": {
-                key: cognition.get(key)
+                key: (_clip(cognition.get(key), 1200) if isinstance(cognition.get(key), str) else cognition.get(key))
                 for key in (
                     "expression_kind",
                     "worth_saying",
                     "topic",
                     "summary",
                     "uncertainty",
+                    "belief_proposition",
+                    "what_changed",
+                    "what_matters",
+                    "rationale",
                 )
                 if cognition.get(key) is not None
             },
@@ -315,6 +319,7 @@ class FerroL1Decisions:
                 "action": resolution.get("action"),
                 "rationale": _clip(resolution.get("rationale"), 500),
                 "useful_fact_count": len(list(resolution.get("useful_facts") or [])),
+                "useful_facts": [_clip(fact, 500) for fact in list(resolution.get("useful_facts") or [])[:6]],
             },
             "mission": _compact_mapping(
                 mission,

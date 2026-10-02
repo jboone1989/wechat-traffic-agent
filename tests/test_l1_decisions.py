@@ -180,3 +180,40 @@ def test_social_attention_routes_reply_before_l2_wording(tmp_path):
     assert result["category"] == "QUESTION"
     assert result["valuable_evidence"] is False
     assert provider.calls[0][0] == "BATCH"
+
+@pytest.mark.parametrize("timing", ["POST_NOW", "HOLD"])
+def test_x_strategy_receives_actual_cognition_information_and_supported_facts(tmp_path, timing):
+    provider = _Provider({"post_timing":timing,"x_format":"SHORT_POST","exploration_mode":"EXPLORE","angle":"BUILD_IN_PUBLIC"})
+    l1 = FerroL1Decisions(state_root=tmp_path, provider=provider)
+    result = l1.choose_x_strategy(
+        cycle="owner-cycle",
+        cognition={
+            "worth_saying":True,"expression_kind":"THOUGHT",
+            "belief_proposition":"Durable jobs can outlive chat turns.",
+            "what_changed":"Repository evidence strengthened this architectural belief.",
+            "what_matters":"Bounded tools preserve control while detached execution preserves continuity.",
+            "rationale":"The project documents the design; reliability outcomes remain unproven.",
+        },
+        evidence={"resolution":{"action":"DRAFT","useful_facts":["The repository documents persistent checkpoints."]}},
+        mission={"status":"ACTIVE"},performance={},
+    )
+    state = provider.calls[0][1]
+    assert state["cognition"]["what_matters"].startswith("Bounded tools")
+    assert state["cognition"]["belief_proposition"] == "Durable jobs can outlive chat turns."
+    assert state["evidence"]["useful_facts"] == ["The repository documents persistent checkpoints."]
+    assert result["post_timing"] == timing
+
+
+def test_x_strategy_bounds_information_without_losing_the_fact_count(tmp_path):
+    provider = _Provider({"post_timing":"HOLD","x_format":"SHORT_POST","exploration_mode":"EXPLORE","angle":"BUILD_IN_PUBLIC"})
+    l1 = FerroL1Decisions(state_root=tmp_path, provider=provider)
+    l1.choose_x_strategy(
+        cycle="c",cognition={"what_matters":"m"*5000},
+        evidence={"resolution":{"action":"DRAFT","useful_facts":["f"*2000]*20}},
+        mission={},performance={},
+    )
+    state = provider.calls[0][1]
+    assert len(state["cognition"]["what_matters"]) <= 1200
+    assert state["evidence"]["useful_fact_count"] == 20
+    assert len(state["evidence"]["useful_facts"]) == 6
+    assert all(len(fact) <= 500 for fact in state["evidence"]["useful_facts"])
