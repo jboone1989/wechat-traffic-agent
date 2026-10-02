@@ -7,6 +7,15 @@ from typing import Any, AsyncIterator
 from agent_runtime.llm import ChatGPTBrowserProvider, ChatGPTBrowserProviderError
 
 
+_JSON_BROWSER_FORMAT = (
+    "\n\nCHATGPT_WEB_JSON_FORMAT: This response is read from rendered ChatGPT Web. "
+    "If the task's output contract requests JSON, return the requested JSON in one fenced json code block "
+    "(triple backticks), with no text outside it. This transport format overrides instructions to omit code fences. "
+    "Use valid JSON escaping for quotes, backslashes and newlines inside string values; "
+    "the code block preserves these characters through Markdown rendering. "
+    "Preserve the requested schema and content exactly. For a prose output contract, respond normally."
+)
+
 _ROUTING_TASK_CLASS: ContextVar[str] = ContextVar(
     "agent_runtime_chatgpt_routing_task_class",
     default="",
@@ -84,7 +93,7 @@ class AgentRuntimeChatGPTProvider:
 
     async def complete(self, prompt: str, **kwargs: Any) -> str:
         try:
-            text = await self._provider.complete(prompt, **self._kwargs(kwargs))
+            text = await self._provider.complete(prompt + _JSON_BROWSER_FORMAT, **self._kwargs(kwargs))
         except (ChatGPTBrowserProviderError, OSError, RuntimeError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         self._record_provenance()
@@ -98,7 +107,7 @@ class AgentRuntimeChatGPTProvider:
     ) -> dict[str, Any]:
         try:
             value = await self._provider.structured(
-                prompt,
+                prompt + _JSON_BROWSER_FORMAT,
                 schema,
                 **self._kwargs(kwargs),
             )
