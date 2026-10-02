@@ -43,19 +43,20 @@ def jev_x_reply(text, target_url, expected_handle='', reconcile_only=False, chec
     return ('outbound = ' + json.dumps(text, ensure_ascii=False) + '\ntarget_url = ' + json.dumps(target_url)
             + '\nexpected_handle = ' + json.dumps(expected_handle) + '\nreconcile_only = ' + repr(reconcile_only)
             + '\ncheckpoint_path = ' + repr(checkpoint_path) + '\n' + helpers() + r'''
-def checkpoint_submit():
+def checkpoint_submit(submitted=True):
     if not checkpoint_path:
         return
     import json
     from pathlib import Path
     path=Path(checkpoint_path)
     previous=json.loads(path.read_text())
-    previous.update({'status':'SUBMIT_PENDING','attempted':True})
+    previous.update({'status':'SUBMIT_PENDING' if submitted else 'PREPARING','attempted':submitted})
     pending=path.with_suffix('.tmp')
     pending.write_text(json.dumps(previous,ensure_ascii=False))
     pending.replace(path)
 
 def reply_action(kind, submit=False):
+    global attempted
     deadline = time.monotonic()+20
     while time.monotonic()<deadline:
         page = browser.observe(screenshot=False)
@@ -77,9 +78,15 @@ def reply_action(kind, submit=False):
                     candidates.append(a)
         if len(candidates)==1:
             try:
+                if submit:
+                    checkpoint_submit()
+                    attempted=True
                 browser.act(candidates[0],page,text=outbound if kind=='fill' else None)
                 return candidates[0]
             except StalePage:
+                if submit:
+                    attempted=False
+                    checkpoint_submit(False)
                 continue
         time.sleep(.15)
     raise RuntimeError('Jev reply control unavailable or ambiguous')
@@ -119,8 +126,6 @@ try:
         rendered=browser.evaluate('window.__jevFast.nodes.get('+str(editor['node'])+')?.innerText')
         if norm(rendered)!=norm(outbound):
             raise RuntimeError('Reply fill mismatch')
-        checkpoint_submit()
-        attempted=True
         reply_action('click',submit=True)
         for _ in range(4):
             time.sleep(.8)

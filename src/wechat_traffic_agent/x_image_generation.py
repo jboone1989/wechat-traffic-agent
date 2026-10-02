@@ -164,7 +164,7 @@ try:
     with Image.open(io.BytesIO(data)) as image:
         image.load()
         width,height=image.size
-        if width<256 or height<192:
+        if width<512 or height<192:
             raise RuntimeError('Generated image dimensions are too small')
         output=Path(image_path)
         tmp=output.with_suffix('.tmp.png')

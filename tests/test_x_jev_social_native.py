@@ -115,6 +115,17 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
         self.assertEqual(browser.actions,[])
 
+    def test_missing_submit_control_does_not_create_uncertain_publication(self):
+        class MissingSubmit(Browser):
+            def observe(self,screenshot=False):
+                page=super().observe(screenshot)
+                if self.dialog:
+                    page['actions']=[a for a in page['actions'] if a['kind']=='fill']
+                return page
+        result=execute(MissingSubmit('reply'),jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro'))
+        self.assertEqual(result['status'],'FAILED')
+        self.assertFalse(result['attempted'])
+
     def test_existing_reply_reconciles_without_input(self):
         browser=Browser('reply',existing=True)
         result=execute(browser,jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro',reconcile_only=True))
