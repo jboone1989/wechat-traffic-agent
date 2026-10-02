@@ -40,8 +40,19 @@ def discovery_interests(state_root: Path) -> dict:
 async def plan_x_search(*, runtime, state_root: Path, folder: Path, mission, persona, previous) -> XSearchPlan:
     from .content_loop import ReceiptRuntime, _structured
     receipt = Path(folder) / "search_plan.json"
+    previous_decision = previous.get("decision") or {}
+    previous_query = str(previous_decision.get("query") or "")
+    def validate_search(plan):
+        if (previous.get("post_count") == 0 and previous_query
+                and " ".join(plan.query.casefold().split()) == " ".join(previous_query.casefold().split())):
+            raise ValueError(
+                "The previous query returned zero posts. Generate a different, broader query "
+                "by dropping restrictive terms or choosing another cryptocurrency, AI, or finance interest."
+            )
     if receipt.exists():
-        return XSearchPlan.model_validate_json(receipt.read_text(encoding="utf-8"))
+        plan = XSearchPlan.model_validate_json(receipt.read_text(encoding="utf-8"))
+        validate_search(plan)
+        return plan
     feedback = {
         "decision": previous.get("decision"),
         "post_count": previous.get("post_count"),
@@ -54,6 +65,10 @@ async def plan_x_search(*, runtime, state_root: Path, folder: Path, mission, per
         "X_SEARCH_PLAN: Choose the public conversation you want to investigate and write your own X search query. "
         + EDITORIAL_SCOPE_INSTRUCTION
         + " Any language, entities, subtopic, or X search operators may be used when useful. "
+        "Keep the research question separate from the query. Begin with a few distinctive search terms, "
+        "not a sentence listing every desired evidence property; combine alternatives with OR when useful. "
+        "After zero results, generate a different broader query: remove restrictive terms, "
+        "or explore another interest within the three domains. Never submit the identical empty query again. "
         "Use prior observed results to refine, broaden, or change the query; an empty or irrelevant search "
         "is feedback, not a reason to stop exploring. Do not default to agent memory or LivingRuntime. "
         "Mission pressure may guide relevance but does not replace your interests or require a reply. "
@@ -63,7 +78,7 @@ async def plan_x_search(*, runtime, state_root: Path, folder: Path, mission, per
                       "persona": persona, "mission": mission, "previous_search_feedback": feedback},
                      ensure_ascii=False)
     )
-    plan = await _structured(ReceiptRuntime(runtime, Path(folder) / "model_calls"), prompt, XSearchPlan)
+    plan = await _structured(ReceiptRuntime(runtime, Path(folder) / "model_calls"), prompt, XSearchPlan, validate=validate_search)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     pending = receipt.with_suffix(".json.tmp")
     pending.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
