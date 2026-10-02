@@ -210,6 +210,12 @@ class XAutonomyLoop:
             or str(row.get("resource") or "") == "X_API_CREDITS"
         ):
             return None
+        if str(row.get("transport") or "") != "JEV_AGENT_RUNTIME":
+            _write_json(self.publication_blocker_path, {
+                **row, "status": "SUPERSEDED", "superseded_at": now.isoformat(),
+                "reason": "publication executor changed to JEV_AGENT_RUNTIME",
+            })
+            return None
         raw = str(row.get("retry_after") or "")
         try:
             retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -241,7 +247,8 @@ class XAutonomyLoop:
             "required_action": str(required_action),
             "first_seen_at": first_seen,
             "last_seen_at": now.isoformat(),
-            "retry_after": (now + timedelta(hours=6)).isoformat(),
+            "retry_after": (now + timedelta(seconds=60)).isoformat(),
+            "transport": "JEV_AGENT_RUNTIME",
             "receipt_id": receipt_id,
             "detail": str(detail)[:400],
         }
@@ -305,7 +312,7 @@ class XAutonomyLoop:
     ) -> dict[str, Any]:
         if self.growth_mission is None:
             return {"status": "NO_GROWTH_MISSION"}
-        user, identity_receipt = self._identity(now=now)
+        user, identity_receipt = await self._publication_identity(now=now)
         record = getattr(self.growth_mission, "record_publication_baseline", None)
         if not callable(record):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
@@ -692,7 +699,7 @@ class XAutonomyLoop:
                     "cycle": cycle,
                     "guardrail": guard,
                 }
-        me, _identity_receipt = self._identity(now=now)
+        me, _identity_receipt = await self._publication_identity(now=now)
         if self.growth_mission is not None:
             if isinstance(mission_binding, dict) and bool(mission_binding.get("bound")):
                 baseline = self.growth_mission.record_publication_baseline(
@@ -708,94 +715,27 @@ class XAutonomyLoop:
                         "binding": mission_binding,
                         "baseline": baseline,
                     }
-        post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
-        publication_receipt_id = post.receipt_id
-        publication_transport = "X_API"
-        publication_url: str | None = None
-        transport_failover: dict[str, Any] | None = None
-        post_id = ""
-        if not post.payload.get("ok"):
-            post_status = str(post.payload.get("status") or "X_POST_FAILED")
-            detail = str(post.payload.get("detail") or "")[:300]
-            if post_status == "X_CREDITS_DEPLETED":
-                try:
-                    browser_transport = self.browser_publish_transport
-                    if browser_transport is None:
-                        from .x_browser import XBrowserTransportRouter
-                        browser_transport = XBrowserTransportRouter(state_root=self.state_root)
-                    published = await browser_transport.publish(text=decision.post_text)
-                except Exception as fallback_exc:
-                    fallback_detail = (
-                        f"X API credits depleted ({detail or 'no detail'}); "
-                        f"authenticated browser publication also failed: "
-                        f"{type(fallback_exc).__name__}: {str(fallback_exc)[:220]}"
-                    )
-                    blocker = self._record_publication_blocker(
-                        now=now,
-                        status="X_PUBLICATION_CAPABILITY_UNAVAILABLE",
-                        detail=fallback_detail,
-                        receipt_id=post.receipt_id,
-                    )
-                    self._write_status(
-                        now=now,
-                        status="X_PUBLICATION_CAPABILITY_UNAVAILABLE",
-                        detail=fallback_detail,
-                    )
-                    return {
-                        "status": "X_PUBLICATION_CAPABILITY_UNAVAILABLE",
-                        "cycle": cycle,
-                        "receipt_id": post.receipt_id,
-                        "detail": fallback_detail,
-                        "blocker": blocker,
-                        "retry_after": blocker["retry_after"],
-                        "transport_failover": {
-                            "status": "BROWSER_FALLBACK_FAILED",
-                            "failed_transport": "X_API",
-                            "fallback_transport": "AUTHENTICATED_BROWSER",
-                            "api_status": post_status,
-                            "fallback_error_type": type(fallback_exc).__name__,
-                            "fallback_error_detail": str(fallback_exc),
-                        },
-                    }
-                post_id = str(getattr(published, "post_id", "") or "").strip()
-                publication_url = str(getattr(published, "url", "") or "").strip() or None
-                provider = str(getattr(published, "provider", "") or "BROWSER").strip()
-                publication_transport = f"{provider}_BROWSER"
-                publication_receipt_id = f"x-browser-fallback:{cycle}:{post_id}"
-                transport_failover = {
-                    "status": "BROWSER_FALLBACK_USED",
-                    "failed_transport": "X_API",
-                    "fallback_transport": publication_transport,
-                    "api_status": post_status,
-                    "reason": "provider-specific X API credits exhausted",
-                }
-                self._clear_publication_blocker(
-                    now=now,
-                    receipt_id=publication_receipt_id,
-                )
-                self._write_status(
-                    now=now,
-                    status="OK_BROWSER_FALLBACK",
-                    detail=(
-                        "X API credits are depleted; publication succeeded through "
-                        "the authenticated browser transport."
-                    ),
-                )
-                self._activity(
-                    cycle=cycle,
-                    title="Published on X through browser fallback",
-                    detail=(
-                        "The X API provider was unavailable, so I used the existing "
-                        "authenticated browser capability instead of blocking the goal."
-                    ),
-                )
-            else:
-                return {
-                    "status": post_status, "cycle": cycle,
-                    "receipt_id": post.receipt_id, "detail": detail,
-                }
-        else:
-            post_id = first_post_id(post.payload.get("data")) or ""
+        try:
+            published = await self._publish_through_browser(text=decision.post_text)
+        except Exception as exc:
+            from .x_browser import XBrowserPublicationUnverified
+            status = (
+                "PUBLICATION_UNVERIFIED" if isinstance(exc, XBrowserPublicationUnverified)
+                else "X_PUBLICATION_CAPABILITY_UNAVAILABLE"
+            )
+            blocker = self._record_publication_blocker(
+                now=now, status=status, detail=str(exc), receipt_id=None,
+            )
+            return {
+                "status": status, "cycle": cycle, "blocker": blocker,
+                "transport": "JEV_AGENT_RUNTIME", "transport_failover": None,
+                "error_type": type(exc).__name__, "detail": str(exc)[:400],
+            }
+        post_id = str(published.post_id).strip()
+        publication_url = str(published.url).strip()
+        publication_transport = str(published.provider)
+        publication_receipt_id = f"x-browser-publication:{cycle}:{post_id}"
+        transport_failover = None
         if not post_id:
             return {
                 "status": "X_POST_ID_MISSING",
@@ -866,6 +806,36 @@ class XAutonomyLoop:
             "owner_execution_request": context.get("owner_publication_request") or None,
         }
 
+    async def _publish_through_browser(self, *, text: str):
+        transport = self.browser_publish_transport
+        if transport is None:
+            from .x_browser import XBrowserTransportRouter
+            transport = XBrowserTransportRouter(state_root=self.state_root)
+        return await transport.publish(text=text)
+
+    async def _publication_identity(self, *, now: datetime):
+        transport = self.browser_publish_transport
+        if transport is None:
+            from .x_browser import XBrowserTransportRouter
+            transport = XBrowserTransportRouter(state_root=self.state_root)
+        user = await transport.identity()
+        cached = _read_json(self.profile_path)
+        handle = str(user.get("username") or "").lstrip("@")
+        if not handle:
+            raise RuntimeError("Jev publication identity has no handle")
+        if str(cached.get("handle") or "").casefold() == handle.casefold():
+            user["id"] = str(cached.get("id") or "")
+        receipt_id = f"x-browser-identity:{handle}:{now.isoformat()}"
+        _write_json(self.profile_path, {
+            **cached, "handle": handle, "id": str(user.get("id") or ""),
+            "synced_at": now.isoformat(), "name": user.get("name") or handle,
+            "public_metrics": user.get("public_metrics") or {},
+            "followers_count": follower_count_from_user(user),
+            "identity_receipt_id": receipt_id,
+            "identity_source": "JEV_AGENT_RUNTIME",
+        })
+        return user, receipt_id
+
     async def _safety_check(self, *, model_runtime: ReceiptRuntime, text: str, context: dict[str, Any]) -> XSafetyDecision:
         prompt = (
             "X_SAFETY_CHECK: Check the candidate X post only against the supplied persisted public cognition/artifact context. "
@@ -912,20 +882,16 @@ class XAutonomyLoop:
         safety = await self._safety_check(model_runtime=model_runtime, text=decision.post_text, context={"settlements": terminal})
         if not _safety_passes(safety):
             return
-        me, _ = self._identity(now=now)
-        post = self.runtime.invoke("x.post", {"user_id": str(me.get("id") or ""), "text": decision.post_text})
-        if not post.payload.get("ok"):
-            self._activity(cycle=cycle, title="Prediction update was not published", detail=str(post.payload.get("status") or "X API error"), status="stopped")
-            return
-        post_id = first_post_id(post.payload.get("data"))
+        published = await self._publish_through_browser(text=decision.post_text)
+        post_id = str(published.post_id).strip()
         if not post_id:
-            return
-        handle = str(me.get("username") or "").lstrip("@")
-        url = f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
+            raise RuntimeError("Jev prediction publication returned no post id")
+        url = str(published.url).strip()
+        receipt_id = f"x-browser-publication:{cycle}:{post_id}"
         row = self.history.append({
             "event_type": "PREDICTION_OUTCOME", "cycle": cycle, "expression_kind": "PREDICTION_OUTCOME",
             "text": decision.post_text, "x_post_id": post_id, "x_url": url,
-            "runtime_receipt_id": post.receipt_id, "prediction_outcomes": terminal,
+            "runtime_receipt_id": receipt_id, "prediction_outcomes": terminal,
             "lineage": {"cycle": cycle, "settlement_file": "prediction_settlements.json", "future_cognition": True},
         })
         self._update_recent_public_posts(row)

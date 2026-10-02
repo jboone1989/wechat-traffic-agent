@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
+from wechat_traffic_agent.browser_runtime import BrowserRuntimeUnavailable
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -79,6 +81,7 @@ class _Runtime:
         if capability_id == "x.bookmark":
             return SimpleNamespace(payload={"ok": True, "data": {"data": {"bookmarked": True}}}, receipt_id=rid)
         if capability_id == "x.post":
+            raise AssertionError("Original publication must never call the X API")
             status = "OK" if self.post_ok else (self.post_status or "X_API_ERROR")
             return SimpleNamespace(
                 payload={
@@ -158,6 +161,29 @@ class _ModelRuntime:
     def persist(self):
         pass
 
+
+
+class _BrowserTransport:
+    def __init__(self, *, ok=True):
+        self.ok, self.calls = ok, []
+    async def identity(self):
+        return {"id":"me","username":"agent","public_metrics":{"followers_count":2000}}
+    async def publish(self, *, text):
+        self.calls.append(text)
+        if not self.ok:
+            raise BrowserRuntimeUnavailable("Jev browser publication unavailable")
+        return SimpleNamespace(post_id="p42",url="https://x.com/agent/status/p42",
+                               handle="agent",provider="JEV_AGENT_RUNTIME")
+
+@pytest.fixture(autouse=True)
+def _inject_browser_transport(monkeypatch):
+    original = XAutonomyLoop.__init__
+    def initialize(self, **kwargs):
+        original(self, **kwargs)
+        if self.browser_publish_transport is None:
+            self.browser_publish_transport = _BrowserTransport(
+                ok=getattr(self.runtime,"post_ok",True))
+    monkeypatch.setattr(XAutonomyLoop,"__init__",initialize)
 
 def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
@@ -298,7 +324,7 @@ def test_x_mission_can_express_grounded_held_website_cycle(tmp_path: Path, monke
     ))
 
     assert result["status"] == "POSTED"
-    assert any(capability == "x.post" for capability, _ in runtime.calls)
+    assert not any(capability == "x.post" for capability, _ in runtime.calls)
     assert growth.calls[0]["post_id"] == "p42"
 
 
@@ -352,7 +378,7 @@ def test_expression_posts_only_from_persisted_cognition_and_records_lineage(tmp_
     assert result["mission_experiment_transition"]["status"] == "STARTED"
     assert growth.calls == [{
         "cycle": cycle,
-        "publication_receipt_id": "receipt:x.post:2",
+        "publication_receipt_id": f"x-browser-publication:{cycle}:p42",
         "post_id": "p42",
         "now": NOW,
     }]
@@ -372,11 +398,11 @@ def test_failed_x_post_does_not_create_fake_history(tmp_path: Path, monkeypatch)
     ])
     loop = XAutonomyLoop(runtime=_Runtime(post_ok=False), model_runtime=model, state_root=tmp_path, base_url="")
     result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle, "publication": {}}, now=NOW))
-    assert result["status"] == "X_API_ERROR"
+    assert result["status"] == "X_PUBLICATION_CAPABILITY_UNAVAILABLE"
     assert XHistoryLedger(tmp_path).recent() == []
 
 
-def test_x_post_credits_depleted_fails_over_to_authenticated_browser(
+def test_x_original_post_uses_authenticated_browser_without_api(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
@@ -400,7 +426,7 @@ def test_x_post_credits_depleted_fails_over_to_authenticated_browser(
         },
     ]
 
-    class BrowserTransport:
+    class BrowserTransport(_BrowserTransport):
         def __init__(self):
             self.calls = []
 
@@ -410,7 +436,7 @@ def test_x_post_credits_depleted_fails_over_to_authenticated_browser(
                 post_id="browser-p42",
                 url="https://x.com/agent/status/browser-p42",
                 handle="agent",
-                provider="JEV_ACCOUNT",
+                provider="JEV_AGENT_RUNTIME",
                 duplicate_found=False,
             )
 
@@ -434,27 +460,27 @@ def test_x_post_credits_depleted_fails_over_to_authenticated_browser(
 
     assert result["status"] == "POSTED"
     assert result["post_id"] == "browser-p42"
-    assert result["transport"] == "JEV_ACCOUNT_BROWSER"
-    assert result["transport_failover"]["status"] == "BROWSER_FALLBACK_USED"
+    assert result["transport"] == "JEV_AGENT_RUNTIME"
+    assert result["transport_failover"] is None
     classified = classify_task_result(
         "CONTENT_COGNITION",
         {"status": "OK", "x_social_expression": result},
     )
-    assert any(
+    assert not any(
         symptom["kind"] == "fallback_dependency"
         for symptom in classified["symptoms"]
     )
     assert browser.calls == ["A grounded test post."]
     assert growth.calls[0]["publication_receipt_id"] == (
-        "x-browser-fallback:v2-x-credit-browser-fallback:browser-p42"
+        "x-browser-publication:v2-x-credit-browser-fallback:browser-p42"
     )
     assert not (tmp_path / "content/x/publication_blocker.json").exists()
     row = XHistoryLedger(tmp_path).recent()[-1]
-    assert row["lineage"]["publication_transport"] == "JEV_ACCOUNT_BROWSER"
-    assert row["lineage"]["transport_failover"]["status"] == "BROWSER_FALLBACK_USED"
+    assert row["lineage"]["publication_transport"] == "JEV_AGENT_RUNTIME"
+    assert row["lineage"]["transport_failover"] is None
 
 
-def test_x_post_blocks_only_after_api_and_browser_publication_both_fail(
+def test_x_browser_failure_records_a_short_retry_blocker(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
@@ -479,7 +505,7 @@ def test_x_post_blocks_only_after_api_and_browser_publication_both_fail(
     ])
     runtime = _Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED")
 
-    class BrokenBrowserTransport:
+    class BrokenBrowserTransport(_BrowserTransport):
         async def publish(self, *, text):
             raise RuntimeError("browser session unavailable")
 
@@ -501,7 +527,9 @@ def test_x_post_blocks_only_after_api_and_browser_publication_both_fail(
     assert first["status"] == "X_PUBLICATION_CAPABILITY_UNAVAILABLE"
     assert first["blocker"]["resource"] == "X_PUBLICATION_TRANSPORT"
     assert first["blocker"]["required_action"] == "RESTORE_X_PUBLICATION_TRANSPORT"
-    assert first["transport_failover"]["status"] == "BROWSER_FALLBACK_FAILED"
+    assert first["transport_failover"] is None
+    assert not runtime.calls
+    assert first["blocker"]["transport"] == "JEV_AGENT_RUNTIME"
     blocker = json.loads(
         (tmp_path / "content/x/publication_blocker.json").read_text()
     )

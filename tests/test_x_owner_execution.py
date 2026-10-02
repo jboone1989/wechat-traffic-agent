@@ -43,7 +43,7 @@ def test_request_must_match_owner_cycle_and_topic(tmp_path):
 
 
 @pytest.mark.parametrize("safe",[True,False])
-def test_explicit_owner_short_post_keeps_safety_and_api_browser_fallback(tmp_path, monkeypatch, safe):
+def test_explicit_owner_short_post_keeps_safety_and_uses_jev_without_api(tmp_path, monkeypatch, safe):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED","1")
     _,result = cycle_context(tmp_path)
     model = _ModelRuntime([
@@ -60,17 +60,20 @@ def test_explicit_owner_short_post_keeps_safety_and_api_browser_fallback(tmp_pat
     runtime=_Runtime(post_ok=False,post_status="X_CREDITS_DEPLETED")
     calls=[]
     class Browser:
+        async def identity(self):
+            return {"username":"agent","public_metrics":{"followers_count":2000}}
         async def publish(self,*,text):
             calls.append(text)
             return SimpleNamespace(post_id="new-123",url="https://x.com/agent/status/new-123",
-                                   provider="AGENT_RUNTIME")
+                                   provider="JEV_AGENT_RUNTIME")
     loop=XAutonomyLoop(runtime=runtime,model_runtime=model,state_root=tmp_path,base_url="",
                        browser_publish_transport=Browser())
     outcome=asyncio.run(loop.after_content_cycle(result=result,now=NOW))
     if safe:
         assert outcome["status"] == "POSTED"
-        assert outcome["transport"] == "AGENT_RUNTIME_BROWSER"
-        assert outcome["transport_failover"]["api_status"] == "X_CREDITS_DEPLETED"
+        assert outcome["transport"] == "JEV_AGENT_RUNTIME"
+        assert outcome["transport_failover"] is None
+        assert runtime.calls == []
         assert outcome["owner_execution_request"]["owner_goal_id"] == "goal-owner"
         assert len(calls)==1
         duplicate=asyncio.run(loop.after_content_cycle(result=result,now=NOW))

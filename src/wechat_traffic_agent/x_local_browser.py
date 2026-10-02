@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -26,12 +27,13 @@ from .x_browser import (
     X_COMPOSE_URL,
     _normalize_text,
 )
+from .x_jev_transaction import jev_x_identity, jev_x_transaction
 
 
 class LocalHarnessXTransport:
     """Single X Web transport over Agent Runtime; never starts its own Chrome."""
 
-    provider_name = "AGENT_RUNTIME_BROWSER"
+    provider_name = "JEV_AGENT_RUNTIME"
 
     def __init__(
         self,
@@ -145,27 +147,52 @@ class LocalHarnessXTransport:
         )
         return result
 
-    def _publish_sync(self, text: str) -> XBrowserPublishResult:
-        if not text.strip() or len(text) > 25_000:
-            raise ValueError("X post must contain 1-25000 characters")
+    def _run_jev_sync(self, script: str) -> dict[str, Any]:
         session_id = "ferro-x-publish"
         try:
             # Reuse the user's authenticated tab without forcing a home reload.
-            self.browser.adopt_existing_tab(session_id, "https://x.com/")
-            body = self.browser.run_session_script(
+            self.browser.adopt_existing_tab(
+                session_id, "https://x.com/", open_if_missing=True
+            )
+            spec = importlib.util.find_spec("jev_ultrafast")
+            if spec is None or spec.origin is None:
+                raise BrowserRuntimeUnavailable("jev-ultrafast is unavailable in the X execution environment")
+            body = self.browser.run_jev_session_script(
                 session_id,
-                self._transaction_script(text),
+                script,
+                package_root=Path(spec.origin).parent.parent,
                 timeout_seconds=max(45.0, min(180.0, self.timeout_ms / 1000 + 45.0)),
             )
         except (LookupError, RuntimeError, ValueError) as exc:
             raise BrowserRuntimeUnavailable(
                 f"Agent Runtime X transaction failed: {exc}"
             ) from exc
+        return body
+
+    async def identity(self) -> dict[str, Any]:
+        body = await asyncio.to_thread(
+            self._run_jev_sync, jev_x_identity(self.expected_handle)
+        )
+        if body.get("status") != "IDENTITY_OBSERVED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        return dict(body["user"])
+
+    def _publish_sync(self, text: str) -> XBrowserPublishResult:
+        if not text.strip() or len(text) > 25_000:
+            raise ValueError("X post must contain 1-25000 characters")
+        body = self._run_jev_sync(self._transaction_script(text, self.expected_handle))
 
         status = str(body.get("status") or "")
-        if status != "POSTED":
+        if status == "PUBLICATION_UNVERIFIED":
             raise XBrowserPublicationUnverified(
-                str(body.get("detail") or "X publication was not verified")
+                f"Jev X {body.get('stage', 'transaction')} failed "
+                f"(attempted={body.get('attempted', False)}): "
+                + str(body.get("detail") or "X publication was not verified")
+            )
+        if status != "POSTED":
+            raise BrowserRuntimeUnavailable(
+                f"Jev X {body.get('stage', 'transaction')} failed: "
+                + str(body.get("detail") or body)
             )
         handle = str(body.get("handle") or "")
         if self.expected_handle and handle.casefold() != self.expected_handle.casefold():
@@ -181,116 +208,8 @@ class LocalHarnessXTransport:
         )
 
     @staticmethod
-    def _transaction_script(text: str) -> str:
-        outbound = json.dumps(text, ensure_ascii=False)
-        return f"""
-import re, time
-outbound = {outbound}
-def norm(value):
-    return ' '.join(str(value or '').split())
-def wait_expr(expr, timeout=15.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        value = js(expr)
-        if value:
-            return value
-        time.sleep(0.15)
-    return None
-
-profile = wait_expr('''(() => document.querySelector('[data-testid="AppTabBar_Profile_Link"]')?.getAttribute('href') || '')()''')
-assert profile, 'Agent Runtime X profile is not authenticated'
-handle = str(profile).strip('/').split('/', 1)[0]
-assert handle and handle not in {{'home','i'}}, 'Agent Runtime X profile handle is unavailable'
-needle = norm(outbound)[:160]
-
-def navigate(url):
-    # A late navigation acknowledgement is ambiguous: observe the requested
-    # destination instead of sending the same navigation again.
-    deadline = time.monotonic() + 25.0
-    try:
-        reply = cdp('Page.navigate', url=url, _response_timeout=20.0)
-        if reply.get('errorText'):
-            raise RuntimeError('X navigation failed: ' + str(reply['errorText']))
-    except TimeoutError:
-        pass
-    observed = ''
-    while time.monotonic() < deadline:
-        try:
-            state = js('''(() => ({{url:location.href,ready:document.readyState}}))()''') or {{}}
-            observed = str(state.get('url') or '').split('?', 1)[0].rstrip('/')
-            if observed == url.rstrip('/') and state.get('ready') == 'complete':
-                return
-        except RuntimeError as exc:
-            if 'Runtime.evaluate timed out' not in str(exc):
-                raise
-        time.sleep(0.15)
-    raise RuntimeError('X navigation did not reach requested destination: ' + url)
-
-def find_existing():
-    navigate('https://x.com/' + handle)
-    wait_expr('''(() => Boolean(document.querySelector('article')))()''', 12.0)
-    rows = js('''(() => [...document.querySelectorAll('article')].slice(0,15).map(a => ({{
-      text:a.innerText || '',
-      hrefs:[...a.querySelectorAll('a[href*="/status/"]')].map(x => x.getAttribute('href') || '')
-    }})))()''') or []
-    for row in rows:
-        if needle and needle not in norm((row or {{}}).get('text') or ''):
-            continue
-        for href in (row or {{}}).get('hrefs') or []:
-            match = re.search(r'^/([^/?#]+)/status/(\\d+)(?:[/?#]|$)', str(href))
-            if match:
-                return match.group(2)
-    return ''
-
-existing = find_existing()
-if existing:
-    result = {{
-        'status':'POSTED',
-        'post_id':existing,
-        'url':f'https://x.com/{{handle}}/status/{{existing}}',
-        'handle':handle,
-        'duplicate_found':True,
-    }}
-else:
-    navigate('https://x.com/compose/post')
-    editor = wait_expr('''(() => Boolean(document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]')))()''', 15.0)
-    assert editor, 'X composer editor is unavailable'
-    # Draft.js owns the editor state: use framework-aware real key events.
-    # CDP Input.insertText bypasses those listeners and can leave it empty.
-    fill_input('[role="dialog"] [data-testid="tweetTextarea_0"]', outbound, timeout=15.0)
-    input_deadline = time.monotonic() + 5.0
-    rendered = ''
-    while time.monotonic() < input_deadline:
-        rendered = js('''(() => document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]')?.innerText || '')()''') or ''
-        if norm(rendered) == norm(outbound):
-            break
-        time.sleep(0.15)
-    assert norm(rendered) == norm(outbound), f'X composer did not preserve the draft text: expected_chars={{len(norm(outbound))}} actual_chars={{len(norm(rendered))}}'
-    point = js('''(() => {{
-      const b=document.querySelector('[role="dialog"] [data-testid="tweetButton"]');
-      if(!b || b.disabled || b.getAttribute('aria-disabled')==='true') return null;
-      const r=b.getBoundingClientRect();
-      if(!r.width || !r.height)return null;
-      return {{x:r.x+r.width/2,y:r.y+r.height/2}};
-    }})()''')
-    assert point, 'X publish button is unavailable'
-    click_at_xy(point['x'], point['y'])
-    time.sleep(1.0)
-    post_id = ''
-    for _ in range(8):
-        post_id = find_existing()
-        if post_id:
-            break
-        time.sleep(0.7)
-    assert post_id, 'X submit could not be tied to a public post URL'
-    result = {{
-        'status':'POSTED',
-        'post_id':post_id,
-        'url':f'https://x.com/{{handle}}/status/{{post_id}}',
-        'handle':handle,
-        'duplicate_found':False,
-    }}
-"""
+    def _transaction_script(text: str, expected_handle: str = "") -> str:
+        return jev_x_transaction(text, expected_handle)
 
 
 def build_agent_runtime_x_browser() -> BrowserHarnessProvider:

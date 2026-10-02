@@ -96,7 +96,8 @@ class _FakeXBrowser:
         self.scripts = []
         self.adoptions = []
 
-    def adopt_existing_tab(self, session_id, url_prefix):
+    def adopt_existing_tab(self, session_id, url_prefix, *, open_if_missing=False):
+        assert open_if_missing is True
         self.adoptions.append((session_id, url_prefix))
         return {"ok": True}
 
@@ -104,7 +105,8 @@ class _FakeXBrowser:
         self.invocations.append((capability_id, dict(payload)))
         return {"ok": True}
 
-    def run_session_script(self, session_id, script, *, timeout_seconds):
+    def run_jev_session_script(self, session_id, script, *, timeout_seconds, package_root):
+        assert package_root is not None
         self.scripts.append((session_id, script, timeout_seconds))
         return {
             "status": "POSTED",
@@ -122,18 +124,23 @@ def test_x_transport_uses_agent_runtime_browser_transaction(tmp_path, monkeypatc
         "_provider",
         classmethod(lambda cls: fake),
     )
+    import importlib.util
+    from types import SimpleNamespace
+    original = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/test/site-packages/jev_ultrafast/__init__.py") if name == "jev_ultrafast" else original(name))
     transport = LocalHarnessXTransport(
         state_root=tmp_path,
         expected_handle="caini56006962",
     )
     result = asyncio.run(transport.publish(text="single path"))
 
-    assert result.provider == "AGENT_RUNTIME_BROWSER"
+    assert result.provider == "JEV_AGENT_RUNTIME"
     assert result.post_id == "1234567890"
     assert fake.invocations == []
     assert fake.adoptions == [("ferro-x-publish", "https://x.com/")]
     assert len(fake.scripts) == 1
-    assert "tweetButton" in fake.scripts[0][1]
+    assert "browser.observe" in fake.scripts[0][1]
+    assert "browser.act" in fake.scripts[0][1]
 
 
 def test_x_router_has_one_agent_runtime_transport(tmp_path, monkeypatch):
@@ -165,78 +172,3 @@ def test_operator_browser_control_does_not_own_browser_process(tmp_path):
     control = LocalBrowserControl(state_root=tmp_path)
     assert not hasattr(control, "browser_factory")
     assert control.stop() == {"ok": True, "running": False}
-
-
-@pytest.mark.parametrize("preserved", [True, False])
-@pytest.mark.parametrize("navigation_ack", ["ok", "late", "failed", "stalled"])
-def test_x_transaction_checks_framework_editor_before_submit(preserved, navigation_ack):
-    text = "I’m Ferro: durable jobs + checkpoints."
-    script = LocalHarnessXTransport._transaction_script(text)
-    editor = [""]
-    calls = {"fill":0,"click":0,"profile":0}
-    now = [0.0]
-    class Clock:
-        def monotonic(self): now[0] += 1; return now[0]
-        def sleep(self, seconds): now[0] += seconds
-    location = ["https://x.com/home"]
-    def cdp(method, *, url, _response_timeout):
-        assert method == "Page.navigate"
-        assert _response_timeout == 20.0
-        calls["navigation"] = calls.get("navigation", 0) + 1
-        if navigation_ack == "stalled":
-            raise TimeoutError("acknowledgement delayed; destination not reached")
-        if navigation_ack == "failed":
-            return {"errorText": "net::ERR_CONNECTION_RESET"}
-        location[0] = url
-        if url == "https://x.com/agent":
-            calls["profile"] += 1
-        if navigation_ack == "late":
-            raise TimeoutError("acknowledgement delayed")
-        return {}
-    def js(expr):
-        if "url:location.href,ready:document.readyState" in expr:
-            return {"url": location[0], "ready": "complete"}
-        if "AppTabBar_Profile_Link" in expr:
-            return "/agent"
-        if "Boolean(document.querySelector('article'))" in expr:
-            return True
-        if ".slice(0,15).map" in expr:
-            return [] if calls["profile"] == 1 else [{"text":text,"hrefs":["/agent/status/1234567890"]}]
-        if "Boolean(document.querySelector(" in expr and "tweetTextarea_0" in expr:
-            return True
-        if "innerText || ''" in expr:
-            return editor[0]
-        if "tweetButton" in expr:
-            return {"x":10,"y":20}
-        raise AssertionError(expr)
-    def fill(selector, value, **kwargs):
-        assert selector == '[role="dialog"] [data-testid="tweetTextarea_0"]'
-        calls["fill"] += 1
-        editor[0] = value if preserved else ""
-    def click(x,y):
-        assert editor[0] == text
-        calls["click"] += 1
-    scope = {"js":js,"cdp":cdp,
-             "fill_input":fill,"click_at_xy":click,"time":Clock()}
-    if navigation_ack == "stalled":
-        with pytest.raises(RuntimeError, match="navigation did not reach"):
-            exec(script.replace("import re, time","import re"),scope)
-        assert calls["click"] == 0
-        assert calls["fill"] == 0
-        assert calls["navigation"] == 1
-        return
-    if navigation_ack == "failed":
-        with pytest.raises(RuntimeError, match="net::ERR_CONNECTION_RESET"):
-            exec(script.replace("import re, time","import re"),scope)
-        assert calls["click"] == 0
-        assert calls["fill"] == 0
-        return
-    if preserved:
-        exec(script.replace("import re, time","import re"),scope)
-        assert scope["result"]["post_id"] == "1234567890"
-        assert calls["click"] == 1
-    else:
-        with pytest.raises(AssertionError,match="composer did not preserve"):
-            exec(script.replace("import re, time","import re"),scope)
-        assert calls["click"] == 0
-    assert calls["fill"] == 1

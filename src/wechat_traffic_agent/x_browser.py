@@ -87,6 +87,12 @@ class XBrowserTransportRouter:
     def __init__(self, *, state_root: Path) -> None:
         self.state_root = Path(state_root)
 
+    async def identity(self) -> dict[str, Any]:
+        from .x_local_browser import LocalHarnessXTransport
+        return await LocalHarnessXTransport.from_environment(
+            state_root=self.state_root
+        ).identity()
+
     async def publish(self, *, text: str) -> XBrowserPublishResult:
         from .x_local_browser import LocalHarnessXTransport
 
