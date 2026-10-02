@@ -26,7 +26,7 @@ try:
     visible=wait_public_text(title,outbound)
     if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
         raise RuntimeError('Pending Article is not publicly verified; no repeated submission')
-    images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
+    images=wait_public_images(cover_source)
     if not cover_source or not all(any(media_key(image)==media_key(item['src']) for image in images) for item in cover_source):
         raise RuntimeError('Pending Article images have not been publicly verified')
     result={'status':'POSTED','post_id':post_id,'url':public_url,'handle':handle,
@@ -47,6 +47,18 @@ def verified_public_location(value,handle):
 def media_key(source):
     value=urlsplit(str(source))
     return (value.netloc, re.sub(r'\.(?:png|jpe?g|webp)$','',value.path,flags=re.I))
+
+
+def wait_public_images(expected):
+    deadline=time.monotonic()+30
+    while time.monotonic()<deadline:
+        # Native Article body images may load only after scrolling into view.
+        browser.evaluate("(() => [...document.querySelectorAll('main img')].filter(e=>e.src.startsWith('https://pbs.twimg.com/media/')).forEach(e=>e.scrollIntoView({block:'center'})))()")
+        images=browser.evaluate("(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && e.src.startsWith('https://pbs.twimg.com/media/')).map(e=>e.src))()") or []
+        if expected and all(any(media_key(image)==media_key(item['src']) for image in images) for item in expected):
+            return images
+        time.sleep(.25)
+    return []
 
 def wait_public_text(title,body):
     deadline=time.monotonic()+30
@@ -259,7 +271,7 @@ try:
         visible=wait_public_text(title,outbound)
         if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
             raise RuntimeError('Public Article title/full body not verified')
-        images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
+        images=wait_public_images(images_to_verify)
         if not images:
             raise RuntimeError('Public Article image not verified')
         if not all(any(media_key(image)==media_key(item['src']) for image in images) for item in images_to_verify):
