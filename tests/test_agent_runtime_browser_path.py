@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -166,6 +168,25 @@ def test_x_router_has_one_agent_runtime_transport(tmp_path, monkeypatch):
         XBrowserTransportRouter(state_root=tmp_path).publish(text="hello x")
     )
     assert result == expected
+
+
+def test_live_bound_x_target_avoids_stale_legacy_page_probe(tmp_path, monkeypatch):
+    fake = _FakeXBrowser()
+    fake._load_target_id = lambda session: "live-x-target"
+    monkeypatch.setattr(LocalHarnessXTransport, "_provider", classmethod(lambda cls: fake))
+    monkeypatch.setattr(LocalHarnessXTransport, "_cdp_url", classmethod(lambda cls: "http://127.0.0.1:9601"))
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: io.StringIO(json.dumps([
+        {"id": "live-x-target", "type": "page", "url": "https://x.com/caini56006962"}])))
+    import importlib.util
+    from types import SimpleNamespace
+    original = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: SimpleNamespace(origin="/test/site-packages/jev_ultrafast/__init__.py") if name == "jev_ultrafast" else original(name))
+    transport = LocalHarnessXTransport(state_root=tmp_path, expected_handle="caini56006962")
+    result = asyncio.run(transport.publish(text="resumed work"))
+    assert result.post_id == "1234567890"
+    assert fake.adoptions == []
+    assert len(fake.scripts) == 1
 
 
 def test_operator_browser_control_does_not_own_browser_process(tmp_path):

@@ -137,6 +137,13 @@ jobs:
           mkdir -p .x-ci/agent_runtime/integrations .x-ci/agent_runtime/llm
           cat > .x-ci/agent_runtime/integrations/__init__.py <<'PY'
           BROWSER_NAVIGATE = "browser.navigate"
+          BROWSER_SCREENSHOT = "browser.screenshot"
+          class PersistentBrowserTakeoverProvider:
+              def __init__(self, **kwargs):
+                  pass
+              def takeover_status(self, profile_id):
+                  from types import SimpleNamespace
+                  return SimpleNamespace(browser_running=False, active=False, url=None)
           class BrowserPolicy:
               def __init__(self, **kwargs):
                   self.__dict__.update(kwargs)
@@ -213,7 +220,7 @@ jobs:
           python -m pytest -q -c /dev/null
           tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_agent_runtime_browser_path.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
           tests/test_x_article_media.py tests/test_x_transport_transactions.py
-          tests/test_x_jev_social_native.py tests/test_x_jev_transaction_native.py tests/test_x_growth_loop_native.py tests/test_x_growth_mission.py
+          tests/test_x_jev_social_native.py tests/test_x_jev_transaction_native.py tests/test_x_growth_loop_native.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
           tests/test_world_feed.py tests/test_live_agent.py

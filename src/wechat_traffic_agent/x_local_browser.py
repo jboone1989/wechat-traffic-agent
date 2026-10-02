@@ -158,9 +158,13 @@ class LocalHarnessXTransport:
         session_id = "ferro-x-publish"
         try:
             # Reuse the user's authenticated tab without forcing a home reload.
-            self.browser.adopt_existing_tab(
-                session_id, "https://x.com/", open_if_missing=True
-            )
+            # A persisted, live target needs no legacy page-script probe. That
+            # probe can retain a stale evaluation session after a host restart;
+            # Jev attaches a fresh CDP session and verifies the page/account.
+            if not self._bound_x_tab_is_live(session_id):
+                self.browser.adopt_existing_tab(
+                    session_id, "https://x.com/", open_if_missing=True
+                )
             spec = importlib.util.find_spec("jev_ultrafast")
             if spec is None or spec.origin is None:
                 raise BrowserRuntimeUnavailable("jev-ultrafast is unavailable in the X execution environment")
@@ -175,6 +179,25 @@ class LocalHarnessXTransport:
                 f"Agent Runtime X transaction failed: {exc}"
             ) from exc
         return body
+
+    def _bound_x_tab_is_live(self, session_id: str) -> bool:
+        import urllib.request
+        from urllib.parse import urlsplit
+        load_target = getattr(self.browser, "_load_target_id", None)
+        if not callable(load_target):
+            return False
+        target_id = load_target(session_id)
+        if not target_id:
+            return False
+        try:
+            with urllib.request.urlopen(self._cdp_url()+"/json/list", timeout=5) as response:
+                targets = json.load(response)
+            return any(row.get("id")==target_id and row.get("type")=="page"
+                and urlsplit(str(row.get("url") or "")).scheme=="https"
+                and urlsplit(str(row.get("url") or "")).hostname in {"x.com","www.x.com"}
+                for row in targets)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
 
     async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False, inline_images=()):
         from .x_jev_article import jev_x_article, jev_x_article_reconcile
