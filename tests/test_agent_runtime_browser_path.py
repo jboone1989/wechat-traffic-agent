@@ -34,7 +34,8 @@ class _FakeChatGPTProvider:
         self.last_metadata = None
 
     async def complete(self, prompt: str, **kwargs):
-        assert prompt == "hello"
+        assert prompt.startswith("hello\n\nCHATGPT_WEB_JSON_FORMAT:")
+        assert "For a prose output contract, respond normally" in prompt
         self.last_metadata = {
             "provider": "chatgpt-browser",
             "model": "chatgpt-web",
