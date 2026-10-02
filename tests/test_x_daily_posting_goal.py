@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,7 +58,11 @@ def test_mailbox_queue_is_not_delivery_and_replay_does_not_duplicate(tmp_path):
     assert goal.reconcile(NOW+timedelta(seconds=90))["deliveries"][0]["status"]=="DELIVERED"
     assert goal.reconcile(NOW+timedelta(seconds=120))["deliveries"]==[]
 
-def test_minimum_met_resets_next_day_without_stopping_autonomous_posts(tmp_path):
+def test_minimum_met_resets_next_day_without_stopping_autonomous_posts(tmp_path, monkeypatch):
+    # Only the external wake envelope is replaced; exercise the real quota scheduler.
+    class Wake:
+        def __init__(self, **values): self.__dict__.update(values)
+    monkeypatch.setitem(sys.modules, "wechat_traffic_agent.wakeful_runtime", SimpleNamespace(PlannedWake=Wake))
     goal=configured(tmp_path)
     class Core:
         def __init__(self): self.plans=[]
@@ -111,8 +116,18 @@ def test_independent_monitor_detects_a_dead_service(tmp_path):
 
 def test_required_daily_goal_supersedes_older_promotional_goal(tmp_path):
     configured(tmp_path)
-    runner=WakefulContentTaskRunner(state_root=tmp_path,app=SimpleNamespace(domain_runtime=SimpleNamespace(active_goals=[])))
+    runner=WakefulContentTaskRunner.__new__(WakefulContentTaskRunner)
+    runner.state_root=tmp_path
+    runner.app=SimpleNamespace(domain_runtime=SimpleNamespace(active_goals=[]))
     goal=runner._active_owner_goal_context(now=NOW)
     assert goal["goal_id"]=="ferro-daily-post:2026-10-03"
     assert goal["daily_posting_contract"]["minimum"]==20
     assert "加密货币" in goal["description"]
+
+def test_reusing_an_existing_post_does_not_reset_stalled_production(tmp_path):
+    goal=configured(tmp_path)
+    for n in range(3):
+        goal.observe("CONTENT_COGNITION", {"status":"OK", "x_social_expression":{"status":"ALREADY_EXPRESSED"}}, NOW+timedelta(minutes=5*n))
+    goal.reconcile(NOW+timedelta(minutes=10))
+    note=json.loads(next((tmp_path/"operator/mailbox/notifications").glob("*.json")).read_text())
+    assert "需要协助" in note["title"]
