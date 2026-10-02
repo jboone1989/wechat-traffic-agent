@@ -181,7 +181,7 @@ def sync_llm_resource_pool(
         "observed_at": observed_at,
         "resource_count": 0,
         "resources": [],
-        "provider_mode": "LIVINGRUNTIME_CHATGPT_ONLY",
+        "provider_mode": "AGENT_RUNTIME_CHATGPT_ONLY",
         "disabled_provider_ids": [
             "nvidia",
             "cerebras",

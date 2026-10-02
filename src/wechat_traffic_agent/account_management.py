@@ -33,7 +33,7 @@ _PROVIDERS = {
         "x", "X", "MULTI_BINDING",
         ("READ", "PUBLISH", "MENTIONS", "METRICS"), True,
         "https://x.com/i/flow/login",
-        "Official X OAuth/API is primary. TinyFish is the preferred authenticated web fallback; the local server browser is advanced recovery only.",
+        "Official X OAuth/API remains identity binding; all authenticated web automation uses the Agent Runtime persistent browser profile.",
     ),
     "youtube": AccountProvider(
         "youtube", "YouTube", "PROVIDER_ADAPTER",
@@ -50,11 +50,10 @@ _PROVIDERS = {
 
 class AccountManager:
     def __init__(
-        self, state_root: Path, *, browser_factory=None, xurl_status_provider=None
+        self, state_root: Path, *, xurl_status_provider=None
     ) -> None:
         self.state_root = Path(state_root)
         self.path = self.state_root / "accounts" / "accounts.json"
-        self.browser_factory = browser_factory
         self.xurl_status_provider = xurl_status_provider
         self.registry = AccountRegistry(self.state_root)
 
@@ -103,28 +102,26 @@ class AccountManager:
                 oauth_user=identity,
                 oauth_status="CONNECTED",
             )
-        tinyfish_ready = bool(
-            os.environ.get("TINYFISH_API_KEY", "").strip()
-            and os.environ.get("TINYFISH_X_PROFILE_ID", "").strip()
+
+        from .browser_runtime import browser_runtime_status
+
+        browser_status = browser_runtime_status()
+        x_profile = next(
+            (
+                row
+                for row in browser_status.get("profiles", [])
+                if row.get("profile_id") == "x"
+            ),
+            {"status": "UNAVAILABLE"},
+        )
+        web_status = (
+            "CONNECTED"
+            if x_profile.get("status") == "READY"
+            else "DEGRADED"
         )
         rows: list[dict[str, Any]] = []
         for record in self.registry.list():
             spec = self.provider(record.provider_id)
-            profile_dir = (
-                self.state_root
-                / "accounts"
-                / "browser-profiles"
-                / record.account_id
-                / "chrome-profile"
-            )
-            profile_status = "PROVISIONED" if profile_dir.exists() else "NOT_PROVISIONED"
-            compatibility = (
-                "TINYFISH"
-                if tinyfish_ready
-                and record.provider_id == "x"
-                and identity.lower() == record.identity.lower()
-                else ""
-            )
             rows.append({
                 "account_id": record.account_id,
                 "provider_id": record.provider_id,
@@ -143,17 +140,17 @@ class AccountManager:
                         "auth_mode": "OAUTH2_PKCE",
                     },
                     {
-                        "binding_id": "browser_profile",
-                        "label": "Account Browser Profile",
-                        "status": profile_status,
-                        "profile_id": record.browser_profile_id,
-                        "automation_engine": record.automation_engine,
+                        "binding_id": "agent_runtime_browser",
+                        "label": "Agent Runtime Browser",
+                        "status": web_status,
+                        "profile_id": "x",
+                        "automation_engine": "AGENT_RUNTIME_BROWSER",
                     },
                 ],
                 "automation": {
-                    "primary_engine": record.automation_engine,
-                    "preferred_browser_provider": record.web_fallback_provider,
-                    "compatibility_fallback": compatibility,
+                    "primary_engine": "AGENT_RUNTIME_BROWSER",
+                    "preferred_browser_provider": "AGENT_RUNTIME_BROWSER",
+                    "compatibility_fallback": "",
                 },
             })
         return rows
@@ -319,31 +316,40 @@ class AccountManager:
         return self._verify_x()
 
     def _verify_x(self) -> dict[str, Any]:
+        from agent_runtime.integrations import BROWSER_NAVIGATE
+        from .x_local_browser import build_agent_runtime_x_browser
+
+        browser = build_agent_runtime_x_browser()
+        session_id = "ferro-x-account-verify"
         try:
-            if self.browser_factory is None:
-                from jev_ultrafast.browser import Browser
-                factory = Browser
-            else:
-                factory = self.browser_factory
-            browser = factory("https://x.com/home")
-            try:
-                profile = str(browser.evaluate(
-                    "document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]')"
-                    "?.getAttribute('href') || ''"
-                ) or "")
-                url = str(browser.evaluate("location.href") or "")
-            finally:
-                browser.close()
-        except Exception as exc:
+            browser.invoke(
+                BROWSER_NAVIGATE,
+                {"session_id": session_id, "url": "https://x.com/home"},
+            )
+            body = browser.run_session_script(
+                session_id,
+                """profile = js(
+                    "(() => document.querySelector('[data-testid=\"AppTabBar_Profile_Link\"]')"
+                    "?.getAttribute('href') || '')()"
+                ) or ''
+info = page_info()
+result = {'profile': profile, 'url': info.get('url', '')}
+""",
+                timeout_seconds=45,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
             return self._record(
                 "x", status="DEGRADED", last_error=type(exc).__name__
             )
 
+        profile = str(body.get("profile") or "")
+        url = str(body.get("url") or "")
         if profile:
             identity = profile.strip("/").split("/", 1)[0]
             return self._record("x", status="CONNECTED", identity=identity)
         return self._record(
-            "x", status="NEEDS_LOGIN",
+            "x",
+            status="NEEDS_LOGIN",
             last_error="authenticated X profile was not visible at " + url[:120],
         )
 

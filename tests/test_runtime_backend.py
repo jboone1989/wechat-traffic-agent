@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+import wechat_traffic_agent.agent_runtime_chatgpt as agent_chatgpt
 from wechat_traffic_agent.runtime_backend import (
     OwnerChatGPTCognitionRuntime,
     _temporary_runtime_llm_environment,
@@ -31,10 +32,29 @@ def _behavioral_context():
     }
 
 
+class _FakeAgentRuntimeProvider:
+    provider_name = "agent-runtime-chatgpt-browser"
+    model_name = "chatgpt-web"
+    timeout_seconds = 90.0
+
+    def __init__(self, *, available: bool = True):
+        self.available = available
+
+    async def complete(self, prompt, **kwargs):
+        return "ok"
+
+
+def _install_provider(monkeypatch, provider):
+    monkeypatch.setattr(
+        agent_chatgpt.AgentRuntimeChatGPTProvider,
+        "from_environment",
+        classmethod(lambda cls, *, fallback=None: provider),
+    )
+
+
 def test_runtime_llm_aliases_never_reconstruct_legacy_api_providers():
     aliases = runtime_llm_aliases({
         "VIRTUALBRAIN_LLM_API_KEY": "legacy-deepseek-secret",
-        "VIRTUALBRAIN_LLM_MODEL": "deepseek-flash",
         "OPENROUTER_API_KEY": "legacy-openrouter-secret",
         "NVIDIA_API_KEY": "legacy-nvidia-secret",
         "CEREBRAS_API_KEY": "legacy-cerebras-secret",
@@ -44,115 +64,53 @@ def test_runtime_llm_aliases_never_reconstruct_legacy_api_providers():
 
 def test_temporary_runtime_environment_does_not_create_provider_aliases(monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
     monkeypatch.setenv("VIRTUALBRAIN_LLM_API_KEY", "legacy-secret")
-    monkeypatch.setenv("VIRTUALBRAIN_LLM_MODEL", "legacy-model")
 
     with _temporary_runtime_llm_environment():
         assert "DEEPSEEK_API_KEY" not in os.environ
-        assert "DEEPSEEK_MODEL" not in os.environ
 
     assert "DEEPSEEK_API_KEY" not in os.environ
-    assert "DEEPSEEK_MODEL" not in os.environ
 
 
-def test_chatgpt_mode_flag_can_report_legacy_config_without_rebuilding_aliases():
+def test_chatgpt_only_mode_is_not_configurable():
+    assert chatgpt_only_mode({}) is True
     assert chatgpt_only_mode({
-        "LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED": "0",
-        "LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK": "1",
         "OPENROUTER_API_KEY": "present",
         "NVIDIA_API_KEY": "present",
         "CEREBRAS_API_KEY": "present",
         "DEEPSEEK_API_KEY": "present",
-    }) is False
-    assert runtime_llm_aliases({
-        "DEEPSEEK_API_KEY": "present",
-        "VIRTUALBRAIN_LLM_API_KEY": "present",
-    }) == {}
+    }) is True
 
 
-def test_public_chat_uses_livingruntime_without_openai_api_key(
-    monkeypatch, tmp_path
-):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-
-    backend = load_public_chat_backend()
-
-    assert backend is not None
-    assert backend.provider.provider_name == "livingruntime-chatgpt"
-    assert backend.provider.available is True
-
-
-def test_public_chat_ignores_openai_api_credentials(
-    monkeypatch, tmp_path
-):
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-public-chat-must-ignore")
+def test_public_chat_uses_agent_runtime_browser_and_ignores_openai_api(monkeypatch):
+    provider = _FakeAgentRuntimeProvider()
+    _install_provider(monkeypatch, provider)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-be-ignored")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("FERRO_PUBLIC_CHAT_OPENAI_MODEL", "gpt-5.6-luna")
 
     backend = load_public_chat_backend()
 
     assert backend is not None
-    assert backend.provider.provider_name == "livingruntime-chatgpt"
-    assert backend.provider.available is True
-    assert "sk-public-chat-must-ignore" not in repr(backend.provider)
+    assert backend.provider is provider
+    assert backend.provider.provider_name == "agent-runtime-chatgpt-browser"
 
 
-def test_public_chat_is_unavailable_when_livingruntime_provider_is_disabled(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
-    monkeypatch.setenv(
-        "LIVINGRUNTIME_CHATGPT_COGNITION_CLI",
-        str(tmp_path / "missing-cognitionctl.py"),
-    )
-
+def test_public_chat_is_unavailable_when_agent_runtime_browser_is_not_ready(monkeypatch):
+    _install_provider(monkeypatch, _FakeAgentRuntimeProvider(available=False))
     assert load_public_chat_backend() is None
 
 
-def test_owner_cognition_uses_livingruntime_when_openai_key_missing(
-    monkeypatch, tmp_path
-):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
+def test_owner_cognition_uses_agent_runtime_browser_and_ignores_openai_api(monkeypatch):
+    provider = _FakeAgentRuntimeProvider()
+    _install_provider(monkeypatch, provider)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-must-be-ignored")
 
     runtime = load_owner_cognition_runtime(
         behavioral_context_provider=_behavioral_context,
     )
 
-    assert runtime.provider is not None
-    assert runtime.provider.available is True
-
-
-def test_owner_cognition_ignores_openai_api_credentials(
-    monkeypatch, tmp_path
-):
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# stub\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-api-must-be-ignored")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-    runtime = load_owner_cognition_runtime(
-        behavioral_context_provider=_behavioral_context,
-    )
-
-    assert runtime.provider.provider_name == "livingruntime-chatgpt"
-    assert runtime.provider.available is True
-    assert "sk-api-must-be-ignored" not in repr(runtime.provider)
+    assert runtime.provider is provider
+    assert runtime.provider.provider_name == "agent-runtime-chatgpt-browser"
 
 
 def test_owner_chatgpt_cognition_carries_always_on_phenotype():

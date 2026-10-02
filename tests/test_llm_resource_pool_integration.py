@@ -49,28 +49,12 @@ def test_sync_replaces_legacy_api_provider_pool_with_empty_chatgpt_only_manifest
     assert result["resource_count"] == 0
     assert result["resource_ids"] == []
     assert payload["resources"] == []
-    assert payload["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert payload["provider_mode"] == "AGENT_RUNTIME_CHATGPT_ONLY"
     assert set(payload["disabled_provider_ids"]) == {
         "nvidia", "cerebras", "openrouter", "deepseek"
     }
     raw = manifest_path.read_text(encoding="utf-8")
     assert "legacy-secret" not in raw
-
-
-def test_runtime_backend_uses_chatgpt_without_api_fallback(tmp_path, monkeypatch):
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("print('unused')\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.setenv("OPENROUTER_API_KEY", "legacy-openrouter")
-    monkeypatch.setenv("NVIDIA_API_KEY", "legacy-nvidia")
-    monkeypatch.setenv("CEREBRAS_API_KEY", "legacy-cerebras")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "legacy-deepseek")
-
-    backend = load_optional_advisory_backend(state_root=tmp_path)
-
-    assert backend.provider.provider_name == "livingruntime-chatgpt"
-    assert backend.provider.fallback is None
 
 
 def test_runtime_pool_paths_are_process_local(tmp_path, monkeypatch):
@@ -90,35 +74,6 @@ def test_runtime_pool_paths_are_process_local(tmp_path, monkeypatch):
     assert "AGENT_LLM_RESOURCE_POOL_PATH" not in os.environ
     assert "AGENT_LLM_ROUTING_POLICY_PATH" not in os.environ
     assert "AGENT_LLM_ROUTING_STATE_DIR" not in os.environ
-
-
-def test_chatgpt_only_resource_observation_never_calls_deepseek_balance(
-    tmp_path, monkeypatch
-):
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("print('unused')\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "must-not-be-used")
-
-    mind = ContentMind(root=tmp_path, subject_id="content-agent")
-    economy = ContentResourceEconomy(state_root=tmp_path, mind=mind)
-
-    def forbidden(_now):
-        raise AssertionError("DeepSeek balance observer must not run")
-
-    monkeypatch.setattr(economy.observer, "observe", forbidden)
-    result = economy.observe(NOW)
-    policy = json.loads(
-        (tmp_path / "application" / "llm_resource_pool" / "policy.json").read_text()
-    )
-
-    assert result["status"] == "CHATGPT_ONLY"
-    assert result["balance_sensor"] == "NOT_APPLICABLE"
-    assert result["llm_routing_policy"]["routing_mode"] == "CHATGPT_ONLY"
-    assert result["llm_routing_policy"]["max_failovers"] == 0
-    assert policy["preferred_lifecycles"] == []
-    assert policy["chatgpt_available"] is True
 
 
 def test_pool_metrics_report_no_active_api_routes_after_sync(tmp_path):

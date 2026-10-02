@@ -367,13 +367,13 @@ __all__ = [
 
 def build_chatgpt_only_provider(*, state_root: Path):
     """Build a benchmark provider that cannot silently fall back to API routes."""
-    from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+    from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
     from .llm_audit import audited_provider
 
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     if not provider.available:
         raise RuntimeError(
-            "LivingRuntime ChatGPT cognition is unavailable for ChatGPT-only evaluation"
+            "Agent Runtime ChatGPT cognition is unavailable for ChatGPT-only evaluation"
         )
     return audited_provider(
         provider,

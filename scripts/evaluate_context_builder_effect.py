@@ -11,11 +11,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from wechat_traffic_agent.decision_context import build_decision_context, candidate
-from wechat_traffic_agent.livingruntime_chatgpt import (
-    LivingRuntimeChatGPTPendingError,
-    LivingRuntimeChatGPTProvider,
-    LivingRuntimeChatGPTProviderError,
-    durable_cognition_phase,
+from wechat_traffic_agent.agent_runtime_chatgpt import (
+    AgentRuntimeChatGPTProvider,
+    AgentRuntimeChatGPTProviderError,
 )
 
 
@@ -450,54 +448,34 @@ def ablation_summary(by_mode: dict[str, dict[str, Any]]) -> dict[str, float]:
 
 async def run() -> dict[str, Any]:
     cases = [make_case(spec, variant) for spec in PAIRS for variant in ("a", "b")]
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     if not provider.available:
         return structural_only_report(
             cases,
-            model_reason="LIVINGRUNTIME_CHATGPT_PROVIDER_UNAVAILABLE",
+            model_reason="AGENT_RUNTIME_CHATGPT_PROVIDER_UNAVAILABLE",
         )
 
-    # Benchmarks use their own agent queue so they cannot block Ferro's normal
-    # cognition. Requests are deterministic durable phases: rerunning this
-    # script resumes exact completed/pending requests instead of spending API
-    # quota or creating duplicates.
-    provider.agent_id = "ferro-context-benchmark"
-    provider.foreground_wait_seconds = 1.0
-
     calls: list[dict[str, Any]] = []
-    pending: list[dict[str, str]] = []
     errors: list[dict[str, str]] = []
-    max_pending_per_run = 8
 
     async def one(
         case: dict[str, Any],
         mode: str,
         rows: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        phase_id = f"context-builder-effect-v2:{case['case_id']}:{mode}"
-        with durable_cognition_phase(phase_id):
-            try:
-                raw = await provider.complete(
-                    decision_prompt(case, mode, rows),
-                    max_tokens=64,
-                    _routing_task_class="context_builder_eval",
-                    _durable_blocking_wait=True,
-                    _durable_blocking_wait_seconds=15,
-                )
-            except LivingRuntimeChatGPTPendingError as exc:
-                return {
-                    "pending": True,
-                    "case_id": case["case_id"],
-                    "mode": mode,
-                    "request_id": exc.request_id,
-                }
-            except LivingRuntimeChatGPTProviderError as exc:
-                return {
-                    "error": True,
-                    "case_id": case["case_id"],
-                    "mode": mode,
-                    "message": str(exc)[:300],
-                }
+        try:
+            raw = await provider.complete(
+                decision_prompt(case, mode, rows),
+                max_tokens=64,
+                _routing_task_class="context_builder_eval",
+            )
+        except AgentRuntimeChatGPTProviderError as exc:
+            return {
+                "error": True,
+                "case_id": case["case_id"],
+                "mode": mode,
+                "message": str(exc)[:300],
+            }
 
         action = parse_action(raw, case["options"])
         return {
@@ -512,7 +490,6 @@ async def run() -> dict[str, Any]:
             "row_count": len(rows),
         }
 
-    stop = False
     for case in cases:
         modes = {
             "current": case["current"],
@@ -524,16 +501,7 @@ async def run() -> dict[str, Any]:
             result = await one(case, mode, rows)
             if result is None:
                 continue
-            if result.get("pending"):
-                pending.append({
-                    "case_id": str(result["case_id"]),
-                    "mode": str(result["mode"]),
-                    "request_id": str(result["request_id"]),
-                })
-                if len(pending) >= max_pending_per_run:
-                    stop = True
-                    break
-            elif result.get("error"):
+            if result.get("error"):
                 errors.append({
                     "case_id": str(result["case_id"]),
                     "mode": str(result["mode"]),
@@ -541,25 +509,17 @@ async def run() -> dict[str, Any]:
                 })
             else:
                 calls.append(result)
-        if stop:
-            break
 
-    if pending or errors or len(calls) < len(cases) * 4:
+    if errors or len(calls) < len(cases) * 4:
         report = structural_only_report(
             cases,
-            model_reason=(
-                "WAITING_FOR_CHATGPT"
-                if pending
-                else "LIVINGRUNTIME_CHATGPT_PROVIDER_ERROR"
-            ),
+            model_reason="AGENT_RUNTIME_CHATGPT_PROVIDER_ERROR",
         )
         report.update({
-            "status": "WAITING_FOR_CHATGPT" if pending else "INCOMPLETE",
-            "provider": "livingruntime-chatgpt",
+            "status": "INCOMPLETE",
+            "provider": "agent-runtime-chatgpt-browser",
             "completed_calls_this_run": len(calls),
             "expected_main_calls": len(cases) * 4,
-            "pending_count": len(pending),
-            "pending_requests": pending,
             "errors": errors,
         })
         return report
@@ -618,8 +578,8 @@ async def run() -> dict[str, Any]:
 
     return {
         "benchmark": "ferro-context-builder-effect-v2",
-        "provider": "livingruntime-chatgpt",
-        "model": "chatgpt-session",
+        "provider": "agent-runtime-chatgpt-browser",
+        "model": "chatgpt-web",
         "cases": len(cases),
         "pairs": len(PAIRS),
         "summary": by_mode,
@@ -669,23 +629,7 @@ if __name__ == "__main__":
     report = asyncio.run(run())
     output = Path("/tmp/ferro-context-builder-effect-v1.json")
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if report.get("status") == "WAITING_FOR_CHATGPT":
-        concise = {
-            "benchmark": report["benchmark"],
-            "provider": report.get("provider"),
-            "status": report["status"],
-            "completed_calls_this_run": report["completed_calls_this_run"],
-            "expected_main_calls": report["expected_main_calls"],
-            "pending_count": report["pending_count"],
-            "pending_requests": report["pending_requests"],
-            "structural": {
-                key: value
-                for key, value in report["structural"].items()
-                if key != "cases"
-            },
-            "output": str(output),
-        }
-    elif report.get("model_available") is False:
+    if report.get("model_available") is False:
         concise = {
             "benchmark": report["benchmark"],
             "model_available": False,

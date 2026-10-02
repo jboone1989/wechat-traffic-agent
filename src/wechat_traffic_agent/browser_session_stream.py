@@ -34,14 +34,14 @@ class BrowserStreamUnavailable(RuntimeError):
 
 def _cdp_target_websocket(
     target_id: str,
-    cdp_url: str = "http://127.0.0.1:9333",
+    cdp_url: str = "http://127.0.0.1:9601",
 ) -> str:
     base = urlparse(str(cdp_url))
     if (
         base.scheme != "http"
         or base.hostname not in {"127.0.0.1", "localhost"}
         or base.port is None
-        or base.port not in {9333, *range(9400, 9600)}
+        or base.port not in {*range(9400, 9700)}
     ):
         raise BrowserStreamUnavailable("unsafe CDP endpoint")
     root = f"http://127.0.0.1:{base.port}"
@@ -83,7 +83,7 @@ class BrowserSessionStream:
             value = str(getter() or "")
             if value:
                 return value
-        return "http://127.0.0.1:9333"
+        return "http://127.0.0.1:9601"
 
     async def _send(self, cdp, method: str, **params: Any) -> int:
         async with self._send_lock:

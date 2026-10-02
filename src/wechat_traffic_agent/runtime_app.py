@@ -130,8 +130,6 @@ class ContentApplication:
     ) -> dict[str, Any]:
         """Feed a settled host task into AgentRuntime without re-executing it."""
         status = str(result.get("status") or "UNKNOWN").upper()
-        if status == "WAITING_FOR_CHATGPT":
-            return {"status": "DEFERRED", "reason": "cognition_not_settled"}
         observer = getattr(self.domain_runtime, "observe_external_experience", None)
         if not callable(observer):
             return {"status": "UNSUPPORTED"}

@@ -1,181 +1,99 @@
 from __future__ import annotations
 
-import json
-
 from wechat_traffic_agent.account_management import AccountManager
+import wechat_traffic_agent.browser_runtime as browser_runtime
+import wechat_traffic_agent.x_local_browser as x_local_browser
 
 
-class FakeBrowser:
-    def __init__(self, url: str, *, authenticated: bool = True):
-        self.url = url
-        self.authenticated = authenticated
-        self.closed = False
-
-    def evaluate(self, expression: str):
-        if "AppTabBar_Profile_Link" in expression:
-            return "/ferro_test" if self.authenticated else ""
-        if expression == "location.href":
-            return self.url if self.authenticated else "https://x.com/"
-        raise AssertionError(expression)
-
-    def close(self):
-        self.closed = True
+def _ready_browser_status():
+    return {
+        "status": "READY",
+        "profiles": [
+            {"profile_id": "chatgpt", "status": "READY", "cdp_url": "http://127.0.0.1:9600"},
+            {"profile_id": "x", "status": "READY", "cdp_url": "http://127.0.0.1:9601"},
+        ],
+    }
 
 
-def test_account_catalog_exposes_x_and_future_adapter_slots(tmp_path):
+def test_account_catalog_exposes_x_and_future_adapter_slots(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_runtime, "browser_runtime_status", _ready_browser_status)
+    status = AccountManager(tmp_path, xurl_status_provider=lambda: "").status()
+    ids = {row["provider_id"] for row in status["accounts"]}
+    assert {"x", "youtube", "email"} <= ids
+
+
+def test_x_instances_bind_web_automation_to_agent_runtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_runtime, "browser_runtime_status", _ready_browser_status)
     manager = AccountManager(tmp_path, xurl_status_provider=lambda: "")
-    rows = {row["provider_id"]: row for row in manager.status()["accounts"]}
-
-    assert rows["x"]["implemented"] is True
-    assert rows["x"]["status"] == "NEEDS_LOGIN"
-    assert rows["youtube"]["implemented"] is False
-    assert rows["youtube"]["status"] == "ADAPTER_NOT_INSTALLED"
-    assert rows["email"]["implemented"] is False
-    assert "PUBLISH" in rows["x"]["capabilities"]
-def test_x_account_verification_persists_only_non_secret_metadata(tmp_path):
-    made = []
-
-    def factory(url):
-        browser = FakeBrowser(url, authenticated=True)
-        made.append(browser)
-        return browser
-
-    manager = AccountManager(
-        tmp_path, browser_factory=factory, xurl_status_provider=lambda: ""
-    )
-    result = manager.verify("x")
-
-    assert result["status"] == "CONNECTED"
-    assert result["identity"] == "ferro_test"
-    assert made[-1].closed is True
-
-    raw = (tmp_path / "accounts" / "accounts.json").read_text()
-    body = json.loads(raw)
-    assert body["accounts"]["x"]["identity"] == "ferro_test"
-    assert "password" not in raw.lower()
-    assert "cookie" not in raw.lower()
-    assert "token" not in raw.lower()
-
-
-def test_x_account_verification_marks_login_needed_when_session_missing(tmp_path):
-    manager = AccountManager(
-        tmp_path,
-        browser_factory=lambda url: FakeBrowser(url, authenticated=False),
-        xurl_status_provider=lambda: "",
-    )
-    result = manager.verify("x")
-    assert result["status"] == "NEEDS_LOGIN"
-    assert result["identity"] == ""
-    assert "authenticated X profile was not visible" in result["last_error"]
-
-
-def test_x_account_distinguishes_api_oauth_from_browser_session(tmp_path):
-    status = """▸ content-agent  [client_id: example]
-      redirect_uri: http://localhost:8080/callback
-      oauth2: caini56006962
-      oauth1: –
-      bearer: –
-
-  default  [(no credentials)]
-      oauth2: (none)
-"""
-    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
-    row = next(x for x in manager.status()["accounts"] if x["provider_id"] == "x")
-
-    assert row["status"] == "CONNECTED"
-    assert row["identity"] == "caini56006962"
-    bindings = {x["binding_id"]: x for x in row["bindings"]}
-    assert bindings["api_oauth"]["status"] == "CONNECTED"
-    assert bindings["api_oauth"]["login_kind"] == "REDIRECT"
-    assert bindings["browser_session"]["status"] == "NEEDS_LOGIN"
-    assert bindings["browser_session"]["purpose"] == "WEB_AUTOMATION"
-
-def test_connected_x_account_keeps_browser_login_failure_scoped_to_browser_binding(tmp_path):
-    oauth_status = """▸ content-agent  [client_id: example]
-      oauth2: caini56006962
-"""
-    manager = AccountManager(
-        tmp_path,
-        browser_factory=lambda url: FakeBrowser(url, authenticated=False),
-        xurl_status_provider=lambda: oauth_status,
-    )
-
-    checked = manager.verify("x")
-    assert checked["status"] == "CONNECTED"
-    assert checked["last_error"] == ""
-    browser = next(x for x in checked["bindings"] if x["binding_id"] == "browser_session")
-    assert browser["status"] == "NEEDS_LOGIN"
-    assert "authenticated X profile was not visible" in browser["last_error"]
-
-    manager.mark_authenticating("x")
-    refreshed = next(x for x in manager.status()["accounts"] if x["provider_id"] == "x")
-    browser = next(x for x in refreshed["bindings"] if x["binding_id"] == "browser_session")
-    assert browser["last_error"] == ""
-
-
-def test_account_status_exposes_multiple_x_instances_without_global_identity_collision(tmp_path, monkeypatch):
-    status = """▸ content-agent  [client_id: example]
-      oauth2: first_x
-"""
-    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
     manager.registry.ensure(
         provider_id="x",
-        identity="second_x",
+        identity="alice",
         oauth_app="content-agent",
-        oauth_user="second_x",
+        oauth_user="alice",
         oauth_status="CONNECTED",
     )
-    monkeypatch.setenv("TINYFISH_API_KEY", "tinyfish-test-key")
-    monkeypatch.setenv("TINYFISH_X_PROFILE_ID", "prof_first")
 
-    body = manager.status()
-    rows = {row["identity"]: row for row in body["instances"]}
-
-    assert body["supports_multiple_accounts"] is True
-    assert set(rows) == {"first_x", "second_x"}
-    assert rows["first_x"]["oauth_user"] == "first_x"
-    assert rows["second_x"]["oauth_user"] == "second_x"
-    assert rows["first_x"]["automation"]["primary_engine"] == "JEV"
-    assert rows["first_x"]["automation"]["compatibility_fallback"] == "TINYFISH"
-    assert rows["second_x"]["automation"]["compatibility_fallback"] == ""
-    assert rows["first_x"]["account_id"] != rows["second_x"]["account_id"]
+    status = manager.status()
+    instance = next(row for row in status["instances"] if row["identity"] == "alice")
+    web = next(
+        row for row in instance["bindings"]
+        if row["binding_id"] == "agent_runtime_browser"
+    )
+    assert web["status"] == "CONNECTED"
+    assert web["profile_id"] == "x"
+    assert web["automation_engine"] == "AGENT_RUNTIME_BROWSER"
+    assert instance["automation"]["compatibility_fallback"] == ""
 
 
-def test_browser_profile_status_means_provisioned_not_authenticated(tmp_path):
+class _VerifyBrowser:
+    def invoke(self, capability_id, payload):
+        return {"ok": True}
+
+    def run_session_script(self, session_id, script, *, timeout_seconds):
+        return {
+            "profile": "/alice",
+            "url": "https://x.com/home",
+        }
+
+
+def test_x_verification_uses_agent_runtime_browser(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        x_local_browser,
+        "build_agent_runtime_x_browser",
+        lambda: _VerifyBrowser(),
+    )
     manager = AccountManager(tmp_path, xurl_status_provider=lambda: "")
-    account = manager.registry.ensure(provider_id="x", identity="profile_x")
-    profile = (
-        tmp_path
-        / "accounts"
-        / "browser-profiles"
-        / account.account_id
-        / "chrome-profile"
+    result = manager.verify("x")
+    assert result["status"] == "CONNECTED"
+    assert result["identity"] == "alice"
+
+
+class _BrokenVerifyBrowser:
+    def invoke(self, capability_id, payload):
+        raise RuntimeError("browser unavailable")
+
+
+def test_x_verification_surfaces_agent_runtime_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        x_local_browser,
+        "build_agent_runtime_x_browser",
+        lambda: _BrokenVerifyBrowser(),
     )
-    profile.mkdir(parents=True)
+    manager = AccountManager(tmp_path, xurl_status_provider=lambda: "")
+    result = manager.verify("x")
+    assert result["status"] == "DEGRADED"
+    assert result["last_error"] == "RuntimeError"
 
-    row = next(
-        x for x in manager.status()["instances"]
-        if x["account_id"] == account.account_id
+
+def test_deleted_x_identity_is_not_reimported(tmp_path, monkeypatch):
+    monkeypatch.setattr(browser_runtime, "browser_runtime_status", _ready_browser_status)
+    manager = AccountManager(
+        tmp_path,
+        xurl_status_provider=lambda: "content-agent\noauth2: alice\n",
     )
-    browser = next(
-        x for x in row["bindings"]
-        if x["binding_id"] == "browser_profile"
-    )
-
-    assert browser["status"] == "PROVISIONED"
-    assert browser["status"] != "CONNECTED"
-
-
-def test_deleted_default_x_identity_is_not_auto_imported_again(tmp_path):
-    status = """▸ content-agent  [client_id: example]
-      oauth2: deleted_x
-"""
-    manager = AccountManager(tmp_path, xurl_status_provider=lambda: status)
     first = manager.status()
-    account = next(x for x in first["instances"] if x["identity"] == "deleted_x")
+    instance = next(row for row in first["instances"] if row["identity"] == "alice")
+    manager.registry.remove(instance["account_id"])
 
-    manager.registry.remove(account["account_id"])
     second = manager.status()
-
-    assert all(x["identity"] != "deleted_x" for x in second["instances"])
-    assert manager.registry.is_deleted(provider_id="x", identity="deleted_x") is True
+    assert not any(row["identity"] == "alice" for row in second["instances"])

@@ -15,7 +15,7 @@ from wechat_traffic_agent.awe_production_contestant import (
     ProductionAWEContestant,
     handle_production_request,
 )
-from wechat_traffic_agent.livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+from wechat_traffic_agent.agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
 
 def main() -> int:
@@ -24,13 +24,9 @@ def main() -> int:
     parser.add_argument("--agent-id", required=True)
     args = parser.parse_args()
 
-    os.environ["LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED"] = "1"
-    os.environ["LIVINGRUNTIME_CHATGPT_AGENT_ID"] = args.agent_id
-    os.environ["LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS"] = "900"
-    os.environ["LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS"] = "60"
-    os.environ["LIVINGRUNTIME_CHATGPT_FOREGROUND_WAIT_SECONDS"] = "120"
+    os.environ["AGENT_RUNTIME_LLM_PROVIDER"] = "chatgpt-browser"
 
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     if not provider.available:
         raise SystemExit("ChatGPT provider unavailable")
     contestant = ProductionAWEContestant(

@@ -656,7 +656,7 @@ def test_high_capability_probe_never_promotes_provider_into_executable_pool(tmp_
         (tmp_path/"application/llm_resource_pool/resources.json").read_text()
     )
     assert manifest["resources"] == []
-    assert manifest["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert manifest["provider_mode"] == "AGENT_RUNTIME_CHATGPT_ONLY"
     assert "nvidia" in manifest["disabled_provider_ids"]
 
 
@@ -1095,7 +1095,7 @@ def test_provider_trial_success_never_enters_executable_llm_manifest(tmp_path, m
         (tmp_path / "application/llm_resource_pool/resources.json").read_text()
     )
     assert manifest["resources"] == []
-    assert manifest["provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
+    assert manifest["provider_mode"] == "AGENT_RUNTIME_CHATGPT_ONLY"
     assert "openrouter" in manifest["disabled_provider_ids"]
 
 

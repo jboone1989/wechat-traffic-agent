@@ -247,7 +247,6 @@ class WakefulContentTaskRunner:
         }
         rows.setdefault("task", task)
         if str(rows.get("status") or "").upper() in {
-            "WAITING_FOR_CHATGPT",
             "SHUTDOWN_CHECKPOINT",
             "CANCELLED",
             "STALE_OWNER_COGNITION_IGNORED",
@@ -627,156 +626,73 @@ class WakefulContentTaskRunner:
         focus_topic: str | None = None,
         relevant_refs: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        from .livingruntime_chatgpt import (
-            LivingRuntimeChatGPTPendingError,
-            LivingRuntimeChatGPTProviderError,
-            resume_next_durable_cognition,
-        )
+        from .agent_runtime_chatgpt import AgentRuntimeChatGPTProviderError
 
-        resume_request_ids = [
-            str(ref).split(":", 1)[1]
-            for ref in relevant_refs
-            if str(ref).startswith("cognition-request:")
-            and str(ref).split(":", 1)[1].strip()
-        ]
-        # A multi-call wakeful task can suspend more than once. Older persisted
-        # refs are historical checkpoints; the newest request is the only
-        # unresolved continuation pointer.
-        resume_request_id = resume_request_ids[-1] if resume_request_ids else ""
-        if task == "CONTENT_COGNITION" and resume_request_id:
-            owner_goal = self._active_owner_goal_context(
-                relevant_refs=relevant_refs,
-                now=now,
-            )
-            episode = getattr(self, "owner_agent_episode", None)
-            classify = getattr(episode, "classify_request", None)
-            owner_goal_id = (
-                str(owner_goal.get("goal_id") or "").strip()
-                if isinstance(owner_goal, dict)
-                else ""
-            )
-            if owner_goal_id and callable(classify):
-                request_class = str(
-                    classify(owner_goal_id, resume_request_id) or ""
+        try:
+            self._raise_if_stopping()
+            if task == "SELF_REPAIR":
+                return self._self_repair(now)
+            regulator = getattr(self, "resource_regulator", None)
+            if regulator is not None:
+                owner_authorized = (
+                    task == "CONTENT_COGNITION"
+                    and self._active_owner_goal_context() is not None
                 )
-                if request_class == "STALE":
+                admission = regulator.claim(
+                    task,
+                    now,
+                    owner_authorized=owner_authorized,
+                )
+                if not admission["allowed"]:
                     return {
                         "task": task,
-                        "status": "STALE_OWNER_COGNITION_IGNORED",
-                        "request_id": resume_request_id,
-                        "owner_goal_id": owner_goal_id,
-                        "resumable": False,
+                        "status": "RESOURCE_DEFERRED",
+                        "resource_admission": admission,
                     }
-        # CONTENT_COGNITION contains multiple semantic LLM phases.  Never bind
-        # its wake-level request id to "the next provider call": a duplicate
-        # owner-episode wake can otherwise leak a completed OwnerAgent response
-        # into the following mission/content phase.  OwnerAgentEpisode and
-        # ReceiptRuntime each bind their own exact durable request below.
-        resume_context = (
-            resume_next_durable_cognition(resume_request_id)
-            if resume_request_id and task != "CONTENT_COGNITION"
-            else nullcontext()
-        )
-        try:
-            with resume_context:
-                self._raise_if_stopping()
-                if task == "SELF_REPAIR":
-                    return self._self_repair(now)
-                regulator = getattr(self, "resource_regulator", None)
-                if regulator is not None and not resume_request_id:
-                    owner_authorized = (
-                        task == "CONTENT_COGNITION"
-                        and self._active_owner_goal_context() is not None
-                    )
-                    admission = regulator.claim(
-                        task,
-                        now,
-                        owner_authorized=owner_authorized,
-                    )
-                    if not admission["allowed"]:
-                        return {
-                            "task": task,
-                            "status": "RESOURCE_DEFERRED",
-                            "resource_admission": admission,
-                        }
-                if task == "FAST_DECISION":
-                    return self._fast_decision(
-                        now,
-                        relevant_refs=relevant_refs,
-                    )
-                if task == "NEURAL_INTEROCEPTION":
-                    return self._neural_interoception(now)
-                if task == "NEURAL_PLAY":
-                    return self._neural_play(now)
-                if task == "NEURAL_DREAM":
-                    return self._neural_dream(now)
-                if task == "NEURAL_TRANSFER":
-                    return self._neural_transfer(now)
-                if task == "NEURAL_DEVELOPMENT":
-                    return self._neural_development(now)
-                if task == "NEURAL_DEVELOPMENT_TRANSFER":
-                    return self._neural_development_transfer(now)
-                if task == "NEURAL_EVOLUTION_CONSOLIDATION":
-                    return self._neural_evolution_consolidation(now)
-                if task == "RESOURCE_REVIEW":
-                    return self._resource(now)
-                if task == "REFLECT":
-                    return self._reflect(
-                        now,
-                        relevant_refs=relevant_refs,
-                    )
-                if task == "CHECK_X":
-                    return self._x(now)
-                if task == "OKX_AI_MARKETPLACE":
-                    return self._okx_ai_marketplace(now)
-                if task == "CHECK_OUTCOMES":
-                    return self._outcomes(now)
-                if task == "OBSERVE_WORLD":
-                    return self._observe(now)
-                if task == "VERIFY_PREDICTION":
-                    return self._verify_prediction(now)
-                if task == "CONTENT_COGNITION":
-                    return self._content(
-                        now,
-                        focus_topic=focus_topic,
-                        relevant_refs=relevant_refs,
-                    )
-                return {"status": "NOOP", "task": task}
-        except LivingRuntimeChatGPTPendingError as exc:
-            result: dict[str, Any] = {
-                "task": task,
-                "status": "WAITING_FOR_CHATGPT",
-                "request_id": exc.request_id,
-                "resumable": True,
-            }
-            resume_refs = tuple(relevant_refs)
-            if task == "CONTENT_COGNITION":
-                owner_goal = self._active_owner_goal_context(
+            if task == "FAST_DECISION":
+                return self._fast_decision(
+                    now,
                     relevant_refs=relevant_refs,
-                    now=now,
                 )
-                owner_goal_id = (
-                    str(owner_goal.get("goal_id") or "").strip()
-                    if isinstance(owner_goal, dict)
-                    else ""
+            if task == "NEURAL_INTEROCEPTION":
+                return self._neural_interoception(now)
+            if task == "NEURAL_PLAY":
+                return self._neural_play(now)
+            if task == "NEURAL_DREAM":
+                return self._neural_dream(now)
+            if task == "NEURAL_TRANSFER":
+                return self._neural_transfer(now)
+            if task == "NEURAL_DEVELOPMENT":
+                return self._neural_development(now)
+            if task == "NEURAL_DEVELOPMENT_TRANSFER":
+                return self._neural_development_transfer(now)
+            if task == "NEURAL_EVOLUTION_CONSOLIDATION":
+                return self._neural_evolution_consolidation(now)
+            if task == "RESOURCE_REVIEW":
+                return self._resource(now)
+            if task == "REFLECT":
+                return self._reflect(
+                    now,
+                    relevant_refs=relevant_refs,
                 )
-                if owner_goal_id:
-                    resume_refs = tuple(
-                        dict.fromkeys((*resume_refs, owner_goal_id))
-                    )
-            schedule_resume = getattr(self.wakeful, "schedule_chatgpt_resume", None)
-            if callable(schedule_resume):
-                try:
-                    result["chatgpt_resume"] = schedule_resume(
-                        now,
-                        request_id=exc.request_id,
-                        task=task,
-                        relevant_refs=resume_refs,
-                    )
-                except Exception as schedule_exc:  # noqa: BLE001
-                    result["chatgpt_resume"] = self._error(schedule_exc)
-            return result
-        except LivingRuntimeChatGPTProviderError as exc:
+            if task == "CHECK_X":
+                return self._x(now)
+            if task == "OKX_AI_MARKETPLACE":
+                return self._okx_ai_marketplace(now)
+            if task == "CHECK_OUTCOMES":
+                return self._outcomes(now)
+            if task == "OBSERVE_WORLD":
+                return self._observe(now)
+            if task == "VERIFY_PREDICTION":
+                return self._verify_prediction(now)
+            if task == "CONTENT_COGNITION":
+                return self._content(
+                    now,
+                    focus_topic=focus_topic,
+                    relevant_refs=relevant_refs,
+                )
+            return {"status": "NOOP", "task": task}
+        except AgentRuntimeChatGPTProviderError as exc:
             # A bounded ChatGPT dispatch/response timeout is an expected
             # provider-availability state, not a process-fatal error. Keep any
             # durable owner episode checkpoint intact and re-enter cognition
@@ -788,17 +704,6 @@ class WakefulContentTaskRunner:
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:500],
             }
-            if task == "CONTENT_COGNITION":
-                episode = getattr(self, "owner_agent_episode", None)
-                clear_pending = getattr(episode, "clear_pending_request", None)
-                if resume_request_id and callable(clear_pending):
-                    result["owner_episode_pending_cleared"] = bool(
-                        clear_pending(
-                            resume_request_id,
-                            error_type=type(exc).__name__,
-                            now=now,
-                        )
-                    )
             schedule_recovery = getattr(
                 self.wakeful,
                 "schedule_provider_recovery",
@@ -809,7 +714,6 @@ class WakefulContentTaskRunner:
                     retry_refs = tuple(
                         ref
                         for ref in relevant_refs
-                        if not str(ref).startswith("cognition-request:")
                     )
                     result["provider_recovery"] = schedule_recovery(
                         now,
@@ -1132,7 +1036,7 @@ class WakefulContentTaskRunner:
         self.wakeful.set_resource_pressure(pressure)
 
         rows["llm_provider_mode"] = (
-            "LIVINGRUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
+            "AGENT_RUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
         )
 
         model_reputation = getattr(self, "model_reputation", None)
@@ -1410,7 +1314,7 @@ class WakefulContentTaskRunner:
         *,
         relevant_refs: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        from .livingruntime_chatgpt import LivingRuntimeChatGPTProviderError
+        from .agent_runtime_chatgpt import AgentRuntimeChatGPTProviderError
 
         rows: dict[str, Any] = {"task": "REFLECT", "status": "OK"}
         continuous = getattr(self.daily_reflection, "reflect_now", None)
@@ -1419,7 +1323,7 @@ class WakefulContentTaskRunner:
                 rows["continuous_reflection"] = self._run_async(
                     continuous(now, relevant_refs=relevant_refs)
                 )
-            except LivingRuntimeChatGPTProviderError:
+            except AgentRuntimeChatGPTProviderError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 rows["continuous_reflection"] = self._error(exc)
@@ -1439,7 +1343,7 @@ class WakefulContentTaskRunner:
                 if callable(cognitive)
                 else self.daily_reflection.maybe_generate(now)
             )
-        except LivingRuntimeChatGPTProviderError:
+        except AgentRuntimeChatGPTProviderError:
             raise
         except Exception as exc:  # noqa: BLE001
             rows["daily_reflection"] = self._error(exc)
@@ -1453,7 +1357,7 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
         try:
             rows["evolution_deliberation"] = self._evolution_deliberation(now)
-        except LivingRuntimeChatGPTProviderError:
+        except AgentRuntimeChatGPTProviderError:
             raise
         except Exception as exc:  # noqa: BLE001
             rows["evolution_deliberation"] = self._error(exc)
@@ -1984,39 +1888,6 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             return {"task": "VERIFY_PREDICTION", "status": "DEGRADED", "prediction_verification": self._error(exc)}
 
-    def _pending_chatgpt_cycle(self) -> dict[str, str] | None:
-        """Return the newest unfinished cycle suspended on a durable ChatGPT request."""
-        state_root = getattr(self, "state_root", None)
-        if state_root is None:
-            return None
-        cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
-        if not cycles_root.is_dir():
-            return None
-        candidates: list[tuple[float, dict[str, str]]] = []
-        for marker in cycles_root.glob("*/waiting_for_chatgpt.json"):
-            folder = marker.parent
-            if (folder / "result.json").exists():
-                continue
-            try:
-                payload = json.loads(marker.read_text(encoding="utf-8"))
-                mtime = marker.stat().st_mtime
-            except (OSError, ValueError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if str(payload.get("status") or "").upper() != "WAITING_FOR_CHATGPT":
-                continue
-            if payload.get("resumable") is not True:
-                continue
-            cycle = str(payload.get("cycle") or folder.name).strip()
-            request_id = str(payload.get("request_id") or "").strip()
-            if cycle != folder.name or not request_id:
-                continue
-            candidates.append((mtime, {"cycle": cycle, "request_id": request_id}))
-        if not candidates:
-            return None
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
 
     def _runtime_revision(self) -> str:
         """Return the deployed Ferro revision when release metadata is available."""
@@ -2718,7 +2589,6 @@ class WakefulContentTaskRunner:
             str(ref).strip()
             for ref in relevant_refs
             if str(ref).strip()
-            and not str(ref).startswith("cognition-request:")
         }
         if preferred_ids:
             preferred = [
@@ -2735,7 +2605,6 @@ class WakefulContentTaskRunner:
         stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
         scored: list[dict[str, Any]] = []
-        non_pending: list[dict[str, Any]] = []
         for goal, origin in candidates:
             goal_id = str(getattr(goal, "goal_id", "") or "").strip()
             priority = float(getattr(goal, "priority", 0.0) or 0.0)
@@ -2772,13 +2641,7 @@ class WakefulContentTaskRunner:
                 "origin": origin,
             }
             scored.append(row)
-            pending = bool(
-                str(state.get("status") or "") == "RUNNING"
-                and str(state.get("pending_request_id") or "").strip()
-            )
-            if not pending:
-                non_pending.append(row)
-        pool = non_pending or scored
+        pool = scored
         scheduler_receipt: dict[str, Any] | None = None
         if preferred_ids:
             # Explicit owner wake references are authority, not a policy trial.
@@ -3048,7 +2911,6 @@ class WakefulContentTaskRunner:
         *,
         owner_goal: dict[str, Any],
         now: datetime,
-        resume_request_id: str | None = None,
     ) -> dict[str, Any]:
         episode = getattr(self, "owner_agent_episode", None)
         domain_runtime = getattr(getattr(self, "app", None), "domain_runtime", None)
@@ -3171,7 +3033,6 @@ class WakefulContentTaskRunner:
                         mission_context=mission_context,
                         tool_executor=execute_tool,
                         now=now,
-                        resume_request_id=resume_request_id,
                     )
                 )
             except Exception as exc:
@@ -3256,19 +3117,6 @@ class WakefulContentTaskRunner:
         owner_directed_cycle_id: str | None = None
         owner_episode_active = False
         owner_seed_evidence: list[dict[str, Any]] = []
-        has_durable_resume = any(
-            str(ref).startswith("cognition-request:")
-            for ref in relevant_refs
-        )
-        owner_resume_request_id = next(
-            (
-                str(ref).split(":", 1)[1]
-                for ref in reversed(relevant_refs)
-                if str(ref).startswith("cognition-request:")
-                and str(ref).split(":", 1)[1].strip()
-            ),
-            None,
-        )
         owner_episode_running = bool(
             owner_goal is not None
             and getattr(self, "owner_agent_episode", None) is not None
@@ -3294,12 +3142,10 @@ class WakefulContentTaskRunner:
         if (
             owner_goal is not None
             and focus_topic is None
-            and (not has_durable_resume or owner_episode_running)
         ):
             control = self._owner_agent_control(
                 owner_goal=owner_goal,
                 now=now,
-                resume_request_id=owner_resume_request_id,
             )
             rows["owner_agent_episode"] = control
             if (
@@ -3377,58 +3223,17 @@ class WakefulContentTaskRunner:
             except Exception as exc:  # noqa: BLE001
                 rows["google_search_console"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        pending_chatgpt = (
-            self._pending_chatgpt_cycle()
-            if focus_topic is None and not owner_episode_active
-            else None
-        )
         focus_cycle_id = (
             owner_directed_cycle_id
             if owner_episode_active and focus_topic
             else f"v2-bootstrap-{int(now.timestamp())}" if focus_topic else None
         )
-        directed_cycle_id = (
-            str(pending_chatgpt["cycle"])
-            if pending_chatgpt is not None
-            else focus_cycle_id
-        )
+        directed_cycle_id = focus_cycle_id
         preflight = self.continuous_loop.preflight(now=now, cycle_id=directed_cycle_id)
         base_cycle_id = str(preflight["cycle"])
         recovery = None
         mission_followup = None
-        if pending_chatgpt is not None:
-            rows["content_chatgpt_resume"] = {
-                "status": "RESUMING",
-                "cycle": str(pending_chatgpt["cycle"]),
-                "request_id": str(pending_chatgpt["request_id"]),
-            }
-            cycle_folder = (
-                Path(self.state_root)
-                / "content"
-                / "continuous"
-                / "cycles"
-                / str(pending_chatgpt["cycle"])
-            )
-            for filename, target in (
-                ("recovery.json", "recovery"),
-                ("mission_followup.json", "mission_followup"),
-            ):
-                path = cycle_folder / filename
-                try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
-                if not isinstance(payload, dict):
-                    continue
-                if str(payload.get("status") or "").upper() != "READY":
-                    continue
-                if target == "recovery":
-                    recovery = payload
-                    rows["content_cycle_recovery"] = payload
-                else:
-                    mission_followup = payload
-                    rows["content_mission_followup"] = payload
-        elif focus_topic is None:
+        if focus_topic is None:
             recovery = self._content_recovery(preflight=preflight, now=now)
             if recovery is not None:
                 rows["content_cycle_recovery"] = recovery
@@ -3555,33 +3360,6 @@ class WakefulContentTaskRunner:
             self.continuous_loop.run_once(**content_run_kwargs)
         )
         rows["continuous_content"] = continuous
-        if str(continuous.get("status") or "").upper() == "WAITING_FOR_CHATGPT":
-            rows["status"] = "WAITING_FOR_CHATGPT"
-            request_id = str(continuous.get("request_id") or "").strip()
-            resume_refs = tuple(relevant_refs)
-            owner_goal_id = (
-                str(owner_goal.get("goal_id") or "").strip()
-                if isinstance(owner_goal, dict)
-                else ""
-            )
-            if owner_goal_id:
-                resume_refs = tuple(
-                    dict.fromkeys((*resume_refs, owner_goal_id))
-                )
-            schedule_resume = getattr(
-                self.wakeful, "schedule_chatgpt_resume", None
-            )
-            if request_id and callable(schedule_resume):
-                try:
-                    rows["chatgpt_resume"] = schedule_resume(
-                        now,
-                        request_id=request_id,
-                        task="CONTENT_COGNITION",
-                        relevant_refs=resume_refs,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    rows["chatgpt_resume"] = self._error(exc)
-            return rows
         if recovery is not None and recovery.get("status") == "READY":
             recovery_path = (
                 Path(self.state_root)

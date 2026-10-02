@@ -10,48 +10,12 @@ NOW = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
-def _multi_provider_default(monkeypatch):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
 
 
 def _policy(root, name, pressure, observed_at=NOW):
     file = root / "application" / name / "policy.json"
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps({"pressure": pressure, "observed_at": observed_at.isoformat()}))
-
-
-def test_chatgpt_only_cognition_ignores_api_pool_pressure(tmp_path, monkeypatch):
-    _policy(tmp_path, "survival_resources", "NORMAL")
-    _policy(tmp_path, "llm_resource_pool", "CRITICAL", NOW - timedelta(hours=3))
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# available\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
-
-    regulator = ResourceRegulator(tmp_path)
-
-    assert regulator.pressure(NOW) == "NORMAL"
-    assert regulator.claim("CONTENT_COGNITION", NOW)["allowed"] is True
-
-
-def test_owner_goal_uses_chatgpt_lane_under_host_pressure(tmp_path, monkeypatch):
-    _policy(tmp_path, "survival_resources", "CRITICAL")
-    _policy(tmp_path, "llm_resource_pool", "CRITICAL")
-    cli = tmp_path / "cognitionctl.py"
-    cli.write_text("# available\n", encoding="utf-8")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_COGNITION_CLI", str(cli))
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
-
-    admitted = ResourceRegulator(tmp_path).claim(
-        "CONTENT_COGNITION", NOW, owner_authorized=True
-    )
-
-    assert admitted["allowed"] is True
-    assert admitted["pressure"] == "CRITICAL"
-    assert admitted["reason"] == "OWNER_GOAL_CHATGPT_COGNITION_LANE"
 
 
 def test_free_verified_route_preserves_cognition_when_paid_balance_is_critical(tmp_path, monkeypatch):

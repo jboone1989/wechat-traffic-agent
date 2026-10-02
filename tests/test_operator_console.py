@@ -880,79 +880,6 @@ def _login_operator(client: TestClient, root) -> None:
     assert response.status_code == 200
 
 
-def test_operator_page_exposes_browser_runtime_and_jev_smoke_action(tmp_path, monkeypatch):
-    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
-    service = LiveAgentService(
-        state_root=tmp_path,
-        application=None,
-        backend=None,
-        mind=None,
-    )
-    client = TestClient(service._app())
-    page = client.get("/operator/")
-    assert page.status_code == 200
-    assert "浏览器" in page.text
-    assert "测试 Jev" in page.text
-    assert "/operator/api/browser/jev/test" in page.text
-
-
-def test_operator_jev_smoke_endpoint_is_authenticated_and_bounded(tmp_path, monkeypatch):
-    from wechat_traffic_agent.browser_runtime import BrowserTaskResult, JevBrowserExecutor
-
-    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
-
-    class FakeExecutor:
-        async def run(self, **kwargs):
-            assert kwargs["url"] == "https://example.com"
-            assert kwargs["task_type"] == "JEV_OPERATOR_SMOKE"
-            return BrowserTaskResult(
-                provider="JEV",
-                status="COMPLETED",
-                elapsed_ms=17,
-                action_count=0,
-                final_url="https://example.com/",
-            )
-
-    monkeypatch.setattr(
-        JevBrowserExecutor,
-        "from_environment",
-        classmethod(lambda cls, state_root: FakeExecutor()),
-    )
-    service = LiveAgentService(
-        state_root=tmp_path,
-        application=None,
-        backend=None,
-        mind=None,
-    )
-
-    client = TestClient(service._app())
-    unauth = client.post(
-        "/operator/api/browser/jev/test",
-        headers={"X-Operator-Request": "1"},
-        json={},
-    )
-    assert unauth.status_code == 401
-
-    _login_operator(client, tmp_path)
-    no_header = client.post("/operator/api/browser/jev/test", json={})
-    assert no_header.status_code == 403
-
-    result = client.post(
-        "/operator/api/browser/jev/test",
-        headers={"X-Operator-Request": "1"},
-        json={},
-    )
-    assert result.status_code == 200
-    assert result.json() == {
-        "ok": True,
-        "status": "JEV_TEST_PASSED",
-        "provider": "JEV",
-        "elapsed_ms": 17,
-        "action_count": 0,
-        "final_url": "https://example.com/",
-    }
-
-
 def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text(tmp_path, monkeypatch):
     import types
     import wechat_traffic_agent.local_browser_control as local_module
@@ -1399,7 +1326,6 @@ def test_operator_login_rate_limits_are_scoped_by_delivery_channel(tmp_path, mon
 def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
     from wechat_traffic_agent.account_registry import AccountRegistry
-    from wechat_traffic_agent.account_browser_profiles import AccountBrowserProfileManager
 
     registry = AccountRegistry(tmp_path)
     first = registry.ensure(
@@ -1411,16 +1337,6 @@ def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_pat
         provider_id="x",
         identity="keep_me",
         oauth_status="NEEDS_AUTHORIZATION",
-    )
-    first_dir = tmp_path / "accounts" / "browser-profiles" / first.account_id / "chrome-profile"
-    second_dir = tmp_path / "accounts" / "browser-profiles" / second.account_id / "chrome-profile"
-    first_dir.mkdir(parents=True)
-    second_dir.mkdir(parents=True)
-
-    monkeypatch.setattr(
-        AccountBrowserProfileManager,
-        "stop",
-        lambda self, account_id: None,
     )
 
     client = TestClient(LiveAgentService(
@@ -1446,86 +1362,5 @@ def test_operator_can_delete_account_instance_with_identity_confirmation(tmp_pat
     assert deleted.status_code == 200
     assert deleted.json()["status"] == "DELETED"
     assert deleted.json()["identity"] == "delete_me"
-    assert deleted.json()["external_authorization_retained"] is False
-    assert first_dir.parent.exists() is False
     assert registry.is_deleted(provider_id="x", identity="delete_me") is True
     assert registry.get(second.account_id).identity == "keep_me"
-    assert second_dir.exists() is True
-
-
-def test_account_instance_has_independent_browser_login_endpoints(tmp_path, monkeypatch):
-    import wechat_traffic_agent.account_browser_login as login_module
-    from wechat_traffic_agent.account_registry import AccountRegistry
-
-    monkeypatch.setenv("CONTENT_OPERATOR_CONSOLE_ENABLED", "true")
-    record = AccountRegistry(tmp_path).ensure(
-        provider_id="x",
-        identity="ferro",
-        oauth_status="CONNECTED",
-    )
-    calls = []
-
-    class FakeControl:
-        def __init__(self, *, state_root, account_id):
-            assert state_root == tmp_path
-            assert account_id == record.account_id
-
-        def start(self):
-            calls.append("start")
-            return {
-                "running": True,
-                "url": "https://x.com/i/flow/login",
-                "title": "X",
-                "x_authenticated": False,
-                "account_identity": "",
-            }
-
-        def stop(self):
-            calls.append("stop")
-            return {
-                "ok": True,
-                "running": False,
-                "authenticated": True,
-                "identity": "ferro",
-            }
-
-    monkeypatch.setattr(
-        login_module,
-        "AccountBrowserLoginControl",
-        FakeControl,
-    )
-    client = TestClient(LiveAgentService(
-        state_root=tmp_path,
-        application=None,
-        backend=None,
-        mind=None,
-    )._app())
-    _login_operator(client, tmp_path)
-    headers = {"X-Operator-Request": "1"}
-
-    started = client.post(
-        f"/operator/api/account-instances/{record.account_id}/browser/login/connect",
-        headers=headers,
-        json={},
-    )
-
-    assert started.status_code == 200
-    assert started.json()["account_id"] == record.account_id
-    assert started.json()["expected_identity"] == "ferro"
-
-    stopped = client.post(
-        f"/operator/api/account-instances/{record.account_id}/browser/login/stop",
-        headers=headers,
-        json={},
-    )
-    assert stopped.status_code == 200
-    assert stopped.json()["authenticated"] is True
-    assert stopped.json()["identity_match"] is True
-    assert calls == ["start", "stop"]
-
-    unknown = client.post(
-        "/operator/api/account-instances/acct_x_aaaaaaaaaaaa/browser/login/connect",
-        headers=headers,
-        json={},
-    )
-    assert unknown.status_code == 404

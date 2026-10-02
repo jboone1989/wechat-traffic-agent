@@ -76,7 +76,6 @@ class DailyReflectionService:
                 str(ref).strip()
                 for ref in relevant_refs
                 if str(ref).strip()
-                and not str(ref).startswith("cognition-request:")
             )
         )
         trigger_ref = next(

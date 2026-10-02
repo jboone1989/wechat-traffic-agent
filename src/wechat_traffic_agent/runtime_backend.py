@@ -1,6 +1,6 @@
 """ChatGPT-only advisory backend wiring for the persistent Content Agent.
 
-Ferro deliberately has one cognition provider: LivingRuntime ChatGPT. External
+Ferro deliberately has one cognition provider: Agent Runtime ChatGPT. External
 API model pools are not fallback capacity and must never be reconstructed from
 legacy credentials or historical provider-discovery state.
 """
@@ -52,7 +52,7 @@ class ContentBoundedLegacyProviderBackend:
 
 
 class OwnerChatGPTCognitionRuntime:
-    """Durable LivingRuntime ChatGPT cognition for owner-goal control."""
+    """Durable Agent Runtime ChatGPT cognition for owner-goal control."""
 
     def __init__(
         self,
@@ -158,30 +158,17 @@ def _temporary_runtime_llm_environment(state_root: Path | None = None) -> Iterat
 
 
 def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
-    """Report the configured ChatGPT-exclusive operating mode.
-
-    Executable cognition remains ChatGPT-only regardless of this helper: the
-    main/public backends and resource manifest no longer construct API-provider
-    routes. This flag is retained for non-routing resource-economy simulations
-    and historical tests.
-    """
-    env = os.environ if environ is None else environ
-    raw_enabled = str(env.get("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED") or "").strip()
-    if raw_enabled:
-        enabled = raw_enabled.lower() in {"1", "true", "yes", "on"}
-    else:
-        enabled = (Path.home() / ".livingruntime" / "ferro-chatgpt-provider.enabled").is_file()
-    raw_fallback = str(env.get("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK") or "").strip()
-    allow_fallback = raw_fallback.lower() in {"1", "true", "yes", "on"}
-    return enabled and not allow_fallback
+    """Ferro cognition has one executable route: Agent Runtime ChatGPT."""
+    _ = environ
+    return True
 
 
 def load_optional_advisory_backend(*, state_root: Path | None = None):
-    """Load Ferro's only advisory backend: LivingRuntime ChatGPT."""
+    """Load Ferro's only advisory backend: Agent Runtime ChatGPT."""
     from agent_runtime.backends import LegacyProviderBackend
-    from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+    from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     advisory_timeout = max(
         _content_advisory_timeout_seconds(),
         provider.timeout_seconds,
@@ -195,17 +182,15 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
     )
 
 def load_public_chat_backend(*, state_root: Path | None = None):
-    """Load public chat through LivingRuntime ChatGPT.
+    """Load public chat through Agent Runtime ChatGPT.
 
-    Public chat uses the same durable ChatGPT transport as Ferro's other
-    cognition surfaces. It must not depend on OpenAI API credentials or quota.
-    The HTTP layer is responsible for translating durable PENDING state into a
-    resumable visitor-facing conversation rather than a 503.
+    Public chat uses the same Agent Runtime browser provider as Ferro's other
+    cognition surfaces. It does not depend on OpenAI API credentials or quota.
     """
     from agent_runtime.backends import LegacyProviderBackend
-    from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+    from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     if not provider.available:
         return None
     if state_root is not None:
@@ -225,17 +210,16 @@ def load_owner_cognition_runtime(
 ):
     """Load Ferro's authoritative owner-goal cognition route.
 
-    Owner cognition is LivingRuntime ChatGPT Provider-only. API credentials,
-    quota, provider pools, and legacy model fallbacks are intentionally outside
-    this path. The durable queue preserves the exact request across replaceable
-    ChatGPT sessions.
+    Owner cognition is Agent Runtime ChatGPT Provider-only. API credentials,
+    provider pools, legacy fallbacks and external cognition queues are outside
+    this path.
     """
-    from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+    from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
     if not provider.available:
         raise RuntimeError(
-            "owner cognition requires available LivingRuntime ChatGPT provider"
+            "owner cognition requires available Agent Runtime ChatGPT provider"
         )
     if state_root is not None:
         from .llm_audit import audited_provider

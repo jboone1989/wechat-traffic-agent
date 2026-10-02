@@ -111,7 +111,7 @@ def _score_outcome(outcome: Mapping[str, Any]) -> dict[str, Any]:
     utility = _world_utility(outcome)
     if status in {
         "ERROR", "FAILED", "DEGRADED", "CHATGPT_UNAVAILABLE",
-        "OWNER_COGNITION_PROVIDER_UNAVAILABLE", "WAITING_FOR_CHATGPT",
+        "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
     }:
         return {
             "valid": False,

@@ -398,7 +398,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         # Bind the request-only Pi RRSI worker to the same source authority and
         # Python environment used by this Ferro process before capabilities are
         # composed. No model API credential is introduced: cognition still goes
-        # through the LivingRuntime ChatGPT provider.
+        # through the Agent Runtime ChatGPT provider.
         os.environ.setdefault("PI_REMOTE_REPAIR_REPO_ROOT", repair_workspace_raw)
         os.environ.setdefault("PI_REMOTE_REPAIR_PYTHON", sys.executable)
         os.environ.setdefault("CONTENT_SELF_REPAIR_PYTHON", sys.executable)
@@ -958,10 +958,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
             if task != "NEURAL_INTEROCEPTION":
                 wakeful_runtime.refresh_neural_life(now)
             wakeful_runtime.sync_prediction_wakes(now)
-            if (
-                task not in {"EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}
-                and status != "WAITING_FOR_CHATGPT"
-            ):
+            if task not in {"EVENT_OBSERVE", "NEURAL_INTEROCEPTION"}:
                 wakeful_runtime.core.mark_action(now)
             if wake_reason is not None and wake_reason.kind == "PLAN" and reason_task:
                 wakeful_runtime.schedule_next(reason_task, now)
@@ -971,13 +968,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
                 state_root, cycle=runtime_event_cycle, phase="WAITING",
                 title="Awake · Waiting",
                 detail=(
-                    (
-                        "A durable ChatGPT cognition request is pending; "
-                        "this cycle is suspended and will resume the same request. "
-                    )
-                    if status == "WAITING_FOR_CHATGPT"
-                    else "No deeper cognition is currently justified. "
-                ) + (
+                    "No deeper cognition is currently justified. "
                     f"Next intentional wake: {next_state.get('next_wake_at') or 'event-driven'} · "
                     f"{next_state.get('next_wake_reason') or 'external stimulus'}"
                 ),

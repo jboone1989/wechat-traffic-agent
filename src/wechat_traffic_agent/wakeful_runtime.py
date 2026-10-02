@@ -393,15 +393,11 @@ class ContentWakefulRuntime:
         return path
 
     def _drain_external_wake_requests(self) -> int:
-        """Merge external wake intents into the live core without postponing work."""
+        """Merge external wake intents without any provider-specific continuation state."""
         if not self._wake_request_root.exists():
             return 0
         paths = list(self._wake_request_root.glob("*.json"))
-        # Cognition continuations for the same wake id are last-writer-wins.
-        # Filename order is a hash/name implementation detail and must not
-        # decide which durable request is authoritative.  Process spool files
-        # in write order so the newest cognition pointer is merged last, while
-        # the existing min(at) rule still preserves the earliest due time.
+
         def spool_order(path: Path) -> tuple[int, str]:
             try:
                 return (path.stat().st_mtime_ns, path.name)
@@ -413,9 +409,9 @@ class ContentWakefulRuntime:
             for wake in self.core.snapshot().pending_plans
         }
         merged = 0
-        for path in sorted(paths, key=spool_order):
+        for request_path in sorted(paths, key=spool_order):
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
                 task = str(payload.get("task") or "")
                 wake_id = str(payload.get("wake_id") or "")
                 raw_at = datetime.fromisoformat(str(payload.get("at") or ""))
@@ -425,7 +421,7 @@ class ContentWakefulRuntime:
                     raise ValueError("external wake task is not allowed")
                 if wake_id != f"content:{task}":
                     raise ValueError("external wake id does not match task")
-                wake = PlannedWake(
+                incoming = PlannedWake(
                     wake_id=wake_id,
                     at=raw_at.astimezone(timezone.utc),
                     reason=str(payload.get("reason") or task.lower().replace("_", " "))[:300],
@@ -435,168 +431,55 @@ class ContentWakefulRuntime:
                     preemptible=bool(payload.get("preemptible", True)),
                 )
                 existing = current.get(wake_id)
-                incoming_cognition_refs = tuple(
-                    str(ref)
-                    for ref in wake.relevant_refs
-                    if str(ref).startswith("cognition-request:")
-                )
-                existing_cognition_ref = (
-                    next(
-                        (
-                            str(ref)
-                            for ref in reversed(existing.relevant_refs)
-                            if str(ref).startswith("cognition-request:")
-                        ),
-                        None,
-                    )
-                    if existing is not None
-                    else None
-                )
-                if (
-                    existing is not None
-                    and existing.reason == _OWNER_WAIT_REASON
-                    and wake.at < existing.at
-                    and not incoming_cognition_refs
-                ):
-                    # Normal cadence/owner-refresh requests cannot cancel a
-                    # deliberate future WAIT.  Merge only non-transactional
-                    # provenance and leave its deadline intact. A real
-                    # cognition-request continuation is handled below and may
-                    # resume an already-started transaction.
-                    merged_refs = tuple(dict.fromkeys(
-                        (
-                            *(str(ref) for ref in existing.relevant_refs),
-                            *(
-                                str(ref)
-                                for ref in wake.relevant_refs
-                                if not str(ref).startswith("cognition-request:")
-                            ),
-                        )
-                    ))
-                    if merged_refs != existing.relevant_refs:
-                        self.core.cancel(wake_id)
-                        protected = PlannedWake(
-                            wake_id=existing.wake_id,
-                            at=existing.at,
-                            reason=_OWNER_WAIT_REASON,
-                            task=existing.task,
-                            relevant_refs=merged_refs,
-                            cancel_conditions=existing.cancel_conditions,
-                            preemptible=existing.preemptible,
-                        )
-                        self.core.schedule(protected)
-                        current[wake_id] = protected
-                        merged += 1
+                if existing is None:
+                    self.core.schedule(incoming)
+                    current[wake_id] = incoming
+                    merged += 1
                     continue
-                replace_cognition_pointer = bool(
-                    existing is not None
-                    and incoming_cognition_refs
-                    and incoming_cognition_refs[-1] != existing_cognition_ref
-                )
-                if existing is not None and incoming_cognition_refs:
-                    non_cognition_refs = tuple(
-                        dict.fromkeys(
-                            (
-                                *(
-                                    str(ref)
-                                    for ref in existing.relevant_refs
-                                    if not str(ref).startswith("cognition-request:")
-                                ),
-                                *(
-                                    str(ref)
-                                    for ref in wake.relevant_refs
-                                    if not str(ref).startswith("cognition-request:")
-                                ),
-                            )
-                        )
-                    )
-                    wake = PlannedWake(
-                        wake_id=wake.wake_id,
-                        at=min(wake.at, existing.at),
-                        reason=wake.reason,
-                        task=wake.task,
-                        relevant_refs=(
-                            *non_cognition_refs,
-                            incoming_cognition_refs[-1],
-                        ),
-                        cancel_conditions=wake.cancel_conditions,
-                        preemptible=wake.preemptible,
-                    )
-                incoming_owner = self._is_owner_goal_cognition_wake(wake)
+
+                merged_refs = tuple(dict.fromkeys(
+                    (*existing.relevant_refs, *incoming.relevant_refs)
+                ))
+                incoming_owner = self._is_owner_goal_cognition_wake(incoming)
                 existing_owner = self._is_owner_goal_cognition_wake(existing)
-                active_owner_ids = self._active_user_goal_ids()
-                incoming_owner_refs = tuple(
-                    str(ref)
-                    for ref in wake.relevant_refs
-                    if str(ref) in active_owner_ids
-                )
-                existing_owner_refs = (
-                    tuple(
-                        str(ref)
-                        for ref in existing.relevant_refs
-                        if str(ref) in active_owner_ids
-                    )
-                    if existing is not None
-                    else ()
-                )
-                replace_owner_target = bool(
-                    existing is not None
-                    and incoming_owner
-                    and existing_owner
-                    and not incoming_cognition_refs
-                    and existing_cognition_ref is None
-                    and incoming_owner_refs
-                    and incoming_owner_refs != existing_owner_refs
-                    and len(incoming_owner_refs) <= max(1, len(existing_owner_refs))
-                )
-                if replace_owner_target:
-                    # A cross-process owner wake naming one concrete active
-                    # goal is stronger provenance than an already-scheduled
-                    # broad owner refresh. Never let a later broad refresh
-                    # erase a precise target. Durable cognition continuations
-                    # and explicit WAIT are handled by the guards above.
-                    wake = PlannedWake(
-                        wake_id=wake.wake_id,
-                        at=min(wake.at, existing.at),
-                        reason=wake.reason,
-                        task=wake.task,
-                        relevant_refs=wake.relevant_refs,
-                        cancel_conditions=wake.cancel_conditions,
-                        preemptible=wake.preemptible,
-                    )
-                if existing is not None and incoming_owner and not existing_owner:
-                    # External owner intent has stronger admission semantics
-                    # than an ordinary cadence wake. Preserve the earlier due
-                    # time, but replace the weaker wake's provenance so
-                    # resource pressure cannot defer it indefinitely.
-                    wake = PlannedWake(
-                        wake_id=wake.wake_id,
-                        at=min(wake.at, existing.at),
-                        reason=wake.reason,
-                        task=wake.task,
-                        relevant_refs=wake.relevant_refs,
-                        cancel_conditions=wake.cancel_conditions,
-                        preemptible=wake.preemptible,
-                    )
+
                 if (
-                    existing is None
-                    or wake.at < existing.at
-                    or replace_cognition_pointer
-                    or replace_owner_target
-                    or (incoming_owner and not existing_owner)
+                    existing.reason == _OWNER_WAIT_REASON
+                    and incoming.at < existing.at
+                    and not incoming_owner
                 ):
-                    if existing is not None and (
-                        replace_cognition_pointer or replace_owner_target
-                    ):
-                        self.core.cancel(wake_id)
-                    self.core.schedule(wake)
-                    current[wake_id] = wake
+                    replacement = PlannedWake(
+                        wake_id=existing.wake_id,
+                        at=existing.at,
+                        reason=existing.reason,
+                        task=existing.task,
+                        relevant_refs=merged_refs,
+                        cancel_conditions=existing.cancel_conditions,
+                        preemptible=existing.preemptible,
+                    )
+                else:
+                    replacement = PlannedWake(
+                        wake_id=incoming.wake_id,
+                        at=min(existing.at, incoming.at),
+                        reason=incoming.reason if incoming_owner or not existing_owner else existing.reason,
+                        task=incoming.task if incoming_owner or not existing_owner else existing.task,
+                        relevant_refs=merged_refs,
+                        cancel_conditions=tuple(dict.fromkeys(
+                            (*existing.cancel_conditions, *incoming.cancel_conditions)
+                        )),
+                        preemptible=existing.preemptible and incoming.preemptible,
+                    )
+
+                if replacement != existing:
+                    self.core.cancel(wake_id)
+                    self.core.schedule(replacement)
+                    current[wake_id] = replacement
                     merged += 1
             except (OSError, ValueError, TypeError, json.JSONDecodeError):
                 pass
             finally:
                 try:
-                    path.unlink()
+                    request_path.unlink()
                 except OSError:
                     pass
         return merged
@@ -667,19 +550,6 @@ class ContentWakefulRuntime:
                 for wake in pending
                 if goal_id in tuple(str(ref) for ref in wake.relevant_refs)
             ]
-            durable_resumes = [
-                wake
-                for wake in related
-                if any(
-                    str(ref).startswith("cognition-request:")
-                    for ref in wake.relevant_refs
-                )
-            ]
-            if durable_resumes:
-                if wake_id in pending_ids:
-                    self.core.cancel(wake_id)
-                    pending_ids.discard(wake_id)
-                continue
             if related:
                 continue
             if wake_id in pending_ids:
@@ -738,24 +608,6 @@ class ContentWakefulRuntime:
         ledger = ProspectivePredictionLedger(self.state_root)
         rows = {row.prediction_id: row for row in ledger.open()}
         pending = tuple(self.core.snapshot().pending_plans)
-        waiting_on_chatgpt = any(
-            wake.task == "VERIFY_PREDICTION"
-            and any(
-                str(ref).startswith("cognition-request:")
-                for ref in wake.relevant_refs
-            )
-            for wake in pending
-        )
-        if waiting_on_chatgpt:
-            # VERIFY_PREDICTION is single-flight while one durable ChatGPT
-            # cognition is unresolved. The ledger entry remains open, so
-            # repeatedly materializing its ordinary due wake would create a
-            # fresh request from mutable host state on every scheduler pass.
-            # Keep only the durable resume wake until that request settles.
-            for wake in pending:
-                if wake.wake_id.startswith("wake:prediction:"):
-                    self.core.cancel(wake.wake_id)
-            return
         for wake in pending:
             ref = wake.wake_id[5:] if wake.wake_id.startswith("wake:prediction:") else None
             if ref is not None and ref not in rows:
@@ -989,11 +841,6 @@ class ContentWakefulRuntime:
         if owner_control_active:
             motor = {
                 "status": "INHIBITED_OWNER_GOAL_CONTROL",
-                "task": None,
-            }
-        elif self.pending_chatgpt_request_ids():
-            motor = {
-                "status": "INHIBITED_WAITING_FOR_CHATGPT",
                 "task": None,
             }
         else:
@@ -1326,10 +1173,6 @@ class ContentWakefulRuntime:
             "pending_tasks": sorted({str(wake.task) for wake in pending}),
             "pending_deep_cognition": any(
                 wake.task in _CHATGPT_COGNITIVE_TASKS
-                and any(
-                    str(ref).startswith("cognition-request:")
-                    for ref in wake.relevant_refs
-                )
                 for wake in pending
             ),
             "last_cognition_at": (
@@ -1503,11 +1346,6 @@ class ContentWakefulRuntime:
         decision_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
-        if (
-            isinstance(result, dict)
-            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
-        ):
-            return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         settled = self.neural_motor.observe_outcome(
             task=task,
@@ -1578,11 +1416,6 @@ class ContentWakefulRuntime:
             and str(row.get("goal_id") or "").strip()
         }
         if str(goal_id) not in active_goal_ids:
-            return None
-        if (
-            isinstance(result, dict)
-            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
-        ):
             return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         status = str((result or {}).get("status") or "UNKNOWN").upper() if isinstance(result, dict) else "UNKNOWN"
@@ -1693,11 +1526,6 @@ class ContentWakefulRuntime:
         experiment_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
-        if (
-            isinstance(result, dict)
-            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
-        ):
-            return None
         return self.neural_transfer.settle_target(
             task=task,
             result=result,
@@ -1840,11 +1668,6 @@ class ContentWakefulRuntime:
         trial_id: str | None = None,
         observed_at: datetime | None = None,
     ) -> dict | None:
-        if (
-            isinstance(result, dict)
-            and str(result.get("status") or "").upper() == "WAITING_FOR_CHATGPT"
-        ):
-            return None
         observed_at = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         settled = self.developmental_world_transfer.settle_target(
             task=task,
@@ -2305,17 +2128,6 @@ class ContentWakefulRuntime:
             or wake.reason == "reconsider priorities after owner activated a goal"
         )
 
-    def pending_chatgpt_request_ids(self) -> tuple[str, ...]:
-        request_ids: list[str] = []
-        for wake in self.core.snapshot().pending_plans:
-            for ref in wake.relevant_refs:
-                text = str(ref)
-                if not text.startswith("cognition-request:"):
-                    continue
-                request_id = text.split(":", 1)[1].strip()
-                if request_id:
-                    request_ids.append(request_id)
-        return tuple(dict.fromkeys(request_ids))
 
     def _optional_internal_max_deferral_seconds(self) -> int:
         value = int(
@@ -2397,105 +2209,16 @@ class ContentWakefulRuntime:
 
     def _plan_admission_delay(self, wake: PlannedWake) -> float | None:
         if wake.task == "SELF_REPAIR":
-            # Repairing a diagnosed capability break is an essential recovery
-            # action, not optional cognition or resource exploration.
             return None
         active_user_goals = self._active_user_goal_ids()
         owner_goal_wake = self._is_owner_goal_cognition_wake(
             wake,
             active_user_goals=active_user_goals,
         )
-        pending_chatgpt = self.pending_chatgpt_request_ids()
-        wake_has_resume_ref = any(
-            str(ref).startswith("cognition-request:")
-            for ref in wake.relevant_refs
-        )
-        now = self.core.clock()
-        owner_continuation_due = any(
-            plan.at <= now
-            and self._is_owner_goal_cognition_wake(
-                plan,
-                active_user_goals=active_user_goals,
-            )
-            and any(
-                str(ref).startswith("cognition-request:")
-                for ref in plan.relevant_refs
-            )
-            for plan in self.core.snapshot().pending_plans
-        )
-        current_is_owner_continuation = owner_goal_wake and wake_has_resume_ref
-        active_game_sprint_play = False
-        if wake.task == "NEURAL_PLAY":
-            foundation = self.brain_lab.game_intelligence.graduation_status()
-            competence = self.brain_lab.foundation_competence()
-            if (
-                not bool(foundation.get("graduated"))
-                or not bool(competence.get("graduated"))
-            ):
-                active_game_sprint_play = True
-            else:
-                harder = self.brain_lab.open_world_curriculum_environments(limit=4)
-                if harder:
-                    open_world = (
-                        self.brain_lab.game_intelligence.open_world_graduation_status(
-                            harder
-                        )
-                    )
-                    if not bool(open_world.get("graduated")):
-                        active_game_sprint_play = True
-                    else:
-                        adversarial = (
-                            self.brain_lab.adversarial_open_world_environments(limit=4)
-                        )
-                        adversarial_status = (
-                            self.brain_lab.game_intelligence
-                            .adversarial_open_world_graduation_status(adversarial)
-                        )
-                        active_game_sprint_play = not bool(
-                            adversarial_status.get("graduated")
-                        )
-        optional_starved = self._optional_internal_starved(
-            wake,
-            now,
-            record=False,
-        )
-        if owner_goal_wake and not wake_has_resume_ref:
-            # Owner-goal cognition now uses its own direct OpenAI authority.
-            # An unrelated durable ChatGPT transaction is not a valid reason
-            # to delay a new owner commitment.
+        if owner_goal_wake:
             return None
-        if (
-            owner_continuation_due
-            and not current_is_owner_continuation
-            and wake.task not in _OWNER_CONTINUATION_EXEMPT_TASKS
-            and not active_game_sprint_play
-            and not optional_starved
-        ):
-            self._optional_internal_starved(wake, now, record=True)
-            return 30.0
-        if wake_has_resume_ref:
-            # This is continuation of a transaction that already passed
-            # admission. Re-throttling each LLM phase can indefinitely stretch
-            # one owner/autonomous task and is not new resource admission.
-            return None
-        if pending_chatgpt and not wake_has_resume_ref:
-            if wake.task in _CHATGPT_COGNITIVE_TASKS:
-                return 60.0
-            if wake.task in _OPTIONAL_INTERNAL_TASKS and not active_game_sprint_play:
-                if not optional_starved:
-                    self._optional_internal_starved(wake, now, record=True)
-                    return 60.0
-                # A pending ChatGPT transaction may delay optional organism
-                # activity, but cannot starve it forever. Resource/REST gates
-                # still apply below before the bounded activity is admitted.
-        delay = self.resource_regulator.defer_seconds(wake.task, now)
+        delay = self.resource_regulator.defer_seconds(wake.task, self.core.clock())
         if delay is None:
-            self._clear_optional_internal_deferral(wake)
-        elif (
-            wake.task in _OPTIONAL_INTERNAL_TASKS
-            and not pending_chatgpt
-            and not owner_continuation_due
-        ):
             self._clear_optional_internal_deferral(wake)
         return delay
 
@@ -2615,7 +2338,6 @@ class ContentWakefulRuntime:
             str(ref).strip()
             for ref in relevant_refs
             if str(ref).strip()
-            and not str(ref).startswith("cognition-request:")
         ))
         delay = max(30, min(int(default_seconds), 1800))
         evidence_ref = None
@@ -2737,85 +2459,6 @@ class ContentWakefulRuntime:
             "evidence_ref": evidence_ref,
         }
 
-    def schedule_chatgpt_resume(
-        self,
-        now: datetime,
-        *,
-        request_id: str,
-        task: str = "CONTENT_COGNITION",
-        relevant_refs: tuple[str, ...] = (),
-        delay_seconds: int = 60,
-    ) -> dict:
-        """Re-enter one suspended wakeful task without creating new cognition."""
-        now = now.astimezone(timezone.utc)
-        request_id = str(request_id or "").strip()
-        task = str(task or "").strip().upper()
-        if not request_id:
-            raise ValueError("request_id is required")
-        if task not in _EXTERNAL_WAKE_TASKS:
-            raise ValueError(f"unsupported ChatGPT resume task: {task}")
-        delay = max(30, min(int(delay_seconds), 900))
-        at = now + timedelta(seconds=delay)
-        wake_id = f"content:{task}"
-        existing = next(
-            (
-                wake
-                for wake in self.core.snapshot().pending_plans
-                if wake.wake_id == wake_id
-            ),
-            None,
-        )
-        relevant_refs = tuple(
-            dict.fromkeys(
-                (
-                    *(
-                        str(ref)
-                        for ref in relevant_refs
-                        if str(ref).strip()
-                        and not str(ref).startswith("cognition-request:")
-                    ),
-                    f"cognition-request:{request_id}",
-                )
-            )
-        )
-        if existing is not None:
-            at = min(at, existing.at)
-            # A durable wake represents exactly one suspended cognition.
-            # Preserve non-cognition provenance, but replace any older
-            # cognition-request ref instead of accumulating stale requests.
-            relevant_refs = tuple(
-                dict.fromkeys(
-                    (
-                        *(
-                            str(ref)
-                            for ref in existing.relevant_refs
-                            if not str(ref).startswith("cognition-request:")
-                        ),
-                        *relevant_refs,
-                    )
-                )
-            )
-            # PlannedWake identity is wake_id. Re-scheduling the same id at the
-            # same/earlier time is not a reliable provenance replacement, so
-            # explicitly remove the stale continuation pointer first.
-            self.core.cancel(wake_id)
-        wake = PlannedWake(
-            wake_id=wake_id,
-            at=at,
-            reason=f"resume durable {task.lower()} after ChatGPT response",
-            task=task,
-            relevant_refs=relevant_refs,
-            preemptible=True,
-        )
-        self._enqueue_external_wake(wake)
-        self.core.schedule(wake)
-        return {
-            "status": "SCHEDULED",
-            "task": task,
-            "request_id": request_id,
-            "retry_at": at.isoformat(),
-            "retry_seconds": delay,
-        }
 
     def schedule_reflection(
         self,
@@ -2833,7 +2476,6 @@ class ContentWakefulRuntime:
             str(ref).strip()
             for ref in relevant_refs
             if str(ref).strip()
-            and not str(ref).startswith("cognition-request:")
         ))
         if not any(ref.startswith("reflection-trigger:") for ref in refs):
             digest = hashlib.sha256(
@@ -2899,9 +2541,6 @@ class ContentWakefulRuntime:
         }:
             return {"status": "NOT_SALIENT"}
         primary = str((result or {}).get("status") or "UNKNOWN").upper()
-        if primary == "WAITING_FOR_CHATGPT":
-            return {"status": "WAITING_COGNITION"}
-
         values: set[str] = set()
         def collect(value, depth: int = 0) -> None:
             if depth > 4:

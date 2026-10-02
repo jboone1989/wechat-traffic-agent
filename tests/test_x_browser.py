@@ -89,7 +89,7 @@ async def _baseline_observer(*, cycle: str, now: datetime) -> dict:
     return {"status": "RECORDED", "cycle": cycle, "observed_at": now.isoformat()}
 
 
-def test_tinyfish_x_publisher_is_double_gated(tmp_path: Path):
+def test_x_publisher_is_double_gated(tmp_path: Path):
     _draft(tmp_path)
     disabled = asyncio.run(XBrowserPublisher(state_root=tmp_path, enabled=False, writes_enabled=True).after_content_cycle(cycle="v2-browser", now=NOW))
     read_only = asyncio.run(XBrowserPublisher(state_root=tmp_path, enabled=True, writes_enabled=False).after_content_cycle(cycle="v2-browser", now=NOW))
@@ -192,38 +192,6 @@ def test_article_is_not_silently_posted_as_feed_text(tmp_path: Path):
 def test_public_x_status_url_parser():
     assert _post_id_from_url("https://x.com/caini56006962/status/2100431447047741762") == "2100431447047741762"
     assert _post_id_from_url("https://x.com/home") is None
-
-
-class _TimelineMissing:
-    @property
-    def first(self):
-        return self
-
-    async def wait_for(self, **kwargs):
-        raise TimeoutError("timeline did not render")
-
-
-class _TimelineMissingPage:
-    async def goto(self, *args, **kwargs):
-        return None
-
-    def locator(self, selector):
-        assert selector == "article"
-        return _TimelineMissing()
-
-
-def test_pre_publish_reconciliation_fails_closed_when_timeline_does_not_load():
-    from wechat_traffic_agent.x_browser import TinyFishXTransport
-    transport = TinyFishXTransport(client=object(), timeout_ms=100)
-    try:
-        asyncio.run(transport._find_existing(
-            _TimelineMissingPage(), handle="caini56006962", text="exact persisted draft",
-            duplicate_found=True, require_timeline=True,
-        ))
-    except XBrowserPublicationUnverified as exc:
-        assert "refusing to publish" in str(exc)
-    else:
-        raise AssertionError("missing timeline was treated as safe-to-publish")
 
 
 def test_browser_mention_post_normalizes_incoming_status_and_skips_self():

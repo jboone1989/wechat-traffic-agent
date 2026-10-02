@@ -70,19 +70,17 @@ def test_browser_login_uses_modal_overlay_instead_of_inline_expansion():
     assert "document.body.classList.add('modal-open')" in page
     assert "document.body.classList.remove('modal-open')" in page
 
-def test_x_account_ui_uses_account_scoped_oauth_and_jev():
+def test_x_account_ui_uses_agent_runtime_browser_owner():
     page = operator_console_document()
 
     assert "官方 API" in page
     assert "网页自动化" in page
     assert "OAuth 身份独立绑定到这个账号" in page
-    assert "长期执行器：" in page
-    assert "每个账号拥有独立 Chrome profile/cookie" in page
-    assert "Browser Use 通过本机 CDP 复用它" in page
-    assert "当前兼容 fallback：" in page
-    assert "创建独立浏览器环境" in page
-    assert "测试该账号 Browser Use" in page
-    assert "网页登录（网页自动化）" not in page
+    assert "Agent Runtime" in page
+    assert "Ferro 不再创建或维护账号级 Chrome" in page
+    assert "创建独立浏览器环境" not in page
+    assert "测试该账号 Browser Use" not in page
+    assert "当前兼容 fallback：" not in page
 
 
 def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
@@ -93,8 +91,8 @@ def test_accounts_ui_supports_multiple_x_accounts_and_headless_oauth():
     assert "添加 X 账号" in page
     assert "/operator/api/accounts/x/oauth/start" in page
     assert "/operator/api/accounts/x/oauth/complete" in page
-    assert "每个账号拥有独立 Chrome profile/cookie" in page
-    assert "测试该账号 Browser Use" in page
+    assert "Agent Runtime" in page
+    assert "测试该账号 Browser Use" not in page
     assert "调用 X API 时显式使用该账号" in page
 
 
@@ -127,35 +125,8 @@ def test_account_cards_offer_confirmed_delete_action():
     assert "button.danger" in page
 
 
-def test_x_account_card_offers_account_scoped_web_login():
-    page = operator_console_document()
-
-    assert "登录 / 更换网页会话" in page
-    assert "不再启动第二套浏览器" in page
-    assert "持久网页登录" in page
-    assert page.index("登录 / 更换网页会话") < page.index("高级操作 / 技术信息")
-    assert "/operator/api/account-instances/" in page
-    assert "/browser/browser-use-test" in page
-    assert "/browser/login/connect" in page
-    assert "/browser/login/stream" in page
-    assert "/browser/login/stop" in page
 
 
-def test_jev_card_offers_chatgpt_cortex_login():
-    page = operator_console_document()
-
-    assert "登录 ChatGPT Cortex" in page
-    assert "ChatGPT Cortex · 持久网页登录" in page
-    assert "正在启动 ChatGPT 专用持久 Chrome profile" in page
-    assert "/operator/api/cortex/browser/login/connect" in page
-    assert "/operator/api/cortex/browser/login/stream" in page
-    assert "/operator/api/cortex/browser/login/stop" in page
-    assert "网页激活只发送 request_id，不读取模型输出" in page
-    assert "与 X 登录完全独立" in page
-    assert "activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts')" in page
-    assert "beginCortexLogin().catch" in page
-    assert 'id="cortexOtherMethod"' in page
-    assert "type:'click_text',text:'Try another method'" in page
 
 
 def test_operator_console_restores_session_without_using_heavy_status_as_auth_probe():
@@ -175,3 +146,15 @@ def test_operator_console_never_shows_an_empty_dashboard_while_status_loads():
     assert "正在加载后台状态" in page
     assert "正在加载资源状态" in page
     assert "metricCard('会话','已登录','正在加载后台状态')" in page
+
+
+def test_browser_ui_has_one_agent_runtime_owner():
+    page = operator_console_document()
+
+    assert "Agent Runtime" in page
+    assert "浏览器生命周期和登录 profile 统一由 Agent Runtime 管理" in page
+    assert "/browser/browser-use-test" not in page
+    assert "/browser/login/connect" not in page
+    assert "/operator/api/cortex/browser/login" not in page
+    assert "登录 ChatGPT Cortex" not in page
+    assert "TinyFish" not in page

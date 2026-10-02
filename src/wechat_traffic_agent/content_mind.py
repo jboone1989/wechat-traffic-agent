@@ -961,7 +961,7 @@ class ContentMind:
                     else bool(quotas.get("deepseek_api_available", 0.0))
                 ),
                 "provider_mode": (
-                    "LIVINGRUNTIME_CHATGPT_ONLY"
+                    "AGENT_RUNTIME_CHATGPT_ONLY"
                     if chatgpt_authoritative
                     else "API_POOL"
                 ),

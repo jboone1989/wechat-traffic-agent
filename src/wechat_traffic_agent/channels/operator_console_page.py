@@ -104,7 +104,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
     <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
     <div class="browser-controls">
      <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
-     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="cortexOtherMethod" class="ghost">ChatGPT：其他验证方式</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
+     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
      <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
     </div>
    </div>
@@ -307,16 +307,6 @@ function renderBrowserRuntime(data){
  for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row'),kind=row.status==='READY'?'ok':row.status==='NOT_CONFIGURED'||row.status==='DISABLED'?'pending':'bad';
   head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
-  if(row.provider==='JEV'){
-   c.append(node('p','MCP Events 仍是首选激活通路；网页激活使用 ChatGPT 自己的持久 Chrome profile，与 X 登录完全独立。','muted'));
-   const result=node('div','网页激活只发送 request_id，不读取模型输出；真正 cognition 仍经 LivingRuntime Remote。','mono muted'),
-         actions=node('div',undefined,'row'),
-         login=node('button','登录 ChatGPT Cortex','primary'),
-         test=node('button','测试 Jev');
-   login.onclick=()=>beginCortexLogin().catch(e=>flash('ChatGPT Cortex 启动失败 · '+e.message,true));
-   test.onclick=async()=>{test.disabled=true;result.textContent='正在测试…';try{const out=await api('/operator/api/browser/jev/test',{method:'POST',body:'{}'});result.textContent=out.status+' · '+fmt(out.elapsed_ms)+' ms · '+fmt(out.action_count)+' actions';flash('Jev 测试通过')}catch(e){result.textContent=e.message;flash(e.message,true)}finally{test.disabled=false}};
-   actions.append(login,test);c.append(actions,result)
-  }
   if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
 let activeAccountProvider='',activeAccountId='';
@@ -340,22 +330,15 @@ function renderAccounts(data){
   apiTitle.append(node('strong','官方 API'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
   apiBox.append(apiTitle,node('p','OAuth 身份独立绑定到这个账号。调用 X API 时显式使用该账号，不依赖全局默认用户。','muted'));c.append(apiBox);
   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
-  const profileReady=profile.status==='PROVISIONED';
-  webTitle.append(node('strong','网页自动化'),badge(profileReady?'独立环境已创建':'按需创建',profileReady?'ok':'info'));
-  webBox.append(webTitle,node('p','长期执行器：'+fmt(automation.primary_engine||'BROWSER_USE')+'。每个账号拥有独立 Chrome profile/cookie；Ferro 直接维护这份持久登录态，Browser Use 通过本机 CDP 复用它，不再启动第二套浏览器。只有新增账号或登录失效时才需要重新登录。','muted'));
-  const webActions=node('div',undefined,'account-actions'),login=node('button','登录 / 更换网页会话');
-  login.onclick=()=>beginAccountInstanceLogin(acct);
-  webActions.append(login);webBox.append(webActions);
-  if(automation.compatibility_fallback)webBox.append(node('p','当前兼容 fallback：'+automation.compatibility_fallback+'（临时，不是长期依赖）。','muted'));
+  webTitle.append(node('strong','网页自动化'),badge('Agent Runtime','ok'));
+  webBox.append(webTitle,node('p','浏览器生命周期和登录 profile 统一由 Agent Runtime 管理；Ferro 不再创建或维护账号级 Chrome。','muted'));
   c.append(webBox);
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
   tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
-  const actions=node('div',undefined,'account-actions'),provision=node('button',profileReady?'启动/检查独立浏览器':'创建独立浏览器环境','ghost'),test=node('button','测试该账号 Browser Use','ghost'),remove=node('button','删除账户','danger');
-  provision.onclick=async()=>{provision.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/provision',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · 浏览器环境 '+out.status);await refresh()}catch(e){flash(e.message,true)}finally{provision.disabled=false}};
-  test.onclick=async()=>{test.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id)+'/browser/browser-use-test',{method:'POST',body:'{}'});flash((acct.display_label||acct.identity)+' · Browser Use '+out.status)}catch(e){flash(e.message,true)}finally{test.disabled=false}};
-  remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？\n\n将删除该账号的本地浏览器 profile 和运行状态。'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
-  actions.append(provision,test,remove);tech.append(actions);c.append(tech);root.append(c)
+  const actions=node('div',undefined,'account-actions'),remove=node('button','删除账户','danger');
+  remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
+  actions.append(remove);tech.append(actions);c.append(tech);root.append(c)
  }
  const instanceProviders=new Set(instances.map(x=>x.provider_id));
  for(const row of providers){
@@ -402,13 +385,9 @@ function drawAccountFrame(data){
 }
 function accountStreamUrl(provider,accountId=''){
  const scheme=location.protocol==='https:'?'wss:':'ws:';
- if(provider==='chatgpt-cortex')return scheme+'//'+location.host+'/operator/api/cortex/browser/login/stream';
- if(accountId)return scheme+'//'+location.host+'/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stream';
  return scheme+'//'+location.host+'/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stream'
 }
 function accountConnectUrl(provider,accountId=''){
- if(provider==='chatgpt-cortex')return '/operator/api/cortex/browser/login/connect';
- if(accountId)return '/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/connect';
  return '/operator/api/accounts/'+encodeURIComponent(provider)+'/connect'
 }
 function shortBrowserLocation(url){
@@ -432,7 +411,7 @@ async function openAccountStream(provider,recovery=0,accountId=''){
     drawAccountFrame(msg.data);
     if(!settled){settled=true;clearTimeout(timer);resolve()}
    }else if(msg.type==='status'){
-    const identity=msg.identity?(provider==='chatgpt-cortex'?' · '+msg.identity:' · @'+msg.identity):'';
+    const identity=msg.identity?' · @'+msg.identity:'';
     const prefix=msg.authenticated?'已登录'+identity:'实时';
     const host=shortBrowserLocation(msg.url),title=fmt(msg.title);
     status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'');
@@ -467,29 +446,6 @@ async function beginAccountConnect(row){
  await api(accountConnectUrl(row.provider_id),{method:'POST',body:'{}'});
  await openAccountStream(row.provider_id,0,'');
  await refresh()
-}
-async function beginAccountInstanceLogin(acct){
- activeAccountProvider=acct.provider_id||'x';activeAccountId=acct.account_id;selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');el('accountLoginTitle').textContent=(acct.display_label||('@'+acct.identity))+' · 持久网页登录';
- el('localBrowserStatus').textContent='正在启动该账号的独立 Chrome profile…';
- await api(accountConnectUrl(activeAccountProvider,activeAccountId),{method:'POST',body:'{}'});
- await openAccountStream(activeAccountProvider,0,activeAccountId);
- await refresh()
-}
-async function beginCortexLogin(){
- activeAccountProvider='chatgpt-cortex';activeAccountId='';selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
- el('accountLoginTitle').textContent='ChatGPT Cortex · 持久网页登录';
- const status=el('localBrowserStatus');
- status.textContent='正在启动 ChatGPT 专用持久 Chrome profile…';
- try{
-  await api(accountConnectUrl(activeAccountProvider),{method:'POST',body:'{}'});
-  await openAccountStream(activeAccountProvider,0,'')
- }catch(e){
-  status.textContent='ChatGPT Cortex 启动失败 · '+e.message;
-  status.classList.remove('live');
-  flash('ChatGPT Cortex 启动失败 · '+e.message,true)
- }
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
@@ -618,9 +574,7 @@ el('xOAuthRestart').onclick=async()=>{
 el('accountLoginClose').onclick=async()=>{
  const provider=activeAccountProvider,accountId=activeAccountId;closeAccountStream();activeAccountProvider='';activeAccountId='';
  try{
-  if(accountId)await api('/operator/api/account-instances/'+encodeURIComponent(accountId)+'/browser/login/stop',{method:'POST',body:'{}'});
-  else if(provider==='chatgpt-cortex')await api('/operator/api/cortex/browser/login/stop',{method:'POST',body:'{}'});
-  else if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})
+  if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})
  }catch{}
  el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');el('liveBrowserCanvas').classList.add('hidden');
  el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。';
@@ -654,10 +608,6 @@ liveCanvas.onwheel=ev=>{
 el('localBrowserSend').onclick=()=>{
  const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;
  try{accountStreamSend({type:'text',text:value})}catch(e){flash(e.message,true)}
-};
-el('cortexOtherMethod').onclick=()=>{
- if(activeAccountProvider!=='chatgpt-cortex'){flash('这个按钮只用于 ChatGPT Cortex 登录',true);return}
- try{accountStreamSend({type:'click_text',text:'Try another method'})}catch(e){flash(e.message,true)}
 };
 el('localBrowserText').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('localBrowserSend').click()}};
 for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{try{accountStreamSend({type:'key',key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};

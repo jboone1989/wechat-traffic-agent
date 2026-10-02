@@ -10,16 +10,10 @@ from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 NOW=datetime(2026,9,17,13,30,tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
-def _disable_chatgpt_only_by_default(monkeypatch):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
 
 
 
 @pytest.fixture(autouse=True)
-def _explicit_multi_provider_default(monkeypatch):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "0")
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
 
 
 class Economy:
@@ -54,46 +48,6 @@ def test_resource_review_requests_only_top_credential_when_local_path_is_deferre
     assert len(assistance.calls)==1
     assert assistance.calls[0]["kind"]=="MODEL_RESOURCE_ACCESS"
     assert "ONE_API_KEY" in assistance.calls[0]["requested_action"]
-
-def test_resource_review_skips_free_provider_trials_in_chatgpt_only_mode(monkeypatch):
-    class ReadyScout(Scout):
-        def plan_trials(self, **kwargs):
-            row=super().plan_trials(**kwargs)
-            row["plans"][0]["status"]="READY_TO_TRIAL"
-            return row
-        def run_ready_trials(self, **kwargs):
-            raise AssertionError("free/API provider trials must not run in ChatGPT-only mode")
-
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-    monkeypatch.delenv("LIVINGRUNTIME_CHATGPT_ALLOW_FALLBACK", raising=False)
-    class ChatGPTEconomy:
-        def observe(self, now):
-            return {
-                "status": "OK",
-                "llm_routing_policy": {
-                    "routing_mode": "CHATGPT_ONLY",
-                    "pressure": "WATCH",
-                    "prefer_free": False,
-                },
-            }
-
-    assistance=Assistance()
-    runner=WakefulContentTaskRunner(
-        resource_economy=ChatGPTEconomy(),
-        content_mind=Mind(),
-        wakeful=Wakeful(),
-        resource_scout=ReadyScout(),
-        human_assistance=assistance,
-    )
-
-    result=runner.run("RESOURCE_REVIEW",now=NOW)
-
-    assert result["status"]=="OK"
-    assert result["llm_provider_mode"]=="LIVINGRUNTIME_CHATGPT_ONLY"
-    assert result["provider_trials"]["status"]=="SKIPPED_CHATGPT_ONLY"
-    assert result["capability_windfall"]["status"]=="SKIPPED_CHATGPT_ONLY"
-    assert not assistance.calls
-
 
 def test_resource_review_does_not_interrupt_human_when_trial_is_ready():
     class ReadyScout(Scout):
@@ -135,50 +89,6 @@ def test_resource_review_schedules_followup_when_trials_require_replan():
     assert wakeful.followup[1]==300
     assert not assistance.calls
 
-def test_resource_review_skips_free_provider_execution_in_chatgpt_only_mode():
-    class ChatGPTEconomy:
-        def observe(self, now):
-            return {
-                "status": "OK",
-                "llm_routing_policy": {
-                    "routing_mode": "CHATGPT_ONLY",
-                    "pressure": "WATCH",
-                    "prefer_free": False,
-                },
-            }
-
-    class ChatGPTScout(Scout):
-        def plan_trials(self, **kwargs):
-            row = super().plan_trials(**kwargs)
-            row["plans"][0]["status"] = "READY_TO_TRIAL"
-            return row
-
-        def run_ready_trials(self, **kwargs):
-            raise AssertionError("free provider trial must not run in ChatGPT-only mode")
-
-        def probe_capability_windfall(self, **kwargs):
-            raise AssertionError("free-model windfall probe must not run in ChatGPT-only mode")
-
-    assistance = Assistance()
-    wakeful = Wakeful()
-    runner = WakefulContentTaskRunner(
-        resource_economy=ChatGPTEconomy(),
-        content_mind=Mind(),
-        wakeful=wakeful,
-        resource_scout=ChatGPTScout(),
-        human_assistance=assistance,
-    )
-
-    result = runner.run("RESOURCE_REVIEW", now=NOW)
-
-    assert result["status"] == "OK", result
-    assert result["llm_provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
-    assert result["provider_trials"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["capability_windfall"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert wakeful.pressure == "WATCH"
-    assert not assistance.calls
-
-
 def test_resource_review_executes_one_chained_safe_survival_phase(tmp_path, monkeypatch):
     class Survival:
         def __init__(self):
@@ -217,30 +127,3 @@ def test_resource_review_executes_one_chained_safe_survival_phase(tmp_path, monk
     assert "survival_resource_after_followup_actions" in result
     assert survival.execute_calls==2
     assert survival.observe_calls==3
-
-
-def test_resource_review_skips_free_provider_work_in_chatgpt_only_mode(monkeypatch):
-    monkeypatch.setenv("LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED", "1")
-
-    class ExplodingScout:
-        def __getattr__(self, name):
-            raise AssertionError(f"provider scout should not be touched: {name}")
-
-    runner = WakefulContentTaskRunner(
-        resource_economy=Economy(),
-        content_mind=Mind(),
-        wakeful=Wakeful(),
-        resource_scout=ExplodingScout(),
-        human_assistance=Assistance(),
-    )
-
-    result = runner.run("RESOURCE_REVIEW", now=NOW)
-
-    assert result["status"] == "OK"
-    assert result["llm_provider_mode"] == "LIVINGRUNTIME_CHATGPT_ONLY"
-    assert result["resource_scout"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["provider_leads"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["provider_verification"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["provider_trial_plans"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["provider_trials"]["status"] == "SKIPPED_CHATGPT_ONLY"
-    assert result["capability_windfall"]["status"] == "SKIPPED_CHATGPT_ONLY"

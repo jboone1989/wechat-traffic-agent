@@ -237,7 +237,7 @@ def _planner_retry_policy(value: object) -> tuple[str, int] | None:
     name = type(value).__name__
     message = str(value)
     if (
-        name in {"LLMProviderError", "LivingRuntimeChatGPTProviderError"}
+        name in {"LLMProviderError", "AgentRuntimeChatGPTProviderError"}
         or "all eligible LLM resources failed" in message
         or "no eligible LLM resources" in message
         or "LivingRuntime cognition request timed out" in message
@@ -258,7 +258,7 @@ def _transient_planner_reason(value: object) -> bool:
     text = str(value or "")
     return (
         text.startswith("LLMProviderError:")
-        or text.startswith("LivingRuntimeChatGPTProviderError:")
+        or text.startswith("AgentRuntimeChatGPTProviderError:")
         or text.startswith("ValidationError:")
         or "all eligible LLM resources failed" in text
         or "no eligible LLM resources" in text

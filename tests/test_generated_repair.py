@@ -51,7 +51,7 @@ class LLMProviderError(RuntimeError):
     pass
 
 
-class LivingRuntimeChatGPTProviderError(RuntimeError):
+class AgentRuntimeChatGPTProviderError(RuntimeError):
     pass
 
 
@@ -61,7 +61,7 @@ class FailingLivingRuntimePlanner:
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
-        raise LivingRuntimeChatGPTProviderError("LivingRuntime cognition request timed out")
+        raise AgentRuntimeChatGPTProviderError("LivingRuntime cognition request timed out")
 
 
 class FailingPlannerRuntime:
@@ -936,7 +936,7 @@ def test_historical_rejected_github_wake_failure_retries_after_bridge_recovers(t
         "planner_version": "generated-repair.v11",
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
-        "reason": "LivingRuntimeChatGPTProviderError:LivingRuntime cognition CLI failed: RuntimeError: cognition GitHub wake worktree contains unrelated changes",
+        "reason": "AgentRuntimeChatGPTProviderError:LivingRuntime cognition CLI failed: RuntimeError: cognition GitHub wake worktree contains unrelated changes",
     }
     problem_path.write_text(json.dumps(problem))
     runtime = PlannerRuntime(_valid_plan())
@@ -967,7 +967,7 @@ def test_startup_recovery_reopens_only_transient_auto_repair_rejections(tmp_path
         "source_commit": _git(workspace, "rev-parse", "HEAD"),
         "occurrences_seen": 1,
         "observed_at": NOW.isoformat(),
-        "reason": "LivingRuntimeChatGPTProviderError:LivingRuntime cognition request timed out",
+        "reason": "AgentRuntimeChatGPTProviderError:LivingRuntime cognition request timed out",
     }
     problem_path.write_text(json.dumps(problem))
     executor = SelfRepairExecutor(

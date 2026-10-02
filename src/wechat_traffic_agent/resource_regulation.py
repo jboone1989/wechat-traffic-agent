@@ -51,13 +51,13 @@ class ResourceRegulator:
         now = now.astimezone(timezone.utc)
         policy = _read(self.state_root / "application" / "survival_resources" / "policy.json")
         routing = _read(self.state_root / "application" / "llm_resource_pool" / "policy.json")
-        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
         from .runtime_backend import chatgpt_only_mode
         from .llm_resources import eligible_free_resources
 
         chatgpt_only = chatgpt_only_mode()
         chatgpt_available = (
-            bool(LivingRuntimeChatGPTProvider.from_environment(fallback=None).available)
+            bool(AgentRuntimeChatGPTProvider.from_environment(fallback=None).available)
             if chatgpt_only
             else False
         )
@@ -101,13 +101,13 @@ class ResourceRegulator:
         if task in ESSENTIAL_TASKS:
             return {"allowed": True, "pressure": pressure, "reason": "RECOVERY_LANE"}
         if owner_authorized and task == "CONTENT_COGNITION":
-            from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+            from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
             from .runtime_backend import chatgpt_only_mode
             from .llm_resources import eligible_free_resources
 
             if (
                 chatgpt_only_mode()
-                and LivingRuntimeChatGPTProvider.from_environment(
+                and AgentRuntimeChatGPTProvider.from_environment(
                     fallback=None
                 ).available
             ):

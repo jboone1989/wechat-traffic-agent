@@ -56,7 +56,7 @@ def main() -> int:
     parser.add_argument(
         "--chatgpt-only",
         action="store_true",
-        help="Require LivingRuntime ChatGPT cognition and forbid API fallback.",
+        help="Require Agent Runtime ChatGPT cognition and forbid API fallback.",
     )
     parser.add_argument("--fixed-model")
     parser.add_argument("--fixed-base-url")

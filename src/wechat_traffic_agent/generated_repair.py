@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .livingruntime_chatgpt import cognition_routing_task_class
+from .agent_runtime_chatgpt import cognition_routing_task_class
 
 
 class GeneratedRepairEdit(BaseModel):

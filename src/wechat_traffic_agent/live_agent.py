@@ -20,10 +20,6 @@ from .channels.brain_lab_page import brain_lab_document
 from .channels.screeps_live_page import screeps_live_document
 from .screeps_observatory import ScreepsObservatory
 from .owner_cognition import build_owner_cognition_prompt, build_owner_private_context
-from .livingruntime_chatgpt import (
-    LivingRuntimeChatGPTPendingError,
-    resume_next_durable_cognition,
-)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8104
@@ -31,7 +27,6 @@ MAX_MESSAGE_CHARS = 1000
 RATE_WINDOW_SECONDS = 60
 RATE_REQUESTS = 4
 PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS = 24
-PUBLIC_CHAT_RESUME_AFTER_SECONDS = 15
 _PUBLIC_BACKEND_UNSET = object()
 PUBLIC_CHAT_STATE_TIMEOUT_SECONDS = 2.0
 
@@ -1336,13 +1331,9 @@ async def _generate_guarded_public_reply(
     *,
     prompt: str,
     message: str,
-    resume_request_id: str | None = None,
 ) -> str:
     """Generate privately, validate, and only then allow text onto the public surface.
 
-    LivingRuntime public chat is durable. The first call may return PENDING; a
-    later HTTP/SSE retry resumes that exact request instead of creating another
-    model call or depending on API quota.
     """
     kwargs = {
         "max_tokens": 260,
@@ -1350,8 +1341,6 @@ async def _generate_guarded_public_reply(
         "_routing_task_class": "simple_public_text",
         "_minimum_quality": 0.7,
         "timeout_seconds": 18,
-        "_durable_blocking_wait": True,
-        "_durable_blocking_wait_seconds": 18,
     }
 
     async def generate(value: str) -> str:
@@ -1365,11 +1354,7 @@ async def _generate_guarded_public_reply(
             return "".join(chunks).strip()
         return str(await provider.complete(value, **kwargs) or "").strip()
 
-    if resume_request_id:
-        with resume_next_durable_cognition(resume_request_id):
-            reply = await generate(prompt)
-    else:
-        reply = await generate(prompt)
+    reply = await generate(prompt)
     if _public_reply_is_visitor_facing(reply, message):
         return reply
     repaired = await generate(_public_reply_repair_prompt(prompt, message))
@@ -1448,20 +1433,11 @@ class LiveAgentService:
         from .channels.operator_audience_page import operator_audience_document
         from .audience_analytics import AudienceAnalytics
         from .llm_audit import LLMRequestAuditStore
-        from .livingruntime_chatgpt import LivingRuntimeChatGPTPendingError
         from .operator_memory import OperatorLongTermMemory, memory_promotion_allowed_for_turn
         from .memory_runtime import OwnerMemoryRuntime
         from .memory_self import ProspectiveSelfMemoryService
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
-        from .account_browser_login import (
-            AccountBrowserLoginControl,
-            AccountBrowserLoginUnavailable,
-        )
-        from .chatgpt_cortex_browser_control import (
-            ChatGPTCortexBrowserControl,
-            ChatGPTCortexBrowserUnavailable,
-        )
         from .browser_session_stream import BrowserSessionStream, BrowserStreamUnavailable
         from .operator_private_chat import (
             OWNER_ENVELOPE_SCHEMA,
@@ -1477,10 +1453,6 @@ class LiveAgentService:
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
         x_oauth_manager = XOAuthHeadlessManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
-        chatgpt_cortex_browser_control = (
-            ChatGPTCortexBrowserControl(state_root=self.state_root)
-            if operator_console is not None else None
-        )
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
         if operator_chat is not None:
             runtime = getattr(self.application, "domain_runtime", None)
@@ -1659,24 +1631,12 @@ class LiveAgentService:
                 return JSONResponse({"error": "invalid_json"}, status_code=400)
             message = str(body.get("message") or "").strip() if isinstance(body, dict) else ""
             visitor_id = str(body.get("visitor_id") or "").strip() if isinstance(body, dict) else ""
-            resume_request_id = (
-                str(body.get("request_id") or "").strip()
-                if isinstance(body, dict)
-                else ""
-            )
             if visitor_id and not re.fullmatch(r"v_[a-f0-9]{24,64}", visitor_id):
                 visitor_id = ""
-            if resume_request_id and not re.fullmatch(
-                r"llmreq_[a-f0-9]{32}", resume_request_id
-            ):
-                resume_request_id = ""
             if not message or len(message) > MAX_MESSAGE_CHARS:
                 return JSONResponse({"error": "message_must_be_1_to_1000_characters"}, status_code=400)
             key = request.client.host if request.client else "unknown"
-            if (
-                not resume_request_id
-                and not self._limiter.allow(key, time.monotonic())
-            ):
+            if not self._limiter.allow(key, time.monotonic()):
                 return JSONResponse({"error": "rate_limited"}, status_code=429)
             scope = classify_public_question(message)
             try:
@@ -1696,8 +1656,7 @@ class LiveAgentService:
                 snapshot = _degraded_public_chat_snapshot(self.state_root, exc)
             relationship = None
             if (
-                not resume_request_id
-                and self.wakeful is not None
+                self.wakeful is not None
                 and visitor_id
                 and hasattr(self.wakeful, "observe_social_interaction")
             ):
@@ -1746,22 +1705,8 @@ class LiveAgentService:
                         self.public_backend.provider,
                         prompt=prompt,
                         message=message,
-                        resume_request_id=resume_request_id or None,
                     ),
                     timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
-                )
-            except LivingRuntimeChatGPTPendingError as exc:
-                return JSONResponse(
-                    {
-                        "status": "WAITING_FOR_CHATGPT",
-                        "request_id": exc.request_id,
-                        "retry_after_seconds": PUBLIC_CHAT_RESUME_AFTER_SECONDS,
-                    },
-                    status_code=202,
-                    headers={
-                        "Cache-Control": "no-store",
-                        "Retry-After": str(PUBLIC_CHAT_RESUME_AFTER_SECONDS),
-                    },
                 )
             except asyncio.TimeoutError:
                 return JSONResponse(
@@ -1799,27 +1744,15 @@ class LiveAgentService:
                 return JSONResponse({"error": "invalid_json"}, status_code=400)
             message = str(body.get("message") or "").strip() if isinstance(body, dict) else ""
             visitor_id = str(body.get("visitor_id") or "").strip() if isinstance(body, dict) else ""
-            resume_request_id = (
-                str(body.get("request_id") or "").strip()
-                if isinstance(body, dict)
-                else ""
-            )
             if visitor_id and not re.fullmatch(r"v_[a-f0-9]{24,64}", visitor_id):
                 visitor_id = ""
-            if resume_request_id and not re.fullmatch(
-                r"llmreq_[a-f0-9]{32}", resume_request_id
-            ):
-                resume_request_id = ""
             if not message or len(message) > MAX_MESSAGE_CHARS:
                 return JSONResponse(
                     {"error": "message_must_be_1_to_1000_characters"},
                     status_code=400,
                 )
             key = request.client.host if request.client else "unknown"
-            if (
-                not resume_request_id
-                and not self._limiter.allow(key, time.monotonic())
-            ):
+            if not self._limiter.allow(key, time.monotonic()):
                 return JSONResponse({"error": "rate_limited"}, status_code=429)
             scope = classify_public_question(message)
 
@@ -1868,8 +1801,7 @@ class LiveAgentService:
 
                 relationship = None
                 if (
-                    not resume_request_id
-                    and self.wakeful is not None
+                    self.wakeful is not None
                     and visitor_id
                     and hasattr(self.wakeful, "observe_social_interaction")
                 ):
@@ -1976,25 +1908,9 @@ class LiveAgentService:
                             self.public_backend.provider,
                             prompt=prompt,
                             message=message,
-                            resume_request_id=resume_request_id or None,
-                        ),
+                            ),
                         timeout=PUBLIC_CHAT_TOTAL_TIMEOUT_SECONDS,
                     )
-                except LivingRuntimeChatGPTPendingError as exc:
-                    yield sse(
-                        "waiting",
-                        {
-                            "status": "WAITING_FOR_CHATGPT",
-                            "request_id": exc.request_id,
-                            "retry_after_seconds": PUBLIC_CHAT_RESUME_AFTER_SECONDS,
-                            "label": "Queued for ChatGPT",
-                            "detail": (
-                                "This turn is safely queued. Ferro will resume "
-                                "the same request instead of dropping the reply."
-                            ),
-                        },
-                    )
-                    return
                 except asyncio.TimeoutError:
                     yield sse(
                         "error",
@@ -3151,65 +3067,6 @@ class LiveAgentService:
             payload = await asyncio.to_thread(operator_console.status)
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
-        async def operator_test_jev(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse({"error": "authentication_required"}, status_code=401)
-            if not operator_write_allowed(request):
-                return JSONResponse({"error": "operator_header_required"}, status_code=403)
-            try:
-                from .browser_runtime import BrowserRuntimeUnavailable, JevBrowserExecutor
-                executor = JevBrowserExecutor.from_environment(state_root=self.state_root)
-                result = await asyncio.wait_for(
-                    executor.run(
-                        url="https://example.com",
-                        goal=(
-                            "Observe this page. If the page title and main heading say Example Domain, "
-                            "finish without typing text or navigating away."
-                        ),
-                        task_type="JEV_OPERATOR_SMOKE",
-                    ),
-                    timeout=60,
-                )
-            except BrowserRuntimeUnavailable as exc:
-                return JSONResponse(
-                    {"ok": False, "status": "JEV_NOT_READY", "detail": str(exc)[:240]},
-                    status_code=409,
-                    headers={"Cache-Control": "no-store"},
-                )
-            except asyncio.TimeoutError:
-                return JSONResponse(
-                    {"ok": False, "status": "JEV_TEST_TIMEOUT"},
-                    status_code=504,
-                    headers={"Cache-Control": "no-store"},
-                )
-            except Exception as exc:
-                return JSONResponse(
-                    {
-                        "ok": False,
-                        "status": "JEV_TEST_FAILED",
-                        "error_type": type(exc).__name__,
-                    },
-                    status_code=502,
-                    headers={"Cache-Control": "no-store"},
-                )
-            verified = (
-                result.status == "COMPLETED"
-                and str(result.final_url or "").startswith("https://example.com")
-            )
-            payload = {
-                "ok": verified,
-                "status": "JEV_TEST_PASSED" if verified else "JEV_TEST_FAILED",
-                "provider": result.provider,
-                "elapsed_ms": result.elapsed_ms,
-                "action_count": result.action_count,
-                "final_url": result.final_url,
-            }
-            return JSONResponse(
-                payload,
-                status_code=200 if verified else 502,
-                headers={"Cache-Control": "no-store"},
-            )
-
         async def operator_x_oauth_start(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -3276,81 +3133,6 @@ class LiveAgentService:
                 return JSONResponse({"error": "x_oauth_cancel_failed"}, status_code=502)
             return JSONResponse({"ok": True}, headers={"Cache-Control": "no-store"})
 
-        async def operator_account_browser_provision(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse({"error": "authentication_required"}, status_code=401)
-            if not operator_write_allowed(request):
-                return JSONResponse({"error": "operator_header_required"}, status_code=403)
-            account_id = str(request.path_params["account_id"]).strip()
-            try:
-                from .account_browser_profiles import (
-                    AccountBrowserProfileError,
-                    AccountBrowserProfileManager,
-                )
-                manager = AccountBrowserProfileManager(self.state_root)
-                runtime = await asyncio.to_thread(manager.ensure, account_id)
-            except (ValueError, KeyError) as exc:
-                return JSONResponse({"error": str(exc)[:240]}, status_code=404)
-            except AccountBrowserProfileError as exc:
-                return JSONResponse({"error": str(exc)[:240]}, status_code=503)
-            return JSONResponse(
-                {
-                    "account_id": runtime.account_id,
-                    "profile_id": runtime.profile_id,
-                    "running": runtime.running,
-                    "status": "READY" if runtime.running else "STOPPED",
-                },
-                headers={"Cache-Control": "no-store"},
-            )
-
-        async def operator_account_browser_use_test(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse({"error": "authentication_required"}, status_code=401)
-            if not operator_write_allowed(request):
-                return JSONResponse({"error": "operator_header_required"}, status_code=403)
-            account_id = str(request.path_params["account_id"]).strip()
-            try:
-                from .browser_use_cli import (
-                    AccountBrowserUseExecutor,
-                    BrowserUseUnavailable,
-                )
-                executor = AccountBrowserUseExecutor(state_root=self.state_root)
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        executor.inspect,
-                        account_id=account_id,
-                        url="https://example.com",
-                    ),
-                    timeout=40,
-                )
-            except (ValueError, KeyError) as exc:
-                return JSONResponse({"error": str(exc)[:240]}, status_code=404)
-            except BrowserUseUnavailable as exc:
-                return JSONResponse({"error": str(exc)[:240]}, status_code=409)
-            except asyncio.TimeoutError:
-                return JSONResponse({"error": "account_browser_use_test_timeout"}, status_code=504)
-            except Exception as exc:
-                return JSONResponse(
-                    {"error": "account_browser_use_test_failed", "error_type": type(exc).__name__},
-                    status_code=502,
-                )
-            ok = (
-                result.url.startswith("https://example.com")
-                and "Example Domain" in result.title
-            )
-            return JSONResponse(
-                {
-                    "ok": ok,
-                    "account_id": account_id,
-                    "provider": result.provider,
-                    "status": "COMPLETED" if ok else "FAILED",
-                    "elapsed_ms": result.elapsed_ms,
-                    "final_url": result.url,
-                },
-                status_code=200 if ok else 502,
-                headers={"Cache-Control": "no-store"},
-            )
-
         async def operator_account_instance_delete(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -3369,7 +3151,6 @@ class LiveAgentService:
                 else ""
             )
             try:
-                from .account_browser_profiles import AccountBrowserProfileManager
                 from .account_registry import AccountRegistry
 
                 registry = AccountRegistry(self.state_root)
@@ -3379,8 +3160,6 @@ class LiveAgentService:
                         {"error": "account_delete_confirmation_mismatch"},
                         status_code=409,
                     )
-                profiles = AccountBrowserProfileManager(self.state_root)
-                await asyncio.to_thread(profiles.delete_profile, account_id)
                 deleted = registry.remove(account_id)
             except (ValueError, KeyError) as exc:
                 return JSONResponse({"error": str(exc)[:240]}, status_code=404)
@@ -3406,230 +3185,6 @@ class LiveAgentService:
                 },
                 headers={"Cache-Control": "no-store"},
             )
-
-
-        def account_instance_login_control(account_id: str):
-            from .account_registry import AccountRegistry
-
-            registry = AccountRegistry(self.state_root)
-            record = registry.get(str(account_id).strip())
-            if record.provider_id != "x":
-                raise ValueError("account browser login is only implemented for X")
-            return record, AccountBrowserLoginControl(
-                state_root=self.state_root,
-                account_id=record.account_id,
-            )
-
-        async def operator_account_instance_login_connect(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse(
-                    {"error": "authentication_required"}, status_code=401
-                )
-            if not operator_write_allowed(request):
-                return JSONResponse(
-                    {"error": "operator_header_required"}, status_code=403
-                )
-            account_id = str(request.path_params["account_id"]).strip()
-            try:
-                record, control = account_instance_login_control(account_id)
-                result = await asyncio.to_thread(control.start)
-                identity = str(result.get("account_identity") or "")
-                if (
-                    result.get("x_authenticated")
-                    and identity.lower() != record.identity.lower()
-                ):
-                    await asyncio.to_thread(control.stop)
-                    return JSONResponse(
-                        {
-                            "error": "account_browser_identity_mismatch",
-                            "expected_identity": record.identity,
-                            "actual_identity": identity,
-                        },
-                        status_code=409,
-                    )
-            except (ValueError, KeyError) as exc:
-                return JSONResponse(
-                    {"error": str(exc)[:240]}, status_code=404
-                )
-            except AccountBrowserLoginUnavailable:
-                return JSONResponse(
-                    {"error": "account_browser_unavailable"}, status_code=503
-                )
-            return JSONResponse(
-                {
-                    "account_id": record.account_id,
-                    "expected_identity": record.identity,
-                    "browser": result,
-                },
-                headers={"Cache-Control": "no-store"},
-            )
-
-        async def operator_account_instance_login_stop(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse(
-                    {"error": "authentication_required"}, status_code=401
-                )
-            if not operator_write_allowed(request):
-                return JSONResponse(
-                    {"error": "operator_header_required"}, status_code=403
-                )
-            account_id = str(request.path_params["account_id"]).strip()
-            try:
-                record, control = account_instance_login_control(account_id)
-                result = await asyncio.to_thread(control.stop)
-            except (ValueError, KeyError) as exc:
-                return JSONResponse(
-                    {"error": str(exc)[:240]}, status_code=404
-                )
-            identity = str(result.get("identity") or "")
-            mismatch = bool(
-                result.get("authenticated")
-                and identity
-                and identity.lower() != record.identity.lower()
-            )
-            return JSONResponse(
-                {
-                    **result,
-                    "account_id": record.account_id,
-                    "expected_identity": record.identity,
-                    "identity_match": not mismatch,
-                },
-                status_code=409 if mismatch else 200,
-                headers={"Cache-Control": "no-store"},
-            )
-
-        async def operator_account_instance_login_stream(websocket: WebSocket):
-            if operator_console is None:
-                await websocket.close(code=4404)
-                return
-            if not operator_websocket_authorized(websocket):
-                await websocket.close(code=4401)
-                return
-            origin = str(websocket.headers.get("origin") or "")
-            host = str(websocket.headers.get("host") or "")
-            if origin:
-                from urllib.parse import urlparse
-
-                parsed = urlparse(origin)
-                if parsed.netloc and parsed.netloc != host:
-                    await websocket.close(code=4403)
-                    return
-            account_id = str(websocket.path_params["account_id"]).strip()
-            try:
-                record, control = account_instance_login_control(account_id)
-                control.target_id()
-            except (ValueError, KeyError, AccountBrowserLoginUnavailable):
-                await websocket.close(code=4409)
-                return
-            await websocket.accept()
-            try:
-                stream = BrowserSessionStream(control)
-                await stream.run(
-                    websocket,
-                    authorize=lambda: operator_websocket_authorized(websocket),
-                )
-            except WebSocketDisconnect:
-                return
-            except BrowserStreamUnavailable as exc:
-                try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": str(exc)[:160],
-                    })
-                except Exception:
-                    pass
-                try:
-                    await websocket.close(code=1011)
-                except Exception:
-                    pass
-
-        async def operator_cortex_browser_login_connect(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse(
-                    {"error": "authentication_required"}, status_code=401
-                )
-            if not operator_write_allowed(request):
-                return JSONResponse(
-                    {"error": "operator_header_required"}, status_code=403
-                )
-            try:
-                result = await asyncio.to_thread(
-                    chatgpt_cortex_browser_control.start
-                )
-            except ChatGPTCortexBrowserUnavailable as exc:
-                return JSONResponse(
-                    {"error": str(exc)[:240]},
-                    status_code=503,
-                    headers={"Cache-Control": "no-store"},
-                )
-            return JSONResponse(
-                {"browser": result},
-                headers={"Cache-Control": "no-store"},
-            )
-
-        async def operator_cortex_browser_login_stop(request: Request):
-            if not operator_authorized(request):
-                return JSONResponse(
-                    {"error": "authentication_required"}, status_code=401
-                )
-            if not operator_write_allowed(request):
-                return JSONResponse(
-                    {"error": "operator_header_required"}, status_code=403
-                )
-            try:
-                result = await asyncio.to_thread(
-                    chatgpt_cortex_browser_control.stop
-                )
-            except ChatGPTCortexBrowserUnavailable as exc:
-                return JSONResponse(
-                    {"error": str(exc)[:240]},
-                    status_code=503,
-                    headers={"Cache-Control": "no-store"},
-                )
-            return JSONResponse(result, headers={"Cache-Control": "no-store"})
-
-        async def operator_cortex_browser_login_stream(websocket: WebSocket):
-            if operator_console is None:
-                await websocket.close(code=4404)
-                return
-            if not operator_websocket_authorized(websocket):
-                await websocket.close(code=4401)
-                return
-            origin = str(websocket.headers.get("origin") or "")
-            host = str(websocket.headers.get("host") or "")
-            if origin:
-                from urllib.parse import urlparse
-
-                parsed = urlparse(origin)
-                if parsed.netloc and parsed.netloc != host:
-                    await websocket.close(code=4403)
-                    return
-            try:
-                chatgpt_cortex_browser_control.target_id()
-            except ChatGPTCortexBrowserUnavailable:
-                await websocket.close(code=4409)
-                return
-            await websocket.accept()
-            try:
-                stream = BrowserSessionStream(chatgpt_cortex_browser_control)
-                await stream.run(
-                    websocket,
-                    authorize=lambda: operator_websocket_authorized(websocket),
-                )
-            except WebSocketDisconnect:
-                return
-            except BrowserStreamUnavailable as exc:
-                try:
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": str(exc)[:160],
-                    })
-                except Exception:
-                    pass
-                try:
-                    await websocket.close(code=1011)
-                except Exception:
-                    pass
 
 
         async def operator_account_stream(websocket: WebSocket):
@@ -4181,18 +3736,9 @@ class LiveAgentService:
                 Route("/operator/api/session", operator_session_status, methods=["GET"]),
                 Route("/operator/api/session", operator_login, methods=["POST"]),
                 Route("/operator/api/status", operator_status, methods=["GET"]),
-                Route("/operator/api/browser/jev/test", operator_test_jev, methods=["POST"]),
                 Route("/operator/api/accounts/x/oauth/start", operator_x_oauth_start, methods=["POST"]),
                 Route("/operator/api/accounts/x/oauth/complete", operator_x_oauth_complete, methods=["POST"]),
                 Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
-                Route("/operator/api/account-instances/{account_id}/browser/provision", operator_account_browser_provision, methods=["POST"]),
-                Route("/operator/api/account-instances/{account_id}/browser/browser-use-test", operator_account_browser_use_test, methods=["POST"]),
-                Route("/operator/api/account-instances/{account_id}/browser/login/connect", operator_account_instance_login_connect, methods=["POST"]),
-                WebSocketRoute("/operator/api/account-instances/{account_id}/browser/login/stream", operator_account_instance_login_stream),
-                Route("/operator/api/account-instances/{account_id}/browser/login/stop", operator_account_instance_login_stop, methods=["POST"]),
-                Route("/operator/api/cortex/browser/login/connect", operator_cortex_browser_login_connect, methods=["POST"]),
-                WebSocketRoute("/operator/api/cortex/browser/login/stream", operator_cortex_browser_login_stream),
-                Route("/operator/api/cortex/browser/login/stop", operator_cortex_browser_login_stop, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),

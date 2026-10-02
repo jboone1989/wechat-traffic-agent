@@ -1,26 +1,16 @@
-"""Provider-neutral browser runtime for Ferro/Content Agent.
-
-Ferro owns native persistent Chromium profiles. Browser Use attaches to those
-profiles through localhost CDP for general web operations. Known deterministic
-site skills can continue to use direct CDP/Browser Harness when that is simpler.
-Jev remains only for legacy/specialized flows that still require it.
-"""
+"""Browser runtime telemetry for the single Agent Runtime browser path."""
 from __future__ import annotations
 
-import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-import importlib.util
 import json
-import os
 from pathlib import Path
-import time
-from typing import Any, Callable
-from urllib.parse import urlparse
+import urllib.request
+from typing import Any
 
 
 class BrowserRuntimeUnavailable(RuntimeError):
-    """A browser provider is not configured or cannot be started."""
+    """The Agent Runtime browser profile is unavailable."""
 
 
 @dataclass(frozen=True)
@@ -33,117 +23,8 @@ class BrowserTaskResult:
     failure_reason: str | None = None
 
 
-def _enabled(name: str, *, default: bool = False) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _module_available(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
-        return False
-
-
-def jev_readiness() -> dict[str, Any]:
-    enabled = _enabled("CONTENT_JEV_BROWSER_ENABLED", default=True)
-    from .runtime_backend import chatgpt_only_mode
-    chatgpt_exclusive = chatgpt_only_mode()
-    typesafe = bool(os.environ.get("TYPESAFE_API_KEY", "").strip())
-    explicit_text_key = bool(os.environ.get("TEXT_MODEL_API_KEY", "").strip())
-    text_key = explicit_text_key
-    installed = _module_available("jev_ultrafast")
-    harness = _module_available("browser_harness")
-    if not enabled:
-        status, reason = "DISABLED", "CONTENT_JEV_BROWSER_ENABLED is false"
-    elif chatgpt_exclusive:
-        status, reason = (
-            "DISABLED",
-            "ChatGPT-exclusive cognition disables external API text helpers for Jev",
-        )
-    elif not typesafe:
-        status, reason = "NOT_CONFIGURED", "TYPESAFE_API_KEY is not configured"
-    elif not text_key:
-        status, reason = "NOT_CONFIGURED", "No text helper API key is configured"
-    elif not installed or not harness:
-        status, reason = "NOT_INSTALLED", "jev-ultrafast/browser-harness is not installed"
-    else:
-        status, reason = "READY", ""
-    return {
-        "provider": "JEV",
-        "status": status,
-        "reason": reason,
-        "adaptive_default": True,
-        "typesafe_configured": typesafe,
-        "text_helper_configured": text_key and not chatgpt_exclusive,
-        "chatgpt_exclusive": chatgpt_exclusive,
-        "text_helper_source": "EXPLICIT" if explicit_text_key else "MISSING",
-        "package_installed": installed,
-        "browser_harness_installed": harness,
-    }
-
-
-def local_cdp_readiness() -> dict[str, Any]:
-    enabled = _enabled("CONTENT_LOCAL_X_BROWSER_ENABLED")
-    installed = _module_available("jev_ultrafast")
-    harness = _module_available("browser_harness")
-    if not enabled:
-        status, reason = "DISABLED", "CONTENT_LOCAL_X_BROWSER_ENABLED is false"
-    elif not installed or not harness:
-        status, reason = "NOT_INSTALLED", "jev-ultrafast/browser-harness is not installed"
-    else:
-        status, reason = "READY", ""
-    return {
-        "provider": "LOCAL_CDP",
-        "status": status,
-        "reason": reason,
-        "deterministic_default": True,
-        "package_installed": installed,
-        "browser_harness_installed": harness,
-    }
-
-
-def browser_use_readiness() -> dict[str, Any]:
-    cli = Path(
-        os.environ.get("CONTENT_BROWSER_USE_CLI")
-        or "/home/ubuntu/browser-use-venv/bin/browser-use"
-    )
-    return {
-        "provider": "BROWSER_USE_CLI",
-        "status": "READY" if cli.is_file() else "NOT_INSTALLED",
-        "cli_path": str(cli),
-        "browser_owner": "FERRO_NATIVE_CHROMIUM",
-        "adaptive_default": True,
-    }
-
-
-def browser_runtime_status() -> dict[str, Any]:
-    tinyfish = bool(
-        os.environ.get("TINYFISH_API_KEY", "").strip()
-        and os.environ.get("TINYFISH_X_PROFILE_ID", "").strip()
-    )
-    return {
-        "schema_version": "content-browser-runtime-status.v1",
-        "routing_policy": "DETERMINISTIC_SKILL_OR_BROWSER_USE",
-        "x_fallback_policy": "OFFICIAL_API_THEN_ACCOUNT_JEV_THEN_EXISTING_PROFILE_JEV_THEN_TINYFISH_THEN_LEGACY_LOCAL_CDP",
-        "adaptive_default": "BROWSER_USE_CLI",
-        "providers": [
-            browser_use_readiness(),
-            local_cdp_readiness(),
-            jev_readiness(),
-            {
-                "provider": "TINYFISH",
-                "status": "READY" if tinyfish else "NOT_CONFIGURED",
-                "fallback_only": True,
-            },
-        ],
-    }
-
-
 class BrowserTelemetryLedger:
-    """Persist provider economics without recording goals, page text, or secrets."""
+    """Persist browser-provider economics without page text or secrets."""
 
     def __init__(self, state_root: Path) -> None:
         self.path = Path(state_root) / "browser" / "runtime-events.jsonl"
@@ -157,7 +38,7 @@ class BrowserTelemetryLedger:
         account_id: str | None = None,
     ) -> None:
         row = {
-            "schema_version": "content-browser-runtime-event.v1",
+            "schema_version": "content-browser-runtime-event.v2",
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             "task_type": str(task_type)[:80],
             "site": str(site)[:160],
@@ -169,86 +50,82 @@ class BrowserTelemetryLedger:
             handle.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
 
 
-class JevBrowserExecutor:
-    """Adaptive browser controller. Jev is never treated as outcome evidence."""
+def _profile_status(profile_id: str) -> dict[str, Any]:
+    state_path = (
+        Path.home()
+        / ".local"
+        / "state"
+        / "agent-runtime"
+        / "browser"
+        / "profiles"
+        / profile_id
+        / "runtime.json"
+    )
+    try:
+        body = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "profile_id": profile_id,
+            "status": "UNAVAILABLE",
+            "reason": type(exc).__name__,
+        }
+    port = body.get("cdp_port") if isinstance(body, dict) else None
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        return {
+            "profile_id": profile_id,
+            "status": "UNAVAILABLE",
+            "reason": "INVALID_CDP_PORT",
+        }
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version",
+            timeout=1,
+        ) as response:
+            response.read(256)
+    except OSError as exc:
+        return {
+            "profile_id": profile_id,
+            "status": "UNAVAILABLE",
+            "cdp_url": f"http://127.0.0.1:{port}",
+            "reason": type(exc).__name__,
+        }
+    return {
+        "profile_id": profile_id,
+        "status": "READY",
+        "cdp_url": f"http://127.0.0.1:{port}",
+    }
 
-    def __init__(
-        self,
-        *,
-        state_root: Path,
-        agent_factory: Callable[[str, str], Any] | None = None,
-    ) -> None:
-        self.state_root = Path(state_root)
-        self.agent_factory = agent_factory
-        self.telemetry = BrowserTelemetryLedger(self.state_root)
 
-    @classmethod
-    def from_environment(cls, *, state_root: Path) -> "JevBrowserExecutor":
-        readiness = jev_readiness()
-        if readiness["status"] != "READY":
-            raise BrowserRuntimeUnavailable(str(readiness["reason"] or readiness["status"]))
-        return cls(state_root=state_root)
-
-    def _factory(self) -> Callable[[str, str], Any]:
-        if self.agent_factory is not None:
-            return self.agent_factory
-        try:
-            from jev_ultrafast import Agent
-        except ImportError as exc:
-            raise BrowserRuntimeUnavailable("jev-ultrafast is not installed") from exc
-        return Agent
-
-    async def run(self, *, url: str, goal: str, task_type: str = "GENERAL") -> BrowserTaskResult:
-        site = urlparse(url).hostname or "unknown"
-        started = time.perf_counter()
-        try:
-            result = await asyncio.to_thread(self._run_sync, url, goal)
-        except Exception as exc:
-            result = BrowserTaskResult(
-                provider="JEV",
-                status="FAILED",
-                elapsed_ms=round((time.perf_counter() - started) * 1000),
-                action_count=0,
-                failure_reason=type(exc).__name__,
-            )
-            self.telemetry.append(task_type=task_type, site=site, result=result)
-            raise
-        self.telemetry.append(task_type=task_type, site=site, result=result)
-        return result
-
-    def _run_sync(self, url: str, goal: str) -> BrowserTaskResult:
-        if not url.startswith(("https://", "http://")):
-            raise ValueError("browser URL must be http(s)")
-        if not goal.strip():
-            raise ValueError("browser goal must be non-empty")
-        started = time.perf_counter()
-        final: dict[str, Any] = {}
-        factory = self._factory()
-        with factory(url, goal) as agent:
-            for state in agent.run():
-                final = dict(state)
-            if not final and hasattr(agent, "snapshot"):
-                final = dict(agent.snapshot())
-        status = str(final.get("status") or "blocked").upper()
-        page = final.get("page") if isinstance(final.get("page"), dict) else {}
-        history = final.get("history") if isinstance(final.get("history"), list) else []
-        return BrowserTaskResult(
-            provider="JEV",
-            status="COMPLETED" if status == "DONE" else "BLOCKED",
-            elapsed_ms=int(final.get("elapsed_ms") or round((time.perf_counter() - started) * 1000)),
-            action_count=len(history),
-            final_url=str(page.get("url") or "") or None,
-            failure_reason=None if status == "DONE" else status,
-        )
+def browser_runtime_status() -> dict[str, Any]:
+    profiles = [_profile_status("chatgpt"), _profile_status("x")]
+    return {
+        "schema_version": "content-browser-runtime-status.v2",
+        "routing_policy": "AGENT_RUNTIME_ONLY",
+        "provider": "AGENT_RUNTIME_BROWSER",
+        "backend": "browser-harness",
+        "status": (
+            "READY"
+            if all(row["status"] == "READY" for row in profiles)
+            else "DEGRADED"
+        ),
+        "profiles": profiles,
+        "providers": [
+            {
+                "provider": "AGENT_RUNTIME_BROWSER",
+                "status": (
+                    "READY"
+                    if all(row["status"] == "READY" for row in profiles)
+                    else "DEGRADED"
+                ),
+                "profiles": profiles,
+            }
+        ],
+    }
 
 
 __all__ = [
     "BrowserRuntimeUnavailable",
     "BrowserTaskResult",
     "BrowserTelemetryLedger",
-    "JevBrowserExecutor",
     "browser_runtime_status",
-    "browser_use_readiness",
-    "jev_readiness",
-    "local_cdp_readiness",
 ]

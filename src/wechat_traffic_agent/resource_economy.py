@@ -148,12 +148,12 @@ class ContentResourceEconomy:
     def observe(self, now: datetime) -> dict[str, Any]:
         from virtualbrain.research.resource_awareness import ResourceState
         from .runtime_backend import chatgpt_only_mode
-        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
         chatgpt_only = chatgpt_only_mode()
         chatgpt_available = False
         if chatgpt_only:
-            chatgpt_available = LivingRuntimeChatGPTProvider.from_environment(
+            chatgpt_available = AgentRuntimeChatGPTProvider.from_environment(
                 fallback=None
             ).available
             balance = BalanceObservation(
@@ -265,9 +265,9 @@ class ContentResourceEconomy:
             evidence_refs = tuple(dict.fromkeys(
                 [*current.source_refs, f"vb-mind-tick:{int(self.mind.session.tick)}"]
             ))
-        from .livingruntime_chatgpt import LivingRuntimeChatGPTProvider
+        from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
         from .runtime_backend import chatgpt_only_mode
-        chatgpt_provider = LivingRuntimeChatGPTProvider.from_environment(fallback=None)
+        chatgpt_provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
         chatgpt_only = chatgpt_only_mode()
         chatgpt_available = bool(chatgpt_provider.available) if chatgpt_only else False
         if chatgpt_only:

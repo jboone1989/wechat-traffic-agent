@@ -25,11 +25,7 @@ def main() -> int:
     parser.add_argument("--agent-id", required=True)
     args = parser.parse_args()
 
-    os.environ["LIVINGRUNTIME_CHATGPT_PROVIDER_ENABLED"] = "1"
-    os.environ["LIVINGRUNTIME_CHATGPT_AGENT_ID"] = args.agent_id
-    os.environ["LIVINGRUNTIME_CHATGPT_TIMEOUT_SECONDS"] = "900"
-    os.environ["LIVINGRUNTIME_CHATGPT_DISPATCH_GRACE_SECONDS"] = "60"
-    os.environ["LIVINGRUNTIME_CHATGPT_FOREGROUND_WAIT_SECONDS"] = "120"
+    os.environ["AGENT_RUNTIME_LLM_PROVIDER"] = "chatgpt-browser"
 
     contestant = ExternalEvalBaselineContestant(
         state_root=args.state_root,

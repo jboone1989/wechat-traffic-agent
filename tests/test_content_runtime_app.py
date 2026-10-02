@@ -169,26 +169,6 @@ def test_settled_task_is_ingested_as_bounded_domain_experience(tmp_path):
     assert row["evidence_refs"][-1].startswith("task-result:")
 
 
-def test_pending_chatgpt_is_not_ingested_as_domain_experience(tmp_path):
-    domain = _DomainRuntime()
-    app = ContentApplication(
-        root=tmp_path,
-        subject=_Subject(),
-        runtime=_Runtime({}),
-        domain_runtime=domain,
-        observation_factory=_observation,
-    )
-    receipt = app.observe_domain_task_result(
-        task="CONTENT_COGNITION",
-        result={"status": "WAITING_FOR_CHATGPT", "request_id": "llmreq:1"},
-        observed_at=datetime(2026, 9, 26, 13, 0, tzinfo=timezone.utc),
-    )
-
-    assert receipt == {"status": "DEFERRED", "reason": "cognition_not_settled"}
-    assert domain.cycle == 7
-    assert domain.external_experiences == []
-
-
 def test_negative_world_utility_is_not_marked_successful(tmp_path):
     domain = _DomainRuntime()
     app = ContentApplication(

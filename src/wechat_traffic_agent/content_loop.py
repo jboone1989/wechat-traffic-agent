@@ -24,10 +24,6 @@ from .content_service import ContentAgent, _extract_json
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor
 from .models import TopicSignal
-from .livingruntime_chatgpt import (
-    LivingRuntimeChatGPTPendingError,
-    durable_cognition_phase,
-)
 from .trading_draft_worker import default_trading_research_audience
 from .web_editorial import digest, website_snapshot, _title_key
 
@@ -178,14 +174,16 @@ def _receipt_request_fingerprint(
 
 
 class ReceiptRuntime:
-    """Persist each response and suspend safely while ChatGPT is unavailable."""
+    """Persist each completed model response; interrupted calls fail loudly."""
     def __init__(self, runtime, root):
         self.runtime, self.root, self.index = runtime, root, 0
         self.agent_manifest = runtime.agent_manifest
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
-        key = str(self.index); self.index += 1
-        path, started = self.root / (key + '.json'), self.root / (key + '.started')
+        key = str(self.index)
+        self.index += 1
+        path = self.root / (key + ".json")
+        started = self.root / (key + ".started")
         fingerprint = _receipt_request_fingerprint(task, max_tokens, output_schema)
         phase_signature = _receipt_phase_signature(task, max_tokens)
         if output_schema is not None:
@@ -193,111 +191,33 @@ class ReceiptRuntime:
                 "phase_signature": phase_signature,
                 "output_schema": output_schema,
             })
-        resume_request_id = None
-        phase_id = digest({
-            'receipt_root': str(self.root),
-            'phase_index': key,
-            'request_sha256': fingerprint,
-        })
+
         if path.exists():
             row = json.loads(path.read_text())
-            if row['request_sha256'] == fingerprint:
-                return row['response']
-            # Mutable host context may drift while ChatGPT is unavailable, but
-            # sequence position alone is not phase identity: completed phase
-            # artifacts can make later calls shift left after a restart.
-            if (
-                str(row.get('durable_request_id') or '').strip()
-                and str(row.get('phase_signature') or '') == phase_signature
-            ):
-                return row['response']
-            # A completed earlier phase may now be represented by its own durable artifact,
-            # so recovery can legitimately skip that phase. Reuse only an exact later
-            # request fingerprint; never guess, reorder, or call the model again.
-            semantic_matches = []
-            for candidate in sorted(self.root.glob('*.json'), key=lambda item: int(item.stem) if item.stem.isdigit() else 10**9):
-                if not candidate.stem.isdigit() or int(candidate.stem) <= int(key):
-                    continue
-                later = json.loads(candidate.read_text())
-                if later.get('request_sha256') == fingerprint:
-                    self.index = int(candidate.stem) + 1
-                    return later['response']
-                if (
-                    str(later.get('durable_request_id') or '').strip()
-                    and str(later.get('phase_signature') or '') == phase_signature
-                ):
-                    semantic_matches.append((candidate, later))
-            if len(semantic_matches) == 1:
-                candidate, later = semantic_matches[0]
-                self.index = int(candidate.stem) + 1
-                return later['response']
-            row_signature = str(row.get('phase_signature') or '')
-            if row_signature and row_signature != phase_signature:
-                numeric_indices = [
-                    int(candidate.stem)
-                    for candidate in self.root.glob('*.json')
-                    if candidate.stem.isdigit()
-                ]
-                self.index = (max(numeric_indices) + 1) if numeric_indices else self.index
-                return await self.cognitive_probe(task, max_tokens, output_schema=output_schema)
-            raise ValueError('model phase input changed during recovery')
+            if row.get("request_sha256") == fingerprint:
+                return row["response"]
+            raise ValueError("model phase input changed during recovery")
+
         if started.exists():
-            marker = json.loads(started.read_text(encoding='utf-8'))
-            marker_status = str(marker.get('status') or '')
-            marker_request_id = str(marker.get('request_id') or '').strip()
-            if (
-                marker.get('request_sha256') != fingerprint
-                and not (
-                    marker_status == 'WAITING_FOR_CHATGPT'
-                    and marker_request_id
-                )
-            ):
-                raise ValueError('model phase input changed during recovery')
-            if marker_status != 'WAITING_FOR_CHATGPT':
-                raise ValueError('model call interrupted without receipt; skip this cycle')
-            phase_id = str(marker.get('phase_id') or phase_id)
-            resume_request_id = marker_request_id or None
-            original_fingerprint = str(marker.get('request_sha256') or fingerprint)
-        else:
-            original_fingerprint = fingerprint
-            _put(started, {
-                'request_sha256': fingerprint,
-                'phase_signature': phase_signature,
-                'phase_id': phase_id,
-                'status': 'STARTED',
-            })
-        try:
-            with durable_cognition_phase(
-                phase_id,
-                request_id=resume_request_id,
-            ):
-                raw = await self.runtime.cognitive_probe(
-                    task,
-                    max_tokens=max_tokens,
-                    output_schema=output_schema,
-                )
-        except LivingRuntimeChatGPTPendingError as exc:
-            _replace(started, {
-                'request_sha256': fingerprint,
-                'phase_signature': phase_signature,
-                'phase_id': phase_id,
-                'request_id': exc.request_id,
-                'status': 'WAITING_FOR_CHATGPT',
-            })
-            raise
+            raise ValueError("model call interrupted without receipt; skip this cycle")
+
+        _put(started, {
+            "request_sha256": fingerprint,
+            "phase_signature": phase_signature,
+            "status": "STARTED",
+        })
+        raw = await self.runtime.cognitive_probe(
+            task,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+        )
         receipt = {
-            'request_sha256': fingerprint,
-            'phase_signature': phase_signature,
-            'response': raw,
+            "request_sha256": fingerprint,
+            "phase_signature": phase_signature,
+            "response": raw,
         }
         if output_schema is not None:
-            receipt['output_schema_sha256'] = digest(output_schema)
-        if resume_request_id:
-            receipt.update({
-                'durable_request_id': resume_request_id,
-                'submitted_request_sha256': original_fingerprint,
-                'resume_input_changed': original_fingerprint != fingerprint,
-            })
+            receipt["output_schema_sha256"] = digest(output_schema)
         _put(path, receipt)
         started.unlink(missing_ok=True)
         return raw
@@ -384,16 +304,6 @@ class ContinuousContentLoop:
                 return {**result, 'status': 'ALREADY_PROCESSED', 'previous_status': result['status']}
             try:
                 result = await self._run(folder, cycle, now)
-            except LivingRuntimeChatGPTPendingError as exc:
-                waiting = {
-                    'schema_version': 'content-cognition-wait.v1',
-                    'status': 'WAITING_FOR_CHATGPT',
-                    'cycle': cycle,
-                    'request_id': exc.request_id,
-                    'resumable': True,
-                }
-                _replace(folder / 'waiting_for_chatgpt.json', waiting)
-                return waiting
             except Exception as exc:
                 diagnostic = {
                     'schema_version': 'content-error-diagnostic.v1',

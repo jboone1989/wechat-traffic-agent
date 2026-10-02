@@ -139,7 +139,7 @@ def test_external_outcome_is_written_only_to_evaluation_snapshot(tmp_path):
 
 
 def test_chatgpt_only_provider_has_no_api_fallback(monkeypatch, tmp_path):
-    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_mod
+    import wechat_traffic_agent.agent_runtime_chatgpt as chatgpt_mod
     import wechat_traffic_agent.llm_audit as audit_mod
     from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
 
@@ -153,7 +153,7 @@ def test_chatgpt_only_provider_has_no_api_fallback(monkeypatch, tmp_path):
         return FakeProvider()
 
     monkeypatch.setattr(
-        chatgpt_mod.LivingRuntimeChatGPTProvider,
+        chatgpt_mod.AgentRuntimeChatGPTProvider,
         "from_environment",
         staticmethod(fake_from_environment),
     )
@@ -171,14 +171,14 @@ def test_chatgpt_only_provider_has_no_api_fallback(monkeypatch, tmp_path):
 
 
 def test_chatgpt_only_provider_fails_when_cognition_unavailable(monkeypatch, tmp_path):
-    import wechat_traffic_agent.livingruntime_chatgpt as chatgpt_mod
+    import wechat_traffic_agent.agent_runtime_chatgpt as chatgpt_mod
     from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
 
     class FakeProvider:
         available = False
 
     monkeypatch.setattr(
-        chatgpt_mod.LivingRuntimeChatGPTProvider,
+        chatgpt_mod.AgentRuntimeChatGPTProvider,
         "from_environment",
         staticmethod(lambda *, fallback=None: FakeProvider()),
     )

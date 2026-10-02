@@ -2,7 +2,7 @@
 
 L0 (VirtualBrain/LIF) produces persistent internal state.  This module is L1:
 it chooses among an explicit finite action set.  It never generates prose or
-silently falls back to an LLM.  L2 (LivingRuntime ChatGPT) is entered only when
+silently falls back to an LLM.  L2 (Agent Runtime ChatGPT) is entered only when
 CONTENT_COGNITION is the selected action or another task explicitly requires it.
 """
 from __future__ import annotations
