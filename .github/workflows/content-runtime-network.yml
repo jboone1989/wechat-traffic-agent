@@ -111,6 +111,7 @@ jobs:
           printf '%s\n' '"""Isolated Ferro Memory System tests."""' > .memory-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/memory_*.py .memory-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/operator_memory.py .memory-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/awe_hillclimb.py .memory-ci/wechat_traffic_agent/
       - name: Run Ferro Memory System regressions
         env:
           PYTHONPATH: .memory-ci
@@ -175,13 +176,18 @@ jobs:
         env:
           PYTHONPATH: .goal-scheduler-ci
         run: python -m pytest -q -c /dev/null tests/test_goal_scheduler_evolution.py
-      - name: Run owner goal scheduler resume regressions
+      - name: Build external Runtime interface for owner tests
+        run: |
+          mkdir -p .owner-runtime-ci/agent_runtime
+          printf '%s\n' '' > .owner-runtime-ci/agent_runtime/__init__.py
+          printf '%s\n' 'class AgentRuntime: pass' > .owner-runtime-ci/agent_runtime/runtime.py
+      - name: Run owner goal scheduler regressions
         env:
-          PYTHONPATH: src
+          PYTHONPATH: .owner-runtime-ci:src
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_owner_agent_episode.py
-          tests/test_wakeful_chatgpt_resume.py
+          tests/test_x_owner_progress.py
       - name: Build isolated runtime package
         run: |
           mkdir -p .runtime-ci/wechat_traffic_agent
