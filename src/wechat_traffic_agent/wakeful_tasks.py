@@ -2290,7 +2290,7 @@ class WakefulContentTaskRunner:
             if not isinstance(result, dict):
                 continue
             result_status = str(result.get("status") or "").upper()
-            if result_status not in {"PUBLISHED", "HELD_BY_CHECKS"}:
+            if result_status not in {"PUBLISHED", "HELD_BY_CHECKS", "X_EXPRESSION_READY"}:
                 continue
             try:
                 cognition = json.loads(
@@ -2304,16 +2304,20 @@ class WakefulContentTaskRunner:
                 else False
             ):
                 continue
-            if result_status == "HELD_BY_CHECKS":
+            if result_status in {"HELD_BY_CHECKS", "X_EXPRESSION_READY"}:
+                from .x_owner_execution import owner_x_publication_request
+                if result_status == "X_EXPRESSION_READY" and not owner_x_publication_request(folder):
+                    continue
                 x_loop = getattr(self, "x_loop", None)
                 growth = getattr(x_loop, "growth_mission", None)
                 binding_method = getattr(growth, "publication_binding", None)
-                if not callable(binding_method):
+                if not callable(binding_method) and result_status != "X_EXPRESSION_READY":
                     continue
                 try:
-                    binding = binding_method(
+                    binding = ({"bound": True, "status": "BOUND_X_EXPRESSION"}
+                               if result_status == "X_EXPRESSION_READY" else binding_method(
                         cycle=str(result.get("cycle") or folder.name)
-                    )
+                    ))
                 except Exception:  # noqa: BLE001
                     continue
                 if (
@@ -2382,8 +2386,9 @@ class WakefulContentTaskRunner:
         now: datetime,
     ) -> None:
         """Run idempotent downstream social work for an already-published cycle."""
+        direct_x = continuous.get("status") == "X_EXPRESSION_READY"
         social_loop = getattr(self, "social_expression_loop", None)
-        if social_loop is not None:
+        if social_loop is not None and not direct_x:
             try:
                 rows["social_expression_drafts"] = self._run_async(
                     social_loop.after_content_cycle(result=continuous, now=now)
@@ -2397,7 +2402,7 @@ class WakefulContentTaskRunner:
             ("x_browser_publication", getattr(self, "x_browser_publisher", None)),
             ("okx_orbit_publication", getattr(self, "okx_orbit_publisher", None)),
         ):
-            if publisher is None:
+            if publisher is None or direct_x:
                 continue
             # Original short posts belong to the API -> verified browser
             # fallback lane, including its independent X safety decision.
@@ -3395,6 +3400,25 @@ class WakefulContentTaskRunner:
         )
         if owner_goal is not None:
             content_run_kwargs["cognition_runtime"] = owner_content_cognition
+            if owner_episode_active and decision.get("decision") in {"EXECUTE", "NO_RESOURCE_ACTION"}:
+                owner_decision = (control.get("decision") or {})
+                surface = str(owner_decision.get("publication_surface") or "AUTO")
+                if surface == "X_SHORT_POST":
+                    from .content_loop import _put
+                    from .x_growth_mission import x_growth_mission_context
+                    from .x_owner_execution import SCHEMA
+
+                    mission = x_growth_mission_context(Path(self.state_root))
+                    folder = Path(self.state_root) / "content" / "continuous" / "cycles" / cycle_id
+                    _put(folder / "owner_publication_request.json", {
+                        "schema_version": SCHEMA, "cycle": cycle_id,
+                        "episode_id": control.get("episode_id"),
+                        "owner_goal_id": owner_goal["goal_id"],
+                        "mission_id": mission.get("mission_id"),
+                        "decision": owner_decision,
+                        "publication_authority": False,
+                    })
+                    content_run_kwargs["publication_surface"] = surface
         continuous = self._run_async(
             self.continuous_loop.run_once(**content_run_kwargs)
         )
@@ -3568,7 +3592,7 @@ class WakefulContentTaskRunner:
                         )
                     except (OSError, ValueError, json.JSONDecodeError):
                         prior = {}
-                    if str(prior.get("status") or "").upper() == "PUBLISHED":
+                    if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY"}:
                         self._run_social_stage(
                             rows=rows,
                             continuous=prior,
@@ -3650,8 +3674,11 @@ class WakefulContentTaskRunner:
         if owner_episode_active or owner_episode_bound:
             complete = getattr(self.owner_agent_episode, "complete", None)
             if callable(complete):
+                owner_outcome = continuous
+                if continuous.get("publication_surface") == "X_SHORT_POST":
+                    owner_outcome = {**continuous, **rows.get("x_social_expression", {"status": "X_PUBLICATION_UNRESOLVED"})}
                 rows["owner_agent_episode_completion"] = complete(
-                    outcome=continuous,
+                    outcome=owner_outcome,
                     now=now,
                     goal_id=(
                         str(owner_goal.get("goal_id") or "")

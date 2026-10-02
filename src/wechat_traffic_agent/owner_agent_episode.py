@@ -28,6 +28,7 @@ class OwnerAgentDecision(BaseModel):
         "RUN_CONTENT_PIPELINE",
         "WAIT",
     ]
+    publication_surface: Literal["AUTO", "WEBSITE", "X_SHORT_POST"] = "AUTO"
     query: str | None = Field(default=None, max_length=240)
     topic: str | None = Field(
         default=None,
@@ -295,8 +296,8 @@ class OwnerAgentEpisode:
             {
                 "name": "RUN_CONTENT_PIPELINE",
                 "side_effect": "bounded_existing_publication_gates",
-                "arguments": {"topic": "optional concrete subject"},
-                "use": "Delegate evidence gathering, drafting and gated publication to the existing content executor.",
+                "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, or X_SHORT_POST"},
+                "use": "Gather evidence and cognition, then publish on the requested surface through existing safety and publication gates. X_SHORT_POST proceeds directly to an original X draft without requiring a website article.",
             },
             {
                 "name": "WAIT",
@@ -323,6 +324,8 @@ class OwnerAgentEpisode:
             "Use WAIT only when no currently permitted tool can materially advance the commitment or when the next evidence is genuinely time-dependent. "
             "Neural/drive signals are advisory inputs only and never override the owner goal or authorization. "
             "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
+            "When the owner commitment explicitly requires an original X post and a real POSTED receipt, choose publication_surface X_SHORT_POST. "
+            "AUTO is for autonomous content selection; WEBSITE is for a website article. Choosing X_SHORT_POST is an execution request, never permission to bypass evidence, X safety, or publication authority. "
             "Return JSON only.\n"
             + json.dumps(
                 {

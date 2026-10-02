@@ -920,10 +920,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         owner_goal=None,
         seed_evidence=None,
         cognition_runtime=None,
+        publication_surface='AUTO',
     ):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
             raise ValueError('focus_topic must be a lowercase kebab-case slug')
+        if publication_surface not in {'AUTO', 'WEBSITE', 'X_SHORT_POST'}:
+            raise ValueError('unknown publication surface')
+        self._publication_surface = publication_surface
         self._focus_topic = topic or None
         self._owner_goal = _normalize_owner_goal_context(owner_goal)
         self._seed_evidence = [
@@ -953,6 +957,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             self._focus_topic = None
             self._owner_goal = None
             self._seed_evidence = []
+            self._publication_surface = 'AUTO'
 
     async def verify_due_predictions(self, *, now):
         due = self.predictions.due(now)
@@ -2298,6 +2303,18 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             self._activity(cycle, 'DECIDE', 'I rebound the method note to the evidence that caused it',
                            f"{selection.title} now cites {selected.get('title') or selection.evidence_id} instead of the unrelated Website fallback source.",
                            status='completed')
+
+        if getattr(self, '_publication_surface', 'AUTO') == 'X_SHORT_POST':
+            from .x_owner_execution import prepare_owner_x_expression
+
+            if cognition_decision is None:
+                raise ValueError('owner X execution requires persisted cognition')
+            return prepare_owner_x_expression(
+                folder=folder, source_evidence=selected,
+                cognition=cognition_decision.model_dump(mode='json'),
+                worldview=worldview_update, prediction=prediction_record,
+                mind_plan=mind_plan,
+            )
 
         expression_kind = cognition_decision.expression_kind if cognition_decision is not None else 'LONGFORM'
         is_short_note = expression_kind in {'RESEARCH_NOTE', 'METHOD_NOTE', 'THOUGHT'}

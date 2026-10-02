@@ -588,7 +588,12 @@ class XAutonomyLoop:
         draft = _read_json(Path(str(result.get("draft_path")))) if result.get("draft_path") else {}
         artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
         publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+        from .x_owner_execution import owner_x_publication_request
+        owner_request = owner_x_publication_request(folder)
+        x_expression = _read_json(folder / "x_expression_context.json") if owner_request else {}
         return folder, {
+            "owner_publication_request": owner_request,
+            "source_evidence": x_expression.get("source_evidence") or {},
             "cycle": cycle, "cognition": cognition, "worldview": worldview, "prediction": prediction,
             "mind_plan": plan, "artifact": artifact, "publication": publication,
         }
@@ -607,13 +612,14 @@ class XAutonomyLoop:
             if callable(binding_method):
                 mission_binding = binding_method(cycle=cycle)
         result_status = str(result.get("status") or "").upper()
+        owner_directed_x = bool(context.get("owner_publication_request")) and result_status == "X_EXPRESSION_READY"
         x_only_admitted = (
             isinstance(mission_binding, dict)
             and bool(mission_binding.get("bound"))
             and str(mission_binding.get("status") or "") == "BOUND_X_EXPRESSION"
         )
         if (
-            (result_status != "PUBLISHED" and not x_only_admitted)
+            (result_status != "PUBLISHED" and not x_only_admitted and not owner_directed_x)
             or not cognition.get("worth_saying")
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
@@ -633,7 +639,7 @@ class XAutonomyLoop:
             context=context,
             now=now,
         )
-        if (
+        if not owner_directed_x and (
             str(x_strategy.get("post_timing") or "") == "HOLD"
             or str(x_strategy.get("interaction_mode") or "ORIGINAL") != "ORIGINAL"
         ):
@@ -644,7 +650,8 @@ class XAutonomyLoop:
                 "x_strategy": x_strategy,
             }
         if (
-            x_strategy
+            not owner_directed_x
+            and x_strategy
             and str(x_strategy.get("x_format") or "SHORT_POST") != "SHORT_POST"
             and not self.history.has_event(cycle=cycle, event_type="EXPRESSION")
         ):
@@ -657,8 +664,10 @@ class XAutonomyLoop:
         public_url = _find_url(context.get("publication"))
         x_mission = x_growth_mission_context(self.state_root)
         prompt = (
-            "X_EXPRESSION_DRAFT: Jev L1 has already selected POST_NOW and SHORT_POST. "
-            "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format. "
+            "X_EXPRESSION_DRAFT: "
+            + ("The durable owner controller explicitly requested an original SHORT_POST on X in this cycle. L1 timing remains advisory for this execution request. "
+               if owner_directed_x else "Jev L1 has already selected POST_NOW and SHORT_POST. ")
+            +             "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format. "
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
             "For METHOD_NOTE, describe the method/tool only as a candidate being tested unless adoption is separately proven. "
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
@@ -854,6 +863,7 @@ class XAutonomyLoop:
             "transport": publication_transport,
             "transport_failover": transport_failover,
             "mission_experiment_transition": mission_experiment_transition,
+            "owner_execution_request": context.get("owner_publication_request") or None,
         }
 
     async def _safety_check(self, *, model_runtime: ReceiptRuntime, text: str, context: dict[str, Any]) -> XSafetyDecision:

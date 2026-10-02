@@ -843,27 +843,42 @@ class XGrowthMissionCoordinator:
         plan = _read_json(folder / "mind_plan.json")
         goal = plan.get("goal") if isinstance(plan.get("goal"), dict) else {}
         mission_id = str(plan.get("external_mission_id") or "").strip()
+        from .x_owner_execution import owner_x_publication_request
+        owner_request = owner_x_publication_request(folder)
         if (
-            str(goal.get("origin") or "") != "EXTERNAL_MISSION"
+            (str(goal.get("origin") or "") != "EXTERNAL_MISSION" and not owner_request)
             or mission_id != str(mission.mission_id)
         ):
             return {"status": "NOT_EXTERNAL_MISSION", "bound": False, "cycle": cycle}
         if (folder / "output_fallback.json").exists():
             return {"status": "OUTPUT_FALLBACK", "bound": False, "cycle": cycle}
         discovery = _read_json(folder / "mission_discovery.json")
-        if str(discovery.get("mission_id") or "") != str(mission.mission_id):
+        if not owner_request and str(discovery.get("mission_id") or "") != str(mission.mission_id):
             return {"status": "MISSION_DISCOVERY_MISMATCH", "bound": False, "cycle": cycle}
         result = _read_json(folder / "result.json")
         result_status = str(result.get("status") or "").upper()
         required_topic = str(plan.get("required_topic") or "").strip()
         evidence_floor = _read_json(folder / "evidence_floor_check.json")
-        if str(evidence_floor.get("status") or "") != "PASS":
+        owner_x_ready = bool(owner_request) and result_status == "X_EXPRESSION_READY"
+        if not owner_x_ready and str(evidence_floor.get("status") or "") != "PASS":
             return {"status": "EVIDENCE_FLOOR_NOT_PASSED", "bound": False, "cycle": cycle}
 
         binding_status = "BOUND"
         bound_topic = required_topic
         admission: dict[str, Any] = {"surface": "WEBSITE"}
-        if result_status == "PUBLISHED":
+        if owner_x_ready:
+            expression = _read_json(folder / "x_expression_context.json")
+            source = expression.get("source_evidence") or {}
+            cognition = _read_json(folder / "cognition.json")
+            if not (cognition.get("worth_saying") and source.get("evidence_id")
+                    and source.get("summary") and source.get("evidence_refs")
+                    and result.get("source_evidence_id") == source.get("evidence_id")):
+                return {"status": "X_EXPRESSION_ADMISSION_FAILED", "bound": False, "cycle": cycle}
+            binding_status = "BOUND_X_EXPRESSION"
+            admission = {"surface": "X", "owner_execution_request": True,
+                         "independent_x_safety_required": True,
+                         "source_evidence_id": source["evidence_id"]}
+        elif result_status == "PUBLISHED":
             publication = _read_json(folder / "publication.json")
             outcome = (
                 publication.get("outcome_attribution")
