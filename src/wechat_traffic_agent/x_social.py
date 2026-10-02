@@ -357,6 +357,12 @@ class XAutonomyLoop:
             except Exception as exc:
                 failures.append({"post_id":post_id,"error_type":type(exc).__name__,"detail":str(exc)[:300]})
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})
+        replies = [
+            {key: row.get(key) for key in ("x_post_id", "x_url", "target_post_id", "runtime_receipt_id")}
+            for row in self.history.recent(limit=40)
+            if row.get("cycle") == cycle and row.get("event_type") == "REPLY"
+            and row.get("publication_verified") and row.get("runtime_receipt_id")
+        ]
         final_status = "DEGRADED" if failures else "OK"
         self._write_status(now=now, status=final_status)
         self._activity(cycle=cycle, title="Finished checking X", detail=f"Reviewed {len(mentions)} recent mention(s); {handled} were new.")
@@ -364,6 +370,11 @@ class XAutonomyLoop:
             "status": final_status, "identity_receipt_id": identity_receipt, "mentions_receipt_id": mentions_receipt_id,
             "mention_count": len(mentions), "new_mentions": handled, "discovery": discovery, "failures": failures,
             "x_growth_mission": growth_result,
+            "reply_count": len(replies), "replies": replies,
+            "engagement_outcome": (
+                "REPLIED" if replies else "READ_ONLY" if not allow_remote_actions
+                else "BLOCKED" if failures else "NO_REPLY_SELECTED"
+            ),
         }
 
     async def _handle_mention(self, *, row: dict[str, Any], post_id: str, me: dict[str, Any], cycle: str, now: datetime,

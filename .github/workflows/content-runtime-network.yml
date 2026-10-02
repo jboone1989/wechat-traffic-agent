@@ -111,6 +111,7 @@ jobs:
           printf '%s\n' '"""Isolated Ferro Memory System tests."""' > .memory-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/memory_*.py .memory-ci/wechat_traffic_agent/
           cp src/wechat_traffic_agent/operator_memory.py .memory-ci/wechat_traffic_agent/
+          cp src/wechat_traffic_agent/awe_hillclimb.py .memory-ci/wechat_traffic_agent/
       - name: Run Ferro Memory System regressions
         env:
           PYTHONPATH: .memory-ci
@@ -175,15 +176,50 @@ jobs:
         env:
           PYTHONPATH: .goal-scheduler-ci
         run: python -m pytest -q -c /dev/null tests/test_goal_scheduler_evolution.py
-      - name: Run owner goal scheduler resume regressions
+      - name: Build external Runtime interface for owner tests
+        run: |
+          mkdir -p .owner-runtime-ci/agent_runtime
+          printf '%s\n' '' > .owner-runtime-ci/agent_runtime/__init__.py
+          printf '%s\n' 'class AgentRuntime: pass' > .owner-runtime-ci/agent_runtime/runtime.py
+          # These external interfaces are only constructed in the owner tests;
+          # diagnosis/evolution behavior is outside this controller's boundary.
+          mkdir -p .owner-runtime-ci/agent_runtime/agency
+          printf '%s\n' '' > .owner-runtime-ci/agent_runtime/agency/__init__.py
+          cat > .owner-runtime-ci/agent_runtime/agency/diagnosis.py <<'PY'
+          from enum import Enum
+          class ObservationKind(str, Enum):
+              FAILURE = "FAILURE"
+          class DiagnosticCase:
+              pass
+          class DiagnosticMemory:
+              def __init__(self, root):
+                  self.root = root
+          PY
+          cat > .owner-runtime-ci/agent_runtime/evolution.py <<'PY'
+          from enum import Enum
+          class EvolutionFactKind(str, Enum):
+              FAILURE = "FAILURE"
+          PY
+      - name: Run owner goal scheduler regressions
         env:
-          PYTHONPATH: src
+          PYTHONPATH: .owner-runtime-ci:src
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_owner_agent_episode.py
-          tests/test_wakeful_chatgpt_resume.py
+          tests/test_x_owner_progress.py
       - name: Build isolated runtime package
         run: |
+          mkdir -p .runtime-ci
+          cp -r src/wechat_traffic_agent .runtime-ci/
+          mkdir -p .owner-runtime-ci/agent_runtime/llm
+          cat > .owner-runtime-ci/agent_runtime/llm/__init__.py <<'PY'
+          class ChatGPTBrowserProviderError(RuntimeError):
+              pass
+          class ChatGPTBrowserProvider:
+              @classmethod
+              def from_environment(cls):
+                  raise ChatGPTBrowserProviderError("CI browser I/O must be substituted by the test")
+          PY
           mkdir -p .runtime-ci/wechat_traffic_agent
           printf '%s\n' '"""Isolated persistent Content Agent tests."""' > .runtime-ci/wechat_traffic_agent/__init__.py
           cp src/wechat_traffic_agent/runtime_app.py .runtime-ci/wechat_traffic_agent/
@@ -213,7 +249,7 @@ jobs:
           cp src/wechat_traffic_agent/sources/trading_network.py .draft-ci/wechat_traffic_agent/sources/
       - name: Run persistent application boundary tests
         env:
-          PYTHONPATH: .runtime-ci
+          PYTHONPATH: .owner-runtime-ci:.runtime-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_content_runtime_app.py
@@ -238,7 +274,7 @@ jobs:
           printf '%s\n' 'class AgentRuntime: pass' > .editorial-ci/agent_runtime/runtime.py
       - name: Run Website editorial and scoped feedback regressions
         env:
-          PYTHONPATH: .editorial-ci
+          PYTHONPATH: .owner-runtime-ci:.editorial-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_web_editorial.py tests/test_channel_evidence.py tests/test_website_experiment.py
@@ -248,7 +284,7 @@ jobs:
           tests/test_evidence_floor.py tests/test_evidence_floor_goal_loop.py tests/test_live_agent.py
       - name: Run Ferro open-development state-machine regressions
         env:
-          PYTHONPATH: .editorial-ci
+          PYTHONPATH: .owner-runtime-ci:.editorial-ci
         run: >-
           python -m pytest -q -c /dev/null
           tests/test_developmental_agency.py

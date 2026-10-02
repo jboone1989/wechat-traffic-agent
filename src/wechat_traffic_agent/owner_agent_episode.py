@@ -24,6 +24,7 @@ class OwnerAgentDecision(BaseModel):
         "INSPECT_MISSION",
         "SEARCH_WORLD",
         "CHECK_X",
+        "ENGAGE_X",
         "CHECK_OUTCOMES",
         "RUN_CONTENT_PIPELINE",
         "WAIT",
@@ -39,6 +40,8 @@ class OwnerAgentDecision(BaseModel):
     # The provider already bounds the response. A valid action must not be
     # rejected because its explanatory text crosses an arbitrary UI budget.
     rationale: str = Field(min_length=8)
+    wait_for: str | None = None
+    next_action: Literal["INSPECT_MISSION", "SEARCH_WORLD", "CHECK_X", "ENGAGE_X", "CHECK_OUTCOMES", "RUN_CONTENT_PIPELINE"] | None = None
 
     @model_validator(mode="after")
     def _validate_action_arguments(self) -> "OwnerAgentDecision":
@@ -175,6 +178,23 @@ class OwnerAgentEpisode:
         )
         if resumable:
             return current
+        previous_episode = None
+        wait_streak = 0
+        if current and str(current.get("commitment_key") or current.get("goal_id") or "") == commitment_key:
+            previous_episode = {
+                key: current.get(key) for key in
+                ("episode_id", "cycle_id", "status", "decision", "outcome", "steps", "updated_at", "cognition_blocker")
+                if current.get(key) is not None
+            }
+            if (current.get("outcome") or {}).get("status") == "WAIT_SCHEDULED":
+                wait_streak = int(current.get("consecutive_waits") or 0) + 1
+            # Keep the complete prior receipt before replacing the active projection.
+            archive = self.episodes_dir / "history" / sha256(goal_id.encode()).hexdigest()[:24]
+            archive.mkdir(parents=True, exist_ok=True)
+            serialized = json.dumps(current, ensure_ascii=False, sort_keys=True)
+            receipt = archive / (sha256(serialized.encode()).hexdigest() + ".json")
+            if not receipt.exists():
+                receipt.write_text(serialized + "\n", encoding="utf-8")
         state = {
             "schema_version": self.SCHEMA,
             "episode_id": self._episode_id(goal_id, now),
@@ -189,6 +209,8 @@ class OwnerAgentEpisode:
             "steps": [],
             "decision": None,
             "outcome": None,
+            "previous_episode": previous_episode,
+            "consecutive_waits": wait_streak,
         }
         self._write(state)
         return state
@@ -289,6 +311,11 @@ class OwnerAgentEpisode:
                 "use": "Observe current X mentions/metrics through the existing bounded connector.",
             },
             {
+                "name": "ENGAGE_X",
+                "side_effect": "bounded_existing_x_reply_gates",
+                "use": "Discover actual public discussions and let Ferro choose useful replies through authenticated Jev pages. Return verified reply receipts or explicit no-reply/blocker feedback. No engagement quota and no forced reply.",
+            },
+            {
                 "name": "CHECK_OUTCOMES",
                 "side_effect": "read_only_reconciliation",
                 "use": "Reconcile matured world/content outcomes when that evidence matters now.",
@@ -326,12 +353,20 @@ class OwnerAgentEpisode:
             "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
             "When the owner commitment explicitly requires an original X post and a real POSTED receipt, choose X_SHORT_POST for a concise thought, X_LONG_POST for useful additional context, or X_ARTICLE for a structured illustrated native Article. "
             "AUTO is for autonomous content selection; WEBSITE is for a website article. Choosing an X surface is an execution request, never permission to bypass evidence, X safety, or publication authority. "
+            "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
+            "Optional 20/200 advice is not a quota, and it is not a reason to stop pursuing the growth goal. "
+            "A no-reply decision applies to those observed posts; consider another discovery source, research, or useful original content rather than treating it as a goal-wide stop. "
+            "Keep your experiment's measurement integrity, but distinguish waiting for its outcome from waiting on every useful goal action. "
+            "Use previous_episode, consecutive_waits and real publication/reply receipts to avoid repeated inspection or indefinite WAIT. "
+            "For WAIT name the concrete blocker or time-dependent evidence in wait_for and the useful next_action to revisit; do not claim goal progress from scheduling a wait. "
             "Return JSON only.\n"
             + json.dumps(
                 {
                     "owner_goal": self._compact(dict(owner_goal)),
                     "mission_context": self._compact(dict(mission_context or {})),
                     "prior_steps": self._compact(list(state.get("steps") or [])),
+                    "previous_episode": self._compact(state.get("previous_episode")),
+                    "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
                 },

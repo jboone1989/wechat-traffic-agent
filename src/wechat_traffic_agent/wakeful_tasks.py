@@ -2978,6 +2978,14 @@ class WakefulContentTaskRunner:
                 **active_blocker,
             }
         mission_context = self._owner_agent_mission_context(owner_goal, now)
+        from .x_goal_progress import owner_x_execution_context
+        mission_context = {
+            **mission_context,
+            "x_execution": owner_x_execution_context(
+                Path(self.state_root) if getattr(self, "state_root", None) is not None else None,
+                configured=getattr(self, "x_loop", None) is not None,
+            ),
+        }
         cognition_runtime = getattr(self, "owner_cognition_runtime", None)
         if cognition_runtime is None:
             from .runtime_backend import load_owner_cognition_runtime
@@ -3051,12 +3059,12 @@ class WakefulContentTaskRunner:
                     row.setdefault("evidence_refs", [row["evidence_id"]])
                     rows.append(row)
                 return {"status": "OK", "query": query, "items": rows}
-            if action == "CHECK_X":
+            if action in {"CHECK_X", "ENGAGE_X"}:
                 loop = getattr(self, "x_loop", None)
                 if loop is None:
                     return {"status": "DISABLED"}
                 try:
-                    result = await loop.observe(now=now, allow_remote_actions=False)
+                    result = await loop.observe(now=now, allow_remote_actions=action == "ENGAGE_X")
                     self.wakeful.emit_x_mentions(
                         count=int(result.get("new_mentions") or 0),
                         observed_at=now,
@@ -3238,6 +3246,9 @@ class WakefulContentTaskRunner:
                     wait_outcome = {
                         "status": "WAIT_SCHEDULED",
                         "wait_seconds": wait_seconds,
+                        "wait_for": decision.get("wait_for") or decision.get("rationale"),
+                        "next_action": decision.get("next_action"),
+                        "goal_progress_claimed": False,
                     }
                     complete = getattr(self.owner_agent_episode, "complete", None)
                     if callable(complete):
