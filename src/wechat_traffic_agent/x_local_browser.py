@@ -176,12 +176,13 @@ class LocalHarnessXTransport:
             ) from exc
         return body
 
-    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False):
+    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False, inline_images=()):
         from .x_jev_article import jev_x_article, jev_x_article_reconcile
         from .x_browser import _read_json, _write_json
         import hashlib
         transaction_path=Path(transaction_path)
-        digest=hashlib.sha256((title+"\n"+text+"\n"+hashlib.sha256(Path(image_path).read_bytes()).hexdigest()).encode()).hexdigest()
+        hashes=[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [image_path,*[r['path'] for r in inline_images]]]
+        digest=hashlib.sha256(json.dumps([title,text,hashes],ensure_ascii=False).encode()).hexdigest()
         previous=_read_json(transaction_path)
         if previous and previous.get("digest")!=digest:
             raise ValueError("Article transaction draft binding mismatch")
@@ -193,11 +194,11 @@ class LocalHarnessXTransport:
                 expected_handle=self.expected_handle))
             _write_json(transaction_path,{**previous,**body,"digest":digest})
             return self._verified_result(body)
-        _write_json(transaction_path,{**previous,"digest":digest,"status":"SUBMIT_PENDING" if not prepare_only else "PREPARING"})
+        _write_json(transaction_path,{**previous,"digest":digest,"status":"PREPARING"})
         body=await asyncio.to_thread(self._run_jev_sync,jev_x_article(title=title,text=text,image_path=str(image_path),
             expected_handle=self.expected_handle,draft_url=str(previous.get("draft_url") or ""),prepare_only=prepare_only,
-            checkpoint_path=str(transaction_path)))
-        _write_json(transaction_path,{**body,"digest":digest})
+            checkpoint_path=str(transaction_path),inline_images=inline_images))
+        _write_json(transaction_path,{**_read_json(transaction_path),**body,"digest":digest})
         if prepare_only and body.get("status")=="DRAFT_PREPARED":
             return body
         return self._verified_result(body)
@@ -227,9 +228,9 @@ class LocalHarnessXTransport:
         if prior.get("status")=="POSTED":
             return self._verified_result(prior)
         reconcile_only=bool(prior.get("attempted") or prior.get("status")=="SUBMIT_PENDING")
-        _write_json(path,{**prior,"status":"SUBMIT_PENDING","text":text,"target_url":target_url})
-        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only))
-        _write_json(path,{**body,"text":text,"target_url":target_url})
+        _write_json(path,{**prior,"status":"PREPARING","text":text,"target_url":target_url})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only,checkpoint_path=str(path)))
+        _write_json(path,{**_read_json(path),**body,"text":text,"target_url":target_url})
         return self._verified_result(body)
 
     def _verified_result(self, body):

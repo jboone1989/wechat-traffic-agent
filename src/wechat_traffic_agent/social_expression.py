@@ -16,6 +16,7 @@ from .social_performance import okx_social_performance_context, x_social_perform
 from .x_growth_mission import x_growth_mission_context
 from .public_persona import public_persona_projection
 from .l1_decisions import FerroL1Decisions
+from .x_article_media import ArticleImageSpec
 
 OKX_SHORT_POST_MAX_CHARS = 500
 SOCIAL_LONG_TEXT_MAX_CHARS = 8000
@@ -28,6 +29,7 @@ class ChannelSocialDraft(BaseModel):
     intent: Literal["ASSERTION", "QUESTION", "OBSERVATION", "UPDATE", "EXPLAINER"] = "ASSERTION"
     title: str | None = Field(default=None, min_length=5, max_length=100)
     cover_caption: str | None = Field(default=None, max_length=64)
+    images: tuple[ArticleImageSpec, ...] = Field(default=(), max_length=8)
     text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
     style_observation_ids: tuple[str, ...] = Field(max_length=4)
     rationale: str = Field(min_length=10, max_length=400)
@@ -36,6 +38,10 @@ class ChannelSocialDraft(BaseModel):
     def channel_bounds(self) -> "ChannelSocialDraft":
         if self.channel == "X" and self.format == "ARTICLE" and not self.title:
             raise ValueError("Native X Article requires a title")
+        if self.images and (self.channel != "X" or self.format != "ARTICLE"):
+            raise ValueError("Native image plans belong to X Articles")
+        if sum(image.role == "COVER" for image in self.images) > 1:
+            raise ValueError("An Article has one cover")
         if self.channel == "OKX" and self.format == "SHORT_POST" and len(self.text) > OKX_SHORT_POST_MAX_CHARS:
             raise ValueError(f"OKX short post must be at most {OKX_SHORT_POST_MAX_CHARS} characters")
         if self.channel == "OKX" and self.format == "LONG_POST":
@@ -73,6 +79,7 @@ class _CandidateChannelSocialDraft(BaseModel):
     intent: Literal["ASSERTION", "QUESTION", "OBSERVATION", "UPDATE", "EXPLAINER"] = "ASSERTION"
     title: str | None = Field(default=None, min_length=5, max_length=100)
     cover_caption: str | None = Field(default=None, max_length=64)
+    images: tuple[ArticleImageSpec, ...] = Field(default=(), max_length=8)
     text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
     style_observation_ids: tuple[str, ...] = Field(max_length=4)
     rationale: str = Field(min_length=10, max_length=400)
@@ -248,7 +255,7 @@ class SocialExpressionDraftWorker:
             "Posts may be assertions, questions, observations, updates, or explainers; choose the form that matches the evidence rather than forcing a market call. "
             "Treat social_evidence_decision.resolution.useful_facts as the information-value boundary: a non-question post must lead with at least one of those supported facts or a direct inference they support. Missing-data caveats may qualify a claim, but must never be the main payload of a DRAFT. "
             "If intent is QUESTION, anchor it in a known fact and ask a genuine unresolved question rather than engagement bait. "
-            "For X ARTICLE, supply a title (5-100 characters) and optional cover_caption (<=64 characters). An original illustrated cover will be generated from these fields; do not pretend a generated graphic is a photo or product screenshot. "
+            "For X ARTICLE, supply a title (5-100 characters), optional cover_caption (<=64 characters), and an images list. Each image has role COVER or INLINE, mode GRAPHIC, GENERATE or SEARCH, alt_text, caption, and prompt for GENERATE or query for SEARCH. Choose visuals by what helps this explanation. GENERATE uses the actual ChatGPT image tool, SEARCH finds licensed Commons images with attribution; GRAPHIC makes an original graphic. Use at most one COVER. INLINE images appear in the article body with captions. An empty images list uses an original graphic cover. Never present generated art as a photo, product screenshot or experimental evidence. "
             "ARTICLE is a real long-form channel artifact, not a teaser. Do not choose it merely because more text is available; choose it only when the cognition supports depth. No private data, personalized investment advice, fabricated numbers, or unsupported causation. Return JSON only."
             + question_instruction + "\n"
             + json.dumps({

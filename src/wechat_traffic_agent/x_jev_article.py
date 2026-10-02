@@ -3,16 +3,16 @@ import json
 from .x_jev_social import helpers
 
 
-def jev_x_article(*, title, text, image_path, expected_handle='', draft_url='', prepare_only=False, checkpoint_path=''):
+def jev_x_article(*, title, text, image_path, expected_handle='', draft_url='', prepare_only=False, checkpoint_path='', inline_images=()):
     values=dict(title=title,outbound=text,image_path=image_path,expected_handle=expected_handle,
-                draft_url=draft_url,prepare_only=prepare_only,checkpoint_path=checkpoint_path)
-    return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+ARTICLE
+                draft_url=draft_url,prepare_only=prepare_only,checkpoint_path=checkpoint_path,inline_images=list(inline_images))
+    return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+PUBLIC_TEXT+ARTICLE
 
 
 def jev_x_article_reconcile(*, title, text, draft_url, cover_source, expected_handle=''):
     values=dict(title=title,outbound=text,draft_url=draft_url,cover_source=cover_source,
                 expected_handle=expected_handle)
-    return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+r'''
+    return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+PUBLIC_TEXT+r'''
 try:
     article_id=draft_url.rstrip('/').rsplit('/',1)[1]
     if not article_id.isdigit() or '/compose/articles/edit/' not in draft_url:
@@ -23,12 +23,12 @@ try:
     handle=str(profile or '').strip('/')
     if not handle or (expected_handle and handle.casefold()!=expected_handle.casefold()):
         raise RuntimeError('Article reconciliation identity mismatch')
-    visible=wait_value('document.querySelector("main")?.innerText',15) or ''
+    visible=wait_public_text(title,outbound)
     if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
         raise RuntimeError('Pending Article is not publicly verified; no repeated submission')
     images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
-    if not any(image.split('?',1)[0]==item['src'].split('?',1)[0] for image in images for item in cover_source):
-        raise RuntimeError('Pending Article cover has not been publicly verified')
+    if not cover_source or not all(any(image.split('?',1)[0]==item['src'].split('?',1)[0] for image in images) for item in cover_source):
+        raise RuntimeError('Pending Article images have not been publicly verified')
     result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
             'draft_url':draft_url,'cover':images,'duplicate_found':True}
 except Exception as exc:
@@ -36,7 +36,20 @@ except Exception as exc:
 '''
 
 
+PUBLIC_TEXT=r'''
+def wait_public_text(title,body):
+    deadline=time.monotonic()+30
+    while time.monotonic()<deadline:
+        visible=browser.evaluate('document.querySelector("main")?.innerText') or ''
+        if norm(title) in norm(visible) and norm(body) in norm(visible):
+            return visible
+        time.sleep(.25)
+    return ''
+
+'''
+
 ARTICLE=r'''
+
 def checkpoint(status,submitted,cover=None):
     if not checkpoint_path:
         return
@@ -68,17 +81,19 @@ def observed(labels, kind='click', text=None):
 
 def upload_cover():
     browser.call('Page.setInterceptFileChooserDialog',enabled=True)
-    observed({'add photos or video','添加照片或视频'})
-    # Observe the native image input before using CDP's explicit file-upload command.
-    spec=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''') or []
-    if len(spec)!=1 or 'image/png' not in spec[0].get('accept','') or spec[0].get('multiple'):
-        raise RuntimeError('Article image upload input is unavailable/ambiguous')
-    document=browser.call('DOM.getDocument',depth=-1,pierce=True)
-    node=browser.call('DOM.querySelector',nodeId=document['root']['nodeId'],selector='input[type=file]')['nodeId']
-    if not node:
-        raise RuntimeError('Article image input disappeared')
-    browser.call('DOM.setFileInputFiles',nodeId=node,files=[image_path])
-    browser.call('Page.setInterceptFileChooserDialog',enabled=False)
+    try:
+        observed({'add photos or video','添加照片或视频'})
+        # Observe the native image input before CDP's explicit file-upload command.
+        spec=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''') or []
+        if len(spec)!=1 or 'image/png' not in spec[0].get('accept','') or spec[0].get('multiple'):
+            raise RuntimeError('Article image upload input is unavailable/ambiguous')
+        document=browser.call('DOM.getDocument',depth=-1,pierce=True)
+        node=browser.call('DOM.querySelector',nodeId=document['root']['nodeId'],selector='input[type=file]')['nodeId']
+        if not node:
+            raise RuntimeError('Article image input disappeared')
+        browser.call('DOM.setFileInputFiles',nodeId=node,files=[image_path])
+    finally:
+        browser.call('Page.setInterceptFileChooserDialog',enabled=False)
     # X may open a native crop dialog. Never click an unrelated save action.
     time.sleep(1.0)
     deadline=time.monotonic()+15
@@ -102,6 +117,40 @@ def upload_cover():
     if not cover:
         raise RuntimeError('Article uploaded cover not observed')
     return cover
+
+def upload_inline_images():
+    if not inline_images:
+        return []
+    # Refill once before inserting media to restore the body selection at its end.
+    # No text fill is performed after an image has been inserted.
+    observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=outbound)
+    inserted=[]
+    for image in inline_images:
+        browser.call('Page.setInterceptFileChooserDialog',enabled=True)
+        try:
+            observed({'add media','添加媒体内容'})
+            spec=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''') or []
+            if not spec:
+                observed({'upload media','upload files','upload image','upload images','上传媒体','上传文件','上传图片','上传照片或视频','上传照片和视频'})
+                spec=wait_value(''' + "'''" + r'''(() => [...document.querySelectorAll('input[type=file]')].map(e=>({accept:e.accept,multiple:e.multiple})))()''' + "'''" + r''',10) or []
+            candidates=[index for index,item in enumerate(spec) if any(word in item.get('accept','') for word in ('image/','.png','.jpg'))]
+            if len(candidates)!=1:
+                raise RuntimeError('Inline image file input unavailable or ambiguous')
+            doc=browser.call('DOM.getDocument',depth=-1,pierce=True)
+            nodes=browser.call('DOM.querySelectorAll',nodeId=doc['root']['nodeId'],selector='input[type=file]')['nodeIds']
+            browser.call('DOM.setFileInputFiles',nodeId=nodes[candidates[0]],files=[image['path']])
+        finally:
+            browser.call('Page.setInterceptFileChooserDialog',enabled=False)
+        deadline=time.monotonic()+30
+        while time.monotonic()<deadline:
+            hosted=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('[contenteditable=true] img')].filter(i=>i.src.startsWith('https://pbs.twimg.com/media/')).map(i=>({src:i.src,width:i.naturalWidth,height:i.naturalHeight})))()''' + "'''" + r''') or []
+            if len(hosted)>len(inserted):
+                inserted=hosted
+                break
+            time.sleep(.25)
+        else:
+            raise RuntimeError('Native Article inline image did not upload')
+    return inserted
 
 try:
     navigate(draft_url or 'https://x.com/compose/articles')
@@ -127,13 +176,15 @@ try:
             raise RuntimeError('Native Article fill mismatch')
     stage='article_cover'
     cover=upload_cover()
+    inline=upload_inline_images()
+    images_to_verify=cover+inline
     if prepare_only:
         result={'status':'DRAFT_PREPARED','draft_url':draft_url,'article_id':article_id,
-                'handle':handle,'cover':cover,'publication_authority':False}
+                'handle':handle,'cover':cover,'inline':inline,'publication_authority':False}
     else:
         stage='article_publish'
         attempted=True
-        checkpoint('SUBMIT_PENDING',True,cover)
+        checkpoint('SUBMIT_PENDING',True,images_to_verify)
         observed({'publish','发布'})
         # Publishing may require a confirmation dialog; use only its observed publish action.
         confirmation_deadline=time.monotonic()+15
@@ -149,20 +200,20 @@ try:
                 except StalePage:
                     continue
                 break
-            if '/compose/articles/edit/' not in str(page.get('url') or ''):
+            if '/compose/articles/edit/' not in str(browser.evaluate('location.href') or ''):
                 break
         stage='article_verify'
         public_url='https://x.com/i/article/'+article_id
         navigate(public_url)
         # A guessed URL or editor success toast is not publication evidence.
-        visible=wait_value('document.querySelector("main")?.innerText',15) or ''
+        visible=wait_public_text(title,outbound)
         if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
             raise RuntimeError('Public Article title/full body not verified')
         images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
         if not images:
             raise RuntimeError('Public Article image not verified')
-        if not any(image.split('?',1)[0] == item['src'].split('?',1)[0] for image in images for item in cover):
-            raise RuntimeError('Public Article cover differs from uploaded cover')
+        if not all(any(image.split('?',1)[0] == item['src'].split('?',1)[0] for image in images) for item in images_to_verify):
+            raise RuntimeError('Public Article images differ from uploaded cover/body images')
         result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
                 'draft_url':draft_url,'cover':images,'duplicate_found':False}
 except Exception as exc:

@@ -271,13 +271,27 @@ class XBrowserPublisher:
         transport = self.transport
         if transport is None:
             transport = XBrowserTransportRouter(state_root=self.state_root)
+        if fmt == "ARTICLE":
+            from .x_article_media import prepare_article_media
+            import httpx
+            try:
+                media=await prepare_article_media(draft=draft,folder=folder)
+            except (RuntimeError, httpx.HTTPError, OSError, ValueError) as exc:
+                failed={"status":"ARTICLE_MEDIA_FAILED","cycle":cycle,"error_type":type(exc).__name__,"detail":str(exc)}
+                _write_json(folder/"x_article_media_failure.json",failed)
+                return failed
+            captions=[f'{index+1}. {r.get("caption") or r["alt_text"]}' for index,r in enumerate(media["inline"])]
+            if captions:
+                text += "\n\nIllustrations:\n" + "\n".join(captions)
+            credits=[r.get("attribution") for r in [media["cover"],*media["inline"]] if r.get("attribution")]
+            if credits:
+                text += "\n\nImage credits:\n" + "\n".join(credits)
         emit_public_activity(self.state_root, cycle=cycle, phase="X", title="Publishing on X",
                              detail=text[:220], status="working", kind="social")
         try:
             if fmt == "ARTICLE":
-                from .x_article_media import generate_article_cover
-                media=generate_article_cover(title=str(draft["title"]),caption=str(draft.get("cover_caption") or ""),folder=folder)
-                published=await transport.publish_article(title=str(draft["title"]),text=text,image_path=media["path"],
+                published=await transport.publish_article(title=str(draft["title"]),text=text,image_path=media["cover"]["path"],
+                    inline_images=media["inline"],
                     transaction_path=folder/"x_article_transaction.json")
             else:
                 published = await transport.publish(text=text)
@@ -289,6 +303,7 @@ class XBrowserPublisher:
             "schema_version": "content-x-browser-publication.v1", "status": "POSTED",
             "cycle": cycle, "published_at": (datetime.now(timezone.utc) if fmt=="ARTICLE" else now).isoformat(), "draft_sha256": digest,
             "format":fmt, "article_media":media if fmt=="ARTICLE" else None,
+            "published_text":text,
             "post_id": published.post_id, "url": published.url, "handle": published.handle,
             "duplicate_found": published.duplicate_found,
             "source": f"{published.provider} + X Web UI", "publication_authority": True,

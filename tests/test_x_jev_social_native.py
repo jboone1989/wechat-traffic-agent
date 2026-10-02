@@ -23,18 +23,22 @@ class Browser:
         if method=='Page.setInterceptFileChooserDialog':return {}
         if method=='DOM.getDocument':return {'root':{'nodeId':1}}
         if method=='DOM.querySelector':return {'nodeId':55}
+        if method=='DOM.querySelectorAll':return {'nodeIds':[55]}
         if method=='DOM.setFileInputFiles':self.uploads.append(params['files']);return {}
         raise AssertionError(method)
 
     def evaluate(self,expression):
+        if expression=='location.href':return self.url
         if 'ready:document.readyState' in expression:return {'url':self.url,'ready':'complete'}
         if 'AppTabBar_Profile_Link' in expression:return '/'+self.handle
         if 'location.href.includes' in expression:return self.url if '/compose/articles/edit/' in self.url else None
         if 'document.querySelector("main")?.innerText' in expression:
             return 'Durable agents\nThe complete verified article body.' if self.submitted and self.verify else 'Unavailable'
         if 'input[type=file]' in expression:return [{'accept':'image/png,image/jpeg','multiple':False}]
+        if '[contenteditable=true] img' in expression:
+            return [{'src':'https://pbs.twimg.com/media/inline.png','width':1024,'height':600}] if len(self.uploads)>1 else []
         if 'naturalWidth>=500' in expression:
-            return ['https://pbs.twimg.com/media/cover.png?name=large'] if 'map(e=>e.src)' in expression else [{'src':'https://pbs.twimg.com/media/cover.png','width':1500,'height':600}]
+            return ['https://pbs.twimg.com/media/cover.png?name=large',*(['https://pbs.twimg.com/media/inline.png'] if len(self.uploads)>1 else [])] if 'map(e=>e.src)' in expression else [{'src':'https://pbs.twimg.com/media/cover.png','width':1500,'height':600}]
         if 'main img[src*=pbs][src*=media]' in expression:return bool(self.uploads)
         if 'Boolean(document.querySelector("[role=dialog]"))' in expression:return False
         if 'closest("[role=dialog]")' in expression:return self.dialog
@@ -59,7 +63,8 @@ class Browser:
                      {'kind':'fill','role':'textbox','label':'textbox','node':11},
                      {'kind':'click','label':'发布','node':12},
                      {'kind':'click','label':'撰写','node':13},
-                     {'kind':'click','label':'添加照片或视频','node':14}]
+                     {'kind':'click','label':'添加照片或视频','node':14},
+                     {'kind':'click','label':'添加媒体内容','node':15}]
         elif self.dialog:
             actions=[{'kind':'fill','role':'textbox','label':'帖子文本','node':10},
                      {'kind':'click','label':'回复','node':12}]
@@ -69,7 +74,7 @@ class Browser:
     def act(self,action,page,text=None):
         self.actions.append(action)
         if action['kind']=='fill':self.values[action['node']]=text
-        elif action['node']==14:pass
+        elif action['node'] in {14,15}:pass
         elif action['node']==13:
             if self.kind=='article':self.url='https://x.com/compose/articles/edit/789'
             else:self.dialog=True
@@ -124,6 +129,36 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertEqual(result['status'],'DRAFT_PREPARED')
         self.assertEqual(browser.uploads,[['/tmp/cover.png']])
         self.assertFalse(browser.submitted)
+
+    def test_article_uploads_native_body_image_and_verifies_it_publicly(self):
+        browser=Browser('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro',inline_images=[{'path':'/tmp/body.png'}]))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertEqual(browser.uploads,[['/tmp/cover.png'],['/tmp/body.png']])
+        self.assertIn('https://pbs.twimg.com/media/inline.png',result['cover'])
+
+    def test_public_article_waits_for_content_after_layout_renders(self):
+        class Delayed(Browser):
+            reads=0
+            def evaluate(self,expression):
+                if expression=='document.querySelector("main")?.innerText':
+                    self.reads+=1
+                    if self.reads<3:return 'X navigation only'
+                return super().evaluate(expression)
+        browser=Delayed('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro'))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertGreaterEqual(browser.reads,3)
+
+    def test_recovery_requires_every_persisted_image(self):
+        browser=Browser('article');browser.submitted=True
+        result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',cover_source=[
+                {'src':'https://pbs.twimg.com/media/cover.png'}, {'src':'https://pbs.twimg.com/media/missing-body.png'}]))
+        self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
+        self.assertEqual(browser.actions,[])
 
     def test_article_publication_requires_complete_public_content_and_cover(self):
         browser=Browser('article')
