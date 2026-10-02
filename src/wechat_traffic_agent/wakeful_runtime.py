@@ -602,6 +602,8 @@ class ContentWakefulRuntime:
                 task="OKX_AI_MARKETPLACE",
             ))
         self.sync_prediction_wakes(now)
+        from .daily_posting_goal import DailyPostingGoal
+        DailyPostingGoal(self.state_root).schedule(self, now)
 
     def sync_prediction_wakes(self, now: datetime) -> None:
         from .prospective_predictions import ProspectivePredictionLedger
@@ -2116,6 +2118,10 @@ class ContentWakefulRuntime:
     ) -> bool:
         if wake is None or wake.task != "CONTENT_COGNITION":
             return False
+        if any(str(ref).startswith("ferro-daily-post:") for ref in wake.relevant_refs):
+            from .daily_posting_goal import DailyPostingGoal
+            status = DailyPostingGoal(self.state_root).status(datetime.now(timezone.utc))
+            return status["enabled"] and status["remaining"] > 0
         active = (
             self._active_user_goal_ids()
             if active_user_goals is None
@@ -2813,6 +2819,8 @@ class ContentWakefulRuntime:
         # watcher alive so cross-process Operator/self-maintenance requests can
         # notify the live core's condition variable without restarting Ferro.
         self._drain_external_wake_requests()
+        from .daily_posting_goal import DailyPostingGoal
+        DailyPostingGoal(self.state_root).schedule(self, datetime.now(timezone.utc))
         stop = threading.Event()
         watcher = threading.Thread(
             target=self._watch_external_wake_requests,

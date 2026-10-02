@@ -1,0 +1,12 @@
+[Unit]
+Description=Check Ferro posting progress and notifications every minute
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=5
+Persistent=true
+Unit=ferro-posting-monitor.service
+
+[Install]
+WantedBy=timers.target
