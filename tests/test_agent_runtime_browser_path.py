@@ -94,6 +94,11 @@ class _FakeXBrowser:
     def __init__(self):
         self.invocations = []
         self.scripts = []
+        self.adoptions = []
+
+    def adopt_existing_tab(self, session_id, url_prefix):
+        self.adoptions.append((session_id, url_prefix))
+        return {"ok": True}
 
     def invoke(self, capability_id, payload):
         self.invocations.append((capability_id, dict(payload)))
@@ -125,7 +130,8 @@ def test_x_transport_uses_agent_runtime_browser_transaction(tmp_path, monkeypatc
 
     assert result.provider == "AGENT_RUNTIME_BROWSER"
     assert result.post_id == "1234567890"
-    assert len(fake.invocations) == 1
+    assert fake.invocations == []
+    assert fake.adoptions == [("ferro-x-publish", "https://x.com/")]
     assert len(fake.scripts) == 1
     assert "tweetButton" in fake.scripts[0][1]
 
@@ -162,7 +168,8 @@ def test_operator_browser_control_does_not_own_browser_process(tmp_path):
 
 
 @pytest.mark.parametrize("preserved", [True, False])
-def test_x_transaction_checks_framework_editor_before_submit(preserved):
+@pytest.mark.parametrize("navigation_ack", ["ok", "late", "failed", "stalled"])
+def test_x_transaction_checks_framework_editor_before_submit(preserved, navigation_ack):
     text = "I’m Ferro: durable jobs + checkpoints."
     script = LocalHarnessXTransport._transaction_script(text)
     editor = [""]
@@ -171,10 +178,24 @@ def test_x_transaction_checks_framework_editor_before_submit(preserved):
     class Clock:
         def monotonic(self): now[0] += 1; return now[0]
         def sleep(self, seconds): now[0] += seconds
-    def goto(url):
+    location = ["https://x.com/home"]
+    def cdp(method, *, url, _response_timeout):
+        assert method == "Page.navigate"
+        assert _response_timeout == 20.0
+        calls["navigation"] = calls.get("navigation", 0) + 1
+        if navigation_ack == "stalled":
+            raise TimeoutError("acknowledgement delayed; destination not reached")
+        if navigation_ack == "failed":
+            return {"errorText": "net::ERR_CONNECTION_RESET"}
+        location[0] = url
         if url == "https://x.com/agent":
             calls["profile"] += 1
+        if navigation_ack == "late":
+            raise TimeoutError("acknowledgement delayed")
+        return {}
     def js(expr):
+        if "url:location.href,ready:document.readyState" in expr:
+            return {"url": location[0], "ready": "complete"}
         if "AppTabBar_Profile_Link" in expr:
             return "/agent"
         if "Boolean(document.querySelector('article'))" in expr:
@@ -195,8 +216,21 @@ def test_x_transaction_checks_framework_editor_before_submit(preserved):
     def click(x,y):
         assert editor[0] == text
         calls["click"] += 1
-    scope = {"js":js,"goto_url":goto,"wait_for_load":lambda **kwargs:None,
+    scope = {"js":js,"cdp":cdp,
              "fill_input":fill,"click_at_xy":click,"time":Clock()}
+    if navigation_ack == "stalled":
+        with pytest.raises(RuntimeError, match="navigation did not reach"):
+            exec(script.replace("import re, time","import re"),scope)
+        assert calls["click"] == 0
+        assert calls["fill"] == 0
+        assert calls["navigation"] == 1
+        return
+    if navigation_ack == "failed":
+        with pytest.raises(RuntimeError, match="net::ERR_CONNECTION_RESET"):
+            exec(script.replace("import re, time","import re"),scope)
+        assert calls["click"] == 0
+        assert calls["fill"] == 0
+        return
     if preserved:
         exec(script.replace("import re, time","import re"),scope)
         assert scope["result"]["post_id"] == "1234567890"

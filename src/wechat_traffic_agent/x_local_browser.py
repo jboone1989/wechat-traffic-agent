@@ -10,7 +10,6 @@ import time
 from typing import Any
 
 from agent_runtime.integrations import (
-    BROWSER_NAVIGATE,
     BrowserHarnessProvider,
     BrowserHarnessRuntime,
     BrowserPolicy,
@@ -25,7 +24,6 @@ from .x_browser import (
     XBrowserPublicationUnverified,
     XBrowserPublishResult,
     X_COMPOSE_URL,
-    X_HOME_URL,
     _normalize_text,
 )
 
@@ -152,10 +150,8 @@ class LocalHarnessXTransport:
             raise ValueError("X post must contain 1-25000 characters")
         session_id = "ferro-x-publish"
         try:
-            self.browser.invoke(
-                BROWSER_NAVIGATE,
-                {"session_id": session_id, "url": X_HOME_URL},
-            )
+            # Reuse the user's authenticated tab without forcing a home reload.
+            self.browser.adopt_existing_tab(session_id, "https://x.com/")
             body = self.browser.run_session_script(
                 session_id,
                 self._transaction_script(text),
@@ -207,9 +203,31 @@ handle = str(profile).strip('/').split('/', 1)[0]
 assert handle and handle not in {{'home','i'}}, 'Agent Runtime X profile handle is unavailable'
 needle = norm(outbound)[:160]
 
+def navigate(url):
+    # A late navigation acknowledgement is ambiguous: observe the requested
+    # destination instead of sending the same navigation again.
+    deadline = time.monotonic() + 25.0
+    try:
+        reply = cdp('Page.navigate', url=url, _response_timeout=20.0)
+        if reply.get('errorText'):
+            raise RuntimeError('X navigation failed: ' + str(reply['errorText']))
+    except TimeoutError:
+        pass
+    observed = ''
+    while time.monotonic() < deadline:
+        try:
+            state = js('''(() => ({{url:location.href,ready:document.readyState}}))()''') or {{}}
+            observed = str(state.get('url') or '').split('?', 1)[0].rstrip('/')
+            if observed == url.rstrip('/') and state.get('ready') == 'complete':
+                return
+        except RuntimeError as exc:
+            if 'Runtime.evaluate timed out' not in str(exc):
+                raise
+        time.sleep(0.15)
+    raise RuntimeError('X navigation did not reach requested destination: ' + url)
+
 def find_existing():
-    goto_url('https://x.com/' + handle)
-    wait_for_load(timeout=20.0)
+    navigate('https://x.com/' + handle)
     wait_expr('''(() => Boolean(document.querySelector('article')))()''', 12.0)
     rows = js('''(() => [...document.querySelectorAll('article')].slice(0,15).map(a => ({{
       text:a.innerText || '',
@@ -234,8 +252,7 @@ if existing:
         'duplicate_found':True,
     }}
 else:
-    goto_url('https://x.com/compose/post')
-    wait_for_load(timeout=20.0)
+    navigate('https://x.com/compose/post')
     editor = wait_expr('''(() => Boolean(document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]')))()''', 15.0)
     assert editor, 'X composer editor is unavailable'
     # Draft.js owns the editor state: use framework-aware real key events.
