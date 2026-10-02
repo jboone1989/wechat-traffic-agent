@@ -177,3 +177,23 @@ except Exception as exc:
               'attempted':attempted, 'action_count':action_count,
               'error_type':type(exc).__name__, 'detail':str(exc)}
 """
+
+def jev_x_reconcile(text: str, expected_handle: str = "") -> str:
+    """Resolve an uncertain submit by observation without composing or submitting."""
+    helpers = TRANSACTION[:TRANSACTION.index("\ntry:\n    profile =")]
+    return "outbound = " + json.dumps(text, ensure_ascii=False) + "\nexpected_handle = " + json.dumps(expected_handle) + "\n" + helpers + r'''
+try:
+    profile = wait_value('document.querySelector("[data-testid=AppTabBar_Profile_Link]")?.getAttribute("href")')
+    handle = str(profile or '').strip('/').split('/',1)[0]
+    if not handle or handle in {'home','i'} or (expected_handle and handle.casefold() != expected_handle.casefold()):
+        raise RuntimeError('X authenticated identity does not match expected handle')
+    post_id = find_post(handle)
+    if not post_id:
+        raise RuntimeError('No matching public status was observed after uncertain submit')
+    result = {'status':'POSTED','post_id':post_id,'url':f'https://x.com/{handle}/status/{post_id}',
+              'handle':handle,'duplicate_found':True,'action_count':0,'executor':'JEV_AGENT_RUNTIME',
+              'verification_only':True}
+except Exception as exc:
+    result = {'status':'PUBLICATION_UNVERIFIED','stage':'reconcile','attempted':True,
+              'action_count':0,'verification_only':True,'error_type':type(exc).__name__,'detail':str(exc)}
+'''

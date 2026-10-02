@@ -140,3 +140,15 @@ class TestJevXRepair(unittest.TestCase):
         row = run(browser, transaction.jev_x_transaction('Hello from Ferro', 'owner'))
         assert row['status'] == 'POSTED'
         assert browser.actions == [('fill', 9), ('click', 20)]
+
+    def test_uncertain_submit_reconciliation_observes_without_input(self):
+        browser=Browser(existing=True)
+        row=run(browser,transaction.jev_x_reconcile('Hello from Ferro','owner'))
+        assert row['status']=='POSTED' and row['verification_only']
+        assert row['action_count']==0 and browser.actions==[]
+
+    def test_missing_uncertain_post_never_triggers_a_second_submit(self):
+        browser=Browser()
+        row=run(browser,transaction.jev_x_reconcile('Hello from Ferro','owner'))
+        assert row['status']=='PUBLICATION_UNVERIFIED'
+        assert browser.actions==[] and not browser.submitted
