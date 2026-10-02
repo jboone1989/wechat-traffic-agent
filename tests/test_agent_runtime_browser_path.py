@@ -159,3 +159,50 @@ def test_operator_browser_control_does_not_own_browser_process(tmp_path):
     control = LocalBrowserControl(state_root=tmp_path)
     assert not hasattr(control, "browser_factory")
     assert control.stop() == {"ok": True, "running": False}
+
+
+@pytest.mark.parametrize("preserved", [True, False])
+def test_x_transaction_checks_framework_editor_before_submit(preserved):
+    text = "I’m Ferro: durable jobs + checkpoints."
+    script = LocalHarnessXTransport._transaction_script(text)
+    editor = [""]
+    calls = {"fill":0,"click":0,"profile":0}
+    now = [0.0]
+    class Clock:
+        def monotonic(self): now[0] += 1; return now[0]
+        def sleep(self, seconds): now[0] += seconds
+    def goto(url):
+        if url == "https://x.com/agent":
+            calls["profile"] += 1
+    def js(expr):
+        if "AppTabBar_Profile_Link" in expr:
+            return "/agent"
+        if "Boolean(document.querySelector('article'))" in expr:
+            return True
+        if ".slice(0,15).map" in expr:
+            return [] if calls["profile"] == 1 else [{"text":text,"hrefs":["/agent/status/1234567890"]}]
+        if "Boolean(document.querySelector('[data-testid=\"tweetTextarea_0\"]'))" in expr:
+            return True
+        if "innerText || ''" in expr:
+            return editor[0]
+        if "tweetButton" in expr:
+            return {"x":10,"y":20}
+        raise AssertionError(expr)
+    def fill(selector, value, **kwargs):
+        assert selector == '[data-testid="tweetTextarea_0"]'
+        calls["fill"] += 1
+        editor[0] = value if preserved else ""
+    def click(x,y):
+        assert editor[0] == text
+        calls["click"] += 1
+    scope = {"js":js,"goto_url":goto,"wait_for_load":lambda **kwargs:None,
+             "fill_input":fill,"click_at_xy":click,"time":Clock()}
+    if preserved:
+        exec(script.replace("import re, time","import re"),scope)
+        assert scope["result"]["post_id"] == "1234567890"
+        assert calls["click"] == 1
+    else:
+        with pytest.raises(AssertionError,match="composer did not preserve"):
+            exec(script.replace("import re, time","import re"),scope)
+        assert calls["click"] == 0
+    assert calls["fill"] == 1

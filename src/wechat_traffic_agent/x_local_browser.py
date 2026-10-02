@@ -238,17 +238,17 @@ else:
     wait_for_load(timeout=20.0)
     editor = wait_expr('''(() => Boolean(document.querySelector('[data-testid="tweetTextarea_0"]')))()''', 15.0)
     assert editor, 'X composer editor is unavailable'
-    focused = js('''(() => {{
-      const el=document.querySelector('[data-testid="tweetTextarea_0"]');
-      if(!el)return false;
-      el.focus();
-      document.execCommand('selectAll', false, null);
-      return true;
-    }})()''')
-    assert focused, 'X composer could not be focused'
-    type_text(outbound)
-    rendered = js('''(() => document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText || '')()''') or ''
-    assert norm(rendered) == norm(outbound), 'X composer did not preserve the draft text'
+    # Draft.js owns the editor state: use framework-aware real key events.
+    # CDP Input.insertText bypasses those listeners and can leave it empty.
+    fill_input('[data-testid="tweetTextarea_0"]', outbound, timeout=15.0)
+    input_deadline = time.monotonic() + 5.0
+    rendered = ''
+    while time.monotonic() < input_deadline:
+        rendered = js('''(() => document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText || '')()''') or ''
+        if norm(rendered) == norm(outbound):
+            break
+        time.sleep(0.15)
+    assert norm(rendered) == norm(outbound), f'X composer did not preserve the draft text: expected_chars={{len(norm(outbound))}} actual_chars={{len(norm(rendered))}}'
     point = js('''(() => {{
       const b=document.querySelector('[data-testid="tweetButton"]');
       if(!b || b.disabled || b.getAttribute('aria-disabled')==='true') return null;
