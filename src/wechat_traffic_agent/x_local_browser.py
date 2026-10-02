@@ -27,7 +27,7 @@ from .x_browser import (
     X_COMPOSE_URL,
     _normalize_text,
 )
-from .x_jev_transaction import jev_x_identity, jev_x_transaction
+from .x_jev_transaction import jev_x_identity, jev_x_transaction, jev_x_reconcile
 
 
 class LocalHarnessXTransport:
@@ -147,14 +147,40 @@ class LocalHarnessXTransport:
         )
         return result
 
-    def _run_jev_sync(self, script: str) -> dict[str, Any]:
+    def _run_jev_sync(self, script: str, *, refresh_target: bool = False) -> dict[str, Any]:
         import fcntl
         self.state_root.mkdir(parents=True, exist_ok=True)
         with (self.state_root / "x_jev_session.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
+            if refresh_target:
+                self._rebind_x_tab()
             return self._run_jev_locked(script)
 
+    def _rebind_x_tab(self) -> None:
+        # Keep the authenticated browser, and replace only Runtime's owned tab binding.
+        body = self.browser._run(
+            "ferro-x-publish",
+            "target_id = new_tab('https://x.com/home')\n"
+            + "print(" + repr(self.browser._RESULT_PREFIX)
+            + " + json.dumps({'target_id':target_id}))",
+            timeout_seconds=20,
+        )
+        target_id = str(body.get("target_id") or "")
+        if not target_id:
+            raise BrowserRuntimeUnavailable("X renderer recovery returned no target")
+        self.browser._save_target_id("ferro-x-publish", target_id)
+
     def _run_jev_locked(self, script: str) -> dict[str, Any]:
+        try:
+            return self._run_jev_once(script)
+        except BrowserRuntimeUnavailable as exc:
+            # Focus setup precedes the supplied transaction: no script action has run.
+            if "Emulation.setFocusEmulationEnabled timed out" not in str(exc):
+                raise
+            self._rebind_x_tab()
+            return self._run_jev_once(script)
+
+    def _run_jev_once(self, script: str) -> dict[str, Any]:
         session_id = "ferro-x-publish"
         try:
             # Reuse the user's authenticated tab without forcing a home reload.
@@ -283,6 +309,13 @@ class LocalHarnessXTransport:
         if not text.strip() or len(text) > 25_000:
             raise ValueError("X post must contain 1-25000 characters")
         body = self._run_jev_sync(self._transaction_script(text, self.expected_handle))
+        if (body.get("status") == "PUBLICATION_UNVERIFIED"
+                and body.get("stage") == "verify"
+                and "Runtime.evaluate timed out" in str(body.get("detail") or "")):
+            # A submit may already have committed. Rebind and observe only; never click again.
+            body = self._run_jev_sync(
+                jev_x_reconcile(text, self.expected_handle), refresh_target=True,
+            )
 
         status = str(body.get("status") or "")
         if status == "PUBLICATION_UNVERIFIED":

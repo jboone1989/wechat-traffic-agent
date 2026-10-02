@@ -194,3 +194,56 @@ def test_operator_browser_control_does_not_own_browser_process(tmp_path):
     control = LocalBrowserControl(state_root=tmp_path)
     assert not hasattr(control, "browser_factory")
     assert control.stop() == {"ok": True, "running": False}
+
+
+def test_x_focus_setup_timeout_rebinds_once_before_transaction(monkeypatch):
+    transport = LocalHarnessXTransport.__new__(LocalHarnessXTransport)
+    calls = []
+    def run(script):
+        calls.append(script)
+        if len(calls) == 1:
+            raise browser_runtime.BrowserRuntimeUnavailable("Emulation.setFocusEmulationEnabled timed out")
+        return {"status": "POSTED"}
+    rebounds = []
+    monkeypatch.setattr(transport, "_run_jev_once", run)
+    monkeypatch.setattr(transport, "_rebind_x_tab", lambda: rebounds.append(True))
+    assert transport._run_jev_locked("transaction") == {"status": "POSTED"}
+    assert calls == ["transaction", "transaction"] and rebounds == [True]
+
+
+def test_x_other_transaction_error_does_not_retry(monkeypatch):
+    transport = LocalHarnessXTransport.__new__(LocalHarnessXTransport)
+    def run(script):
+        raise browser_runtime.BrowserRuntimeUnavailable("input acknowledgement timed out")
+    rebounds = []
+    monkeypatch.setattr(transport, "_run_jev_once", run)
+    monkeypatch.setattr(transport, "_rebind_x_tab", lambda: rebounds.append(True))
+    with pytest.raises(browser_runtime.BrowserRuntimeUnavailable):
+        transport._run_jev_locked("transaction")
+    assert rebounds == []
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_x_uncertain_submit_only_reconciles_after_renderer_refresh(monkeypatch, found):
+    transport = LocalHarnessXTransport.__new__(LocalHarnessXTransport)
+    transport.expected_handle = "owner"
+    calls = []
+    def run(script, *, refresh_target=False):
+        calls.append((script, refresh_target))
+        if len(calls) == 1:
+            return {"status": "PUBLICATION_UNVERIFIED", "stage": "verify",
+                    "detail": "Runtime.evaluate timed out", "attempted": True}
+        assert refresh_target is True and "verification_only" in script
+        if found:
+            return {"status": "POSTED", "post_id": "123", "url": "https://x.com/owner/status/123",
+                    "handle": "owner", "duplicate_found": True}
+        return {"status": "PUBLICATION_UNVERIFIED", "stage": "reconcile",
+                "detail": "No matching public status", "attempted": True}
+    monkeypatch.setattr(transport, "_run_jev_sync", run)
+    if found:
+        result = transport._publish_sync("Hello from Ferro")
+        assert result.post_id == "123" and result.duplicate_found
+    else:
+        with pytest.raises(x_local_module.XBrowserPublicationUnverified):
+            transport._publish_sync("Hello from Ferro")
+    assert len(calls) == 2 and calls[0][1] is False

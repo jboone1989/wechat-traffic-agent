@@ -68,6 +68,8 @@ class DailyPostingGoal:
             receipt = _read(folder / "x_browser_publication.json")
             if receipt.get("status") != "POSTED":
                 receipt = _read(folder / "x_social_expression.json")
+            if receipt.get("status") != "POSTED":
+                receipt = _read(folder / "x_native_publication_verification.json")
             post_id = str(item["x_post_id"])
             url = str(receipt.get("url") or "")
             if (receipt.get("status") != "POSTED" or str(receipt.get("post_id")) != post_id
