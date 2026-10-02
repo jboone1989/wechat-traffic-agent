@@ -192,6 +192,63 @@ class TestGrowthLoop(unittest.TestCase):
         transport.publish_article.assert_awaited_once()
         self.assertFalse((folder/'publication.json').exists())
 
+    def test_native_longform_draft_and_safety_have_distinct_receipts(self):
+        class Model:
+            agent_manifest = None
+            def __init__(self):
+                self.calls = []
+            async def cognitive_probe(self, prompt, max_tokens, output_schema=None):
+                self.calls.append(prompt)
+                if prompt.startswith("X_OWNER_LONGFORM_DRAFT:"):
+                    return json.dumps({"channel":"X","format":"ARTICLE","title":"Crypto agent evaluation",
+                        "text":"A capability claim needs a separate reliability test before it supports an outcome claim.",
+                        "style_observation_ids":[],"rationale":"A structured evaluation framework adds useful context."})
+                if prompt.startswith("X_SAFETY_CHECK:"):
+                    return json.dumps({"safe":True,"no_private_data":True,"no_impersonation":True,
+                        "no_harassment":True,"no_investment_advice":True,"no_fabricated_facts":True,
+                        "attribution_ok":True,"rationale":"The framework stays within the supplied claim."})
+                raise AssertionError(prompt[:80])
+        loop, transport = self.loop()
+        model = Model()
+        loop.model_runtime = model
+        cycle = "native-receipt-test"
+        folder = self.root/"content/continuous/cycles"/cycle
+        write(folder/"cognition.json", {"worth_saying":True,"expression_kind":"THOUGHT"})
+        context = {"cycle":cycle,"owner_publication_request":{"decision":{"publication_surface":"X_ARTICLE"}},
+                   "source_evidence":{"summary":"Capability claims do not establish measured reliability."}}
+        transport.publish_article = AsyncMock(return_value=SimpleNamespace(post_id="2105980723614158848",
+            url="https://x.com/i/article/2105980723614158848",handle="ferro",provider="JEV_AGENT_RUNTIME",duplicate_found=False))
+        with patch.dict(os.environ, {"CONTENT_X_PUBLICATION_ENABLED":"1","CONTENT_X_BROWSER_ENABLED":"1",
+                                    "CONTENT_X_BROWSER_WRITE_ENABLED":"1"}):
+            result = asyncio.run(loop._owner_longform(folder=folder,context=context,now=NOW,surface="X_ARTICLE"))
+            repeated = asyncio.run(loop._owner_longform(folder=folder,context=context,now=NOW,surface="X_ARTICLE"))
+        self.assertEqual(result["status"], "POSTED")
+        self.assertEqual(repeated["status"], "ALREADY_EXPRESSED")
+        self.assertEqual(len(model.calls), 2)
+        transport.publish_article.assert_awaited_once()
+        receipts = loop.root/"expression-model-calls"/cycle
+        self.assertTrue((receipts/"longform-draft/ARTICLE/0.json").exists())
+        self.assertTrue((receipts/"draft-safety/0.json").exists())
+
+    def test_l1_longform_choice_reaches_native_executor_and_preserves_hold(self):
+        for fmt, surface in (("ARTICLE","X_ARTICLE"), ("LONG_POST","X_LONG_POST")):
+            loop, transport = self.loop()
+            loop._cycle_context = lambda result: (self.root/"content/continuous/cycles"/fmt,
+                {"cycle":fmt,"cognition":{"worth_saying":True}})
+            loop._publish_prediction_outcome = AsyncMock()
+            loop._l1_x_strategy = lambda **kw: {"x_format":fmt,"post_timing":"POST_NOW","interaction_mode":"ORIGINAL"}
+            loop._owner_longform = AsyncMock(return_value={"status":"POSTED"})
+            with patch.dict(os.environ, {"CONTENT_X_PUBLICATION_ENABLED":"1"}):
+                result = asyncio.run(loop.after_content_cycle(result={"status":"PUBLISHED","cycle":fmt},now=NOW))
+            self.assertEqual(result["status"], "POSTED")
+            self.assertEqual(loop._owner_longform.call_args.kwargs["surface"], surface)
+            loop._owner_longform.reset_mock()
+            loop._l1_x_strategy = lambda **kw: {"x_format":fmt,"post_timing":"HOLD","interaction_mode":"ORIGINAL"}
+            with patch.dict(os.environ, {"CONTENT_X_PUBLICATION_ENABLED":"1"}):
+                result = asyncio.run(loop.after_content_cycle(result={"status":"PUBLISHED","cycle":fmt},now=NOW))
+            self.assertEqual(result["status"], "SKIPPED")
+            loop._owner_longform.assert_not_awaited()
+
 
 if __name__=='__main__':
     unittest.main()

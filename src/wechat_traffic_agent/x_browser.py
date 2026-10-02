@@ -262,7 +262,7 @@ class XBrowserPublisher:
                     "binding": binding,
                     "baseline": baseline,
                 }
-        if fmt == "ARTICLE" or (folder / "owner_publication_request.json").exists():
+        if fmt == "ARTICLE" or (folder / "owner_publication_request.json").exists() or self.draft_safety_check is not None:
             if self.draft_safety_check is None:
                 return {"status":"ARTICLE_SAFETY_UNAVAILABLE", "cycle":cycle}
             safety=await self.draft_safety_check(cycle=cycle,draft=draft)

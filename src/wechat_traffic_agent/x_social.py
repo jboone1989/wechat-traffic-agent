@@ -670,11 +670,9 @@ class XAutonomyLoop:
             and str(x_strategy.get("x_format") or "SHORT_POST") != "SHORT_POST"
             and not self.history.has_event(cycle=cycle, event_type="EXPRESSION")
         ):
-            return {
-                "status": "X_LONGFORM_TRANSPORT_REQUIRED",
-                "cycle": cycle,
-                "x_strategy": x_strategy,
-            }
+            surface = "X_ARTICLE" if x_strategy["x_format"] == "ARTICLE" else "X_LONG_POST"
+            context["x_l1_strategy"] = x_strategy
+            return await self._owner_longform(folder=folder, context=context, now=now, surface=surface)
         model_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle)
         public_url = _find_url(context.get("publication"))
         x_mission = x_growth_mission_context(self.state_root)
@@ -826,26 +824,28 @@ class XAutonomyLoop:
             return {"status":"ALREADY_EXPRESSED","cycle":cycle}
         path=folder/"social_expression_drafts.json"
         existing=_read_json(path)
-        if existing.get("status")!="DRAFT_READY":
-            prompt=("X_OWNER_LONGFORM_DRAFT: Ferro's durable owner-goal controller selected "+fmt+". "
+        if existing.get("status")!="DRAFT_READY" or (existing.get("drafts",{}).get("x",{}).get("format") != fmt):
+            prompt=("X_OWNER_LONGFORM_DRAFT: Ferro selected "+fmt+" through its persisted autonomous publication decision. "
                 "Write in the supplied public persona from persisted cognition and attributed source only. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
                 "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
+                "Depth must follow evidence quality. A source used in a short post may support this richer explanation only when it adds useful supported context; preserve attribution and do not pad or repeat a prior post. "
                 "For ARTICLE, choose images: each has role COVER or INLINE, mode GRAPHIC/GENERATE/SEARCH, alt_text, caption, "
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
                 "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
                 "Preserve uncertainty and source attribution. Owner quantities are optional advice, not quotas.\n"
                 +json.dumps({**context,"persona":public_persona_projection(self.state_root),
-                    "mission":x_growth_mission_context(self.state_root)},ensure_ascii=False))
-            runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle)
+                    "mission":x_growth_mission_context(self.state_root),
+                    "recent_posts":self.history.recent(limit=20)},ensure_ascii=False))
+            runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"longform-draft"/fmt)
             draft=await _structured(runtime,prompt,ChannelSocialDraft)
             if draft.channel!="X" or draft.format!=fmt:
                 return {"status":"OWNER_FORMAT_MISMATCH","cycle":cycle}
             strategy={"schema_version":"ferro-x-owner-format-request.v1","post_timing":"POST_NOW",
-                "x_format":fmt,"interaction_mode":"ORIGINAL","selection_authority":"FERRO_OWNER_EPISODE",
-                "owner_request":context["owner_publication_request"]}
+                "x_format":fmt,"interaction_mode":"ORIGINAL","selection_authority":("FERRO_OWNER_EPISODE" if context.get("owner_publication_request") else "FERRO_L1_STRATEGY"),
+                "owner_request":context.get("owner_publication_request")}
             _write_json(path,{"status":"DRAFT_READY","cycle":cycle,"drafts":{"x":draft.model_dump(mode="json")},
-                "x_strategy":strategy,"evidence_decision":{"source_evidence":context.get("source_evidence"),
+                "x_strategy":strategy,"evidence_decision":existing.get("evidence_decision") or {"source_evidence":context.get("source_evidence"),
                     "resolution":{"action":"DRAFT","useful_facts":[str((context.get("source_evidence") or {}).get("summary") or "")]}}})
         publisher=XBrowserPublisher(state_root=self.state_root,transport=self.browser_publish_transport,
             growth_mission=self.growth_mission,mission_baseline_observer=self.capture_mission_publication_baseline,
@@ -868,7 +868,7 @@ class XAutonomyLoop:
         text="\n".join(str(draft.get(key) or "") for key in ("title","text","cover_caption"))
         if draft.get("images"):
             text += "\nIMAGE_PLAN:\n" + json.dumps(draft["images"], ensure_ascii=False)
-        runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle)
+        runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"draft-safety")
         safety=await self._safety_check(model_runtime=runtime,text=text,context=context)
         payload={**safety.model_dump(mode="json"),"passed":_safety_passes(safety)}
         _write_json(folder/"x_article_safety.json",payload)

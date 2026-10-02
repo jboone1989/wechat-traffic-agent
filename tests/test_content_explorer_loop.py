@@ -1391,7 +1391,7 @@ class _AlwaysSeenInbox:
         return True
 
 
-def test_market_candidates_remain_pool_eligible_until_live_context_is_bound():
+def test_used_sources_remain_eligible_for_a_new_supported_expression():
     market = {
         "evidence_id": "web:fed", "source_kind": "web-search", "source": "runtime:web.fetch:jina-reader",
         "title": "Bitcoin News Today: Why BTC Is Down", "summary": "Bitcoin is trading near a catalyst today.",
@@ -1404,7 +1404,7 @@ def test_market_candidates_remain_pool_eligible_until_live_context_is_bound():
     }
     inbox = _AlwaysSeenInbox()
     assert _candidate_available_for_pool(inbox, market) is True
-    assert _candidate_available_for_pool(inbox, ordinary) is False
+    assert _candidate_available_for_pool(inbox, ordinary) is True
 
 
 def test_market_expression_fingerprint_changes_only_when_catalyst_or_market_state_changes():
@@ -2108,3 +2108,18 @@ def test_owner_goal_constrains_external_mission_discovery_without_breaking_bindi
         "LivingRuntime Remote ChatGPT remote host Pi Remote durable receipt",
         "livingruntime-remote",
     )]
+
+
+def test_evidence_reuse_deduplicates_question_and_kind_instead_of_source_or_title():
+    from wechat_traffic_agent.content_goal_loop import _expression_fingerprint, EvidenceSelection
+    source = {"evidence_id":"paper", "source_kind":"web-search", "source":"public-paper", "source_revision":"r1"}
+    selection = EvidenceSelection(title="Agent reliability", evidence_id="paper", topic="ai",
+        related_ids=(), reader_question="Which evaluation demonstrates recovery?",
+        gap="Separate capability claims from a measured recovery test.")
+    first = _expression_fingerprint(source, None, selection, "THOUGHT")
+    renamed = selection.model_copy(update={"title":"A renamed reliability claim",
+        "reader_question":"  WHICH evaluation demonstrates recovery?  "})
+    assert first == _expression_fingerprint(source, None, renamed, "THOUGHT")
+    assert first != _expression_fingerprint(source, None, selection, "LONGFORM")
+    expanded = selection.model_copy(update={"reader_question":"How can this evaluation be reproduced?"})
+    assert first != _expression_fingerprint(source, None, expanded, "THOUGHT")
