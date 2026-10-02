@@ -181,7 +181,7 @@ def test_x_transaction_checks_framework_editor_before_submit(preserved):
             return True
         if ".slice(0,15).map" in expr:
             return [] if calls["profile"] == 1 else [{"text":text,"hrefs":["/agent/status/1234567890"]}]
-        if "Boolean(document.querySelector('[data-testid=\"tweetTextarea_0\"]'))" in expr:
+        if "Boolean(document.querySelector(" in expr and "tweetTextarea_0" in expr:
             return True
         if "innerText || ''" in expr:
             return editor[0]
@@ -189,7 +189,7 @@ def test_x_transaction_checks_framework_editor_before_submit(preserved):
             return {"x":10,"y":20}
         raise AssertionError(expr)
     def fill(selector, value, **kwargs):
-        assert selector == '[data-testid="tweetTextarea_0"]'
+        assert selector == '[role="dialog"] [data-testid="tweetTextarea_0"]'
         calls["fill"] += 1
         editor[0] = value if preserved else ""
     def click(x,y):

@@ -236,21 +236,21 @@ if existing:
 else:
     goto_url('https://x.com/compose/post')
     wait_for_load(timeout=20.0)
-    editor = wait_expr('''(() => Boolean(document.querySelector('[data-testid="tweetTextarea_0"]')))()''', 15.0)
+    editor = wait_expr('''(() => Boolean(document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]')))()''', 15.0)
     assert editor, 'X composer editor is unavailable'
     # Draft.js owns the editor state: use framework-aware real key events.
     # CDP Input.insertText bypasses those listeners and can leave it empty.
-    fill_input('[data-testid="tweetTextarea_0"]', outbound, timeout=15.0)
+    fill_input('[role="dialog"] [data-testid="tweetTextarea_0"]', outbound, timeout=15.0)
     input_deadline = time.monotonic() + 5.0
     rendered = ''
     while time.monotonic() < input_deadline:
-        rendered = js('''(() => document.querySelector('[data-testid="tweetTextarea_0"]')?.innerText || '')()''') or ''
+        rendered = js('''(() => document.querySelector('[role="dialog"] [data-testid="tweetTextarea_0"]')?.innerText || '')()''') or ''
         if norm(rendered) == norm(outbound):
             break
         time.sleep(0.15)
     assert norm(rendered) == norm(outbound), f'X composer did not preserve the draft text: expected_chars={{len(norm(outbound))}} actual_chars={{len(norm(rendered))}}'
     point = js('''(() => {{
-      const b=document.querySelector('[data-testid="tweetButton"]');
+      const b=document.querySelector('[role="dialog"] [data-testid="tweetButton"]');
       if(!b || b.disabled || b.getAttribute('aria-disabled')==='true') return null;
       const r=b.getBoundingClientRect();
       if(!r.width || !r.height)return null;
