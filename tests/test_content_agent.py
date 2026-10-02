@@ -137,3 +137,23 @@ def test_content_agent_repairs_one_non_json_backend_response(tmp_path):
 
     assert artifact.title == "热点很高，为什么还不能马上写？"
     assert len(backend.requests) == 2
+
+
+def test_content_agent_accepts_wrapped_supplied_source_and_keeps_provenance(tmp_path):
+    url = _topic().source_url
+    extra = _topic().model_copy(update={"title":"Another evidenced topic", "source_url":"https://example.com/second"})
+    runtime, backend = _runtime(tmp_path, _response(source_urls=[f"[{url}]({url})", f"[source]({extra.source_url})"]))
+    artifact = asyncio.run(ContentAgent(runtime).compose([_topic(), extra], _audience(), artifact_id="wrapped-source"))
+    assert {ref.locator for ref in artifact.source_refs} == {url, extra.source_url}
+    assert len(backend.requests) == 1
+
+
+@pytest.mark.parametrize("value", [
+    "[https://example.com/research-source](https://invented.example)",
+    "[source](https://example.com/research-source?invented=1)",
+    "[source](https://example.com/research-source) extra",
+])
+def test_source_link_wrappers_do_not_expand_evidence_authority(tmp_path, value):
+    runtime, _ = _runtime(tmp_path, _response(source_urls=[value]))
+    with pytest.raises(ValueError, match="unsupported source URL"):
+        asyncio.run(ContentAgent(runtime).compose([_topic()], _audience(), artifact_id="bad-wrapper"))

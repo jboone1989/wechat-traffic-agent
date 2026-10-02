@@ -73,8 +73,10 @@ class ContentAgent:
         if draft.topic not in topic_by_title:
             raise ValueError("backend selected a topic outside supplied evidence")
         allowed_urls = {item.source_url for item in topics if item.source_url}
-        if not set(draft.source_urls).issubset(allowed_urls):
+        source_urls = tuple(_plain_source_url(value) for value in draft.source_urls)
+        if not set(source_urls).issubset(allowed_urls):
             raise ValueError("backend introduced an unsupported source URL")
+        draft = draft.model_copy(update={"source_urls": source_urls})
         return ContentArtifact(
             artifact_id=artifact_id,
             kind=kind,
@@ -87,6 +89,14 @@ class ContentAgent:
             disclosure=draft.disclosure,
             public_safe=False,
         )
+
+
+def _plain_source_url(value: str) -> str:
+    # ChatGPT Web can format a source field as one Markdown link. Strip only
+    # that wrapper; the caller still checks its exact destination against
+    # supplied evidence. A matching label cannot authorize another target.
+    wrapped = re.fullmatch(r"\[[^\]\r\n]*\]\((https?://[^\s()]+)\)", value)
+    return wrapped.group(1) if wrapped else value
 
 
 def _repair_task(task: str, raw: str, error: ValidationError | ValueError) -> str:
