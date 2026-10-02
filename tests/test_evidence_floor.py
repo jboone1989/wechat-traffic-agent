@@ -176,3 +176,44 @@ def test_actual_sharpe_term_still_triggers_floor():
     )
     cues = artifact_risk_cues(draft, topic="crypto-market")
     assert "claim:sharpe" in cues
+
+
+def test_runtime_comparison_does_not_borrow_trading_domain_from_other_fields():
+    draft = artifact(
+        title="Checkpoints Beat a Longer Chat When the Work Has to Survive the Wait",
+        paragraph=(
+            "For research workflows such as testing an automated-trading idea, "
+            "a durable checkpoint changes the failure boundary. "
+            "These mechanisms do not prove correctness of a trading strategy."
+        ),
+    )
+    plan = EvidenceFloorPlan(topic="livingruntime-remote-growth", required=False, trigger_cues=(), status="NOT_REQUIRED")
+    assert artifact_risk_cues(draft, topic=plan.topic) == ()
+    check = evaluate_evidence_floor(artifact=draft, plan=plan, supports=[])
+    verify_evidence_floor_publication(artifact=draft, plan=plan, check=check, supports=[])
+    assert check.status == "PASS"
+
+
+def test_unrelated_sentences_do_not_form_a_financial_claim():
+    draft = artifact(paragraph="Checkpoints beat a longer chat. Trading research is one possible application.")
+    assert artifact_risk_cues(draft, topic="livingruntime-remote-growth") == ()
+
+
+@pytest.mark.parametrize("paragraph", [
+    "This Bitcoin strategy may outperform after the observed market change.",
+    "This Bitcoin strategy may beat the market.",
+    "This crypto strategy is profitable.",
+    "A Bitcoin strategy was evaluated. It may outperform after the observed change.",
+])
+def test_statement_scoping_retains_real_financial_claims(paragraph):
+    draft = artifact(paragraph=paragraph)
+    plan = EvidenceFloorPlan(topic="rare", required=False, trigger_cues=(), status="NOT_REQUIRED")
+    check = evaluate_evidence_floor(artifact=draft, plan=plan, supports=[])
+    assert check.status == "FAIL"
+    assert check.failure_reason == "COUNTER_EVIDENCE_NOT_ACQUIRED"
+
+
+def test_financial_topic_still_supplies_context_for_short_claim():
+    draft = artifact(paragraph="It may outperform.")
+    plan = EvidenceFloorPlan(topic="backtesting", required=False, trigger_cues=(), status="NOT_REQUIRED")
+    assert evaluate_evidence_floor(artifact=draft, plan=plan, supports=[]).status == "FAIL"

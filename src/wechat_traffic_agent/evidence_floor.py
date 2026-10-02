@@ -110,25 +110,38 @@ class EvidenceFloorCheck(BaseModel):
 
 def risk_cues(*, topic: str, text: str) -> tuple[str, ...]:
     """Return deterministic minimum-floor cues; semantic independence is out of scope."""
-    normalized = " ".join(str(text).lower().split())
     cues: list[str] = []
     topic = str(topic).strip()
 
-    def contains_term(term: str) -> bool:
-        # Financial trigger words must be lexical terms, not substrings. In particular,
-        # ``sharper`` must never be interpreted as the Sharpe ratio.
+    def contains_term(term: str, statement: str) -> bool:
+        # Financial trigger words must be lexical terms, not substrings.
+        # In particular, sharper is not the Sharpe ratio.
         phrase = " ".join(term.lower().split())
-        return re.search(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", normalized) is not None
+        return re.search(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])", statement) is not None
 
-    domains = [term for term in DOMAIN_TERMS if contains_term(term)]
-    claims = [term.strip() for term in CLAIM_TERMS if contains_term(term)]
-    # Topic membership alone is not a claim. A neutral methodology article about trading or
-    # backtesting should remain publishable; the floor is for substantive performance/advice claims.
-    if topic in HIGH_RISK_TOPICS and claims:
-        cues.append("topic:" + topic)
-    if domains and claims:
-        cues.extend("domain:" + value for value in domains[:4])
-        cues.extend("claim:" + value for value in claims[:4])
+    # Fields/paragraphs and sentences are separate assertions. Combining a
+    # software comparison in a title with a trading example elsewhere invents
+    # a financial claim the author never made. Preserve domain context only
+    # for an explicit anaphoric continuation inside the same paragraph.
+    for block in str(text).lower().splitlines():
+        previous_domains: list[str] = []
+        for part in re.split(r"[.!?;]+(?:\s+|$)", block):
+            statement = " ".join(part.split())
+            if not statement:
+                continue
+            domains = [term for term in DOMAIN_TERMS if contains_term(term, statement)]
+            claims = [term.strip() for term in CLAIM_TERMS if contains_term(term, statement)]
+            if re.match(r"^(?:it|they|this|that|these|those|its|their)\b", statement):
+                domains = list(dict.fromkeys((*previous_domains, *domains)))
+            # Topic membership alone is not a claim. An explicitly financial
+            # topic still supplies context for a short performance assertion.
+            if topic in HIGH_RISK_TOPICS and claims:
+                cues.append("topic:" + topic)
+            if (domains or topic in HIGH_RISK_TOPICS) and claims:
+                cues.extend("domain:" + value for value in domains[:4])
+                cues.extend("claim:" + value for value in claims[:4])
+            previous_domains = domains
+
     return tuple(dict.fromkeys(cues))[:24]
 
 
