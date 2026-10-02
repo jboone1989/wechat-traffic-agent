@@ -21,7 +21,7 @@ class Browser:
 
     def call(self,method,**params):
         if method=='Page.navigate':self.url=params['url'];return {}
-        if method=='Page.setInterceptFileChooserDialog':return {}
+        if method in {'Page.setInterceptFileChooserDialog','Page.bringToFront'}:return {}
         if method=='DOM.getDocument':return {'root':{'nodeId':1}}
         if method=='DOM.querySelector':return {'nodeId':55}
         if method=='DOM.querySelectorAll':return {'nodeIds':[55,56] if self.inline_dialog else [55]}
@@ -34,6 +34,9 @@ class Browser:
         if '?.matches(' in expression:return 'get(11)' in expression
         if 'Processing media|Cancel upload' in expression:return False
         if expression=='location.href':return self.url
+        if 'location.href.includes("/status/")' in expression:return self.url if '/status/' in self.url else None
+        if 'e.click(); return true' in expression:
+            self.submitted=True;self.dialog=False;self.url='https://x.com/'+self.handle+'/status/987';return True
         if 'ready:document.readyState' in expression:return {'url':self.url,'ready':'complete'}
         if 'AppTabBar_Profile_Link' in expression:return '/'+self.handle
         if 'location.href.includes' in expression:return self.url if '/compose/articles/edit/' in self.url else None
@@ -91,6 +94,9 @@ class Browser:
         elif action['node']==13:
             if self.kind=='article':self.url='https://x.com/compose/articles/edit/789'
             else:self.dialog=True
+        elif self.kind=='article':
+            if not self.dialog:self.dialog=True
+            else:self.submitted=True;self.dialog=False;self.url='https://x.com/'+self.handle+'/status/987'
         else:self.submitted=True;self.dialog=False
 
 
@@ -199,7 +205,7 @@ class TestJevNativeSocial(unittest.TestCase):
     def test_recovery_requires_every_persisted_image(self):
         browser=Browser('article');browser.submitted=True
         result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
-            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',cover_source=[
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',public_url='https://x.com/ferro/status/987',cover_source=[
                 {'src':'https://pbs.twimg.com/media/cover.png'}, {'src':'https://pbs.twimg.com/media/missing-body.png'}]))
         self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
         self.assertEqual(browser.actions,[])
@@ -209,7 +215,7 @@ class TestJevNativeSocial(unittest.TestCase):
         result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
             image_path='/tmp/cover.png',expected_handle='ferro'))
         self.assertEqual(result['status'],'POSTED')
-        self.assertEqual(result['url'],'https://x.com/i/article/789')
+        self.assertEqual(result['url'],'https://x.com/ferro/status/987')
 
     def test_article_missing_public_body_is_unverified(self):
         browser=Browser('article',verify=False)
@@ -228,8 +234,31 @@ class TestJevNativeSocial(unittest.TestCase):
     def test_article_reconciles_publication_after_process_restart(self):
         browser=Browser('article');browser.submitted=True
         result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
-            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',public_url='https://x.com/ferro/status/987',
             cover_source=[{'src':'https://pbs.twimg.com/media/cover.png'}]))
         self.assertEqual(result['status'],'POSTED')
         self.assertTrue(result['duplicate_found'])
         self.assertEqual(browser.actions,[])
+
+    def test_occluded_confirmation_activates_only_observed_native_button(self):
+        class Occluded(Browser):
+            def act(self,action,page,text=None):
+                if action['node']==12 and self.dialog:
+                    from jev_ultrafast.browser import StalePage
+                    raise StalePage('transparent overlay')
+                return super().act(action,page,text)
+        browser=Occluded('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro'))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertEqual(result['post_id'],'987')
+        self.assertNotEqual(result['post_id'],'789')
+
+    def test_missing_observed_public_url_never_guesses_or_resubmits(self):
+        browser=Browser('article');browser.submitted=True
+        result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',
+            cover_source=[{'src':'https://pbs.twimg.com/media/cover.png'}]))
+        self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
+        self.assertEqual(browser.actions,[])
+        self.assertEqual(browser.url,'https://x.com/home')

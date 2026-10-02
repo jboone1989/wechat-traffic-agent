@@ -214,7 +214,7 @@ class LocalHarnessXTransport:
         if previous.get("attempted") or previous.get("status")=="SUBMIT_PENDING":
             body=await asyncio.to_thread(self._run_jev_sync,jev_x_article_reconcile(title=title,text=text,
                 draft_url=str(previous.get("draft_url") or ""),cover_source=previous.get("cover_source") or [],
-                expected_handle=self.expected_handle))
+                expected_handle=self.expected_handle,public_url=str(previous.get("public_url") or "")))
             _write_json(transaction_path,{**previous,**body,"digest":digest})
             return self._verified_result(body)
         _write_json(transaction_path,{**previous,"digest":digest,"status":"PREPARING"})

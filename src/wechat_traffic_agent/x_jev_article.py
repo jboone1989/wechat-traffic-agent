@@ -9,15 +9,15 @@ def jev_x_article(*, title, text, image_path, expected_handle='', draft_url='', 
     return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+PUBLIC_TEXT+ARTICLE
 
 
-def jev_x_article_reconcile(*, title, text, draft_url, cover_source, expected_handle=''):
+def jev_x_article_reconcile(*, title, text, draft_url, cover_source, expected_handle='', public_url=''):
     values=dict(title=title,outbound=text,draft_url=draft_url,cover_source=cover_source,
-                expected_handle=expected_handle)
+                expected_handle=expected_handle,public_url=public_url)
     return '\n'.join(k+' = '+repr(v) for k,v in values.items())+'\n'+helpers()+PUBLIC_TEXT+r'''
 try:
     article_id=draft_url.rstrip('/').rsplit('/',1)[1]
     if not article_id.isdigit() or '/compose/articles/edit/' not in draft_url:
         raise RuntimeError('Pending Article has no recoverable draft identity')
-    public_url='https://x.com/i/article/'+article_id
+    public_url,post_id=verified_public_location(public_url,expected_handle)
     navigate(public_url)
     profile=wait_value('document.querySelector("[data-testid=AppTabBar_Profile_Link]")?.getAttribute("href")')
     handle=str(profile or '').strip('/')
@@ -29,7 +29,7 @@ try:
     images=browser.evaluate(''' + "'''" + r'''(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.src.includes('profile_images')).map(e=>e.src))()''' + "'''" + r''') or []
     if not cover_source or not all(any(media_key(image)==media_key(item['src']) for image in images) for item in cover_source):
         raise RuntimeError('Pending Article images have not been publicly verified')
-    result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
+    result={'status':'POSTED','post_id':post_id,'url':public_url,'handle':handle,
             'draft_url':draft_url,'cover':images,'duplicate_found':True}
 except Exception as exc:
     result={'status':'PUBLICATION_UNVERIFIED','attempted':True,'draft_url':draft_url,'detail':str(exc)}
@@ -37,6 +37,13 @@ except Exception as exc:
 
 
 PUBLIC_TEXT=r'''
+def verified_public_location(value,handle):
+    parts=urlsplit(str(value or ''))
+    match=re.fullmatch(r'/([^/]+)/status/(\d+)',parts.path)
+    if parts.scheme!='https' or parts.netloc!='x.com' or not match or match[1].casefold()!=handle.casefold():
+        raise RuntimeError('Observed public Article URL unavailable; no guessed URL or repeated submission')
+    return str(value),match[2]
+
 def media_key(source):
     value=urlsplit(str(source))
     return (value.netloc, re.sub(r'\.(?:png|jpe?g|webp)$','',value.path,flags=re.I))
@@ -55,7 +62,7 @@ def wait_public_text(title,body):
 ARTICLE=r'''
 import json
 
-def checkpoint(status,submitted,cover=None):
+def checkpoint(status,submitted,cover=None,public_url=''):
     if not checkpoint_path:
         return
     import json
@@ -63,6 +70,8 @@ def checkpoint(status,submitted,cover=None):
     path=Path(checkpoint_path)
     previous=json.loads(path.read_text()) if path.exists() else {}
     previous.update({'status':status,'attempted':submitted,'draft_url':draft_url})
+    if public_url:
+        previous['public_url']=public_url
     if cover:
         previous['cover_source']=cover
     pending=path.with_suffix(path.suffix+'.tmp')
@@ -227,17 +236,26 @@ try:
                      and str(a.get('label') or '').strip().casefold() in {'publish','发布'}
                      and browser.evaluate('Boolean(window.__jevFast.nodes.get('+str(a['node'])+')?.closest("[role=dialog]"))')]
             if len(confirm)==1:
+                stage='article_final_confirm'
+                checkpoint('FINAL_CONFIRM_PENDING',True,images_to_verify)
+                browser.call('Page.bringToFront')
                 try:
                     browser.act(confirm[0],page)
                 except StalePage:
-                    continue
+                    # Jev's mouse hit-test can encounter X's transparent modal overlay.
+                    # Activate only this freshly observed enabled native dialog button.
+                    clicked=browser.evaluate('(() => {const e=window.__jevFast.nodes.get('+str(confirm[0]['node'])+');if(!e || !e.isConnected || e.tagName!=="BUTTON" || !e.closest("[role=dialog]") || !e.getClientRects().length || e.disabled || e.getAttribute("aria-disabled")==="true" || !["publish","发布"].includes((e.getAttribute("aria-label") || e.innerText || "").trim().toLowerCase()))return false; e.click(); return true;})()')
+                    if clicked is not True:
+                        raise RuntimeError('Fresh native Article confirmation button unavailable')
                 break
             if '/compose/articles/edit/' not in str(browser.evaluate('location.href') or ''):
                 break
         stage='article_verify'
-        public_url='https://x.com/i/article/'+article_id
+        public_url=wait_value('location.href.includes("/status/") && location.href',30)
+        public_url,post_id=verified_public_location(public_url,handle)
+        checkpoint('PUBLICATION_UNVERIFIED',True,images_to_verify,public_url)
         navigate(public_url)
-        # A guessed URL or editor success toast is not publication evidence.
+        # Independently reopen the observed public URL and verify the full content.
         visible=wait_public_text(title,outbound)
         if norm(title) not in norm(visible) or norm(outbound) not in norm(visible):
             raise RuntimeError('Public Article title/full body not verified')
@@ -246,7 +264,7 @@ try:
             raise RuntimeError('Public Article image not verified')
         if not all(any(media_key(image)==media_key(item['src']) for image in images) for item in images_to_verify):
             raise RuntimeError('Public Article images differ from uploaded cover/body images')
-        result={'status':'POSTED','post_id':article_id,'url':public_url,'handle':handle,
+        result={'status':'POSTED','post_id':post_id,'url':public_url,'handle':handle,
                 'draft_url':draft_url,'cover':images,'duplicate_found':False}
 except Exception as exc:
     result={'status':'PUBLICATION_UNVERIFIED' if attempted else 'FAILED','stage':stage,
