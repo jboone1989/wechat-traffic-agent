@@ -367,7 +367,7 @@ class XAutonomyLoop:
                 except Exception as fallback_exc:
                     self._write_status(now=now, status=status, detail=detail)
                     self._activity(cycle=cycle, title="X observation paused", detail="X API credits are depleted and the read-only browser fallback was unavailable.", status="stopped")
-                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__, "x_growth_mission": growth_result}
+                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__, "browser_fallback_detail": str(fallback_exc), "x_growth_mission": growth_result}
             else:
                 self._write_status(now=now, status=status, detail=detail)
                 self._activity(cycle=cycle, title="X observation paused", detail="X returned an error while reading mentions.", status="stopped")
@@ -744,6 +744,7 @@ class XAutonomyLoop:
                             "fallback_transport": "AUTHENTICATED_BROWSER",
                             "api_status": post_status,
                             "fallback_error_type": type(fallback_exc).__name__,
+                            "fallback_error_detail": str(fallback_exc),
                         },
                     }
                 post_id = str(getattr(published, "post_id", "") or "").strip()

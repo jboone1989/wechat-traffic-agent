@@ -307,7 +307,13 @@ function renderBrowserRuntime(data){
  for(const row of rows){const c=node('div',undefined,'card'),head=node('div',undefined,'row'),kind=row.status==='READY'?'ok':row.status==='NOT_CONFIGURED'||row.status==='DISABLED'?'pending':'bad';
   head.append(node('h3',row.provider||'UNKNOWN','grow'),badge(row.status||'UNKNOWN',kind));c.append(head);
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
-  if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
+  if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));
+  if(row.provider==='AGENT_RUNTIME_BROWSER'){
+   const login=node('button','登录 X 浏览器','primary');
+   login.onclick=async()=>{login.disabled=true;try{await beginAccountConnect({provider_id:'x',label:'X'})}catch(e){flash(e.message,true)}finally{login.disabled=false}};
+   c.append(login,node('p','在 Ferro 发布使用的浏览器中登录 @caini56006962。','muted'))
+  }
+  if(row.reason)c.append(node('p',row.reason,'muted'));root.append(c)}
 }
 let activeAccountProvider='',activeAccountId='';
 function accountStatusKind(status){

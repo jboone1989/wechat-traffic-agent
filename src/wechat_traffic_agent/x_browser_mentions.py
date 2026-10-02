@@ -73,6 +73,7 @@ class LocalHarnessXMentionsObserver:
                     elapsed_ms=round((time.perf_counter() - started) * 1000),
                     action_count=0,
                     failure_reason=type(exc).__name__,
+                    failure_detail=str(exc),
                 ),
             )
             raise

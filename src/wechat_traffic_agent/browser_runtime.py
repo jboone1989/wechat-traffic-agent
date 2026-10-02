@@ -21,6 +21,7 @@ class BrowserTaskResult:
     action_count: int
     final_url: str | None = None
     failure_reason: str | None = None
+    failure_detail: str | None = None
 
 
 class BrowserTelemetryLedger:
