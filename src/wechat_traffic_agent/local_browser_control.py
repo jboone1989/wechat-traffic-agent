@@ -135,6 +135,18 @@ class LocalBrowserControl:
             self._running = True
             return self.status()
 
+    def open(self) -> dict[str, Any]:
+        """Reattach and focus; retain an in-progress login or existing session."""
+        with self._lock:
+            self._target_id = ""
+            self.target_id()
+            self._browser().run_session_script(
+                _SESSION_ID,
+                "cdp('Page.bringToFront')\nresult = {'ok': True}",
+                timeout_seconds=30,
+            )
+            return self.status()
+
     def _require(self) -> BrowserHarnessProvider:
         if not self._running:
             raise LocalBrowserControlUnavailable("Agent Runtime X browser session is not active")

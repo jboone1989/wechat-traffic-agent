@@ -43,17 +43,18 @@ def test_operator_console_compacts_account_browser_controls_on_mobile():
     assert ".account-actions button{flex:0 0 auto!important" in page
     assert ".account-login-dialog>.row:first-child>button{flex:0 0 auto!important" in page
     assert ".browser-controls>.row>button{flex:0 0 auto!important" in page
-    assert ".browser-keys button{flex:0 0 auto!important" in page
     assert ".account-login-dialog{width:100%;max-height:calc(100dvh - 16px)" in page
     assert ".account-login-dialog h3+p{display:none}" in page
-    assert ".browser-live{border-radius:6px;max-height:52dvh;object-fit:contain}" in page
+    assert 'id="browserTakeoverFrame"' in page
+    assert "height:65dvh" in page
+    assert 'id="liveBrowserCanvas"' not in page
 
 
 def test_live_browser_status_never_renders_full_oauth_url_inline():
     page = operator_console_document()
 
     assert "function shortBrowserLocation(url)" in page
-    assert "status.title=fmt(msg.url)" in page
+    assert "status.title=fmt(row.url)" in page
     assert "status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'')" in page
     assert "status.textContent=prefix+' · '+fmt(msg.url)" not in page
     assert "white-space:nowrap;overflow:hidden;text-overflow:ellipsis" in page
@@ -158,3 +159,13 @@ def test_browser_ui_has_one_agent_runtime_owner():
     assert "/operator/api/cortex/browser/login" not in page
     assert "登录 ChatGPT Cortex" not in page
     assert "TinyFish" not in page
+
+
+def test_x_takeover_reconnect_keeps_browser_and_login_alive():
+    page = operator_console_document()
+    assert "out.browser.takeover_url" in page
+    assert "browserTakeoverUrl)el('browserTakeoverFrame').src=browserTakeoverUrl" in page
+    assert "/login/stop" not in page
+    assert "accountStreamSend" not in page
+    assert "data:image/jpeg;base64" not in page
+    assert "/operator/api/accounts/x/browser/status" in page

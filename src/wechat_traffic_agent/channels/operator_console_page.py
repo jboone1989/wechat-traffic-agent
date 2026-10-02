@@ -31,10 +31,10 @@ label{display:grid;gap:6px;font-size:12px;color:#9baab6}input,select,textarea{wi
 .section{margin-top:16px}.section-title{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 9px}.section-title p{margin:3px 0 0}
 details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;margin-top:10px}details.fold>summary{cursor:pointer;padding:13px 15px;font-weight:700}details.fold>.fold-body{padding:0 15px 15px}
 .resource-row{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(100px,.6fr) auto;gap:10px;align-items:center}.resource-row+.resource-row{border-top:1px solid #232c34;padding-top:10px;margin-top:10px}
-.browser-live{width:100%;height:auto;aspect-ratio:1120/780;display:block;border-radius:8px;border:1px solid #34414f;background:#05080a;touch-action:none;cursor:crosshair}.browser-controls{display:grid;gap:8px;margin-top:10px}.browser-keys{display:flex;gap:8px;flex-wrap:wrap}.live-indicator{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.live-indicator:before{content:"";flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:#5b6872}.live-indicator.live:before{background:#8ee1b2}
-.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.modal-open{overflow:hidden}.account-login-modal{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:16px;background:rgba(3,6,8,.78);backdrop-filter:blur(5px)}.account-login-dialog{width:min(760px,100%);max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #34414f;border-radius:14px;background:#10151a;padding:14px;box-shadow:0 18px 70px rgba(0,0,0,.5)}.account-binding{display:grid;gap:5px;padding:11px 0;border-top:1px solid #263038}.account-binding:first-of-type{border-top:0}.account-binding-title{display:flex;align-items:center;gap:8px}.account-binding-title strong{flex:1}.account-binding p{margin:0}.account-tech{margin-top:2px}.account-tech summary{font-size:11px;color:#71818d;cursor:pointer}
+.browser-takeover{display:block;width:100%;height:65dvh;min-height:320px;border:1px solid #34414f;border-radius:8px;background:#05080a}.browser-controls{display:grid;gap:8px;margin-top:10px}.live-indicator{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.live-indicator:before{content:"";flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:#5b6872}.live-indicator.live:before{background:#8ee1b2}
+.account-card{display:grid;gap:10px}.account-meta,.account-actions{display:flex;gap:7px;flex-wrap:wrap}.account-actions button{flex:0 1 auto}.modal-open{overflow:hidden}.account-login-modal{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:16px;background:rgba(3,6,8,.78);backdrop-filter:blur(5px)}.account-login-dialog{width:min(1280px,100%);max-height:calc(100dvh - 32px);overflow:auto;border:1px solid #34414f;border-radius:14px;background:#10151a;padding:14px;box-shadow:0 18px 70px rgba(0,0,0,.5)}.account-binding{display:grid;gap:5px;padding:11px 0;border-top:1px solid #263038}.account-binding:first-of-type{border-top:0}.account-binding-title{display:flex;align-items:center;gap:8px}.account-binding-title strong{flex:1}.account-binding p{margin:0}.account-tech{margin-top:2px}.account-tech summary{font-size:11px;color:#71818d;cursor:pointer}
 .divider{height:1px;background:#263038;margin:12px 0}.mobile-note{display:none}
-@media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.account-card{gap:8px;padding:12px}.account-actions{gap:5px}.account-actions button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.account-login-modal{padding:8px;place-items:end center}.account-login-dialog{width:100%;max-height:calc(100dvh - 16px);border-radius:14px 14px 10px 10px;padding:10px}.account-login-dialog>.row:first-child{align-items:flex-start;gap:6px}.account-login-dialog>.row:first-child>button{flex:0 0 auto!important;width:auto;padding:6px 9px;font-size:12px}.account-login-dialog h3{font-size:15px}.account-login-dialog h3+p{display:none}.browser-live{border-radius:6px;max-height:52dvh;object-fit:contain}.browser-controls{gap:6px;margin-top:7px}.browser-controls label{font-size:11px}.browser-controls input{padding:8px}.browser-controls>.row{gap:5px;flex-wrap:wrap}.browser-controls>.row>button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.browser-keys{gap:4px}.browser-keys button{flex:0 0 auto!important;width:auto;padding:6px 8px;font-size:11px;min-width:0}.live-indicator{font-size:10px;line-height:1.35;margin:4px 0}.mobile-note{display:block;font-size:12px;color:#71818d}}
+@media(max-width:760px){main{width:calc(100% - 16px);padding-top:14px}.topbar{align-items:flex-start;flex-direction:column}.toolbar{width:100%}.toolbar>*{flex:1;text-align:center}.nav{top:5px}.nav button{font-size:12px}.metrics{grid-template-columns:repeat(2,1fr)}.dashboard-grid{grid-template-columns:1fr}.page-head{align-items:flex-start;flex-direction:column}.two{grid-template-columns:1fr}.metric-value{font-size:22px}.resource-row{grid-template-columns:1fr auto}.resource-row>:nth-child(2){grid-column:1/2}.row>button,.row>a{flex:1 1 130px;text-align:center}.account-card{gap:8px;padding:12px}.account-actions{gap:5px}.account-actions button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.account-login-modal{padding:8px;place-items:end center}.account-login-dialog{width:100%;max-height:calc(100dvh - 16px);border-radius:14px 14px 10px 10px;padding:10px}.account-login-dialog>.row:first-child{align-items:flex-start;gap:6px}.account-login-dialog>.row:first-child>button{flex:0 0 auto!important;width:auto;padding:6px 9px;font-size:12px}.account-login-dialog h3{font-size:15px}.account-login-dialog h3+p{display:none}.browser-takeover{display:block;width:100%;height:65dvh;min-height:320px;border:1px solid #34414f;border-radius:8px;background:#05080a}.browser-controls{gap:6px;margin-top:7px}.browser-controls label{font-size:11px}.browser-controls input{padding:8px}.browser-controls>.row{gap:5px;flex-wrap:wrap}.browser-controls>.row>button{flex:0 0 auto!important;width:auto;padding:7px 9px;font-size:12px}.live-indicator{font-size:10px;line-height:1.35;margin:4px 0}.mobile-note{display:block;font-size:12px;color:#71818d}}
 </style></head><body><main>
 
 <section id="login" class="card">
@@ -99,14 +99,10 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
   </div>
   <div id="accountLoginShell" class="account-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="accountLoginTitle">
    <div class="account-login-dialog">
-    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">这是网页自动化的高级回退，不是普通账号登录。OAuth/API 身份应优先使用跳转授权；这里仅用于让 Ferro 自己的服务器浏览器获得网页登录态。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
+    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">直接操作 Ferro 的 X 浏览器。关闭后登录态继续保留，下次可从“资源管理 → 浏览器”重新打开。手机输入可使用画面左侧的键盘和剪贴板。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
     <div id="localBrowserStatus" class="mono muted live-indicator">未连接实时会话。</div>
-    <canvas id="liveBrowserCanvas" class="browser-live hidden" width="1120" height="780" aria-label="Ferro live browser session"></canvas>
-    <div class="browser-controls">
-     <label>输入内容<input id="localBrowserText" type="password" autocomplete="off" placeholder="先点击实时浏览器里的输入框"></label>
-     <div class="row"><button id="localBrowserSend" class="primary">发送</button><button id="liveBrowserReconnect" class="ghost">重新连接实时画面</button></div>
-     <div class="browser-keys"><button data-browser-key="Tab" class="ghost">Tab</button><button data-browser-key="Enter" class="ghost">Enter</button><button data-browser-key="Backspace" class="ghost">Backspace</button><button data-browser-key="Escape" class="ghost">Esc</button></div>
-    </div>
+    <iframe id="browserTakeoverFrame" class="browser-takeover" title="X 实时浏览器桌面" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
+    <div class="browser-controls"><div class="row"><button id="liveBrowserReconnect" class="ghost">重新连接画面</button><button id="browserVerifyLogin" class="primary">检查登录状态</button></div></div>
    </div>
   </div>
  </section>
@@ -309,7 +305,7 @@ function renderBrowserRuntime(data){
   if(row.provider==='LOCAL_CDP')c.append(node('p','本地持久化 Chrome','muted'));
   if(row.provider==='TINYFISH')c.append(node('p','兼容性备用浏览器','muted'));
   if(row.provider==='AGENT_RUNTIME_BROWSER'){
-   const login=node('button','登录 X 浏览器','primary');
+   const login=node('button','打开 X 浏览器','primary');
    login.onclick=async()=>{login.disabled=true;try{await beginAccountConnect({provider_id:'x',label:'X'})}catch(e){flash(e.message,true)}finally{login.disabled=false}};
    c.append(login,node('p','在 Ferro 发布使用的浏览器中登录 @caini56006962。','muted'))
   }
@@ -359,99 +355,31 @@ function renderAccounts(data){
  }
  if(!instances.length&&!providers.length)root.append(node('div','暂无账户提供方','card muted'))
 }
-let accountStream=null,accountStreamGeneration=0,streamFramePending=null,streamFrameDrawing=false;
-function closeAccountStream(){
- accountStreamGeneration++;
- if(accountStream){accountStream.onclose=null;try{accountStream.close()}catch{}}
- accountStream=null;
- const status=el('localBrowserStatus');status.classList.remove('live')
+let browserStatusTimer=null,browserTakeoverUrl='',browserLoginConnected=false;
+function closeBrowserTakeover(){
+ clearInterval(browserStatusTimer);browserStatusTimer=null;
+ el('browserTakeoverFrame').src='about:blank';
+ el('localBrowserStatus').classList.remove('live')
 }
-function accountStreamSend(payload){
- if(!accountStream||accountStream.readyState!==WebSocket.OPEN)throw new Error('实时浏览器会话未连接');
- accountStream.send(JSON.stringify(payload))
-}
-function drawAccountFrame(data){
- streamFramePending=data;
- if(streamFrameDrawing)return;
- const drawNext=()=>{
-  const frame=streamFramePending;streamFramePending=null;
-  if(!frame){streamFrameDrawing=false;return}
-  streamFrameDrawing=true;
-  const img=new Image();
-  img.onload=()=>{
-   const canvas=el('liveBrowserCanvas'),ctx=canvas.getContext('2d');
-   ctx.drawImage(img,0,0,canvas.width,canvas.height);
-   canvas.classList.remove('hidden');
-   drawNext()
-  };
-  img.onerror=()=>drawNext();
-  img.src='data:image/jpeg;base64,'+frame
- };
- drawNext()
-}
-function accountStreamUrl(provider,accountId=''){
- const scheme=location.protocol==='https:'?'wss:':'ws:';
- return scheme+'//'+location.host+'/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stream'
-}
-function accountConnectUrl(provider,accountId=''){
- return '/operator/api/accounts/'+encodeURIComponent(provider)+'/connect'
-}
-function shortBrowserLocation(url){
- try{return new URL(url).hostname||''}catch{return ''}
-}
-async function openAccountStream(provider,recovery=0,accountId=''){
- closeAccountStream();
- activeAccountProvider=provider;activeAccountId=accountId;
- const generation=accountStreamGeneration,ws=new WebSocket(accountStreamUrl(provider,accountId));
- accountStream=ws;
- const status=el('localBrowserStatus');
- status.textContent='正在连接实时浏览器…';
- return await new Promise((resolve,reject)=>{
-  let settled=false;
-  const timer=setTimeout(()=>{if(!settled){settled=true;reject(new Error('实时浏览器连接超时'))}},10000);
-  ws.onopen=()=>{if(generation!==accountStreamGeneration)return;status.textContent='实时浏览器已连接，等待画面…';status.classList.add('live')};
-  ws.onmessage=async ev=>{
-   if(generation!==accountStreamGeneration)return;
-   let msg;try{msg=JSON.parse(ev.data)}catch{return}
-   if(msg.type==='frame'){
-    drawAccountFrame(msg.data);
-    if(!settled){settled=true;clearTimeout(timer);resolve()}
-   }else if(msg.type==='status'){
-    const identity=msg.identity?' · @'+msg.identity:'';
-    const prefix=msg.authenticated?'已登录'+identity:'实时';
-    const host=shortBrowserLocation(msg.url),title=fmt(msg.title);
-    status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'');
-    status.title=fmt(msg.url);
-    status.classList.add('live');
-    if(msg.authenticated)refresh().catch(()=>{})
-   }else if(msg.type==='error'){
-    status.textContent=msg.error||'实时浏览器错误'
-   }
-  };
-  ws.onerror=()=>{if(!settled){settled=true;clearTimeout(timer);reject(new Error('实时浏览器连接失败'))}};
-  ws.onclose=async ev=>{
-   if(generation!==accountStreamGeneration)return;
-   accountStream=null;status.classList.remove('live');
-   if(ev.code===4401){showLogin();status.textContent='管理员会话已过期';return}
-   if(ev.code===4409&&recovery<1){
-    status.textContent='网页会话已重建，正在恢复实时连接…';
-    try{
-     await api(accountConnectUrl(provider,accountId),{method:'POST',body:'{}'});
-     await openAccountStream(provider,recovery+1,accountId)
-    }catch(e){status.textContent=e.message;flash(e.message,true)}
-    return
-   }
-   status.textContent='实时浏览器连接已断开'
-  }
- })
+function shortBrowserLocation(url){try{return new URL(url).hostname||''}catch{return ''}}
+async function refreshBrowserLoginStatus(){
+ const out=await api('/operator/api/accounts/x/browser/status',{method:'GET'}),row=out.browser;
+ const status=el('localBrowserStatus'),host=shortBrowserLocation(row.url),title=fmt(row.title);
+ const prefix=row.x_authenticated?'已登录 · @'+row.account_identity:'等待在浏览器中完成登录';
+ status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'');
+ status.title=fmt(row.url);status.classList.toggle('live',!!row.x_authenticated);
+ if(row.x_authenticated&&!browserLoginConnected){browserLoginConnected=true;await refresh()}
 }
 async function beginAccountConnect(row){
  activeAccountProvider=row.provider_id;activeAccountId='';selectPanel('accounts');
- el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');el('accountLoginTitle').textContent=row.label+' · 实时服务器网页会话';
- el('localBrowserStatus').textContent='正在创建 Ferro 服务器上的网页会话…';
- await api(accountConnectUrl(row.provider_id),{method:'POST',body:'{}'});
- await openAccountStream(row.provider_id,0,'');
- await refresh()
+ closeBrowserTakeover();browserLoginConnected=false;
+ el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
+ el('accountLoginTitle').textContent=row.label+' · 实时浏览器';
+ el('localBrowserStatus').textContent='正在连接现有浏览器…';
+ const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
+ browserTakeoverUrl=out.browser.takeover_url;el('browserTakeoverFrame').src=browserTakeoverUrl;
+ await refreshBrowserLoginStatus();
+ browserStatusTimer=setInterval(()=>refreshBrowserLoginStatus().catch(e=>{el('localBrowserStatus').textContent=e.message}),5000)
 }
 function renderResources(data){
  const rows=((data.llm_resources||{}).resources||[]),root=el('resources');root.replaceChildren();
@@ -578,45 +506,15 @@ el('xOAuthRestart').onclick=async()=>{
 };
 
 el('accountLoginClose').onclick=async()=>{
- const provider=activeAccountProvider,accountId=activeAccountId;closeAccountStream();activeAccountProvider='';activeAccountId='';
- try{
-  if(provider)await api('/operator/api/accounts/'+encodeURIComponent(provider)+'/login/stop',{method:'POST',body:'{}'})
- }catch{}
- el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');el('liveBrowserCanvas').classList.add('hidden');
- el('localBrowserStatus').textContent='已关闭。网页登录态仍保存在 Ferro 的持久化浏览器中。';
- await refresh().catch(()=>{})
+ closeBrowserTakeover();activeAccountProvider='';activeAccountId='';
+ el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');
+ await refresh().catch(e=>flash(e.message,true))
 };
 el('accountLoginShell').onclick=ev=>{if(ev.target===el('accountLoginShell'))el('accountLoginClose').click()};
-el('liveBrowserReconnect').onclick=async()=>{
- if(!activeAccountProvider)return;
- try{await openAccountStream(activeAccountProvider,0,activeAccountId)}catch(e){flash(e.message,true)}
+el('liveBrowserReconnect').onclick=()=>{
+ if(browserTakeoverUrl)el('browserTakeoverFrame').src=browserTakeoverUrl
 };
-const liveCanvas=el('liveBrowserCanvas');
-let livePointer=null;
-liveCanvas.onpointerdown=ev=>{
- const r=liveCanvas.getBoundingClientRect();livePointer={x:ev.clientX,y:ev.clientY,rx:(ev.clientX-r.left)/r.width,ry:(ev.clientY-r.top)/r.height};
- try{liveCanvas.setPointerCapture(ev.pointerId)}catch{}
-};
-liveCanvas.onpointerup=ev=>{
- if(!livePointer)return;
- const r=liveCanvas.getBoundingClientRect(),dx=ev.clientX-livePointer.x,dy=ev.clientY-livePointer.y;
- try{
-  if(Math.abs(dx)<12&&Math.abs(dy)<12)accountStreamSend({type:'click',x_ratio:livePointer.rx,y_ratio:livePointer.ry});
-  else accountStreamSend({type:'wheel',x_ratio:(ev.clientX-r.left)/r.width,y_ratio:(ev.clientY-r.top)/r.height,delta_x:-dx*3,delta_y:-dy*3})
- }catch(e){flash(e.message,true)}
- livePointer=null
-};
-liveCanvas.onpointercancel=()=>{livePointer=null};
-liveCanvas.onwheel=ev=>{
- ev.preventDefault();const r=liveCanvas.getBoundingClientRect();
- try{accountStreamSend({type:'wheel',x_ratio:(ev.clientX-r.left)/r.width,y_ratio:(ev.clientY-r.top)/r.height,delta_x:ev.deltaX,delta_y:ev.deltaY})}catch(e){flash(e.message,true)}
-};
-el('localBrowserSend').onclick=()=>{
- const field=el('localBrowserText'),value=field.value;field.value='';if(!value)return;
- try{accountStreamSend({type:'text',text:value})}catch(e){flash(e.message,true)}
-};
-el('localBrowserText').onkeydown=ev=>{if(ev.key==='Enter'){ev.preventDefault();el('localBrowserSend').click()}};
-for(const b of document.querySelectorAll('[data-browser-key]'))b.onclick=()=>{try{accountStreamSend({type:'key',key:b.dataset.browserKey})}catch(e){flash(e.message,true)}};
+el('browserVerifyLogin').onclick=()=>refreshBrowserLoginStatus().catch(e=>flash(e.message,true));
 async function requestLoginDelivery(channel,btn){
  const status=el('loginStatus'),controller=new AbortController();
  const timer=setTimeout(()=>controller.abort(),15000);

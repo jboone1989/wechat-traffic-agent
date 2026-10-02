@@ -963,6 +963,7 @@ def test_operator_local_browser_controls_require_auth_and_do_not_echo_typed_text
     assert "X 账号登录" not in page.text
     assert "img-src 'self' data:" in page.headers["content-security-policy"]
 def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypatch):
+    import wechat_traffic_agent.novnc_takeover as novnc_module
     import types
     import wechat_traffic_agent.account_management as account_module
     import wechat_traffic_agent.local_browser_control as local_module
@@ -995,7 +996,8 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
     class FakeControl:
         def __init__(self, *args, **kwargs):
             pass
-        def start(self, url):
+        def open(self):
+            url = "https://x.com/i/flow/login"
             return {
                 "running": True, "url": url, "title": "X",
                 "x_authenticated": False, "account_identity": "",
@@ -1016,6 +1018,11 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
         def stop(self):
             return {"ok": True, "running": False}
 
+    class FakeNoVNC:
+        def connection(self):
+            return {"transport": "NOVNC", "takeover_url": "/operator/browser/x/vnc.html"}
+
+    monkeypatch.setattr(novnc_module, "AgentRuntimeNoVNC", FakeNoVNC)
     monkeypatch.setattr(account_module, "AccountManager", FakeAccountManager)
     monkeypatch.setattr(local_module, "LocalBrowserControl", FakeControl)
 
@@ -1037,6 +1044,7 @@ def test_operator_account_routes_are_generic_and_secret_safe(tmp_path, monkeypat
     )
     assert connected.status_code == 200
     assert connected.json()["account"]["status"] == "AUTHENTICATING"
+    assert connected.json()["browser"]["transport"] == "NOVNC"
 
     snap = client.get("/operator/api/accounts/x/login/snapshot")
     assert snap.status_code == 200

@@ -1416,7 +1416,7 @@ class LiveAgentService:
         from starlette.applications import Starlette
         from starlette.requests import Request
         from starlette.middleware.sessions import SessionMiddleware
-        from starlette.responses import HTMLResponse, JSONResponse, StreamingResponse
+        from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
         from starlette.routing import Route, WebSocketRoute
         from starlette.websockets import WebSocket, WebSocketDisconnect
         from .channels.agent_live_page import live_agent_document
@@ -1438,6 +1438,7 @@ class LiveAgentService:
         from .memory_self import ProspectiveSelfMemoryService
         from .operator_console import OperatorConsole, operator_console_enabled
         from .local_browser_control import LocalBrowserControl, LocalBrowserControlUnavailable
+        from .novnc_takeover import AgentRuntimeNoVNC, NoVNCUnavailable
         from .browser_session_stream import BrowserSessionStream, BrowserStreamUnavailable
         from .operator_private_chat import (
             OWNER_ENVELOPE_SCHEMA,
@@ -1453,6 +1454,7 @@ class LiveAgentService:
         account_manager = AccountManager(self.state_root) if operator_console is not None else None
         x_oauth_manager = XOAuthHeadlessManager(self.state_root) if operator_console is not None else None
         local_browser_control = LocalBrowserControl(state_root=self.state_root) if operator_console is not None else None
+        novnc_takeover = AgentRuntimeNoVNC() if operator_console is not None else None
         operator_chat = OperatorConversationStore(self.state_root) if operator_console is not None else None
         if operator_chat is not None:
             runtime = getattr(self.application, "domain_runtime", None)
@@ -2018,7 +2020,7 @@ class LiveAgentService:
                 "Cache-Control": "no-store",
                 "Content-Security-Policy": (
                     "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
-                    "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
+                    "connect-src 'self'; img-src 'self' data:; frame-src 'self'; frame-ancestors 'none'; "
                     "base-uri 'none'; form-action 'self'"
                 ),
             })
@@ -3239,6 +3241,66 @@ class LiveAgentService:
                 except Exception:
                     pass
 
+        async def operator_novnc_asset(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            if request.path_params["path"] in {"defaults.json", "mandatory.json"}:
+                settings = {} if request.path_params["path"] == "defaults.json" else {
+                    "host": request.url.hostname,
+                    "port": request.url.port or (443 if request.url.scheme == "https" else 80),
+                    "encrypt": request.url.scheme == "https",
+                    "path": "operator/browser/x/websockify",
+                    "shared": True, "reconnect": True, "resize": "scale",
+                }
+                return JSONResponse(settings, headers={"Cache-Control": "no-store"})
+            try:
+                status, body, content_type = await novnc_takeover.asset(request.path_params["path"])
+            except ValueError as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+            except (NoVNCUnavailable, OSError, RuntimeError) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=503)
+            return Response(body, status_code=status, headers={
+                "Content-Type": content_type, "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; "
+                    "base-uri 'self'; form-action 'self'"
+                ),
+            })
+
+        async def operator_novnc_websocket(websocket: WebSocket):
+            if not operator_websocket_authorized(websocket):
+                await websocket.close(code=4401)
+                return
+            from urllib.parse import urlsplit
+            origin = str(websocket.headers.get("origin") or "")
+            if origin and urlsplit(origin).netloc != str(websocket.headers.get("host") or ""):
+                await websocket.close(code=4403)
+                return
+            try:
+                await novnc_takeover.relay(
+                    websocket, authorize=lambda: operator_websocket_authorized(websocket),
+                )
+            except WebSocketDisconnect:
+                return
+            except (NoVNCUnavailable, OSError, RuntimeError) as exc:
+                import logging
+                logging.getLogger(__name__).exception("Agent Runtime X noVNC failed: %s", exc)
+                if websocket.application_state.name != "DISCONNECTED":
+                    await websocket.close(code=1011, reason=str(exc)[:120])
+
+        async def operator_browser_status(request: Request):
+            if not operator_authorized(request):
+                return JSONResponse({"error": "authentication_required"}, status_code=401)
+            try:
+                await asyncio.to_thread(local_browser_control.target_id)
+                result = await asyncio.to_thread(local_browser_control.status)
+                if result.get("x_authenticated"):
+                    account_manager.record_connected("x", identity=str(result.get("account_identity") or ""))
+                return JSONResponse({"browser": result}, headers={"Cache-Control": "no-store"})
+            except Exception as exc:
+                return JSONResponse({"error": str(exc)}, status_code=503)
+
         async def operator_account_connect(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
@@ -3249,7 +3311,9 @@ class LiveAgentService:
                 spec = account_manager.provider(provider_id)
                 if not spec.implemented or provider_id != "x":
                     raise ValueError("account adapter is not installed")
-                result = await asyncio.to_thread(local_browser_control.start, spec.login_url)
+                connection = await asyncio.to_thread(novnc_takeover.connection)
+                result = await asyncio.to_thread(local_browser_control.open)
+                result.update(connection)
                 if result.get("x_authenticated"):
                     account = account_manager.record_connected(
                         provider_id, identity=str(result.get("account_identity") or "")
@@ -3258,10 +3322,10 @@ class LiveAgentService:
                     account = account_manager.mark_authenticating(provider_id)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=409)
-            except LocalBrowserControlUnavailable:
-                return JSONResponse({"error": "local_browser_unavailable"}, status_code=503)
-            except Exception:
-                return JSONResponse({"error": "account_connect_failed"}, status_code=502)
+            except (LocalBrowserControlUnavailable, NoVNCUnavailable) as exc:
+                return JSONResponse({"error": str(exc)}, status_code=503)
+            except Exception as exc:
+                return JSONResponse({"error": str(exc)}, status_code=502)
             return JSONResponse(
                 {"account": account, "browser": result},
                 headers={"Cache-Control": "no-store"},
@@ -3746,6 +3810,9 @@ class LiveAgentService:
                 Route("/operator/api/accounts/x/oauth/complete", operator_x_oauth_complete, methods=["POST"]),
                 Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
                 Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
+                WebSocketRoute("/operator/browser/x/websockify", operator_novnc_websocket),
+                Route("/operator/browser/x/{path:path}", operator_novnc_asset, methods=["GET"]),
+                Route("/operator/api/accounts/x/browser/status", operator_browser_status, methods=["GET"]),
                 WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
                 Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
                 Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),
