@@ -343,6 +343,12 @@ class OwnerAgentEpisode:
         state: Mapping[str, Any],
     ) -> OwnerAgentDecision:
         from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
+        from .x_social import XHistoryLedger
+        recent_posts = [
+            {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
+            for row in XHistoryLedger(self.state_root).recent(limit=100)
+            if row.get("event_type") == "EXPRESSION" and row.get("x_post_id") and row.get("x_url")
+        ][-12:]
         prompt = (
             "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
             + EDITORIAL_SCOPE_INSTRUCTION + " "
@@ -357,6 +363,9 @@ class OwnerAgentEpisode:
             "AUTO is for autonomous content selection; WEBSITE is for a website article. Choosing an X surface is an execution request, never permission to bypass evidence, X safety, or publication authority. "
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Optional 20/200 advice is not a quota, and it is not a reason to stop pursuing the growth goal. "
+            "Prioritize a sustainable cadence of useful original posts; replies are secondary. Use recent_original_posts and current_time to notice long publication gaps. "
+            "Select the pace and next review yourself, and use WAIT with a concrete next_action rather than silently abandoning posting. A failed draft is not a published post. "
+            "Evidence can support both a short post and a later illustrated explanation when each adds useful supported value. Choose format by evidence quality, not a required fresh belief change. "
             "A no-reply decision applies to those observed posts; consider another discovery source, research, or useful original content rather than treating it as a goal-wide stop. "
             "Keep your experiment's measurement integrity, but distinguish waiting for its outcome from waiting on every useful goal action. "
             "Use previous_episode, consecutive_waits and real publication/reply receipts to avoid repeated inspection or indefinite WAIT. "
@@ -369,6 +378,8 @@ class OwnerAgentEpisode:
                     "prior_steps": self._compact(list(state.get("steps") or [])),
                     "previous_episode": self._compact(state.get("previous_episode")),
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
+                    "current_time": datetime.now(timezone.utc).isoformat(),
+                    "recent_original_posts": recent_posts,
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
                 },
