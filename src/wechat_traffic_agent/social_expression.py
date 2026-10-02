@@ -201,7 +201,24 @@ class SocialExpressionDraftWorker:
         allowed_style_ids = {
             str(row.get("observation_id")) for row in style.get("observations", []) if isinstance(row, dict)
         }
-        model_runtime = ReceiptRuntime(self.runtime, folder / "social-expression-model-calls-v3")
+        call_root = None
+        for attempt in range(3):
+            name = "social-expression-model-calls-v3" + (f"-retry-{attempt}" if attempt else "")
+            candidate_root = folder / name
+            if not candidate_root.exists() or not any(candidate_root.iterdir()):
+                call_root = candidate_root
+                if attempt:
+                    _put(folder / f"social_draft_recovery-{attempt}.json", {
+                        "status": "RETRY_ADVISORY_DRAFT", "cycle": cycle,
+                        "attempt": attempt, "created_at": now.isoformat(),
+                        "model_call_directory": name,
+                        "reason": "No committed social draft survived the prior attempt.",
+                        "publication_authority": False,
+                    })
+                break
+        if call_root is None:
+            return {"status": "DRAFT_RECOVERY_LIMIT_REACHED", "cycle": cycle, "attempt_limit": 3}
+        model_runtime = ReceiptRuntime(self.runtime, call_root)
         question_instruction = (
             " Evidence resolution is QUESTION: both channel drafts must have intent QUESTION. Give the known fact briefly, then ask a genuine open question. "
             "Do not smuggle an unsupported answer into a rhetorical question and do not pad the post with a list of caveats."

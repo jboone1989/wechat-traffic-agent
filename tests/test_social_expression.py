@@ -506,3 +506,47 @@ def test_l1_x_strategy_is_persisted_and_controls_publication_intent(tmp_path):
     assert saved["x_strategy"]["post_timing"] == "HOLD"
     assert saved["x_strategy"]["interaction_mode"] == "ORIGINAL"
     assert runtime.l1_decisions.calls
+
+def test_interrupted_social_model_call_retries_in_new_receipt_directory(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    folder = state / "content/continuous/cycles" / cycle
+    class Interrupted(Runtime):
+        fail = True
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            if self.fail and task.startswith("SOCIAL_EXPRESSION_DRAFT"):
+                raise RuntimeError("submission timed out")
+            return await super().cognitive_probe(task, max_tokens, output_schema)
+    runtime = Interrupted()
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state)
+    try:
+        asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("failure was swallowed")
+    marker = folder / "social-expression-model-calls-v3/0.started"
+    old_marker = marker.read_bytes()
+    runtime.fail = False
+    recovered = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    assert recovered["status"] == "DRAFTED"
+    assert marker.read_bytes() == old_marker
+    assert (folder / "social-expression-model-calls-v3-retry-1/0.json").exists()
+    assert json.loads((folder / "social_draft_recovery-1.json").read_text())["publication_authority"] is False
+    before = len(runtime.calls)
+    assert asyncio.run(worker.after_content_cycle(result=result, now=NOW))["status"] == "ALREADY_DRAFTED"
+    assert len(runtime.calls) == before
+
+
+def test_social_draft_recovery_is_bounded_without_erasing_old_receipts(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    folder = state / "content/continuous/cycles" / cycle
+    for suffix in ["","-retry-1","-retry-2"]:
+        p = folder / ("social-expression-model-calls-v3" + suffix)
+        p.mkdir()
+        (p / "0.started").write_text('{"status":"STARTED"}')
+    runtime = Runtime()
+    worker = SocialExpressionDraftWorker(runtime=runtime, state_root=state)
+    response = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    assert response["status"] == "DRAFT_RECOVERY_LIMIT_REACHED"
+    assert not any(task.startswith("SOCIAL_EXPRESSION_DRAFT") for task in runtime.calls)
+    assert not (folder / "social_expression_drafts.json").exists()
