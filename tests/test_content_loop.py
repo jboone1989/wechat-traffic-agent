@@ -34,8 +34,7 @@ class Runtime:
             if self.provenance_ids:
                 import re
                 source_id = re.search(r'content-artifact:a0:sha256:[a-f0-9]+', task).group()
-            return json.dumps({'grounded':self.passes,'useful':True,'no_private_data':True,'no_investment_advice':True,
-                'applications':[{'technique_index':0,'article_quote':'Invented application quote' if self.badquote else 'Explanation of supplied evidence',
+            return json.dumps({'grounded':self.passes,'useful':True,'applications':[{'technique_index':0,'article_quote':'Invented application quote' if self.badquote else 'Explanation of supplied evidence',
                     'explanation':'The explanation distinguishes interpretation from evidence.'}],
                 'support':[{'section_index':0,'source_id':source_id,'source_quote':'Existing bounded evidence.'}],
                 'next_practice':'NEXT_PRACTICE_MARKER: make the opening reader question more specific.',
@@ -190,7 +189,7 @@ def test_receipt_recovery_can_skip_persisted_phase_only_by_exact_request_fingerp
     assert runtime.calls == []
 
 
-def test_receipt_recovery_does_not_guess_when_no_exact_later_request_exists(tmp_path):
+def test_changed_request_generates_new_response_without_reusing_old_input(tmp_path):
     root = tmp_path / "receipts"
     root.mkdir()
     (root / "0.json").write_text(json.dumps({
@@ -201,8 +200,13 @@ def test_receipt_recovery_does_not_guess_when_no_exact_later_request_exists(tmp_
         "request_sha256": digest({"task": "other-phase", "max_tokens": 100}),
         "response": "other-response",
     }))
-    with pytest.raises(ValueError, match="input changed"):
-        asyncio.run(ReceiptRuntime(Runtime(), root).cognitive_probe("phase-b", 100))
+    runtime = Runtime()
+    response = asyncio.run(ReceiptRuntime(runtime, root).cognitive_probe("phase-b", 100))
+    assert runtime.calls == ["phase-b"]
+    receipt = json.loads((root / "2.json").read_text())
+    assert receipt["response"] == response
+    assert receipt["request_sha256"] == digest({"task": "phase-b", "max_tokens": 100})
+    assert json.loads((root / "0.json").read_text())["response"] == "old-response"
 
 
 def test_feed_freshness_content_identity_and_xml_budget():

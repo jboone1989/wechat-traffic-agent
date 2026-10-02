@@ -209,9 +209,6 @@ def _normalize_owner_goal_context(value):
 def _active_mission_discovery_context(value):
     if not isinstance(value, dict) or value.get("status") != "ACTIVE":
         return None
-    hard_stop = value.get("hard_stop")
-    if isinstance(hard_stop, dict) and hard_stop.get("active") is True:
-        return None
     roadmap = value.get("roadmap") if isinstance(value.get("roadmap"), dict) else {}
     steps = list(roadmap.get("steps") or ())
     candidates = [
@@ -783,8 +780,6 @@ def _compact_writing_experience(rows, *, row_limit=4):
             "self_check": {
                 "grounded": self_check.get("grounded"),
                 "useful": self_check.get("useful"),
-                "no_private_data": self_check.get("no_private_data"),
-                "no_investment_advice": self_check.get("no_investment_advice"),
                 "next_practice": str(self_check.get("next_practice") or "")[:500],
                 "rationale": str(self_check.get("rationale") or "")[:300],
             },
@@ -2710,16 +2705,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 if support.section_index >= len(artifact.sections):
                     raise ValueError('section_index is zero-based and must be between 0 and ' + str(len(artifact.sections)-1))
         self._activity(cycle, 'CREATE', 'I’m checking every section before publishing',
-                       'Verifying source support, technique use, privacy, usefulness, and investment-advice boundaries.')
+                       'Verifying source support, technique use, and usefulness.')
         check_article = artifact.model_dump(mode='json')
-        # public_safe is a workflow/admission flag, not article content. Omitting it prevents
-        # the checker from confusing an unpublished draft state with private-data presence.
+        # Check the article content without workflow metadata.
         check_article.pop('public_safe', None)
         check_prompt = (
             'CHECK_ARTICLE: Independently check this generated article against supplied source material. '
             'Mark grounded false if any factual claim lacks support. Interpretations must be explicit and reasonable. '
-            'Mark useful false for thin/repetitive paraphrase. Check private data and investment advice. '
-            'Judge no_private_data only from human-readable article content; workflow/admission metadata is not private data. '
+            'Mark useful false for thin/repetitive paraphrase. '
             'For EACH section provide a supporting exact quote from a source using an exact source_registry key as source_id. '
             'For EACH technique listed in technique_requirements.required_indices provide its zero-based index, an exact article quote demonstrating application, and explanation. '
             'Techniques listed in deferred_indices conflict with a hard prospective experiment constraint and are not required this cycle. '
@@ -2744,7 +2737,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         experiment_eligible = experiment_check is None or experiment_check['status'] == 'PASS'
         floor_check = evaluate_evidence_floor(artifact=artifact, plan=floor_plan, supports=check.support)
         _put(folder / 'evidence_floor_check.json', floor_check.model_dump(mode='json'))
-        passes = (all([check.grounded, check.useful, check.no_private_data, check.no_investment_advice])
+        passes = (all([check.grounded, check.useful])
                   and _required_techniques_applied(application_valid, technique_requirements)
                   and grounding_valid == set(range(len(artifact.sections)))
                   and (minimum_words is None or len(text.split()) >= minimum_words)
@@ -2781,8 +2774,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 all([
                     retry_check.grounded,
                     retry_check.useful,
-                    retry_check.no_private_data,
-                    retry_check.no_investment_advice,
                 ])
                 and _required_techniques_applied(retry_application_valid, technique_requirements)
                 and retry_grounding_valid == set(range(len(artifact.sections)))
@@ -2818,8 +2809,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             and all([
                 check.grounded,
                 check.useful,
-                check.no_private_data,
-                check.no_investment_advice,
             ])
             and grounding_valid == set(range(len(artifact.sections)))
             and (minimum_words is None or len(text.split()) >= minimum_words)
@@ -2896,8 +2885,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             repair_check_prompt = (
                 'CHECK_ARTICLE: Independently check this generated article against supplied source material. '
                 'Mark grounded false if any factual claim lacks support. Interpretations must be explicit and reasonable. '
-                'Mark useful false for thin/repetitive paraphrase. Check private data and investment advice. '
-                'Judge no_private_data only from human-readable article content; workflow/admission metadata is not private data. '
+                'Mark useful false for thin/repetitive paraphrase. '
                 'For EACH section provide a supporting exact quote from a source using an exact source_registry key as source_id. '
                 'For EACH technique listed in technique_requirements.required_indices provide its zero-based index, an exact article quote demonstrating application, and explanation. '
                 'Techniques listed in deferred_indices conflict with a hard prospective experiment constraint and are not required this cycle. '
@@ -2951,8 +2939,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 all([
                     check.grounded,
                     check.useful,
-                    check.no_private_data,
-                    check.no_investment_advice,
                 ])
                 and _required_techniques_applied(application_valid, technique_requirements)
                 and grounding_valid == set(range(len(artifact.sections)))

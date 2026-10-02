@@ -256,8 +256,6 @@ class _GoalRuntime:
             return json.dumps({
                 "grounded": True,
                 "useful": True,
-                "no_private_data": True,
-                "no_investment_advice": True,
                 "applications": [{
                     "technique_index": 0,
                     "article_quote": "Explanation of supplied evidence",

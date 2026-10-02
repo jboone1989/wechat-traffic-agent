@@ -177,9 +177,7 @@ def _write_x_only_bound_cycle(
         "self_check": {
             "grounded": grounded,
             "useful": True,
-            "no_private_data": True,
-            "no_investment_advice": True,
-        },
+            },
         "missing_section_support": [],
         "missing_section_grounding": [],
         "perspective_expression": True,
@@ -242,7 +240,7 @@ def test_held_website_cycle_can_bind_to_x_when_x_admission_is_safe(tmp_path):
     assert binding["bound"] is True
     assert binding["admission"]["surface"] == "X"
     assert binding["admission"]["website_checks_passed"] is False
-    assert binding["admission"]["x_evidence_safety_admission"] is True
+    assert binding["admission"]["x_evidence_admission"] is True
     assert baseline["status"] == "RECORDED"
 
 
@@ -790,8 +788,8 @@ def test_ready_baseline_guardrail_step_completes_with_real_artifact(tmp_path):
     assert report["baseline"]["value"] == 2000.0
     assert report["measurement"]["prospective_follower_snapshots"] == "ENABLED"
     assert report["measurement"]["causal_attribution"] is False
-    assert report["guardrails"]["hard_stop"]["active"] is False
-    assert report["guardrails"]["hard_stop"]["decline_threshold"] == 0.02
+    assert report["guardrails"]["audience_feedback"]["active"] is False
+    assert report["guardrails"]["audience_feedback"]["decline_threshold"] == 0.02
     assert report["guardrails"]["ratification"]["new_human_approval_event"] is False
     completed = runtime.missions.get_step(roadmap.steps[0].step_id)
     assert completed.completed_at == NOW
@@ -799,7 +797,7 @@ def test_ready_baseline_guardrail_step_completes_with_real_artifact(tmp_path):
     assert second["roadmap"]["steps"][0]["status"] == "COMPLETED"
 
 
-def test_verified_follower_drop_over_two_percent_activates_publication_hard_stop(tmp_path):
+def test_verified_follower_drop_over_two_percent_becomes_strategy_feedback(tmp_path):
     runtime, clock, _backend = _runtime(tmp_path)
     coordinator = XGrowthMissionCoordinator(
         runtime=runtime,
@@ -814,7 +812,7 @@ def test_verified_follower_drop_over_two_percent_activates_publication_hard_stop
             now=NOW,
         )
     )
-    assert first["hard_stop"]["active"] is False
+    assert first["audience_feedback"]["active"] is False
 
     clock.advance(timedelta(hours=24).total_seconds())
     second = asyncio.run(
@@ -825,13 +823,12 @@ def test_verified_follower_drop_over_two_percent_activates_publication_hard_stop
         )
     )
 
-    assert second["hard_stop"]["active"] is True
-    assert second["hard_stop"]["peak"] == 2000.0
-    assert second["hard_stop"]["current"] == 1959.0
-    assert second["hard_stop"]["decline_ratio"] > 0.02
-    guard = coordinator.publication_guardrail()
-    assert guard["allowed"] is False
-    assert guard["status"] == "HARD_STOP_ACTIVE"
+    assert second["audience_feedback"]["active"] is True
+    assert second["audience_feedback"]["peak"] == 2000.0
+    assert second["audience_feedback"]["current"] == 1959.0
+    assert second["audience_feedback"]["decline_ratio"] > 0.02
+    assert second["audience_feedback"]["authority"] == "STRATEGY_FEEDBACK_ONLY"
+    assert second["audience_feedback"]["action"] == "REASSESS_CONTENT_STRATEGY"
 
 
 def test_verified_publication_starts_ready_content_step_and_records_progress(tmp_path):

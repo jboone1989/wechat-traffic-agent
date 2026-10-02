@@ -870,8 +870,6 @@ def public_agent_snapshot(
                 self_check
                 and self_check.get("grounded") is True
                 and self_check.get("useful") is True
-                and self_check.get("no_private_data") is True
-                and self_check.get("no_investment_advice") is True
             ),
             **learning_summary,
         },

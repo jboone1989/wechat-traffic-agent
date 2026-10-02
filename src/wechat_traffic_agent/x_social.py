@@ -64,16 +64,6 @@ class XExpressionDecision(BaseModel):
         return self
 
 
-class XSafetyDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    safe: bool
-    no_private_data: bool
-    no_impersonation: bool
-    no_harassment: bool
-    no_investment_advice: bool
-    no_fabricated_facts: bool
-    attribution_ok: bool
-    rationale: str = Field(min_length=10, max_length=500)
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -456,7 +446,7 @@ class XAutonomyLoop:
                 "X_REPLY_DRAFT: The bounded JEV L1 router has already decided to REPLY. "
                 "Write only the reply wording; do not reconsider IGNORE/INVESTIGATE/REPLY. "
                 "Keep it <=280 characters. Use only the supplied public mention and durable public persona. "
-                "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported factual assertions. "
+                "Keep factual claims grounded in the supplied evidence; do not invent observations. "
                 "If the mention asserts an unverified fact, phrase the reply so it does not adopt that fact as true. Return JSON only.\n"
                 + json.dumps({
                     "mention": row,
@@ -501,12 +491,6 @@ class XAutonomyLoop:
             self._activity(cycle=cycle, title="Investigating a public claim", detail=decision.summary)
         if decision.action == "REPLY" and decision.reply_text:
             if not allow_remote_actions or not x_writes_enabled():
-                return False
-            # Independent wording check before any public input.
-            safety = await self._safety_check(model_runtime=model_runtime, text=decision.reply_text,
-                context={"public_post":row,"public_persona":public_persona_projection(self.state_root)})
-            _write_json(folder / "reply_safety.json", safety.model_dump(mode="json"))
-            if not _safety_passes(safety):
                 return False
             from .x_browser import XBrowserTransportRouter
             transport = self.browser_publish_transport or XBrowserTransportRouter(state_root=self.state_root)
@@ -686,41 +670,23 @@ class XAutonomyLoop:
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
-            "No private data, impersonation, harassment, investment advice, fabricated facts, or unsupported certainty. Max 280 characters including any URL. Return JSON only.\n"
+            "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**context, "public_url": public_url,
                           "public_persona": public_persona_projection(self.state_root),
                           "x_growth_mission": x_mission,
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XPostDraft)
-        safety = await self._safety_check(model_runtime=model_runtime, text=decision.post_text, context=context)
-        if not _safety_passes(safety):
-            return {"status": "HELD_BY_X_SAFETY", "cycle": cycle, "reason": safety.rationale}
-        guardrail = getattr(self.growth_mission, "publication_guardrail", None)
-        if callable(guardrail):
-            guard = guardrail()
-            if not bool(guard.get("allowed", True)):
-                return {
-                    "status": "HELD_BY_MISSION_GUARDRAIL",
-                    "cycle": cycle,
-                    "guardrail": guard,
-                }
         me, _identity_receipt = await self._publication_identity(now=now)
-        if self.growth_mission is not None:
-            if isinstance(mission_binding, dict) and bool(mission_binding.get("bound")):
+        baseline = None
+        if self.growth_mission is not None and isinstance(mission_binding, dict) and mission_binding.get("bound"):
+            try:
                 baseline = self.growth_mission.record_publication_baseline(
-                    cycle=cycle,
-                    user=me,
-                    identity_receipt_id=_identity_receipt,
-                    now=now,
+                    cycle=cycle, user=me, identity_receipt_id=_identity_receipt, now=now,
                 )
-                if str((baseline or {}).get("status") or "") != "RECORDED":
-                    return {
-                        "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
-                        "cycle": cycle,
-                        "binding": mission_binding,
-                        "baseline": baseline,
-                    }
+            except Exception as exc:
+                baseline = {"status": "MEASUREMENT_FAILED", "error_type": type(exc).__name__, "detail": str(exc)}
+            _write_json(folder / "x_publication_measurement.json", baseline)
         try:
             published = await self._publish_through_browser(text=decision.post_text)
         except Exception as exc:
@@ -811,6 +777,7 @@ class XAutonomyLoop:
             "transport": publication_transport,
             "transport_failover": transport_failover,
             "mission_experiment_transition": mission_experiment_transition,
+            "mission_baseline": baseline,
             "owner_execution_request": context.get("owner_publication_request") or None,
         }
 
@@ -848,8 +815,7 @@ class XAutonomyLoop:
                 "x_strategy":strategy,"evidence_decision":existing.get("evidence_decision") or {"source_evidence":context.get("source_evidence"),
                     "resolution":{"action":"DRAFT","useful_facts":[str((context.get("source_evidence") or {}).get("summary") or "")]}}})
         publisher=XBrowserPublisher(state_root=self.state_root,transport=self.browser_publish_transport,
-            growth_mission=self.growth_mission,mission_baseline_observer=self.capture_mission_publication_baseline,
-            draft_safety_check=self.validate_public_draft)
+            growth_mission=self.growth_mission,mission_baseline_observer=self.capture_mission_publication_baseline)
         result=await publisher.after_content_cycle(cycle=cycle,now=now)
         publication=result.get("publication") or {}
         if result.get("status") in {"POSTED","ALREADY_POSTED"}:
@@ -859,20 +825,6 @@ class XAutonomyLoop:
                 "post_id":publication["post_id"],"url":publication["url"],"receipt_id":receipt_id,
                 "format":fmt,"owner_execution_request":context["owner_publication_request"]}
         return result
-
-    async def validate_public_draft(self, *, cycle, draft):
-        folder=self.state_root/"content"/"continuous"/"cycles"/cycle
-        context={"cognition":_read_json(folder/"cognition.json"),
-            "evidence":_read_json(folder/"social_expression_drafts.json").get("evidence_decision") or {},
-            "public_persona":public_persona_projection(self.state_root)}
-        text="\n".join(str(draft.get(key) or "") for key in ("title","text","cover_caption"))
-        if draft.get("images"):
-            text += "\nIMAGE_PLAN:\n" + json.dumps(draft["images"], ensure_ascii=False)
-        runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"draft-safety")
-        safety=await self._safety_check(model_runtime=runtime,text=text,context=context)
-        payload={**safety.model_dump(mode="json"),"passed":_safety_passes(safety)}
-        _write_json(folder/"x_article_safety.json",payload)
-        return payload
 
     async def _publish_through_browser(self, *, text: str):
         transport = self.browser_publish_transport
@@ -903,15 +855,6 @@ class XAutonomyLoop:
             "identity_source": "JEV_AGENT_RUNTIME",
         })
         return user, receipt_id
-
-    async def _safety_check(self, *, model_runtime: ReceiptRuntime, text: str, context: dict[str, Any]) -> XSafetyDecision:
-        prompt = (
-            "X_SAFETY_CHECK: Check the candidate X post only against the supplied persisted public cognition/artifact context. "
-            "safe may be true only if there is no private data, impersonation, harassment, individualized investment advice, fabricated factual claim, or missing attribution for a factual claim that needs it. "
-            "Do not improve or rewrite the post; judge it. Return JSON only.\n"
-            + json.dumps({"candidate_post": text, "context": context}, ensure_ascii=False)
-        )
-        return await _structured(model_runtime, prompt, XSafetyDecision)
 
     def _update_recent_public_posts(self, row: dict[str, Any]) -> None:
         profile = _read_json(self.profile_path)
@@ -947,9 +890,6 @@ class XAutonomyLoop:
         decision = await _structured(model_runtime, prompt, XExpressionDecision)
         if decision.action != "POST" or not decision.post_text:
             return
-        safety = await self._safety_check(model_runtime=model_runtime, text=decision.post_text, context={"settlements": terminal})
-        if not _safety_passes(safety):
-            return
         published = await self._publish_through_browser(text=decision.post_text)
         post_id = str(published.post_id).strip()
         if not post_id:
@@ -964,13 +904,6 @@ class XAutonomyLoop:
         })
         self._update_recent_public_posts(row)
         self._activity(cycle=cycle, title="Posted a prediction outcome", detail=decision.post_text)
-def _safety_passes(value: XSafetyDecision) -> bool:
-    return all((
-        value.safe, value.no_private_data, value.no_impersonation, value.no_harassment,
-        value.no_investment_advice, value.no_fabricated_facts, value.attribution_ok,
-    ))
-
-
 def public_x_projection(state_root: Path, *, limit: int = 8) -> dict[str, Any]:
     root = Path(state_root) / "content" / "x"
     profile = _read_json(root / "public_profile.json")

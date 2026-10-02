@@ -127,10 +127,10 @@ class FerroNeuralLife:
         mission = _read_json(self.state_root / "content" / "x" / "growth_mission.json")
         current = mission.get("current")
         target = mission.get("target")
-        hard_stop = mission.get("hard_stop") if isinstance(mission.get("hard_stop"), Mapping) else {}
+        audience_feedback = mission.get("audience_feedback") if isinstance(mission.get("audience_feedback"), Mapping) else {}
         peak = mission.get("peak")
         if not isinstance(peak, (int, float)):
-            peak = hard_stop.get("peak")
+            peak = audience_feedback.get("peak")
         follower_gap = None
         decline = 0.0
         if isinstance(current, (int, float)) and isinstance(target, (int, float)) and float(target) > 0:
