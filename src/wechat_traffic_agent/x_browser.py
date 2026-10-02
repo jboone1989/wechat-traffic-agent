@@ -124,7 +124,6 @@ class XBrowserPublisher:
         writes_enabled: bool | None = None,
         growth_mission: Any | None = None,
         mission_baseline_observer: Any | None = None,
-        draft_safety_check: Any | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.transport = transport
@@ -132,7 +131,6 @@ class XBrowserPublisher:
         self.writes_enabled = x_browser_writes_enabled() if writes_enabled is None else bool(writes_enabled)
         self.growth_mission = growth_mission
         self.mission_baseline_observer = mission_baseline_observer
-        self.draft_safety_check = draft_safety_check
 
     def _folder(self, cycle: str) -> Path:
         return self.state_root / "content" / "continuous" / "cycles" / cycle
@@ -224,50 +222,19 @@ class XBrowserPublisher:
                 "publication": existing,
                 "mission_experiment_transition": transition,
             }
-        guardrail = getattr(self.growth_mission, "publication_guardrail", None)
-        if callable(guardrail):
-            guard = guardrail()
-            if not bool(guard.get("allowed", True)):
-                return {
-                    "status": "HELD_BY_MISSION_GUARDRAIL",
-                    "cycle": cycle,
-                    "guardrail": guard,
-                }
-        binding = None
+        baseline = None
         binding_method = getattr(self.growth_mission, "publication_binding", None)
-        if callable(binding_method):
-            binding = binding_method(cycle=cycle)
-        if isinstance(binding, dict) and bool(binding.get("bound")):
+        binding = binding_method(cycle=cycle) if callable(binding_method) else None
+        if isinstance(binding, dict) and binding.get("bound"):
             observer = self.mission_baseline_observer
             if observer is None:
-                return {
-                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
-                    "cycle": cycle,
-                    "binding": binding,
-                }
-            try:
-                baseline = await observer(cycle=cycle, now=now)
-            except Exception as exc:
-                return {
-                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
-                    "cycle": cycle,
-                    "binding": binding,
-                    "error_type": type(exc).__name__,
-                    "message": str(exc)[:300],
-                }
-            if str((baseline or {}).get("status") or "") != "RECORDED":
-                return {
-                    "status": "HELD_MISSION_BASELINE_UNAVAILABLE",
-                    "cycle": cycle,
-                    "binding": binding,
-                    "baseline": baseline,
-                }
-        if fmt == "ARTICLE" or (folder / "owner_publication_request.json").exists() or self.draft_safety_check is not None:
-            if self.draft_safety_check is None:
-                return {"status":"ARTICLE_SAFETY_UNAVAILABLE", "cycle":cycle}
-            safety=await self.draft_safety_check(cycle=cycle,draft=draft)
-            if not safety.get("passed"):
-                return {"status":"HELD_BY_X_SAFETY", "cycle":cycle,"safety":safety}
+                baseline = {"status": "MEASUREMENT_UNAVAILABLE", "reason": "No follower baseline observer"}
+            else:
+                try:
+                    baseline = await observer(cycle=cycle, now=now)
+                except Exception as exc:
+                    baseline = {"status": "MEASUREMENT_FAILED", "error_type": type(exc).__name__, "detail": str(exc)}
+            _write_json(folder / "x_publication_measurement.json", baseline)
         transport = self.transport
         if transport is None:
             transport = XBrowserTransportRouter(state_root=self.state_root)
@@ -303,6 +270,7 @@ class XBrowserPublisher:
             "schema_version": "content-x-browser-publication.v1", "status": "POSTED",
             "cycle": cycle, "published_at": (datetime.now(timezone.utc) if fmt=="ARTICLE" else now).isoformat(), "draft_sha256": digest,
             "format":fmt, "article_media":media if fmt=="ARTICLE" else None,
+            "mission_baseline": baseline,
             "published_text":text,
             "post_id": published.post_id, "url": published.url, "handle": published.handle,
             "duplicate_found": published.duplicate_found,

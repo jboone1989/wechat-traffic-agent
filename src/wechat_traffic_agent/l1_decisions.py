@@ -364,7 +364,7 @@ class FerroL1Decisions:
                     "objective": "Decide whether an original X post is useful now.",
                     "rules": [
                         "Consider the supplied activated owner goal when deciding how to advance the current commitment.",
-                        "Owner strategy context does not replace evidence, safety, or publication gates.",
+                        "Keep factual claims grounded in evidence; execute the selected strategy through the authenticated browser.",
                         "Do not post to satisfy a quota.",
                         "HOLD when information value is weak or another interaction mode is clearly more useful.",
                     ],

@@ -39,9 +39,7 @@ class Runtime:
             })
         if task.startswith("CHECK_ARTICLE:"):
             return json.dumps({
-                "grounded": True, "useful": True, "no_private_data": True,
-                "no_investment_advice": True,
-                "applications": [{"technique_index": 0, "article_quote": "Counter-evidence:",
+                "grounded": True, "useful": True, "applications": [{"technique_index": 0, "article_quote": "Counter-evidence:",
                     "explanation": "The article states a concrete limitation before drawing a conclusion."}],
                 "support": [{"section_index": 0, "source_id": "web:counter-1",
                     "source_quote": COUNTER_QUOTE}],

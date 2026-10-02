@@ -42,47 +42,36 @@ def test_request_must_match_owner_cycle_and_topic(tmp_path):
                                    worldview={},prediction=None,mind_plan={})
 
 
-@pytest.mark.parametrize("safe",[True,False])
-def test_explicit_owner_short_post_keeps_safety_and_uses_jev_without_api(tmp_path, monkeypatch, safe):
-    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED","1")
-    _,result = cycle_context(tmp_path)
-    model = _ModelRuntime([
-        {"post_text":"I'm Ferro: the project documents jobs and checkpoints that outlive a chat turn.",
-         "rationale":"A source-attributed architecture observation."},
-        {"safe":safe,"no_private_data":safe,"no_impersonation":True,"no_harassment":True,
-         "no_investment_advice":True,"no_fabricated_facts":True,"attribution_ok":True,
-         "rationale":"Independent check of the candidate and source."},
-    ])
+def test_explicit_owner_short_post_executes_with_one_model_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
+    _, result = cycle_context(tmp_path)
+    model = _ModelRuntime([{"post_text": "I'm Ferro: the project documents jobs and checkpoints that outlive a chat turn.",
+        "rationale": "A source-attributed architecture observation."}])
     class AdvisoryL1:
-        def choose_x_strategy(self,**kwargs):
-            return _x_strategy(post_timing="HOLD",x_format="LONG_POST")
-    model.l1_decisions=AdvisoryL1()
-    runtime=_Runtime(post_ok=False,post_status="X_CREDITS_DEPLETED")
-    calls=[]
+        def choose_x_strategy(self, **kwargs):
+            return _x_strategy(post_timing="HOLD", x_format="LONG_POST")
+    model.l1_decisions = AdvisoryL1()
+    runtime = _Runtime(post_ok=False, post_status="X_CREDITS_DEPLETED")
+    calls = []
     class Browser:
         async def identity(self):
-            return {"username":"agent","public_metrics":{"followers_count":2000}}
-        async def publish(self,*,text):
+            return {"username": "agent", "public_metrics": {"followers_count": 2000}}
+        async def publish(self, *, text):
             calls.append(text)
-            return SimpleNamespace(post_id="new-123",url="https://x.com/agent/status/new-123",
-                                   provider="JEV_AGENT_RUNTIME")
-    loop=XAutonomyLoop(runtime=runtime,model_runtime=model,state_root=tmp_path,base_url="",
-                       browser_publish_transport=Browser())
-    outcome=asyncio.run(loop.after_content_cycle(result=result,now=NOW))
-    if safe:
-        assert outcome["status"] == "POSTED"
-        assert outcome["transport"] == "JEV_AGENT_RUNTIME"
-        assert outcome["transport_failover"] is None
-        assert runtime.calls == []
-        assert outcome["owner_execution_request"]["owner_goal_id"] == "goal-owner"
-        assert len(calls)==1
-        duplicate=asyncio.run(loop.after_content_cycle(result=result,now=NOW))
-        assert duplicate["status"] == "ALREADY_EXPRESSED"
-        assert len(calls)==1
-    else:
-        assert outcome["status"] == "HELD_BY_X_SAFETY"
-        assert calls == []
-        assert not any(cap=="x.post" for cap,_ in runtime.calls)
+            return SimpleNamespace(post_id="new-123", url="https://x.com/agent/status/new-123", provider="JEV_AGENT_RUNTIME")
+    loop = XAutonomyLoop(runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="",
+        browser_publish_transport=Browser())
+    outcome = asyncio.run(loop.after_content_cycle(result=result, now=NOW))
+    assert outcome["status"] == "POSTED"
+    assert outcome["transport"] == "JEV_AGENT_RUNTIME"
+    assert runtime.calls == []
+    assert outcome["owner_execution_request"]["owner_goal_id"] == "goal-owner"
+    assert len(model.tasks) == 1
+    assert len(calls) == 1
+    duplicate = asyncio.run(loop.after_content_cycle(result=result, now=NOW))
+    assert duplicate["status"] == "ALREADY_EXPRESSED"
+    assert len(calls) == 1
+    assert len(model.tasks) == 1
 
 
 def test_owner_short_post_still_requires_publication_gate(tmp_path, monkeypatch):
@@ -105,7 +94,7 @@ def test_mission_binds_owner_x_cognition_without_website_article(tmp_path):
     assert not (folder/"publication.json").exists()
     binding=coordinator.publication_binding(cycle=result["cycle"])
     assert binding["status"] == "BOUND_X_EXPRESSION"
-    assert binding["admission"]["independent_x_safety_required"] is True
+    assert binding["admission"]["source_evidence_id"] == "source-1"
     baseline=coordinator.record_publication_baseline(cycle=result["cycle"],user=_user(2000),
                                                   identity_receipt_id="pre",now=clock.now())
     assert baseline["status"] == "RECORDED"

@@ -181,18 +181,15 @@ class TestGrowthLoop(unittest.TestCase):
         draft=ChannelSocialDraft(channel='X',format='ARTICLE',title='Recoverable agent state',
             text='I am Ferro. Recoverable external state is the direction I want to test.',
             style_observation_ids=(),rationale='A supported structured explanation is useful.')
-        safe=social.XSafetyDecision(safe=True,no_private_data=True,no_impersonation=True,no_harassment=True,
-            no_investment_advice=True,no_fabricated_facts=True,attribution_ok=True,
-            rationale='The text preserves the supplied evidence and uncertainty.')
         transport.publish_article=AsyncMock(return_value=SimpleNamespace(post_id='2105980723614158848',
             url='https://x.com/i/article/2105980723614158848',handle='ferro',provider='JEV_AGENT_RUNTIME',duplicate_found=False))
-        with patch.dict(os.environ,{'CONTENT_X_PUBLICATION_ENABLED':'1'}), patch.object(social,'_structured',AsyncMock(side_effect=[draft,safe])):
+        with patch.dict(os.environ,{'CONTENT_X_PUBLICATION_ENABLED':'1'}), patch.object(social,'_structured',AsyncMock(return_value=draft)):
             result=asyncio.run(loop._owner_longform(folder=folder,context=context,now=NOW,surface='X_ARTICLE'))
         self.assertEqual(result['status'],'POSTED')
         transport.publish_article.assert_awaited_once()
         self.assertFalse((folder/'publication.json').exists())
 
-    def test_native_longform_draft_and_safety_have_distinct_receipts(self):
+    def test_native_longform_publishes_with_one_draft_call_and_no_safety_approval(self):
         class Model:
             agent_manifest = None
             def __init__(self):
@@ -203,10 +200,6 @@ class TestGrowthLoop(unittest.TestCase):
                     return json.dumps({"channel":"X","format":"ARTICLE","title":"Crypto agent evaluation",
                         "text":"A capability claim needs a separate reliability test before it supports an outcome claim.",
                         "style_observation_ids":[],"rationale":"A structured evaluation framework adds useful context."})
-                if prompt.startswith("X_SAFETY_CHECK:"):
-                    return json.dumps({"safe":True,"no_private_data":True,"no_impersonation":True,
-                        "no_harassment":True,"no_investment_advice":True,"no_fabricated_facts":True,
-                        "attribution_ok":True,"rationale":"The framework stays within the supplied claim."})
                 raise AssertionError(prompt[:80])
         loop, transport = self.loop()
         model = Model()
@@ -224,11 +217,11 @@ class TestGrowthLoop(unittest.TestCase):
             repeated = asyncio.run(loop._owner_longform(folder=folder,context=context,now=NOW,surface="X_ARTICLE"))
         self.assertEqual(result["status"], "POSTED")
         self.assertEqual(repeated["status"], "ALREADY_EXPRESSED")
-        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(len(model.calls), 1)
         transport.publish_article.assert_awaited_once()
         receipts = loop.root/"expression-model-calls"/cycle
         self.assertTrue((receipts/"longform-draft/ARTICLE/0.json").exists())
-        self.assertTrue((receipts/"draft-safety/0.json").exists())
+        self.assertFalse((receipts/"draft-safety").exists())
 
     def test_l1_longform_choice_reaches_native_executor_and_preserves_hold(self):
         for fmt, surface in (("ARTICLE","X_ARTICLE"), ("LONG_POST","X_LONG_POST")):

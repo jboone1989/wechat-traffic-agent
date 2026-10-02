@@ -76,8 +76,7 @@ def _state(tmp_path: Path) -> Path:
         "techniques": [{"name": "Question opener", "instruction": "Open with the reader question."}]}})
     _write(cycle / "experience.json", {"assessment_kind": "bounded self-check",
         "automated_checks_passed": True,
-        "self_check": {"grounded": True, "useful": True, "no_private_data": True,
-                       "no_investment_advice": True, "next_practice": "Add a falsifiable check.",
+        "self_check": {"grounded": True, "useful": True, "next_practice": "Add a falsifiable check.",
                        "rationale": "The checked article applied the planned technique.",
                        "applications": [{"technique_index": 0, "article_quote": "Reader question",
                                          "explanation": "The article opened with the reader question."}]}})

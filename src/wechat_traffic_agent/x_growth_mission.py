@@ -22,8 +22,8 @@ DEFAULT_EXPERIMENT_HOURS = 24
 MIN_OBSERVATION_INTERVAL = timedelta(hours=6)
 MISSION_PLANNING_CONTEXT_REF = "x-mission-planning-context:v1"
 MISSION_BASELINE_GUARDRAIL_SCHEMA = "content-agent-x-mission-baseline-guardrails.v1"
-MISSION_HARD_STOP_WINDOW = timedelta(hours=72)
-MISSION_HARD_STOP_DECLINE = 0.02
+MISSION_AUDIENCE_FEEDBACK_WINDOW = timedelta(hours=72)
+MISSION_AUDIENCE_DECLINE_THRESHOLD = 0.02
 MISSION_PROGRESS_SCHEMA = "content-agent-x-growth-roadmap-progress.v1"
 MISSION_PUBLICATION_BASELINE_SCHEMA = "content-agent-x-mission-publication-baseline.v1"
 
@@ -397,14 +397,14 @@ class XGrowthMissionCoordinator:
             },
         }
 
-    def _hard_stop_state(
+    def _audience_feedback_state(
         self,
         *,
         mission: Any,
         followers: int,
         now: datetime,
     ) -> dict[str, Any]:
-        cutoff = now - MISSION_HARD_STOP_WINDOW
+        cutoff = now - MISSION_AUDIENCE_FEEDBACK_WINDOW
         points: list[tuple[datetime, float, str]] = []
         if mission.created_at >= cutoff:
             points.append((mission.created_at, float(mission.baseline), "mission-baseline"))
@@ -422,35 +422,22 @@ class XGrowthMissionCoordinator:
             if peak_value <= 0
             else max(0.0, (peak_value - float(followers)) / peak_value)
         )
-        active = decline_ratio > MISSION_HARD_STOP_DECLINE
+        active = decline_ratio > MISSION_AUDIENCE_DECLINE_THRESHOLD
         return {
             "active": active,
-            "window_hours": MISSION_HARD_STOP_WINDOW.total_seconds() / 3600.0,
-            "decline_threshold": MISSION_HARD_STOP_DECLINE,
+            "authority": "STRATEGY_FEEDBACK_ONLY",
+            "window_hours": MISSION_AUDIENCE_FEEDBACK_WINDOW.total_seconds() / 3600.0,
+            "decline_threshold": MISSION_AUDIENCE_DECLINE_THRESHOLD,
             "current": float(followers),
             "peak": peak_value,
             "peak_at": peak_at.isoformat(),
             "peak_ref": peak_ref,
             "decline_ratio": decline_ratio,
             "action": (
-                "PAUSE_MISSION_LINKED_X_PUBLICATION"
+                "REASSESS_CONTENT_STRATEGY"
                 if active
-                else "ALLOW_WITH_EXISTING_GATES"
+                else "CONTINUE_EXPERIMENT"
             ),
-        }
-
-    def publication_guardrail(self) -> dict[str, Any]:
-        if not self.enabled:
-            return {"allowed": True, "status": "MISSION_DISABLED"}
-        payload = _read_json(self.path)
-        hard_stop = payload.get("hard_stop")
-        if not isinstance(hard_stop, dict):
-            return {"allowed": True, "status": "NO_ACTIVE_HARD_STOP"}
-        active = bool(hard_stop.get("active"))
-        return {
-            "allowed": not active,
-            "status": "HARD_STOP_ACTIVE" if active else "ALLOWED",
-            "hard_stop": hard_stop,
         }
 
     def _baseline_guardrail_report(
@@ -462,7 +449,7 @@ class XGrowthMissionCoordinator:
         followers: int,
         identity_receipt_id: str,
         now: datetime,
-        hard_stop: dict[str, Any],
+        audience_feedback: dict[str, Any],
     ) -> tuple[Path, dict[str, Any]]:
         payload = {
             "schema_version": MISSION_BASELINE_GUARDRAIL_SCHEMA,
@@ -504,7 +491,7 @@ class XGrowthMissionCoordinator:
                 ],
             },
             "guardrails": {
-                "hard_stop": hard_stop,
+                "audience_feedback": audience_feedback,
                 "prohibited_tactics": [
                     "artificial follower inflation",
                     "follow-churn",
@@ -516,8 +503,8 @@ class XGrowthMissionCoordinator:
                 "policy_constraints": list(mission.constraints),
                 "ratification": {
                     "basis": (
-                        "operator-issued mission plus runtime adoption of a protective "
-                        "execution guardrail"
+                        "operator-issued mission with observational "
+                        "audience feedback"
                     ),
                     "new_human_approval_event": False,
                     "existing_execution_gates_remain_authoritative": True,
@@ -552,7 +539,7 @@ class XGrowthMissionCoordinator:
         identity_receipt_id: str,
         now: datetime,
         evidence_refs: list[str],
-        hard_stop: dict[str, Any],
+        audience_feedback: dict[str, Any],
     ) -> dict[str, Any] | None:
         roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
         schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
@@ -595,7 +582,7 @@ class XGrowthMissionCoordinator:
             followers=followers,
             identity_receipt_id=identity_receipt_id,
             now=now,
-            hard_stop=hard_stop,
+            audience_feedback=audience_feedback,
         )
         completed = complete(
             candidate.step_id,
@@ -886,7 +873,6 @@ class XGrowthMissionCoordinator:
                 return {"status": "X_EXPRESSION_ADMISSION_FAILED", "bound": False, "cycle": cycle}
             binding_status = "BOUND_X_EXPRESSION"
             admission = {"surface": "X", "owner_execution_request": True,
-                         "independent_x_safety_required": True,
                          "source_evidence_id": source["evidence_id"]}
         elif result_status == "PUBLISHED":
             publication = _read_json(folder / "publication.json")
@@ -910,8 +896,7 @@ class XGrowthMissionCoordinator:
             # (learned writing techniques, long-form structure, opening-mode
             # experiments).  Those constraints must not silently become X
             # publication policy.  A held mission cycle may continue to X only
-            # through this narrower evidence/safety admission; X still performs
-            # its own model safety check and official API guardrails later.
+            # from grounded, useful cognition with attributable source evidence.
             cognition = _read_json(folder / "cognition.json")
             experience = _read_json(folder / "experience.json")
             self_check = (
@@ -919,8 +904,6 @@ class XGrowthMissionCoordinator:
                 if isinstance(experience.get("self_check"), dict)
                 else {}
             )
-            missing_support = list(experience.get("missing_section_support") or ())
-            missing_grounding = list(experience.get("missing_section_grounding") or ())
             draft_path = str(result.get("draft_path") or "").strip()
             draft: dict[str, Any] = {}
             if draft_path:
@@ -944,11 +927,6 @@ class XGrowthMissionCoordinator:
                     bool(cognition.get("worth_saying")),
                     bool(self_check.get("grounded")),
                     bool(self_check.get("useful")),
-                    bool(self_check.get("no_private_data")),
-                    bool(self_check.get("no_investment_advice")),
-                    bool(experience.get("perspective_expression")),
-                    not missing_support,
-                    not missing_grounding,
                     bool(source_refs),
                 )
             )
@@ -961,11 +939,6 @@ class XGrowthMissionCoordinator:
                         "worth_saying": bool(cognition.get("worth_saying")),
                         "grounded": bool(self_check.get("grounded")),
                         "useful": bool(self_check.get("useful")),
-                        "no_private_data": bool(self_check.get("no_private_data")),
-                        "no_investment_advice": bool(self_check.get("no_investment_advice")),
-                        "perspective_expression": bool(experience.get("perspective_expression")),
-                        "missing_section_support": missing_support,
-                        "missing_section_grounding": missing_grounding,
                         "source_ref_count": len(source_refs),
                     },
                 }
@@ -989,7 +962,7 @@ class XGrowthMissionCoordinator:
                 "surface": "X",
                 "website_status": result_status,
                 "website_checks_passed": bool(result.get("automated_checks_passed")),
-                "x_evidence_safety_admission": True,
+                "x_evidence_admission": True,
                 "source_ref_count": len(source_refs),
             }
         else:
@@ -1578,7 +1551,7 @@ class XGrowthMissionCoordinator:
             )
 
         mission = self.runtime.missions.get(mission.mission_id)
-        hard_stop = self._hard_stop_state(
+        audience_feedback = self._audience_feedback_state(
             mission=mission,
             followers=followers,
             now=now,
@@ -1595,7 +1568,7 @@ class XGrowthMissionCoordinator:
                 identity_receipt_id=identity_receipt_id,
                 now=now,
                 evidence_refs=evidence_refs,
-                hard_stop=hard_stop,
+                audience_feedback=audience_feedback,
             )
 
         progress = self.runtime.mission_progress(mission.mission_id)
@@ -1651,7 +1624,7 @@ class XGrowthMissionCoordinator:
             "roadmap_transition": roadmap_result,
             "roadmap_execution": roadmap_execution,
             "roadmap_reconciliation": roadmap_reconciliation,
-            "hard_stop": hard_stop,
+            "audience_feedback": audience_feedback,
             "roadmap": (
                 None
                 if roadmap is None

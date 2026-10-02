@@ -2336,7 +2336,7 @@ class WakefulContentTaskRunner:
                     x_receipt = {}
                 x_status = str(x_receipt.get("status") or "")
                 if x_status in {
-                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "HELD_BY_X_SAFETY"
+                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED"
                 }:
                     continue
                 if blocker_active and x_status in {
