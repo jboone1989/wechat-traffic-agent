@@ -141,6 +141,25 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertEqual(browser.uploads,[['/tmp/cover.png']])
         self.assertFalse(browser.submitted)
 
+    def test_empty_article_list_with_create_and_write_uses_create_once(self):
+        class EmptyList(Browser):
+            def observe(self,screenshot=False):
+                page=super().observe(screenshot)
+                if self.url=='https://x.com/compose/articles':
+                    page['actions'].append({'kind':'click','role':'button','label':'create','node':16})
+                return page
+            def act(self,action,page,text=None):
+                if action['node']==16:
+                    self.actions.append(action)
+                    self.url='https://x.com/compose/articles/edit/789'
+                else:
+                    super().act(action,page,text)
+        browser=EmptyList('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro',prepare_only=True))
+        self.assertEqual(result['status'],'DRAFT_PREPARED')
+        self.assertEqual([a['node'] for a in browser.actions if a['node'] in {13,16}],[16])
+
     def test_article_uploads_native_body_image_and_verifies_it_publicly(self):
         browser=Browser('article')
         result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',

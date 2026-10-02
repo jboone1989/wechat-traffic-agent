@@ -64,12 +64,16 @@ def checkpoint(status,submitted,cover=None):
     pending.write_text(json.dumps(previous,ensure_ascii=False))
     pending.replace(path)
 
-def observed(labels, kind='click', text=None):
+def observed(labels, kind='click', text=None, preferred=()):
     deadline=time.monotonic()+20
     while time.monotonic()<deadline:
         page=browser.observe(screenshot=False)
         candidates=[a for a in page.get('actions') or [] if a.get('kind')==kind
             and str(a.get('label') or '').strip().casefold() in labels]
+        preferred_candidates=[a for a in candidates
+            if str(a.get('label') or '').strip().casefold() in preferred]
+        if preferred_candidates:
+            candidates=preferred_candidates
         if len(candidates)==1:
             try:
                 browser.act(candidates[0],page,text=text)
@@ -159,7 +163,7 @@ try:
     if not handle or (expected_handle and handle.casefold()!=expected_handle.casefold()):
         raise RuntimeError('Article identity mismatch')
     if not draft_url:
-        observed({'write','撰写','create'})
+        observed({'write','撰写','create'},preferred={'create'})
     draft_url=wait_value('location.href.includes("/compose/articles/edit/") && location.href')
     if not draft_url:
         raise RuntimeError('Native Article editor URL not observed')
