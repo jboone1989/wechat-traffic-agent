@@ -69,6 +69,7 @@ def test_screencast_pump_sends_live_frame_and_ack():
     assert client.sent[1]["data"] == "ZmFrZS1qcGVn"
     methods = [row["method"] for row in cdp.sent]
     assert methods == [
+        "Page.bringToFront",
         "Page.enable",
         "Page.startScreencast",
         "Page.screencastFrameAck",

@@ -204,6 +204,7 @@ class BrowserSessionStream:
         self, client, cdp, authorize: Callable[[], bool] | None = None
     ) -> None:
         await self._send_status(client)
+        await self._send(cdp, "Page.bringToFront")
         await self._send(cdp, "Page.enable")
         await self._send(
             cdp,
