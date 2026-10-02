@@ -332,15 +332,34 @@ class XAutonomyLoop:
                 transport = self.browser_publish_transport or XBrowserTransportRouter(state_root=self.state_root)
                 if discovery["source"] == "SEARCH":
                     from .x_discovery import plan_x_search
-                    search = await plan_x_search(
-                        runtime=self.model_runtime, state_root=self.state_root,
-                        folder=self.root / "discovery-cycles" / cycle,
-                        mission=x_growth_mission_context(self.state_root),
-                        persona=public_persona_projection(self.state_root),
-                        previous=_read_json(self.root / "discovery.json"),
-                    )
-                    discovery = {**discovery, **search.model_dump(mode="json")}
-                    raw_mentions = await transport.discover(source="SEARCH", query=search.query, max_results=20)
+                    previous = _read_json(self.root / "discovery.json")
+                    search_folder = self.root / "discovery-cycles" / cycle
+                    attempts = []
+                    # One observation task permits three autonomous searches, with real feedback
+                    # between attempts. A transport/model failure still fails this observation.
+                    for attempt in range(1, 4):
+                        attempt_folder = search_folder if attempt == 1 else search_folder / f"attempt-{attempt}"
+                        search = await plan_x_search(
+                            runtime=self.model_runtime, state_root=self.state_root,
+                            folder=attempt_folder,
+                            mission=x_growth_mission_context(self.state_root),
+                            persona=public_persona_projection(self.state_root),
+                            previous=previous,
+                        )
+                        discovery = {**discovery, **search.model_dump(mode="json")}
+                        raw_mentions = await transport.discover(source="SEARCH", query=search.query, max_results=20)
+                        feedback = {
+                            "attempt": attempt, "decision": discovery,
+                            "post_count": len(raw_mentions), "posts": raw_mentions,
+                            "observed_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                        _write_json(attempt_folder / "search_observation.json", feedback)
+                        attempts.append({"attempt": attempt, **search.model_dump(mode="json"),
+                                         "post_count": len(raw_mentions)})
+                        if raw_mentions:
+                            break
+                        previous = feedback
+                    discovery = {**discovery, "search_attempts": attempts}
                 else:
                     raw_mentions = await transport.discover(source=discovery["source"], max_results=20)
             mentions = normalize_posts(raw_mentions, observed_at=now)
@@ -381,6 +400,7 @@ class XAutonomyLoop:
         return {
             "status": final_status, "identity_receipt_id": identity_receipt, "mentions_receipt_id": mentions_receipt_id,
             "mention_count": len(mentions), "new_mentions": handled, "discovery": discovery, "failures": failures,
+            "discovery_outcome": "OBSERVED_POSTS" if mentions else "EMPTY_RESULTS",
             "x_growth_mission": growth_result,
             "reply_count": len(replies), "replies": replies,
             "engagement_outcome": (

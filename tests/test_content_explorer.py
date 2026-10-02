@@ -240,3 +240,36 @@ def test_mission_web_query_executes_subject_first_query(tmp_path):
     assert calls == [result["query"]]
     assert result["query"].startswith("model evaluation ")
     assert result["query_authority"] == "EXTERNAL_MISSION_DISCOVERY"
+
+
+@pytest.mark.parametrize("counter", [False, True])
+def test_multiple_valid_quotes_from_one_source_are_preserved_without_duplicate_sources(tmp_path, counter):
+    row = candidate()
+    payload = {"matches": [
+        {"evidence_id": row["evidence_id"], "evidence_quote": row["title"], "reason": "Relevant source title."},
+        {"evidence_id": row["evidence_id"], "evidence_quote": row["summary"], "reason": "Another grounded observation."},
+    ]}
+    runtime = Runtime(json.dumps(payload))
+    worker = explorer(tmp_path)
+    operation = (worker.filter_counter_evidence(runtime=runtime, primary=candidate("primary"), candidates=[row])
+                 if counter else worker.filter_for_goal(runtime=runtime, goal_topic="validation", topic_context=[], candidates=[row]))
+    result = asyncio.run(operation)
+    assert result["items"] == [row]
+    assert result["matches"] == payload["matches"]
+    assert len(runtime.calls) == 1
+
+
+@pytest.mark.parametrize("counter", [False, True])
+def test_repeated_source_cannot_hide_an_invented_second_quote(tmp_path, counter):
+    row = candidate()
+    payload = {"matches": [
+        {"evidence_id": row["evidence_id"], "evidence_quote": row["title"], "reason": "Relevant source title."},
+        {"evidence_id": row["evidence_id"], "evidence_quote": "This quote was invented.", "reason": "Another claimed observation."},
+    ]}
+    runtime = Runtime(json.dumps(payload))
+    worker = explorer(tmp_path)
+    operation = (worker.filter_counter_evidence(runtime=runtime, primary=candidate("primary"), candidates=[row])
+                 if counter else worker.filter_for_goal(runtime=runtime, goal_topic="validation", topic_context=[], candidates=[row]))
+    with pytest.raises(ValueError, match="substring"):
+        asyncio.run(operation)
+    assert len(runtime.calls) == 2

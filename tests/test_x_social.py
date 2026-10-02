@@ -730,3 +730,45 @@ def test_x_only_cycle_without_social_draft_gets_real_l1_strategy_before_l2_text(
     assert strategy["post_timing"] == "POST_NOW"
     assert model.tasks[0].startswith("X_EXPRESSION_DRAFT")
     assert "Decide whether" not in model.tasks[0]
+
+
+@pytest.mark.parametrize("result_on_attempt", [2, None])
+def test_empty_search_refines_from_feedback_then_handles_real_results(tmp_path, result_on_attempt):
+    class SearchL1(_L1):
+        def choose_x_discovery(self, **kwargs):
+            return {"source": "SEARCH"}
+
+    class SearchTransport(_BrowserTransport):
+        def __init__(self):
+            super().__init__()
+            self.queries = []
+
+        async def discover(self, *, source, query, max_results):
+            assert source == "SEARCH"
+            self.queries.append(query)
+            return ([{"id": "search-1", "text": "What makes AI agent evaluations reliable?",
+                      "username": "researcher", "url": "https://x.com/researcher/status/search-1"}]
+                    if len(self.queries) == result_on_attempt else [])
+
+    plans = [{"domain": domain, "query": query, "question": "What should I investigate?",
+              "rationale": "I will refine my exploration using the actual results."}
+             for domain, query in [("CRYPTOCURRENCY", "crypto drawdown evidence"),
+                                   ("AI", "AI agent evaluation"),
+                                   ("FINANCE", "bond term premium")]]
+    model = _ModelRuntime(plans)
+    model.l1_decisions = SearchL1()
+    transport = SearchTransport()
+    loop = XAutonomyLoop(runtime=_Runtime(), model_runtime=model, state_root=tmp_path,
+                         base_url="https://example.org", browser_publish_transport=transport)
+    result = asyncio.run(loop.observe(now=NOW, allow_remote_actions=False))
+    expected_attempts = result_on_attempt or 3
+    assert len(transport.queries) == expected_attempts
+    assert result["mention_count"] == (1 if result_on_attempt else 0)
+    assert result["discovery_outcome"] == ("OBSERVED_POSTS" if result_on_attempt else "EMPTY_RESULTS")
+    assert len(model.l1_decisions.calls) == (1 if result_on_attempt else 0)
+    assert transport.calls == []
+    second_prompt = model.tasks[1]
+    feedback = json.JSONDecoder().raw_decode(second_prompt.split("\n", 1)[1])[0]["previous_search_feedback"]
+    assert feedback["decision"]["query"] == plans[0]["query"]
+    assert feedback["post_count"] == 0
+    assert len(result["discovery"]["search_attempts"]) == expected_attempts
