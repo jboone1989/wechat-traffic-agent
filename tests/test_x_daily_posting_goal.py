@@ -131,3 +131,26 @@ def test_reusing_an_existing_post_does_not_reset_stalled_production(tmp_path):
     goal.reconcile(NOW+timedelta(minutes=10))
     note=json.loads(next((tmp_path/"operator/mailbox/notifications").glob("*.json")).read_text())
     assert "需要协助" in note["title"]
+
+def test_publication_survives_more_than_500_later_history_events(tmp_path):
+    goal=configured(tmp_path)
+    post(tmp_path,1)
+    for n in range(501):
+        XHistoryLedger(tmp_path).append({"cycle":"reply-"+str(n),"event_type":"REPLY","x_post_id":str(100+n)})
+    assert goal.status(NOW)["published"]==1
+    assert len(goal.reconcile(NOW)["deliveries"])==1
+
+def test_quantity_rule_off_keeps_real_error_notifications(tmp_path):
+    goal=configured(tmp_path)
+    config=json.loads(goal.config_path.read_text()); config["enabled"]=False; put(goal.config_path,config)
+    goal.observe("CHECK_OUTCOMES",{"status":"ERROR","message":"X browser session unavailable"},NOW)
+    notes=goal.reconcile(NOW)["deliveries"]
+    assert len(notes)==1
+    note=json.loads(next((tmp_path/"operator/mailbox/notifications").glob("*.json")).read_text())
+    assert "X browser session unavailable" in note["message"]
+
+def test_met_goal_does_not_raise_shortfall_from_later_unproductive_cognition(tmp_path):
+    goal=configured(tmp_path)
+    for n in range(20): post(tmp_path,n)
+    for n in range(3): goal.observe("CONTENT_COGNITION",{"status":"OK"},NOW+timedelta(minutes=5*n))
+    assert not list((goal.root/"notifications").glob("*.json"))

@@ -46,9 +46,22 @@ class DailyPostingGoal:
             yield
 
     def publications(self):
-        from .x_social import XHistoryLedger
         rows = {}
-        for item in XHistoryLedger(self.state_root).recent(limit=500):
+        history = self.state_root / "content/x/history.jsonl"
+        try:
+            stream = history.open(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        with stream:
+            items = []
+            for line in stream:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # A concurrent append may leave its last line incomplete.
+                if isinstance(item, dict) and item.get("schema_version") == "content-agent-x-history.v1":
+                    items.append(item)
+        for item in items:
             if item.get("event_type") != "EXPRESSION" or not item.get("x_post_id"):
                 continue
             folder = self.state_root / "content/continuous/cycles" / str(item["cycle"])
@@ -165,20 +178,20 @@ class DailyPostingGoal:
             return
         with self._lock():
             status = self.status(now)
-            if not status["enabled"] or task != "CONTENT_COGNITION":
-                return
             progress = _read(self.root / "progress.json")
-            previous_count = int(progress.get("published", status["published"])) if progress.get("date") == status["date"] else status["published"]
-            succeeded = status["published"] > previous_count or any(
-                value.get("status") == "POSTED" for value in result.values() if isinstance(value, dict))
-            failures = 0 if succeeded else (int(progress.get("consecutive_no_publication", 0)) + 1 if progress.get("date") == status["date"] else 1)
-            left = max(60, int((_time(status["deadline"]) - now).total_seconds()))
-            delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
-            _write(self.root / "progress.json", {
-                "date": status["date"], "published": status["published"],
-                "last_attempt_at": now.isoformat(), "next_attempt_at": (now + timedelta(seconds=max(60, delay))).isoformat(),
-                "consecutive_no_publication": failures, "last_result_status": result.get("status"),
-            })
+            failures = 0
+            if task == "CONTENT_COGNITION":
+                previous_count = int(progress.get("published", status["published"])) if progress.get("date") == status["date"] else status["published"]
+                succeeded = status["published"] > previous_count or any(
+                    value.get("status") == "POSTED" for value in result.values() if isinstance(value, dict))
+                failures = 0 if succeeded or not status["enabled"] or not status["remaining"] else (int(progress.get("consecutive_no_publication", 0)) + 1 if progress.get("date") == status["date"] else 1)
+                left = max(60, int((_time(status["deadline"]) - now).total_seconds()))
+                delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
+                _write(self.root / "progress.json", {
+                    "date": status["date"], "published": status["published"],
+                    "last_attempt_at": now.isoformat(), "next_attempt_at": (now + timedelta(seconds=max(60, delay))).isoformat(),
+                    "consecutive_no_publication": failures, "last_result_status": result.get("status"),
+                })
             errors = []
             def scan(value):
                 if isinstance(value, dict):
@@ -194,12 +207,12 @@ class DailyPostingGoal:
                     for item in value:
                         scan(item)
             scan(result)
-            if errors or failures >= 3:
+            if errors or (status["enabled"] and status["remaining"] and failures >= 3):
                 detail = json.dumps(errors[:3], ensure_ascii=False) if errors else "连续三次生产尝试没有真实发布，可能是选题或证据获取停滞。"
                 key = ("unresolved:" if failures >= 3 else "blocker:") + status["date"] + ":" + sha256(detail.encode()).hexdigest()[:12]
                 self._queue(key, "Ferro 发帖流程需要协助" if failures >= 3 else "Ferro 发帖流程阻塞",
                     f"北京时间 {status['date']} 已发布 {status['published']}/{status['minimum']}。\n"
-                    f"阻塞：{detail}\n" + ("多次自动尝试仍未解决，需要你检查浏览器登录、主机及模型通道；自动重试仍继续。" if failures >= 3 else "正在自动修复，5分钟后重试；仍不能推进时会另行求助。"), now)
+                    f"阻塞：{detail}\n" + ("多次自动尝试仍未解决，需要你检查浏览器登录、主机及模型通道；自动重试仍继续。" if failures >= 3 else ("正在自动修复，5分钟后重试；仍不能推进时会另行求助。" if status["enabled"] and task == "CONTENT_COGNITION" else "已交给自动修复；尚未解决时保留告警并继续求助。")), now)
 
     def reconcile(self, now, *, watch_heartbeat=False):
         config = _read(self.config_path)
