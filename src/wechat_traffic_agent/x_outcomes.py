@@ -144,60 +144,12 @@ class LocalHarnessXMetricsTransport:
         post_id = _post_id_from_url(url)
         if not post_id:
             raise ValueError("X outcome URL must be a public x.com status URL")
-        session_id = "ferro-x-metrics"
-        marker = f"/status/{post_id}"
-        try:
-            self.browser.invoke(
-                BROWSER_NAVIGATE,
-                {"session_id": session_id, "url": url},
-            )
-            script = (
-                "import time\n"
-                + "marker = " + json.dumps(marker) + "\n"
-                + """deadline = time.monotonic() + 15.0
-while time.monotonic() < deadline:
-    found = js('''(() => [...document.querySelectorAll('article')].some(
-      a => [...a.querySelectorAll('a')].some(x => (x.getAttribute('href')||'').includes(%s))
-    ))()''' % marker)
-    if found:
-        break
-    time.sleep(0.15)
-else:
-    raise RuntimeError('X public post article did not render')
-raw = js('''(() => {
-  const marker=%s;
-  const article=[...document.querySelectorAll('article')].find(
-    a => [...a.querySelectorAll('a')].some(x => (x.getAttribute('href')||'').includes(marker))
-  );
-  if(!article) return null;
-  const counter=(testid) => {
-    const n=article.querySelector('[data-testid="'+testid+'"]');
-    return n ? (n.getAttribute('aria-label') || n.innerText || '') : '';
-  };
-  let analytics=[...article.querySelectorAll('a')].find(
-    x => (x.getAttribute('href')||'').includes(marker+'/analytics')
-  );
-  if(!analytics) analytics=article.querySelector('a[href$="/analytics"]');
-  return {
-    replies:counter('reply'),
-    reposts:counter('retweet'),
-    likes:counter('like'),
-    views:analytics ? (analytics.innerText || '') : ''
-  };
-})()''' % marker)
-assert isinstance(raw, dict), 'X public counters were unavailable'
-result = raw
-"""
-            )
-            body = self.browser.run_session_script(
-                session_id,
-                script,
-                timeout_seconds=max(30.0, self.timeout_ms / 1000 + 15.0),
-            )
-        except (LookupError, RuntimeError, ValueError) as exc:
-            raise BrowserRuntimeUnavailable(
-                f"Agent Runtime X metrics failed: {exc}"
-            ) from exc
+        from .x_local_browser import LocalHarnessXTransport
+        from .x_jev_metrics import jev_x_metrics
+        marker=("/i/article/" if "/i/article/" in url else "/status/")+post_id
+        body=LocalHarnessXTransport.from_environment(state_root=self.state_root)._run_jev_sync(jev_x_metrics(url,marker))
+        if body.get("status")!="OBSERVED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
         metrics = XPublicMetrics(
             views=_count_or_none(str(body.get("views") or "")),
             replies=_count_or_none(str(body.get("replies") or "")),
@@ -290,14 +242,18 @@ class XOutcomeCollector:
             draft=draft_rows.get("x") if isinstance(draft_rows.get("x"),dict) else {}
             text=str(draft.get("text") or "")
             attr=website.get("outcome_attribution") if isinstance(website.get("outcome_attribution"),dict) else {}
-            if not text.strip() or not attr: continue
+            if not text.strip(): continue
+            if not attr:
+                cognition=_read_json(cycle_dir/"cognition.json")
+                attr={"topic":cognition.get("topic") or "public_cognition", "artifact_id":cycle_dir.name}
             post_id=str(receipt.get("post_id") or ""); url=str(receipt.get("url") or "")
             if not post_id or not url: continue
             if receipt.get("draft_sha256") != _draft_sha256(cycle=cycle_dir.name,draft=draft):
                 raise ValueError("X publication receipt draft binding mismatch")
             if _post_id_from_url(url) != post_id:
                 raise ValueError("X publication receipt URL/post id mismatch")
-            published_at=_published_at_from_status_id(post_id)
+            published_at=(datetime.fromisoformat(str(receipt["published_at"])) if draft.get("format")=="ARTICLE"
+                          else _published_at_from_status_id(post_id))
             format_name=str(draft.get("format") or "SHORT_POST"); intent=str(draft.get("intent") or "UNKNOWN")
             resolution=drafts.get("evidence_decision") if isinstance(drafts.get("evidence_decision"),dict) else {}
             rr=resolution.get("resolution") if isinstance(resolution.get("resolution"),dict) else {}
@@ -310,6 +266,43 @@ class XOutcomeCollector:
                 "structure_version":f"x:{format_name}:{intent}:v1",
                 "strategy_version":f"x-social-evidence:{str(rr.get('action') or 'UNKNOWN')}:v1",
             })
+        # Autonomous expressions and replies do not require a website artifact.
+        from .x_social import XHistoryLedger
+        seen={row["post_id"] for row in rows}
+        for event in XHistoryLedger(self.state_root).recent(limit=1000):
+            post_id=str(event.get("x_post_id") or "")
+            url=str(event.get("x_url") or "")
+            text=str(event.get("text") or "")
+            if not post_id or post_id in seen or not text or _post_id_from_url(url)!=post_id:
+                continue
+            cycle=str(event.get("cycle") or "")
+            if event.get("event_type")=="EXPRESSION":
+                receipt=_read_json(root/cycle/"x_social_expression.json")
+                if receipt.get("status")!="POSTED" or str(receipt.get("post_id") or "")!=post_id or receipt.get("url")!=url:
+                    continue
+                if event.get("runtime_receipt_id")!=receipt.get("receipt_id"):
+                    continue
+                if receipt.get("content_sha256") and receipt["content_sha256"]!=hashlib.sha256(text.encode("utf-8")).hexdigest():
+                    raise ValueError("X autonomous publication content binding mismatch")
+                if receipt.get("text") and receipt["text"]!=text:
+                    raise ValueError("X autonomous publication text binding mismatch")
+                kind="SHORT_POST"
+            elif event.get("event_type")=="REPLY":
+                if not event.get("publication_verified") or not event.get("target_post_id"):
+                    continue
+                if event.get("runtime_receipt_id")!=f"x-jev-reply:{event['target_post_id']}:{post_id}":
+                    continue
+                kind="REPLY"
+            else:
+                continue
+            seen.add(post_id)
+            cognition=event.get("cognition") or {}
+            rows.append({"publication_id":f"x:{post_id}", "post_id":post_id, "url":url,
+                "published_at":_published_at_from_status_id(post_id),
+                "account":url.split("/status/",1)[0], "artifact_id":cycle,
+                "content_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "topic":str(cognition.get("topic") or cognition.get("category") or "public_cognition"),
+                "structure_version":f"x:{kind}:v1", "strategy_version":"x-autonomy:jev:v1"})
         return rows
 
     @staticmethod

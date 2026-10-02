@@ -148,6 +148,13 @@ class LocalHarnessXTransport:
         return result
 
     def _run_jev_sync(self, script: str) -> dict[str, Any]:
+        import fcntl
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        with (self.state_root / "x_jev_session.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._run_jev_locked(script)
+
+    def _run_jev_locked(self, script: str) -> dict[str, Any]:
         session_id = "ferro-x-publish"
         try:
             # Reuse the user's authenticated tab without forcing a home reload.
@@ -168,6 +175,73 @@ class LocalHarnessXTransport:
                 f"Agent Runtime X transaction failed: {exc}"
             ) from exc
         return body
+
+    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False):
+        from .x_jev_article import jev_x_article, jev_x_article_reconcile
+        from .x_browser import _read_json, _write_json
+        import hashlib
+        transaction_path=Path(transaction_path)
+        digest=hashlib.sha256((title+"\n"+text+"\n"+hashlib.sha256(Path(image_path).read_bytes()).hexdigest()).encode()).hexdigest()
+        previous=_read_json(transaction_path)
+        if previous and previous.get("digest")!=digest:
+            raise ValueError("Article transaction draft binding mismatch")
+        if previous.get("status")=="POSTED":
+            return self._verified_result(previous)
+        if previous.get("attempted") or previous.get("status")=="SUBMIT_PENDING":
+            body=await asyncio.to_thread(self._run_jev_sync,jev_x_article_reconcile(title=title,text=text,
+                draft_url=str(previous.get("draft_url") or ""),cover_source=previous.get("cover_source") or [],
+                expected_handle=self.expected_handle))
+            _write_json(transaction_path,{**previous,**body,"digest":digest})
+            return self._verified_result(body)
+        _write_json(transaction_path,{**previous,"digest":digest,"status":"SUBMIT_PENDING" if not prepare_only else "PREPARING"})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_article(title=title,text=text,image_path=str(image_path),
+            expected_handle=self.expected_handle,draft_url=str(previous.get("draft_url") or ""),prepare_only=prepare_only,
+            checkpoint_path=str(transaction_path)))
+        _write_json(transaction_path,{**body,"digest":digest})
+        if prepare_only and body.get("status")=="DRAFT_PREPARED":
+            return body
+        return self._verified_result(body)
+
+    async def discover(self, *, source="MENTIONS", max_results=20):
+        from urllib.parse import quote
+        from .x_jev_social import jev_x_discover
+        urls={"MENTIONS":"https://x.com/notifications/mentions", "HOME":"https://x.com/home"}
+        queries={"AGENT_RUNTIME":"persistent AI agents runtime", "LIVINGRUNTIME":"LivingRuntime Remote", "AGENT_MEMORY":"AI agent memory continuity"}
+        if source not in urls and source not in queries:
+            raise ValueError("Unknown X discovery source")
+        url=urls.get(source) or "https://x.com/search?q="+quote(queries[source])+"&f=live"
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_discover(url,max_results))
+        if body.get("status")!="OBSERVED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        return body["posts"]
+
+    async def reply(self, *, text, target_url):
+        from .x_jev_social import jev_x_reply
+        if not text.strip() or len(text)>280:
+            raise ValueError("X reply must contain 1-280 characters")
+        import hashlib
+        from .x_browser import _read_json, _write_json
+        digest=hashlib.sha256((target_url+"\n"+text).encode()).hexdigest()
+        path=self.state_root/"content"/"x"/"reply-transactions"/(digest+".json")
+        prior=_read_json(path)
+        if prior.get("status")=="POSTED":
+            return self._verified_result(prior)
+        reconcile_only=bool(prior.get("attempted") or prior.get("status")=="SUBMIT_PENDING")
+        _write_json(path,{**prior,"status":"SUBMIT_PENDING","text":text,"target_url":target_url})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only))
+        _write_json(path,{**body,"text":text,"target_url":target_url})
+        return self._verified_result(body)
+
+    def _verified_result(self, body):
+        if body.get("status")=="PUBLICATION_UNVERIFIED":
+            raise XBrowserPublicationUnverified(str(body.get("detail") or body))
+        if body.get("status")!="POSTED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        handle=str(body.get("handle") or "")
+        if self.expected_handle and handle.casefold()!=self.expected_handle.casefold():
+            raise BrowserRuntimeUnavailable("X transaction identity mismatch")
+        return XBrowserPublishResult(post_id=str(body["post_id"]),url=str(body["url"]),handle=handle,
+            duplicate_found=bool(body.get("duplicate_found")),provider=self.provider_name)
 
     async def identity(self) -> dict[str, Any]:
         body = await asyncio.to_thread(

@@ -1172,7 +1172,7 @@ def test_x_growth_context_ignores_expired_publication_blocker(tmp_path):
 
     context = x_growth_mission_context(tmp_path)
 
-    assert "execution_blocker" not in context
+    assert context.get("execution_blocker") is None
 
     blocker_path.write_text(
         json.dumps({
@@ -1183,4 +1183,4 @@ def test_x_growth_context_ignores_expired_publication_blocker(tmp_path):
         encoding="utf-8",
     )
     context = x_growth_mission_context(tmp_path)
-    assert "execution_blocker" not in context
+    assert context.get("execution_blocker") is None

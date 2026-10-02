@@ -925,7 +925,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
             raise ValueError('focus_topic must be a lowercase kebab-case slug')
-        if publication_surface not in {'AUTO', 'WEBSITE', 'X_SHORT_POST'}:
+        if publication_surface not in {'AUTO', 'WEBSITE', 'X_SHORT_POST', 'X_LONG_POST', 'X_ARTICLE'}:
             raise ValueError('unknown publication surface')
         self._publication_surface = publication_surface
         self._focus_topic = topic or None
@@ -2304,7 +2304,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                            f"{selection.title} now cites {selected.get('title') or selection.evidence_id} instead of the unrelated Website fallback source.",
                            status='completed')
 
-        if getattr(self, '_publication_surface', 'AUTO') == 'X_SHORT_POST':
+        if getattr(self, '_publication_surface', 'AUTO') in {'X_SHORT_POST', 'X_LONG_POST', 'X_ARTICLE'}:
             from .x_owner_execution import prepare_owner_x_expression
 
             if cognition_decision is None:

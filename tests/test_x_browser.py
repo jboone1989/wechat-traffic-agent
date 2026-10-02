@@ -186,7 +186,7 @@ def test_unverified_browser_write_does_not_create_fake_receipt_or_history(tmp_pa
 def test_article_is_not_silently_posted_as_feed_text(tmp_path: Path):
     _draft(tmp_path, cycle="article", fmt="ARTICLE", text="x" * 1200)
     result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=_Transport(), enabled=True, writes_enabled=True).after_content_cycle(cycle="article", now=NOW))
-    assert result == {"status": "UNSUPPORTED_FORMAT", "cycle": "article", "format": "ARTICLE"}
+    assert result == {"status": "INVALID_ARTICLE_TITLE", "cycle": "article"}
 
 
 def test_public_x_status_url_parser():

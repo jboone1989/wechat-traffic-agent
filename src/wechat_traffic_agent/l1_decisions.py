@@ -286,6 +286,7 @@ class FerroL1Decisions:
             "x_format": {
                 "SHORT_POST": "A concise X post is sufficient for the information value.",
                 "LONG_POST": "One X post benefits materially from additional context and explanation.",
+                "ARTICLE": "A native illustrated X Article provides durable structured explanation.",
             },
             "exploration_mode": {
                 "EXPLOIT": "Use the strongest currently supported strategy pattern.",
@@ -333,6 +334,7 @@ class FerroL1Decisions:
                     "exploration_rate",
                     "active_experiment",
                     "hard_stop",
+                    "owner_strategy_advice",
                 ),
             ),
             "owner_goal": {
@@ -403,6 +405,24 @@ class FerroL1Decisions:
             "decided_at": first.decided_at,
         }
 
+    def choose_x_discovery(self, *, mission, persona, previous=None):
+        results = self.provider.choose_many(
+            state={"mission": mission, "persona": persona, "previous_discovery":previous or {}},
+            decisions={"source": {
+                "MENTIONS": "Read direct questions and responses to Ferro.",
+                "HOME": "Explore the personalized following/recommendation timeline.",
+                "AGENT_RUNTIME": "Search public discussion of persistent agents and runtime state.",
+                "LIVINGRUNTIME": "Search public discussion of LivingRuntime Remote.",
+                "AGENT_MEMORY": "Search public discussion of agent memory and continuity.",
+            }},
+            instructions={"source": {"objective": "Choose public conversations Ferro wants to read and potentially join.",
+                "rules": ["Owner suggested quantities are optional advice, never quotas.",
+                          "Choose by curiosity and relevance; reply selection happens separately.",
+                          "Use previous discovery feedback; avoid repeatedly choosing a search that returned no conversations."]}})
+        choice=results["source"]
+        return {"source": choice.choice, "decision_id": choice.decision_id,
+                "authority": "ATTENTION_ONLY"}
+
     def choose_social_attention(
         self,
         *,
@@ -422,7 +442,7 @@ class FerroL1Decisions:
                 "relationship": dict(relationship or {}),
                 "mission": _compact_mapping(
                     mission or {},
-                    ("status", "trajectory", "pressure", "active_experiment"),
+                    ("status", "trajectory", "pressure", "active_experiment", "owner_strategy_advice"),
                 ),
             },
             decisions={

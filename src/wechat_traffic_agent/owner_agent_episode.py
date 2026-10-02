@@ -28,7 +28,7 @@ class OwnerAgentDecision(BaseModel):
         "RUN_CONTENT_PIPELINE",
         "WAIT",
     ]
-    publication_surface: Literal["AUTO", "WEBSITE", "X_SHORT_POST"] = "AUTO"
+    publication_surface: Literal["AUTO", "WEBSITE", "X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"] = "AUTO"
     query: str | None = Field(default=None, max_length=240)
     topic: str | None = Field(
         default=None,
@@ -296,8 +296,8 @@ class OwnerAgentEpisode:
             {
                 "name": "RUN_CONTENT_PIPELINE",
                 "side_effect": "bounded_existing_publication_gates",
-                "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, or X_SHORT_POST"},
-                "use": "Gather evidence and cognition, then publish on the requested surface through existing safety and publication gates. X_SHORT_POST proceeds directly to an original X draft without requiring a website article.",
+                "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, X_SHORT_POST, X_LONG_POST, or X_ARTICLE"},
+                "use": "Gather evidence and cognition, then publish on the requested surface through existing safety and publication gates. All X surfaces proceed directly to an original X draft without requiring a website article. Native X_ARTICLE includes an original illustrated cover.",
             },
             {
                 "name": "WAIT",
@@ -324,8 +324,8 @@ class OwnerAgentEpisode:
             "Use WAIT only when no currently permitted tool can materially advance the commitment or when the next evidence is genuinely time-dependent. "
             "Neural/drive signals are advisory inputs only and never override the owner goal or authorization. "
             "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
-            "When the owner commitment explicitly requires an original X post and a real POSTED receipt, choose publication_surface X_SHORT_POST. "
-            "AUTO is for autonomous content selection; WEBSITE is for a website article. Choosing X_SHORT_POST is an execution request, never permission to bypass evidence, X safety, or publication authority. "
+            "When the owner commitment explicitly requires an original X post and a real POSTED receipt, choose X_SHORT_POST for a concise thought, X_LONG_POST for useful additional context, or X_ARTICLE for a structured illustrated native Article. "
+            "AUTO is for autonomous content selection; WEBSITE is for a website article. Choosing an X surface is an execution request, never permission to bypass evidence, X safety, or publication authority. "
             "Return JSON only.\n"
             + json.dumps(
                 {

@@ -26,12 +26,16 @@ class ChannelSocialDraft(BaseModel):
     channel: Literal["OKX", "X"]
     format: Literal["SHORT_POST", "LONG_POST", "ARTICLE"]
     intent: Literal["ASSERTION", "QUESTION", "OBSERVATION", "UPDATE", "EXPLAINER"] = "ASSERTION"
+    title: str | None = Field(default=None, min_length=5, max_length=100)
+    cover_caption: str | None = Field(default=None, max_length=64)
     text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
     style_observation_ids: tuple[str, ...] = Field(max_length=4)
     rationale: str = Field(min_length=10, max_length=400)
 
     @model_validator(mode="after")
     def channel_bounds(self) -> "ChannelSocialDraft":
+        if self.channel == "X" and self.format == "ARTICLE" and not self.title:
+            raise ValueError("Native X Article requires a title")
         if self.channel == "OKX" and self.format == "SHORT_POST" and len(self.text) > OKX_SHORT_POST_MAX_CHARS:
             raise ValueError(f"OKX short post must be at most {OKX_SHORT_POST_MAX_CHARS} characters")
         if self.channel == "OKX" and self.format == "LONG_POST":
@@ -67,6 +71,8 @@ class _CandidateChannelSocialDraft(BaseModel):
     channel: Literal["OKX", "X"]
     format: Literal["SHORT_POST", "LONG_POST", "ARTICLE"]
     intent: Literal["ASSERTION", "QUESTION", "OBSERVATION", "UPDATE", "EXPLAINER"] = "ASSERTION"
+    title: str | None = Field(default=None, min_length=5, max_length=100)
+    cover_caption: str | None = Field(default=None, max_length=64)
     text: str = Field(min_length=20, max_length=SOCIAL_LONG_TEXT_MAX_CHARS)
     style_observation_ids: tuple[str, ...] = Field(max_length=4)
     rationale: str = Field(min_length=10, max_length=400)
@@ -242,6 +248,7 @@ class SocialExpressionDraftWorker:
             "Posts may be assertions, questions, observations, updates, or explainers; choose the form that matches the evidence rather than forcing a market call. "
             "Treat social_evidence_decision.resolution.useful_facts as the information-value boundary: a non-question post must lead with at least one of those supported facts or a direct inference they support. Missing-data caveats may qualify a claim, but must never be the main payload of a DRAFT. "
             "If intent is QUESTION, anchor it in a known fact and ask a genuine unresolved question rather than engagement bait. "
+            "For X ARTICLE, supply a title (5-100 characters) and optional cover_caption (<=64 characters). An original illustrated cover will be generated from these fields; do not pretend a generated graphic is a photo or product screenshot. "
             "ARTICLE is a real long-form channel artifact, not a teaser. Do not choose it merely because more text is available; choose it only when the cognition supports depth. No private data, personalized investment advice, fabricated numbers, or unsupported causation. Return JSON only."
             + question_instruction + "\n"
             + json.dumps({

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -278,35 +279,6 @@ class XAutonomyLoop:
             status=status, kind="social",
         )
 
-    def _identity(self, *, now: datetime) -> tuple[dict[str, Any], str]:
-        receipt = self.runtime.invoke("x.identity", {})
-        if not receipt.payload.get("ok"):
-            raise RuntimeError(str(receipt.payload.get("status") or "X_IDENTITY_FAILED"))
-        user = first_user(receipt.payload.get("data"))
-        if not user:
-            raise RuntimeError("X identity response did not contain a user")
-        handle = str(user.get("username") or "").strip().lstrip("@")
-        follower_count = follower_count_from_user(user)
-        profile = {
-            "schema_version": "content-agent-x-profile.v1",
-            "synced_at": now.isoformat(),
-            "id": str(user.get("id") or ""),
-            "handle": handle,
-            "name": str(user.get("name") or ""),
-            "avatar_url": user.get("profile_image_url"),
-            "url": f"https://x.com/{handle}" if handle else None,
-            "followers_count": follower_count,
-            "public_metrics": (
-                dict(user.get("public_metrics"))
-                if isinstance(user.get("public_metrics"), dict)
-                else None
-            ),
-            "identity_receipt_id": receipt.receipt_id,
-        }
-        existing = _read_json(self.profile_path)
-        _write_json(self.profile_path, {**existing, **profile})
-        return user, receipt.receipt_id
-
     async def capture_mission_publication_baseline(
         self, *, cycle: str, now: datetime
     ) -> dict[str, Any]:
@@ -326,7 +298,7 @@ class XAutonomyLoop:
     async def observe(self, *, now: datetime, allow_remote_actions: bool = True) -> dict[str, Any]:
         cycle = "x-observe-" + str(int(now.timestamp()))
         try:
-            me, identity_receipt = self._identity(now=now)
+            me, identity_receipt = await self._publication_identity(now=now)
         except Exception as exc:
             self._write_status(now=now, status="X_UNAVAILABLE", detail=str(exc))
             return {"status": "X_UNAVAILABLE", "error_type": type(exc).__name__, "message": str(exc)[:300]}
@@ -345,65 +317,58 @@ class XAutonomyLoop:
                     "message": str(exc)[:300],
                 }
         self._activity(cycle=cycle, title="Scanning X", detail="Checking new mentions for questions, rebuttals, and evidence worth investigating.", status="working")
-        receipt = self.runtime.invoke("x.mentions", {"user_id": str(me.get("id") or ""), "max_results": 20})
-        browser_fallback = False
-        mentions_receipt_id: str | None = receipt.receipt_id
-        if not receipt.payload.get("ok"):
-            status = str(receipt.payload.get("status") or "X_MENTIONS_FAILED")
-            detail = str(receipt.payload.get("detail") or "")[:300]
-            if status == "X_CREDITS_DEPLETED":
-                try:
-                    observer = self.browser_mentions_observer
-                    if observer is None:
-                        from .x_browser_mentions import XBrowserMentionsObserverRouter
-                        observer = XBrowserMentionsObserverRouter(state_root=self.state_root)
-                    raw_mentions = await observer.observe(now=now, max_results=20)
-                    mentions = normalize_posts(raw_mentions, observed_at=now)
-                    browser_fallback = True
-                    mentions_receipt_id = None
-                    self._write_status(
-                        now=now,
-                        status="OK_BROWSER_FALLBACK",
-                        detail="Official X credits depleted; mentions read through the authenticated browser runtime.",
-                    )
-                    self._activity(
-                        cycle=cycle,
-                        title="Reading X through browser fallback",
-                        detail="Official X credits are depleted, so I used an authenticated read-only browser provider.",
-                    )
-                except Exception as fallback_exc:
-                    self._write_status(now=now, status=status, detail=detail)
-                    self._activity(cycle=cycle, title="X observation paused", detail="X API credits are depleted and the read-only browser fallback was unavailable.", status="stopped")
-                    return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "browser_fallback_error": type(fallback_exc).__name__, "browser_fallback_detail": str(fallback_exc), "x_growth_mission": growth_result}
+        try:
+            observer = self.browser_mentions_observer
+            if observer is not None:
+                raw_mentions = await observer.observe(now=now, max_results=20)
+                discovery = {"source": "MENTIONS", "authority": "ATTENTION_ONLY"}
             else:
-                self._write_status(now=now, status=status, detail=detail)
-                self._activity(cycle=cycle, title="X observation paused", detail="X returned an error while reading mentions.", status="stopped")
-                return {"status": status, "mentions_receipt_id": receipt.receipt_id, "detail": detail, "x_growth_mission": growth_result}
-        else:
-            mentions = normalize_posts(receipt.payload.get("data"), observed_at=now)
+                discovery = self._l1().choose_x_discovery(
+                    mission=x_growth_mission_context(self.state_root),
+                    persona=public_persona_projection(self.state_root),
+                    previous={key:value for key,value in _read_json(self.root/"discovery.json").items()
+                              if key in {"decision","observed_at","post_count"}})
+                from .x_browser import XBrowserTransportRouter
+                transport = self.browser_publish_transport or XBrowserTransportRouter(state_root=self.state_root)
+                raw_mentions = await transport.discover(source=discovery["source"], max_results=20)
+            mentions = normalize_posts(raw_mentions, observed_at=now)
+            mentions_receipt_id = f"x-jev-discovery:{cycle}"
+            _write_json(self.root / "discovery.json", {"cycle": cycle, "observed_at": now.isoformat(),
+                "decision": discovery, "posts": raw_mentions, "post_count":len(raw_mentions), "receipt_id": mentions_receipt_id})
+        except Exception as exc:
+            self._write_status(now=now, status="X_OBSERVATION_FAILED", detail=str(exc))
+            return {"status":"X_OBSERVATION_FAILED", "detail":str(exc)[:300], "x_growth_mission":growth_result}
         seen_payload = _read_json(self.seen_path)
         seen = {str(value) for value in seen_payload.get("ids", []) if str(value)}
         fresh = [row for row in mentions if row["evidence_id"].removeprefix("x-post:") not in seen]
         handled = 0
+        failures = []
         for row in fresh[:10]:
             post_id = row["evidence_id"].removeprefix("x-post:")
-            await self._handle_mention(row=row, post_id=post_id, me=me, cycle=cycle, now=now,
-                                       allow_remote_actions=allow_remote_actions and not browser_fallback)
-            seen.add(post_id)
-            handled += 1
+            try:
+                completed = await self._handle_mention(row=row, post_id=post_id, me=me, cycle=cycle, now=now,
+                    allow_remote_actions=allow_remote_actions)
+                if completed is False:
+                    if allow_remote_actions:
+                        failures.append({"post_id":post_id,"status":"REPLY_NOT_COMMITTED"})
+                    continue
+                seen.add(post_id)
+                handled += 1
+            except Exception as exc:
+                failures.append({"post_id":post_id,"error_type":type(exc).__name__,"detail":str(exc)[:300]})
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})
-        final_status = "OK_BROWSER_FALLBACK" if browser_fallback else "OK"
+        final_status = "DEGRADED" if failures else "OK"
         self._write_status(now=now, status=final_status)
         self._activity(cycle=cycle, title="Finished checking X", detail=f"Reviewed {len(mentions)} recent mention(s); {handled} were new.")
         return {
             "status": final_status, "identity_receipt_id": identity_receipt, "mentions_receipt_id": mentions_receipt_id,
-            "mention_count": len(mentions), "new_mentions": handled,
+            "mention_count": len(mentions), "new_mentions": handled, "discovery": discovery, "failures": failures,
             "x_growth_mission": growth_result,
         }
 
     async def _handle_mention(self, *, row: dict[str, Any], post_id: str, me: dict[str, Any], cycle: str, now: datetime,
                               allow_remote_actions: bool = True) -> None:
-        self._activity(cycle=cycle, title="Someone replied", detail=row.get("summary", "")[:220])
+        self._activity(cycle=cycle, title="Reading a public X post", detail=row.get("summary", "")[:220])
         folder = self.root / "social-model-calls" / cycle / post_id
         model_runtime = ReceiptRuntime(self.model_runtime, folder)
         actor = str(row.get("x_author_id") or row.get("username") or "").strip()
@@ -490,35 +455,32 @@ class XAutonomyLoop:
                 "category": decision.category, "source_text": row.get("summary", "")[:1000],
                 "evidence_refs": row.get("evidence_refs", ()),
             })
-            self._activity(cycle=cycle, title="Investigating a reply", detail=decision.summary)
-            if allow_remote_actions and x_writes_enabled():
-                bookmark = self.runtime.invoke("x.bookmark", {
-                    "user_id": str(me.get("id") or ""), "post_id": post_id,
-                })
-                if bookmark.payload.get("ok"):
-                    self.history.append({
-                        "event_type": "BOOKMARK", "cycle": cycle, "expression_kind": "LEARNING_CANDIDATE",
-                        "target_post_id": post_id, "runtime_receipt_id": bookmark.receipt_id,
-                        "source_evidence_refs": list(row.get("evidence_refs", ())),
-                        "lineage": {"source": "mention", "status": "DISCOVERED", "adopted": False},
-                    })
-                    self._activity(cycle=cycle, title="Bookmarked for testing", detail=decision.summary)
-        if decision.action == "REPLY" and decision.reply_text and allow_remote_actions and x_writes_enabled():
-            reply = self.runtime.invoke("x.reply", {
-                "user_id": str(me.get("id") or ""), "post_id": post_id, "text": decision.reply_text,
-            })
-            if not reply.payload.get("ok"):
-                self._activity(cycle=cycle, title="Reply was not published", detail=str(reply.payload.get("status") or "X API error"), status="stopped")
-                return
-            reply_id = first_post_id(reply.payload.get("data"))
+            self._activity(cycle=cycle, title="Investigating a public claim", detail=decision.summary)
+        if decision.action == "REPLY" and decision.reply_text:
+            if not allow_remote_actions or not x_writes_enabled():
+                return False
+            # Independent wording check before any public input.
+            safety = await self._safety_check(model_runtime=model_runtime, text=decision.reply_text,
+                context={"public_post":row,"public_persona":public_persona_projection(self.state_root)})
+            _write_json(folder / "reply_safety.json", safety.model_dump(mode="json"))
+            if not _safety_passes(safety):
+                return False
+            from .x_browser import XBrowserTransportRouter
+            transport = self.browser_publish_transport or XBrowserTransportRouter(state_root=self.state_root)
+            reply = await transport.reply(text=decision.reply_text, target_url=str(row.get("url") or ""))
+            receipt_id = f"x-jev-reply:{post_id}:{reply.post_id}"
             self.history.append({
-                "event_type": "REPLY", "cycle": cycle, "cognition": decision.model_dump(mode="json"),
-                "expression_kind": "SOCIAL_REPLY", "text": decision.reply_text,
-                "x_post_id": reply_id, "target_post_id": post_id, "target_user_id": row.get("x_author_id"),
-                "runtime_receipt_id": reply.receipt_id, "source_evidence_refs": list(row.get("evidence_refs", ())),
-                "lineage": {"source": "mention", "attention": decision.category, "future_cognition": bool(decision.valuable_evidence)},
+                "event_type":"REPLY", "cycle":cycle, "cognition":decision.model_dump(mode="json"),
+                "expression_kind":"SOCIAL_REPLY", "text":decision.reply_text,
+                "x_post_id":reply.post_id, "x_url":reply.url, "target_post_id":post_id,
+                "target_user_id":row.get("x_author_id"), "runtime_receipt_id":receipt_id,
+                "publication_verified":True, "publication_transport":reply.provider,
+                "source_evidence_refs":list(row.get("evidence_refs", ())),
+                "lineage":{"source":"public_x_discovery","attention":decision.category,
+                           "future_cognition":bool(decision.valuable_evidence)},
             })
-            self._activity(cycle=cycle, title="Replied on X", detail=decision.reply_text)
+            self._activity(cycle=cycle,title="Replied on X",detail=decision.reply_text)
+        return True
 
     def _l1_x_strategy(
         self,
@@ -630,6 +592,9 @@ class XAutonomyLoop:
             or not cognition.get("worth_saying")
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
+        owner_surface=str((context.get("owner_publication_request") or {}).get("decision",{}).get("publication_surface") or "")
+        if owner_directed_x and owner_surface in {"X_LONG_POST","X_ARTICLE"}:
+            return await self._owner_longform(folder=folder,context=context,now=now,surface=owner_surface)
         blocker = self._active_publication_blocker(now=now)
         if blocker is not None:
             return {
@@ -800,11 +765,67 @@ class XAutonomyLoop:
             "post_id": post_id,
             "url": url,
             "receipt_id": publication_receipt_id,
+            "content_sha256": hashlib.sha256(decision.post_text.encode("utf-8")).hexdigest(),
+            "text": decision.post_text,
             "transport": publication_transport,
             "transport_failover": transport_failover,
             "mission_experiment_transition": mission_experiment_transition,
             "owner_execution_request": context.get("owner_publication_request") or None,
         }
+
+    async def _owner_longform(self, *, folder, context, now, surface):
+        """Execute Ferro's selected X format without a website publication prerequisite."""
+        from .social_expression import ChannelSocialDraft
+        from .x_browser import XBrowserPublisher
+        cycle=folder.name
+        fmt="ARTICLE" if surface=="X_ARTICLE" else "LONG_POST"
+        if self.history.has_event(cycle=cycle,event_type="EXPRESSION"):
+            return {"status":"ALREADY_EXPRESSED","cycle":cycle}
+        path=folder/"social_expression_drafts.json"
+        existing=_read_json(path)
+        if existing.get("status")!="DRAFT_READY":
+            prompt=("X_OWNER_LONGFORM_DRAFT: Ferro's durable owner-goal controller selected "+fmt+". "
+                "Write in the supplied public persona from persisted cognition and attributed source only. "
+                "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
+                "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
+                "An original illustrated cover will be generated; never claim it is a real product screenshot. "
+                "Preserve uncertainty and source attribution. Owner quantities are optional advice, not quotas.\n"
+                +json.dumps({**context,"persona":public_persona_projection(self.state_root),
+                    "mission":x_growth_mission_context(self.state_root)},ensure_ascii=False))
+            runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle)
+            draft=await _structured(runtime,prompt,ChannelSocialDraft)
+            if draft.channel!="X" or draft.format!=fmt:
+                return {"status":"OWNER_FORMAT_MISMATCH","cycle":cycle}
+            strategy={"schema_version":"ferro-x-owner-format-request.v1","post_timing":"POST_NOW",
+                "x_format":fmt,"interaction_mode":"ORIGINAL","selection_authority":"FERRO_OWNER_EPISODE",
+                "owner_request":context["owner_publication_request"]}
+            _write_json(path,{"status":"DRAFT_READY","cycle":cycle,"drafts":{"x":draft.model_dump(mode="json")},
+                "x_strategy":strategy,"evidence_decision":{"source_evidence":context.get("source_evidence"),
+                    "resolution":{"action":"DRAFT","useful_facts":[str((context.get("source_evidence") or {}).get("summary") or "")]}}})
+        publisher=XBrowserPublisher(state_root=self.state_root,transport=self.browser_publish_transport,
+            growth_mission=self.growth_mission,mission_baseline_observer=self.capture_mission_publication_baseline,
+            draft_safety_check=self.validate_public_draft)
+        result=await publisher.after_content_cycle(cycle=cycle,now=now)
+        publication=result.get("publication") or {}
+        if result.get("status") in {"POSTED","ALREADY_POSTED"}:
+            receipt_id=f"x-browser-publication:{cycle}:{publication['post_id']}"
+            self._clear_publication_blocker(now=now,receipt_id=receipt_id)
+            return {**result,"status":"POSTED" if result['status']=='POSTED' else "ALREADY_EXPRESSED",
+                "post_id":publication["post_id"],"url":publication["url"],"receipt_id":receipt_id,
+                "format":fmt,"owner_execution_request":context["owner_publication_request"]}
+        return result
+
+    async def validate_public_draft(self, *, cycle, draft):
+        folder=self.state_root/"content"/"continuous"/"cycles"/cycle
+        context={"cognition":_read_json(folder/"cognition.json"),
+            "evidence":_read_json(folder/"social_expression_drafts.json").get("evidence_decision") or {},
+            "public_persona":public_persona_projection(self.state_root)}
+        text="\n".join(str(draft.get(key) or "") for key in ("title","text","cover_caption"))
+        runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle)
+        safety=await self._safety_check(model_runtime=runtime,text=text,context=context)
+        payload={**safety.model_dump(mode="json"),"passed":_safety_passes(safety)}
+        _write_json(folder/"x_article_safety.json",payload)
+        return payload
 
     async def _publish_through_browser(self, *, text: str):
         transport = self.browser_publish_transport

@@ -1,0 +1,13 @@
+{
+  "schema_version": "ferro-x-strategy-advice.v1",
+  "authority": "ADVISORY_ONLY",
+  "source": "OWNER_CONVERSATION_2026-10-02",
+  "goal_id": "goal_11afc32ac20b4e57",
+  "mission_id": "mission_10adf8b48211424d",
+  "topic_suggestion": "Demonstrate and promote LivingRuntime Remote through concrete work and learning",
+  "suggested_posts_or_articles_per_day": 20,
+  "suggested_replies_per_day": 200,
+  "quotas_required": false,
+  "decision_authority": "FERRO",
+  "guidance": "Choose publication formats, pace, subjects and conversations by Ferro's interests, evidence and outcome learning. These quantities are suggestions, not required actions."
+}

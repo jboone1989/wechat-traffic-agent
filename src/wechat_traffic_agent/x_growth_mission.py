@@ -30,7 +30,7 @@ MISSION_PUBLICATION_BASELINE_SCHEMA = "content-agent-x-mission-publication-basel
 MISSION_CONSTRAINTS = (
     "obey applicable law",
     "obey current X platform and automation policy",
-    "use official X API/OAuth for automated X actions",
+    "use the authenticated Agent Runtime-owned Jev browser for X actions",
     "do not use artificial account-metric inflation",
     "do not use churn, reciprocal-engagement schemes, or indiscriminate following",
     "do not use automated likes or unsolicited repetitive replies",
@@ -115,8 +115,10 @@ def x_growth_mission_context(state_root: Path) -> dict[str, Any]:
             "publication_authority": False,
         }
     blocker = _active_execution_blocker(Path(state_root))
-    if blocker:
-        payload = {**payload, "execution_blocker": blocker}
+    payload = {**payload, "execution_blocker": blocker}
+    advice = _read_json(Path(state_root) / "content" / "x" / "strategy_advice.json")
+    if advice.get("authority") == "ADVISORY_ONLY":
+        payload["owner_strategy_advice"] = advice
     return payload
 
 
@@ -176,6 +178,11 @@ class XGrowthMissionCoordinator:
     ) -> Any:
         mission = self._mission()
         if mission is not None:
+            # Migrate the retired transport constraint without changing Ferro's experiment.
+            old="use official X API/OAuth for automated X actions"
+            if old in list(getattr(mission,"constraints",()) or ()):
+                mission.constraints=["use the authenticated Agent Runtime-owned Jev browser for X actions" if c==old else c for c in mission.constraints]
+                self._persist_runtime()
             return mission
         if followers >= self.target:
             raise ValueError("X growth mission target must exceed the current follower count")
@@ -340,20 +347,22 @@ class XGrowthMissionCoordinator:
 
     def _planning_context(self) -> dict[str, Any]:
         return {
+            "owner_strategy_advice": _read_json(self.state_root / "content" / "x" / "strategy_advice.json"),
             "schema_version": MISSION_PLANNING_CONTEXT_REF,
             "measurement": {
                 "follower_metric_source": (
-                    "official X identity public_metrics.followers_count"
+                    "authenticated Jev X profile follower display (precision recorded)"
                 ),
                 "prospective_follower_snapshots": "AVAILABLE",
                 "post_public_metrics": (
-                    "LIMITED_TO_X_PUBLIC_METRICS_WHEN_API_READS_ARE_AVAILABLE"
+                    "VISIBLE_COUNTERS_ON_VERIFIED_X_PUBLIC_PAGES"
                 ),
                 "historical_post_level_follower_attribution": "UNAVAILABLE",
                 "post_level_profile_visits": "UNAVAILABLE",
                 "post_level_follows": "UNAVAILABLE",
                 "retrospective_90_day_new_follower_uplift": "UNAVAILABLE",
                 "browser_fallback_is_metric_authority": False,
+                "authenticated_jev_identity_is_metric_authority": True,
                 "causal_attribution": (
                     "UNAVAILABLE; use bounded prospective observational evidence"
                 ),
@@ -361,8 +370,8 @@ class XGrowthMissionCoordinator:
             "execution": {
                 "website_content_pipeline": "AVAILABLE",
                 "x_publication": (
-                    "AVAILABLE only through existing gated official API or "
-                    "independently verified browser publication paths"
+                    "AVAILABLE through the authenticated Runtime-owned Jev browser; "
+                    "public content verification is required"
                 ),
                 "publication_starts_experiment": True,
                 "automated_follow_like_repost": "FORBIDDEN_BY_MISSION_CONSTRAINTS",
@@ -467,7 +476,7 @@ class XGrowthMissionCoordinator:
             "baseline": {
                 "metric": MISSION_METRIC,
                 "value": float(followers),
-                "source": "official X identity public_metrics.followers_count",
+                "source": "authenticated Jev X profile follower display (precision recorded)",
                 "identity_receipt_id": str(identity_receipt_id),
             },
             "measurement": {
@@ -478,6 +487,7 @@ class XGrowthMissionCoordinator:
                 ),
                 "authoritative_source": "official-x-identity",
                 "browser_fallback_is_metric_authority": False,
+                "authenticated_jev_identity_is_metric_authority": True,
                 "causal_attribution": False,
                 "post_public_metrics_when_available": [
                     "impression_count",
@@ -1015,7 +1025,7 @@ class XGrowthMissionCoordinator:
         if mission is None:
             return {"status": "NO_ACTIVE_MISSION", "binding": binding}
         experiment = self._open_experiment(mission.mission_id)
-        if experiment is None or _enum_value(experiment.status) != "PROPOSED":
+        if experiment is None or _enum_value(experiment.status) not in {"PROPOSED", "RUNNING"}:
             return {
                 "status": "NO_PROPOSED_EXPERIMENT",
                 "experiment_id": None if experiment is None else experiment.experiment_id,
@@ -1418,6 +1428,10 @@ class XGrowthMissionCoordinator:
             }
         status = _enum_value(experiment.status)
         if status == "RUNNING":
+            experiment.evidence_refs = list(dict.fromkeys([*experiment.evidence_refs,
+                str(publication_receipt_id), f"x-post:{post_id}",
+                str(baseline.get("observation_id") or "")]))
+            self._persist_runtime()
             return {
                 "status": "ALREADY_RUNNING",
                 "experiment_id": experiment.experiment_id,

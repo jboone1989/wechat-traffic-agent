@@ -28,7 +28,7 @@ def owner_x_publication_request(folder: Path) -> dict[str, Any]:
         and request.get("owner_goal_id")
         and request.get("owner_goal_id") == goal.get("goal_id")
         and decision.get("action") == "RUN_CONTENT_PIPELINE"
-        and decision.get("publication_surface") == "X_SHORT_POST"
+        and decision.get("publication_surface") in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}
         and decision.get("topic") == plan.get("required_topic")
         and str(request.get("mission_id") or "") == str(plan.get("external_mission_id") or "")
     ):
@@ -57,6 +57,6 @@ def prepare_owner_x_expression(*, folder: Path, source_evidence: dict[str, Any],
         "status": "X_EXPRESSION_READY", "cycle": folder.name,
         "mind_plan": mind_plan, "cognition": cognition,
         "worldview_update": worldview, "prediction": prediction,
-        "publication_surface": "X_SHORT_POST",
+        "publication_surface": request["decision"]["publication_surface"],
         "source_evidence_id": source_evidence["evidence_id"],
     }

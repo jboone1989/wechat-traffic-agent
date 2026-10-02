@@ -1552,8 +1552,9 @@ class WakefulContentTaskRunner:
             return {"task": "CHECK_X", "status": "DISABLED"}
         try:
             result = self._run_async(self.x_loop.observe(now=now))
-            self.wakeful.emit_x_mentions(count=int(result.get("new_mentions") or 0), observed_at=now)
-            return {"task": "CHECK_X", "status": "OK", "x_social_observation": result}
+            if (result.get("discovery") or {}).get("source","MENTIONS")=="MENTIONS":
+                self.wakeful.emit_x_mentions(count=int(result.get("new_mentions") or 0), observed_at=now)
+            return {"task": "CHECK_X", "status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED", "x_social_observation": result}
         except Exception as exc:  # noqa: BLE001
             return {"task": "CHECK_X", "status": "DEGRADED", "x_social_observation": self._error(exc)}
 
@@ -2404,8 +2405,7 @@ class WakefulContentTaskRunner:
         ):
             if publisher is None or direct_x:
                 continue
-            # Original short posts belong to the API -> verified browser
-            # fallback lane, including its independent X safety decision.
+            # Original short posts use the Jev autonomy lane and its independent safety decision.
             if name == "x_browser_publication" and getattr(self, "x_loop", None) is not None:
                 folder = Path(self.state_root) / "content" / "continuous" / "cycles" / str(continuous.get("cycle") or "")
                 try:
@@ -3061,7 +3061,7 @@ class WakefulContentTaskRunner:
                         count=int(result.get("new_mentions") or 0),
                         observed_at=now,
                     )
-                    return {"status": "OK", "x_social_observation": result}
+                    return {"status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED", "x_social_observation": result}
                 except Exception as exc:
                     return {"status": "DEGRADED", **self._error(exc)}
             if action == "CHECK_OUTCOMES":
@@ -3403,7 +3403,7 @@ class WakefulContentTaskRunner:
             if owner_episode_active and decision.get("decision") in {"EXECUTE", "NO_RESOURCE_ACTION"}:
                 owner_decision = (control.get("decision") or {})
                 surface = str(owner_decision.get("publication_surface") or "AUTO")
-                if surface == "X_SHORT_POST":
+                if surface in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}:
                     from .content_loop import _put
                     from .x_growth_mission import x_growth_mission_context
                     from .x_owner_execution import SCHEMA
@@ -3675,7 +3675,7 @@ class WakefulContentTaskRunner:
             complete = getattr(self.owner_agent_episode, "complete", None)
             if callable(complete):
                 owner_outcome = continuous
-                if continuous.get("publication_surface") == "X_SHORT_POST":
+                if continuous.get("publication_surface") in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}:
                     owner_outcome = {**continuous, **rows.get("x_social_expression", {"status": "X_PUBLICATION_UNRESOLVED"})}
                 rows["owner_agent_episode_completion"] = complete(
                     outcome=owner_outcome,

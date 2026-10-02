@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -77,7 +77,7 @@ def _normalize_text(value: str) -> str:
 
 
 def _post_id_from_url(url: str) -> str | None:
-    match = re.search(r"https://x\.com/[^/?#]+/status/(\d+)(?:[/?#]|$)", url)
+    match = re.search(r"https://x\.com/(?:[^/?#]+/status|i/article)/(\d+)(?:[/?#]|$)", url)
     return match.group(1) if match else None
 
 
@@ -101,6 +101,18 @@ class XBrowserTransportRouter:
         )
         return await transport.publish(text=text)
 
+    async def publish_article(self, **kwargs):
+        from .x_local_browser import LocalHarnessXTransport
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).publish_article(**kwargs)
+
+    async def discover(self, *, source="MENTIONS", max_results=20):
+        from .x_local_browser import LocalHarnessXTransport
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).discover(source=source,max_results=max_results)
+
+    async def reply(self, *, text, target_url):
+        from .x_local_browser import LocalHarnessXTransport
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).reply(text=text,target_url=target_url)
+
 
 class XBrowserPublisher:
     def __init__(
@@ -112,6 +124,7 @@ class XBrowserPublisher:
         writes_enabled: bool | None = None,
         growth_mission: Any | None = None,
         mission_baseline_observer: Any | None = None,
+        draft_safety_check: Any | None = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.transport = transport
@@ -119,6 +132,7 @@ class XBrowserPublisher:
         self.writes_enabled = x_browser_writes_enabled() if writes_enabled is None else bool(writes_enabled)
         self.growth_mission = growth_mission
         self.mission_baseline_observer = mission_baseline_observer
+        self.draft_safety_check = draft_safety_check
 
     def _folder(self, cycle: str) -> Path:
         return self.state_root / "content" / "continuous" / "cycles" / cycle
@@ -183,11 +197,13 @@ class XBrowserPublisher:
         if draft.get("channel") != "X":
             return {"status": "NO_X_DRAFT", "cycle": cycle}
         fmt = str(draft.get("format") or "")
-        if fmt not in {"SHORT_POST", "LONG_POST"}:
+        if fmt not in {"SHORT_POST", "LONG_POST", "ARTICLE"}:
             return {"status": "UNSUPPORTED_FORMAT", "cycle": cycle, "format": fmt}
         text = str(draft.get("text") or "")
         if not text.strip() or len(text) > X_PREMIUM_LONG_POST_MAX_CHARS:
             return {"status": "INVALID_DRAFT", "cycle": cycle}
+        if fmt == "ARTICLE" and not str(draft.get("title") or "").strip():
+            return {"status":"INVALID_ARTICLE_TITLE", "cycle":cycle}
         receipt_path = folder / "x_browser_publication.json"
         digest = _draft_sha256(cycle=cycle, draft=draft)
         existing = _read_json(receipt_path)
@@ -246,20 +262,33 @@ class XBrowserPublisher:
                     "binding": binding,
                     "baseline": baseline,
                 }
+        if fmt == "ARTICLE" or (folder / "owner_publication_request.json").exists():
+            if self.draft_safety_check is None:
+                return {"status":"ARTICLE_SAFETY_UNAVAILABLE", "cycle":cycle}
+            safety=await self.draft_safety_check(cycle=cycle,draft=draft)
+            if not safety.get("passed"):
+                return {"status":"HELD_BY_X_SAFETY", "cycle":cycle,"safety":safety}
         transport = self.transport
         if transport is None:
             transport = XBrowserTransportRouter(state_root=self.state_root)
         emit_public_activity(self.state_root, cycle=cycle, phase="X", title="Publishing on X",
                              detail=text[:220], status="working", kind="social")
         try:
-            published = await transport.publish(text=text)
-        except XBrowserSessionUnavailable as exc:
-            return {"status": "SESSION_UNAVAILABLE", "cycle": cycle, "detail": str(exc)}
+            if fmt == "ARTICLE":
+                from .x_article_media import generate_article_cover
+                media=generate_article_cover(title=str(draft["title"]),caption=str(draft.get("cover_caption") or ""),folder=folder)
+                published=await transport.publish_article(title=str(draft["title"]),text=text,image_path=media["path"],
+                    transaction_path=folder/"x_article_transaction.json")
+            else:
+                published = await transport.publish(text=text)
         except XBrowserPublicationUnverified as exc:
             return {"status": "PUBLICATION_UNVERIFIED", "cycle": cycle, "detail": str(exc)}
+        except (XBrowserSessionUnavailable, RuntimeError) as exc:
+            return {"status": "SESSION_UNAVAILABLE", "cycle": cycle, "detail": str(exc)}
         publication = {
             "schema_version": "content-x-browser-publication.v1", "status": "POSTED",
-            "cycle": cycle, "published_at": now.isoformat(), "draft_sha256": digest,
+            "cycle": cycle, "published_at": (datetime.now(timezone.utc) if fmt=="ARTICLE" else now).isoformat(), "draft_sha256": digest,
+            "format":fmt, "article_media":media if fmt=="ARTICLE" else None,
             "post_id": published.post_id, "url": published.url, "handle": published.handle,
             "duplicate_found": published.duplicate_found,
             "source": f"{published.provider} + X Web UI", "publication_authority": True,

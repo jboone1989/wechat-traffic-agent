@@ -235,7 +235,7 @@ def test_channel_formats_allow_articles_but_keep_okx_feed_short():
         style_observation_ids=(), rationale="Premium X can carry a longer social post.",
     )
     x_article = ChannelSocialDraft(
-        channel="X", format="ARTICLE", intent="EXPLAINER", text="x" * 2500,
+        channel="X", format="ARTICLE", intent="EXPLAINER", title="A durable explanation", text="x" * 2500,
         style_observation_ids=(), rationale="X Article is a separate long-form expression.",
     )
     assert len(okx_article.text) == 1200

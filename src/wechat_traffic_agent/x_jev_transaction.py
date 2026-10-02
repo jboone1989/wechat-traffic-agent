@@ -32,6 +32,7 @@ except Exception as exc:
 
 TRANSACTION = r"""
 import re, time
+from urllib.parse import urlsplit, parse_qs
 from jev_ultrafast.browser import StalePage
 stage = 'identity'
 attempted = False
@@ -65,7 +66,11 @@ def navigate(url):
             state = browser.evaluate('({url:location.href, ready:document.readyState})') or {}
         except StalePage:
             state = {}
-        if str(state.get('url') or '').split('?',1)[0].rstrip('/') == url.rstrip('/') and state.get('ready') == 'complete':
+        actual=urlsplit(str(state.get('url') or ''))
+        wanted=urlsplit(url)
+        same=(actual.netloc==wanted.netloc and actual.path.rstrip('/')==wanted.path.rstrip('/')
+              and all(parse_qs(actual.query).get(k)==v for k,v in parse_qs(wanted.query).items()))
+        if same and state.get('ready') == 'complete':
             return
         time.sleep(0.15)
     raise RuntimeError('X navigation did not reach ' + url)

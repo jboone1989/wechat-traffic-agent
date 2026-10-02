@@ -1,0 +1,156 @@
+import sys
+import types
+import unittest
+from unittest.mock import patch
+from wechat_traffic_agent.x_jev_social import jev_x_discover, jev_x_reply
+from wechat_traffic_agent.x_jev_article import jev_x_article, jev_x_article_reconcile
+
+
+def execute(browser, script):
+    scope={'browser':browser}
+    exec(compile(script,'jev-native-social','exec'),scope)
+    return scope['result']
+
+
+class Browser:
+    def __init__(self,kind,*,verify=True,parent=True,fill=True,handle='ferro',existing=False):
+        self.kind,self.verify,self.parent,self.fill,self.handle,self.existing=kind,verify,parent,fill,handle,existing
+        self.url='https://x.com/home';self.submitted=False;self.dialog=False
+        self.values={};self.actions=[];self.uploads=[]
+
+    def call(self,method,**params):
+        if method=='Page.navigate':self.url=params['url'];return {}
+        if method=='Page.setInterceptFileChooserDialog':return {}
+        if method=='DOM.getDocument':return {'root':{'nodeId':1}}
+        if method=='DOM.querySelector':return {'nodeId':55}
+        if method=='DOM.setFileInputFiles':self.uploads.append(params['files']);return {}
+        raise AssertionError(method)
+
+    def evaluate(self,expression):
+        if 'ready:document.readyState' in expression:return {'url':self.url,'ready':'complete'}
+        if 'AppTabBar_Profile_Link' in expression:return '/'+self.handle
+        if 'location.href.includes' in expression:return self.url if '/compose/articles/edit/' in self.url else None
+        if 'document.querySelector("main")?.innerText' in expression:
+            return 'Durable agents\nThe complete verified article body.' if self.submitted and self.verify else 'Unavailable'
+        if 'input[type=file]' in expression:return [{'accept':'image/png,image/jpeg','multiple':False}]
+        if 'naturalWidth>=500' in expression:
+            return ['https://pbs.twimg.com/media/cover.png?name=large'] if 'map(e=>e.src)' in expression else [{'src':'https://pbs.twimg.com/media/cover.png','width':1500,'height':600}]
+        if 'main img[src*=pbs][src*=media]' in expression:return bool(self.uploads)
+        if 'Boolean(document.querySelector("[role=dialog]"))' in expression:return False
+        if 'closest("[role=dialog]")' in expression:return self.dialog
+        if '?.closest("article")' in expression:return ['/reader/status/123']
+        if 'nodes.get' in expression:
+            for n,value in self.values.items():
+                if 'get('+str(n)+')' in expression:return value if self.fill else 'wrong text'
+            return None
+        if 'Boolean(document.querySelector("article")' in expression:return True
+        if 'Boolean(document.querySelector(\'a[href*="/status/123"]\'))' in expression:return self.parent
+        if "document.querySelectorAll('article')" in expression:
+            if self.kind=='discover':return [{'text':'Agent state discussion','hrefs':['/reader/status/123']}]
+            rows=[{'text':'Public parent post','hrefs':['/reader/status/123']}]
+            if (self.submitted and self.verify) or self.existing:
+                rows.append({'text':'A grounded reply.','hrefs':['/ferro/status/456']})
+            return rows
+        raise AssertionError(expression)
+
+    def observe(self,screenshot=False):
+        if self.kind=='article':
+            actions=[{'kind':'fill','role':'textbox','label':'添加标题','node':10},
+                     {'kind':'fill','role':'textbox','label':'textbox','node':11},
+                     {'kind':'click','label':'发布','node':12},
+                     {'kind':'click','label':'撰写','node':13},
+                     {'kind':'click','label':'添加照片或视频','node':14}]
+        elif self.dialog:
+            actions=[{'kind':'fill','role':'textbox','label':'帖子文本','node':10},
+                     {'kind':'click','label':'回复','node':12}]
+        else:actions=[{'kind':'click','label':'1 回复','node':13}]
+        return {'actions':actions,'page_key':'live'}
+
+    def act(self,action,page,text=None):
+        self.actions.append(action)
+        if action['kind']=='fill':self.values[action['node']]=text
+        elif action['node']==14:pass
+        elif action['node']==13:
+            if self.kind=='article':self.url='https://x.com/compose/articles/edit/789'
+            else:self.dialog=True
+        else:self.submitted=True;self.dialog=False
+
+
+class TestJevNativeSocial(unittest.TestCase):
+    def setUp(self):
+        import time
+        clock=[0.]
+        self.enterContext(patch.object(time,'monotonic',lambda:clock[0]))
+        self.enterContext(patch.object(time,'sleep',lambda s:clock.__setitem__(0,clock[0]+s)))
+        module=types.ModuleType('jev_ultrafast.browser');module.StalePage=type('StalePage',(ValueError,),{})
+        self.enterContext(patch.dict(sys.modules,{'jev_ultrafast.browser':module}))
+
+    def test_search_query_navigation_and_observed_posts(self):
+        browser=Browser('discover')
+        result=execute(browser,jev_x_discover('https://x.com/search?q=agent%20state&f=live'))
+        self.assertEqual(result['status'],'OBSERVED')
+        self.assertEqual(result['posts'][0]['url'],'https://x.com/reader/status/123')
+        self.assertEqual(browser.actions,[])
+
+    def test_reply_requires_own_public_text_and_intended_parent(self):
+        browser=Browser('reply')
+        result=execute(browser,jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro'))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertEqual(result['url'],'https://x.com/ferro/status/456')
+        self.assertEqual(result['target_post_id'],'123')
+
+    def test_reply_with_wrong_parent_is_unverified(self):
+        browser=Browser('reply',parent=False)
+        result=execute(browser,jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro'))
+        self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
+
+    def test_pending_reply_never_submits_again(self):
+        browser=Browser('reply')
+        result=execute(browser,jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro',reconcile_only=True))
+        self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
+        self.assertEqual(browser.actions,[])
+
+    def test_existing_reply_reconciles_without_input(self):
+        browser=Browser('reply',existing=True)
+        result=execute(browser,jev_x_reply('A grounded reply.','https://x.com/reader/status/123','ferro',reconcile_only=True))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertTrue(result['duplicate_found'])
+        self.assertEqual(browser.actions,[])
+
+    def test_article_preparation_uploads_cover_without_publication(self):
+        browser=Browser('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro',prepare_only=True))
+        self.assertEqual(result['status'],'DRAFT_PREPARED')
+        self.assertEqual(browser.uploads,[['/tmp/cover.png']])
+        self.assertFalse(browser.submitted)
+
+    def test_article_publication_requires_complete_public_content_and_cover(self):
+        browser=Browser('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro'))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertEqual(result['url'],'https://x.com/i/article/789')
+
+    def test_article_missing_public_body_is_unverified(self):
+        browser=Browser('article',verify=False)
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro'))
+        self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
+
+    def test_wrong_article_identity_cannot_upload_or_publish(self):
+        browser=Browser('article',handle='other')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro'))
+        self.assertEqual(result['status'],'FAILED')
+        self.assertEqual(browser.uploads,[])
+        self.assertEqual(browser.actions,[])
+
+    def test_article_reconciles_publication_after_process_restart(self):
+        browser=Browser('article');browser.submitted=True
+        result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',
+            cover_source=[{'src':'https://pbs.twimg.com/media/cover.png'}]))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertTrue(result['duplicate_found'])
+        self.assertEqual(browser.actions,[])

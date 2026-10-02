@@ -40,6 +40,9 @@ class _L1:
         self.calls = []
         self.strategy_calls = []
 
+    def choose_x_discovery(self, **kwargs):
+        return {"source":"MENTIONS"}
+
     def choose_x_strategy(self, **kwargs):
         self.strategy_calls.append(kwargs)
         return _x_strategy()
@@ -164,10 +167,17 @@ class _ModelRuntime:
 
 
 class _BrowserTransport:
-    def __init__(self, *, ok=True):
-        self.ok, self.calls = ok, []
+    def __init__(self, *, ok=True, mentions_ok=True):
+        self.ok, self.calls, self.mentions_ok = ok, [], mentions_ok
     async def identity(self):
         return {"id":"me","username":"agent","public_metrics":{"followers_count":2000}}
+    async def discover(self, *, source, max_results):
+        if not self.mentions_ok:
+            raise RuntimeError("fixture: browser unavailable")
+        return [{"id":"m1","text":"Have you tested this method?", "author_id":"u2", "username":"visitor", "url":"https://x.com/u2/status/m1"}]
+    async def reply(self, *, text, target_url):
+        self.calls.append({"reply_text":text,"target_url":target_url})
+        return SimpleNamespace(post_id="r42",url="https://x.com/agent/status/r42",handle="agent",provider="JEV_AGENT_RUNTIME")
     async def publish(self, *, text):
         self.calls.append(text)
         if not self.ok:
@@ -182,7 +192,7 @@ def _inject_browser_transport(monkeypatch):
         original(self, **kwargs)
         if self.browser_publish_transport is None:
             self.browser_publish_transport = _BrowserTransport(
-                ok=getattr(self.runtime,"post_ok",True))
+                ok=getattr(self.runtime,"post_ok",True),mentions_ok=getattr(self.runtime,"mentions_ok",True))
     monkeypatch.setattr(XAutonomyLoop,"__init__",initialize)
 
 def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_path: Path, monkeypatch):
@@ -211,13 +221,12 @@ def test_valuable_mention_becomes_discovered_social_evidence_and_bookmark(tmp_pa
     )
     result = asyncio.run(loop.observe(now=NOW))
     assert result["status"] == "OK"
-    assert ("x.bookmark", {"user_id": "me", "post_id": "m1"}) in runtime.calls
+    assert not runtime.calls
     items = social_evidence_items(tmp_path, now=NOW)
     assert items[0]["evidence_id"] == "x-social:m1"
     assert json.loads((tmp_path / "content/x/social_evidence.jsonl").read_text().splitlines()[0])["status"] == "DISCOVERED"
     history = XHistoryLedger(tmp_path).recent()
-    assert history[-1]["event_type"] == "BOOKMARK"
-    assert history[-1]["lineage"]["adopted"] is False
+    assert not history
     assert observed_social == [{
         "actor": "u2",
         "category": "SOCIAL",
@@ -260,10 +269,10 @@ def test_credits_depleted_is_public_status_not_fake_social_success(tmp_path: Pat
             raise RuntimeError("fixture: authenticated browser unavailable")
     loop = XAutonomyLoop(runtime=_Runtime(mentions_ok=False), model_runtime=_ModelRuntime([]), state_root=tmp_path, base_url="", browser_mentions_observer=UnavailableBrowser())
     result = asyncio.run(loop.observe(now=NOW))
-    assert result["status"] == "X_CREDITS_DEPLETED"
+    assert result["status"] == "X_OBSERVATION_FAILED"
     projection = public_x_projection(tmp_path)
     assert projection["connected"] is True
-    assert projection["status"] == "X_CREDITS_DEPLETED"
+    assert projection["status"] == "X_OBSERVATION_FAILED"
     assert projection["recent_activity"] == []
 
 
@@ -593,7 +602,8 @@ class _BrowserMentions:
         }]
 
 
-def test_credits_depleted_uses_read_only_browser_mentions_for_learning(tmp_path: Path, monkeypatch):
+def test_browser_mentions_can_reply_without_api_credits(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
     runtime = _Runtime(mentions_ok=False)
     observer = _BrowserMentions()
@@ -601,14 +611,14 @@ def test_credits_depleted_uses_read_only_browser_mentions_for_learning(tmp_path:
         "action": "REPLY", "category": "QUESTION", "valuable_evidence": False,
         "summary": "A visitor asks how Ferro persists across chats.",
         "reply_text": "I persist through runtime state rather than one chat session.",
-        "rationale": "This is a relevant identity question, but browser fallback is intentionally read-only.",
-    }])
+        "rationale": "This is a relevant identity question that merits a grounded reply.",
+    }, {"safe": True,"no_private_data":True,"no_impersonation":True,"no_harassment":True,"no_investment_advice":True,"no_fabricated_facts":True,"attribution_ok":True,"rationale":"The wording is bounded and grounded in the public question."}])
     loop = XAutonomyLoop(
         runtime=runtime, model_runtime=model, state_root=tmp_path, base_url="",
         browser_mentions_observer=observer,
     )
     result = asyncio.run(loop.observe(now=NOW))
-    assert result["status"] == "OK_BROWSER_FALLBACK"
+    assert result["status"] == "OK"
     assert result["new_mentions"] == 1
     assert observer.calls == [(NOW, 20)]
     assert not any(capability in {"x.reply", "x.bookmark"} for capability, _ in runtime.calls)
@@ -616,7 +626,7 @@ def test_credits_depleted_uses_read_only_browser_mentions_for_learning(tmp_path:
     assert interaction["source"] == "X"
     assert interaction["category"] == "QUESTION"
     assert interaction["learning_authority"] == "AUDIENCE_INTEREST_ONLY"
-    assert public_x_projection(tmp_path)["status"] == "OK_BROWSER_FALLBACK"
+    assert public_x_projection(tmp_path)["status"] == "OK"
 
 
 class _BlockedGrowthMission(_GrowthMission):
