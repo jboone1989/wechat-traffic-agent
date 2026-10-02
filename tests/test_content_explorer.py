@@ -273,3 +273,13 @@ def test_repeated_source_cannot_hide_an_invented_second_quote(tmp_path, counter)
     with pytest.raises(ValueError, match="substring"):
         asyncio.run(operation)
     assert len(runtime.calls) == 2
+
+def test_invalid_quote_retry_can_recover_with_literal_source_title(tmp_path):
+    row=candidate(title="AI Agent Evaluation | DeepEval")
+    invalid=json.dumps({"matches":[{"evidence_id":row["evidence_id"],"evidence_quote":"Paraphrased evaluation guide","reason":"Directly relevant."}]})
+    valid=json.dumps({"matches":[{"evidence_id":row["evidence_id"],"evidence_quote":row["title"],"reason":"Directly relevant."}]})
+    runtime=Runtime(invalid,valid)
+    result=asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,goal_topic="AI agent evaluation",topic_context=[],candidates=[row]))
+    assert result["items"]==[row]
+    assert result["matches"][0]["evidence_quote"]==row["title"]
+    assert json.dumps({"evidence_id":row["evidence_id"],"evidence_quote":row["title"]},ensure_ascii=False) in runtime.calls[1]
