@@ -159,3 +159,17 @@ def test_provider_unavailable_notifies_on_first_failed_attempt(tmp_path):
     goal=configured(tmp_path)
     goal.observe("CONTENT_COGNITION",{"status":"CHATGPT_UNAVAILABLE","error_type":"AgentRuntimeChatGPTProviderError","message":"model browser request timed out"},NOW)
     assert len(goal.reconcile(NOW)["deliveries"])==1
+
+
+def test_verified_reconciliation_survives_replayed_failed_attempt(tmp_path):
+    goal=configured(tmp_path)
+    receipt=post(tmp_path,1,status="PUBLICATION_UNVERIFIED")
+    receipt["status"]="POSTED"
+    folder=tmp_path/"content/continuous/cycles/cycle-1"
+    put(folder/"x_native_publication_verification.json",receipt)
+    put(folder/"x_social_expression.json",{"status":"PUBLICATION_UNVERIFIED"})
+    assert goal.status(NOW)["published"]==1
+    assert len(goal.reconcile(NOW)["deliveries"])==1
+    receipt["post_id"]="2"
+    put(folder/"x_native_publication_verification.json",receipt)
+    assert goal.status(NOW)["published"]==0
