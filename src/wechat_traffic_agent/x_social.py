@@ -330,7 +330,19 @@ class XAutonomyLoop:
                               if key in {"decision","observed_at","post_count"}})
                 from .x_browser import XBrowserTransportRouter
                 transport = self.browser_publish_transport or XBrowserTransportRouter(state_root=self.state_root)
-                raw_mentions = await transport.discover(source=discovery["source"], max_results=20)
+                if discovery["source"] == "SEARCH":
+                    from .x_discovery import plan_x_search
+                    search = await plan_x_search(
+                        runtime=self.model_runtime, state_root=self.state_root,
+                        folder=self.root / "discovery-cycles" / cycle,
+                        mission=x_growth_mission_context(self.state_root),
+                        persona=public_persona_projection(self.state_root),
+                        previous=_read_json(self.root / "discovery.json"),
+                    )
+                    discovery = {**discovery, **search.model_dump(mode="json")}
+                    raw_mentions = await transport.discover(source="SEARCH", query=search.query, max_results=20)
+                else:
+                    raw_mentions = await transport.discover(source=discovery["source"], max_results=20)
             mentions = normalize_posts(raw_mentions, observed_at=now)
             mentions_receipt_id = f"x-jev-discovery:{cycle}"
             _write_json(self.root / "discovery.json", {"cycle": cycle, "observed_at": now.isoformat(),

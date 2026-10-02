@@ -47,6 +47,30 @@ class TestGrowthLoop(unittest.TestCase):
         t.discover.assert_awaited_once_with(source='HOME',max_results=20)
         self.assertEqual(json.loads(loop.profile_path.read_text())['identity_source'],'JEV_AGENT_RUNTIME')
 
+    def test_search_routes_agent_generated_query_and_persists_its_reason(self):
+        from wechat_traffic_agent.x_discovery import XSearchPlan
+        loop, transport = self.loop()
+        loop.l1_decisions = SimpleNamespace(choose_x_discovery=lambda **kw: {"source": "SEARCH"})
+        plan = XSearchPlan(domain="FINANCE", query="sovereign debt refinancing",
+                           question="What changes refinancing risk?", rationale="A useful question in my finance interests.")
+        with patch("wechat_traffic_agent.x_discovery.plan_x_search", AsyncMock(return_value=plan)):
+            result = asyncio.run(loop.observe(now=NOW))
+        self.assertEqual(result["status"], "OK")
+        transport.discover.assert_awaited_once_with(source="SEARCH", query=plan.query, max_results=20)
+        saved = json.loads((loop.root / "discovery.json").read_text())
+        self.assertEqual(saved["decision"]["domain"], "FINANCE")
+        self.assertEqual(saved["decision"]["query"], plan.query)
+        self.assertEqual(saved["decision"]["question"], plan.question)
+
+    def test_failed_query_generation_does_not_fall_back_to_agent_memory(self):
+        loop, transport = self.loop()
+        loop.l1_decisions = SimpleNamespace(choose_x_discovery=lambda **kw: {"source": "SEARCH"})
+        with patch("wechat_traffic_agent.x_discovery.plan_x_search", AsyncMock(side_effect=RuntimeError("cognition unavailable"))):
+            result = asyncio.run(loop.observe(now=NOW))
+        self.assertEqual(result["status"], "X_OBSERVATION_FAILED")
+        transport.discover.assert_not_awaited()
+        self.assertIn("cognition unavailable", result["detail"])
+
     def test_failed_reply_remains_retryable(self):
         handler=AsyncMock(side_effect=[False,True])
         loop,t=self.loop(handler=handler)

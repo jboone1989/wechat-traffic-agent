@@ -105,9 +105,9 @@ class XBrowserTransportRouter:
         from .x_local_browser import LocalHarnessXTransport
         return await LocalHarnessXTransport.from_environment(state_root=self.state_root).publish_article(**kwargs)
 
-    async def discover(self, *, source="MENTIONS", max_results=20):
+    async def discover(self, *, source="MENTIONS", query=None, max_results=20):
         from .x_local_browser import LocalHarnessXTransport
-        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).discover(source=source,max_results=max_results)
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).discover(source=source,query=query,max_results=max_results)
 
     async def reply(self, *, text, target_url):
         from .x_local_browser import LocalHarnessXTransport

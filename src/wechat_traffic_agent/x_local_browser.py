@@ -226,16 +226,20 @@ class LocalHarnessXTransport:
             return body
         return self._verified_result(body)
 
-    async def discover(self, *, source="MENTIONS", max_results=20):
+    async def discover(self, *, source="MENTIONS", query=None, max_results=20):
         from urllib.parse import quote
         from .x_jev_social import jev_x_discover
-        urls={"MENTIONS":"https://x.com/notifications/mentions", "HOME":"https://x.com/home"}
-        queries={"AGENT_RUNTIME":"persistent AI agents runtime", "LIVINGRUNTIME":"LivingRuntime Remote", "AGENT_MEMORY":"AI agent memory continuity"}
-        if source not in urls and source not in queries:
+        urls = {"MENTIONS": "https://x.com/notifications/mentions", "HOME": "https://x.com/home"}
+        if source == "SEARCH":
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("X SEARCH requires an agent-generated query")
+            url = "https://x.com/search?q=" + quote(query.strip(), safe="") + "&f=live"
+        elif source in urls:
+            url = urls[source]
+        else:
             raise ValueError("Unknown X discovery source")
-        url=urls.get(source) or "https://x.com/search?q="+quote(queries[source])+"&f=live"
-        body=await asyncio.to_thread(self._run_jev_sync,jev_x_discover(url,max_results))
-        if body.get("status")!="OBSERVED":
+        body = await asyncio.to_thread(self._run_jev_sync, jev_x_discover(url, max_results))
+        if body.get("status") != "OBSERVED":
             raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
         return body["posts"]
 

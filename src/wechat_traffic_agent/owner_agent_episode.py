@@ -342,8 +342,10 @@ class OwnerAgentEpisode:
         mission_context: Mapping[str, Any] | None,
         state: Mapping[str, Any],
     ) -> OwnerAgentDecision:
+        from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
         prompt = (
             "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
+            + EDITORIAL_SCOPE_INSTRUCTION + " "
             "Choose the next useful tool/action, not a content topic by default. "
             "Prefer reality checks when key facts are missing; do not repeat a tool whose prior result already answers the need. "
             "Treat a specific activated owner proposal as the immediate commitment under its broader parent goal. "

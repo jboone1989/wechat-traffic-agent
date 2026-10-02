@@ -323,12 +323,14 @@ def persona_learning_context(state_root: Path) -> dict[str, Any]:
 
 
 def public_persona_projection(state_root: Path) -> dict[str, Any]:
+    from .editorial_policy import editorial_scope
     persona = load_public_persona(state_root)
     anchor = load_public_identity_anchor(state_root)
     if persona is None:
-        return {"status": "UNINITIALIZED", "name": "Content Agent", "identity_anchor": None, "learning": persona_learning_context(state_root)}
+        return {"status": "UNINITIALIZED", "name": "Content Agent", "identity_anchor": None, "learning": persona_learning_context(state_root), "editorial_scope": editorial_scope()}
     return {
         "status": "ACTIVE", **persona.model_dump(mode="json"),
+        "editorial_scope": editorial_scope(),
         "identity_anchor": anchor.model_dump(mode="json") if anchor is not None else None,
         "learning": persona_learning_context(state_root),
     }
