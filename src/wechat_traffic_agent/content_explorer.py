@@ -336,11 +336,9 @@ class GoalEvidenceExplorer:
 
         def checked(raw: str) -> CounterEvidenceFilter:
             value = CounterEvidenceFilter.model_validate_json(_extract_json(raw))
-            seen = set()
             for match in value.matches:
-                if match.evidence_id in seen or match.evidence_id not in registry:
-                    raise ValueError("counter evidence_id must be unique and supplied")
-                seen.add(match.evidence_id)
+                if match.evidence_id not in registry:
+                    raise ValueError("counter evidence_id must reference a supplied candidate")
                 if match.evidence_quote not in _candidate_text(registry[match.evidence_id]):
                     raise ValueError("counter evidence_quote must be an exact candidate substring")
             return value
@@ -349,7 +347,8 @@ class GoalEvidenceExplorer:
             value = checked(raw)
         except ValueError as exc:
             value = checked(await runtime.cognitive_probe(task + "\nValidation: " + str(exc)[:700], max_tokens=1400))
-        selected = [registry[row.evidence_id] for row in value.matches]
+        # Multiple valid quotes may support one source; they do not create independent sources.
+        selected = [registry[evidence_id] for evidence_id in dict.fromkeys(row.evidence_id for row in value.matches)]
         return {"items": selected, "matches": [row.model_dump(mode="json") for row in value.matches],
                 "candidate_count": len(candidates)}
 
@@ -384,11 +383,7 @@ class GoalEvidenceExplorer:
 
         def checked(raw: str) -> EvidenceFilter:
             value = EvidenceFilter.model_validate_json(_extract_json(raw))
-            seen: set[str] = set()
             for match in value.matches:
-                if match.evidence_id in seen:
-                    raise ValueError("evidence_id must be unique")
-                seen.add(match.evidence_id)
                 candidate = registry.get(match.evidence_id)
                 if candidate is None:
                     raise ValueError("evidence_id must reference a supplied candidate")
@@ -419,7 +414,8 @@ class GoalEvidenceExplorer:
                     "classifier_status": "MODEL_OUTPUT_INVALID",
                     "classifier_error": type(second_exc).__name__,
                 }
-        selected = [registry[match.evidence_id] for match in value.matches]
+        # Keep every validated quote in the receipt, but admit each source only once.
+        selected = [registry[evidence_id] for evidence_id in dict.fromkeys(match.evidence_id for match in value.matches)]
         return {
             "items": selected,
             "matches": [match.model_dump(mode="json") for match in value.matches],
