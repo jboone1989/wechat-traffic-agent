@@ -269,6 +269,7 @@ class FerroL1Decisions:
         evidence: Mapping[str, Any],
         mission: Mapping[str, Any],
         performance: Mapping[str, Any],
+        owner_goal: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Choose bounded X presentation and exploration strategy before L2 writes."""
 
@@ -334,6 +335,12 @@ class FerroL1Decisions:
                     "hard_stop",
                 ),
             ),
+            "owner_goal": {
+                "context_authority": "STRATEGY_ONLY",
+                **{key: _clip((owner_goal or {}).get(key), 1200)
+                   for key in ("goal_id", "description", "origin")
+                   if (owner_goal or {}).get(key) is not None},
+            },
             "x_performance": _compact_mapping(
                 performance,
                 (
@@ -352,6 +359,8 @@ class FerroL1Decisions:
                 "post_timing": {
                     "objective": "Decide whether an original X post is useful now.",
                     "rules": [
+                        "Consider the supplied activated owner goal when deciding how to advance the current commitment.",
+                        "Owner strategy context does not replace evidence, safety, or publication gates.",
                         "Do not post to satisfy a quota.",
                         "HOLD when information value is weak or another interaction mode is clearly more useful.",
                     ],

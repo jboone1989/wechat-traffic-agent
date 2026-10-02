@@ -567,6 +567,7 @@ class XAutonomyLoop:
             ),
             evidence=evidence,
             mission=x_growth_mission_context(self.state_root),
+            owner_goal=(context.get("mind_plan") or {}).get("goal") or {},
             performance=x_social_performance_context(
                 state_root=self.state_root,
                 as_of=now,

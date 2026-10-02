@@ -229,7 +229,10 @@ def test_read_only_x_observation_never_replies_or_bookmarks(tmp_path: Path, monk
 def test_credits_depleted_is_public_status_not_fake_social_success(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("CONTENT_X_WRITES_ENABLED", raising=False)
     monkeypatch.delenv("CONTENT_TINYFISH_X_ENABLED", raising=False)
-    loop = XAutonomyLoop(runtime=_Runtime(mentions_ok=False), model_runtime=_ModelRuntime([]), state_root=tmp_path, base_url="")
+    class UnavailableBrowser:
+        async def observe(self, **kwargs):
+            raise RuntimeError("fixture: authenticated browser unavailable")
+    loop = XAutonomyLoop(runtime=_Runtime(mentions_ok=False), model_runtime=_ModelRuntime([]), state_root=tmp_path, base_url="", browser_mentions_observer=UnavailableBrowser())
     result = asyncio.run(loop.observe(now=NOW))
     assert result["status"] == "X_CREDITS_DEPLETED"
     projection = public_x_projection(tmp_path)

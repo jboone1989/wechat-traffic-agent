@@ -197,6 +197,7 @@ class SocialExpressionDraftWorker:
             evidence=evidence,
             mission=x_mission,
             performance=x_performance,
+            owner_goal=_read_json(folder / "mind_plan.json").get("goal") or {},
         )
         allowed_style_ids = {
             str(row.get("observation_id")) for row in style.get("observations", []) if isinstance(row, dict)

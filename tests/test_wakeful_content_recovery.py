@@ -1354,3 +1354,35 @@ def test_missing_published_social_draft_recovers_before_explicit_owner_focus(tmp
     assert order == ["recover","new-cognition"]
     assert result["social_stage_backlog_recovery"]["cycle"] == cycle
     assert json.loads((folder / "result.json").read_text()) == published
+
+def test_original_short_post_uses_api_safety_fallback_lane_only(tmp_path):
+    folder = tmp_path / "content/continuous/cycles/short"
+    folder.mkdir(parents=True)
+    (folder / "social_expression_drafts.json").write_text(json.dumps({
+        "status":"DRAFT_READY",
+        "x_strategy":{"x_format":"SHORT_POST","interaction_mode":"ORIGINAL","post_timing":"POST_NOW"},
+    }))
+    publisher = Publisher()
+    x_loop = AfterCycle()
+    runner = WakefulContentTaskRunner(
+        state_root=tmp_path, social_expression_loop=None,
+        x_browser_publisher=publisher, okx_orbit_publisher=None, x_loop=x_loop,
+    )
+    rows = {"status":"OK"}
+    runner._run_social_stage(rows=rows, continuous={"status":"PUBLISHED","cycle":"short"}, now=NOW)
+    assert rows["x_browser_publication"]["status"] == "DELEGATED_TO_X_AUTONOMY"
+    assert publisher.calls == []
+    assert len(x_loop.calls) == 1
+
+
+def test_long_post_retains_browser_transport_lane(tmp_path):
+    folder = tmp_path / "content/continuous/cycles/long"
+    folder.mkdir(parents=True)
+    (folder / "social_expression_drafts.json").write_text(json.dumps({
+        "status":"DRAFT_READY",
+        "x_strategy":{"x_format":"LONG_POST","interaction_mode":"ORIGINAL","post_timing":"POST_NOW"},
+    }))
+    publisher = Publisher()
+    runner = WakefulContentTaskRunner(state_root=tmp_path, x_browser_publisher=publisher, x_loop=AfterCycle())
+    runner._run_social_stage(rows={"status":"OK"}, continuous={"status":"PUBLISHED","cycle":"long"}, now=NOW)
+    assert len(publisher.calls) == 1

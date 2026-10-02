@@ -2399,6 +2399,26 @@ class WakefulContentTaskRunner:
         ):
             if publisher is None:
                 continue
+            # Original short posts belong to the API -> verified browser
+            # fallback lane, including its independent X safety decision.
+            if name == "x_browser_publication" and getattr(self, "x_loop", None) is not None:
+                folder = Path(self.state_root) / "content" / "continuous" / "cycles" / str(continuous.get("cycle") or "")
+                try:
+                    draft_payload = json.loads((folder / "social_expression_drafts.json").read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    draft_payload = {}
+                if not isinstance(draft_payload, dict):
+                    draft_payload = {}
+                strategy = draft_payload.get("x_strategy")
+                if not isinstance(strategy, dict):
+                    strategy = {}
+                if (
+                    draft_payload.get("status") == "DRAFT_READY"
+                    and strategy.get("interaction_mode", "ORIGINAL") == "ORIGINAL"
+                    and strategy.get("x_format") == "SHORT_POST"
+                ):
+                    rows[name] = {"status": "DELEGATED_TO_X_AUTONOMY", "cycle": str(continuous.get("cycle") or "")}
+                    continue
             try:
                 rows[name] = self._run_async(
                     publisher.after_content_cycle(

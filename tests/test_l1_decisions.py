@@ -196,12 +196,15 @@ def test_x_strategy_receives_actual_cognition_information_and_supported_facts(tm
         },
         evidence={"resolution":{"action":"DRAFT","useful_facts":["The repository documents persistent checkpoints."]}},
         mission={"status":"ACTIVE"},performance={},
+        owner_goal={"goal_id":"owner-growth","origin":"EXTERNAL_MISSION","description":"Promote LivingRuntime Remote through a real X growth experiment."},
     )
     state = provider.calls[0][1]
     assert state["cognition"]["what_matters"].startswith("Bounded tools")
     assert state["cognition"]["belief_proposition"] == "Durable jobs can outlive chat turns."
     assert state["evidence"]["useful_facts"] == ["The repository documents persistent checkpoints."]
     assert result["post_timing"] == timing
+    assert state["owner_goal"]["goal_id"] == "owner-growth"
+    assert state["owner_goal"]["context_authority"] == "STRATEGY_ONLY"
 
 
 def test_x_strategy_bounds_information_without_losing_the_fact_count(tmp_path):
