@@ -1658,7 +1658,7 @@ def test_running_external_mission_gets_bounded_priority_until_experiment_starts(
     assert any(call.startswith("MISSION_DISCOVERY:") for call in runtime.calls)
 
 
-def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
+def test_audience_decline_does_not_disable_proactive_mission_discovery(tmp_path):
     from wechat_traffic_agent.content_goal_loop import _active_mission_discovery_context
 
     value = {
@@ -1673,7 +1673,7 @@ def test_x_mission_hard_stop_disables_proactive_mission_discovery(tmp_path):
         },
         "active_experiment": {"status": "PROPOSED"},
     }
-    assert _active_mission_discovery_context(value) is None
+    assert _active_mission_discovery_context(value) is not None
 
 
 @pytest.mark.parametrize(

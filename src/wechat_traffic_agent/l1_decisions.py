@@ -335,7 +335,7 @@ class FerroL1Decisions:
                     "pressure",
                     "exploration_rate",
                     "active_experiment",
-                    "hard_stop",
+                    "audience_feedback",
                     "owner_strategy_advice",
                 ),
             ),

@@ -209,9 +209,6 @@ def _normalize_owner_goal_context(value):
 def _active_mission_discovery_context(value):
     if not isinstance(value, dict) or value.get("status") != "ACTIVE":
         return None
-    hard_stop = value.get("hard_stop")
-    if isinstance(hard_stop, dict) and hard_stop.get("active") is True:
-        return None
     roadmap = value.get("roadmap") if isinstance(value.get("roadmap"), dict) else {}
     steps = list(roadmap.get("steps") or ())
     candidates = [
