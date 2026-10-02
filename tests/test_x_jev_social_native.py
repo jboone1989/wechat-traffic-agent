@@ -262,3 +262,20 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertEqual(result['status'],'PUBLICATION_UNVERIFIED')
         self.assertEqual(browser.actions,[])
         self.assertEqual(browser.url,'https://x.com/home')
+
+    def test_public_verification_waits_for_lazily_loaded_body_asset(self):
+        class LazyBody(Browser):
+            image_reads=0
+            def evaluate(self,expression):
+                if 'naturalWidth>=500' in expression and 'map(e=>e.src)' in expression and 'previousCover' not in expression:
+                    self.image_reads+=1
+                    if self.image_reads<3:return ['https://pbs.twimg.com/media/cover.png']
+                    return ['https://pbs.twimg.com/media/cover.png','https://pbs.twimg.com/media/inline.png']
+                return super().evaluate(expression)
+        browser=LazyBody('article');browser.submitted=True
+        result=execute(browser,jev_x_article_reconcile(title='Durable agents',text='The complete verified article body.',
+            draft_url='https://x.com/compose/articles/edit/789',expected_handle='ferro',public_url='https://x.com/ferro/status/987',
+            cover_source=[{'src':'https://pbs.twimg.com/media/cover.png'},{'src':'https://pbs.twimg.com/media/inline.png'}]))
+        self.assertEqual(result['status'],'POSTED')
+        self.assertGreaterEqual(browser.image_reads,3)
+        self.assertEqual(browser.actions,[])
