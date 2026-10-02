@@ -89,8 +89,10 @@ class MediaTests(unittest.TestCase):
 
 
 class ImageBrowser:
-    def __init__(self, submitted=False):
+    def __init__(self, submitted=False, drops_fill=False):
         self.submitted = submitted
+        self.drops_fill = drops_fill
+        self.native_inputs = 0
         self.outbound = ''
         self.sends = 0
     def evaluate(self, expression):
@@ -103,6 +105,8 @@ class ImageBrowser:
                                 'message_id': 'assistant-image'}] if self.submitted else []}
         if 'data-testid' in expression:
             return 'send-button'
+        if 'document.activeElement===e' in expression:
+            return True
         if 'nodes.get' in expression:
             return self.outbound
         raise AssertionError(expression)
@@ -110,9 +114,13 @@ class ImageBrowser:
         return {'actions': [{'kind': 'fill', 'role': 'textbox', 'label': 'Prompt', 'node': 1},
                             {'kind': 'click', 'role': 'button', 'label': 'Send', 'node': 2}]}
     def act(self, action, page, text=None):
-        if action['kind'] == 'fill': self.outbound = text
+        if action['kind'] == 'fill': self.outbound = '' if self.drops_fill else text
         else: self.submitted = True; self.sends += 1
     def call(self, method, **params):
+        if method == 'Input.insertText':
+            self.native_inputs += 1
+            self.outbound = params['text']
+            return {}
         self.assert_download = params
         assert method == 'Runtime.evaluate'
         return {'result': {'value': base64.b64encode(png_bytes()).decode()}}
@@ -159,3 +167,11 @@ class GenerationTransactionTests(unittest.TestCase):
             self.assertEqual(result['status'], 'GENERATION_UNVERIFIED')
             self.assertEqual(browser.sends, 0)
             self.assertFalse((folder / 'image.png').exists())
+
+    def test_discarded_fill_is_repaired_with_native_input_before_send(self):
+        with tempfile.TemporaryDirectory() as root:
+            browser = ImageBrowser(drops_fill=True)
+            result = self.execute(browser, Path(root))
+            self.assertEqual(result['status'], 'GENERATED')
+            self.assertEqual(browser.native_inputs, 1)
+            self.assertEqual(browser.sends, 1)

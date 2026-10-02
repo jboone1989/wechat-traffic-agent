@@ -9,6 +9,10 @@ on:
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
+      - "src/wechat_traffic_agent/x_local_browser.py"
+      - "src/wechat_traffic_agent/x_jev_*.py"
+      - "src/wechat_traffic_agent/x_article_media.py"
+      - "src/wechat_traffic_agent/x_image_generation.py"
       - "src/wechat_traffic_agent/account_management.py"
       - "src/wechat_traffic_agent/channels/operator_console_page.py"
       - "src/wechat_traffic_agent/x_outcomes.py"
@@ -30,7 +34,7 @@ on:
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
       - "tests/test_account_management.py"
-      - "tests/test_local_browser_control.py"
+      - "tests/test_agent_runtime_browser_path.py"
       - "tests/test_operator_console.py"
       - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
@@ -48,6 +52,10 @@ on:
       - "src/wechat_traffic_agent/social_expression.py"
       - "src/wechat_traffic_agent/x_browser.py"
       - "src/wechat_traffic_agent/local_browser_control.py"
+      - "src/wechat_traffic_agent/x_local_browser.py"
+      - "src/wechat_traffic_agent/x_jev_*.py"
+      - "src/wechat_traffic_agent/x_article_media.py"
+      - "src/wechat_traffic_agent/x_image_generation.py"
       - "src/wechat_traffic_agent/account_management.py"
       - "src/wechat_traffic_agent/channels/operator_console_page.py"
       - "src/wechat_traffic_agent/x_outcomes.py"
@@ -69,7 +77,7 @@ on:
       - "tests/test_social_expression.py"
       - "tests/test_x_browser.py"
       - "tests/test_account_management.py"
-      - "tests/test_local_browser_control.py"
+      - "tests/test_agent_runtime_browser_path.py"
       - "tests/test_operator_console.py"
       - "tests/test_x_outcomes.py"
       - "tests/test_social_performance.py"
@@ -90,7 +98,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install isolated test dependencies
-        run: python -m pip install "pytest>=8" "pydantic>=2.5" "httpx>=0.27" "pyyaml>=6" "starlette>=0.37" "websockets>=14,<16"
+        run: python -m pip install "pytest>=8" "pydantic>=2.5" "httpx>=0.27" "pyyaml>=6" "starlette>=0.37" "websockets>=14,<16" "Pillow>=10,<13"
       - name: Compile X and OKX social boundary
         run: >-
           python -m py_compile
@@ -99,6 +107,11 @@ jobs:
           src/wechat_traffic_agent/x_growth_mission.py
           src/wechat_traffic_agent/x_browser.py
           src/wechat_traffic_agent/local_browser_control.py
+          src/wechat_traffic_agent/x_local_browser.py
+          src/wechat_traffic_agent/x_jev_social.py
+          src/wechat_traffic_agent/x_jev_article.py
+          src/wechat_traffic_agent/x_article_media.py
+          src/wechat_traffic_agent/x_image_generation.py
           src/wechat_traffic_agent/account_management.py
           src/wechat_traffic_agent/channels/operator_console_page.py
           src/wechat_traffic_agent/x_outcomes.py
@@ -119,6 +132,35 @@ jobs:
       - name: Build lightweight runtime stubs
         run: |
           mkdir -p .x-ci/agent_runtime .x-ci/agent_network
+          # Only external Runtime interfaces are substituted. Tests exercise the
+          # real Content Agent methods and explicitly replace browser I/O.
+          mkdir -p .x-ci/agent_runtime/integrations .x-ci/agent_runtime/llm
+          cat > .x-ci/agent_runtime/integrations/__init__.py <<'PY'
+          BROWSER_NAVIGATE = "browser.navigate"
+          class BrowserPolicy:
+              def __init__(self, **kwargs):
+                  self.__dict__.update(kwargs)
+          class BrowserHarnessRuntime:
+              def __init__(self, **kwargs):
+                  self.__dict__.update(kwargs)
+          class BrowserHarnessProvider:
+              def __init__(self, *, policy, runtime):
+                  self.policy, self.runtime = policy, runtime
+              def readiness(self):
+                  return {"status": "UNAVAILABLE", "reason": "CI has no authenticated browser"}
+              def invoke(self, *args, **kwargs):
+                  raise RuntimeError("CI browser I/O must be substituted by the test")
+          PY
+          printf '%s\\n' 'from . import BROWSER_NAVIGATE, BrowserPolicy' > .x-ci/agent_runtime/integrations/browser.py
+          printf '%s\\n' 'from . import BrowserHarnessProvider, BrowserHarnessRuntime' > .x-ci/agent_runtime/integrations/browser_harness.py
+          cat > .x-ci/agent_runtime/llm/__init__.py <<'PY'
+          class ChatGPTBrowserProviderError(RuntimeError):
+              pass
+          class ChatGPTBrowserProvider:
+              @classmethod
+              def from_environment(cls):
+                  raise ChatGPTBrowserProviderError("CI provider must be substituted by the test")
+          PY
           printf '%s\n' '' > .x-ci/agent_runtime/__init__.py
           printf '%s\n' 'class AgentRuntime: pass' > .x-ci/agent_runtime/runtime.py
           printf '%s\n' '' > .x-ci/agent_network/__init__.py
@@ -144,7 +186,7 @@ jobs:
                   return cls(agent_id, secrets.token_hex(32))
 
               @classmethod
-              def load_or_create(cls, path, agent_id):
+              def load_or_create(cls, path, agent_id, *, secret_path=None):
                   path = Path(path)
                   if path.exists():
                       row = json.loads(path.read_text())
@@ -169,7 +211,9 @@ jobs:
           PYTHONPATH: .x-ci:src
         run: >-
           python -m pytest -q -c /dev/null
-          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_local_browser_control.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
+          tests/test_x_mcp.py tests/test_x_social.py tests/test_x_browser.py tests/test_account_management.py tests/test_agent_runtime_browser_path.py tests/test_operator_console.py tests/test_x_outcomes.py tests/test_x_site.py
+          tests/test_x_article_media.py tests/test_x_transport_transactions.py
+          tests/test_x_jev_social_native.py tests/test_x_jev_transaction_native.py tests/test_x_growth_loop_native.py tests/test_x_growth_mission.py
           tests/test_social_expression.py tests/test_social_performance.py
           tests/test_okx_orbit.py tests/test_okx_orbit_outcomes.py
           tests/test_world_feed.py tests/test_live_agent.py

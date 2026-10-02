@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 
@@ -41,7 +42,7 @@ class ChatGPTImageGenerator:
             raise RuntimeError("Image generation requires Jev")
         with _BrowserProfileProcessLock(self.provider.process_lock_path,
                                        timeout_seconds=self.timeout_seconds + 45):
-            if prior.get("conversation_url"):
+            if re.fullmatch(r"https://chatgpt\.com/c/[A-Za-z0-9_-]+", str(prior.get("conversation_url") or "")):
                 self.provider.browser.invoke(BROWSER_NAVIGATE, {
                     "session_id": self.session_id, "url": prior["conversation_url"]})
             elif not prior.get("attempted"):
@@ -61,7 +62,7 @@ class ChatGPTImageGenerator:
 
 
 GENERATE = r'''
-import base64, hashlib, io, json, os, time
+import base64, hashlib, io, json, os, re, time
 from pathlib import Path
 from jev_ultrafast.browser import StalePage
 from PIL import Image
@@ -72,23 +73,47 @@ outbound=('Create one actual original image using your image-generation tool. '
           'Do not present an illustration as a photograph, real product screenshot, or measured result. '
           'Do not use existing copyrighted logos. Return the generated image.\n'+prompt)
 def save(**changes):
+    if changes.get('status') not in (None,'FAILED','GENERATION_UNVERIFIED'):
+        prior.pop('detail',None)
+    if path.exists() and all(prior.get(k)==v for k,v in changes.items()):
+        return
     prior.update(changes)
     prior['prompt_sha256']=prompt_sha256
     tmp=path.with_suffix('.tmp')
-    tmp.write_text(json.dumps(prior,ensure_ascii=False))
+    with tmp.open('w') as handle:
+        json.dump(prior,handle,ensure_ascii=False)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(tmp,path)
 def observe_state():
     return browser.evaluate("""(() => {
-      const users=[...document.querySelectorAll('[data-message-author-role="user"]')];
-      const assistants=[...document.querySelectorAll('[data-message-author-role="assistant"]')];
+      const messageNodes=role=>{
+        for(const selector of ['[data-message-author-role="'+role+'"]',
+          '[data-content-search-unit-key$=":'+role+'"]',
+          '[data-chatgpt-search-unit-key$=":'+role+'"]']) {
+          const nodes=[...document.querySelectorAll(selector)].filter(e=>e.getClientRects().length);
+          if(nodes.length)return nodes;
+        }
+        return [];
+      };
+      const users=messageNodes('user');
+      const textAssistants=messageNodes('assistant');
+      // Work's image-only responses omit the text-message role wrapper.
+      // Their native generated-image gallery still exposes the owning message.
+      const assistants=textAssistants.length?textAssistants:
+        [...document.querySelectorAll('[data-chatgpt-search-message-ids]')].filter(e=>
+          e.querySelector('[data-testid="generated-image-gallery"]')?.getClientRects().length);
       const images=assistants.flatMap((a,index)=>[...a.querySelectorAll('img')].filter(i=>
         i.complete && i.naturalWidth>=256 && i.naturalHeight>=192).map(i=>({
           src:i.currentSrc||i.src,width:i.naturalWidth,height:i.naturalHeight,
-          assistant_index:index,message_id:a.getAttribute('data-message-id')})));
+          assistant_index:index,message_id:a.getAttribute('data-message-id')||
+            a.getAttribute('data-content-search-unit-key')||a.getAttribute('data-chatgpt-search-unit-key')||
+            a.getAttribute('data-chatgpt-search-message-ids')})));
       return {url:location.href,user_count:users.length,assistant_count:assistants.length,
         last_user:users.at(-1)?.innerText||'',images,
         response:assistants.at(-1)?.innerText||'',
-        generating:Boolean(document.querySelector('[data-testid="stop-button"]'))};
+        generating:[...document.querySelectorAll('button')].some(e=>e.getClientRects().length&&
+          (e.getAttribute('data-testid')==='stop-button'||/^stop( generating| streaming| response)?$/i.test(e.getAttribute('aria-label')||'')))};
     })()""")
 def action(kind, text=None):
     deadline=time.monotonic()+30
@@ -120,7 +145,29 @@ try:
         if '/c/' in state['url'] or state['user_count']:
             raise RuntimeError('Image request must start in its own empty conversation')
         editor=action('fill',outbound)
-        filled=browser.evaluate('(() => {const e=window.__jevFast.nodes.get('+str(editor['node'])+');return e?.innerText||e?.value||"";})()')
+        read_editor='(() => {const e=window.__jevFast.nodes.get('+str(editor['node'])+');return typeof e?.value==="string"?e.value:e?.innerText||"";})()'
+        filled=browser.evaluate(read_editor)
+        if ' '.join(str(filled).split())!=' '.join(outbound.split()):
+            # Work's editor can discard synthetic DOM edits. Focus the freshly
+            # observed editor and use native browser text input instead.
+            page=browser.observe(screenshot=False)
+            editors=[a for a in page.get('actions') or [] if a.get('kind')=='fill'
+                     and a.get('role')=='textbox' and not any(w in str(a.get('label') or '').casefold()
+                                                            for w in ('search','搜索'))]
+            if len(editors)!=1:
+                raise RuntimeError('Image composer editor unavailable or ambiguous')
+            editor=editors[0]
+            focused=browser.evaluate('(() => {const e=window.__jevFast.nodes.get('+str(editor['node'])+');if(!e?.isContentEditable)return false;e.focus();const r=document.createRange();r.selectNodeContents(e);const s=getSelection();s.removeAllRanges();s.addRange(r);return document.activeElement===e;})()')
+            if focused is not True:
+                raise RuntimeError('Image composer could not receive native input')
+            browser.call('Input.insertText',text=outbound,_response_timeout=30)
+            read_editor='(() => {const e=window.__jevFast.nodes.get('+str(editor['node'])+');return typeof e?.value==="string"?e.value:e?.innerText||"";})()'
+            fill_deadline=time.monotonic()+30
+            while time.monotonic()<fill_deadline:
+                filled=browser.evaluate(read_editor)
+                if ' '.join(str(filled).split())==' '.join(outbound.split()):
+                    break
+                time.sleep(.25)
         if ' '.join(str(filled).split())!=' '.join(outbound.split()):
             raise RuntimeError('Image prompt fill mismatch')
         save(status='SUBMIT_PENDING',attempted=True,baseline_user_count=state['user_count'],
@@ -129,7 +176,10 @@ try:
     state=observe_state()
     while time.monotonic()<deadline:
         state=observe_state()
-        if '/c/' in state['url'] and not prior.get('conversation_url'):
+        if re.fullmatch(r'https://chatgpt\.com/c/[A-Za-z0-9_-]+',state['url']):
+            bound=prior.get('conversation_url') or ''
+            if re.fullmatch(r'https://chatgpt\.com/c/[A-Za-z0-9_-]+',bound) and bound!=state['url']:
+                raise RuntimeError('Image generation conversation binding changed')
             save(conversation_url=state['url'])
         acknowledged=(state['user_count']>prior['baseline_user_count'] and
                       ' '.join(outbound.split()) in ' '.join(state['last_user'].split()))
