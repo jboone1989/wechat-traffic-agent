@@ -366,6 +366,7 @@ class OwnerAgentEpisode:
         runtime: Any,
         owner_goal: Mapping[str, Any],
         mission_context: Mapping[str, Any] | None,
+        related_memory: list[dict[str, Any]],
         state: Mapping[str, Any],
     ) -> OwnerAgentDecision:
         from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
@@ -374,10 +375,6 @@ class OwnerAgentEpisode:
 
         mission = dict(mission_context or {})
         current_mind = mission.get("current_mind") if isinstance(mission.get("current_mind"), Mapping) else {}
-        related_memory = self._related_memory(
-            owner_goal=owner_goal,
-            mission_context=mission,
-        )
         recent_posts = [
             {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
             for row in XHistoryLedger(self.state_root).recent(limit=100)
@@ -454,11 +451,17 @@ class OwnerAgentEpisode:
                 "resumed": True,
             }
 
+        related_memory = self._related_memory(
+            owner_goal=owner_goal,
+            mission_context=mission_context,
+        )
+
         while len(list(state.get("steps") or [])) < self.MAX_STEPS:
             decision = await self._decide(
                 runtime=runtime,
                 owner_goal=owner_goal,
                 mission_context=mission_context,
+                related_memory=related_memory,
                 state=state,
             )
             payload = decision.model_dump(mode="json")

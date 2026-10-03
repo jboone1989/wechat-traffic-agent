@@ -402,15 +402,22 @@ def test_owner_prompt_uses_current_mind_and_retrieved_history_not_archives(tmp_p
             }]
 
     monkeypatch.setattr(memory_service, "MemoryService", FakeMemoryService)
-    runtime = Runtime([{
-        "action": "WAIT",
-        "wait_seconds": 300,
-        "rationale": "Wait for the next measured observation before changing the active experiment.",
-    }])
+    runtime = Runtime([
+        {
+            "action": "INSPECT_MISSION",
+            "rationale": "Inspect the live mission once before deciding the next action.",
+        },
+        {
+            "action": "WAIT",
+            "wait_seconds": 300,
+            "rationale": "Wait for the next measured observation before changing the active experiment.",
+        },
+    ])
     episode = OwnerAgentEpisode(tmp_path)
 
-    async def execute(_decision):
-        raise AssertionError("WAIT must not execute a tool")
+    async def execute(decision):
+        assert decision["action"] == "INSPECT_MISSION"
+        return {"status": "OK", "mission": "current"}
 
     result = asyncio.run(episode.run(
         runtime=runtime,
@@ -425,9 +432,10 @@ def test_owner_prompt_uses_current_mind_and_retrieved_history_not_archives(tmp_p
         now=NOW,
     ))
 
-    prompt = runtime.prompts[0][0]
+    prompt = runtime.prompts[-1][0]
     assert result["status"] == "DECIDED"
-    assert queries and "Study BTC drawdown regimes" in queries[0]
+    assert len(queries) == 1
+    assert "Study BTC drawdown regimes" in queries[0]
     assert "bitcoin-regimes" in prompt
     assert "RETRIEVED_RELEVANT_HISTORY" in prompt
     assert "HISTORICAL_ARCHIVE_MUST_NOT_ENTER_PROMPT" not in prompt
