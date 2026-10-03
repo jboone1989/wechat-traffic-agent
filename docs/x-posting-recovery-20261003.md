@@ -47,3 +47,19 @@ The receipt status is POSTED, and verified daily progress advanced from 11 to 12
 The temporary daily minimum remains 20 with 8 remaining, automatic attempts and
 existing notifications enabled. The old resource-blocked artifact was superseded
 by this successful receipt. No new browser OOM occurred during this acceptance.
+
+## Citation resolution and second publication
+
+A concurrent update 6cf26d1 is now deployed as 6cf26d1-research-evidence. It resolves
+generated research citations by source_quote_id into immutable original excerpts,
+preventing ellipsized/paraphrased model quotations from reaching the existing
+substring check. This deployed update is retained; the separate direct-quote
+schema experiment was not deployed over it. The current learning/content/explorer/
+owner suites passed 96 tests against the integrated main branch.
+
+Another real post was verified on the expected account after this deployment:
+https://x.com/caini56006962/status/2106279631167029716 .
+Verified daily publications reached 13/20, with automatic attempts and existing
+notifications still enabled. This confirms the restored browser publishing chain;
+the remaining daily minimum and long-term host stability still require ongoing
+operation and monitoring.
