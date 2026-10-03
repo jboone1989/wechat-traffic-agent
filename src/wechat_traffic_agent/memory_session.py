@@ -122,6 +122,7 @@ class MemorySession:
                  "ref": self.bind(row["node_id"])} for row in rows]
 
     def packet(self):
+        window = self.state.get('prompt_window', 8)
         refreshed=[]
         for card in self.state["cards"]:
             node_id=self.state['refs'].get(card['ref'])
@@ -134,9 +135,13 @@ class MemorySession:
             if current.get('version')!=card.get('version'): current['changed_since_read']=True
             refreshed.append(current)
         self.state['cards']=refreshed
+        result = self.state["tool_result"]
+        if result and 'cards' in result:
+            result = {**result, 'cards': result['cards'][:window],
+                      'cards_available': len(result['cards'])}
         return {"working_summary": self.state["working_summary"],
                 "missing_information": self.state["missing_information"],
-                "memory_cards": self.state["cards"], "tool_result": self.state["tool_result"],
+                "memory_cards": self.state["cards"][:window], "tool_result": result,
                 "tools": list(MemoryAction.model_fields["action"].annotation.__args__)}
 
     def execute(self, command: MemoryAction):
@@ -172,7 +177,7 @@ class MemorySession:
 
 async def memory_decision(*, runtime, session, instruction, payload_builder,
                           contract_builder, validate=None, max_turns=8):
-    from .content_loop import _structured
+    from .content_loop import _structured, _structured_prompt
     tools_instruction = (
         "Memory is external and read on demand. If evidence is missing or contradictory, "
         "return a MemoryAction instead of a final decision. Use SEARCH_MEMORY to retrieve "
@@ -193,9 +198,20 @@ async def memory_decision(*, runtime, session, instruction, payload_builder,
         if validate: validate(value)
         return value
     for _ in range(max_turns):
-        payload = payload_builder()
-        payload["working_memory"] = session.packet()
-        contract = contract_builder()
+        # Measure the schema-inclusive request and reduce the selection, never
+        # the canonical archive. Reserve room for one structured-output repair.
+        selection_budget = PromptBudget(max_chars=24000, max_tokens=9000)
+        for window in (8, 4, 2, 1):
+            session.state['prompt_window'] = window
+            payload = payload_builder()
+            payload["working_memory"] = session.packet()
+            contract = contract_builder()
+            task = instruction.rstrip() + ' ' + tools_instruction + '\n' + json.dumps(payload, ensure_ascii=False)
+            if selection_budget.fits(_structured_prompt(task, tool_contract(contract))):
+                break
+        else:
+            raise ValueError('MEMORY_MINIMUM_SELECTION_EXCEEDS_BUDGET: ' + json.dumps(
+                selection_budget.measure(_structured_prompt(task, tool_contract(contract)))))
         def check(value):
             if isinstance(value,MemoryAction):
                 if value.action=='SEARCH_MEMORY' and not value.query.strip(): raise ValueError('search requires a concrete query')
@@ -205,7 +221,7 @@ async def memory_decision(*, runtime, session, instruction, payload_builder,
         observed_versions=session.versions()
         value = await _structured(
             BudgetedRuntime(runtime, session.path.parent),
-            instruction.rstrip() + " " + tools_instruction + "\n" + json.dumps(payload, ensure_ascii=False),
+            task,
             tool_contract(contract), validate=check,
         )
         if isinstance(value, MemoryAction):

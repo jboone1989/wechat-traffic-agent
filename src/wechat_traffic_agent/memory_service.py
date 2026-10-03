@@ -421,8 +421,8 @@ class MemoryService:
         if not self._valid(node):
             return {"status":node["status"],"needs_refresh":True,"version":node["version"]}
         body=node["body"]
-        return {"type":node["node_type"],"text":body[offset:offset+1800],"offset":offset,
-                "next_offset":offset+1800 if offset+1800<len(body) else None,
+        return {"type":node["node_type"],"text":body[offset:offset+900],"offset":offset,
+                "next_offset":offset+900 if offset+900<len(body) else None,
                 "version":node["version"],"context":node["prefix"][:300],
                 "evidence_id":node["metadata"].get("evidence_id"),
                 "source_start":node["metadata"].get("start"),"node_id":node_id}

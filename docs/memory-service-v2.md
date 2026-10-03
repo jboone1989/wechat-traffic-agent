@@ -66,6 +66,10 @@ Every final serialized learning request, including schema and repair text, is
 checked before dispatch. Defaults are 36,000 characters and an estimated
 12,000 total tokens, including 2,400 reserved output tokens. `cl100k_base` is a
 conservative planning estimate, not the browser model's exact tokenizer.
+The selection window shrinks from eight cards to four, two or one against the
+actual schema-inclusive request, with room reserved for a validation repair.
+Original evidence and reference bindings stay intact; newly read evidence takes
+priority. Models can retrieve the remaining cards in later turns.
 `memory_request_sizes.jsonl` records actual serialized character counts.
 Oversized requests fail explicitly; originals are never silently truncated.
 

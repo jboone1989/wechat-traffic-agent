@@ -237,10 +237,15 @@ class ReceiptRuntime:
         self.runtime.persist()
 
 
-async def _structured(runtime, task, contract, validate=None):
+def _structured_prompt(task, contract):
     prompt = task + '\nBE CONCISE: every prose field must be ONE short sentence, aim for at most 150 characters. '
     prompt += 'In particular gap, adaptation, instruction, next_practice and rationale must stay short. '
     prompt += 'Character limits are not word limits. Canonical reference fields such as related_proposition must copy the supplied value exactly, even when longer than the prose target; never shorten or paraphrase them. Quotes may be short exact excerpts. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
+    return prompt
+
+
+async def _structured(runtime, task, contract, validate=None):
+    prompt = _structured_prompt(task, contract)
     def checked(raw):
         value = contract.model_validate_json(_extract_json(raw))
         if validate is not None:

@@ -241,9 +241,9 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
             for card in cards: session.bind(card['node_id'])
         refs=list(session.state['eligible_quotes'])
         last=(session.state.get('tool_result') or {}).get('ref')
-        if last and last in session.state['refs']: refs.append(session.state['refs'][last])
+        if last and last in session.state['refs']: refs.insert(0,session.state['refs'][last])
         quotes={};visible={}
-        for node_id in dict.fromkeys(refs):
+        for node_id in list(dict.fromkeys(refs))[:session.state.get('prompt_window',8)]:
             node=service._node(node_id)
             source_id=node['metadata'].get('evidence_id')
             if node['node_type']!='evidence' or source_id not in registry or not service._valid(node): continue

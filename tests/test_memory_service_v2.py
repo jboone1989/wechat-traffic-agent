@@ -171,6 +171,23 @@ def test_final_request_budget_rejects_schema_and_repair_overflow_before_dispatch
     assert json.loads((tmp_path/'memory_request_sizes.jsonl').read_text())['characters']>36000
 
 
+def test_chinese_selection_shrinks_before_dispatch(tmp_path):
+    class Decision(BaseModel):
+        answer: str
+    class Runtime:
+        async def cognitive_probe(self,task,max_tokens,output_schema=None):
+            return json.dumps({'answer':'ok'})
+    session=MemorySession(tmp_path/'cycle','chinese',MemoryService(tmp_path))
+    def packet():
+        return {'excerpts':['汉语长文本用于检索窗口预算验证。'*200]*session.state.get('prompt_window',8)}
+    answer=asyncio.run(memory_decision(runtime=Runtime(),session=session,instruction='TEST:',
+        payload_builder=packet,contract_builder=lambda:Decision))
+    assert answer.answer=='ok'
+    assert session.state['prompt_window']<8
+    metric=json.loads((tmp_path/'cycle'/'memory_request_sizes.jsonl').read_text())
+    assert metric['estimated_input_tokens']+metric['reserved_output_tokens']<=12000
+
+
 def test_raw_archive_growth_does_not_grow_learning_prompt(tmp_path):
     from test_learning_research import Runtime, Explorer, FOCUS, step, INTRO
     from wechat_traffic_agent.learning_research import investigate_learning
