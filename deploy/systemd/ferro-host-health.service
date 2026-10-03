@@ -1,0 +1,13 @@
+[Unit]
+Description=Ferro independent host resource evidence
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/ubuntu/content-agent/current/scripts/record_host_health.py --root /home/ubuntu/content-agent-state/host-health
+Restart=on-failure
+RestartSec=5
+MemoryMax=96M
+MemorySwapMax=0
+
+[Install]
+WantedBy=default.target

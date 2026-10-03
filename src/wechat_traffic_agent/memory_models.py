@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import resource
+import time
 from uuid import uuid4
 
 
@@ -26,7 +28,8 @@ class LocalRetrievalModels:
         request = dict(operation=operation, texts=texts, query=query,
                        embedding=self.embedding, reranker=self.reranker, cache=self.cache)
         # One host inference at a time, in a transient unit owned by the user
-        # manager. ONNX weights do not count against Ferro's browser/core unit.
+        # manager. One-GiB resident limit is explicit; model inference cannot
+        # consume host swap. All documents are still scored, one at a time.
         cache=Path(self.cache)
         cache.mkdir(parents=True,exist_ok=True)
         environment=dict(os.environ)
@@ -37,7 +40,9 @@ class LocalRetrievalModels:
             fcntl.flock(lock,fcntl.LOCK_EX)
             process = subprocess.run([
                 'systemd-run','--user','--quiet','--pipe','--wait','--collect',
-                '--property=RuntimeMaxSec=240','--unit=ferro-memory-'+uuid4().hex,
+                '--property=RuntimeMaxSec=240',
+                '--property=MemoryMax=1G','--property=MemorySwapMax=0',
+                '--unit=ferro-memory-'+uuid4().hex,
                 sys.executable,str(Path(__file__).resolve())],
                 input=json.dumps(request),text=True,capture_output=True,timeout=255,env=environment)
         if process.returncode:
@@ -53,6 +58,7 @@ class LocalRetrievalModels:
 
 def worker():
     import numpy as np
+    started = time.monotonic()
     request = json.load(sys.stdin)
     if request["operation"] == "rerank":
         from fastembed.rerank.cross_encoder import TextCrossEncoder
@@ -62,14 +68,21 @@ def worker():
                 sources=ModelSource(hf="Xenova/bge-reranker-base"),
                 model_file="onnx/model_quantized.onnx",license="mit",size_in_gb=0.28,
                 description="Quantized BGE bilingual Chinese/English cross-encoder")
-        model = TextCrossEncoder(request["reranker"], cache_dir=request["cache"], threads=2, local_files_only=True)
-        result = [float(value) for value in model.rerank(request["query"], request["texts"])]
+        model = TextCrossEncoder(request["reranker"], cache_dir=request["cache"], threads=2, local_files_only=True,
+                                 enable_cpu_mem_arena=False)
+        result = [float(value) for value in model.rerank(request["query"], request["texts"], batch_size=1)]
     else:
         from fastembed import TextEmbedding
         model = TextEmbedding(request["embedding"], cache_dir=request["cache"], threads=2, local_files_only=True)
-        vectors = (model.query_embed(request["texts"]) if request["operation"] == "query"
-                   else model.embed(request["texts"], batch_size=8))
+        vectors = (model.query_embed(request["texts"], batch_size=1) if request["operation"] == "query"
+                   else model.embed(request["texts"], batch_size=1))
         result = [(vector / max(float(np.linalg.norm(vector)), 1e-12)).tolist() for vector in vectors]
+    metrics = {"operation": request["operation"], "documents": len(request["texts"]),
+               "elapsed_seconds": round(time.monotonic() - started, 3),
+               "max_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+               "completed_at": time.time(), "pid": os.getpid()}
+    with (Path(request["cache"]) / "inference-metrics.jsonl").open("a") as output:
+        output.write(json.dumps(metrics) + "\n")
     json.dump(result, sys.stdout)
 
 
