@@ -282,4 +282,22 @@ def test_invalid_quote_retry_can_recover_with_literal_source_title(tmp_path):
     result=asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,goal_topic="AI agent evaluation",topic_context=[],candidates=[row]))
     assert result["items"]==[row]
     assert result["matches"][0]["evidence_quote"]==row["title"]
-    assert json.dumps({"evidence_id":row["evidence_id"],"evidence_quote":row["title"]},ensure_ascii=False) in runtime.calls[1]
+    assert json.dumps({"evidence_id":"candidate-0","evidence_quote":row["title"]},ensure_ascii=False) in runtime.calls[1]
+
+def test_relevance_uses_short_references_and_retains_exact_canonical_lineage(tmp_path):
+    row = candidate("web:" + "a1" * 32, title="Concrete validation implementation")
+    runtime = Runtime(json.dumps({"matches": [{"evidence_id": "candidate-0",
+        "evidence_quote": row["title"], "reason": "Direct implementation evidence."}]}))
+    result = asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,
+        goal_topic="validation", topic_context=[], candidates=[row]))
+    assert result["items"] == [row]
+    assert result["matches"][0]["evidence_id"] == row["evidence_id"]
+    assert '"enum": ["candidate-0"]' in runtime.calls[0]
+
+
+def test_unknown_short_reference_cannot_admit_a_source(tmp_path):
+    runtime = Runtime(json.dumps({"matches": [{"evidence_id": "candidate-99",
+        "evidence_quote": "Candidate evidence", "reason": "Directly relevant."}]}))
+    with pytest.raises(ValueError, match="supplied candidate"):
+        asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,
+            goal_topic="validation", topic_context=[], candidates=[candidate()]))
