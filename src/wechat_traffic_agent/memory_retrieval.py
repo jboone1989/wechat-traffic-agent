@@ -135,14 +135,26 @@ class MemorySearchIndex:
 
     def rebuild_if_stale(self) -> None:
         with self.store._connect() as connection:
-            memory_count = int(connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0])
-            index_count = int(connection.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0])
-            row = connection.execute(
-                "SELECT value FROM memory_fts_meta WHERE key='index_version'"
-            ).fetchone()
-            version = str(row["value"]) if row is not None else ""
-        if memory_count != index_count or version != self.INDEX_VERSION:
-            self.rebuild()
+            version=connection.execute("SELECT value FROM memory_fts_meta WHERE key='index_version'").fetchone()
+            if not version or version[0]!=self.INDEX_VERSION:
+                self.rebuild()
+                return
+            row=connection.execute("SELECT value FROM memory_fts_meta WHERE key='event_cursor'").fetchone()
+            cursor=int(row[0]) if row else 0
+            events=connection.execute("SELECT event_seq,memory_id FROM memory_events WHERE event_seq>? ORDER BY event_seq",(cursor,)).fetchall()
+            missing=connection.execute("SELECT memory_id FROM memories WHERE memory_id NOT IN (SELECT memory_id FROM memory_fts)").fetchall()
+        ids=list(dict.fromkeys([r['memory_id'] for r in events]+[r[0] for r in missing]))
+        for memory_id in ids:
+            memory=self.store.get_memory(memory_id)
+            with self.store._connect() as connection:
+                connection.execute("DELETE FROM memory_fts WHERE memory_id=?",(memory_id,))
+                if memory:
+                    document=memory_document(memory)
+                    connection.execute("INSERT INTO memory_fts VALUES(?,?,?,?,?)",
+                        (memory_id," ".join(_terms(document)+[document]),memory['kind']," ".join(memory['topics'])," ".join(memory['entities'])))
+        if events:
+            with self.store._connect() as connection:
+                connection.execute("INSERT OR REPLACE INTO memory_fts_meta VALUES('event_cursor',?)",(str(events[-1]['event_seq']),))
 
     def rebuild(self) -> int:
         rows = self.store.list_memories(limit=None)
@@ -164,6 +176,8 @@ class MemorySearchIndex:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (self.INDEX_VERSION,),
             )
+            cursor=connection.execute("SELECT COALESCE(MAX(event_seq),0) FROM memory_events").fetchone()[0]
+            connection.execute("INSERT OR REPLACE INTO memory_fts_meta VALUES('event_cursor',?)",(str(cursor),))
         return len(rows)
 
     def search(self, query: str, *, limit: int = 50) -> list[tuple[str, float]]:
@@ -302,6 +316,13 @@ class MemoryRouter:
                 continue
             if not plan.historical and str(row.get("status") or "ACTIVE") != "ACTIVE":
                 continue
+            if not plan.historical:
+                current=(now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+                def timestamp(value):
+                    parsed=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+                    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                if row.get('valid_until') and timestamp(row['valid_until'])<=current: continue
+                if row.get('valid_from') and timestamp(row['valid_from'])>current: continue
             score = 0.0
             if memory_id in lexical_rank:
                 score += self.weights.lexical_weight / (
@@ -326,6 +347,10 @@ class MemoryRouter:
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
             reverse=True,
         )
+        if hasattr(self.vector.provider,"models") and candidates:
+            bounded=candidates[:32]
+            scores=self.vector.provider.rerank(query,[memory_document(r) for _,r in bounded])
+            candidates=[pair for _,pair in sorted(zip(scores,bounded,strict=True),key=lambda p:-p[0])]
         self.last_recall_metrics = {
             "candidate_cost": float(len(lexical) + len(vector) + len(candidates)),
             "search_limit": float(search_limit),

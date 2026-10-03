@@ -446,6 +446,12 @@ def _rank_candidate(
     source = str(row.get("source") or "")
     source_matches = _source_match(source, need.source_hints)
     semantic_evidence = lexical > 0 or recall_rank is not None or dependency_score > 0 or anchor_overlap > 0
+    # A tested counterexample changes how the related prior should be used.
+    # Keep that correction ahead of the original observation for this decision.
+    if (semantic_evidence and row.get("kind")=="LEARNING_APPLICATION_OUTCOME"
+            and (row.get("payload") or {}).get("status")=="REFUTED"):
+        score += 1.8
+        reasons.append("tested_counterexample")
 
     # Some compact current-state summaries are inherently needed for the
     # corresponding question. This prior is deliberately narrow: it does not

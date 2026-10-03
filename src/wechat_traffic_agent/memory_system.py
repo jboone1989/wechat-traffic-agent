@@ -413,6 +413,10 @@ class CanonicalMemoryStore:
                     _json({"status": next_status, "superseded_by": str(superseded_by or "")}),
                 ),
             )
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE name='memory_dependencies'").fetchone():
+                from .memory_service import MemoryService
+                MemoryService.invalidate(connection,memory_id)
+                connection.execute("UPDATE memory_nodes SET status=? WHERE node_id=?",(next_status,memory_id))
         self.repair_event_mirror()
         result = self.get_memory(memory_id)
         if result is None:

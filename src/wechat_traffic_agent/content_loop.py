@@ -274,6 +274,14 @@ class ContinuousContentLoop:
         if now.utcoffset() is None:
             raise ValueError('timezone required')
         seconds = self.interval_hours * 3600
+        if cycle_id is None:
+            for pending in sorted((self.root / 'cycles').glob('*/memory_pending.json'),reverse=True):
+                saved=json.loads(pending.read_text())
+                if (saved.get('focus_topic')==getattr(self,'_focus_topic',None)
+                    and saved.get('owner_scope')==getattr(self,'_owner_goal',None)
+                    and not (pending.parent/'result.json').exists()):
+                    cycle_id=pending.parent.name
+                    break
         cycle = str(cycle_id or ('v2-' + str(int(now.timestamp()) // seconds * seconds)))
         if cycle_id is not None:
             parts = cycle.split('-')
@@ -296,6 +304,7 @@ class ContinuousContentLoop:
         }
 
     async def run_once(self, *, now=None, cycle_id=None):
+        from .memory_session import MemoryContinuationRequired
         now = now or datetime.now(timezone.utc)
         if now.utcoffset() is None:
             raise ValueError('timezone required')
@@ -315,6 +324,12 @@ class ContinuousContentLoop:
                 return {**result, 'status': 'ALREADY_PROCESSED', 'previous_status': result['status']}
             try:
                 result = await self._run(folder, cycle, now)
+            except MemoryContinuationRequired as exc:
+                pending={'status':'MEMORY_RETRIEVAL_PENDING','cycle':cycle,'retryable':True,
+                         'focus_topic':getattr(self,'_focus_topic',None),'owner_scope':getattr(self,'_owner_goal',None),
+                         'checkpoint':str(exc)}
+                _replace(folder/'memory_pending.json',pending)
+                return pending
             except Exception as exc:
                 diagnostic = {
                     'schema_version': 'content-error-diagnostic.v1',
@@ -347,6 +362,7 @@ class ContinuousContentLoop:
                     }
             (folder / 'waiting_for_chatgpt.json').unlink(missing_ok=True)
             _put(result_path, result)
+            (folder / "memory_pending.json").unlink(missing_ok=True)
             return result
 
     async def _run(self, folder, cycle, now):

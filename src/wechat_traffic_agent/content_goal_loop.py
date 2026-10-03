@@ -1850,7 +1850,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             learning_memory = research_memory(self.mind, self.state, topic=str(effective_topic or ''))
             learning_focus = await choose_research_focus(
                 runtime=explorer_runtime, folder=folder, topic=str(effective_topic or ''),
-                memory=learning_memory,
+                memory=learning_memory, state_root=self.state,
             )
             self._activity(cycle, 'LEARN', 'I’m following a concrete research question',
                            learning_focus.question)

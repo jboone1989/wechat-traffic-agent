@@ -109,6 +109,22 @@ def cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 
 
+class TrainedEmbeddingProvider:
+    def __init__(self, root):
+        from .memory_models import LocalRetrievalModels
+        self.root=root
+        self.models=LocalRetrievalModels(root)
+        self.model_id=self.models.model_id
+        self.dimensions=384
+    def embed(self,text):
+        return self.models.embed([text],query=True)[0]
+    def embed_many(self,texts):
+        return self.models.embed(texts)
+    def rerank(self,query,texts):
+        from .memory_service import MemoryService
+        return MemoryService(self.root.parent.parent,models=self.models)._cached_model('rerank',query,texts)
+
+
 class SemanticVectorIndex:
     """Derived vector index; safe to delete and fully rebuild from canonical memory."""
 
@@ -119,7 +135,8 @@ class SemanticVectorIndex:
         provider: EmbeddingProvider | None = None,
     ) -> None:
         self.store = store
-        self.provider = provider or SemanticHashEmbeddingProvider()
+        configured=(store.root / "active_embedding.json").exists()
+        self.provider = provider or (TrainedEmbeddingProvider(store.root) if configured else SemanticHashEmbeddingProvider())
         self._ensure()
         self.rebuild_if_stale()
 
@@ -137,39 +154,43 @@ class SemanticVectorIndex:
             )
 
     def rebuild_if_stale(self) -> None:
-        rows = self.store.list_memories(limit=None)
-        canonical = {str(row["memory_id"]): str(row["content_hash"]) for row in rows}
+        if isinstance(self.provider,TrainedEmbeddingProvider):
+            from .memory_service import MemoryService
+            MemoryService(self.store.root.parent.parent,models=self.provider.models).prepare_vectors()
+            return
         with self.store._connect() as connection:
-            indexed = {
-                str(row["memory_id"]): (str(row["content_hash"]), str(row["model_id"]))
-                for row in connection.execute(
-                    "SELECT memory_id, content_hash, model_id FROM memory_vector_index"
-                )
-            }
-        if len(canonical) != len(indexed) or any(
-            memory_id not in indexed
-            or indexed[memory_id][0] != content_hash
-            or indexed[memory_id][1] != self.provider.model_id
-            for memory_id, content_hash in canonical.items()
-        ):
-            self.rebuild()
+            pending=connection.execute("""SELECT m.memory_id FROM memories m
+                LEFT JOIN memory_vector_index v ON v.memory_id=m.memory_id
+                WHERE v.memory_id IS NULL OR v.content_hash!=m.content_hash OR v.model_id!=?""",
+                (self.provider.model_id,)).fetchall()
+            connection.execute("DELETE FROM memory_vector_index WHERE memory_id NOT IN (SELECT memory_id FROM memories)")
+        for start in range(0,len(pending),128):
+            rows=[self.store.get_memory(r[0]) for r in pending[start:start+128]]
+            documents=[self._document(row) for row in rows]
+            vectors=(self.provider.embed_many(documents) if hasattr(self.provider,"embed_many")
+                     else [self.provider.embed(d) for d in documents])
+            with self.store._connect() as connection:
+                for row,vector in zip(rows,vectors,strict=True):
+                    connection.execute("INSERT OR REPLACE INTO memory_vector_index VALUES(?,?,?,?)",
+                        (row["memory_id"],row["content_hash"],self.provider.model_id,json.dumps(vector)))
 
     def rebuild(self) -> int:
-        rows = self.store.list_memories(limit=None)
+        if isinstance(self.provider,TrainedEmbeddingProvider):
+            from .memory_service import MemoryService
+            service=MemoryService(self.store.root.parent.parent,models=self.provider.models)
+            service.rebuild_views();service.prepare_vectors()
+            return len(self.store.list_memories(limit=None))
         with self.store._connect() as connection:
+            count=connection.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
             connection.execute("DELETE FROM memory_vector_index")
-            for row in rows:
-                vector = self.provider.embed(self._document(row))
-                connection.execute(
-                    "INSERT INTO memory_vector_index(memory_id, content_hash, model_id, vector_json) VALUES(?,?,?,?)",
-                    (
-                        row["memory_id"], row["content_hash"], self.provider.model_id,
-                        json.dumps(vector, separators=(",", ":")),
-                    ),
-                )
-        return len(rows)
+        self.rebuild_if_stale()
+        return count
 
     def search(self, query: str, *, limit: int = 50) -> list[tuple[str, float]]:
+        if isinstance(self.provider,TrainedEmbeddingProvider):
+            from .memory_service import MemoryService
+            service=MemoryService(self.store.root.parent.parent,models=self.provider.models)
+            return service.dense_search(query,filter_sql="n.status='ACTIVE' AND n.node_type='memory'",limit=limit)
         self.rebuild_if_stale()
         query_vector = self.provider.embed(query)
         with self.store._connect() as connection:
