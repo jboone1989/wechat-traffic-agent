@@ -38,7 +38,7 @@ async def review_learning_expression(*, runtime, folder: Path, learning: dict,
         if isinstance(fact, dict) and isinstance(fact.get("quote"), str)
         and len(fact["quote"]) >= 12
         and fact.get("evidence_id") in sources
-        and fact["quote"] in str(sources[fact["evidence_id"]].get("summary") or "")
+        and fact["quote"] in str(sources[fact["evidence_id"]].get("evidence_text") or sources[fact["evidence_id"]].get("summary") or "")
     }
     if learning.get("progress") not in {"LEARNED", "DEEPENED"} or not facts:
         result = {"passed": False, "rationale": "No verified concrete research discovery supports this expression."}

@@ -79,7 +79,7 @@ class RuntimeWebSearch:
                 "rank": rank,
             })
             rows.append({
-                "title": title, "summary": summary, "url": final_url,
+                "title": title, "summary": summary, "evidence_text": markdown, "url": final_url,
                 "source": "runtime:web.fetch:" + str(fetch_receipt.provider),
                 "source_revision": revision,
                 "evidence_refs": [

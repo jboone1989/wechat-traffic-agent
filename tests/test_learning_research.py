@@ -178,3 +178,47 @@ def test_empty_belief_registry_requires_null_reference():
     assert contract.model_validate(step("LEARNED", DETAIL, related=None)).related_proposition is None
     with pytest.raises(ValueError):
         contract.model_validate(step("LEARNED", DETAIL, related="invented belief"))
+
+
+def test_research_reads_method_passages_beyond_search_summary(tmp_path):
+    body = "Background context without the mechanism. " * 70
+    mechanism = "The worker stores a tool invocation ID before execution and reconciles it after restart."
+    body += mechanism
+    source = {**DETAIL, "summary": body[:2000], "evidence_text": body}
+    decision = step("LEARNED", source)
+    decision["facts"][0]["quote"] = mechanism
+    class FullBodyRuntime(Runtime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            self.calls.append(task)
+            data = json.JSONDecoder().raw_decode(task.split("\n", 1)[1])[0]
+            key = next(key for key, value in data["source_quotes"].items()
+                       if mechanism in value["quote"])
+            return json.dumps({**decision, "facts": [{
+                "source_quote_id": key, "observation": "Invocation identity survives a restart."}]})
+    result = asyncio.run(investigate_learning(
+        runtime=FullBodyRuntime([]), explorer=Explorer(), folder=tmp_path/"cycles"/"full",
+        state_root=tmp_path, topic="agent-reliability", focus=FOCUS,
+        memory={"beliefs":[{"proposition":KNOWN}], "research":{"history":[]}},
+        evidence=[source], selected=source, now=NOW, search_rounds=0))
+    assert mechanism in result["facts"][0]["quote"]
+    assert result["facts"][0]["quote"] not in source["summary"]
+    assert read_research_state(tmp_path)["history"][0]["facts"] == result["facts"]
+
+
+def test_next_cycle_receives_original_learned_facts_even_without_belief_change(tmp_path):
+    result = run(tmp_path, Runtime([step("LEARNED", INTRO)]), Explorer(), rounds=0)
+    memory = research_memory(None, tmp_path)
+    assert memory["research"]["history"][0]["facts"] == result["facts"]
+    assert read_research_state(tmp_path)["inquiries"]["agent-reliability"]["facts"] == result["facts"]
+
+
+def test_existing_receipts_supply_facts_missing_from_old_history(tmp_path):
+    result = run(tmp_path, Runtime([step("LEARNED", INTRO)]), Explorer(), rounds=0)
+    state_path = tmp_path/"content"/"learning"/"research.json"
+    state = json.loads(state_path.read_text())
+    del state["history"][0]["facts"]
+    state_path.write_text(json.dumps(state))
+    receipt = tmp_path/"content"/"continuous"/"cycles"/result["cycle"]/"learning_result.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps(result))
+    assert research_memory(None, tmp_path)["research"]["history"][0]["facts"] == result["facts"]

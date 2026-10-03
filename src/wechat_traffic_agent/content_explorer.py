@@ -26,6 +26,7 @@ class EvidenceCandidate(BaseModel):
     source: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=2, max_length=300)
     summary: str = Field(min_length=1, max_length=2000)
+    evidence_text: str | None = Field(default=None, max_length=12000)
     url: str | None = None
     observed_at: str | None = None
     source_revision: str = Field(min_length=1, max_length=200)
@@ -115,7 +116,7 @@ def _web_candidate(row: dict[str, Any]) -> dict[str, Any]:
     candidate = EvidenceCandidate(
         evidence_id="web:" + revision, source_kind="web-search",
         source=str(row["source"]), title=str(row["title"]),
-        summary=str(row["summary"]), url=row.get("url"),
+        summary=str(row["summary"]), evidence_text=row.get("evidence_text"), url=row.get("url"),
         observed_at=row.get("observed_at"), source_revision=revision,
         evidence_refs=tuple(row["evidence_refs"]),
         search_query=row.get("search_query"), search_rank=row.get("search_rank"),
