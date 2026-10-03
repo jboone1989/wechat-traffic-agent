@@ -30,7 +30,8 @@ class Runtime:
             source=data['primary_source']
             return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
                 'learning_delta':'The source adds a concrete observation about the current question.',
-                'facts':[{'evidence_id':source['evidence_id'],'quote':source['summary'][:600],
+                'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
+                          if value['evidence_id']==source['evidence_id']),
                           'observation':'This source supplies a concrete observation for this inquiry.'}],
                 'related_proposition':None,'next_question':'How does this observation hold in another case?',
                 'next_query':'mechanism another case comparison primary experiment',

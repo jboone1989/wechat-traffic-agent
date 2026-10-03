@@ -45,7 +45,15 @@ class Runtime:
         self.calls.append(task)
         if task.startswith('PLAN_LEARNING:'):
             return FOCUS.model_dump_json()
-        return json.dumps(self.decisions.pop(0))
+        decision = self.decisions.pop(0)
+        if task.startswith('ADVANCE_LEARNING:'):
+            data = json.JSONDecoder().raw_decode(task.split('\n', 1)[1])[0]
+            decision = {**decision, 'facts': [
+                {'source_quote_id': next((key for key, value in data['source_quotes'].items()
+                    if value['quote'] == fact['quote'] and value['evidence_id'] == fact['evidence_id']),
+                    'unknown-source-excerpt'), 'observation': fact['observation']}
+                for fact in decision['facts']]}
+        return json.dumps(decision)
 
 
 class Explorer:
@@ -98,7 +106,7 @@ def test_unresolved_inquiry_keeps_next_unknown_across_cycles_and_restart(tmp_pat
 def test_unknown_quote_cannot_count_as_learning(tmp_path):
     invalid=step('LEARNED',INTRO)
     invalid['facts'][0]['quote']='The agent achieves a ninety percent improvement.'
-    with pytest.raises(ValueError,match='quote must occur'):
+    with pytest.raises(ValueError,match='source_quote_id'):
         run(tmp_path,Runtime([invalid,invalid]),Explorer(),rounds=0)
     assert not (tmp_path/'content'/'learning'/'research.json').exists()
 
@@ -145,6 +153,24 @@ def test_research_reference_schema_preserves_long_canonical_belief():
     with pytest.raises(ValueError):
         contract.model_validate({**row, "related_proposition": belief[:150]})
     assert contract.model_validate({**row, "related_proposition": None}).related_proposition is None
+
+
+def test_citation_id_retrieves_exact_original_text_without_model_copying():
+    from wechat_traffic_agent.learning_research import (
+        _research_quotes, _research_choice_contract, _bind_research_choice)
+    source = {**DETAIL, 'summary': 'Invocation IDs—persisted before execution—survive restart; outcomes remain separately verified.'}
+    quotes = _research_quotes({source['evidence_id']: source})
+    choice = {**step('LEARNED', source),
+              'facts': [{'source_quote_id': next(iter(quotes)),
+                         'observation': 'Invocation identity survives the restart boundary.'}]}
+    contract = _research_choice_contract({KNOWN}, quotes)
+    bound = _bind_research_choice(contract.model_validate(choice), quotes)
+    assert bound.facts[0].quote == source['summary']
+    assert bound.facts[0].evidence_id == source['evidence_id']
+    with pytest.raises(ValueError, match='source_quote_id'):
+        contract.model_validate({**choice, 'facts': [
+            {'source_quote_id': 'invented-source', 'observation': 'An unverified model assertion.'}]})
+
 
 def test_empty_belief_registry_requires_null_reference():
     from wechat_traffic_agent.learning_research import _research_step_contract

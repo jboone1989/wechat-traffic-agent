@@ -123,7 +123,8 @@ def test_content_executor_stops_after_real_cognition_for_owner_x(tmp_path):
                 source=data['sources'][0]
                 return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
                     'learning_delta':'Validation evidence reduces uncertainty about model reliability.',
-                    'facts':[{'evidence_id':source['evidence_id'],'quote':source['summary'],
+                    'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
+                              if value['evidence_id']==source['evidence_id']),
                               'observation':'Validation evidence reduces model reliability uncertainty.'}],
                     'related_proposition':None,'next_question':'Which validation method reduces uncertainty most?',
                     'next_query':'validation method uncertainty comparison experiment',

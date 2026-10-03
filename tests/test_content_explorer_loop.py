@@ -381,6 +381,8 @@ class Explorer:
     def __init__(self, mind=None, *, empty=False, fail=False):
         self.mind, self.empty, self.fail = mind, empty, fail
         self.collect_calls = self.filter_calls = 0
+    async def search_web_query(self, *, query, goal_topic, now):
+        return {'items': [], 'failures': [], 'query': query}
     async def collect(self, *, now, active):
         if self.mind: assert self.mind.planned and active is True
         self.collect_calls += 1
@@ -653,6 +655,46 @@ class QuietBeliefRuntime(BeliefRuntime):
                 "rationale": "The agent learned something without having enough new understanding to justify publication.",
             })
         return await V2Runtime.cognitive_probe(self, task, max_tokens)
+
+
+
+def test_research_question_searches_primary_evidence_before_market_snapshot(tmp_path):
+    _, legacy, publisher = setup(tmp_path)
+    paper = {**candidate(), 'source_kind': 'web-search',
+             'title': 'A primary validation mechanism study',
+             'summary': 'The experiment validates the mechanism using held-out observations.',
+             'search_query': 'mechanism implementation primary evidence'}
+    snapshot = {**candidate(), 'evidence_id': 'generic-market',
+                'source_kind': 'public-api', 'title': 'Current crypto market prices',
+                'summary': 'Five spot assets changed prices in the last twenty four hours.'}
+    class ResearchExplorer(Explorer):
+        def __init__(self):
+            super().__init__()
+            self.queries = []
+        async def collect(self, **kwargs):
+            return {'items': [snapshot], 'failures': [], 'observed_at': NOW.isoformat()}
+        async def search_web_query(self, *, query, goal_topic, now):
+            self.queries.append(query)
+            return {'items': [paper], 'failures': [], 'query': query}
+        async def filter_for_goal(self, **kwargs):
+            assert kwargs['goal_topic'] == 'How does the supplied mechanism work in practice?'
+            assert {row['evidence_id'] for row in kwargs['candidates']} == {'generic-market', 'news-1'}
+            return {'items': [paper], 'matches': [], 'candidate_count': 2}
+        async def search_web(self, **kwargs):
+            raise AssertionError('The research question must not become a generic market catalyst search')
+    runtime, mind, explorer = QuietBeliefRuntime(), BeliefMind(), ResearchExplorer()
+    worker = v2(legacy, runtime, publisher, mind=mind, explorer=explorer)
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result['status'] == 'COGNITION_ONLY', result
+    assert explorer.queries == ['mechanism implementation primary evidence']
+    assert mind.recorded[0]['source_evidence']['title'] == paper['title']
+    folder = legacy.state / 'content/continuous/cycles' / result['cycle']
+    receipt = json.loads((folder / 'learning_result.json').read_text())
+    assert receipt['facts'][0]['quote'] == paper['summary']
+    select = next(call for call in runtime.calls if call.startswith('SELECT_EVIDENCE:'))
+    assert 'How does the supplied mechanism work in practice?' in select
+    assert asyncio.run(worker.run_once(now=NOW))['status'] == 'ALREADY_PROCESSED'
+    assert len(explorer.queries) == 1
 
 
 def test_cognition_can_finish_without_forcing_publication(tmp_path):
@@ -981,6 +1023,9 @@ class MethodExpressionMind:
 class MethodExpressionExplorer:
     def __init__(self, rows):
         self.rows = rows
+
+    async def search_web_query(self, *, query, goal_topic, now):
+        return {'items': [], 'failures': [], 'query': query}
 
     async def collect(self, *, now, active):
         return {"items": list(self.rows), "failures": [], "observed_at": now.isoformat()}
