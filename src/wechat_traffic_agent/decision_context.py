@@ -1185,7 +1185,7 @@ def build_ferro_decision_context(
     # as operational experience, including counterexamples to prior knowledge.
     from .learning_application import application_feedback
     if state_root is not None:
-        for row in application_feedback(state_root):
+        for row in application_feedback(state_root, limit=100):
             local.append(candidate(
                 context_id=f"learning-application:{row['cycle']}",
                 source="experience",

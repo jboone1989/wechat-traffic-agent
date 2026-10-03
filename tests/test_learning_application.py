@@ -65,7 +65,7 @@ class Runtime:
             memory = {key: value for key, value in data.items() if key != "topic"}
             value = focus(memory).model_dump(mode="json")
             if data.get("application_feedback"):
-                assert data["application_feedback"][-1]["correction"] == CORRECTION
+                assert data["application_feedback"][0]["correction"] == CORRECTION
                 value["search_query"] = NEXT
                 value["application"]["confidence"] = 0.35
             return json.dumps(value)
@@ -121,7 +121,7 @@ def test_saved_fact_is_precommitted_tested_and_corrects_next_cycle_after_restart
     state = json.loads((tmp_path / "content/learning/research.json").read_text())
     assert state["inquiries"]["worker-reliability"]["search_query"] == NEXT
     restarted_memory = research_memory(None, tmp_path, "worker-reliability")
-    assert restarted_memory["application_feedback"][-1]["correction"] == CORRECTION
+    assert restarted_memory["application_feedback"][0]["correction"] == CORRECTION
     next_focus = asyncio.run(choose_research_focus(runtime=Runtime(), folder=folder.parent / "application-2",
         topic="worker-reliability", memory=restarted_memory))
     assert next_focus.search_query == NEXT
@@ -247,3 +247,86 @@ def test_unknown_saved_fact_cannot_be_bound_by_the_model(tmp_path):
         asyncio.run(choose_research_focus(runtime=InvalidRuntime(), folder=tmp_path/"cycle",
             topic="worker-reliability", memory=memory))
     assert not (tmp_path / "cycle/learning_application_plan.json").exists()
+
+
+def test_existing_world_action_and_dated_prediction_outcomes_reach_next_research(tmp_path):
+    from datetime import timedelta
+    from wechat_traffic_agent.world_learning import WorldLearningLedger
+    from wechat_traffic_agent.prospective_predictions import ProspectivePredictionLedger, PredictionEvidence
+    ledger = WorldLearningLedger(tmp_path)
+    action = ledger.commit(action_kind="RESEARCH_METHOD",
+        prediction="Inspecting worker code will reveal the persistence boundary.",
+        expected_utility=0.8, confidence=0.8, evidence_refs=["method:code"], now=NOW,
+        windows=(("1h", timedelta(hours=1)),))
+    checked = NOW + timedelta(hours=2)
+    ledger.settle(action_id=action["action_id"], window="1h", actual_utility=-0.2,
+        evidence_refs=["real-method-result"], now=checked)
+    predictions = ProspectivePredictionLedger(tmp_path)
+    prediction = predictions.record(cycle="prior", topic="worker-reliability",
+        proposition="The second worker persists invocation identity before external execution.",
+        proposition_stance=0.8, statement="The worker will not repeat operations after its next restart.",
+        confidence=0.9, created_at=NOW, due_at=NOW + timedelta(hours=1),
+        verification_query="worker next restart operation receipts",
+        falsifier="The restart receipt records a repeated external operation.",
+        source_evidence_refs=("prior:worker",))
+    predictions.check(prediction.prediction_id, checked_at=checked, status="REFUTED",
+        evidence=(PredictionEvidence(evidence_id="later:restart",
+            evidence_quote="The next restart repeated the external operation.",
+            observed_at=checked, source="worker-receipt", title="Restart result",
+            source_revision="result:1"),), reliability=0.9,
+        rationale="The later restart receipt records the predicted falsifier.")
+    feedback = research_memory(None, tmp_path)["outcome_feedback"]
+    assert feedback["settled_actions"][0]["actual_utility"] == -0.2
+    assert feedback["settled_actions"][0]["observed_at"] == checked.isoformat()
+    assert feedback["resolved_predictions"][0]["status"] == "REFUTED"
+    assert feedback["resolved_predictions"][0]["prediction_error"] == pytest.approx(0.9)
+    assert feedback["resolved_predictions"][0]["evidence"][0]["evidence_id"] == "later:restart"
+
+
+def test_topic_retrieval_retains_old_counterexample_after_many_unrelated_tests(tmp_path):
+    from copy import deepcopy
+    from wechat_traffic_agent.learning_application import remember_application
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path / "critical-zircon"
+    commit_application(folder, focus(memory), memory)
+    _put(folder / "learning_initial_search.json", {"items": [NEW]})
+    receipt = asyncio.run(assess_application(runtime=Runtime(), folder=folder,
+        state_root=tmp_path, topic="zircon-persistence"))
+    for index in range(20):
+        unrelated = deepcopy(receipt)
+        unrelated["cycle"] = f"unrelated-{index}"
+        unrelated["topic"] = "btc-volatility"
+        unrelated["knowledge"]["observation"] = "BTC returns vary with realized volatility."
+        unrelated["application"]["prediction"] = "The new BTC window has higher realized volatility."
+        unrelated["assessment"]["correction"] = "BTC volatility in the window was lower."
+        remember_application(tmp_path, unrelated)
+    recalled = application_feedback(tmp_path, query="zircon-persistence")
+    assert recalled[0]["cycle"] == "critical-zircon"
+    assert recalled[0]["correction"] == CORRECTION
+
+
+def test_interruption_after_precommit_restores_focus_without_a_new_model_prediction(tmp_path):
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path / "cycle"
+    original = focus(memory)
+    commit_application(folder, original, memory)
+    class MustNotThink:
+        async def cognitive_probe(self, *args, **kwargs):
+            raise AssertionError("a durable prediction must not be regenerated after restart")
+    restored = asyncio.run(choose_research_focus(runtime=MustNotThink(), folder=folder,
+        topic="worker-reliability", memory={"knowledge_catalog": {}}))
+    assert restored == original
+    assert json.loads((folder / "learning_focus.json").read_text()) == original.model_dump(mode="json")
+
+
+def test_changed_focus_cannot_reuse_an_existing_prediction_receipt(tmp_path):
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path / "cycle"
+    original = focus(memory)
+    commit_application(folder, original, memory)
+    changed = original.model_copy(update={"search_query": "different worker implementation source query"})
+    with pytest.raises(ValueError, match="differs from its precommitted"):
+        commit_application(folder, changed, memory)

@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -85,7 +86,12 @@ def application_contract(catalog: dict):
 def commit_application(folder: Path, focus, memory: dict) -> dict | None:
     path = folder / "learning_application_plan.json"
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
+        plan = json.loads(path.read_text(encoding="utf-8"))
+        if (focus.application is None
+                or plan["application"] != focus.application.model_dump(mode="json")
+                or plan["question"] != focus.question or plan["search_query"] != focus.search_query):
+            raise ValueError("cached research focus differs from its precommitted application")
+        return plan
     if focus.application is None:
         return None
     catalog = memory.get("knowledge_catalog") or {}
@@ -93,7 +99,7 @@ def commit_application(folder: Path, focus, memory: dict) -> dict | None:
     prior = (memory.get("research") or {}).get("history") or []
     plan = {
         "schema_version": "ferro-learning-application.v1",
-        "cycle": folder.name, "question": focus.question,
+        "cycle": folder.name, "focus": focus.model_dump(mode="json"), "question": focus.question,
         "search_query": focus.search_query,
         "committed_at": datetime.now(timezone.utc).isoformat(),
         "application": focus.application.model_dump(mode="json"),
@@ -132,6 +138,7 @@ def remember_application(state_root: Path, receipt: dict) -> None:
         resolved = [row for row in state["history"]
                     if row["assessment"]["status"] in {"CONFIRMED", "REFUTED"}]
         state["metrics"] = {
+            "scope": "last_100_applications",
             "tested": len(resolved),
             "confirmed": sum(row["assessment"]["status"] == "CONFIRMED" for row in resolved),
             "refuted": sum(row["assessment"]["status"] == "REFUTED" for row in resolved),
@@ -142,9 +149,15 @@ def remember_application(state_root: Path, receipt: dict) -> None:
         _replace(Path(state_root) / "content" / "learning" / "applications.json", state)
 
 
-def application_feedback(state_root: Path, limit: int = 8) -> list[dict]:
+def application_feedback(state_root: Path, limit: int = 8, query: str = "") -> list[dict]:
+    rows = list(reversed(_application_state(state_root)["history"]))
+    terms = set(re.findall(r"[a-z0-9]+", query.casefold()))
+    if terms:
+        rows.sort(key=lambda row: -len(terms & set(re.findall(r"[a-z0-9]+",
+            json.dumps([row["topic"], row["knowledge"]["observation"],
+                        row["application"]["prediction"], row["assessment"]["correction"]]).casefold()))))
     result = []
-    for row in _application_state(state_root)["history"][-limit:]:
+    for row in rows[:limit]:
         assessment = row["assessment"]
         result.append({
             "cycle": row["cycle"], "topic": row["topic"],
@@ -257,7 +270,7 @@ def existing_outcome_feedback(state_root: Path) -> dict:
     """Expose measured legacy action/prediction outcomes to the next research plan."""
     root = Path(state_root)
     path = root / "application" / "world_learning.json"
-    actions = json.loads(path.read_text(encoding="utf-8")).get("actions") or {} if path.exists() else {}
+    actions = (json.loads(path.read_text(encoding="utf-8")).get("actions") or {}) if path.exists() else {}
     settled = []
     for action in actions.values():
         for window, outcome in (action.get("settlements") or {}).items():
@@ -267,23 +280,23 @@ def existing_outcome_feedback(state_root: Path) -> dict:
                     "prediction": action["prediction"], "window": window,
                     **{key: outcome.get(key) for key in (
                         "actual_utility", "prediction_error", "learning_signal",
-                        "settled_at", "evidence_refs", "causal_factors")},
+                        "observed_at", "evidence_refs", "causal_factors")},
                 })
     path = root / "content" / "predictions" / "ledger.json"
-    predictions = json.loads(path.read_text(encoding="utf-8")).get("predictions") or {} if path.exists() else {}
+    predictions = (json.loads(path.read_text(encoding="utf-8")).get("predictions") or {}) if path.exists() else {}
     resolved = []
     for row in predictions.values():
-        outcome = row.get("outcome")
+        outcome = row["checks"][-1] if row.get("status") == "RESOLVED" and row.get("checks") else None
         if outcome:
             resolved.append({
                 "prediction_id": row["prediction_id"], "topic": row["topic"],
                 "statement": row["statement"], "prior_confidence": row["confidence"],
                 **{key: outcome.get(key) for key in (
-                    "status", "prediction_error", "resolved_at", "rationale")},
+                    "status", "prediction_error", "checked_at", "rationale")},
                 "evidence": [{key: item.get(key) for key in (
                     "evidence_id", "evidence_quote", "observed_at")}
                     for item in (outcome.get("evidence") or [])[:2]],
             })
-    settled.sort(key=lambda row: str(row.get("settled_at") or ""))
-    resolved.sort(key=lambda row: str(row.get("resolved_at") or ""))
+    settled.sort(key=lambda row: str(row.get("observed_at") or ""))
+    resolved.sort(key=lambda row: str(row.get("checked_at") or ""))
     return {"settled_actions": settled[-8:], "resolved_predictions": resolved[-8:]}

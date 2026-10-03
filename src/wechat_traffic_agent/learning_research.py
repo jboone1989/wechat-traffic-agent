@@ -257,7 +257,7 @@ def research_memory(mind: Any, state_root: Path, topic: str = "") -> dict[str, A
             "recent_shares": posts, "research": {
                 "inquiries": state['inquiries'], "history": history[-12:]},
             "knowledge_catalog": knowledge_catalog(history, topic),
-            "application_feedback": application_feedback(state_root),
+            "application_feedback": application_feedback(state_root, query=topic),
             "outcome_feedback": existing_outcome_feedback(state_root),
             "recent_reflections": recent_reflections(state_root),
             "known_source_ids": list(dict.fromkeys(
@@ -273,6 +273,12 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
     if path.exists():
         focus = ResearchFocus.model_validate_json(path.read_text(encoding="utf-8"))
         commit_application(folder, focus, memory)
+        return focus
+    plan_path = folder / "learning_application_plan.json"
+    if plan_path.exists():
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        focus = ResearchFocus.model_validate(plan["focus"])
+        _put(path, focus.model_dump(mode="json"))
         return focus
     catalog = memory.get("knowledge_catalog") or {}
     contract = (create_model(
@@ -309,8 +315,8 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
         validate=validate_focus,
     )
     focus = ResearchFocus.model_validate(focus.model_dump(mode="json"))
-    _put(path, focus.model_dump(mode="json"))
     commit_application(folder, focus, memory)
+    _put(path, focus.model_dump(mode="json"))
     return focus
 
 
