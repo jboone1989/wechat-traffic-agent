@@ -319,9 +319,36 @@ class LocalHarnessXTransport:
         return dict(body["user"])
 
     def _publish_sync(self, text: str) -> XBrowserPublishResult:
+        import hashlib, fcntl
+        digest = hashlib.sha256(json.dumps(
+            [self.account_id, self.expected_handle.casefold(), text],
+            ensure_ascii=False).encode()).hexdigest()
+        lock_path = self.state_root / "content/x/post-transactions" / (digest + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._publish_transaction_sync(text)
+
+    def _publish_transaction_sync(self, text: str) -> XBrowserPublishResult:
         if not text.strip() or len(text) > 25_000:
             raise ValueError("X post must contain 1-25000 characters")
-        body = self._run_jev_sync(self._transaction_script(text, self.expected_handle))
+        import hashlib
+        from .x_browser import _read_json, _write_json
+        digest = hashlib.sha256(json.dumps(
+            [self.account_id, self.expected_handle.casefold(), text],
+            ensure_ascii=False).encode()).hexdigest()
+        checkpoint = self.state_root / "content/x/post-transactions" / (digest + ".json")
+        previous = _read_json(checkpoint)
+        if previous.get("status") == "POSTED":
+            return self._verified_result(previous)
+        if previous.get("attempted") or previous.get("status") == "SUBMIT_PENDING":
+            body = self._run_jev_sync(jev_x_reconcile(text, self.expected_handle))
+        else:
+            _write_json(checkpoint, {**previous, "status": "PREPARING",
+                "account_id": self.account_id, "expected_handle": self.expected_handle,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest()})
+            body = self._run_jev_sync(jev_x_transaction(
+                text, self.expected_handle, str(checkpoint)))
         if (body.get("status") == "PUBLICATION_UNVERIFIED"
                 and body.get("stage") == "verify"
                 and "Runtime.evaluate timed out" in str(body.get("detail") or "")):
@@ -330,6 +357,9 @@ class LocalHarnessXTransport:
                 jev_x_reconcile(text, self.expected_handle), refresh_target=True,
             )
 
+        persisted = _read_json(checkpoint)
+        _write_json(checkpoint, {**persisted, **body,
+            "attempted": bool(persisted.get("attempted") or body.get("attempted"))})
         status = str(body.get("status") or "")
         if status == "PUBLICATION_UNVERIFIED":
             raise XBrowserPublicationUnverified(

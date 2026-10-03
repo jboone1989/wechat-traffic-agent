@@ -1,8 +1,10 @@
 """A Jev observation/action transaction on an Agent Runtime-owned X tab."""
 import json
 
-def jev_x_transaction(text: str, expected_handle: str = "") -> str:
-    return "outbound = " + json.dumps(text, ensure_ascii=False) + "\nexpected_handle = " + json.dumps(expected_handle) + "\n" + TRANSACTION
+def jev_x_transaction(text: str, expected_handle: str = "", checkpoint_path: str = "") -> str:
+    return ("outbound = " + json.dumps(text, ensure_ascii=False)
+            + "\nexpected_handle = " + json.dumps(expected_handle)
+            + "\ncheckpoint_path = " + json.dumps(checkpoint_path) + "\n" + TRANSACTION)
 
 def jev_x_identity(expected_handle: str = "") -> str:
     helpers = TRANSACTION[:TRANSACTION.index("\ntry:\n    profile =")]
@@ -13,7 +15,7 @@ try:
         raise RuntimeError('X profile is not authenticated')
     handle = str(profile).strip('/').split('/',1)[0]
     if not handle or handle in {'home','i'} or (expected_handle and handle.casefold() != expected_handle.casefold()):
-        raise RuntimeError('X authenticated identity does not match expected handle')
+        raise RuntimeError('X authenticated identity unavailable' if not handle else 'X authenticated identity @' + handle + ' does not match expected @' + expected_handle)
     navigate('https://x.com/' + handle)
     label = wait_value("(() => { const a=[...document.querySelectorAll('a[href]')].find(e=>e.getAttribute('href')===location.pathname+'/verified_followers'||e.getAttribute('href')===location.pathname+'/followers'); return a?.getAttribute('aria-label')||a?.innerText||''; })()")
     if not label:
@@ -159,6 +161,25 @@ try:
             raise RuntimeError('Jev fill mismatch: expected_chars=' + str(len(norm(outbound))) + ' actual_chars=' + str(len(norm(rendered))))
         stage = 'submit'
         attempted = True
+        checkpoint = globals().get('checkpoint_path')
+        if checkpoint:
+            import json, os, tempfile
+            from pathlib import Path
+            path = Path(checkpoint)
+            previous = json.loads(path.read_text())
+            previous.update(status='SUBMIT_PENDING', attempted=True)
+            with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as f:
+                os.chmod(f.name, 0o600)
+                json.dump(previous, f)
+                f.flush()
+                os.fsync(f.fileno())
+                tmp = f.name
+            os.replace(tmp, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         act_observed('click')
         action_count += 1
         stage = 'verify'
@@ -186,7 +207,7 @@ try:
     profile = wait_value('document.querySelector("[data-testid=AppTabBar_Profile_Link]")?.getAttribute("href")')
     handle = str(profile or '').strip('/').split('/',1)[0]
     if not handle or handle in {'home','i'} or (expected_handle and handle.casefold() != expected_handle.casefold()):
-        raise RuntimeError('X authenticated identity does not match expected handle')
+        raise RuntimeError('X authenticated identity unavailable' if not handle else 'X authenticated identity @' + handle + ' does not match expected @' + expected_handle)
     post_id = find_post(handle)
     if not post_id:
         raise RuntimeError('No matching public status was observed after uncertain submit')

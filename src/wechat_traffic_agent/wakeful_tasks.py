@@ -2333,7 +2333,7 @@ class WakefulContentTaskRunner:
                     x_receipt = {}
                 x_status = str(x_receipt.get("status") or "")
                 if x_status in {
-                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED"
+                    "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "RECOVERY_INVALIDATED"
                 }:
                     continue
                 if blocker_active and x_status in {
@@ -2359,7 +2359,7 @@ class WakefulContentTaskRunner:
                 if isinstance(social, dict)
                 else ""
             )
-            if social_status in {"DRAFT_READY", "SKIPPED"}:
+            if social_status in {"DRAFT_READY", "SKIPPED", "RECOVERY_INVALIDATED"}:
                 continue
             if published_candidate is None:
                 published_candidate = {
@@ -2470,6 +2470,9 @@ class WakefulContentTaskRunner:
             "observed_at": now.isoformat(),
             "cycle": str(continuous.get("cycle") or ""),
         }
+        if isinstance(exc, ValueError) and str(exc) == "model call interrupted without receipt; skip this cycle":
+            error.update(status="RECOVERY_INVALIDATED", reason="INCOMPLETE_MODEL_RECEIPT",
+                         recovery_action="START_NEW_CYCLE_WITH_PRESERVED_EVIDENCE")
         state_root = getattr(self, "state_root", None)
         if state_root is not None and error["cycle"]:
             path = Path(state_root) / "content" / "continuous" / "cycles" / error["cycle"] / f"{stage}.error.json"
@@ -2477,6 +2480,11 @@ class WakefulContentTaskRunner:
             tmp = path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(error, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
             tmp.replace(path)
+            if error.get("status") == "RECOVERY_INVALIDATED":
+                stage_path = path.with_name(f"{stage}.json")
+                tmp = stage_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(error, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+                tmp.replace(stage_path)
         return error
 
     def _recover_social_stage_backlog(
