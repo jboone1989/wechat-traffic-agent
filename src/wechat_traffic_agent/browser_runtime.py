@@ -94,19 +94,25 @@ def _profile_status(profile_id: str) -> dict[str, Any]:
         "profile_id": profile_id,
         "status": "READY",
         "cdp_url": f"http://127.0.0.1:{port}",
+        "chrome_pid": body.get("chrome_pid"),
     }
 
 
 def browser_runtime_status() -> dict[str, Any]:
     profiles = [_profile_status("chatgpt"), _profile_status("x")]
+    shared = (all(row["status"] == "READY" for row in profiles)
+              and len({row.get("cdp_url") for row in profiles}) == 1)
     return {
         "schema_version": "content-browser-runtime-status.v2",
         "routing_policy": "AGENT_RUNTIME_ONLY",
         "provider": "AGENT_RUNTIME_BROWSER",
         "backend": "browser-harness",
+        "shared_browser": shared,
+        "cdp_url": profiles[0].get("cdp_url") if shared else None,
+        "chrome_pid": profiles[0].get("chrome_pid") if shared else None,
         "status": (
             "READY"
-            if all(row["status"] == "READY" for row in profiles)
+            if shared
             else "DEGRADED"
         ),
         "profiles": profiles,
@@ -115,7 +121,7 @@ def browser_runtime_status() -> dict[str, Any]:
                 "provider": "AGENT_RUNTIME_BROWSER",
                 "status": (
                     "READY"
-                    if all(row["status"] == "READY" for row in profiles)
+                    if shared
                     else "DEGRADED"
                 ),
                 "profiles": profiles,

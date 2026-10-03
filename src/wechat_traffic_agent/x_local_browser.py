@@ -113,6 +113,7 @@ class LocalHarnessXTransport:
                     )
                 ).expanduser(),
                 cdp_url=cls._cdp_url(),
+                account_id=str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip(),
             ),
         )
 
@@ -275,7 +276,11 @@ class LocalHarnessXTransport:
             raise ValueError("X reply must contain 1-280 characters")
         import hashlib
         from .x_browser import _read_json, _write_json
-        digest=hashlib.sha256((target_url+"\n"+text).encode()).hexdigest()
+        account_id = str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip()
+        binding = target_url+"\n"+text
+        if account_id != "default":
+            binding = account_id+"\n"+self.expected_handle.casefold()+"\n"+binding
+        digest=hashlib.sha256(binding.encode()).hexdigest()
         path=self.state_root/"content"/"x"/"reply-transactions"/(digest+".json")
         prior=_read_json(path)
         if prior.get("status")=="POSTED":
