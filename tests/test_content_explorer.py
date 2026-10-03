@@ -35,8 +35,8 @@ def explorer(tmp_path):
 
 def test_required_topic_changes_evidence_selection(tmp_path):
     rows = [candidate("rare-1", "Rare validation evidence"), candidate("common-1", "Common validation evidence")]
-    rare = Runtime(json.dumps({"matches": [{"evidence_id": "rare-1", "evidence_quote": "Rare validation evidence", "reason": "Directly relevant."}]}))
-    common = Runtime(json.dumps({"matches": [{"evidence_id": "common-1", "evidence_quote": "Common validation evidence", "reason": "Directly relevant."}]}))
+    rare = Runtime(json.dumps({"matches": [{"source_quote_id": "candidate-0-title", "reason": "Directly relevant."}]}))
+    common = Runtime(json.dumps({"matches": [{"source_quote_id": "candidate-1-title", "reason": "Directly relevant."}]}))
     a = asyncio.run(explorer(tmp_path).filter_for_goal(runtime=rare, goal_topic="rare", topic_context=[], candidates=rows))
     b = asyncio.run(explorer(tmp_path).filter_for_goal(runtime=common, goal_topic="common", topic_context=[], candidates=rows))
     assert [x["evidence_id"] for x in a["items"]] == ["rare-1"]
@@ -44,8 +44,8 @@ def test_required_topic_changes_evidence_selection(tmp_path):
 
 
 @pytest.mark.parametrize("payload,message", [
-    ({"matches": [{"evidence_id": "invented", "evidence_quote": "Candidate evidence", "reason": "Relevant enough."}]}, "supplied candidate"),
-    ({"matches": [{"evidence_id": "news-1", "evidence_quote": "invented quote", "reason": "Relevant enough."}]}, "contiguous source substring"),
+    ({"matches": [{"source_quote_id": "candidate-999-title", "reason": "Relevant enough."}]}, "supplied candidate"),
+    ({"matches": [{"source_quote_id": "candidate-0-invented", "reason": "Relevant enough."}]}, "supplied candidate quote"),
 ])
 def test_invented_id_or_quote_is_rejected(tmp_path, payload, message):
     raw = json.dumps(payload)
@@ -249,7 +249,11 @@ def test_multiple_valid_quotes_from_one_source_are_preserved_without_duplicate_s
         {"evidence_id": row["evidence_id"], "evidence_quote": row["title"], "reason": "Relevant source title."},
         {"evidence_id": row["evidence_id"], "evidence_quote": row["summary"], "reason": "Another grounded observation."},
     ]}
-    runtime = Runtime(json.dumps(payload))
+    runtime = Runtime(json.dumps({"matches": [
+        {"source_quote_id": "candidate-0-title", "reason": payload["matches"][0]["reason"]},
+        {"source_quote_id": ("candidate-0-summary-0" if payload["matches"][1]["evidence_quote"] == row["summary"] else "candidate-0-invented"),
+         "reason": payload["matches"][1]["reason"]},
+    ]}))
     worker = explorer(tmp_path)
     operation = (worker.filter_counter_evidence(runtime=runtime, primary=candidate("primary"), candidates=[row])
                  if counter else worker.filter_for_goal(runtime=runtime, goal_topic="validation", topic_context=[], candidates=[row]))
@@ -266,38 +270,53 @@ def test_repeated_source_cannot_hide_an_invented_second_quote(tmp_path, counter)
         {"evidence_id": row["evidence_id"], "evidence_quote": row["title"], "reason": "Relevant source title."},
         {"evidence_id": row["evidence_id"], "evidence_quote": "This quote was invented.", "reason": "Another claimed observation."},
     ]}
-    runtime = Runtime(json.dumps(payload))
+    runtime = Runtime(json.dumps({"matches": [
+        {"source_quote_id": "candidate-0-title", "reason": payload["matches"][0]["reason"]},
+        {"source_quote_id": ("candidate-0-summary-0" if payload["matches"][1]["evidence_quote"] == row["summary"] else "candidate-0-invented"),
+         "reason": payload["matches"][1]["reason"]},
+    ]}))
     worker = explorer(tmp_path)
     operation = (worker.filter_counter_evidence(runtime=runtime, primary=candidate("primary"), candidates=[row])
                  if counter else worker.filter_for_goal(runtime=runtime, goal_topic="validation", topic_context=[], candidates=[row]))
-    with pytest.raises(ValueError, match="substring"):
+    with pytest.raises(ValueError, match="supplied candidate quote"):
         asyncio.run(operation)
     assert len(runtime.calls) == 2
 
 def test_invalid_quote_retry_can_recover_with_literal_source_title(tmp_path):
     row=candidate(title="AI Agent Evaluation | DeepEval")
-    invalid=json.dumps({"matches":[{"evidence_id":row["evidence_id"],"evidence_quote":"Paraphrased evaluation guide","reason":"Directly relevant."}]})
-    valid=json.dumps({"matches":[{"evidence_id":row["evidence_id"],"evidence_quote":row["title"],"reason":"Directly relevant."}]})
+    invalid=json.dumps({"matches":[{"source_quote_id":"candidate-0-invented","reason":"Directly relevant."}]})
+    valid=json.dumps({"matches":[{"source_quote_id":"candidate-0-title","reason":"Directly relevant."}]})
     runtime=Runtime(invalid,valid)
     result=asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,goal_topic="AI agent evaluation",topic_context=[],candidates=[row]))
     assert result["items"]==[row]
     assert result["matches"][0]["evidence_quote"]==row["title"]
-    assert json.dumps({"evidence_id":"candidate-0","evidence_quote":row["title"]},ensure_ascii=False) in runtime.calls[1]
+    assert '"candidate-0-title": "AI Agent Evaluation | DeepEval"' in runtime.calls[1]
 
 def test_relevance_uses_short_references_and_retains_exact_canonical_lineage(tmp_path):
     row = candidate("web:" + "a1" * 32, title="Concrete validation implementation")
-    runtime = Runtime(json.dumps({"matches": [{"evidence_id": "candidate-0",
-        "evidence_quote": row["title"], "reason": "Direct implementation evidence."}]}))
+    runtime = Runtime(json.dumps({"matches": [{"source_quote_id": "candidate-0-title", "reason": "Direct implementation evidence."}]}))
     result = asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,
         goal_topic="validation", topic_context=[], candidates=[row]))
     assert result["items"] == [row]
     assert result["matches"][0]["evidence_id"] == row["evidence_id"]
-    assert '"enum": ["candidate-0"]' in runtime.calls[0]
+    assert '"enum": ["candidate-0-title", "candidate-0-summary-0"]' in runtime.calls[0]
 
 
 def test_unknown_short_reference_cannot_admit_a_source(tmp_path):
-    runtime = Runtime(json.dumps({"matches": [{"evidence_id": "candidate-99",
-        "evidence_quote": "Candidate evidence", "reason": "Directly relevant."}]}))
+    runtime = Runtime(json.dumps({"matches": [{"source_quote_id": "candidate-99-title", "reason": "Directly relevant."}]}))
     with pytest.raises(ValueError, match="supplied candidate"):
         asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,
             goal_topic="validation", topic_context=[], candidates=[candidate()]))
+
+def test_quote_binding_preserves_exact_unicode_punctuation_and_source_span(tmp_path):
+    row = candidate("web:" + "ab" * 32, title="AI Agent’s ‘Recovery’ | 状态—证据")
+    row["summary"] = "Precise text with punctuation: {state}, [receipt], and a backslash\\\\path."
+    runtime = Runtime(json.dumps({"matches": [
+        {"source_quote_id": "candidate-0-title", "reason": "Exact implementation title."},
+        {"source_quote_id": "candidate-0-summary-0", "reason": "Exact recovery mechanism."},
+    ]}))
+    result = asyncio.run(explorer(tmp_path).filter_for_goal(runtime=runtime,
+        goal_topic="recovery", topic_context=[], candidates=[row]))
+    assert result["items"] == [row]
+    assert [match["evidence_quote"] for match in result["matches"]] == [row["title"], row["summary"]]
+    assert all(match["evidence_id"] == row["evidence_id"] for match in result["matches"])
