@@ -136,12 +136,19 @@ def test_bad_model_response_bounded_persisted_no_retries_after_restart(tmp_path)
     assert len(runtime.calls)==2
 
 
-def test_interrupted_model_call_is_not_repeated(tmp_path):
+def test_interrupted_cognition_retries_and_then_reuses_completed_receipt(tmp_path):
     runtime=Runtime(); receipts=ReceiptRuntime(runtime,tmp_path/'receipts')
     async def crash(task, max_tokens, output_schema=None): raise RuntimeError('simulated interruption')
     runtime.cognitive_probe=crash
     with pytest.raises(RuntimeError): asyncio.run(receipts.cognitive_probe('task',100))
-    with pytest.raises(ValueError,match='interrupted'): asyncio.run(ReceiptRuntime(Runtime(),tmp_path/'receipts').cognitive_probe('task',100))
+    retry=Runtime()
+    assert asyncio.run(ReceiptRuntime(retry,tmp_path/'receipts').cognitive_probe('task',100))
+    assert retry.calls==['task']
+    assert (tmp_path/'receipts'/'0.started').exists()
+    assert (tmp_path/'receipts'/'1.json').exists()
+    replay=Runtime()
+    asyncio.run(ReceiptRuntime(replay,tmp_path/'receipts').cognitive_probe('task',100))
+    assert replay.calls==[]
 
 
 def test_receipt_runtime_forwards_schema_and_binds_it_to_phase_identity(tmp_path):

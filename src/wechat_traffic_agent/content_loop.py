@@ -199,10 +199,9 @@ class ReceiptRuntime:
             else:
                 row = json.loads(started.read_text())
                 previous = row.get("request_sha256")
-                if not previous or previous == fingerprint:
-                    raise ValueError("model call interrupted without receipt; skip this cycle")
-                # A changed input is a new request, never a replay of an
-                # ambiguous old request. Preserve the interrupted evidence.
+                # Cognition can be retried after interruption. Preserve the
+                # unfinished attempt and append a fresh model-call receipt.
+                # Actual publication has its own durable execution receipts.
                 interrupted_inputs.append({"started_path": str(started),
                                            "request_sha256": previous})
             key = str(self.index)

@@ -7,10 +7,12 @@ their version or embedding model changes.
 from __future__ import annotations
 
 import json
+import fcntl
 import os
 from pathlib import Path
 import subprocess
 import sys
+from uuid import uuid4
 
 
 class LocalRetrievalModels:
@@ -23,8 +25,21 @@ class LocalRetrievalModels:
     def _run(self, operation, texts, query=""):
         request = dict(operation=operation, texts=texts, query=query,
                        embedding=self.embedding, reranker=self.reranker, cache=self.cache)
-        process = subprocess.run([sys.executable, str(Path(__file__).resolve())],
-                                 input=json.dumps(request), text=True, capture_output=True, timeout=240)
+        # One host inference at a time, in a transient unit owned by the user
+        # manager. ONNX weights do not count against Ferro's browser/core unit.
+        cache=Path(self.cache)
+        cache.mkdir(parents=True,exist_ok=True)
+        environment=dict(os.environ)
+        user_runtime='/run/user/'+str(os.getuid())
+        environment.setdefault('XDG_RUNTIME_DIR',user_runtime)
+        environment.setdefault('DBUS_SESSION_BUS_ADDRESS','unix:path='+user_runtime+'/bus')
+        with (cache/'inference.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            process = subprocess.run([
+                'systemd-run','--user','--quiet','--pipe','--wait','--collect',
+                '--property=RuntimeMaxSec=240','--unit=ferro-memory-'+uuid4().hex,
+                sys.executable,str(Path(__file__).resolve())],
+                input=json.dumps(request),text=True,capture_output=True,timeout=255,env=environment)
         if process.returncode:
             raise RuntimeError("MEMORY_MODEL_FAILED: " + process.stderr[-1600:])
         return json.loads(process.stdout)

@@ -21,6 +21,9 @@ topic, node type and eligible source identities are enforced on the host.
 The encoder defaults to normalized multilingual MiniLM-L12 embeddings. The
 reranker defaults to a quantized Chinese/English BGE cross-encoder. Inference
 runs in short-lived CPU workers and shares a disk model cache across releases.
+Workers run as transient user-manager units outside Ferro's core service cgroup.
+A host lock serializes inference so concurrent cognition requests cannot load
+multiple copies of the weights. The user systemd manager must be available.
 Deployment must provision the model cache; inference reads local weights without
 network metadata checks. Embedding batches contain eight documents to fit the
 production host's memory budget.
