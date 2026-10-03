@@ -2308,6 +2308,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'learning': learning_result,
                     }
                     _put(cognition_context_path, cognition_context)
+                from .x_social import _expression_model_context
                 def validate_cognition(value):
                     if value.worth_saying != (value.expression_kind != 'NONE'):
                         raise ValueError('worth_saying must match expression_kind')
@@ -2339,7 +2340,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'Learning includes a new mechanism, implementation detail, comparison, counterexample or narrowed uncertainty, even if the broad inquiry remains open. '
                     'The same evidence may support a concise post and a later illustrated explanation when the latter adds supported context or a useful framework. A new belief change or fresh source is not required for a useful new expression. Choose depth by evidence quality; padding or repeating a prior point is not useful. Compare recent_public_expressions before deciding there is additional public value. Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.'
                     + mission_instruction + market_instruction + '\n'
-                    + json.dumps(cognition_context, ensure_ascii=False),
+                    + json.dumps(_expression_model_context(cognition_context), ensure_ascii=False),
                     CognitionDecision, validate=validate_cognition,
                 )
                 cognition_decision = _normalize_cognition_consistency(cognition_decision, worldview_update)
