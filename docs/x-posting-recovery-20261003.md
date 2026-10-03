@@ -23,3 +23,27 @@ This is a bounded recovery check, not proof of indefinite memory stability.
 
 A concurrent release 6254a36 was deployed while this repair was being tested;
 the fix must retain its learning-sharing changes when deployed.
+
+## Production acceptance at 14:52 Asia/Shanghai
+
+The learning-sharing changes from 6254a36 were retained. Research steps now expose
+an enum of exact known beliefs for related_proposition; canonical references are
+exempt from prose brevity targets. This prevents a model paraphrase from failing
+the existing exact-reference validation. The focused learning/content suites
+passed 32 tests.
+
+The rejected X draft had 148,386 characters, including 65,635 characters of raw
+recent history with internal execution lineage. Drafts now receive full public
+text, URL, ID, time, cycle, and expression kind within a bounded public-history
+projection. Over-budget long text is explicitly omitted with a source URL and
+SHA-256; it is never silently truncated. Original ledger records remain intact.
+The focused posting recovery/owner/browser suites passed 24 tests.
+
+Agent Runtime archived the explicitly rejected owned request without resubmitting
+it, then verified the real browser model channel in the preserved conversation.
+Ferro was restarted on 4f7b699 and published a fresh short post:
+https://x.com/caini56006962/status/2106275925344284675 .
+The receipt status is POSTED, and verified daily progress advanced from 11 to 12.
+The temporary daily minimum remains 20 with 8 remaining, automatic attempts and
+existing notifications enabled. The old resource-blocked artifact was superseded
+by this successful receipt. No new browser OOM occurred during this acceptance.
