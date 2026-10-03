@@ -103,6 +103,44 @@ def test_repeated_commonplace_causes_real_search_then_concrete_learning(tmp_path
     assert result['sources']==[DETAIL]
     assert read_research_state(tmp_path)['inquiries']['agent-reliability']['question']==result['next_question']
 
+def test_react_retrieval_searches_external_inside_one_reasoning_loop(tmp_path):
+    class ReactRuntime(Runtime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            self.calls.append(task)
+            if not task.startswith('ADVANCE_LEARNING:'):
+                return await super().cognitive_probe(task, max_tokens, output_schema)
+            data = json.JSONDecoder().raw_decode(task.split('\n', 1)[1])[0]
+            if not any(row.get('title') == DETAIL['title'] for row in data['sources']):
+                return json.dumps({
+                    'action': 'SEARCH_EXTERNAL',
+                    'query': 'agent checkpoint reconcile invocation restart',
+                    'ref': '',
+                    'offset': 0,
+                    'working_summary': 'The existing memory states a reliability principle but does not show the restart mechanism.',
+                    'missing_information': 'I need a concrete implementation detail showing how work is reconciled after restart.',
+                })
+            decision = step('DEEPENED', DETAIL,
+                            query='agent external side effect idempotency restart')
+            decision = wire_step_references(data, decision)
+            decision['facts'] = [{
+                'source_quote_id': next(
+                    key for key, value in data['source_quotes'].items()
+                    if DETAIL['summary'] in value['quote']
+                ),
+                'observation': decision['facts'][0]['observation'],
+            }]
+            return json.dumps(decision)
+
+    explorer = Explorer()
+    result = run(tmp_path, ReactRuntime([]), explorer, rounds=0)
+    assert explorer.queries == ['agent checkpoint reconcile invocation restart']
+    assert result['progressed']
+    assert result['evidence_id'] == DETAIL['evidence_id']
+    assert result['search_rounds'] == 1
+    assert result['react_search_queries'] == ['agent checkpoint reconcile invocation restart']
+    assert (tmp_path/'cycles'/'cycle-1'/'learning_react_search_0.json').exists()
+    assert not (tmp_path/'cycles'/'cycle-1'/'learning_search_0.json').exists()
+
 
 def test_unresolved_inquiry_keeps_next_unknown_across_cycles_and_restart(tmp_path):
     first=run(tmp_path, Runtime([step('REPEATED',INTRO)]), Explorer(), rounds=0)

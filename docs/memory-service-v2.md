@@ -18,6 +18,15 @@ Search combines lexical and dense candidates with RRF, then a learned
 cross-encoder reranks the bounded candidates. Filters for validity, status,
 topic, node type and eligible source identities are enforced on the host.
 
+Learning tasks also expose `SEARCH_EXTERNAL` through the same durable session.
+It is not a second research pipeline: when the current memory and evidence leave
+a concrete information gap, the model can search current external knowledge,
+ingest the returned originals into the canonical evidence store, read the new
+evidence, return to memory/relations if useful, and continue the same reasoning
+loop. Retrieval is task-bounded rather than knowledge-complete. The stopping
+condition is that the current task has enough evidence for a validated decision,
+not that the subject has been exhausted or that a fixed number of searches ran.
+
 The encoder defaults to normalized multilingual MiniLM-L12 embeddings. The
 reranker defaults to a quantized Chinese/English BGE cross-encoder. Inference
 runs in short-lived CPU workers and shares a disk model cache across releases.
@@ -62,10 +71,13 @@ seen sources and quotes from confirming a supposedly unseen case.
 A model turn either requests a memory operation or commits a validated decision.
 Tool results replace earlier results rather than accumulating forever. The
 session persists each operation's observation and retains stable reference
-bindings. Eight retrieval turns form one scheduler slice; exhaustion writes
-`MEMORY_RETRIEVAL_PENDING`, does not write a terminal cycle result, and resumes
-the same checkpoint. Final decisions retain host-side quote/reference bindings
-so a crash before the next receipt does not change their meaning.
+bindings. Memory reads, relationship traversal and task-scoped external search
+therefore share one working summary and one checkpoint. Eight retrieval turns
+form one scheduler slice; this is a scheduling/resource boundary, not a
+knowledge-sufficiency rule. Exhaustion writes `MEMORY_RETRIEVAL_PENDING`, does
+not write a terminal cycle result, and resumes the same checkpoint. Final
+decisions retain host-side quote/reference bindings so a crash before the next
+receipt does not change their meaning.
 
 Every final serialized learning request, including schema and repair text, is
 checked before dispatch. Defaults are 36,000 characters and an estimated
