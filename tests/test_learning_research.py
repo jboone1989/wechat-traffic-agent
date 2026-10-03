@@ -37,6 +37,23 @@ def step(progress, source, *, related=KNOWN, query='agent checkpoint reconcile i
         'next_query':query, 'rationale':'The overview repeats a known idea; implementation detail advances the inquiry.'}
 
 
+def wire_step_references(data, decision):
+    evidence_id = data["primary_source"]["evidence_id"]
+    for fact in decision["facts"]:
+        quote = fact.get("quote")
+        if quote:
+            match = next((value for value in data["source_quotes"].values()
+                          if quote in value["quote"]), None)
+            if match is not None:
+                evidence_id = match["evidence_id"]
+                break
+    related = decision["related_proposition"]
+    if related is not None:
+        related = next((row["belief_id"] for row in data["memory"]["beliefs"]
+                        if row["proposition"] == related), related)
+    return {**decision, "evidence_id": evidence_id, "related_proposition": related}
+
+
 class Runtime:
     def __init__(self, decisions):
         self.decisions=list(decisions)
@@ -48,9 +65,9 @@ class Runtime:
         decision = self.decisions.pop(0)
         if task.startswith('ADVANCE_LEARNING:'):
             data = json.JSONDecoder().raw_decode(task.split('\n', 1)[1])[0]
-            decision = {**decision, 'facts': [
+            decision = {**wire_step_references(data, decision), 'facts': [
                 {'source_quote_id': next((key for key, value in data['source_quotes'].items()
-                    if value['quote'] == fact['quote'] and value['evidence_id'] == fact['evidence_id']),
+                    if fact['quote'] in value['quote']),
                     'unknown-source-excerpt'), 'observation': fact['observation']}
                 for fact in decision['facts']]}
         return json.dumps(decision)
@@ -160,11 +177,12 @@ def test_citation_id_retrieves_exact_original_text_without_model_copying():
         _research_quotes, _research_choice_contract, _bind_research_choice)
     source = {**DETAIL, 'summary': 'Invocation IDs—persisted before execution—survive restart; outcomes remain separately verified.'}
     quotes = _research_quotes({source['evidence_id']: source})
-    choice = {**step('LEARNED', source),
+    choice = {**step('LEARNED', source), 'evidence_id': 'source-0', 'related_proposition': 'belief-0',
               'facts': [{'source_quote_id': next(iter(quotes)),
                          'observation': 'Invocation identity survives the restart boundary.'}]}
-    contract = _research_choice_contract({KNOWN}, quotes)
-    bound = _bind_research_choice(contract.model_validate(choice), quotes)
+    registry = {source['evidence_id']: source}
+    contract = _research_choice_contract({KNOWN}, quotes, registry)
+    bound = _bind_research_choice(contract.model_validate(choice), quotes, registry, {KNOWN})
     assert bound.facts[0].quote == source['summary']
     assert bound.facts[0].evidence_id == source['evidence_id']
     with pytest.raises(ValueError, match='source_quote_id'):
@@ -193,7 +211,7 @@ def test_research_reads_method_passages_beyond_search_summary(tmp_path):
             data = json.JSONDecoder().raw_decode(task.split("\n", 1)[1])[0]
             key = next(key for key, value in data["source_quotes"].items()
                        if mechanism in value["quote"])
-            return json.dumps({**decision, "facts": [{
+            return json.dumps({**wire_step_references(data, decision), "facts": [{
                 "source_quote_id": key, "observation": "Invocation identity survives a restart."}]})
     result = asyncio.run(investigate_learning(
         runtime=FullBodyRuntime([]), explorer=Explorer(), folder=tmp_path/"cycles"/"full",
@@ -244,7 +262,7 @@ def test_research_source_quote_registry_is_authoritative_without_duplicate_body(
             value = step("LEARNED", INTRO)
             value["facts"] = [{"source_quote_id": next(iter(data["source_quotes"])),
                                "observation": "The supplied source contains a concrete observation."}]
-            return json.dumps(value)
+            return json.dumps(wire_step_references(data, value))
     runtime = QuoteRuntime([])
     result = asyncio.run(investigate_learning(runtime=runtime, explorer=Explorer(),
         folder=tmp_path/"cycles"/"source-once", state_root=tmp_path, topic="agent-reliability",
@@ -252,6 +270,85 @@ def test_research_source_quote_registry_is_authoritative_without_duplicate_body(
             "research": read_research_state(tmp_path)}, evidence=[selected], selected=selected,
         now=NOW, search_rounds=0))
     prompt = json.JSONDecoder().raw_decode(runtime.calls[0].split("\n", 1)[1])[0]
-    assert prompt["primary_source"] == {"evidence_id": INTRO["evidence_id"]}
+    assert prompt["primary_source"] == {"evidence_id": "source-0"}
     assert result["sources"] == [selected]
     assert result["facts"][0]["quote"] in selected["evidence_text"]
+
+
+def test_research_source_and_belief_references_bind_exact_canonical_values(tmp_path):
+    source = {**DETAIL, "evidence_id": "web:" + "abcdef01" * 8}
+    canonical = "A complete canonical belief that must never be recopied by the model. " * 5
+    class WireRuntime:
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            data = json.JSONDecoder().raw_decode(task.split("\n", 1)[1])[0]
+            quote_id = next(iter(data["source_quotes"]))
+            assert data["sources"][0]["evidence_id"] == "source-0"
+            assert data["memory"]["beliefs"][0]["belief_id"] == "belief-0"
+            return json.dumps({**step("LEARNED", source), "evidence_id": "source-0",
+                "related_proposition": "belief-0", "facts": [{
+                    "source_quote_id": quote_id,
+                    "observation": "The worker persists invocation identity before execution."}]})
+    result = asyncio.run(investigate_learning(runtime=WireRuntime(), explorer=Explorer(),
+        folder=tmp_path/"cycles"/"short-refs", state_root=tmp_path, topic="agent-reliability",
+        focus=FOCUS, memory={"beliefs": [{"proposition": canonical}], "research": {"history": []}},
+        evidence=[source], selected=source, now=NOW, search_rounds=0))
+    assert result["evidence_id"] == source["evidence_id"]
+    assert result["related_proposition"] == canonical
+    assert result["facts"][0]["evidence_id"] == source["evidence_id"]
+    assert result["facts"][0]["quote"] == source["summary"]
+
+
+@pytest.mark.parametrize("field,value", [("evidence_id", "source-999"), ("related_proposition", "belief-999")])
+def test_unknown_research_reference_is_rejected_before_persistence(tmp_path, field, value):
+    class InvalidRuntime:
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            data = json.JSONDecoder().raw_decode(task.split("\n", 1)[1])[0]
+            return json.dumps({**step("LEARNED", INTRO), "evidence_id": "source-0",
+                "related_proposition": "belief-0", field: value,
+                "facts": [{"source_quote_id": next(iter(data["source_quotes"])),
+                           "observation": "An observation cannot admit an unknown source or belief."}]})
+    with pytest.raises(ValueError, match=field):
+        run(tmp_path, InvalidRuntime(), Explorer(), rounds=0)
+    assert not (tmp_path/"content"/"learning"/"research.json").exists()
+
+
+def test_research_projection_retains_pending_inquiry_and_observations_without_copying_archives():
+    from copy import deepcopy
+    from wechat_traffic_agent.learning_research import _research_prompt_memory
+    fact = {"evidence_id": "web:original", "quote": "long original excerpt " * 30,
+            "observation": "Persisted invocation identity survives the worker restart."}
+    memory = {"beliefs": [{"proposition": KNOWN}],
+              "recent_shares": [{"text": str(i)} for i in range(20)],
+              "research": {"inquiries": {
+                  "agent-reliability": {"question": FOCUS.question, "facts": [fact]},
+                  "other-topic": {"question": "Unrelated old investigation"}},
+                  "history": [{"cycle": str(i), "topic": "agent-reliability",
+                               "facts": [fact], "learning_delta": "Invocation identity is persisted."}
+                              for i in range(12)]}}
+    original = deepcopy(memory)
+    projected = _research_prompt_memory(memory, "agent-reliability")
+    assert projected["research"]["inquiries"]["agent-reliability"]["question"] == FOCUS.question
+    assert projected["research"]["history"][-1]["facts"] == [{"observation": fact["observation"]}]
+    assert "other-topic" not in projected["research"]["inquiries"]
+    assert fact["quote"] not in json.dumps(projected)
+    assert projected["beliefs"] == memory["beliefs"]
+    assert len(projected["recent_shares"]) == 8
+    assert projected["projection"]["history_total"] == 12
+    assert memory == original
+
+
+def test_question_relevant_exact_passages_survive_global_excerpt_budget():
+    from wechat_traffic_agent.learning_research import _research_quotes
+    registry = {}
+    needle = "Persist invocation checkpoints before restart to reconcile tool side effects."
+    for i in range(8):
+        registry[f"web:{i}"] = {**DETAIL,
+            "evidence_text": ("Unrelated background. " * 600) + needle + (" More context." * 100)}
+    quotes = _research_quotes(registry, "invocation checkpoints restart reconcile tool side effects")
+    assert len(quotes) <= 24
+    assert {value["evidence_id"] for value in quotes.values()} == set(registry)
+    for evidence_id, source in registry.items():
+        assert any(needle in value["quote"] for value in quotes.values()
+                   if value["evidence_id"] == evidence_id)
+        assert all(value["quote"] in source["evidence_text"] for value in quotes.values()
+                   if value["evidence_id"] == evidence_id)
