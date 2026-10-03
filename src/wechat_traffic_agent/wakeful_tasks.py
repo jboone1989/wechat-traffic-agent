@@ -2996,6 +2996,9 @@ class WakefulContentTaskRunner:
                 configured=getattr(self, "x_loop", None) is not None,
             ),
         }
+        content_mind = getattr(self, "content_mind", None)
+        if content_mind is not None:
+            mission_context["current_mind"] = content_mind.public_projection()
         cognition_runtime = getattr(self, "owner_cognition_runtime", None)
         if cognition_runtime is None:
             from .runtime_backend import load_owner_cognition_runtime

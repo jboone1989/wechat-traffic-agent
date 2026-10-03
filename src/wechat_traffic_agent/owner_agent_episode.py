@@ -334,6 +334,32 @@ class OwnerAgentEpisode:
             },
         ]
 
+    def _related_memory(
+        self,
+        *,
+        owner_goal: Mapping[str, Any],
+        mission_context: Mapping[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        from .memory_service import MemoryService
+
+        context = dict(mission_context or {})
+        mind = context.get("current_mind") if isinstance(context.get("current_mind"), Mapping) else {}
+        interests = list(mind.get("interests") or [])[:6]
+        inquiries = list(mind.get("open_inquiries") or [])[:6]
+        query = " ".join(
+            part
+            for part in [
+                str(owner_goal.get("description") or "").strip(),
+                str(owner_goal.get("parent_goal_description") or "").strip(),
+                *(str(row.get("name") or "").strip() for row in interests if isinstance(row, Mapping)),
+                *(str(row.get("question") or "").strip() for row in inquiries if isinstance(row, Mapping)),
+            ]
+            if part
+        )
+        if not query:
+            return []
+        return MemoryService(self.state_root).search(query, limit=6, node_types=("memory",))
+
     async def _decide(
         self,
         *,
@@ -344,13 +370,14 @@ class OwnerAgentEpisode:
     ) -> OwnerAgentDecision:
         from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
         from .x_social import XHistoryLedger
-        from .learning_research import read_research_state, LEARNING_INSTRUCTION
-        learning = read_research_state(self.state_root)
-        # The owner goal controls the domain and commitment; Ferro's durable
-        # interests and unfinished research determine which question to follow.
-        mind_path = self.state_root / 'application' / 'content_mind' / 'checkpoint.json'
-        mind = self._read_path(mind_path).get('subject') or {}
-        interests = (mind.get('interests') or {}).get('items') or {}
+        from .learning_research import LEARNING_INSTRUCTION
+
+        mission = dict(mission_context or {})
+        current_mind = mission.get("current_mind") if isinstance(mission.get("current_mind"), Mapping) else {}
+        related_memory = self._related_memory(
+            owner_goal=owner_goal,
+            mission_context=mission,
+        )
         recent_posts = [
             {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
             for row in XHistoryLedger(self.state_root).recent(limit=100)
@@ -385,14 +412,16 @@ class OwnerAgentEpisode:
             + json.dumps(
                 {
                     "owner_goal": self._compact(dict(owner_goal)),
-                    "mission_context": self._compact(dict(mission_context or {})),
+                    "mission_context": self._compact({
+                        key: value for key, value in mission.items() if key != "current_mind"
+                    }),
+                    "current_mind": self._compact(current_mind),
                     "prior_steps": self._compact(list(state.get("steps") or [])),
                     "previous_episode": self._compact(state.get("previous_episode")),
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "current_time": datetime.now(timezone.utc).isoformat(),
                     "recent_original_posts": recent_posts,
-                    "learning_research": learning,
-                    "durable_interests": interests,
+                    "related_memory": self._compact(related_memory),
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
                 },

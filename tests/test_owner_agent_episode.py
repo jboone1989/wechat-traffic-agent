@@ -364,3 +364,73 @@ def test_long_rationale_keeps_valid_owner_action_and_complete_explanation(tmp_pa
     assert result["decision"]["rationale"] == rationale
     assert episode.projection_for("goal-owner")["decision"]["rationale"] == rationale
     assert len(runtime.prompts) == 1
+
+
+def test_owner_prompt_uses_current_mind_and_retrieved_history_not_archives(tmp_path, monkeypatch):
+    from wechat_traffic_agent import memory_service
+
+    research = tmp_path / "content" / "learning"
+    research.mkdir(parents=True)
+    (research / "research.json").write_text(
+        json.dumps({"history": [{"fact": "HISTORICAL_ARCHIVE_MUST_NOT_ENTER_PROMPT"}]}),
+        encoding="utf-8",
+    )
+    checkpoint = tmp_path / "application" / "content_mind"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "checkpoint.json").write_text(
+        json.dumps({"subject": {"interests": {"items": {"CHECKPOINT_ARCHIVE_MUST_NOT_ENTER_PROMPT": {}}}}}),
+        encoding="utf-8",
+    )
+
+    queries = []
+
+    class FakeMemoryService:
+        def __init__(self, _state_root):
+            pass
+
+        def search(self, query, **_kwargs):
+            queries.append(query)
+            return [{
+                "node_id": "memory:btc-drawdown",
+                "type": "memory",
+                "text": "RETRIEVED_RELEVANT_HISTORY",
+                "context": "btc drawdown regime",
+                "version": "v1",
+                "status": "ACTIVE",
+                "topics": ["btc-drawdown"],
+                "change_seq": 1,
+            }]
+
+    monkeypatch.setattr(memory_service, "MemoryService", FakeMemoryService)
+    runtime = Runtime([{
+        "action": "WAIT",
+        "wait_seconds": 300,
+        "rationale": "Wait for the next measured observation before changing the active experiment.",
+    }])
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("WAIT must not execute a tool")
+
+    result = asyncio.run(episode.run(
+        runtime=runtime,
+        owner_goal={"goal_id": "goal-owner", "description": "Study BTC drawdown regimes"},
+        mission_context={
+            "current_mind": {
+                "interests": [{"name": "bitcoin-regimes", "salience": 0.9, "preference": 0.8}],
+                "open_inquiries": [{"question": "Does drawdown clustering distinguish market regimes?"}],
+            }
+        },
+        tool_executor=execute,
+        now=NOW,
+    ))
+
+    prompt = runtime.prompts[0][0]
+    assert result["status"] == "DECIDED"
+    assert queries and "Study BTC drawdown regimes" in queries[0]
+    assert "bitcoin-regimes" in prompt
+    assert "RETRIEVED_RELEVANT_HISTORY" in prompt
+    assert "HISTORICAL_ARCHIVE_MUST_NOT_ENTER_PROMPT" not in prompt
+    assert "CHECKPOINT_ARCHIVE_MUST_NOT_ENTER_PROMPT" not in prompt
+    assert '"learning_research"' not in prompt
+    assert '"durable_interests"' not in prompt
