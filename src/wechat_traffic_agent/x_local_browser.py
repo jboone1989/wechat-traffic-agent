@@ -163,10 +163,54 @@ class LocalHarnessXTransport:
             fcntl.flock(lock, fcntl.LOCK_EX)
             if refresh_target:
                 self._rebind_x_tab()
-            return self._run_jev_locked(script)
+            result = self._run_jev_locked(script)
+            self._retire_replaced_x_tabs()
+            return result
+
+    def _retirement_path(self) -> Path:
+        return self.state_root / ("x_retired_targets_" + self.account_id + ".json")
+
+    def _retire_replaced_x_tabs(self) -> None:
+        path = self._retirement_path()
+        if not path.exists():
+            return
+        retirement = json.loads(path.read_text(encoding="utf-8"))
+        old_targets = retirement["target_ids"]
+        if not old_targets:
+            return
+        active_target = self.browser._load_target_id("ferro-x-publish")
+        # Never close a target still owned by another persisted Runtime session.
+        for binding_path in Path(self.browser.runtime.state_dir).rglob("*.json"):
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            if isinstance(binding, dict) and binding.get("target_id") in old_targets:
+                raise BrowserRuntimeUnavailable("Retired X target still has a persisted task binding")
+        body = self.browser._run(
+            "ferro-x-publish",
+            "from urllib.parse import urlsplit\n"
+            + f"active_target = {active_target!r}\n"
+            + f"old_targets = {old_targets!r}\n"
+            + "targets = {row['targetId']: row for row in list_tabs(include_chrome=False)}\n"
+            + "assert active_target in targets, 'replacement X target disappeared'\n"
+            + "assert urlsplit(targets[active_target]['url']).hostname in ('x.com','www.x.com'), 'replacement is not an X page'\n"
+            + "retired = []\n"
+            + "for target in old_targets:\n"
+            + "    assert target != active_target, 'cannot retire the active X target'\n"
+            + "    if target in targets:\n"
+            + "        assert urlsplit(targets[target]['url']).hostname in ('x.com','www.x.com'), 'retired target is no longer an X page'\n"
+            + "        assert cdp('Target.closeTarget', targetId=target).get('success'), 'retired X target did not close'\n"
+            + "    retired.append(target)\n"
+            + "print(" + repr(self.browser._RESULT_PREFIX) + " + json.dumps({'retired':retired}))",
+            timeout_seconds=20,
+        )
+        if body.get("retired") != old_targets:
+            raise BrowserRuntimeUnavailable("Retired X target cleanup receipt is incomplete")
+        from .x_browser import _write_json
+        _write_json(path, {"target_ids": [], "last_retired": old_targets,
+                          "active_target_id": active_target, "retired_at": time.time()})
 
     def _rebind_x_tab(self) -> None:
         # Keep the authenticated browser, and replace only Runtime's owned tab binding.
+        previous_target = self.browser._load_target_id("ferro-x-publish")
         body = self.browser._run(
             "ferro-x-publish",
             "target_id = new_tab('https://x.com/home')\n"
@@ -177,6 +221,14 @@ class LocalHarnessXTransport:
         target_id = str(body.get("target_id") or "")
         if not target_id:
             raise BrowserRuntimeUnavailable("X renderer recovery returned no target")
+        from .x_browser import _write_json
+        path = self._retirement_path()
+        retirement = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"target_ids": []}
+        if previous_target and previous_target != target_id:
+            retirement["target_ids"] = list(dict.fromkeys([*retirement["target_ids"], previous_target]))
+        # Record cleanup before changing the durable binding, so a process
+        # restart cannot forget the retired renderer.
+        _write_json(path, retirement)
         self.browser._save_target_id("ferro-x-publish", target_id)
 
     def _run_jev_locked(self, script: str) -> dict[str, Any]:

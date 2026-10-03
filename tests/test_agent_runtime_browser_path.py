@@ -224,9 +224,11 @@ def test_x_other_transaction_error_does_not_retry(monkeypatch):
 
 
 @pytest.mark.parametrize("found", [True, False])
-def test_x_uncertain_submit_only_reconciles_after_renderer_refresh(monkeypatch, found):
+def test_x_uncertain_submit_only_reconciles_after_renderer_refresh(monkeypatch, found, tmp_path):
     transport = LocalHarnessXTransport.__new__(LocalHarnessXTransport)
     transport.expected_handle = "owner"
+    transport.account_id = "default"
+    transport.state_root = tmp_path
     calls = []
     def run(script, *, refresh_target=False):
         calls.append((script, refresh_target))
