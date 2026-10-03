@@ -1998,6 +1998,11 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                            f"Keeping the missed goal in memory while considering {len(evidence)} real evidence items for this production slot.",
                            status='completed')
         if not evidence:
+            from .learning_application import assess_application
+            await assess_application(
+                runtime=explorer_runtime, folder=folder, state_root=self.state,
+                topic=str(effective_topic or 'autonomous-research'),
+            )
             if self.mind is not None and hasattr(self.mind, 'record_research_belief'):
                 cognition = {
                     'cognition_state': 'NO_MATERIAL_CHANGE', 'worth_saying': False,

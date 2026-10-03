@@ -1181,6 +1181,21 @@ def build_ferro_decision_context(
             confidence=0.75,
         ))
 
+    # Research outcomes participate in the same decision-conditioned retrieval
+    # as operational experience, including counterexamples to prior knowledge.
+    from .learning_application import application_feedback
+    if state_root is not None:
+        for row in application_feedback(state_root):
+            local.append(candidate(
+                context_id=f"learning-application:{row['cycle']}",
+                source="experience",
+                kind="LEARNING_APPLICATION_OUTCOME",
+                payload=row,
+                importance=0.9,
+                confidence=1.0,
+                refs=[row["cycle"], *row["evidence_refs"]],
+            ))
+
     for index, row in enumerate(life_experience):
         if not isinstance(row, Mapping):
             continue

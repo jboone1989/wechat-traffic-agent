@@ -165,12 +165,14 @@ class DailyReflectionService:
                     "trigger_ref": row.get("trigger_ref"),
                     "reflection_text": str(row.get("reflection_text") or "")[:1200],
                 })
+        from .learning_application import application_feedback
         return {
             "as_of": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
             "trigger_refs": list(refs),
             "mind": self._mind_context(snapshot),
             "recent_cycles": cycles,
             "recent_reflections": prior,
+            "learning_applications": application_feedback(self.state_root),
         }
 
     @staticmethod
