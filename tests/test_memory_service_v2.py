@@ -60,6 +60,18 @@ def test_original_revision_invalidates_facts_graph_and_hierarchy(tmp_path):
     assert json.loads(Path(current['archive']).read_text())['evidence_text']==changed['evidence_text']
     assert len(list((service.root/'evidence').glob('*.json')))==2
 
+def test_relation_enrichment_skips_edges_not_present_in_fact(tmp_path):
+    raw=source();row=research(raw)
+    service=MemoryService(tmp_path);service.ingest_source(raw,topic='restart');service.ingest_research(row)
+    class RelationRuntime:
+        async def cognitive_probe(self,task,max_tokens,output_schema=None):
+            return json.dumps({'relations':[
+                {'fact_ref':'F0','subject':'worker','predicate':'USES','object':'checkpoint'},
+                {'fact_ref':'F0','subject':'missing','predicate':'USES','object':'checkpoint'}]})
+    asyncio.run(service.enrich_relations(RelationRuntime(),row))
+    relations=service.store.query_memories(memory_types=['RELATIONAL'])
+    assert [r['text'] for r in relations]==['worker USES checkpoint']
+
 
 def test_canonical_transition_invalidates_ancestors_in_same_transaction(tmp_path):
     service=MemoryService(tmp_path)
