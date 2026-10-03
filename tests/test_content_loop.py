@@ -438,3 +438,23 @@ def test_changed_model_phase_input_invalidates_stale_recovery_without_retrying_m
     assert "stale_recovery" in diagnostic["traceback"]
     assert invalidated["reason"] == "MODEL_PHASE_INPUT_CHANGED"
     assert persisted["status"] == "RECOVERY_INVALIDATED"
+
+def test_changed_input_preserves_interrupted_request_and_appends_new_receipt(tmp_path):
+    root=tmp_path/"receipts"
+    runtime=Runtime()
+    async def crash(task,max_tokens,output_schema=None):
+        raise RuntimeError("explicit failed old generation")
+    runtime.cognitive_probe=crash
+    with pytest.raises(RuntimeError):
+        asyncio.run(ReceiptRuntime(runtime,root).cognitive_probe("old oversized input",100))
+    before=(root/"0.started").read_bytes()
+    fresh=Runtime()
+    asyncio.run(ReceiptRuntime(fresh,root).cognitive_probe("new projected input",100))
+    assert fresh.calls==["new projected input"]
+    assert (root/"0.started").read_bytes()==before
+    receipt=json.loads((root/"1.json").read_text())
+    assert receipt["changed_input_after_interrupted_requests"][0]["request_sha256"] == json.loads(before)["request_sha256"]
+    # Recovery of the same new input uses its receipt without another call.
+    replay=Runtime()
+    asyncio.run(ReceiptRuntime(replay,root).cognitive_probe("new projected input",100))
+    assert replay.calls==[]

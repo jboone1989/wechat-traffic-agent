@@ -190,22 +190,31 @@ class ReceiptRuntime:
                 "output_schema": output_schema,
             })
 
-        while path.exists():
-            row = json.loads(path.read_text())
-            if row.get("request_sha256") == fingerprint:
-                return row["response"]
+        interrupted_inputs = []
+        while path.exists() or started.exists():
+            if path.exists():
+                row = json.loads(path.read_text())
+                if row.get("request_sha256") == fingerprint:
+                    return row["response"]
+            else:
+                row = json.loads(started.read_text())
+                previous = row.get("request_sha256")
+                if not previous or previous == fingerprint:
+                    raise ValueError("model call interrupted without receipt; skip this cycle")
+                # A changed input is a new request, never a replay of an
+                # ambiguous old request. Preserve the interrupted evidence.
+                interrupted_inputs.append({"started_path": str(started),
+                                           "request_sha256": previous})
             key = str(self.index)
             self.index += 1
             path = self.root / (key + ".json")
             started = self.root / (key + ".started")
 
-        if started.exists():
-            raise ValueError("model call interrupted without receipt; skip this cycle")
-
         _put(started, {
             "request_sha256": fingerprint,
             "phase_signature": phase_signature,
             "status": "STARTED",
+            "changed_input_after_interrupted_requests": interrupted_inputs,
         })
         raw = await self.runtime.cognitive_probe(
             task,
@@ -216,6 +225,7 @@ class ReceiptRuntime:
             "request_sha256": fingerprint,
             "phase_signature": phase_signature,
             "response": raw,
+            "changed_input_after_interrupted_requests": interrupted_inputs,
         }
         if output_schema is not None:
             receipt["output_schema_sha256"] = digest(output_schema)
