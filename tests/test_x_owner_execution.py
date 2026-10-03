@@ -112,7 +112,24 @@ def test_content_executor_stops_after_real_cognition_for_owner_x(tmp_path):
     from test_content_loop import setup, NOW as CONTENT_NOW
     from test_content_explorer import candidate
     _,legacy,publisher=setup(tmp_path)
-    runtime=BeliefRuntime()
+    class LearningRuntime(BeliefRuntime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            if task.startswith('PLAN_LEARNING:'):
+                return json.dumps({'question':'How does validation reduce model uncertainty?',
+                    'search_query':'validation model uncertainty experiment',
+                    'why_interested':'I want to understand the concrete validation mechanism.'})
+            if task.startswith('ADVANCE_LEARNING:'):
+                data=json.JSONDecoder().raw_decode(task.split('\n',1)[1])[0]
+                source=data['sources'][0]
+                return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
+                    'learning_delta':'Validation evidence reduces uncertainty about model reliability.',
+                    'facts':[{'evidence_id':source['evidence_id'],'quote':source['summary'],
+                              'observation':'Validation evidence reduces model reliability uncertainty.'}],
+                    'related_proposition':None,'next_question':'Which validation method reduces uncertainty most?',
+                    'next_query':'validation method uncertainty comparison experiment',
+                    'rationale':'This observation gives a mechanism for the focused learning question.'})
+            return await super().cognitive_probe(task,max_tokens,output_schema)
+    runtime=LearningRuntime()
     class OwnerExplorer(Explorer):
         async def collect(self,*,now,active):
             row=candidate()

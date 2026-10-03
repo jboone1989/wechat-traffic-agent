@@ -21,6 +21,20 @@ class Runtime:
         self.calls=[]; self.number=number; self.passes=passes; self.badquote=badquote; self.provenance_ids=provenance_ids
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         self.calls.append(task)
+        if task.startswith('PLAN_LEARNING:'):
+            return json.dumps({'question':'How does the supplied mechanism work in practice?',
+                'search_query':'mechanism implementation primary evidence',
+                'why_interested':'I want to understand the specific mechanism behind this observation.'})
+        if task.startswith('ADVANCE_LEARNING:'):
+            data=json.JSONDecoder().raw_decode(task.split('\n',1)[1])[0]
+            source=data['primary_source']
+            return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
+                'learning_delta':'The source adds a concrete observation about the current question.',
+                'facts':[{'evidence_id':source['evidence_id'],'quote':source['summary'][:600],
+                          'observation':'This source supplies a concrete observation for this inquiry.'}],
+                'related_proposition':None,'next_question':'How does this observation hold in another case?',
+                'next_query':'mechanism another case comparison primary experiment',
+                'rationale':'This fixture adds an observation rather than repeating the prior statement.'})
         if task.startswith('LEARN_WRITING:'):
             return json.dumps({'techniques':[{'name':'Separate observations', 'instruction':'Separate facts from hypothetical interpretation.',
                 'before':'This always works.', 'after':'Hypothetically this could work; we need evidence.',

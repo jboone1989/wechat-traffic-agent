@@ -1822,6 +1822,19 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'summary': artifact['summary'][:500],
                 })
         explorer_runtime = ReceiptRuntime(self.runtime, folder / 'explorer_calls')
+        learning_memory = None
+        learning_focus = None
+        learning_result = None
+        if (callable(getattr(self.mind, 'record_research_belief', None))
+                or str(getattr(self, '_publication_surface', 'AUTO')).startswith('X_')):
+            from .learning_research import research_memory, choose_research_focus
+            learning_memory = research_memory(self.mind, self.state, topic=str(effective_topic or ''))
+            learning_focus = await choose_research_focus(
+                runtime=explorer_runtime, folder=folder, topic=str(effective_topic or ''),
+                memory=learning_memory,
+            )
+            self._activity(cycle, 'LEARN', 'I’m following a concrete research question',
+                           learning_focus.question)
         if exploration_path.exists():
             exploration = json.loads(exploration_path.read_text())
         else:
@@ -1865,7 +1878,12 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         if owner_focus_fast_path and effective_topic
                         else ''
                     )
-                    if mission_query and callable(search_mission_web):
+                    if learning_focus is not None and callable(search_mission_web):
+                        web_pool = await search_mission_web(
+                            query=learning_focus.search_query,
+                            goal_topic=str(effective_topic), now=now,
+                        )
+                    elif mission_query and callable(search_mission_web):
                         web_pool = await search_mission_web(
                             query=mission_query,
                             goal_topic=str(effective_topic),
@@ -1885,7 +1903,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         web_pool = {'items': [], 'failures': [], 'query': None}
                     web_pool['items'] = [row for row in web_pool['items']
                                          if _candidate_available_for_pool(self.inbox, row)]
-                    if owner_focus_fast_path and effective_topic:
+                    if owner_focus_fast_path and effective_topic and learning_focus is None:
                         web_pool['items'] = [
                             row for row in web_pool['items']
                             if _owner_focus_candidate_matches(row, effective_topic)
@@ -2077,10 +2095,40 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             raise ValueError('selection duplicates an existing title')
 
         worldview_update = None
+        if learning_focus is not None:
+            from .learning_research import investigate_learning, learning_receipt
+            learning_result = await investigate_learning(
+                runtime=runtime, explorer=self.explorer, folder=folder,
+                state_root=self.state, topic=selection.topic, focus=learning_focus,
+                memory=learning_memory, evidence=evidence, selected=selected, now=now,
+            )
+            selected = next(row for row in learning_result['sources']
+                            if row['evidence_id'] == learning_result['evidence_id'])
+            selection = selection.model_copy(update={
+                'evidence_id': selected['evidence_id'],
+                'reader_question': learning_focus.question,
+            })
+            if not learning_result['progressed']:
+                cognition = {
+                    'cognition_state': 'INVESTIGATING', 'worth_saying': False,
+                    'expression_kind': 'NONE',
+                    'what_changed': 'Research continued but did not yet add concrete understanding.',
+                    'what_matters': learning_result['next_question'],
+                    'belief_proposition': learning_result['related_proposition'],
+                    'rationale': learning_result['rationale'],
+                }
+                learning_receipt(folder, 'cognition.json', cognition)
+                self._activity(cycle, 'LEARN', 'I continued the inquiry rather than repeat a known thought',
+                               learning_result['next_question'], status='completed')
+                return {'status': 'COGNITION_ONLY', 'cycle': cycle, 'mind_plan': mind_plan,
+                        'cognition': cognition, 'learning': learning_result,
+                        'next_research_query': learning_result['next_query'],
+                        'source_failures': [*exploration.get('source_failures', []),
+                                            *learning_result['source_failures']]}
         record_belief = getattr(self.mind, 'record_research_belief', None) if self.mind is not None else None
         if record_belief is not None:
-            belief_path = folder / 'worldview_decision.json'
-            update_path = folder / 'worldview_update.json'
+            belief_path = folder / ('learning_worldview_decision.json' if learning_result else 'worldview_decision.json')
+            update_path = folder / ('learning_worldview_update.json' if learning_result else 'worldview_update.json')
             if belief_path.exists():
                 belief_decision = WorldviewDecision.model_validate_json(belief_path.read_text(encoding='utf-8'))
             else:
@@ -2093,6 +2141,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'This is cognition, not article writing. DEFER is valid and preferred when the evidence is insufficient. '
                     'A proposition must be a concise, testable world claim that can be revisited by future evidence; do not make it source-specific. '
                     'If the evidence revises an existing proposition, copy that proposition EXACTLY rather than paraphrasing it. '
+                    'Compare semantic meaning, not wording. Repetition of a known idea is not a new belief or a revision. '
+                    'When learning.related_proposition is supplied, use that exact canonical proposition. '
+                    'A concrete discovery may be retained and shared without committing a general world claim. '
                     'stance ranges from -1 (evidence argues strongly against the proposition) to +1 (strongly supports it). '
                     'reliability is how fit this evidence is for updating that proposition, not a claim of truth. support is the evidence support used inside the inquiry. '
                     'Separate observed facts from interpretation and do not invent facts beyond source_evidence. Return JSON only.\n'
@@ -2100,9 +2151,19 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'topic': selection.topic, 'reader_question': selection.reader_question,
                         'source_evidence': selected, 'current_beliefs': current_beliefs,
                         'mind_goal': mind_plan.get('goal'),
+                        'learning': learning_result,
                     }, ensure_ascii=False),
                     WorldviewDecision,
                 )
+            if learning_result is not None and learning_result['related_proposition'] is not None:
+                belief_decision = belief_decision.model_copy(update={
+                    'proposition': learning_result['related_proposition'],
+                })
+                _put(folder / 'worldview_semantic_binding.json', {
+                    'canonical_proposition': learning_result['related_proposition'],
+                    'learning_cycle': cycle,
+                })
+            if not belief_path.exists():
                 _put(belief_path, belief_decision.model_dump(mode='json'))
             mind_goal = mind_plan.get('goal') if isinstance(mind_plan.get('goal'), dict) else {}
             inquiry_refs = list(mind_goal.get('inquiry_refs') or ())
@@ -2123,6 +2184,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     commit=belief_decision.action == 'COMMIT',
                 )
                 _put(update_path, worldview_update)
+            if learning_result is not None:
+                learning_receipt(folder, 'worldview_decision.json', belief_decision.model_dump(mode='json'))
+                learning_receipt(folder, 'worldview_update.json', worldview_update)
             self._activity(
                 cycle, 'LEARN',
                 ('I updated a long-term belief' if belief_decision.action == 'COMMIT' else 'I kept the question open'),
@@ -2174,13 +2238,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
 
         cognition_decision = None
         if record_belief is not None:
-            cognition_path = folder / 'cognition.json'
+            cognition_path = folder / ('learning_cognition.json' if learning_result else 'cognition.json')
             if cognition_path.exists():
                 cognition_decision = CognitionDecision.model_validate_json(cognition_path.read_text(encoding='utf-8'))
             else:
                 self._activity(cycle, 'DECIDE', 'I’m deciding whether I actually have something worth saying',
                                'A completed cognition cycle does not create a publication obligation.')
-                cognition_context_path = folder / 'cognition_context.json'
+                cognition_context_path = folder / ('learning_cognition_context.json' if learning_result else 'cognition_context.json')
                 if cognition_context_path.exists():
                     cognition_context = json.loads(cognition_context_path.read_text(encoding='utf-8'))
                 else:
@@ -2196,6 +2260,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         'worldview_update': worldview_update, 'prediction': prediction_record, 'mind_goal': mind_plan.get('goal'),
                         'current_mind': self.mind.public_projection(), 'recent_titles': inputs['previous_titles'][-20:],
                         'market_context_evidence': market_companion,
+                        'learning': learning_result,
                     }
                     _put(cognition_context_path, cognition_context)
                 def validate_cognition(value):
@@ -2204,8 +2269,6 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     changed = isinstance(worldview_update, dict) and worldview_update.get('status') in {'FORMED', 'REVISED'}
                     if value.cognition_state == 'BELIEF_CHANGED' and not changed:
                         return
-                    if changed and value.expression_kind == 'NONE':
-                        raise ValueError('persisted worldview change requires a public expression trace')
                 mission_instruction = (
                     ' Bootstrap focus: this one cycle was deliberately pointed at a topic to establish initial output. '
                     'Choose LONGFORM, RESEARCH_NOTE, METHOD_NOTE, THOUGHT, or NONE according to the actual information gain and evidence. '
@@ -2222,10 +2285,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 cognition_decision = await _structured(
                     runtime,
                     'DECIDE_EXPRESSION: Decide whether this completed cognition cycle contains a genuinely useful idea worth expressing now. '
-                    'The persistent agent is expected to think continuously, but publication is never a quota. NONE is correct only when there is no meaningful information gain or useful public trace. '
+                    'The persistent agent thinks continuously and fulfills active daily publication commitments by investigating substantive questions. Do not relabel repetition as learning to fill the count. NONE is correct only when there is no meaningful information gain or useful public trace. '
                     'LONGFORM is appropriate for a material belief formation/revision or substantial research result. RESEARCH_NOTE is appropriate when the evidence is real and the investigation itself is useful, but the durable worldview correctly remains unresolved. '
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
-                    'THOUGHT is appropriate for a concise, evidence-grounded reflection or question that is worth making public even though it is not a full research note. A persisted Worldview FORMATION or REVISION must leave at least a THOUGHT public trace; low confidence should be stated, not hidden by NONE. '
+                    'THOUGHT is appropriate for a concise, evidence-grounded reflection or question from actual learning. '
+                    'Ferro researches its own interests and shares along the way. A belief formation or revision creates no publication obligation. '
+                    'Use the concrete learning_delta and observations, not another generic reminder that evidence is needed. '
+                    'Learning includes a new mechanism, implementation detail, comparison, counterexample or narrowed uncertainty, even if the broad inquiry remains open. '
                     'The same evidence may support a concise post and a later illustrated explanation when the latter adds supported context or a useful framework. A new belief change or fresh source is not required for a useful new expression. Choose depth by evidence quality; padding or repeating a prior point is not useful. Compare recent_public_expressions before deciding there is additional public value. Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.'
                     + mission_instruction + market_instruction + '\n'
                     + json.dumps(cognition_context, ensure_ascii=False),
@@ -2233,6 +2299,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 )
                 cognition_decision = _normalize_cognition_consistency(cognition_decision, worldview_update)
                 _put(cognition_path, cognition_decision.model_dump(mode='json'))
+            if learning_result is not None:
+                learning_receipt(folder, 'cognition.json', cognition_decision.model_dump(mode='json'))
             if not cognition_decision.worth_saying:
                 self._activity(cycle, 'DECIDE', 'I completed the thought without forcing a publication',
                                cognition_decision.rationale, status='completed')
@@ -2538,6 +2606,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if scope_downgraded else ''
         )
         expression_context = ({
+            'learning': learning_result,
             'agent_cognition': cognition_decision.model_dump(mode='json'),
             'worldview_decision': belief_decision.model_dump(mode='json'),
             'worldview_update': worldview_update,
@@ -2569,6 +2638,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                      + ('For a thought, render a post-like note rather than an article: use one compact title, at most two short sections, and no more than three short paragraphs total. Put the immediate observation and the agent’s bounded view first; add what to watch or what would change the view only when useful. No formal introduction or conclusion. ' if expression_kind == 'THOUGHT' else '')
                      + ('Use social_style_context only for structure and pacing; never copy source wording, persona, claims, or certainty. ' if social_style_context.get('observations') else '')
                      + (_market_expression_instruction(selected) + ' ' if _market_expression_instruction(selected) else '')
+                     + 'Share the concrete learning discovery and question being pursued. Preserve source-supported mechanisms, names, comparisons or implementation details; do not reduce them to a generic reminder that evidence is needed. '
                      + 'Explain one mechanism, separate reported facts and interpretation. '
                      + 'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '
                      'Apply each technique listed in technique_requirements.required_indices visibly. '

@@ -6,6 +6,7 @@ parser=argparse.ArgumentParser()
 parser.add_argument("--release",type=Path,required=True)
 parser.add_argument("--expected-current",type=Path,required=True)
 parser.add_argument("--commit",required=True)
+parser.add_argument("--evidence-ref",required=True)
 args=parser.parse_args()
 current=Path.home()/"content-agent/current"
 release=args.release.resolve(strict=True)
@@ -19,7 +20,7 @@ manifest={"schema":"pi-remote.ferro-release.v1","gitCommit":actual,
     "releaseId":release.name,"releasePath":str(release),
     "materializedAt":datetime.now(timezone.utc).isoformat(),
     "previousRelease":str(previous),
-    "evidenceRef":"pytest:daily-posting-goal:16-passed",
+    "evidenceRef":args.evidence_ref,
     "editorialDomains":["CRYPTOCURRENCY","AI","FINANCE"]}
 (release/".ferro-release.json").write_text(json.dumps(manifest,indent=2)+"\n")
 temporary=current.with_name("current-posting-"+uuid.uuid4().hex)

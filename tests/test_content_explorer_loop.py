@@ -876,15 +876,15 @@ class RepairSilentBeliefRuntime(BeliefRuntime):
         return await super().cognitive_probe(task, max_tokens)
 
 
-def test_persisted_worldview_change_cannot_disappear_into_none(tmp_path):
+def test_persisted_worldview_change_can_remain_private_without_forced_publication(tmp_path):
     _runtime, legacy, publisher = setup(tmp_path)
     runtime = RepairSilentBeliefRuntime()
     result = asyncio.run(v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=Explorer()).run_once(now=NOW))
-    assert runtime.expression_attempts == 2
-    assert result["status"] == "PUBLISHED"
-    assert result["cognition"]["expression_kind"] == "THOUGHT"
-    published = json.loads(publisher.inventory_path().read_text())
-    assert published[-1]["kind"] == "note"
+    assert runtime.expression_attempts == 1
+    assert result["status"] == "COGNITION_ONLY"
+    assert result["worldview_update"]["status"] == "FORMED"
+    assert result["cognition"]["expression_kind"] == "NONE"
+    assert not any(call.startswith('LEARN_WRITING:') for call in runtime.calls)
 
 
 class PredictiveBeliefRuntime(BeliefRuntime):

@@ -590,6 +590,7 @@ class XAutonomyLoop:
         return folder, {
             "owner_publication_request": owner_request,
             "source_evidence": x_expression.get("source_evidence") or {},
+            "learning": _read_json(folder / "learning_result.json"),
             "cycle": cycle, "cognition": cognition, "worldview": worldview, "prediction": prediction,
             "mind_plan": plan, "artifact": artifact, "publication": publication,
         }
@@ -666,12 +667,17 @@ class XAutonomyLoop:
                if owner_directed_x else "Jev L1 has already selected POST_NOW and SHORT_POST. ")
             +             "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format. "
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
+            "Share what you actually learned: lead with the concrete learning_delta, observation, mechanism or counterexample in learning. "
+            "Use learning.sources as attributed factual input alongside source_evidence. Preserve concrete names, measurements or implementation details when supplied. "
+            "Do not compress the discovery into a generic moral such as 'agents need measurable outcomes'. "
+            "Compare recent_shares by meaning, not wording; a short post must retain the new detail that distinguishes this step. "
             "For METHOD_NOTE, describe the method/tool only as a candidate being tested unless adoption is separately proven. "
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
             "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**context, "public_url": public_url,
+                          "recent_shares": self.history.recent(limit=20),
                           "public_persona": public_persona_projection(self.state_root),
                           "x_growth_mission": x_mission,
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
@@ -794,13 +800,16 @@ class XAutonomyLoop:
         if existing.get("status")!="DRAFT_READY" or (existing.get("drafts",{}).get("x",{}).get("format") != fmt):
             prompt=("X_OWNER_LONGFORM_DRAFT: Ferro selected "+fmt+" through its persisted autonomous publication decision. "
                 "Write in the supplied public persona from persisted cognition and attributed source only. "
+                "Share the actual learning_delta and concrete observations from learning, with attribution to learning.sources. "
+                "Explain what you were trying to understand, what you found, why it changed or deepened your understanding, and the next unknown. "
+                "Do not replace the discovery with generic evidence reminders or a repeated slogan. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
                 "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
                 "Depth must follow evidence quality. A source used in a short post may support this richer explanation only when it adds useful supported context; preserve attribution and do not pad or repeat a prior post. "
                 "For ARTICLE, choose images: each has role COVER or INLINE, mode GRAPHIC/GENERATE/SEARCH, alt_text, caption, "
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
                 "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
-                "Preserve uncertainty and source attribution. Owner quantities are optional advice, not quotas.\n"
+                "Preserve uncertainty and source attribution. Honor an active temporary daily contract through substantive learning and sharing.\n"
                 +json.dumps({**context,"persona":public_persona_projection(self.state_root),
                     "mission":x_growth_mission_context(self.state_root),
                     "recent_posts":self.history.recent(limit=20)},ensure_ascii=False))

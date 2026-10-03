@@ -344,6 +344,13 @@ class OwnerAgentEpisode:
     ) -> OwnerAgentDecision:
         from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
         from .x_social import XHistoryLedger
+        from .learning_research import read_research_state, LEARNING_INSTRUCTION
+        learning = read_research_state(self.state_root)
+        # The owner goal controls the domain and commitment; Ferro's durable
+        # interests and unfinished research determine which question to follow.
+        mind_path = self.state_root / 'application' / 'content_mind' / 'checkpoint.json'
+        mind = self._read_path(mind_path).get('subject') or {}
+        interests = (mind.get('interests') or {}).get('items') or {}
         recent_posts = [
             {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
             for row in XHistoryLedger(self.state_root).recent(limit=100)
@@ -352,6 +359,7 @@ class OwnerAgentEpisode:
         prompt = (
             "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
             + EDITORIAL_SCOPE_INSTRUCTION + " "
+            + LEARNING_INSTRUCTION + " "
             "Choose the next useful tool/action, not a content topic by default. "
             "Prefer reality checks when key facts are missing; do not repeat a tool whose prior result already answers the need. "
             "Treat a specific activated owner proposal as the immediate commitment under its broader parent goal. "
@@ -383,6 +391,8 @@ class OwnerAgentEpisode:
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "current_time": datetime.now(timezone.utc).isoformat(),
                     "recent_original_posts": recent_posts,
+                    "learning_research": learning,
+                    "durable_interests": interests,
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
                 },
