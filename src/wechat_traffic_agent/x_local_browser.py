@@ -47,14 +47,22 @@ class LocalHarnessXTransport:
         self.expected_handle = str(expected_handle).strip().lstrip("@")
         self.telemetry = BrowserTelemetryLedger(self.state_root)
         self.browser = self._provider()
+        self.account_id = str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip()
 
     @classmethod
-    def from_environment(cls, *, state_root: Path) -> "LocalHarnessXTransport":
-        return cls(
+    def from_environment(cls, *, state_root: Path, account_id: str | None = None) -> "LocalHarnessXTransport":
+        transport = cls(
             state_root=state_root,
             timeout_ms=int(os.environ.get("CONTENT_X_BROWSER_TIMEOUT_MS", "30000")),
             expected_handle=str(os.environ.get("CONTENT_X_USERNAME") or ""),
         )
+        if account_id:
+            from .browser_accounts import x_account_binding
+            record, context = x_account_binding(state_root, account_id)
+            transport.browser = transport.browser.for_account(context)
+            transport.expected_handle = record.identity
+            transport.account_id = context
+        return transport
 
     @staticmethod
     def _profile_state_path() -> Path:
@@ -276,7 +284,7 @@ class LocalHarnessXTransport:
             raise ValueError("X reply must contain 1-280 characters")
         import hashlib
         from .x_browser import _read_json, _write_json
-        account_id = str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip()
+        account_id = self.account_id
         binding = target_url+"\n"+text
         if account_id != "default":
             binding = account_id+"\n"+self.expected_handle.casefold()+"\n"+binding

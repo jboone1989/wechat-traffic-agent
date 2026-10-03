@@ -43,11 +43,27 @@ class LocalBrowserControl:
     """Thin operator adapter over Agent Runtime; never starts its own Chrome."""
 
     def __init__(self, *, state_root: Path | None = None) -> None:
-        _ = state_root
+        self.state_root = Path(state_root or (Path.home() / 'content-agent-state'))
+        self._accounts: dict[str, LocalBrowserControl] = {}
+        self._account_id = str(os.environ.get('AGENT_RUNTIME_X_ACCOUNT_ID') or 'default').strip()
+        self._registry_account_id = ''
+        self._expected_identity = ''
         self._lock = threading.RLock()
         self._provider: BrowserHarnessProvider | None = None
         self._target_id = ""
         self._running = False
+
+    def for_account(self, account_id: str) -> "LocalBrowserControl":
+        from .browser_accounts import x_account_binding
+        record, context = x_account_binding(self.state_root, account_id)
+        with self._lock:
+            if account_id not in self._accounts:
+                child = type(self)(state_root=self.state_root)
+                child._account_id = context
+                child._registry_account_id = record.account_id
+                child._expected_identity = record.identity
+                self._accounts[account_id] = child
+            return self._accounts[account_id]
 
     @staticmethod
     def _runtime_state_path() -> Path:
@@ -106,6 +122,7 @@ class LocalBrowserControl:
                         )
                     ).expanduser(),
                     cdp_url=self._cdp_url(),
+                    account_id=self._account_id,
                 ),
             )
         return self._provider
@@ -156,7 +173,7 @@ class LocalBrowserControl:
         with self._lock:
             if self._target_id:
                 return self._target_id
-            adopted = self._browser().adopt_existing_tab(_SESSION_ID, "https://x.com/")
+            adopted = self._browser().adopt_existing_tab(_SESSION_ID, "https://x.com/", **({"open_if_missing": True} if self._account_id != "default" else {}))
             self._target_id = str(adopted.get("target_id") or "")
             self._running = bool(self._target_id)
             if not self._target_id:
@@ -180,7 +197,16 @@ class LocalBrowserControl:
             )
             row = value if isinstance(value, dict) else {}
             profile = str(row.get("profile") or "")
+            identity = profile.strip("/").split("/", 1)[0] if profile else ""
+            if identity and self._expected_identity and identity.casefold() != self._expected_identity.casefold():
+                raise LocalBrowserControlUnavailable("X browser identity does not match selected account")
+            if self._registry_account_id:
+                from .x_browser import _write_json
+                _write_json(self.state_root / "accounts/browser-verifications" / (self._registry_account_id + ".json"),
+                            {"account_id": self._registry_account_id, "identity": identity,
+                             "context": self._account_id, "status": "CONNECTED" if identity else "NEEDS_LOGIN"})
             return {
+                "browser_account_id": self._account_id,
                 "running": True,
                 "url": str(row.get("url") or ""),
                 "title": str(row.get("title") or ""),

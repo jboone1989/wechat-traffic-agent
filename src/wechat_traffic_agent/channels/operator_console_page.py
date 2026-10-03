@@ -99,7 +99,7 @@ details.fold{border:1px solid #252f38;background:#10151a;border-radius:12px;marg
   </div>
   <div id="accountLoginShell" class="account-login-modal hidden" role="dialog" aria-modal="true" aria-labelledby="accountLoginTitle">
    <div class="account-login-dialog">
-    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">直接操作 Ferro 的 X 浏览器。关闭后登录态继续保留，下次可从“资源管理 → 浏览器”重新打开。手机输入可使用画面左侧的键盘和剪贴板。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
+    <div class="row"><div class="grow"><h3 id="accountLoginTitle">服务器网页会话</h3><p class="muted">直接操作 Ferro 的 X 浏览器。关闭后登录态继续保留，下次可从账号卡片重新打开。手机输入可使用画面左侧的键盘和剪贴板。</p></div><button id="accountLoginClose" class="ghost">关闭</button></div>
     <div id="localBrowserStatus" class="mono muted live-indicator">未连接实时会话。</div>
     <iframe id="browserTakeoverFrame" class="browser-takeover" title="X 实时浏览器桌面" src="about:blank" allow="clipboard-read; clipboard-write"></iframe>
     <div class="browser-controls"><div class="row"><button id="liveBrowserReconnect" class="ghost">重新连接画面</button><button id="browserVerifyLogin" class="primary">检查登录状态</button></div></div>
@@ -332,12 +332,14 @@ function renderAccounts(data){
   apiTitle.append(node('strong','官方 API'),badge(accountStatusLabel(apiBinding.status),accountStatusKind(apiBinding.status)));
   apiBox.append(apiTitle,node('p','OAuth 身份独立绑定到这个账号。调用 X API 时显式使用该账号，不依赖全局默认用户。','muted'));c.append(apiBox);
   const webBox=node('div',undefined,'account-binding'),webTitle=node('div',undefined,'account-binding-title');
-  webTitle.append(node('strong','网页自动化'),badge('Agent Runtime','ok'));
-  webBox.append(webTitle,node('p','浏览器生命周期和登录 profile 统一由 Agent Runtime 管理；Ferro 不再创建或维护账号级 Chrome。','muted'));
+  const browserBinding=(acct.bindings||[]).find(x=>x.binding_id==='agent_runtime_browser')||{};
+  webTitle.append(node('strong','网页自动化'),badge(accountStatusLabel(browserBinding.status),accountStatusKind(browserBinding.status)));
+  webBox.append(webTitle,node('p','所有账号共用一个浏览器，各账号的登录状态独立保存。','muted'));
+  if(acct.provider_id==='x'){const login=node('button','打开账号浏览器');login.onclick=()=>beginAccountConnect({provider_id:'x',label:acct.display_label||acct.identity,account_id:acct.account_id}).catch(e=>flash(e.message,true));webBox.append(login)}
   c.append(webBox);
   const meta=node('div',undefined,'account-meta');for(const cap of (acct.capabilities||[]))meta.append(badge(cap,'info'));c.append(meta);
   const tech=document.createElement('details');tech.className='account-tech';tech.append(node('summary','高级操作 / 技术信息'));
-  tech.append(node('div','account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
+  tech.append(node('div','Agent Runtime · account_id '+fmt(acct.account_id)+' · OAuth user '+fmt(acct.oauth_user)+' · engine '+fmt(automation.primary_engine),'mono muted'));
   const actions=node('div',undefined,'account-actions'),remove=node('button','删除账户','danger');
   remove.onclick=async()=>{const label=acct.display_label||('@'+acct.identity);if(!confirm('确定从 Ferro 删除 '+label+'？'))return;remove.disabled=true;try{const out=await api('/operator/api/account-instances/'+encodeURIComponent(acct.account_id),{method:'DELETE',body:JSON.stringify({confirm_identity:acct.identity})});flash(label+' 已从 Ferro 删除'+(out.external_authorization_retained?'；外部 OAuth 授权仍保留在提供方。':''));await refresh()}catch(e){flash(e.message,true)}finally{remove.disabled=false}};
   actions.append(remove);tech.append(actions);c.append(tech);root.append(c)
@@ -363,7 +365,7 @@ function closeBrowserTakeover(){
 }
 function shortBrowserLocation(url){try{return new URL(url).hostname||''}catch{return ''}}
 async function refreshBrowserLoginStatus(){
- const out=await api('/operator/api/accounts/x/browser/status',{method:'GET'}),row=out.browser;
+ const out=await api('/operator/api/accounts/x/browser/status'+(activeAccountId?'?account_id='+encodeURIComponent(activeAccountId):''),{method:'GET'}),row=out.browser;
  const status=el('localBrowserStatus'),host=shortBrowserLocation(row.url),title=fmt(row.title);
  const prefix=row.x_authenticated?'已登录 · @'+row.account_identity:'等待在浏览器中完成登录';
  status.textContent=prefix+(host?' · '+host:'')+(title?' · '+title:'');
@@ -371,12 +373,12 @@ async function refreshBrowserLoginStatus(){
  if(row.x_authenticated&&!browserLoginConnected){browserLoginConnected=true;await refresh()}
 }
 async function beginAccountConnect(row){
- activeAccountProvider=row.provider_id;activeAccountId='';selectPanel('accounts');
+ activeAccountProvider=row.provider_id;activeAccountId=row.account_id||'';selectPanel('accounts');
  closeBrowserTakeover();browserLoginConnected=false;
  el('accountLoginShell').classList.remove('hidden');document.body.classList.add('modal-open');
  el('accountLoginTitle').textContent=row.label+' · 实时浏览器';
  el('localBrowserStatus').textContent='正在连接现有浏览器…';
- const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:'{}'});
+ const out=await api('/operator/api/accounts/'+encodeURIComponent(row.provider_id)+'/connect',{method:'POST',body:JSON.stringify({account_id:activeAccountId})});
  browserTakeoverUrl=out.browser.takeover_url;el('browserTakeoverFrame').src=browserTakeoverUrl;
  await refreshBrowserLoginStatus();
  browserStatusTimer=setInterval(()=>refreshBrowserLoginStatus().catch(e=>{el('localBrowserStatus').textContent=e.message}),5000)
@@ -506,6 +508,7 @@ el('xOAuthRestart').onclick=async()=>{
 };
 
 el('accountLoginClose').onclick=async()=>{
+ try{await refreshBrowserLoginStatus()}catch(e){flash(e.message,true)}
  closeBrowserTakeover();activeAccountProvider='';activeAccountId='';
  el('accountLoginShell').classList.add('hidden');document.body.classList.remove('modal-open');
  await refresh().catch(e=>flash(e.message,true))

@@ -84,34 +84,35 @@ def _post_id_from_url(url: str) -> str | None:
 class XBrowserTransportRouter:
     """Single X Web route through Agent Runtime's persistent browser profile."""
 
-    def __init__(self, *, state_root: Path) -> None:
+    def __init__(self, *, state_root: Path, account_id: str | None = None) -> None:
         self.state_root = Path(state_root)
+        self.account_id = account_id
 
     async def identity(self) -> dict[str, Any]:
         from .x_local_browser import LocalHarnessXTransport
         return await LocalHarnessXTransport.from_environment(
-            state_root=self.state_root
+            state_root=self.state_root, **({"account_id": self.account_id} if self.account_id else {})
         ).identity()
 
     async def publish(self, *, text: str) -> XBrowserPublishResult:
         from .x_local_browser import LocalHarnessXTransport
 
         transport = LocalHarnessXTransport.from_environment(
-            state_root=self.state_root
+            state_root=self.state_root, **({"account_id": self.account_id} if self.account_id else {})
         )
         return await transport.publish(text=text)
 
     async def publish_article(self, **kwargs):
         from .x_local_browser import LocalHarnessXTransport
-        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).publish_article(**kwargs)
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root, **({"account_id": self.account_id} if self.account_id else {})).publish_article(**kwargs)
 
     async def discover(self, *, source="MENTIONS", query=None, max_results=20):
         from .x_local_browser import LocalHarnessXTransport
-        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).discover(source=source,query=query,max_results=max_results)
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root, **({"account_id": self.account_id} if self.account_id else {})).discover(source=source,query=query,max_results=max_results)
 
     async def reply(self, *, text, target_url):
         from .x_local_browser import LocalHarnessXTransport
-        return await LocalHarnessXTransport.from_environment(state_root=self.state_root).reply(text=text,target_url=target_url)
+        return await LocalHarnessXTransport.from_environment(state_root=self.state_root, **({"account_id": self.account_id} if self.account_id else {})).reply(text=text,target_url=target_url)
 
 
 class XBrowserPublisher:

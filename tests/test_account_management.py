@@ -39,7 +39,8 @@ def test_x_instances_bind_web_automation_to_agent_runtime(tmp_path, monkeypatch)
         row for row in instance["bindings"]
         if row["binding_id"] == "agent_runtime_browser"
     )
-    assert web["status"] == "CONNECTED"
+    assert web["status"] == "NEEDS_LOGIN"
+    assert web["browser_context"] == instance["account_id"]
     assert web["profile_id"] == "x"
     assert web["automation_engine"] == "AGENT_RUNTIME_BROWSER"
     assert instance["automation"]["compatibility_fallback"] == ""

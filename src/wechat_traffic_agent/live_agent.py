@@ -3287,12 +3287,22 @@ class LiveAgentService:
                 if websocket.application_state.name != "DISCONNECTED":
                     await websocket.close(code=1011, reason=str(exc)[:120])
 
+        def operator_account_browser(request, body=None):
+            account_id = str((body or {}).get("account_id") or request.query_params.get("account_id") or "").strip()
+            if not account_id:
+                return local_browser_control
+            try:
+                return local_browser_control.for_account(account_id)
+            except KeyError as exc:
+                raise ValueError("selected account is unavailable") from exc
+
         async def operator_browser_status(request: Request):
             if not operator_authorized(request):
                 return JSONResponse({"error": "authentication_required"}, status_code=401)
             try:
-                await asyncio.to_thread(local_browser_control.target_id)
-                result = await asyncio.to_thread(local_browser_control.status)
+                control = operator_account_browser(request)
+                await asyncio.to_thread(control.target_id)
+                result = await asyncio.to_thread(control.status)
                 if result.get("x_authenticated"):
                     account_manager.record_connected("x", identity=str(result.get("account_identity") or ""))
                 return JSONResponse({"browser": result}, headers={"Cache-Control": "no-store"})
@@ -3309,8 +3319,10 @@ class LiveAgentService:
                 spec = account_manager.provider(provider_id)
                 if not spec.implemented or provider_id != "x":
                     raise ValueError("account adapter is not installed")
+                body = await request.json()
+                control = operator_account_browser(request, body)
                 connection = await asyncio.to_thread(novnc_takeover.connection)
-                result = await asyncio.to_thread(local_browser_control.open)
+                result = await asyncio.to_thread(control.open)
                 result.update(connection)
                 if result.get("x_authenticated"):
                     account = account_manager.record_connected(
@@ -3349,7 +3361,7 @@ class LiveAgentService:
                 spec = account_manager.provider(provider_id)
                 if not spec.implemented or provider_id != "x":
                     raise ValueError("account adapter is not installed")
-                snap = await asyncio.to_thread(local_browser_control.snapshot)
+                snap = await asyncio.to_thread(operator_account_browser(request).snapshot)
                 if snap.x_authenticated:
                     account_manager.record_connected(
                         provider_id, identity=snap.account_identity
@@ -3383,7 +3395,7 @@ class LiveAgentService:
                     raise ValueError("account adapter is not installed")
                 body = await request.json()
                 result = await asyncio.to_thread(
-                    local_browser_control.click,
+                    operator_account_browser(request, body).click,
                     x_ratio=float(body.get("x_ratio")),
                     y_ratio=float(body.get("y_ratio")),
                 )
@@ -3407,7 +3419,7 @@ class LiveAgentService:
                     raise ValueError("account adapter is not installed")
                 body = await request.json()
                 text = str(body.get("text") or "") if isinstance(body, dict) else ""
-                result = await asyncio.to_thread(local_browser_control.type_text, text)
+                result = await asyncio.to_thread(operator_account_browser(request, body).type_text, text)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except LocalBrowserControlUnavailable:
@@ -3426,7 +3438,7 @@ class LiveAgentService:
                     raise ValueError("account adapter is not installed")
                 body = await request.json()
                 key = str(body.get("key") or "") if isinstance(body, dict) else ""
-                result = await asyncio.to_thread(local_browser_control.key, key)
+                result = await asyncio.to_thread(operator_account_browser(request, body).key, key)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
             except LocalBrowserControlUnavailable:
@@ -3443,7 +3455,7 @@ class LiveAgentService:
                 spec = account_manager.provider(provider_id)
                 if not spec.implemented or provider_id != "x":
                     raise ValueError("account adapter is not installed")
-                result = await asyncio.to_thread(local_browser_control.stop)
+                result = await asyncio.to_thread(operator_account_browser(request).stop)
             except ValueError as exc:
                 return JSONResponse({"error": str(exc)}, status_code=409)
             return JSONResponse(result, headers={"Cache-Control": "no-store"})

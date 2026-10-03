@@ -122,6 +122,13 @@ class AccountManager:
         rows: list[dict[str, Any]] = []
         for record in self.registry.list():
             spec = self.provider(record.provider_id)
+            context = "default" if record.browser_profile_id == "default" else record.account_id
+            verification_path = self.state_root / "accounts/browser-verifications" / (record.account_id + ".json")
+            try:
+                verification = json.loads(verification_path.read_text())
+            except FileNotFoundError:
+                verification = {}
+            account_web_status = ("CONNECTED" if context == "default" else str(verification.get("status") or "NEEDS_LOGIN")) if web_status == "CONNECTED" else "DEGRADED"
             rows.append({
                 "account_id": record.account_id,
                 "provider_id": record.provider_id,
@@ -142,8 +149,10 @@ class AccountManager:
                     {
                         "binding_id": "agent_runtime_browser",
                         "label": "Agent Runtime Browser",
-                        "status": web_status,
+                        "status": account_web_status,
                         "profile_id": "x",
+                        "account_id": record.account_id,
+                        "browser_context": context,
                         "automation_engine": "AGENT_RUNTIME_BROWSER",
                     },
                 ],

@@ -78,7 +78,7 @@ def test_x_account_ui_uses_agent_runtime_browser_owner():
     assert "网页自动化" in page
     assert "OAuth 身份独立绑定到这个账号" in page
     assert "Agent Runtime" in page
-    assert "Ferro 不再创建或维护账号级 Chrome" in page
+    assert "所有账号共用一个浏览器，各账号的登录状态独立保存" in page
     assert "创建独立浏览器环境" not in page
     assert "测试该账号 Browser Use" not in page
     assert "当前兼容 fallback：" not in page
@@ -153,7 +153,8 @@ def test_browser_ui_has_one_agent_runtime_owner():
     page = operator_console_document()
 
     assert "Agent Runtime" in page
-    assert "浏览器生命周期和登录 profile 统一由 Agent Runtime 管理" in page
+    assert "打开账号浏览器" in page
+    assert "account_id:activeAccountId" in page
     assert "/browser/browser-use-test" not in page
     assert "/browser/login/connect" not in page
     assert "/operator/api/cortex/browser/login" not in page
