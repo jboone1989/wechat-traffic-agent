@@ -701,6 +701,25 @@ class XAutonomyLoop:
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XPostDraft)
+        if context.get("learning"):
+            from .learning_expression_quality import review_learning_expression
+            quality_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle / "learning-quality")
+            for attempt in range(2):
+                quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
+                    learning=context["learning"], text=decision.post_text,
+                    recent_shares=self.history.recent_public_shares(limit=20),
+                    label=f"x_learning_quality_{attempt}")
+                if quality["passed"]:
+                    break
+                if attempt == 0:
+                    decision = await _structured(model_runtime,
+                        prompt + "\nREWRITE_LEARNING_EXPRESSION: The independent final-text check rejected the draft. "
+                        "Retain a specific supported detail from learning.facts, with source attribution; preserve uncertainty. "
+                        "Do not substitute a validation slogan for the discovery.\n"
+                        + json.dumps({"rejected_post": decision.post_text, "review": quality}, ensure_ascii=False),
+                        XPostDraft)
+            if not quality["passed"]:
+                return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle, "quality": quality}
         me, _identity_receipt = await self._publication_identity(now=now)
         baseline = None
         if self.growth_mission is not None and isinstance(mission_binding, dict) and mission_binding.get("bound"):
@@ -841,6 +860,33 @@ class XAutonomyLoop:
             _write_json(path,{"status":"DRAFT_READY","cycle":cycle,"drafts":{"x":draft.model_dump(mode="json")},
                 "x_strategy":strategy,"evidence_decision":existing.get("evidence_decision") or {"source_evidence":context.get("source_evidence"),
                     "resolution":{"action":"DRAFT","useful_facts":[str((context.get("source_evidence") or {}).get("summary") or "")]}}})
+        if context.get("learning"):
+            from .learning_expression_quality import review_learning_expression
+            quality_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle / "longform-quality" / fmt)
+            for attempt in range(2):
+                saved = _read_json(path)
+                draft = ChannelSocialDraft.model_validate(saved["drafts"]["x"])
+                quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
+                    learning=context["learning"], text=(draft.title or "") + "\n" + draft.text,
+                    recent_shares=self.history.recent_public_shares(limit=20),
+                    label=f"x_longform_learning_quality_{attempt}")
+                if quality["passed"]:
+                    break
+                if attempt == 0:
+                    repair_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle / "longform-repair" / fmt)
+                    draft = await _structured(repair_runtime,
+                        "REWRITE_LEARNING_EXPRESSION: Repair this rejected research sharing draft as ChannelSocialDraft JSON. "
+                        "Keep channel X and format " + fmt + ". Preserve source attribution, the concrete discovery and uncertainty. "
+                        "Do not pad the text or substitute generic validation reminders.\n"
+                        + json.dumps({"draft": draft.model_dump(mode="json"), "review": quality,
+                                      "learning": context["learning"]}, ensure_ascii=False),
+                        ChannelSocialDraft)
+                    if draft.channel != "X" or draft.format != fmt:
+                        return {"status": "OWNER_FORMAT_MISMATCH", "cycle": cycle}
+                    saved["drafts"]["x"] = draft.model_dump(mode="json")
+                    _write_json(path, saved)
+            if not quality["passed"]:
+                return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle, "quality": quality}
         publisher=XBrowserPublisher(state_root=self.state_root,transport=self.browser_publish_transport,
             growth_mission=self.growth_mission,mission_baseline_observer=self.capture_mission_publication_baseline)
         result=await publisher.after_content_cycle(cycle=cycle,now=now)

@@ -711,3 +711,79 @@ def test_empty_search_refines_from_feedback_then_handles_real_results(tmp_path, 
     assert feedback["decision"]["query"] == plans[0]["query"]
     assert feedback["post_count"] == 0
     assert len(result["discovery"]["search_attempts"]) == expected_attempts
+
+
+@pytest.mark.parametrize("repair_passes", [True, False])
+def test_research_post_quality_repairs_thin_text_before_any_browser_write(tmp_path, monkeypatch, repair_passes):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "research-quality"
+    _write_cycle(tmp_path, cycle)
+    folder = tmp_path / "content/continuous/cycles" / cycle
+    source_quote = "Volatility filtering recovered eleven regimes versus six in a size-matched random sample."
+    learning = {"cycle": cycle, "progress": "LEARNED",
+        "focus": {"question": "How does sampling change regime discovery?"},
+        "learning_delta": "Filtering changes the discovered regime count.",
+        "sources": [{"evidence_id": "paper", "summary": source_quote, "title": "Regime clustering study", "url": "https://example.org/paper"}],
+        "facts": [{"evidence_id": "paper", "quote": source_quote, "observation": "The comparison reports eleven versus six regimes."}]}
+    (folder / "learning_result.json").write_text(json.dumps(learning))
+    thin = "Regimes need validation on unseen data before we can trust them."
+    repaired = "A clustering study reports 11 regimes with volatility filtering versus 6 with size-matched random sampling. I still need to test prediction."
+    rejected = {"concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
+                "source_fact_id": None, "post_quote": None, "rationale": "The post drops the supplied measured comparison and repeats a validation reminder."}
+    approved = {"concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
+                "source_fact_id": "fact-0", "post_quote": "11 regimes with volatility filtering versus 6",
+                "rationale": "The attributed sampling comparison is concrete and distinct from prior generic validation posts."}
+    model = _ModelRuntime([
+        {"post_text": thin, "rationale": "A bounded research question."}, rejected,
+        {"post_text": repaired, "rationale": "Retain the source's measured comparison."},
+        approved if repair_passes else rejected])
+    transport = _BrowserTransport()
+    loop = XAutonomyLoop(runtime=_Runtime(), model_runtime=model, state_root=tmp_path,
+        base_url="", growth_mission=_XOnlyGrowthMission(), browser_publish_transport=transport)
+    result = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED", "cycle": cycle}, now=NOW))
+    assert result["status"] == ("POSTED" if repair_passes else "HELD_BY_LEARNING_QUALITY")
+    assert transport.calls == ([repaired] if repair_passes else [])
+    assert len(model.tasks) == 4
+    assert json.loads((folder / "x_learning_quality_0.json").read_text())["passed"] is False
+    assert json.loads((folder / "x_learning_quality_1.json").read_text())["passed"] is repair_passes
+
+
+def test_learning_quality_rejects_forged_post_quote_or_source_reference(tmp_path):
+    from wechat_traffic_agent.learning_expression_quality import review_learning_expression
+    quote = "Volatility filtering recovered eleven distinct Bitcoin market regimes."
+    learning = {"progress": "LEARNED", "sources": [{"evidence_id": "paper", "summary": quote}],
+                "facts": [{"evidence_id": "paper", "quote": quote}]}
+    forged = {"concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
+              "source_fact_id": "fact-0", "post_quote": "Eleven regimes improve future predictions.",
+              "rationale": "This invented assertion must not pass exact public text validation."}
+    with pytest.raises(ValueError, match="exact excerpt"):
+        asyncio.run(review_learning_expression(runtime=_ModelRuntime([forged, forged]), folder=tmp_path,
+            learning=learning, text="The study reports eleven regimes.", recent_shares=[], label="quality"))
+
+
+@pytest.mark.parametrize("format_name", ["LONG_POST", "ARTICLE"])
+def test_cached_research_longform_cannot_bypass_quality_before_native_publisher(tmp_path, format_name):
+    cycle = "cached-research-" + format_name
+    folder = tmp_path / "content/continuous/cycles" / cycle
+    folder.mkdir(parents=True)
+    quote = "Volatility filtering recovered eleven regimes versus six in a random sample."
+    learning = {"progress": "LEARNED", "sources": [{"evidence_id": "paper", "summary": quote}],
+                "facts": [{"evidence_id": "paper", "quote": quote}]}
+    draft = {"channel": "X", "format": format_name, "title": "A thin research note",
+             "text": "Market models require more evidence before adoption.",
+             "style_observation_ids": [], "rationale": "The draft repeats a broad verification principle."}
+    (folder / "social_expression_drafts.json").write_text(json.dumps({
+        "status": "DRAFT_READY", "drafts": {"x": draft}, "x_strategy": {}}))
+    rejected = {"concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
+                "source_fact_id": None, "post_quote": None,
+                "rationale": "This draft repeats a generic reminder and contains no concrete observation."}
+    transport = _BrowserTransport()
+    model = _ModelRuntime([rejected, draft, rejected])
+    loop = XAutonomyLoop(runtime=_Runtime(), model_runtime=model, state_root=tmp_path,
+        base_url="", browser_publish_transport=transport)
+    result = asyncio.run(loop._owner_longform(folder=folder,
+        context={"learning": learning, "owner_publication_request": {}}, now=NOW,
+        surface="X_ARTICLE" if format_name == "ARTICLE" else "X_LONG_POST"))
+    assert result["status"] == "HELD_BY_LEARNING_QUALITY"
+    assert transport.calls == []
+    assert len(model.tasks) == 3
