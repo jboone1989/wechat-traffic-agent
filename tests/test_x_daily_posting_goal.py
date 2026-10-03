@@ -173,3 +173,34 @@ def test_verified_reconciliation_survives_replayed_failed_attempt(tmp_path):
     receipt["post_id"]="2"
     put(folder/"x_native_publication_verification.json",receipt)
     assert goal.status(NOW)["published"]==0
+
+
+def test_overdue_posting_keeps_its_place_ahead_of_internal_backlog(tmp_path):
+    from agent_runtime.wakeful import PlannedWake, WakefulCore
+    goal=configured(tmp_path)
+    current=[NOW+timedelta(hours=3)]
+    core=WakefulCore(state_path=tmp_path/"wakeful.json",
+        reflex=SimpleNamespace(snapshot=lambda:{}),clock=lambda:current[0])
+    core.schedule(PlannedWake(wake_id="internal",at=NOW+timedelta(hours=2),
+        reason="internal maintenance backlog",task="RESOURCE_REVIEW"))
+    wakeful=SimpleNamespace(core=core)
+    for _ in range(3):
+        goal.schedule(wakeful,current[0])
+        current[0]+=timedelta(minutes=5)
+    selected=core.pop_ready()
+    assert selected.task=="CONTENT_COGNITION"
+    assert selected.wake_id=="content:DAILY_POST_GOAL"
+    assert selected.relevant_refs==("ferro-daily-post:2026-10-03",)
+    assert core.pop_ready().task=="RESOURCE_REVIEW"
+
+def test_failed_posting_attempt_retains_future_retry_time(tmp_path):
+    from agent_runtime.wakeful import WakefulCore
+    goal=configured(tmp_path)
+    current=[NOW]
+    core=WakefulCore(state_path=tmp_path/"wakeful.json",
+        reflex=SimpleNamespace(snapshot=lambda:{}),clock=lambda:current[0])
+    goal.observe("CONTENT_COGNITION",{"status":"CHATGPT_UNAVAILABLE"},NOW)
+    goal.schedule(SimpleNamespace(core=core),NOW+timedelta(seconds=30))
+    assert core.pop_ready() is None
+    current[0]=NOW+timedelta(minutes=5)
+    assert core.pop_ready().task=="CONTENT_COGNITION"

@@ -131,7 +131,9 @@ class DailyPostingGoal:
             wakeful.core.cancel(wake_id)
             return status
         if status["remaining"]:
-            at = max(now, _time(status["next_attempt_at"]))
+            # Keep overdue work at its original due time so repeated waits cannot
+            # move it behind a continually replenished internal-task backlog.
+            at = _time(status["next_attempt_at"])
         else:
             at = _time(status["deadline"])
         existing = next((row for row in wakeful.core.snapshot().pending_plans if row.wake_id == wake_id), None)
