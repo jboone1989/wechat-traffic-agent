@@ -64,6 +64,30 @@ class XExpressionDecision(BaseModel):
         return self
 
 
+def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Keep publication facts once; execution receipts stay in the cycle ledger."""
+    projected = dict(context)
+    plan = context.get("mind_plan")
+    if isinstance(plan, dict):
+        projected["mind_plan"] = {key: plan[key] for key in (
+            "cycle", "goal", "endogenous_goal", "required_topic", "focus_kind",
+            "external_mission_id", "owner_goal_id",
+        ) if key in plan}
+    source = context.get("source_evidence")
+    learning = context.get("learning") or {}
+    if isinstance(source, dict) and source and isinstance(learning, dict):
+        # Exact equality is required: revisions with the same ID may differ.
+        if any(source == row for row in learning.get("sources") or []):
+            projected["source_evidence"] = {
+                "evidence_id": source.get("evidence_id"),
+                "source_in": "learning.sources",
+                "sha256": hashlib.sha256(json.dumps(
+                    source, sort_keys=True, ensure_ascii=False,
+                ).encode()).hexdigest(),
+            }
+    return projected
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -700,12 +724,20 @@ class XAutonomyLoop:
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
             "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
-            + json.dumps({**context, "public_url": public_url,
+            + json.dumps({**_expression_model_context(context), "public_url": public_url,
                           "recent_shares": self.history.recent_public_shares(limit=20),
                           "public_persona": public_persona_projection(self.state_root),
                           "x_growth_mission": x_mission,
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
         )
+        _write_json(folder / "x_expression_context_projection.json", {
+            "schema_version": "ferro-x-expression-context-projection.v1",
+            "source_context_chars": len(json.dumps(context, ensure_ascii=False)),
+            "projected_context_chars": len(json.dumps(_expression_model_context(context), ensure_ascii=False)),
+            "prompt_chars": len(prompt),
+            "source_policy": "EXACT_DUPLICATES_REFERENCED_ONCE; FULL_EVIDENCE_RETAINED",
+            "plan_policy": "CURRENT_GOAL_AND_TOPIC; CANDIDATES_RETAINED_IN_MIND_PLAN_RECEIPT",
+        })
         decision = await _structured(model_runtime, prompt, XPostDraft)
         if context.get("learning"):
             from .learning_expression_quality import review_learning_expression
@@ -857,7 +889,7 @@ class XAutonomyLoop:
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
                 "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
                 "Preserve uncertainty and source attribution. Honor an active temporary daily contract through substantive learning and sharing.\n"
-                +json.dumps({**context,"persona":public_persona_projection(self.state_root),
+                +json.dumps({**_expression_model_context(context),"persona":public_persona_projection(self.state_root),
                     "mission":x_growth_mission_context(self.state_root),
                     "recent_posts":self.history.recent_public_shares(limit=20)},ensure_ascii=False))
             runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"longform-draft"/fmt)

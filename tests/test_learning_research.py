@@ -222,3 +222,36 @@ def test_existing_receipts_supply_facts_missing_from_old_history(tmp_path):
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps(result))
     assert research_memory(None, tmp_path)["research"]["history"][0]["facts"] == result["facts"]
+
+def test_research_publication_memory_uses_public_words_not_private_cognition(tmp_path):
+    from wechat_traffic_agent.x_social import XHistoryLedger
+    ledger = XHistoryLedger(tmp_path)
+    ledger.append({"event_type": "EXPRESSION", "cycle": "published",
+                   "text": "A concrete public learning detail.",
+                   "cognition": {"private": "execution trace" * 10000},
+                   "x_url": "https://x.com/agent/status/1", "recorded_at": NOW.isoformat()})
+    memory = research_memory(None, tmp_path)
+    assert memory["recent_shares"][0]["text"] == "A concrete public learning detail."
+    assert "cognition" not in memory["recent_shares"][0]
+
+
+def test_research_source_quote_registry_is_authoritative_without_duplicate_body(tmp_path):
+    selected = {**INTRO, "evidence_text": INTRO["summary"] + " Other context." * 2000}
+    class QuoteRuntime(Runtime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            self.calls.append(task)
+            data = json.JSONDecoder().raw_decode(task.split("\n", 1)[1])[0]
+            value = step("LEARNED", INTRO)
+            value["facts"] = [{"source_quote_id": next(iter(data["source_quotes"])),
+                               "observation": "The supplied source contains a concrete observation."}]
+            return json.dumps(value)
+    runtime = QuoteRuntime([])
+    result = asyncio.run(investigate_learning(runtime=runtime, explorer=Explorer(),
+        folder=tmp_path/"cycles"/"source-once", state_root=tmp_path, topic="agent-reliability",
+        focus=FOCUS, memory={"beliefs": [{"proposition": KNOWN}], "recent_shares": [],
+            "research": read_research_state(tmp_path)}, evidence=[selected], selected=selected,
+        now=NOW, search_rounds=0))
+    prompt = json.JSONDecoder().raw_decode(runtime.calls[0].split("\n", 1)[1])[0]
+    assert prompt["primary_source"] == {"evidence_id": INTRO["evidence_id"]}
+    assert result["sources"] == [selected]
+    assert result["facts"][0]["quote"] in selected["evidence_text"]

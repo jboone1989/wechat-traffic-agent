@@ -155,10 +155,12 @@ def research_memory(mind: Any, state_root: Path, topic: str = "") -> dict[str, A
         claims = session.worldview.snapshot()["claims"]
         beliefs = [{"proposition": key, **value} for key, value in claims.items()]
     posts = [
-        {key: row.get(key) for key in ("text", "cognition", "recorded_at", "x_url")}
+        {key: row.get(key) for key in ("text", "recorded_at", "x_url")}
         for row in XHistoryLedger(state_root).recent(limit=100)
         if row.get("event_type") == "EXPRESSION"
     ][-20:]
+    # Public words are the duplicate-expression authority. Private cognition
+    # and lineage are already represented by beliefs and research facts.
     # Keep topic-related low-confidence claims and recent claims as well as the
     # strongest ones. Exact text canonicalization happens in the model decision.
     terms = set(re.findall(r'[a-z0-9]+', topic.casefold())) - {'in', 'of', 'the', 'and'}
@@ -256,7 +258,7 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                     "sources": [{key: row.get(key) for key in (
                         "evidence_id", "title", "source", "url", "learning_kind")}
                         for row in registry.values()],
-                    "source_quotes": quotes, "primary_source": selected,
+                    "source_quotes": quotes, "primary_source": {"evidence_id": selected["evidence_id"]},
                     "attempts": attempts,
                 }, ensure_ascii=False), _research_choice_contract(known, quotes),
                 validate=lambda value: validate(_bind_research_choice(value, quotes)),
