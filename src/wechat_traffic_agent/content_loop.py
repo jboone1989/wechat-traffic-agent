@@ -230,7 +230,7 @@ class ReceiptRuntime:
 async def _structured(runtime, task, contract, validate=None):
     prompt = task + '\nBE CONCISE: every prose field must be ONE short sentence, aim for at most 150 characters. '
     prompt += 'In particular gap, adaptation, instruction, next_practice and rationale must stay short. '
-    prompt += 'Character limits are not word limits. Quotes may be short exact excerpts. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
+    prompt += 'Character limits are not word limits. Canonical reference fields such as related_proposition must copy the supplied value exactly, even when longer than the prose target; never shorten or paraphrase them. Quotes may be short exact excerpts. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
     def checked(raw):
         value = contract.model_validate_json(_extract_json(raw))
         if validate is not None:
@@ -240,7 +240,7 @@ async def _structured(runtime, task, contract, validate=None):
     try:
         return checked(raw)
     except ValueError as exc:
-        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Shorten ALL prose to at most 150 characters each; preserve exact IDs and short exact quotes. Errors: ' + str(exc)[:2000]
+        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Shorten generated prose to at most 150 characters each; preserve exact IDs, canonical reference values such as related_proposition without truncation, and exact quotes. Errors: ' + str(exc)[:2000]
                                             + '\nPrevious untrusted response: ' + raw, max_tokens=2400)
         return checked(raw)
 

@@ -105,7 +105,7 @@ def test_unknown_quote_cannot_count_as_learning(tmp_path):
 
 def test_semantic_binding_must_reference_an_existing_canonical_claim(tmp_path):
     invalid=step('DEEPENED',INTRO,related='A newly invented equivalent wording is not canonical.')
-    with pytest.raises(ValueError,match='copy an existing belief'):
+    with pytest.raises(ValueError,match='copy an existing belief|related_proposition'):
         run(tmp_path,Runtime([invalid,invalid]),Explorer(),rounds=0)
 
 
@@ -135,3 +135,20 @@ def test_crash_after_cycle_receipt_repairs_longitudinal_state_on_replay(tmp_path
     replay=run(tmp_path,Runtime([]),Explorer(),rounds=0)
     assert replay==result
     assert read_research_state(tmp_path)['history'][0]['cycle']=='cycle-1'
+
+def test_research_reference_schema_preserves_long_canonical_belief():
+    from wechat_traffic_agent.learning_research import _research_step_contract
+    belief = "Durable execution evidence must retain the complete canonical proposition. " * 5
+    contract = _research_step_contract({belief})
+    row = step("LEARNED", DETAIL, related=belief)
+    assert contract.model_validate(row).related_proposition == belief
+    with pytest.raises(ValueError):
+        contract.model_validate({**row, "related_proposition": belief[:150]})
+    assert contract.model_validate({**row, "related_proposition": None}).related_proposition is None
+
+def test_empty_belief_registry_requires_null_reference():
+    from wechat_traffic_agent.learning_research import _research_step_contract
+    contract = _research_step_contract(set())
+    assert contract.model_validate(step("LEARNED", DETAIL, related=None)).related_proposition is None
+    with pytest.raises(ValueError):
+        contract.model_validate(step("LEARNED", DETAIL, related="invented belief"))
