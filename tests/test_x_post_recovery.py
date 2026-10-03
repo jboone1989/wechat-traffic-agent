@@ -69,3 +69,28 @@ def test_interrupted_social_model_stage_is_retired_from_replay(tmp_path):
     assert result["status"] == "RECOVERY_INVALIDATED"
     assert runner._social_stage_backlog_candidate() is None
     assert (folder / "social_expression_drafts.error.json").exists()
+
+def test_draft_history_keeps_full_public_text_without_private_lineage(tmp_path):
+    from wechat_traffic_agent.x_social import XHistoryLedger
+    history = XHistoryLedger(tmp_path)
+    text = "A complete supported public observation."
+    history.append({"event_type":"EXPRESSION", "cycle":"v2-1", "text":text,
+                    "x_url":"https://x.com/owner/status/1",
+                    "lineage":{"internal_context":"x"*70000}})
+    projected = history.recent_public_shares()
+    assert projected[0]["text"] == text
+    assert "lineage" not in projected[0]
+    assert len(json.dumps(projected)) < 1000
+    assert history.recent()[0]["lineage"]["internal_context"] == "x"*70000
+
+def test_long_share_history_has_an_explicit_budget_without_truncating_posts(tmp_path):
+    from wechat_traffic_agent.x_social import XHistoryLedger
+    history = XHistoryLedger(tmp_path)
+    for number in range(3):
+        history.append({"text":str(number)*9000, "x_url":f"https://x.com/owner/status/{number}"})
+    rows = history.recent_public_shares()
+    assert sum(len(row.get("text", "")) for row in rows) <= 16000
+    assert rows[-1]["text"] == "2"*9000
+    assert rows[0]["text_omitted_for_budget"] and rows[0]["text_sha256"]
+    assert rows[0]["x_url"] == "https://x.com/owner/status/0"
+    assert all(len(row["text"]) == 9000 for row in history.recent())

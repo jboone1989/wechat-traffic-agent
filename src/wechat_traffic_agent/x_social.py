@@ -137,6 +137,24 @@ class XHistoryLedger:
                 rows.append(row)
         return rows
 
+    def recent_public_shares(self, *, limit: int = 20, max_text_chars: int = 16000) -> list[dict[str, Any]]:
+        # Public text supports semantic deduplication; private execution lineage
+        # is retained in the ledger and must not inflate every draft request.
+        keys = ("text", "x_url", "x_post_id", "recorded_at", "cycle", "expression_kind")
+        projected = []
+        used = 0
+        for row in reversed(self.recent(limit=limit)):
+            item = {key: row[key] for key in keys if key in row}
+            text = str(item.get("text") or "")
+            if used + len(text) <= max_text_chars:
+                used += len(text)
+            else:
+                item.pop("text", None)
+                item.update(text_omitted_for_budget=True,
+                            text_sha256=hashlib.sha256(text.encode()).hexdigest())
+            projected.append(item)
+        return list(reversed(projected))
+
     def has_event(self, *, cycle: str, event_type: str) -> bool:
         return any(row.get("cycle") == cycle and row.get("event_type") == event_type for row in self.recent(limit=300))
 
@@ -677,7 +695,7 @@ class XAutonomyLoop:
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
             "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**context, "public_url": public_url,
-                          "recent_shares": self.history.recent(limit=20),
+                          "recent_shares": self.history.recent_public_shares(limit=20),
                           "public_persona": public_persona_projection(self.state_root),
                           "x_growth_mission": x_mission,
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
@@ -812,7 +830,7 @@ class XAutonomyLoop:
                 "Preserve uncertainty and source attribution. Honor an active temporary daily contract through substantive learning and sharing.\n"
                 +json.dumps({**context,"persona":public_persona_projection(self.state_root),
                     "mission":x_growth_mission_context(self.state_root),
-                    "recent_posts":self.history.recent(limit=20)},ensure_ascii=False))
+                    "recent_posts":self.history.recent_public_shares(limit=20)},ensure_ascii=False))
             runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"longform-draft"/fmt)
             draft=await _structured(runtime,prompt,ChannelSocialDraft)
             if draft.channel!="X" or draft.format!=fmt:
