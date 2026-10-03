@@ -75,6 +75,25 @@ class EvidenceSelection(Contract):
     gap: str = Field(min_length=10, max_length=500)
 
 
+def _research_supports_expression_source(learning, selected):
+    """Bind researched expressions to the same source and verified original excerpts."""
+    if not isinstance(learning, dict) or learning.get('progress') not in {'LEARNED', 'DEEPENED'}:
+        return False
+    if selected.get('source_kind') != 'web-search':
+        return False
+    evidence_id = selected.get('evidence_id')
+    if not evidence_id or learning.get('evidence_id') != evidence_id:
+        return False
+    summary = str(selected.get('summary') or '')
+    facts = learning.get('facts') or []
+    return bool(facts) and any(
+        isinstance(fact, dict) and fact.get('evidence_id') == evidence_id
+        and isinstance(fact.get('quote'), str) and len(fact['quote']) >= 12
+        and fact['quote'] in summary
+        for fact in facts
+    )
+
+
 def _explicit_hypothetical_note_sections(artifact):
     """Allow source-free Note sections only when every paragraph is explicitly hypothetical."""
     if artifact.kind is not ContentKind.NOTE:
@@ -2296,7 +2315,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'Do not force a length or format merely because the cycle was bootstrapped.'
                     if getattr(self, '_focus_topic', None) else ''
                 )
-                market_instruction = _market_expression_instruction(selected)
+                market_instruction = '' if learning_result is not None else _market_expression_instruction(selected)
                 if market_instruction and market_companion is not None:
                     market_instruction += (
                         ' Use the supplied market_context_evidence together with the primary source to form the current bounded market view. '
@@ -2337,8 +2356,18 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                     'evidence_refs': selected['evidence_refs']},
                 }
 
+        researched_expression = _research_supports_expression_source(learning_result, selected)
         if (cognition_decision is not None and cognition_decision.expression_kind == 'METHOD_NOTE'
-                and selected.get('learning_kind') not in {'METHOD', 'TOOL'}):
+                and researched_expression):
+            _put(folder / 'research_expression_binding.json', {
+                'reason': 'METHOD_NOTE_SUPPORTED_BY_VERIFIED_RESEARCH',
+                'evidence_id': selected['evidence_id'], 'learning_cycle': learning_result['cycle'],
+                'facts': learning_result['facts'],
+            })
+
+        if (cognition_decision is not None and cognition_decision.expression_kind == 'METHOD_NOTE'
+                and selected.get('learning_kind') not in {'METHOD', 'TOOL'}
+                and not researched_expression):
             observed_methods = {}
             observed_topics = {
                 str(row.get('evidence_id')): str(row.get('topic') or '')
@@ -2422,7 +2451,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         expression_kind = cognition_decision.expression_kind if cognition_decision is not None else 'LONGFORM'
         is_short_note = expression_kind in {'RESEARCH_NOTE', 'METHOD_NOTE', 'THOUGHT'}
         minimum_words = None if is_short_note else 350
-        market_pulse = bool(_market_expression_instruction(selected))
+        market_pulse = learning_result is None and bool(_market_expression_instruction(selected))
         social_style_context = load_social_style_context(
             self.curriculum_path.parent / 'social-writing-observations.json',
             expression_kind=expression_kind, market_pulse=market_pulse,
@@ -2658,7 +2687,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                      + ('For a method note, describe the discovered method/tool as a learning candidate, why it may matter, and how this agent would test it before adoption. Do not claim it has already been learned or installed. ' if expression_kind == 'METHOD_NOTE' else '')
                      + ('For a thought, render a post-like note rather than an article: use one compact title, at most two short sections, and no more than three short paragraphs total. Put the immediate observation and the agent’s bounded view first; add what to watch or what would change the view only when useful. No formal introduction or conclusion. ' if expression_kind == 'THOUGHT' else '')
                      + ('Use social_style_context only for structure and pacing; never copy source wording, persona, claims, or certainty. ' if social_style_context.get('observations') else '')
-                     + (_market_expression_instruction(selected) + ' ' if _market_expression_instruction(selected) else '')
+                     + (_market_expression_instruction(selected) + ' ' if market_pulse else '')
                      + 'Share the concrete learning discovery and question being pursued. Preserve source-supported mechanisms, names, comparisons or implementation details; do not reduce them to a generic reminder that evidence is needed. '
                      + 'Explain one mechanism, separate reported facts and interpretation. '
                      + 'No personal investment advice, fabricated numbers, private details, or unstated predictive claims. '

@@ -1145,7 +1145,7 @@ def test_method_note_rebinds_to_observed_method_evidence_instead_of_unrelated_ou
         world_feed=MethodExpressionWorld(rows),
     )
     result = asyncio.run(worker.run_once(now=NOW))
-    assert result["status"] == "PUBLISHED"
+    assert result["status"] == "PUBLISHED", result
     assert result["cognition"]["expression_kind"] == "METHOD_NOTE"
     assert result["traffic_context"]["selection_authority"] == "COGNITION_EVIDENCE_REBIND"
     cycle = Path(legacy.state) / "content/continuous/cycles" / result["cycle"]
@@ -2164,3 +2164,57 @@ def test_evidence_reuse_deduplicates_question_and_kind_instead_of_source_or_titl
     assert first != _expression_fingerprint(source, None, selection, "LONGFORM")
     expanded = selection.model_copy(update={"reader_question":"How can this evaluation be reproduced?"})
     assert first != _expression_fingerprint(source, None, expanded, "THOUGHT")
+
+
+@pytest.mark.parametrize("mutation", ["none", "repeated", "unrelated", "forged", "empty"])
+def test_research_expression_requires_progress_and_the_selected_original_source(mutation):
+    from wechat_traffic_agent.content_goal_loop import _research_supports_expression_source
+    source = {"evidence_id": "paper", "source_kind": "web-search",
+              "summary": "The method filters volatility before HDBSCAN clustering."}
+    learning = {"progress": "LEARNED", "evidence_id": "paper",
+                "facts": [{"evidence_id": "paper", "quote": source["summary"]}]}
+    if mutation == "repeated":
+        learning["progress"] = "REPEATED"
+    elif mutation == "unrelated":
+        learning["evidence_id"] = "other-paper"
+    elif mutation == "forged":
+        learning["facts"][0]["quote"] = "The method predicts all future drawdowns."
+    elif mutation == "empty":
+        learning["facts"] = []
+    assert _research_supports_expression_source(learning, source) is (mutation == "none")
+
+
+def test_researched_method_note_uses_verified_paper_without_market_pulse_or_local_method_tag(tmp_path):
+    _, legacy, publisher = setup(tmp_path)
+    paper = {**candidate(), "source_kind": "web-search", "search_query": "crypto market Bitcoin clustering method paper"}
+    class PaperExplorer(Explorer):
+        async def search_web_query(self, **kwargs):
+            return {"items": [paper], "failures": []}
+        async def filter_for_goal(self, **kwargs):
+            return {"items": [paper], "matches": [], "candidate_count": 1}
+    class PaperMethodRuntime(QuietBeliefRuntime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            if task.startswith("DECIDE_EXPRESSION:"):
+                self.calls.append(task)
+                assert "treat this as a market pulse" not in task
+                return json.dumps({
+                    "cognition_state": "INVESTIGATING", "worth_saying": True,
+                    "expression_kind": "METHOD_NOTE", "belief_proposition": None,
+                    "what_changed": "The paper reveals a concrete mechanism worth testing.",
+                    "what_matters": "The method still needs reproduction before adoption.",
+                    "rationale": "Share the supported method observation while preserving its limitations.",
+                })
+            if "Create one original, useful web-ready content artifact" in task:
+                return await BeliefRuntime.cognitive_probe(self, task, max_tokens, output_schema)
+            return await super().cognitive_probe(task, max_tokens, output_schema)
+    runtime = PaperMethodRuntime()
+    worker = v2(legacy, runtime, publisher, mind=BeliefMind(), explorer=PaperExplorer())
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED", result
+    folder = legacy.state / "content/continuous/cycles" / result["cycle"]
+    binding = json.loads((folder / "research_expression_binding.json").read_text())
+    assert binding["evidence_id"] == paper["evidence_id"]
+    assert binding["reason"] == "METHOD_NOTE_SUPPORTED_BY_VERIFIED_RESEARCH"
+    assert not (folder / "expression_binding.json").exists()
+    compose = next(call for call in runtime.calls if "Create one original, useful web-ready content artifact" in call)
+    assert "treat this as a market pulse" not in compose
