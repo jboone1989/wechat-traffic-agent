@@ -224,6 +224,10 @@ class XBrowserPublisher:
                 "mission_experiment_transition": transition,
             }
         learning = _read_json(folder / "learning_result.json")
+        from .learning_expression_quality import learning_required_for_sharing
+        if not learning and learning_required_for_sharing(self.state_root):
+            return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
+                    "reason": "NO_VERIFIED_LEARNING_RECORD"}
         if learning:
             checked_texts = {text, str(draft.get("title") or "") + "\n" + text}
             checked_hashes = {hashlib.sha256(value.encode("utf-8")).hexdigest() for value in checked_texts}

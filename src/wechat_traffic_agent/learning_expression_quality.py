@@ -8,6 +8,18 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from .content_loop import _replace, _structured
 
 
+def learning_required_for_sharing(state_root: Path) -> bool:
+    """Honor the owner's durable learning-first publication policy, including legacy drafts."""
+    path = Path(state_root) / "content" / "learning" / "sharing_policy.json"
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, json.JSONDecodeError):
+        return True
+    return not isinstance(policy, dict) or policy.get("require_learning_discovery") is not False
+
+
 class LearningExpressionReview(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     concrete_discovery: bool

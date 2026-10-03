@@ -638,6 +638,12 @@ class XAutonomyLoop:
             or not cognition.get("worth_saying")
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
+        if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
+            return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
+        from .learning_expression_quality import learning_required_for_sharing
+        if not context.get("learning") and learning_required_for_sharing(self.state_root):
+            return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
+                    "reason": "NO_VERIFIED_LEARNING_RECORD"}
         owner_surface=str((context.get("owner_publication_request") or {}).get("decision",{}).get("publication_surface") or "")
         if owner_directed_x and owner_surface in {"X_LONG_POST","X_ARTICLE"}:
             return await self._owner_longform(folder=folder,context=context,now=now,surface=owner_surface)
@@ -832,6 +838,10 @@ class XAutonomyLoop:
         fmt="ARTICLE" if surface=="X_ARTICLE" else "LONG_POST"
         if self.history.has_event(cycle=cycle,event_type="EXPRESSION"):
             return {"status":"ALREADY_EXPRESSED","cycle":cycle}
+        from .learning_expression_quality import learning_required_for_sharing
+        if not context.get("learning") and learning_required_for_sharing(self.state_root):
+            return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
+                    "reason": "NO_VERIFIED_LEARNING_RECORD"}
         path=folder/"social_expression_drafts.json"
         existing=_read_json(path)
         if existing.get("status")!="DRAFT_READY" or (existing.get("drafts",{}).get("x",{}).get("format") != fmt):
