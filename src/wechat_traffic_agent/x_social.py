@@ -85,6 +85,28 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
                     source, sort_keys=True, ensure_ascii=False,
                 ).encode()).hexdigest(),
             }
+    if isinstance(learning, dict) and learning:
+        learning_projection = dict(learning)
+        learning_projection["sources"] = [{
+            **{key: row[key] for key in (
+                "evidence_id", "title", "summary", "url", "source", "source_kind", "learning_kind",
+            ) if key in row},
+            "source_receipt_sha256": hashlib.sha256(json.dumps(
+                row, sort_keys=True, ensure_ascii=False,
+            ).encode()).hexdigest(),
+        } for row in learning.get("sources") or []]
+        application = learning.get("application")
+        if isinstance(application, dict):
+            learning_projection["application"] = {
+                key: value for key, value in application.items()
+                if key not in {"prior_quotes", "prior_source_ids", "prior_source_urls"}
+            }
+        learning_projection["projection"] = {
+            "receipt_ref": "content/continuous/cycles/" + str(
+                learning.get("cycle") or context.get("cycle")) + "/learning_result.json",
+            "factual_authority": "exact verified facts retained; full acquired sources and comparison history remain in receipt_ref",
+        }
+        projected["learning"] = learning_projection
     return projected
 
 
@@ -735,7 +757,7 @@ class XAutonomyLoop:
             "source_context_chars": len(json.dumps(context, ensure_ascii=False)),
             "projected_context_chars": len(json.dumps(_expression_model_context(context), ensure_ascii=False)),
             "prompt_chars": len(prompt),
-            "source_policy": "EXACT_DUPLICATES_REFERENCED_ONCE; FULL_EVIDENCE_RETAINED",
+            "source_policy": "EXACT_VERIFIED_FACTS_AND_SOURCE_METADATA; FULL_RESEARCH_IN_CYCLE_RECEIPT",
             "plan_policy": "CURRENT_GOAL_AND_TOPIC; CANDIDATES_RETAINED_IN_MIND_PLAN_RECEIPT",
         })
         decision = await _structured(model_runtime, prompt, XPostDraft)
