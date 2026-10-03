@@ -33,7 +33,7 @@ def test_vector_index_is_derived_and_rebuildable(tmp_path):
     index = SemanticVectorIndex(store)
     assert index.search("unreliable disposable server")
     with store._connect() as connection:
-        connection.execute("DELETE FROM memory_vector_index")
+        connection.execute("UPDATE memory_nodes SET vector=NULL, model_id=''")
     assert store.get_memory("m:one") is not None
     assert index.rebuild() == 1
     assert index.search("unreliable disposable server")[0][0] == "m:one"
@@ -49,6 +49,6 @@ def test_vector_index_tracks_canonical_revision_hash(tmp_path):
     index.rebuild_if_stale()
     with store._connect() as connection:
         row = connection.execute(
-            "SELECT content_hash FROM memory_vector_index WHERE memory_id='m:state'"
+            "SELECT status FROM memory_nodes WHERE node_id='m:state'"
         ).fetchone()
-    assert row["content_hash"] == store.get_memory("m:state")["content_hash"]
+    assert row["status"] == store.get_memory("m:state")["status"]

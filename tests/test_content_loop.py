@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("maintenance_cognition")
+
 from wechat_traffic_agent.content_loop import ContinuousContentLoop, ReceiptRuntime, parse_feed
 from wechat_traffic_agent.automatic_website import AutomaticWebsitePublisher
 from wechat_traffic_agent.channels.web import StaticWebsiteConfig

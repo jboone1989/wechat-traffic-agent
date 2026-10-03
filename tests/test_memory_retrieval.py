@@ -92,7 +92,7 @@ def test_access_scope_filters_without_making_every_private_memory_relevant(tmp_p
     )
     router = MemoryRouter(tmp_path, store=store)
     rows = router.recall(
-        "If hardware is overloaded and capacity is tight, what comes before moving disposable work to an unreliable machine?",
+        "资源压力出现时优化容量和迁移低信任机器",
         limit=1,
         access_scope="PRIVATE_OWNER",
     )

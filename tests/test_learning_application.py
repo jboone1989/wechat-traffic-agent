@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("maintenance_cognition")
+
 from wechat_traffic_agent.content_loop import _put
 from wechat_traffic_agent.decision_context import build_ferro_decision_context
 from wechat_traffic_agent.learning_application import (

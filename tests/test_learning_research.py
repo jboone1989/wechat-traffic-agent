@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("maintenance_cognition")
+
 from wechat_traffic_agent.learning_research import (
     ResearchFocus, investigate_learning, choose_research_focus,
     read_research_state, research_memory,

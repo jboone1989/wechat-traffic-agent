@@ -5,13 +5,12 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any, Iterable
 
 from .memory_consolidation import recall_weight
 from .memory_domain_policy import load_policies, policy_ref, validate_policy
 from .memory_system import CanonicalMemoryStore
-from .memory_vector import EmbeddingProvider, SemanticVectorIndex, memory_document
+from .memory_vector import SemanticVectorIndex, memory_document
 
 
 def _normalize(text: str) -> str:
@@ -186,17 +185,14 @@ class MemorySearchIndex:
         if not terms:
             return []
         match = " OR ".join('"' + term.replace('"', '""') + '"' for term in terms[:24])
-        try:
-            with self.store._connect() as connection:
-                rows = connection.execute(
-                    """
-                    SELECT memory_id, bm25(memory_fts, 1.0, 0.4, 0.4, 0.4) AS rank
-                    FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?
-                    """,
-                    (match, max(1, min(int(limit), 200))),
-                ).fetchall()
-        except sqlite3.OperationalError:
-            return []
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT memory_id, bm25(memory_fts, 1.0, 0.4, 0.4, 0.4) AS rank
+                FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?
+                """,
+                (match, max(1, min(int(limit), 200))),
+            ).fetchall()
         return [(str(row["memory_id"]), float(row["rank"])) for row in rows]
 
 
@@ -208,7 +204,7 @@ class MemoryRouter:
         state_root,
         *,
         store: CanonicalMemoryStore | None = None,
-        embedding_provider: EmbeddingProvider | None = None,
+        retrieval_models=None,
         weights: RecallWeights | None = None,
         domain_policies: dict[str, dict[str, float]] | None = None,
     ) -> None:
@@ -219,18 +215,16 @@ class MemoryRouter:
         self.last_recall_metrics: dict[str, float] = {}
         self.last_domain_policy_refs: dict[str, str] = {}
         self.fts = MemorySearchIndex(self.store)
-        self.vector = SemanticVectorIndex(self.store, provider=embedding_provider)
+        self.vector = SemanticVectorIndex(self.store, models=retrieval_models)
 
     def _load_active_weights(self) -> RecallWeights:
         path = self.state_root / "application" / "memory_system" / "active_recall_policy.json"
         if not path.exists():
             return RecallWeights()
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            value = raw.get("weights") if isinstance(raw, dict) else None
-            return RecallWeights.from_mapping(dict(value)) if isinstance(value, dict) else RecallWeights()
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            return RecallWeights()
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict) or not isinstance(raw.get("weights"), dict):
+            raise ValueError("active recall policy must contain a weights object")
+        return RecallWeights.from_mapping(raw["weights"])
 
     def plan(
         self,
@@ -347,9 +341,9 @@ class MemoryRouter:
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
             reverse=True,
         )
-        if hasattr(self.vector.provider,"models") and candidates:
+        if candidates:
             bounded=candidates[:32]
-            scores=self.vector.provider.rerank(query,[memory_document(r) for _,r in bounded])
+            scores=self.vector.rerank(query,[memory_document(r) for _,r in bounded])
             candidates=[pair for _,pair in sorted(zip(scores,bounded,strict=True),key=lambda p:-p[0])]
         self.last_recall_metrics = {
             "candidate_cost": float(len(lexical) + len(vector) + len(candidates)),

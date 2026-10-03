@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("maintenance_cognition")
+
 from wechat_traffic_agent.content_goal_loop import (
     ContinuousContentLoop, MissionDiscoveryDecision, _explicit_hypothetical_note_sections,
     _market_expression_instruction, _market_companion_evidence,

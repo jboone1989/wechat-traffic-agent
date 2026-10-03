@@ -21,10 +21,12 @@ topic, node type and eligible source identities are enforced on the host.
 The encoder defaults to normalized multilingual MiniLM-L12 embeddings. The
 reranker defaults to a quantized Chinese/English BGE cross-encoder. Inference
 runs in short-lived CPU workers and shares a disk model cache across releases.
+Deployment must provision the model cache; inference reads local weights without
+network metadata checks. Embedding batches contain eight documents to fit the
+production host's memory budget.
 Model failures are explicit; the learning service never substitutes feature
-hashes for trained embeddings. Existing canonical-router deployments are
-upgraded by creating `active_embedding.json`; legacy installations without
-that marker retain their explicitly separate compatibility provider.
+hashes for trained embeddings. The canonical router and learning tools share the trained service directly;
+there is no feature-hash compatibility path or activation-marker switch.
 
 New original excerpts are staged. Lexical/structured lookup and cross-encoder
 ranking can expose them for reading, but semantic indexing waits for an LLM
@@ -80,8 +82,7 @@ and source pointers without deleting original evidence or event history.
 The learning service maintains an incremental HNSW index with host-side filters.
 Its binary generations are disposable; SQLite atomically selects the committed
 generation. Updated vectors replace their labels and inactive records are
-removed from active recall. The upgraded canonical router shares this ANN view and the rerank cache;
-legacy installations retain their separate historical vector adapter.
+removed from active recall. The canonical router shares this ANN view and the rerank cache.
 
 Acceptance covers source revision propagation, canonical transitions, expiry,
 view reconstruction, exact-quote invariance, incremental encoding, hierarchy

@@ -47,13 +47,13 @@ def worker():
                 sources=ModelSource(hf="Xenova/bge-reranker-base"),
                 model_file="onnx/model_quantized.onnx",license="mit",size_in_gb=0.28,
                 description="Quantized BGE bilingual Chinese/English cross-encoder")
-        model = TextCrossEncoder(request["reranker"], cache_dir=request["cache"], threads=2)
+        model = TextCrossEncoder(request["reranker"], cache_dir=request["cache"], threads=2, local_files_only=True)
         result = [float(value) for value in model.rerank(request["query"], request["texts"])]
     else:
         from fastembed import TextEmbedding
-        model = TextEmbedding(request["embedding"], cache_dir=request["cache"], threads=2)
+        model = TextEmbedding(request["embedding"], cache_dir=request["cache"], threads=2, local_files_only=True)
         vectors = (model.query_embed(request["texts"]) if request["operation"] == "query"
-                   else model.embed(request["texts"], batch_size=32))
+                   else model.embed(request["texts"], batch_size=8))
         result = [(vector / max(float(np.linalg.norm(vector)), 1e-12)).tolist() for vector in vectors]
     json.dump(result, sys.stdout)
 

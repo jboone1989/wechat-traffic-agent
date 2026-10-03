@@ -121,18 +121,17 @@ def test_summary_semantic_hierarchy_is_bounded_cached_and_descendable(tmp_path):
     assert service._node(root)['status']=='SUPERSEDED'
 
 
-def test_incremental_existing_vector_view_encodes_only_changed_record(tmp_path):
-    class Provider:
-        model_id='test-incremental';dimensions=2
-        def __init__(self): self.calls=[]
-        def embed(self,text): self.calls.append(text);return [1.0,0.0]
+def test_shared_vector_facade_only_encodes_changed_active_records(tmp_path):
+    models=RetrievalModelsDouble()
     store=CanonicalMemoryStore(tmp_path)
     for i in range(20): store.append_memory({'memory_id':str(i),'text':'Fact '+str(i),'kind':'FACT'})
-    provider=Provider();index=SemanticVectorIndex(store,provider=provider)
-    assert len(provider.calls)==20
+    index=SemanticVectorIndex(store,models=models)
+    assert len(models.encoded)==20
     store.transition_memory('0',status='ARCHIVED');index.rebuild_if_stale()
-    assert len(provider.calls)==21
-    index.rebuild_if_stale();assert len(provider.calls)==21
+    assert len(models.encoded)==20
+    index.rebuild_if_stale();assert len(models.encoded)==20
+    store.append_memory({'memory_id':'new','text':'New fact','kind':'FACT'})
+    index.rebuild_if_stale();assert len(models.encoded)==21
 
 
 def test_iterative_task_resumes_without_losing_tool_observation_or_reference(tmp_path):
@@ -169,6 +168,14 @@ def test_final_request_budget_rejects_schema_and_repair_overflow_before_dispatch
     with pytest.raises(ValueError,match='MEMORY_REQUEST_BUDGET_EXCEEDED'):
         asyncio.run(runtime.cognitive_probe('small',max_tokens=2400,output_schema={'description':'x'*40000}))
     assert json.loads((tmp_path/'memory_request_sizes.jsonl').read_text())['characters']>36000
+
+
+def test_explicit_maintenance_fixture_keeps_real_budget_checks(tmp_path, maintenance_cognition):
+    class Runtime:
+        async def cognitive_probe(self,*args,**kwargs): raise AssertionError('oversized maintenance dispatched')
+    runtime=BudgetedRuntime(Runtime(),tmp_path)
+    with pytest.raises(ValueError,match='MEMORY_REQUEST_BUDGET_EXCEEDED'):
+        asyncio.run(runtime.cognitive_probe('LINK_MEMORY:'+'x'*40000,max_tokens=2400))
 
 
 def test_chinese_selection_shrinks_before_dispatch(tmp_path):
@@ -232,12 +239,11 @@ def test_upgraded_canonical_router_uses_shared_ann_view(tmp_path):
     from wechat_traffic_agent.memory_retrieval import MemoryRouter
     service=MemoryService(tmp_path)
     service.store.append_memory({'memory_id':'checkpoint','text':'A checkpoint restores worker state after restart.','kind':'FACT'})
-    (service.root/'active_embedding.json').write_text('{}')
     router=MemoryRouter(tmp_path)
     assert router.recall('checkpoint worker',limit=1)[0]['memory_id']=='checkpoint'
     with service.store._connect() as db:
         assert db.execute('SELECT COUNT(*) FROM memory_ann_state').fetchone()[0]>0
-        assert db.execute('SELECT COUNT(*) FROM memory_vector_index').fetchone()[0]==0
+        assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_vector_index'").fetchone()
 
 
 def test_receipt_import_selects_newest_revision_and_marks_older_observation(tmp_path):

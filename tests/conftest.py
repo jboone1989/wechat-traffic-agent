@@ -27,21 +27,31 @@ class RetrievalModelsDouble:
 
 
 @pytest.fixture(autouse=True)
-def deterministic_memory_models(monkeypatch, request):
+def deterministic_memory_models(monkeypatch):
     from wechat_traffic_agent import memory_models
     monkeypatch.setattr(memory_models,"LocalRetrievalModels",RetrievalModelsDouble)
-    # These pre-existing tests exercise inquiry/application decisions. Supply a
-    # separate cognition double for the newly added maintenance phase, leaving
-    # their decision queues and recorded inquiry prompts intact.
-    if request.path.name != "test_memory_service_v2.py":
-        from wechat_traffic_agent.memory_session import BudgetedRuntime
-        original=BudgetedRuntime.cognitive_probe
-        async def probe(self,task,max_tokens,output_schema=None):
+
+
+@pytest.fixture
+def maintenance_cognition(monkeypatch):
+    """Explicit cognition fixture for tests whose decision queues predate maintenance.
+
+    Wrap the model double underneath BudgetedRuntime, so real budget checks run.
+    """
+    from wechat_traffic_agent.memory_session import BudgetedRuntime
+    original=BudgetedRuntime.__init__
+    class Cognition:
+        def __init__(self,runtime): self.runtime=runtime
+        async def cognitive_probe(self,task,max_tokens,output_schema=None):
             if task.startswith("LINK_MEMORY:"): return json.dumps({"relations":[]})
             if task.startswith("CONSOLIDATE_MEMORY:"):
                 return json.dumps({"summary":"Evidence records retain unresolved details and qualified observations.","context_prefix":"Research observations within the selected topic."})
             if task.startswith("CONTEXTUALIZE_MEMORY:"):
                 data=json.JSONDecoder().raw_decode(task.split("\n",1)[1])[0]
                 return json.dumps({"prefixes":[{"ref":r["ref"],"prefix":"This excerpt concerns its identified source and research question."} for r in data["chunks"]]})
-            return await original(self,task,max_tokens,output_schema)
-        monkeypatch.setattr(BudgetedRuntime,"cognitive_probe",probe)
+            if output_schema is None:
+                return await self.runtime.cognitive_probe(task,max_tokens=max_tokens)
+            return await self.runtime.cognitive_probe(task,max_tokens=max_tokens,output_schema=output_schema)
+    def initialize(self,runtime,folder,budget=None):
+        original(self,Cognition(runtime),folder,budget)
+    monkeypatch.setattr(BudgetedRuntime,"__init__",initialize)

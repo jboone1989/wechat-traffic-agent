@@ -10,9 +10,11 @@ args=parser.parse_args()
 root=args.state_root
 service=MemoryService(root)
 facts=[('restart','A worker persists invocation identity before external effects and reconciles unfinished operations after reboot.'),('cost','Replace disposable workloads first when hardware capacity is overloaded.'),('permission','The browser requires an explicit owner authorization before a trade can be submitted.'),('weather','The forecast predicts heavy rain on the coast tomorrow.'),('payment','A payment retry retains the same idempotency key so a network timeout cannot produce two transfers.'),('summary','A summary tree descends into original source passages rather than treating summaries as proof.')]
+facts.append(('resource-cn','资源压力出现时，先优化现有容量；不足再迁移可重建工作到低信任机器。'))
 for key,text in facts:
  if not service.store.get_memory('eval:'+key):service.store.append_memory({'memory_id':'eval:'+key,'text':text,'kind':'FACT','topics':[key]})
 queries=[('restart','recover pending tool calls when the process crashes'),('cost','machine resource pressure should shed replaceable jobs'),('payment','avoid charging twice after a request loses its response'),('summary','verify evidence behind a hierarchical condensed report'),('restart','工作进程崩溃后怎样恢复未完成的工具操作'),('payment','网络超时重试怎样避免重复转账')]
+queries.append(('resource-cn','If hardware is overloaded and capacity is tight, what comes before moving disposable work to an unreliable machine?'))
 results=[]
 for expected,query in queries:
  start=time.monotonic();hits=service.search(query,limit=3,node_types=['memory'])
