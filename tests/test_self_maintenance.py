@@ -297,7 +297,8 @@ def test_review_enriches_existing_composition_json_problem(tmp_path):
     capability, payload = repair_runtime.calls[0]
     assert capability == "REQUEST_CODE_REPAIR"
     assert payload["targetFiles"] == ["src/wechat_traffic_agent/content_service.py"]
-    assert payload["failedTests"] == ["tests/test_content_agent.py"]
+    assert payload["failedTests"] == []
+    assert payload["evaluationTests"] == ["tests/test_content_agent.py"]
 
 
 def test_review_versions_old_composition_proposal_and_supersedes_unexecutable_request(

@@ -562,21 +562,20 @@ class SelfMaintenanceService:
             for ref in (problem.get("evidence_refs") or [])[:32]
             if str(ref).strip()
         ]
-        failed_tests = [
-            str(item)
-            for item in proposal.get("focused_tests") or ()
-            if str(item).strip()
-        ][:32]
         trial = problem.get("repair_trial")
-        if isinstance(trial, dict):
-            failed_tests = list(dict.fromkeys([
-                *failed_tests,
-                *(
-                    str(item)
-                    for item in trial.get("failed_tests") or ()
-                    if str(item).strip()
-                ),
-            ]))[:32]
+        failed_tests = [
+            str(item) for item in (trial.get("failed_tests") or [])
+            if str(item).strip()
+        ][:32] if isinstance(trial, dict) else []
+        from .self_repair_executor import DEFAULT_RECIPES
+        recipe = DEFAULT_RECIPES.get(str(proposal.get("repair_kind") or ""))
+        generated = proposal.get("generated_recipe") or {}
+        evaluation_tests = list(dict.fromkeys(
+            str(item) for item in (
+                generated.get("focused_tests") or proposal.get("focused_tests")
+                or (recipe.focused_tests if recipe else ()) or failed_tests
+            ) if str(item).strip()
+        ))[:32]
         impact = str(problem.get("observed_world_impact") or "").strip()
         if not impact:
             impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
@@ -587,6 +586,7 @@ class SelfMaintenanceService:
             failure_site=str(problem.get("failure_site") or "unknown"),
             evidence=refs,
             failed_tests=failed_tests,
+            evaluation_tests=evaluation_tests,
             severity=str(problem.get("severity") or "LOW").upper(),
             risk="LOW",
             observed_world_impact=impact,

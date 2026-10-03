@@ -806,11 +806,13 @@ class SelfRepairExecutor:
             if isinstance(proposal.get("generated_recipe"), dict)
             else {}
         )
-        evaluation_tests = [
-            str(item)
-            for item in (generated_recipe.get("focused_tests") or failed_tests)
-            if str(item).strip()
-        ][:32]
+        recipe = self.recipes.get(str(proposal.get("repair_kind") or ""))
+        evaluation_tests = list(dict.fromkeys(
+            str(item) for item in (
+                generated_recipe.get("focused_tests") or proposal.get("focused_tests")
+                or (recipe.focused_tests if recipe else ()) or failed_tests
+            ) if str(item).strip()
+        ))[:32]
         impact = str(problem.get("observed_world_impact") or "").strip()
         if not impact:
             impact = "Recorded failure prevented the affected cognition cycle from completing; downstream impact is not established."
