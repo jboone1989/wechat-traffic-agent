@@ -250,3 +250,20 @@ def test_l1_hold_prevents_browser_publication(tmp_path: Path):
     assert result["status"] == "SKIPPED"
     assert result["reason"] == "L1_X_STRATEGY"
     assert transport.calls == []
+
+
+def test_native_publisher_requires_quality_receipt_for_the_exact_research_draft(tmp_path):
+    import hashlib
+    for kind in ("missing", "stale", "passed"):
+        folder = _draft(tmp_path, cycle=kind)
+        text = json.loads((folder / "social_expression_drafts.json").read_text())["drafts"]["x"]["text"]
+        (folder / "learning_result.json").write_text(json.dumps({"cycle": kind, "progress": "LEARNED"}))
+        if kind != "missing":
+            (folder / "x_longform_learning_quality_0.json").write_text(json.dumps({
+                "passed": True, "learning_cycle": kind,
+                "text_sha256": hashlib.sha256(text.encode()).hexdigest() if kind == "passed" else "stale-draft"}))
+        transport = _Transport()
+        result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=transport,
+            enabled=True, writes_enabled=True).after_content_cycle(cycle=kind, now=NOW))
+        assert result["status"] == ("POSTED" if kind == "passed" else "HELD_BY_LEARNING_QUALITY")
+        assert transport.calls == ([text] if kind == "passed" else [])

@@ -1386,3 +1386,13 @@ def test_long_post_retains_browser_transport_lane(tmp_path):
     runner = WakefulContentTaskRunner(state_root=tmp_path, x_browser_publisher=publisher, x_loop=AfterCycle())
     runner._run_social_stage(rows={"status":"OK"}, continuous={"status":"PUBLISHED","cycle":"long"}, now=NOW)
     assert len(publisher.calls) == 1
+
+
+def test_rejected_learning_expression_leaves_backlog_for_new_research(tmp_path):
+    from test_x_owner_execution import cycle_context
+    folder, result = cycle_context(tmp_path)
+    (folder / "x_social_expression.json").write_text(json.dumps({
+        "status": "HELD_BY_LEARNING_QUALITY", "cycle": result["cycle"],
+        "quality": {"passed": False, "rationale": "The draft repeats a validation reminder."}}))
+    runner = WakefulContentTaskRunner(state_root=tmp_path)
+    assert runner._social_stage_backlog_candidate() is None

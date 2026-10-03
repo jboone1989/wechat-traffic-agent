@@ -223,6 +223,17 @@ class XBrowserPublisher:
                 "publication": existing,
                 "mission_experiment_transition": transition,
             }
+        learning = _read_json(folder / "learning_result.json")
+        if learning:
+            checked_texts = {text, str(draft.get("title") or "") + "\n" + text}
+            checked_hashes = {hashlib.sha256(value.encode("utf-8")).hexdigest() for value in checked_texts}
+            reviews = [_read_json(folder / name) for name in (
+                "x_learning_quality_0.json", "x_learning_quality_1.json",
+                "x_longform_learning_quality_0.json", "x_longform_learning_quality_1.json")]
+            if not any(review.get("passed") is True and review.get("learning_cycle") == learning.get("cycle")
+                       and review.get("text_sha256") in checked_hashes for review in reviews):
+                return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
+                        "reason": "CURRENT_DRAFT_HAS_NO_PASSED_LEARNING_REVIEW"}
         baseline = None
         binding_method = getattr(self.growth_mission, "publication_binding", None)
         binding = binding_method(cycle=cycle) if callable(binding_method) else None
