@@ -10,6 +10,7 @@ from agent_runtime.memory.retrieval import (
     fingerprint,
     terms,
 )
+from agent_runtime.memory.sources import DurableEvidenceSources
 
 from .memory_system import CanonicalMemoryStore
 
@@ -20,19 +21,13 @@ class MemoryService:
         self.root = self.store.root
         self.models = models
         self.retrieval = DurableMemoryRetrieval(self.store)
+        self.sources = DurableEvidenceSources(self.store, self.retrieval)
         with self.store._connect() as db:
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS evidence_sources (source_id TEXT PRIMARY KEY,archive TEXT NOT NULL,topic TEXT NOT NULL,source_version TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS memory_model_cache (cache_key TEXT PRIMARY KEY,result TEXT NOT NULL);
             """)
-        with self.store._connect() as db:
-            if 'observed_at' not in {r['name'] for r in db.execute('PRAGMA table_info(evidence_sources)')}:
-                db.execute("ALTER TABLE evidence_sources ADD COLUMN observed_at TEXT NOT NULL DEFAULT ''")
         self.store.set_transition_hook(self.retrieval.canonical_transition_hook)
         self.sync()
-        with self.store._connect() as db:
-            missing=db.execute("SELECT * FROM evidence_sources s WHERE NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.node_id='source:'||s.source_id)").fetchall()
-        for row in missing: self.ingest_source(json.loads(Path(row['archive']).read_text()),topic=row['topic'])
 
     def _node(self, node_id):
         return self.retrieval.node(node_id)
@@ -56,59 +51,7 @@ class MemoryService:
         self.retrieval.sync()
 
     def ingest_source(self, source, *, topic="", activate=True, observed_at=""):
-        body = str(source.get("evidence_text") or source.get("summary") or "")
-        source_id = source["evidence_id"]
-        version = fingerprint(body)
-        root_id = "source:" + source_id
-        # Every source revision retains the exact original; the active view points to it.
-        archive = self.root / "evidence" / (fingerprint(source_id)+"-"+version+".json")
-        archive.parent.mkdir(exist_ok=True)
-        if not archive.exists():
-            archive.write_text(json.dumps(source,ensure_ascii=False))
-        with self.store._connect() as db:
-            pointer=db.execute("SELECT * FROM evidence_sources WHERE source_id=?",(source_id,)).fetchone()
-            current=db.execute("SELECT 1 FROM memory_nodes WHERE node_id=?",(root_id,)).fetchone()
-        observed_at=observed_at or datetime.now(timezone.utc).isoformat()
-        if pointer and pointer['source_version']==version and current:
-            return root_id
-        if pointer and pointer['source_version']!=version:
-            if not activate or (pointer['observed_at'] and observed_at<pointer['observed_at']): return root_id
-        if pointer and pointer['source_version']==version: observed_at=pointer['observed_at'] or observed_at
-        with self.store._connect() as db:
-            db.execute("INSERT OR REPLACE INTO evidence_sources(source_id,archive,topic,source_version,observed_at) VALUES(?,?,?,?,?)",(source_id,str(archive),topic,version,observed_at))
-        prefix = f"Source {source.get('title','')}; topic {topic}; observed {source.get('published_at','')}; URL {source.get('url','')}"
-        metadata = {"evidence_id":source_id,"source_version":version,"archive":str(archive),
-                    "topic":topic,"topics":[topic],"title":source.get("title",""),"url":source.get("url",""),
-                    "source_revision":source.get("source_revision","")}
-        chunk_ids = []
-        # Overlap retains a sentence that crosses a page boundary; offsets prove exactness.
-        for start in range(0,len(body),550):
-            text=body[start:start+650]
-            if len(text)<12:
-                continue
-            node_id="evidence:"+fingerprint([source_id,version,start])[:28]
-            chunk_ids.append(node_id)
-            with self.store._connect() as db:
-                exists=db.execute("SELECT 1 FROM memory_nodes WHERE node_id=?",(node_id,)).fetchone()
-            if not exists:
-                self.put_node(node_id,"evidence",text,{**metadata,"start":start,"end":start+len(text)},prefix=prefix)
-        previous = None
-        with self.store._connect() as db:
-            previous=db.execute("SELECT metadata FROM memory_nodes WHERE node_id=?",(root_id,)).fetchone()
-        if previous and json.loads(previous[0])["source_version"]!=version:
-            with self.store._connect() as db:
-                old=db.execute("SELECT child_id FROM memory_dependencies WHERE parent_id=?",(root_id,)).fetchall()
-                for child in old:
-                    db.execute("UPDATE memory_nodes SET status='SUPERSEDED' WHERE node_id=?",(child[0],))
-                    self.invalidate(db,child[0])
-                self.invalidate(db,root_id)
-                self.invalidate(db,source_id)
-                disputed=db.execute("SELECT m.memory_id FROM memories m LEFT JOIN memory_nodes n ON n.node_id=m.memory_id WHERE m.status='ACTIVE' AND (n.status='DIRTY' OR EXISTS (SELECT 1 FROM json_each(m.evidence_refs_json) WHERE value=?))",(source_id,)).fetchall()
-            for row in disputed:
-                self.store.transition_memory(row[0],status="DISPUTED",event_type="EVIDENCE_REVISION_INVALIDATED")
-        self.put_node(root_id,"source",str(source.get("summary") or source.get("title") or "")[:1800],metadata,
-                      children=chunk_ids,prefix=prefix)
-        return root_id
+        return self.sources.ingest(source, topic=topic, activate=activate, observed_at=observed_at)
 
     async def contextualize(self,runtime,node_ids):
         from .content_loop import _structured
@@ -152,11 +95,10 @@ class MemoryService:
             if self.store.get_memory(memory_id) is not None:
                 continue
             source_body=next((str(s.get('evidence_text') or s.get('summary') or '') for s in row.get('sources',[]) if s['evidence_id']==fact['evidence_id']),None)
-            with self.store._connect() as db:
-                current=db.execute('SELECT archive,source_version FROM evidence_sources WHERE source_id=?',(fact['evidence_id'],)).fetchone()
+            current=self.sources.current(fact['evidence_id'])
             status='ACTIVE'
             if current:
-                source=json.loads(Path(current['archive']).read_text())
+                source=self.sources.read_original(fact['evidence_id']) or {}
                 if ((source_body is not None and fingerprint(source_body)!=current['source_version'])
                     or fact['quote'] not in str(source.get('evidence_text') or source.get('summary') or '')):
                     status='DISPUTED'
@@ -308,14 +250,12 @@ class MemoryService:
         # Canonical memories, event history, evidence files and active source
         # pointers survive. Only disposable retrieval views are cleared.
         with self.store._connect() as db:
-            sources=db.execute("SELECT * FROM evidence_sources").fetchall()
             db.execute('CREATE TABLE IF NOT EXISTS memory_ann_state(node_id TEXT PRIMARY KEY,label INTEGER NOT NULL,revision TEXT NOT NULL,status TEXT NOT NULL)')
             for table in ('memory_model_cache','memory_ann_state'):
                 db.execute('DELETE FROM '+table)
             db.execute("DELETE FROM memory_service_meta WHERE key='ann_generation' OR key LIKE 'summary_root:%'")
         self.retrieval.clear_canonical_views()
-        for source in sources:
-            self.ingest_source(json.loads(Path(source['archive']).read_text()),topic=source['topic'])
+        self.sources.rebuild_source_views()
 
     def _cached_model(self,operation,query,texts):
         model=self._models()

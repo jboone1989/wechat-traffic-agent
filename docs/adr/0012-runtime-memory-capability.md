@@ -37,6 +37,13 @@ Embedding/HNSW remain in Ferro for this slice and are injected as a dense-search
 implementation. This keeps FastEmbed/hnswlib out of Runtime and preserves the
 existing Python AI ecosystem while the module boundary stabilizes.
 
+Evidence/source ingestion now lives in `agent_runtime.memory.sources`.
+Ferro delegates exact source archival, version selection, chunk creation,
+source-view rebuild and evidence-revision invalidation to that module.
+
+The source archive remains byte-for-byte compatible with the existing state
+layout; no second memory database or source store is created.
+
 Cognition-assisted contextualization, relation enrichment and consolidation
 remain legacy operations and are not part of this extraction commit.
 
