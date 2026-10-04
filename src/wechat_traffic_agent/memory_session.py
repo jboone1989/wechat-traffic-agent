@@ -60,6 +60,27 @@ class BudgetedRuntime:
             return await self.runtime.cognitive_probe(task, max_tokens=max_tokens)
         return await self.runtime.cognitive_probe(task, max_tokens=max_tokens, output_schema=output_schema)
 
+    async def mechanical_cognitive_probe(self, task, max_tokens, output_schema=None):
+        serialized = task + (json.dumps(output_schema) if output_schema else "")
+        metrics = self.budget.measure(serialized, max_tokens)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        with (self.folder / "memory_request_sizes.jsonl").open("a") as handle:
+            handle.write(json.dumps({**metrics, "mode": "MECHANICAL"}) + "\n")
+        if not self.budget.fits(serialized, max_tokens):
+            raise ValueError("MEMORY_REQUEST_BUDGET_EXCEEDED: " + json.dumps(metrics))
+        probe = getattr(self.runtime, "mechanical_cognitive_probe", None)
+        if callable(probe):
+            return await probe(
+                task,
+                max_tokens=max_tokens,
+                output_schema=output_schema,
+            )
+        return await self.runtime.cognitive_probe(
+            task,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+        )
+
 
 def tool_contract(decision_contract):
     adapter = TypeAdapter(MemoryAction | decision_contract)

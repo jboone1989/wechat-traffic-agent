@@ -151,7 +151,12 @@ async def collect_news(urls, now):
             'signal_kind': 'recent publisher coverage; not measured popularity'}
 
 
-def _receipt_phase_signature(task: str, max_tokens: int) -> str:
+def _receipt_phase_signature(
+    task: str,
+    max_tokens: int,
+    *,
+    mode: str = "NORMAL",
+) -> str:
     """Stable identity for one semantic cognition phase, excluding mutable payload."""
     text = str(task or "").strip()
     first_line = text.splitlines()[0] if text else ""
@@ -159,15 +164,24 @@ def _receipt_phase_signature(task: str, max_tokens: int) -> str:
     phase_key = labelled.group(1) if labelled else first_line[:512]
     if "\nOne repair only." in text:
         phase_key += ":REPAIR"
-    return digest({"phase_key": phase_key, "max_tokens": int(max_tokens)})
+    payload = {"phase_key": phase_key, "max_tokens": int(max_tokens)}
+    if mode != "NORMAL":
+        payload["mode"] = mode
+    return digest(payload)
 
 
 def _receipt_request_fingerprint(
-    task: str, max_tokens: int, output_schema: dict | None
+    task: str,
+    max_tokens: int,
+    output_schema: dict | None,
+    *,
+    mode: str = "NORMAL",
 ) -> str:
     payload = {"task": task, "max_tokens": int(max_tokens)}
     if output_schema is not None:
         payload["output_schema"] = output_schema
+    if mode != "NORMAL":
+        payload["mode"] = mode
     return digest(payload)
 
 
@@ -178,12 +192,37 @@ class ReceiptRuntime:
         self.agent_manifest = runtime.agent_manifest
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
+        return await self._probe(
+            task,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+            mode="NORMAL",
+        )
+
+    async def mechanical_cognitive_probe(
+        self,
+        task,
+        max_tokens,
+        output_schema=None,
+    ):
+        return await self._probe(
+            task,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+            mode="MECHANICAL",
+        )
+
+    async def _probe(self, task, *, max_tokens, output_schema, mode):
         key = str(self.index)
         self.index += 1
         path = self.root / (key + ".json")
         started = self.root / (key + ".started")
-        fingerprint = _receipt_request_fingerprint(task, max_tokens, output_schema)
-        phase_signature = _receipt_phase_signature(task, max_tokens)
+        fingerprint = _receipt_request_fingerprint(
+            task, max_tokens, output_schema, mode=mode
+        )
+        phase_signature = _receipt_phase_signature(
+            task, max_tokens, mode=mode
+        )
         if output_schema is not None:
             phase_signature = digest({
                 "phase_signature": phase_signature,
@@ -215,10 +254,15 @@ class ReceiptRuntime:
             "status": "STARTED",
             "changed_input_after_interrupted_requests": interrupted_inputs,
         })
-        raw = await self.runtime.cognitive_probe(
-            task,
-            max_tokens=max_tokens,
-            output_schema=output_schema,
+        probe = (
+            getattr(self.runtime, "mechanical_cognitive_probe", None)
+            if mode == "MECHANICAL"
+            else None
+        )
+        if not callable(probe):
+            probe = self.runtime.cognitive_probe
+        raw = await probe(
+            task, max_tokens=max_tokens, output_schema=output_schema
         )
         receipt = {
             "request_sha256": fingerprint,
@@ -226,6 +270,8 @@ class ReceiptRuntime:
             "response": raw,
             "changed_input_after_interrupted_requests": interrupted_inputs,
         }
+        if mode != "NORMAL":
+            receipt["cognition_mode"] = mode
         if output_schema is not None:
             receipt["output_schema_sha256"] = digest(output_schema)
         _put(path, receipt)

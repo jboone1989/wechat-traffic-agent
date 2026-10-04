@@ -213,6 +213,39 @@ def test_receipt_recovery_can_skip_persisted_phase_only_by_exact_request_fingerp
     assert runtime.calls == []
 
 
+def test_mechanical_receipt_does_not_reuse_normal_receipt(tmp_path):
+    class DualRuntime(Runtime):
+        def __init__(self):
+            super().__init__()
+            self.mechanical_calls = []
+
+        async def mechanical_cognitive_probe(
+            self, task, max_tokens, output_schema=None
+        ):
+            self.mechanical_calls.append(task)
+            return "mechanical-response"
+
+    root = tmp_path / "receipts"
+    normal_runtime = Runtime()
+    normal = ReceiptRuntime(normal_runtime, root)
+    assert asyncio.run(normal.cognitive_probe("same-task", 100))
+    first = json.loads((root / "0.json").read_text())
+    assert first["request_sha256"] == digest(
+        {"task": "same-task", "max_tokens": 100}
+    )
+
+    mechanical_runtime = DualRuntime()
+    mechanical = ReceiptRuntime(mechanical_runtime, root)
+    assert asyncio.run(
+        mechanical.mechanical_cognitive_probe("same-task", 100)
+    ) == "mechanical-response"
+    second = json.loads((root / "1.json").read_text())
+    assert second["cognition_mode"] == "MECHANICAL"
+    assert second["request_sha256"] != first["request_sha256"]
+    assert mechanical_runtime.mechanical_calls == ["same-task"]
+    assert mechanical_runtime.calls == []
+
+
 def test_changed_request_generates_new_response_without_reusing_old_input(tmp_path):
     root = tmp_path / "receipts"
     root.mkdir()
