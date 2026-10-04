@@ -748,6 +748,57 @@ def test_research_post_quality_repairs_thin_text_before_any_browser_write(tmp_pa
     assert json.loads((folder / "x_learning_quality_1.json").read_text())["passed"] is repair_passes
 
 
+def test_learning_quality_allows_unresolved_inquiry_with_verified_concrete_fact(tmp_path):
+    from wechat_traffic_agent.learning_expression_quality import review_learning_expression
+    quote = (
+        "btc_features_scaled.csv contains standardized HMM inputs and "
+        "xgb_model.pkl stores the trained XGBoost model."
+    )
+    learning = {
+        "cycle": "unresolved-with-fact",
+        "progress": "UNRESOLVED",
+        "progressed": False,
+        "focus": {"question": "Does the regime pipeline improve unseen drawdown error?"},
+        "learning_delta": (
+            "The source documents a concrete HMM/XGBoost pipeline, while the "
+            "target unseen-error comparison remains unresolved."
+        ),
+        "sources": [{
+            "evidence_id": "repo",
+            "summary": quote,
+            "title": "BTC regime pipeline",
+            "url": "https://example.org/repo",
+        }],
+        "facts": [{
+            "evidence_id": "repo",
+            "quote": quote,
+            "observation": "The repository persists HMM inputs and a trained XGBoost model.",
+        }],
+    }
+    text = (
+        "The repository documents standardized HMM inputs and a trained XGBoost "
+        "model; whether that lowers unseen drawdown error is still unresolved."
+    )
+    approved = {
+        "concrete_discovery": True,
+        "faithful_to_sources": True,
+        "adds_to_recent_shares": True,
+        "source_fact_id": "fact-0",
+        "post_quote": "standardized HMM inputs and a trained XGBoost model",
+        "rationale": "The post retains a concrete implementation detail and keeps the main question unresolved.",
+    }
+    result = asyncio.run(review_learning_expression(
+        runtime=_ModelRuntime([approved]),
+        folder=tmp_path,
+        learning=learning,
+        text=text,
+        recent_shares=[],
+        label="quality",
+    ))
+    assert result["passed"] is True
+    assert result["source_fact_id"] == "fact-0"
+
+
 def test_learning_quality_rejects_forged_post_quote_or_source_reference(tmp_path):
     from wechat_traffic_agent.learning_expression_quality import review_learning_expression
     quote = "Volatility filtering recovered eleven distinct Bitcoin market regimes."

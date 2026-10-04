@@ -29,18 +29,36 @@ class LearningExpressionReview(BaseModel):
     rationale: str = Field(min_length=10, max_length=600)
 
 
+def verified_learning_facts(learning: dict) -> dict[str, dict]:
+    """Return only exact facts that can be traced back to supplied source text."""
+    if not isinstance(learning, dict):
+        return {}
+    sources = {
+        row["evidence_id"]: row
+        for row in learning.get("sources", [])
+        if isinstance(row, dict) and row.get("evidence_id")
+    }
+    return {
+        f"fact-{index}": fact
+        for index, fact in enumerate(learning.get("facts") or [])
+        if isinstance(fact, dict)
+        and isinstance(fact.get("quote"), str)
+        and len(fact["quote"]) >= 12
+        and fact.get("evidence_id") in sources
+        and fact["quote"] in str(
+            sources[fact["evidence_id"]].get("evidence_text")
+            or sources[fact["evidence_id"]].get("summary")
+            or ""
+        )
+    }
+
+
 async def review_learning_expression(*, runtime, folder: Path, learning: dict,
                                      text: str, recent_shares: list, label: str) -> dict:
     sources = {row["evidence_id"]: row for row in learning.get("sources", [])
                if isinstance(row, dict) and row.get("evidence_id")}
-    facts = {
-        f"fact-{index}": fact for index, fact in enumerate(learning.get("facts") or [])
-        if isinstance(fact, dict) and isinstance(fact.get("quote"), str)
-        and len(fact["quote"]) >= 12
-        and fact.get("evidence_id") in sources
-        and fact["quote"] in str(sources[fact["evidence_id"]].get("evidence_text") or sources[fact["evidence_id"]].get("summary") or "")
-    }
-    if learning.get("progress") not in {"LEARNED", "DEEPENED"} or not facts:
+    facts = verified_learning_facts(learning)
+    if not facts:
         result = {"passed": False, "rationale": "No verified concrete research discovery supports this expression."}
     else:
         contract = create_model("BoundLearningExpressionReview", __base__=LearningExpressionReview,

@@ -56,6 +56,7 @@ def _opening_conflict_lesson():
 
 
 def test_unresolved_learning_with_specific_fact_keeps_expression_lane_open():
+    quote = "The holdout was reserved for final evaluation of unseen data."
     learning = {
         "progressed": False,
         "progress": "UNRESOLVED",
@@ -65,7 +66,12 @@ def test_unresolved_learning_with_specific_fact_keeps_expression_lane_open():
         ),
         "facts": [{
             "evidence_id": "web:test",
+            "quote": quote,
             "observation": "The holdout was reserved for final evaluation.",
+        }],
+        "sources": [{
+            "evidence_id": "web:test",
+            "summary": quote,
         }],
     }
     assert _learning_has_concrete_public_trace(learning) is True
@@ -77,6 +83,24 @@ def test_unresolved_learning_without_specific_fact_can_end_without_expression():
         "progress": "UNRESOLVED",
         "learning_delta": "No new evidence.",
         "facts": [],
+    }
+    assert _learning_has_concrete_public_trace(learning) is False
+
+
+def test_unresolved_learning_with_unverified_fact_cannot_enter_expression_lane():
+    learning = {
+        "progressed": False,
+        "progress": "UNRESOLVED",
+        "learning_delta": "A source may contain a useful implementation detail.",
+        "facts": [{
+            "evidence_id": "web:test",
+            "quote": "This quote is not present in the supplied source.",
+            "observation": "A claimed detail exists.",
+        }],
+        "sources": [{
+            "evidence_id": "web:test",
+            "summary": "Different source text.",
+        }],
     }
     assert _learning_has_concrete_public_trace(learning) is False
 

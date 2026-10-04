@@ -371,12 +371,9 @@ def _learning_has_concrete_public_trace(learning: object) -> bool:
     """An open question can still contain a specific, evidence-backed discovery."""
     if not isinstance(learning, dict):
         return False
-    facts = [
-        row for row in list(learning.get("facts") or ())
-        if isinstance(row, dict)
-        and str(row.get("observation") or "").strip()
-        and str(row.get("evidence_id") or "").strip()
-    ]
+    from .learning_expression_quality import verified_learning_facts
+
+    facts = verified_learning_facts(learning)
     delta = str(learning.get("learning_delta") or "").strip()
     return bool(facts and len(delta) >= 10)
 
