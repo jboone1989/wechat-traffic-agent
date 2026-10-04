@@ -97,3 +97,14 @@ def test_episodic_memory_implementation_lives_in_runtime():
         "TRAJECTORY_CONSOLIDATION",
     ):
         assert forbidden not in source
+
+
+def test_semantic_memory_implementation_lives_in_runtime():
+    source = (PACKAGE / "memory_semantic.py").read_text(encoding="utf-8")
+    assert "agent_runtime.memory.semantic" in source
+    for forbidden in (
+        "class SemanticRelationalMemoryService",
+        "def remember_semantic",
+        "def remember_relation",
+    ):
+        assert forbidden not in source

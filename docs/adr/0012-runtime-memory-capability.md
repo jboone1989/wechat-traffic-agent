@@ -93,6 +93,11 @@ also preserves the older lightweight `Episode` / `EpisodicMemory` API used
 by MemoryGovernor, so this migration does not replace or fork the existing
 Runtime episodic contract.
 
+Semantic/relational memory now lives in `agent_runtime.memory.semantic`.
+Ferro's `memory_semantic.py` is a compatibility import only. Runtime preserves
+its original lightweight `SemanticMemory` used by `MemoryStore` and adds the
+durable `SemanticRelationalMemoryService` alongside it.
+
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
 ## Consequences
