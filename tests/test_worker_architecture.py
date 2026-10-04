@@ -58,6 +58,16 @@ def test_neural_worker_owns_only_live_neural_runtime():
         assert forbidden not in runtime
 
 
+def test_neural_worker_has_independent_systemd_resource_domain():
+    supervisor = (ROOT / "scripts" / "run_ferro_supervisor.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"systemd-run"' in supervisor
+    assert '"--user"' in supervisor
+    assert '"--scope"' in supervisor
+    assert '"ferro-neural"' in supervisor
+
+
 def test_only_content_worker_owns_main_application_runtime():
     content = (ROOT / "scripts" / "run_content_cognition_worker.py").read_text(encoding="utf-8")
     assert "build_content_application(" in content

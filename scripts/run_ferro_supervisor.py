@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,7 +61,13 @@ def _write_health(
         "observed_at": datetime.now(timezone.utc).isoformat(),
         "workers": {
             name: {
-                "pid": row.get("process").pid if row.get("process") is not None else None,
+                "pid": row.get("worker_pid")
+                if row.get("worker_pid") is not None
+                else (
+                    row.get("process").pid
+                    if row.get("process") is not None
+                    else None
+                ),
                 "restart_count": int(row.get("restart_count") or 0),
                 "failure_streak": int(row.get("failure_streak") or 0),
                 "restart_backoff_seconds": float(row.get("restart_backoff_seconds") or 0.0),
@@ -84,10 +91,27 @@ def _start_worker(
 ) -> tuple[subprocess.Popen, object]:
     log_root.mkdir(parents=True, exist_ok=True)
     log = (log_root / f"{name}.log").open("ab", buffering=0)
+    argv = [sys.executable, str(ROOT / script)]
+    environment = os.environ.copy()
+    if name == "ferro-neural":
+        user_runtime = "/run/user/" + str(os.getuid())
+        environment.setdefault("XDG_RUNTIME_DIR", user_runtime)
+        environment.setdefault(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=" + user_runtime + "/bus",
+        )
+        argv = [
+            "systemd-run",
+            "--user",
+            "--quiet",
+            "--scope",
+            "--unit=ferro-neural-" + uuid4().hex,
+            *argv,
+        ]
     process = subprocess.Popen(
-        [sys.executable, str(ROOT / script)],
+        argv,
         cwd=str(ROOT),
-        env=os.environ.copy(),
+        env=environment,
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -96,7 +120,10 @@ def _start_worker(
     return process, log
 
 
-def _wait_for_neural_writer(state_root: Path, process: subprocess.Popen) -> None:
+def _wait_for_neural_writer(
+    state_root: Path,
+    process: subprocess.Popen,
+) -> int:
     path = state_root / "application" / "workers" / "ferro-neural.json"
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
@@ -110,9 +137,9 @@ def _wait_for_neural_writer(state_root: Path, process: subprocess.Popen) -> None
             row = {}
         if (
             row.get("status") == "RUNNING"
-            and int(row.get("pid") or 0) == process.pid
+            and int(row.get("pid") or 0) > 1
         ):
-            return
+            return int(row["pid"])
         time.sleep(0.1)
     raise RuntimeError("ferro-neural did not become ready")
 
@@ -150,7 +177,9 @@ def main() -> int:
             "started_monotonic": time.monotonic(),
             "last_exit_code": None,
         }
-        _wait_for_neural_writer(state_root, process)
+        workers[state_name]["worker_pid"] = _wait_for_neural_writer(
+            state_root, process
+        )
 
         for name, script in specs[1:]:
             process, log = _start_worker(
@@ -169,6 +198,7 @@ def main() -> int:
                 "next_restart_monotonic": 0.0,
                 "started_monotonic": time.monotonic(),
                 "last_exit_code": None,
+                "worker_pid": process.pid,
             }
 
         _write_health(state_root, workers, status="RUNNING")
@@ -190,7 +220,11 @@ def main() -> int:
                     row["log"] = new_log
                     row["started_monotonic"] = now_mono
                     if name == "ferro-neural":
-                        _wait_for_neural_writer(state_root, new_process)
+                        row["worker_pid"] = _wait_for_neural_writer(
+                            state_root, new_process
+                        )
+                    else:
+                        row["worker_pid"] = new_process.pid
                     continue
                 exit_code = process.poll()
                 if exit_code is None:
@@ -213,6 +247,7 @@ def main() -> int:
                 if row.get("log") is not None and not row["log"].closed:
                     row["log"].close()
                 row["process"] = None
+                row["worker_pid"] = None
                 if stopping:
                     continue
             _write_health(state_root, workers, status="RUNNING")
