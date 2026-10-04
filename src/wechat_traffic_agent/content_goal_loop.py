@@ -648,21 +648,54 @@ def _bounded_evidence_refs(value, *, limit=5):
 def _compact_worldview_beliefs(
     rows,
     *,
+    topic,
+    reader_question,
+    source_evidence,
     related_proposition=None,
     limit=12,
 ):
-    """Keep the exact related belief first, then the existing confidence order."""
+    """Keep the exact related belief first, then beliefs relevant to this decision."""
     visible = [row for row in list(rows or ()) if isinstance(row, dict)]
     related = str(related_proposition or "").strip()
-    if related:
-        visible.sort(
-            key=lambda row: 0
-            if str(row.get("proposition") or "") == related
-            else 1
-        )
+    source = source_evidence if isinstance(source_evidence, dict) else {}
+    query = " ".join(str(value or "") for value in (
+        topic,
+        reader_question,
+        source.get("title"),
+        str(source.get("summary") or "")[:450],
+        related,
+    )).casefold()
+    query_terms = {
+        token for token in re.findall(r"[a-z0-9]+", query)
+        if len(token) >= 3
+    }
+    ranked = []
+    for index, row in enumerate(visible):
+        proposition = str(row.get("proposition") or "").strip()
+        if not proposition:
+            continue
+        proposition_terms = set(re.findall(r"[a-z0-9]+", proposition.casefold()))
+        exact_related = bool(related and proposition == related)
+        try:
+            confidence = float(row.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        try:
+            stance = abs(float(row.get("stance") or 0.0))
+        except (TypeError, ValueError):
+            stance = 0.0
+        ranked.append((
+            1000.0 if exact_related else 0.0,
+            len(query_terms & proposition_terms),
+            confidence,
+            stance,
+            -index,
+            row,
+        ))
+    ranked.sort(reverse=True, key=lambda item: item[:5])
     compact = []
     seen = set()
-    for row in visible:
+    for *_score, row in ranked:
         proposition = str(row.get("proposition") or "").strip()
         if not proposition or proposition in seen:
             continue
@@ -753,6 +786,9 @@ def _worldview_decision_context(
         "source_evidence": source_view,
         "current_beliefs": _compact_worldview_beliefs(
             current_beliefs,
+            topic=topic,
+            reader_question=reader_question,
+            source_evidence=source_evidence,
             related_proposition=related,
         ),
         "mind_goal": _compact_selection_mind_plan({"goal": mind_goal}).get(

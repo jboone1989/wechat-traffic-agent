@@ -798,8 +798,14 @@ def test_worldview_prompt_is_compact_but_durable_belief_keeps_full_evidence(tmp_
     form_call = next(
         call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:")
     )
+    compose_call = next(
+        call for call in runtime.calls
+        if "Create one original, useful web-ready content artifact" in call
+    )
     assert huge_marker not in form_call
+    assert huge_marker not in compose_call
     assert len(form_call.encode("utf-8")) < 32 * 1024
+    assert len(compose_call.encode("utf-8")) < 64 * 1024
     assert mind.recorded[0]["source_evidence"]["evidence_text"] == huge_marker
     assert mind.recorded[0]["source_evidence"]["raw_payload"]["body"] == huge_marker
 
