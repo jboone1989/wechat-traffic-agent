@@ -56,8 +56,16 @@ FTS refresh and vector invalidation.
 Ferro retains only the adapter that invokes its current cognition provider and
 returns `{chunk_ref: prefix}` to the Runtime contextualizer.
 
-Relation enrichment and consolidation remain legacy operations and are not part
-of this extraction commit.
+Relation enrichment now lives in `agent_runtime.memory.relations`. Runtime
+owns edge validation, allowed predicates, provenance, canonical RELATIONAL
+memory writes and idempotency.
+
+Ferro's `enrich_relations` method only prepares the research fact packet and
+adapts its current structured cognition call into the Runtime relation
+generator.
+
+Semantic consolidation remains a legacy operation and is not part of this
+extraction commit.
 
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
