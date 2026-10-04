@@ -1,7 +1,6 @@
 """Canonical-backed memory tools and rebuildable, incrementally maintained views."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -87,64 +86,16 @@ class MemoryService:
         return await self.contextualizer.contextualize(node_ids,generate)
 
     def ingest_research(self, row, *, sync=True):
-        for index,fact in enumerate(row.get("facts") or []):
-            memory_id="research-fact:"+fingerprint([row["cycle"],index,fact])[:28]
-            if self.store.get_memory(memory_id) is not None:
-                continue
-            source_body=next((str(s.get('evidence_text') or s.get('summary') or '') for s in row.get('sources',[]) if s['evidence_id']==fact['evidence_id']),None)
-            current=self.sources.current(fact['evidence_id'])
-            status='ACTIVE'
-            if current:
-                source=self.sources.read_original(fact['evidence_id']) or {}
-                if ((source_body is not None and fingerprint(source_body)!=current['source_version'])
-                    or fact['quote'] not in str(source.get('evidence_text') or source.get('summary') or '')):
-                    status='DISPUTED'
-            self.store.append_memory({"memory_id":memory_id,"memory_type":"SEMANTIC","kind":"RESEARCH_OBSERVATION","status":status,
-                "text":fact["observation"],"created_at":row.get("observed_at") or datetime.now(timezone.utc).isoformat(),
-                "source_type":"RESEARCH_RECEIPT","source_ref":row["cycle"],"topics":[row.get("topic","")],
-                "evidence_refs":[fact["evidence_id"]],"payload":{"cycle":row["cycle"],"fact":fact,
-                    "source_urls":row.get("source_urls",[]),"next_question":row.get("next_question",""),
-                    "derived_from":["source:"+fact["evidence_id"]]}})
-        if sync: self.sync()
+        from .learning_memory_bridge import LearningMemoryBridge
+        return LearningMemoryBridge(self).ingest_research(row,sync=sync)
 
     def ingest_application(self,row):
-        memory_id="learning-application:"+str(row['cycle'])
-        assessment=row['assessment']
-        if self.store.get_memory(memory_id) is None:
-            self.store.append_memory({"memory_id":memory_id,"memory_type":"EPISODIC","kind":"LEARNING_APPLICATION_OUTCOME",
-                "text":row['application']['prediction']+' Outcome '+assessment['status']+': '+assessment['rationale']+' Correction '+assessment.get('correction',''),
-                "importance":0.9,"confidence":1.0,"topics":[row['topic']],"source_type":"APPLICATION_RECEIPT","source_ref":row['cycle'],
-                "created_at":row.get('checked_at') or datetime.now(timezone.utc).isoformat(),
-                "evidence_refs":[r['evidence_id'] for r in row.get('evidence',[])],
-                "payload":{**row,'derived_from':['source:'+r['evidence_id'] for r in row.get('evidence',[])]}})
-        self.sync()
+        from .learning_memory_bridge import LearningMemoryBridge
+        return LearningMemoryBridge(self).ingest_application(row)
 
     def migrate_receipts(self,state_root):
-        # The rolling compatibility ledger is not the archive. Recover every
-        # saved research receipt once, then import only changed receipts.
-        with self.store._connect() as db:
-            value=db.execute("SELECT value FROM memory_service_meta WHERE key='receipt_imports'").fetchone()
-        imported=json.loads(value[0]) if value else {}
-        root=Path(state_root)/"content"/"continuous"/"cycles"
-        changed=False
-        for path in sorted(root.glob("*/learning_result.json")):
-            stamp=path.stat().st_mtime_ns
-            key=str(path)
-            if imported.get(key)==stamp: continue
-            row=json.loads(path.read_text())
-            for source in row.get("sources",[]): self.ingest_source(source,topic=row.get("topic",""),observed_at=row.get("observed_at", ""))
-            self.ingest_research(row,sync=False)
-            imported[key]=stamp
-            changed=True
-        for path in sorted(root.glob("*/learning_application_result.json")):
-            stamp=path.stat().st_mtime_ns;key=str(path)
-            if imported.get(key)==stamp: continue
-            self.ingest_application(json.loads(path.read_text()))
-            imported[key]=stamp;changed=True
-        if changed:
-            self.sync()
-            with self.store._connect() as db:
-                db.execute("INSERT OR REPLACE INTO memory_service_meta VALUES('receipt_imports',?)",(json.dumps(imported),))
+        from .learning_memory_bridge import LearningMemoryBridge
+        return LearningMemoryBridge(self).migrate_receipts(state_root)
 
     async def enrich_relations(self,runtime,row):
         from .content_loop import _structured

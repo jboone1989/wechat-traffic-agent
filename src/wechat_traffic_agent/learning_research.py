@@ -223,8 +223,10 @@ def _research_prompt_memory(memory: dict, topic: str) -> dict:
 
 
 def _memory_service(memory, state_root):
+    from .learning_memory_bridge import LearningMemoryBridge
     from .memory_service import MemoryService, fingerprint
     service=MemoryService(state_root)
+    bridge=LearningMemoryBridge(service)
     for row in memory.get("beliefs") or []:
         proposition=row["proposition"]
         subject="research-belief:"+fingerprint(proposition)[:28]
@@ -238,7 +240,7 @@ def _memory_service(memory, state_root):
         for old in older:
             service.store.transition_memory(old[0],status="SUPERSEDED",superseded_by=memory_id,event_type="WORLDVIEW_REVISED")
     for row in memory.get("research",{}).get("history",[]):
-        service.ingest_research(row)
+        bridge.ingest_research(row)
     service.sync()
     return service
 
@@ -359,7 +361,8 @@ def research_memory(mind: Any, state_root: Path, topic: str = "") -> dict[str, A
             urls = [source["url"] for source in saved.get("sources") or [] if source.get("url")]
         history.append({**row, "facts": facts or [], "source_urls": urls or []})
     service=_memory_service({"beliefs":beliefs,"research":{"history":history}},state_root)
-    service.migrate_receipts(state_root)
+    from .learning_memory_bridge import LearningMemoryBridge
+    LearningMemoryBridge(service).migrate_receipts(state_root)
     related=service.search(topic or "current interests",topic=topic,node_types=("memory",),limit=8)
     older={}
     for card in related:
@@ -638,11 +641,13 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
 
 
 def remember_learning(state_root: Path, result: dict) -> None:
+    from .learning_memory_bridge import LearningMemoryBridge
     service=_memory_service({},state_root)
+    bridge=LearningMemoryBridge(service)
     for source in result.get("sources") or []: service.ingest_source(source,topic=result["topic"],activate=False)
-    service.ingest_research(result)
+    bridge.ingest_research(result)
     state = read_research_state(state_root)
-    for row in state["history"]: service.ingest_research(row)
+    for row in state["history"]: bridge.ingest_research(row)
     if not any(row.get("cycle") == result['cycle'] for row in state["history"]):
         trace = {key: result[key] for key in (
             'cycle', 'topic', 'focus', 'progress', 'learning_delta',

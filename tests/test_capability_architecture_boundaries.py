@@ -60,3 +60,18 @@ def test_local_semantic_retrieval_implementation_does_not_return_to_ferro():
     for forbidden in ("fastembed", "hnswlib", "systemd-run", "TextEmbedding"):
         assert forbidden not in models
         assert forbidden not in ann
+
+
+def test_learning_receipt_projection_stays_out_of_memory_service():
+    memory_service = (PACKAGE / "memory_service.py").read_text(encoding="utf-8")
+    bridge = (PACKAGE / "learning_memory_bridge.py").read_text(encoding="utf-8")
+    for ferro_receipt_detail in (
+        "learning_result.json",
+        "learning_application_result.json",
+        "APPLICATION_RECEIPT",
+        "LEARNING_APPLICATION_OUTCOME",
+        "learning-application:",
+        "receipt_imports",
+    ):
+        assert ferro_receipt_detail not in memory_service
+        assert ferro_receipt_detail in bridge

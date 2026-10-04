@@ -132,8 +132,9 @@ def _application_state(state_root: Path) -> dict:
 
 
 def remember_application(state_root: Path, receipt: dict) -> None:
+    from .learning_memory_bridge import LearningMemoryBridge
     from .memory_service import MemoryService
-    MemoryService(state_root).ingest_application(receipt)
+    LearningMemoryBridge(MemoryService(state_root)).ingest_application(receipt)
     state = _application_state(state_root)
     if not any(row["cycle"] == receipt["cycle"] for row in state["history"]):
         state["history"] = [*state["history"], receipt][-100:]

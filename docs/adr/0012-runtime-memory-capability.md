@@ -72,6 +72,15 @@ supersession.
 Ferro's `consolidate` method now only adapts its current embedding provider and
 structured cognition call into the generic Runtime consolidator.
 
+Ferro's learning/research receipt schemas are intentionally **not** part of the
+generic Memory capability. Their projection into durable memory now lives in
+`learning_memory_bridge.py`. Production learning code calls that bridge
+directly; MemoryService keeps compatibility wrappers only while older callers
+migrate.
+
+Architecture tests forbid Ferro-specific receipt file names and receipt kinds
+from returning to MemoryService.
+
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
 ## Consequences
