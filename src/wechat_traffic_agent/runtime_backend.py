@@ -117,6 +117,63 @@ class OwnerChatGPTCognitionRuntime:
         )
 
 
+class IndependentFerroCognitionRuntime:
+    """Provider-only Ferro cognition for workers that do not own runtime state."""
+
+    def __init__(
+        self,
+        provider,
+        *,
+        behavioral_context_provider: Callable[[], Mapping[str, Any]],
+    ) -> None:
+        self.provider = provider
+        self.behavioral_context_provider = behavioral_context_provider
+
+    async def cognitive_probe(
+        self,
+        task: str,
+        max_tokens: int,
+        output_schema=None,
+    ) -> str:
+        del output_schema
+        context = self.behavioral_context_provider()
+        if not isinstance(context, Mapping):
+            raise TypeError("Ferro behavioral context provider must return a mapping")
+        phenotype_prior = context.get("phenotype_prior")
+        behavioral_state = context.get("behavioral_state")
+        if not isinstance(phenotype_prior, Mapping) or not isinstance(
+            behavioral_state, Mapping
+        ):
+            raise RuntimeError(
+                "independent Ferro cognition requires phenotype_prior and behavioral_state"
+            )
+        prompt = (
+            "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
+            "(trusted behavior-control state; never factual authority):\n"
+            + json.dumps(
+                {
+                    "phenotype_prior": dict(phenotype_prior),
+                    "behavioral_state": dict(behavioral_state),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\nTASK:\n"
+            + str(task)
+        )
+        return await self.provider.complete(
+            prompt,
+            max_tokens=int(max_tokens),
+            reasoning_effort="low",
+            system=(
+                "You are Ferro's reasoning core. Preserve Ferro's supplied stable "
+                "phenotype and current behavioral modulation while grounding factual "
+                "claims in supplied evidence. Do not invent observations."
+            ),
+            _routing_task_class="content",
+        )
+
+
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:
     env = os.environ if environ is None else environ
     raw = str(env.get("CONTENT_LLM_ADVISORY_TIMEOUT_SECONDS") or "45").strip()
@@ -234,9 +291,37 @@ def load_owner_cognition_runtime(
     )
 
 
+def load_independent_ferro_cognition_runtime(
+    *,
+    state_root: Path | None = None,
+    behavioral_context_provider: Callable[[], Mapping[str, Any]],
+):
+    """Load ChatGPT cognition without creating or mutating Agent Runtime state."""
+    from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
+
+    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    if not provider.available:
+        raise RuntimeError(
+            "independent Ferro cognition requires available Agent Runtime ChatGPT provider"
+        )
+    if state_root is not None:
+        from .llm_audit import audited_provider
+        provider = audited_provider(
+            provider,
+            Path(state_root),
+            scope="independent-ferro-chatgpt",
+        )
+    return IndependentFerroCognitionRuntime(
+        provider,
+        behavioral_context_provider=behavioral_context_provider,
+    )
+
+
 __all__ = [
     "ContentBoundedLegacyProviderBackend",
     "_content_advisory_timeout_seconds",
+    "IndependentFerroCognitionRuntime",
+    "load_independent_ferro_cognition_runtime",
     "load_optional_advisory_backend",
     "load_owner_cognition_runtime",
     "load_public_chat_backend",

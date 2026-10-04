@@ -116,6 +116,26 @@ def test_context_prefix_does_not_change_original_or_reencode_unchanged_nodes(tmp
     assert service._node(root)['status']=='ACTIVE'
 
 
+def test_hybrid_search_does_not_require_cross_encoder_reranker(tmp_path):
+    class NoRerank(RetrievalModelsDouble):
+        def rerank(self, query, texts):
+            raise AssertionError("cross-encoder must not run on the hot retrieval path")
+
+    service = MemoryService(tmp_path, models=NoRerank())
+    service.store.append_memory({
+        'memory_id': 'checkpoint-fact',
+        'text': 'A checkpoint restores worker state after restart.',
+        'kind': 'FACT',
+        'topics': ['recovery'],
+    })
+    service.sync()
+
+    results = service.search('checkpoint restart', topic='recovery', limit=3)
+
+    assert results
+    assert results[0]['node_id'] == 'checkpoint-fact'
+
+
 def test_summary_semantic_hierarchy_is_bounded_cached_and_descendable(tmp_path):
     service=MemoryService(tmp_path)
     for i in range(26):

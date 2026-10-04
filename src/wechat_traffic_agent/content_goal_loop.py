@@ -367,6 +367,20 @@ def _normalize_cognition_consistency(value: CognitionDecision, worldview_update:
     })
 
 
+def _learning_has_concrete_public_trace(learning: object) -> bool:
+    """An open question can still contain a specific, evidence-backed discovery."""
+    if not isinstance(learning, dict):
+        return False
+    facts = [
+        row for row in list(learning.get("facts") or ())
+        if isinstance(row, dict)
+        and str(row.get("observation") or "").strip()
+        and str(row.get("evidence_id") or "").strip()
+    ]
+    delta = str(learning.get("learning_delta") or "").strip()
+    return bool(facts and len(delta) >= 10)
+
+
 def _candidate_fingerprint(candidate):
     if candidate.get("source_kind") == "rss":
         return digest({"continuous_content_version": 1, "news_id": candidate["evidence_id"]})
@@ -2153,7 +2167,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 'evidence_id': selected['evidence_id'],
                 'reader_question': learning_focus.question,
             })
-            if not learning_result['progressed']:
+            if (
+                not learning_result['progressed']
+                and not _learning_has_concrete_public_trace(learning_result)
+            ):
                 cognition = {
                     'cognition_state': 'INVESTIGATING', 'worth_saying': False,
                     'expression_kind': 'NONE',
@@ -2284,9 +2301,23 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         cognition_decision = None
         if record_belief is not None:
             cognition_path = folder / ('learning_cognition.json' if learning_result else 'cognition.json')
+            reconsider_forced_cognition = False
             if cognition_path.exists():
-                cognition_decision = CognitionDecision.model_validate_json(cognition_path.read_text(encoding='utf-8'))
-            else:
+                persisted_cognition = CognitionDecision.model_validate_json(
+                    cognition_path.read_text(encoding='utf-8')
+                )
+                reconsider_forced_cognition = bool(
+                    learning_result is not None
+                    and not learning_result['progressed']
+                    and _learning_has_concrete_public_trace(learning_result)
+                    and not persisted_cognition.worth_saying
+                    and persisted_cognition.expression_kind == 'NONE'
+                    and persisted_cognition.what_changed
+                    == 'Research continued but did not yet add concrete understanding.'
+                )
+                if not reconsider_forced_cognition:
+                    cognition_decision = persisted_cognition
+            if cognition_decision is None:
                 self._activity(cycle, 'DECIDE', 'I’m deciding whether I actually have something worth saying',
                                'A completed cognition cycle does not create a publication obligation.')
                 cognition_context_path = folder / ('learning_cognition_context.json' if learning_result else 'cognition_context.json')
@@ -2344,7 +2375,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     CognitionDecision, validate=validate_cognition,
                 )
                 cognition_decision = _normalize_cognition_consistency(cognition_decision, worldview_update)
-                _put(cognition_path, cognition_decision.model_dump(mode='json'))
+                if reconsider_forced_cognition:
+                    _replace(cognition_path, cognition_decision.model_dump(mode='json'))
+                else:
+                    _put(cognition_path, cognition_decision.model_dump(mode='json'))
             if learning_result is not None:
                 learning_receipt(folder, 'cognition.json', cognition_decision.model_dump(mode='json'))
             if not cognition_decision.worth_saying:

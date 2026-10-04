@@ -18,6 +18,7 @@ from wechat_traffic_agent.x_browser import (
 )
 from wechat_traffic_agent.x_local_browser import LocalHarnessXTransport
 import wechat_traffic_agent.agent_runtime_chatgpt as chatgpt_module
+import wechat_traffic_agent.local_browser_control as local_control_module
 import wechat_traffic_agent.x_local_browser as x_local_module
 
 
@@ -194,6 +195,36 @@ def test_operator_browser_control_does_not_own_browser_process(tmp_path):
     control = LocalBrowserControl(state_root=tmp_path)
     assert not hasattr(control, "browser_factory")
     assert control.stop() == {"ok": True, "running": False}
+
+
+def test_x_browser_harness_resolves_from_current_python_environment(tmp_path, monkeypatch):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("", encoding="utf-8")
+    harness = venv_bin / "browser-harness"
+    harness.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.delenv("AGENT_RUNTIME_BROWSER_HARNESS", raising=False)
+    monkeypatch.setattr(x_local_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(x_local_module.sys, "executable", str(python))
+
+    assert LocalHarnessXTransport._harness_executable() == str(harness)
+
+
+def test_operator_browser_harness_resolves_from_current_python_environment(tmp_path, monkeypatch):
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("", encoding="utf-8")
+    harness = venv_bin / "browser-harness"
+    harness.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.delenv("AGENT_RUNTIME_BROWSER_HARNESS", raising=False)
+    monkeypatch.setattr(local_control_module.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(local_control_module.sys, "executable", str(python))
+
+    assert LocalBrowserControl._harness_executable() == str(harness)
 
 
 def test_x_focus_setup_timeout_rebinds_once_before_transaction(monkeypatch):

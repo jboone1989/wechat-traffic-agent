@@ -15,6 +15,7 @@ from wechat_traffic_agent.content_goal_loop import (
     _compact_writing_experience, _select_evidence_decision_context,
     _generation_strategy_receipt,
     _resolve_technique_requirements, _required_techniques_applied,
+    _learning_has_concrete_public_trace,
     _owner_focus_anchor_terms, _owner_focus_candidate_matches,
     _owner_focus_search_query,
 )
@@ -51,6 +52,32 @@ def _opening_conflict_lesson():
         ),
         adaptation="Keep the source boundary explicit and testable.",
     )
+
+
+def test_unresolved_learning_with_specific_fact_keeps_expression_lane_open():
+    learning = {
+        "progressed": False,
+        "progress": "UNRESOLVED",
+        "learning_delta": (
+            "A held-out BTC model test still did not compare adjusted versus raw "
+            "on-chain activity features."
+        ),
+        "facts": [{
+            "evidence_id": "web:test",
+            "observation": "The holdout was reserved for final evaluation.",
+        }],
+    }
+    assert _learning_has_concrete_public_trace(learning) is True
+
+
+def test_unresolved_learning_without_specific_fact_can_end_without_expression():
+    learning = {
+        "progressed": False,
+        "progress": "UNRESOLVED",
+        "learning_delta": "No new evidence.",
+        "facts": [],
+    }
+    assert _learning_has_concrete_public_trace(learning) is False
 
 
 def test_evidence_first_defers_conflicting_reader_question_opener():

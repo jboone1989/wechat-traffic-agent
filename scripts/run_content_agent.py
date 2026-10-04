@@ -16,6 +16,29 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# The persistent service path must stay a pure process supervisor.  Preserve
+# explicit maintenance/one-shot CLI commands below, but replace the persistent
+# process before any business module is imported.
+_MAINTENANCE_PREFIXES = (
+    "--once",
+    "--guardian-canary",
+    "--task",
+    "--health",
+    "--focus-topic",
+)
+if __name__ == "__main__" and not any(
+    arg == prefix or arg.startswith(prefix + "=")
+    for arg in sys.argv[1:]
+    for prefix in _MAINTENANCE_PREFIXES
+):
+    os.execv(
+        sys.executable,
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_ferro_supervisor.py"),
+        ],
+    )
+
 from wechat_traffic_agent.network_service import ContentNetworkService, network_enabled  # noqa: E402
 from wechat_traffic_agent.runtime_app import APPLICATION_VERSION, build_content_application  # noqa: E402
 from wechat_traffic_agent.trading_draft_worker import TradingResearchDraftWorker, trading_draft_worker_enabled  # noqa: E402
@@ -376,7 +399,6 @@ def main() -> int:
     if args.focus_topic and not (args.once or args.task == "CONTENT_COGNITION"):
         parser.error("--focus-topic requires --once or --task CONTENT_COGNITION")
     if args.watchdog_seconds < 60: parser.error("watchdog-seconds must be at least 60")
-
     state_root = _state_root()
     from wechat_traffic_agent.guardian_heartbeat import FerroHeartbeat
     heartbeat = FerroHeartbeat(state_root)

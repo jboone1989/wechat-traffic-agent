@@ -411,9 +411,13 @@ class MemoryService:
         nodes=nodes[:32]
         if not nodes:
             return []
-        reranked=self._cached_model("rerank",query,[n["prefix"]+" "+n["body"] for n in nodes])
-        ordered=sorted(zip(nodes,reranked,strict=True),key=lambda pair:-pair[1])
-        return [self._card(node) for node,_ in ordered[:limit]]
+        # The hybrid first stage already combines lexical BM25 and dense ANN
+        # rankings with reciprocal-rank fusion. Cross-encoder reranking loaded
+        # another ~700 MiB model for every search and could kill the entire
+        # cognition cycle even though recall had already succeeded. Keep the
+        # hot path on the fused retrieval ranking; heavier reranking belongs in
+        # optional/offline evaluation, not the publication-critical path.
+        return [self._card(node) for node in nodes[:limit]]
 
     def read(self,node_id,*,offset=0):
         self.sync()

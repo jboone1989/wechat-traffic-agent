@@ -26,6 +26,15 @@ class WakefulContentTaskRunner:
         self.wakeful = components.get("wakeful")
         self.stop_requested = components.get("stop_requested") or (lambda: False)
         state_root = components.get("state_root")
+        if state_root is not None and getattr(self, "state_events", None) is None:
+            from .state_events import FerroStateClient, FerroStateEventBus
+
+            self.state_events = FerroStateEventBus(Path(state_root))
+            self.state_client = FerroStateClient(Path(state_root))
+        if state_root is not None and getattr(self, "task_scheduler", None) is None:
+            from .task_scheduler import IndependentTaskScheduler
+
+            self.task_scheduler = IndependentTaskScheduler(Path(state_root))
         app = components.get("app")
         capability_runtime = (
             components.get("capability_runtime")
@@ -115,8 +124,10 @@ class WakefulContentTaskRunner:
         wakeful = getattr(self, "wakeful", None)
         projection = getattr(wakeful, "behavioral_projection", None)
         if not callable(projection):
+            projection = getattr(getattr(self, "state_client", None), "behavioral_projection", None)
+        if not callable(projection):
             raise RuntimeError(
-                "owner cognition requires live wakeful behavioral projection"
+                "owner cognition requires Ferro behavioral projection"
             )
         from .behavioral_state import build_behavioral_state, build_phenotype_prior
 
@@ -402,55 +413,52 @@ class WakefulContentTaskRunner:
             isinstance(diagnostic_failure, dict)
             and str(maintenance_observation.get("status") or "") == "RECORDED"
         ):
-            schedule_repair = getattr(self.wakeful, "schedule_self_maintenance", None)
-            if callable(schedule_repair):
-                try:
-                    schedule_repair(now, seconds=0)
-                    rows["interoception"]["repair_wake"] = {
-                        "status": "SCHEDULED",
-                        "task": "SELF_REPAIR",
-                        "problem_id": maintenance_observation.get("problem_id"),
-                    }
-                except Exception as exc:  # noqa: BLE001
-                    rows["interoception"]["repair_wake"] = self._error(exc)
+            try:
+                rows["interoception"]["repair_wake"] = {
+                    **self.task_scheduler.schedule(
+                        "SELF_REPAIR",
+                        now,
+                        reason="diagnose recorded task failure",
+                    ),
+                    "problem_id": maintenance_observation.get("problem_id"),
+                }
+            except Exception as exc:  # noqa: BLE001
+                rows["interoception"]["repair_wake"] = self._error(exc)
 
         if observation.get("abnormal"):
-            emit = getattr(self.wakeful, "emit_interoceptive_fault", None)
-            if callable(emit):
-                try:
-                    rows["interoception"]["neural_signal"] = emit(
-                        {
-                            "episode_id": observation.get("episode_id"),
-                            "subsystem": observation.get("subsystem"),
-                            "primary_symptom": observation.get("primary_symptom"),
-                            "severity": observation.get("severity"),
-                            "projection": projection,
-                        },
-                        observed_at=now,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    rows["interoception"]["neural_signal"] = self._error(exc)
+            try:
+                rows["interoception"]["neural_signal"] = self.state_events.emit(
+                    "INTEROCEPTIVE_FAULT",
+                    {
+                        "episode_id": observation.get("episode_id"),
+                        "subsystem": observation.get("subsystem"),
+                        "primary_symptom": observation.get("primary_symptom"),
+                        "severity": observation.get("severity"),
+                        "projection": projection,
+                    },
+                    observed_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["interoception"]["neural_signal"] = self._error(exc)
 
         if bool(sensed.get("should_diagnose")):
-            schedule = getattr(self.wakeful, "schedule_reflection", None)
-            if callable(schedule):
-                try:
-                    episode_id = str(observation.get("episode_id") or "")
-                    rows["interoception"]["diagnostic_wake"] = schedule(
-                        now,
-                        seconds=15,
-                        reason=(
-                            "diagnose felt runtime pathology: "
-                            + str(observation.get("primary_symptom") or "unknown")
-                            + " in "
-                            + str(observation.get("subsystem") or "unknown")
-                        ),
-                        relevant_refs=tuple(
-                            ref for ref in (episode_id, "interoception:active") if ref
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    rows["interoception"]["diagnostic_wake"] = self._error(exc)
+            try:
+                episode_id = str(observation.get("episode_id") or "")
+                rows["interoception"]["diagnostic_wake"] = self.task_scheduler.schedule(
+                    "REFLECT",
+                    now + timedelta(seconds=15),
+                    reason=(
+                        "diagnose felt runtime pathology: "
+                        + str(observation.get("primary_symptom") or "unknown")
+                        + " in "
+                        + str(observation.get("subsystem") or "unknown")
+                    ),
+                    relevant_refs=tuple(
+                        ref for ref in (episode_id, "interoception:active") if ref
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["interoception"]["diagnostic_wake"] = self._error(exc)
         return rows
 
     def observe_settled_capability_outcome(
@@ -521,21 +529,20 @@ class WakefulContentTaskRunner:
         }
 
         if observation.get("abnormal"):
-            emit = getattr(self.wakeful, "emit_interoceptive_fault", None)
-            if callable(emit):
-                try:
-                    receipt["interoception"]["neural_signal"] = emit(
-                        {
-                            "episode_id": observation.get("episode_id"),
-                            "subsystem": observation.get("subsystem"),
-                            "primary_symptom": observation.get("primary_symptom"),
-                            "severity": observation.get("severity"),
-                            "projection": projection,
-                        },
-                        observed_at=now,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    receipt["interoception"]["neural_signal"] = self._error(exc)
+            try:
+                receipt["interoception"]["neural_signal"] = self.state_events.emit(
+                    "INTEROCEPTIVE_FAULT",
+                    {
+                        "episode_id": observation.get("episode_id"),
+                        "subsystem": observation.get("subsystem"),
+                        "primary_symptom": observation.get("primary_symptom"),
+                        "severity": observation.get("severity"),
+                        "projection": projection,
+                    },
+                    observed_at=now,
+                )
+            except Exception as exc:  # noqa: BLE001
+                receipt["interoception"]["neural_signal"] = self._error(exc)
 
         if bool(sensed.get("should_diagnose")):
             violations = [
@@ -573,25 +580,23 @@ class WakefulContentTaskRunner:
                     )
                 except Exception as exc:  # noqa: BLE001
                     receipt["maintenance_observation"] = self._error(exc)
-            schedule = getattr(self.wakeful, "schedule_reflection", None)
-            if callable(schedule):
-                try:
-                    episode_id = str(observation.get("episode_id") or "")
-                    receipt["diagnostic_wake"] = schedule(
-                        now,
-                        seconds=15,
-                        reason=(
-                            "diagnose settled capability pathology: "
-                            + str(observation.get("primary_symptom") or "unknown")
-                            + " in "
-                            + str(observation.get("subsystem") or subsystem)
-                        ),
-                        relevant_refs=tuple(
-                            ref for ref in (episode_id, "interoception:active") if ref
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    receipt["diagnostic_wake"] = self._error(exc)
+            try:
+                episode_id = str(observation.get("episode_id") or "")
+                receipt["diagnostic_wake"] = self.task_scheduler.schedule(
+                    "REFLECT",
+                    now + timedelta(seconds=15),
+                    reason=(
+                        "diagnose settled capability pathology: "
+                        + str(observation.get("primary_symptom") or "unknown")
+                        + " in "
+                        + str(observation.get("subsystem") or subsystem)
+                    ),
+                    relevant_refs=tuple(
+                        ref for ref in (episode_id, "interoception:active") if ref
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                receipt["diagnostic_wake"] = self._error(exc)
         return receipt
 
     def run(
@@ -704,25 +709,15 @@ class WakefulContentTaskRunner:
                 "error_type": type(exc).__name__,
                 "message": str(exc)[:500],
             }
-            schedule_recovery = getattr(
-                self.wakeful,
-                "schedule_provider_recovery",
-                None,
-            )
-            if callable(schedule_recovery):
-                try:
-                    retry_refs = tuple(
-                        ref
-                        for ref in relevant_refs
-                    )
-                    result["provider_recovery"] = schedule_recovery(
-                        now,
-                        default_seconds=300,
-                        task=task,
-                        relevant_refs=retry_refs,
-                    )
-                except Exception as schedule_exc:  # noqa: BLE001
-                    result["provider_recovery"] = self._error(schedule_exc)
+            try:
+                result["provider_recovery"] = self.task_scheduler.schedule(
+                    task,
+                    now + timedelta(seconds=300),
+                    reason=f"retry {task.lower()} after temporary LLM provider outage",
+                    relevant_refs=tuple(ref for ref in relevant_refs),
+                )
+            except Exception as schedule_exc:  # noqa: BLE001
+                result["provider_recovery"] = self._error(schedule_exc)
             return result
         except _ShutdownRequested:
             return {
@@ -1033,7 +1028,11 @@ class WakefulContentTaskRunner:
             key=lambda value: pressure_rank.get(str(value).upper(), 0),
         )
         pressure = str(combined_pressure).upper()
-        self.wakeful.set_resource_pressure(pressure)
+        rows["resource_pressure_state_event"] = self.state_events.emit(
+            "SET_RESOURCE_PRESSURE",
+            {"pressure": pressure},
+            observed_at=now,
+        )
 
         rows["llm_provider_mode"] = (
             "AGENT_RUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
@@ -1116,10 +1115,12 @@ class WakefulContentTaskRunner:
                         "request_ids": [row.get("request_id") for row in credential_resolutions],
                     }
                 if autonomous_pending:
-                    self.wakeful.schedule_resource_followup(now, seconds=300)
                     rows["resource_followup"] = {
-                        "status": "SCHEDULED",
-                        "reason": "unverified autonomous resource/provider evidence remains",
+                        **self.task_scheduler.schedule(
+                            "RESOURCE_REVIEW",
+                            now + timedelta(seconds=300),
+                            reason="unverified autonomous resource/provider evidence remains",
+                        ),
                         "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
                         "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
                         "delay_seconds": 300,
@@ -1129,10 +1130,12 @@ class WakefulContentTaskRunner:
                     trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
                     rows["provider_trials"] = trial_result
                     if bool(trial_result.get("replan_required")):
-                        self.wakeful.schedule_resource_followup(now, seconds=300)
                         rows["resource_followup"] = {
-                            "status": "SCHEDULED",
-                            "reason": "provider trial evidence requires alternate routes",
+                            **self.task_scheduler.schedule(
+                                "RESOURCE_REVIEW",
+                                now + timedelta(seconds=300),
+                                reason="provider trial evidence requires alternate routes",
+                            ),
                             "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
                             "delay_seconds": 300,
                         }
@@ -1283,29 +1286,36 @@ class WakefulContentTaskRunner:
             for item in nested
             if isinstance(item, dict)
         }
-        schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
         immediate = {
             "GENERATED_REPAIR_PROPOSED",
             "REQUESTED_TO_PI_REMOTE",
             "CANDIDATE_REJECTED_REPLAN_QUEUED",
             "CANDIDATE_REPLAY_PASSED_RETRY_QUEUED",
         }
-        if callable(schedule) and repair_statuses & immediate:
+        if repair_statuses & immediate:
             retry_values = [
                 int(item.get("retry_seconds") or 60)
                 for item in nested
                 if isinstance(item, dict)
                 and str(item.get("status") or "") in immediate
             ]
-            schedule(now, seconds=min(retry_values or [60]))
-        elif callable(schedule) and "GENERATED_PLAN_DEFERRED" in repair_statuses:
+            self.task_scheduler.schedule(
+                "SELF_REPAIR",
+                now + timedelta(seconds=min(retry_values or [60])),
+                reason="continue independent self-repair",
+            )
+        elif "GENERATED_PLAN_DEFERRED" in repair_statuses:
             retry_values = [
                 int(item.get("retry_seconds") or 900)
                 for item in nested
                 if isinstance(item, dict)
                 and str(item.get("status") or "") == "GENERATED_PLAN_DEFERRED"
             ]
-            schedule(now, seconds=min(retry_values or [900]))
+            self.task_scheduler.schedule(
+                "SELF_REPAIR",
+                now + timedelta(seconds=min(retry_values or [900])),
+                reason="resume deferred independent self-repair",
+            )
         return result
 
     def _reflect(
@@ -1553,7 +1563,13 @@ class WakefulContentTaskRunner:
         try:
             result = self._run_async(self.x_loop.observe(now=now))
             if (result.get("discovery") or {}).get("source","MENTIONS")=="MENTIONS":
-                self.wakeful.emit_x_mentions(count=int(result.get("new_mentions") or 0), observed_at=now)
+                count = int(result.get("new_mentions") or 0)
+                if count > 0:
+                    result["state_event"] = self.state_events.emit(
+                        "X_MENTIONS",
+                        {"count": count},
+                        observed_at=now,
+                    )
             return {"task": "CHECK_X", "status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED", "x_social_observation": result}
         except Exception as exc:  # noqa: BLE001
             return {"task": "CHECK_X", "status": "DEGRADED", "x_social_observation": self._error(exc)}
@@ -1690,8 +1706,9 @@ class WakefulContentTaskRunner:
                 or ""
             ).strip()
             if evidence_ref:
-                self.wakeful.emit_network_evidence(
-                    evidence_ref=evidence_ref,
+                rows["network_state_event"] = self.state_events.emit(
+                    "NETWORK_EVIDENCE",
+                    {"evidence_ref": evidence_ref},
                     observed_at=now,
                 )
             elif draft_status in {"NO_RESEARCH_PROVIDER", "NO_RESEARCH"}:
@@ -1704,7 +1721,11 @@ class WakefulContentTaskRunner:
         except Exception as exc:  # noqa: BLE001
             code = str(getattr(exc, "code", "") or "")
             if code or type(exc).__name__ == "NetworkError":
-                self.wakeful.emit_network_error(code=code or type(exc).__name__, observed_at=now)
+                rows["network_state_event"] = self.state_events.emit(
+                    "NETWORK_ERROR",
+                    {"code": code or type(exc).__name__},
+                    observed_at=now,
+                )
             message = str(exc).strip()
             blocked = code in {"INVALID_SIGNATURE", "TAMPER_DETECTED"} or (
                 type(exc).__name__ == "NetworkError" and message.upper() in {"UNSIGNED EVIDENCE", "TAMPER_DETECTED"}
@@ -1746,15 +1767,19 @@ class WakefulContentTaskRunner:
                 rows["content_action_prediction_learning"] = learning
                 feedback_rows = []
                 for outcome in learning.get("recorded") or ():
-                    feedback_rows.append(self.wakeful.apply_prediction_outcome_feedback(outcome))
+                    feedback_rows.append(self.state_events.emit(
+                        "PREDICTION_OUTCOME",
+                        dict(outcome),
+                        observed_at=now,
+                    ))
                 rows["neural_prediction_learning"] = {
-                    "status": "APPLIED" if feedback_rows else "NO_NEW_OUTCOMES",
+                    "status": "QUEUED" if feedback_rows else "NO_NEW_OUTCOMES",
                     "count": len(feedback_rows),
                     "feedback": feedback_rows,
                     "publication_authority": False,
                 }
                 competition_rows = []
-                if hasattr(self.wakeful, "settle_brain_cortex"):
+                if learning.get("recorded"):
                     prediction_cycles: dict[str, str] = {}
                     cycles_root = Path(self.state_root) / "content" / "continuous" / "cycles"
                     for prediction_path in cycles_root.glob("*/action_prediction.json"):
@@ -1783,14 +1808,17 @@ class WakefulContentTaskRunner:
                                 observed_at = datetime.fromisoformat(str(raw_observed_at))
                             except ValueError:
                                 observed_at = now
-                        competition_rows.append(self.wakeful.settle_brain_cortex(
-                            cycle=cycle_id,
-                            utility=utility,
-                            evidence_refs=outcome.get("evidence_refs") or (),
+                        competition_rows.append(self.state_events.emit(
+                            "BRAIN_CORTEX_SETTLEMENT",
+                            {
+                                "cycle": cycle_id,
+                                "utility": utility,
+                                "evidence_refs": list(outcome.get("evidence_refs") or ()),
+                            },
                             observed_at=observed_at,
                         ))
                 rows["brain_vs_cortex_learning"] = {
-                    "status": "SETTLED" if competition_rows else "NO_NEW_OUTCOMES",
+                    "status": "QUEUED" if competition_rows else "NO_NEW_OUTCOMES",
                     "count": len(competition_rows),
                     "results": competition_rows,
                 }
@@ -1859,9 +1887,16 @@ class WakefulContentTaskRunner:
                     for prediction in due_predictions
                 ]
                 if deferred:
-                    sync = getattr(self.wakeful, "sync_prediction_wakes", None)
-                    if callable(sync):
-                        sync(now)
+                    retry_after = deferred[0].get("retry_after")
+                    if retry_after:
+                        retry_at = datetime.fromisoformat(
+                            str(retry_after).replace("Z", "+00:00")
+                        )
+                        self.task_scheduler.schedule(
+                            "VERIFY_PREDICTION",
+                            retry_at,
+                            reason="resume deferred prediction verification",
+                        )
             return {
                 "task": "VERIFY_PREDICTION",
                 "status": "OWNER_MISSION_DEFERRED",
@@ -1876,8 +1911,10 @@ class WakefulContentTaskRunner:
         try:
             if due_predictions:
                 for prediction in due_predictions:
-                    self.wakeful.emit_prediction_due(
-                        prediction_ref=str(prediction.prediction_id), observed_at=now,
+                    self.state_events.emit(
+                        "PREDICTION_DUE",
+                        {"prediction_ref": str(prediction.prediction_id)},
+                        observed_at=now,
                     )
             result = self._run_async(self.continuous_loop.verify_due_predictions(now=now))
             return {
@@ -3078,10 +3115,13 @@ class WakefulContentTaskRunner:
                     return {"status": "DISABLED"}
                 try:
                     result = await loop.observe(now=now, allow_remote_actions=action == "ENGAGE_X")
-                    self.wakeful.emit_x_mentions(
-                        count=int(result.get("new_mentions") or 0),
-                        observed_at=now,
-                    )
+                    count = int(result.get("new_mentions") or 0)
+                    if count > 0:
+                        result["state_event"] = self.state_events.emit(
+                            "X_MENTIONS",
+                            {"count": count},
+                            observed_at=now,
+                        )
                     return {"status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED", "x_social_observation": result}
                 except Exception as exc:
                     return {"status": "DEGRADED", **self._error(exc)}
@@ -3119,13 +3159,12 @@ class WakefulContentTaskRunner:
                     retry_at=now + timedelta(seconds=retry_seconds),
                     now=now,
                 )
-                schedule = getattr(self.wakeful, "schedule_goal_followup", None)
-                if callable(schedule):
-                    schedule(
-                        now,
-                        seconds=retry_seconds,
-                        relevant_refs=(goal_id,),
-                    )
+                self.task_scheduler.schedule(
+                    "CONTENT_COGNITION",
+                    now + timedelta(seconds=retry_seconds),
+                    reason="resume owner cognition after provider block",
+                    relevant_refs=(goal_id,),
+                )
                 return {
                     **blocked,
                     "goal_id": goal_id,
@@ -3241,21 +3280,13 @@ class WakefulContentTaskRunner:
                 ).strip() or None
                 if action == "WAIT":
                     wait_seconds = int(decision.get("wait_seconds") or 300)
-                    schedule_wait = getattr(self.wakeful, "schedule_owner_wait", None)
-                    if callable(schedule_wait):
-                        rows["owner_wait"] = schedule_wait(
-                            now,
-                            seconds=max(60, min(wait_seconds, 21600)),
-                            relevant_refs=(str(owner_goal.get("goal_id") or ""),),
-                        )
-                    else:
-                        schedule = getattr(self.wakeful, "schedule_goal_followup", None)
-                        if callable(schedule):
-                            schedule(
-                                now,
-                                seconds=max(60, min(wait_seconds, 21600)),
-                                relevant_refs=(str(owner_goal.get("goal_id") or ""),),
-                            )
+                    delay = max(60, min(wait_seconds, 21600))
+                    rows["owner_wait"] = self.task_scheduler.schedule(
+                        "CONTENT_COGNITION",
+                        now + timedelta(seconds=delay),
+                        reason="resume owner goal after explicit wait",
+                        relevant_refs=(str(owner_goal.get("goal_id") or ""),),
+                    )
                     wait_outcome = {
                         "status": "WAIT_SCHEDULED",
                         "wait_seconds": wait_seconds,
@@ -3519,8 +3550,10 @@ class WakefulContentTaskRunner:
         prediction_id = str((action_prediction or {}).get("prediction_id") or "")
         if prediction_id:
             try:
-                rows["neural_action_commitment"] = self.wakeful.emit_action_commitment(
-                    prediction_id=prediction_id, observed_at=now,
+                rows["neural_action_commitment"] = self.state_events.emit(
+                    "ACTION_COMMITMENT",
+                    {"prediction_id": prediction_id},
+                    observed_at=now,
                 )
             except Exception as exc:  # noqa: BLE001
                 rows["neural_action_commitment"] = self._error(exc)
@@ -3540,14 +3573,14 @@ class WakefulContentTaskRunner:
                 rows["status"] = "DEGRADED"
                 error_type = str(continuous.get("error_type") or "")
                 if error_type == "LLMProviderError":
-                    schedule_provider_recovery = getattr(
-                        self.wakeful, "schedule_provider_recovery", None
-                    )
-                    if callable(schedule_provider_recovery):
-                        try:
-                            rows["provider_recovery"] = schedule_provider_recovery(now)
-                        except Exception as exc:  # noqa: BLE001
-                            rows["provider_recovery"] = self._error(exc)
+                    try:
+                        rows["provider_recovery"] = self.task_scheduler.schedule(
+                            "CONTENT_COGNITION",
+                            now + timedelta(seconds=300),
+                            reason="retry content cognition after provider outage",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        rows["provider_recovery"] = self._error(exc)
                 else:
                     state_root = getattr(self, "state_root", None)
                     cycle = str(continuous.get("cycle") or "").strip()
@@ -3569,42 +3602,39 @@ class WakefulContentTaskRunner:
                             and str(followup_identity.get("reason") or "")
                             == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
                         ):
-                            schedule = getattr(
-                                self.wakeful, "schedule_goal_followup", None
-                            )
-                            if callable(schedule):
-                                owner_goal_id = str(
-                                    continuous.get("owner_goal_id") or ""
-                                ).strip()
-                                schedule(
-                                    now,
-                                    seconds=5,
+                            owner_goal_id = str(
+                                continuous.get("owner_goal_id") or ""
+                            ).strip()
+                            rows["mission_followup_schedule"] = {
+                                **self.task_scheduler.schedule(
+                                    "CONTENT_COGNITION",
+                                    now + timedelta(seconds=5),
+                                    reason=str(
+                                        followup_identity.get("reason") or ""
+                                    ),
                                     relevant_refs=(
                                         (owner_goal_id,)
                                         if owner_goal_id
                                         else ()
                                     ),
-                                )
-                                rows["mission_followup_schedule"] = {
-                                    "status": "SCHEDULED",
-                                    "seconds": 5,
-                                    "goal_id": str(
-                                        followup_identity.get("goal_id") or ""
-                                    ),
-                                    "mission_id": str(
-                                        followup_identity.get("mission_id") or ""
-                                    ),
-                                    "reason": str(
-                                        followup_identity.get("reason") or ""
-                                    ),
-                                }
+                                ),
+                                "seconds": 5,
+                                "goal_id": str(
+                                    followup_identity.get("goal_id") or ""
+                                ),
+                                "mission_id": str(
+                                    followup_identity.get("mission_id") or ""
+                                ),
+                            }
                 self_maintenance = getattr(self, "self_maintenance", None)
                 if self_maintenance is not None:
                     try:
                         rows["self_maintenance"] = self_maintenance.ingest_failure(continuous, now=now)
-                        schedule = getattr(self.wakeful, "schedule_self_maintenance", None)
-                        if callable(schedule):
-                            schedule(now, seconds=60)
+                        self.task_scheduler.schedule(
+                            "SELF_REPAIR",
+                            now + timedelta(seconds=60),
+                            reason="repair content failure",
+                        )
                     except Exception as exc:  # noqa: BLE001
                         rows["self_maintenance"] = self._error(exc)
             elif continuous.get("status") == "ALREADY_PROCESSED":
@@ -3627,7 +3657,10 @@ class WakefulContentTaskRunner:
                             "cycle": str(prior.get("cycle") or cycle_id),
                             "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
                         }
-                        self.wakeful.mark_cognition(now)
+                        rows["cognition_state_event"] = self.state_events.emit(
+                            "MARK_COGNITION",
+                            observed_at=now,
+                        )
             if owner_episode_active or owner_episode_bound:
                 complete = getattr(self.owner_agent_episode, "complete", None)
                 if callable(complete):
@@ -3671,30 +3704,29 @@ class WakefulContentTaskRunner:
             )
         )
         if should_schedule_followup:
-            schedule = getattr(self.wakeful, "schedule_goal_followup", None)
-            if callable(schedule):
-                owner_goal_id = str(
-                    continuous.get("owner_goal_id") or ""
-                ).strip()
-                schedule(
-                    now,
-                    seconds=5,
+            owner_goal_id = str(
+                continuous.get("owner_goal_id") or ""
+            ).strip()
+            reason = str(
+                followup_identity.get("reason")
+                or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"
+            )
+            rows["mission_followup_schedule"] = {
+                **self.task_scheduler.schedule(
+                    "CONTENT_COGNITION",
+                    now + timedelta(seconds=5),
+                    reason=reason,
                     relevant_refs=(
                         (owner_goal_id,)
                         if owner_goal_id
                         else ()
                     ),
-                )
-                rows["mission_followup_schedule"] = {
-                    "status": "SCHEDULED",
-                    "seconds": 5,
-                    "goal_id": str(followup_identity.get("goal_id") or ""),
-                    "mission_id": str(followup_identity.get("mission_id") or ""),
-                    "reason": str(
-                        followup_identity.get("reason")
-                        or "EXTERNAL_MISSION_NO_MATERIAL_CHANGE"
-                    ),
-                }
+                ),
+                "seconds": 5,
+                "goal_id": str(followup_identity.get("goal_id") or ""),
+                "mission_id": str(followup_identity.get("mission_id") or ""),
+                "reason": reason,
+            }
         if owner_episode_active or owner_episode_bound:
             complete = getattr(self.owner_agent_episode, "complete", None)
             if callable(complete):
@@ -3710,7 +3742,10 @@ class WakefulContentTaskRunner:
                         else None
                     ),
                 )
-        self.wakeful.mark_cognition(now)
+        rows["cognition_state_event"] = self.state_events.emit(
+            "MARK_COGNITION",
+            observed_at=now,
+        )
         return rows
 
     @staticmethod

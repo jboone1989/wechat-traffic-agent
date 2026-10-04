@@ -265,6 +265,12 @@ class ContentWakefulRuntime:
         self.core = WakefulCore(
             state_path=self.state_root / "application" / "wakeful.json",
             reflex=reflex,
+            plan_store=__import__(
+                "agent_runtime.wakeful.plan_store",
+                fromlist=["FilePlanStore"],
+            ).FilePlanStore(
+                self.state_root / "application" / "task_plans"
+            ),
         )
         from .resource_regulation import ResourceRegulator
         self.resource_regulator = ResourceRegulator(self.state_root)
@@ -2656,7 +2662,7 @@ class ContentWakefulRuntime:
             source="agent-network", kind="NETWORK_ERROR", observed_at=now,
             salience=0.75, novelty=0.4, urgency=0.65, persistence=0.7,
             payload_ref=f"network-error:{code or 'unknown'}",
-        ))
+        ), enqueue=False)
 
     def emit_network_evidence(self, *, evidence_ref: str, observed_at: datetime | None = None) -> None:
         now = observed_at or datetime.now(timezone.utc)
@@ -2666,7 +2672,7 @@ class ContentWakefulRuntime:
             source="agent-network", kind="NETWORK_EVIDENCE", observed_at=now,
             salience=0.65, novelty=0.55, urgency=0.35, persistence=0.55,
             payload_ref=f"network-evidence:{digest}",
-        ))
+        ), enqueue=False)
 
     def emit_x_mentions(self, *, count: int, observed_at: datetime | None = None) -> None:
         if int(count) <= 0:
@@ -2678,7 +2684,7 @@ class ContentWakefulRuntime:
             source="x", kind="X_MENTION", observed_at=now,
             salience=strength, novelty=min(1.0, 0.45 + 0.05 * int(count)),
             urgency=0.35, persistence=0.45, payload_ref=f"x-mentions-count:{int(count)}",
-        ))
+        ), enqueue=False)
 
     def emit_action_commitment(self, *, prediction_id: str, observed_at: datetime | None = None) -> dict:
         prediction_id = str(prediction_id or "").strip()

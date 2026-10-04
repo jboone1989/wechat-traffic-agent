@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import sys
 import time
 from typing import Any
 
@@ -96,6 +97,9 @@ class LocalHarnessXTransport:
         found = shutil.which("browser-harness")
         if found:
             return found
+        candidate = Path(sys.executable).resolve().with_name("browser-harness")
+        if candidate.is_file():
+            return str(candidate)
         candidate = Path.home() / "browser-use-venv" / "bin" / "browser-harness"
         if candidate.is_file():
             return str(candidate)

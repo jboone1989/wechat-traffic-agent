@@ -44,6 +44,18 @@ def learning_receipt(folder: Path, name: str, value: dict) -> None:
     _replace(canonical, value)
 
 
+def defer_memory_maintenance(folder: Path, result: dict) -> None:
+    """Keep retrieval-view maintenance off the publication-critical path."""
+    _put(folder / "memory_maintenance_pending.json", {
+        "schema_version": "ferro-memory-maintenance-pending.v1",
+        "status": "PENDING",
+        "cycle": str(result.get("cycle") or folder.name),
+        "topic": str(result.get("topic") or ""),
+        "tasks": ["ENRICH_RELATIONS", "CONSOLIDATE_SUMMARY_TREE"],
+        "reason": "learning is durable; retrieval-view maintenance must not block expression or publication",
+    })
+
+
 class ResearchFocus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     question: str = Field(min_length=10, max_length=400)
@@ -443,9 +455,7 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
         result = json.loads(result_path.read_text(encoding='utf-8'))
         await assess_application(runtime=runtime, folder=folder, state_root=state_root, topic=topic)
         remember_learning(state_root, result)
-        service=_memory_service(memory,state_root)
-        await service.enrich_relations(runtime,result)
-        await service.consolidate(runtime,topic)
+        defer_memory_maintenance(folder, result)
         return result
     from .memory_session import MemorySession, memory_decision, BudgetedRuntime
     service=_memory_service(memory,state_root)
@@ -623,8 +633,7 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
         result["next_query"] = application["assessment"]["next_query"]
     _put(folder / "learning_result.json", result)
     remember_learning(state_root, result)
-    await service.enrich_relations(runtime,result)
-    await service.consolidate(runtime,topic)
+    defer_memory_maintenance(folder, result)
     return result
 
 
