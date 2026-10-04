@@ -33,7 +33,7 @@ def _enabled(name: str, default: bool = True) -> bool:
 
 def _worker_specs() -> list[tuple[str, str]]:
     specs = [
-        ("ferro-state", "scripts/run_ferro_state_worker.py"),
+        ("ferro-neural", "scripts/run_ferro_neural_worker.py"),
         ("content-cognition", "scripts/run_content_cognition_worker.py"),
         ("resource-review", "scripts/run_resource_review_worker.py"),
         ("check-outcomes", "scripts/run_check_outcomes_worker.py"),
@@ -62,6 +62,8 @@ def _write_health(
             name: {
                 "pid": row.get("process").pid if row.get("process") is not None else None,
                 "restart_count": int(row.get("restart_count") or 0),
+                "failure_streak": int(row.get("failure_streak") or 0),
+                "restart_backoff_seconds": float(row.get("restart_backoff_seconds") or 0.0),
                 "last_exit_code": row.get("last_exit_code"),
                 "script": row["script"],
             }
@@ -94,13 +96,13 @@ def _start_worker(
     return process, log
 
 
-def _wait_for_state_writer(state_root: Path, process: subprocess.Popen) -> None:
-    path = state_root / "application" / "workers" / "ferro-state.json"
+def _wait_for_neural_writer(state_root: Path, process: subprocess.Popen) -> None:
+    path = state_root / "application" / "workers" / "ferro-neural.json"
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         if process.poll() is not None:
             raise RuntimeError(
-                f"ferro-state exited during startup with code {process.returncode}"
+                f"ferro-neural exited during startup with code {process.returncode}"
             )
         try:
             row = json.loads(path.read_text(encoding="utf-8"))
@@ -112,7 +114,7 @@ def _wait_for_state_writer(state_root: Path, process: subprocess.Popen) -> None:
         ):
             return
         time.sleep(0.1)
-    raise RuntimeError("ferro-state did not become ready")
+    raise RuntimeError("ferro-neural did not become ready")
 
 
 def main() -> int:
@@ -142,9 +144,13 @@ def main() -> int:
             "process": process,
             "log": log,
             "restart_count": 0,
+            "failure_streak": 0,
+            "restart_backoff_seconds": 0.0,
+            "next_restart_monotonic": 0.0,
+            "started_monotonic": time.monotonic(),
             "last_exit_code": None,
         }
-        _wait_for_state_writer(state_root, process)
+        _wait_for_neural_writer(state_root, process)
 
         for name, script in specs[1:]:
             process, log = _start_worker(
@@ -158,6 +164,10 @@ def main() -> int:
                 "process": process,
                 "log": log,
                 "restart_count": 0,
+                "failure_streak": 0,
+                "restart_backoff_seconds": 0.0,
+                "next_restart_monotonic": 0.0,
+                "started_monotonic": time.monotonic(),
                 "last_exit_code": None,
             }
 
@@ -166,25 +176,45 @@ def main() -> int:
         while not stopping:
             for name, row in workers.items():
                 process = row["process"]
+                now_mono = time.monotonic()
+                if process is None:
+                    if now_mono < float(row.get("next_restart_monotonic") or 0.0):
+                        continue
+                    new_process, new_log = _start_worker(
+                        name=name,
+                        script=row["script"],
+                        state_root=state_root,
+                        log_root=log_root,
+                    )
+                    row["process"] = new_process
+                    row["log"] = new_log
+                    row["started_monotonic"] = now_mono
+                    if name == "ferro-neural":
+                        _wait_for_neural_writer(state_root, new_process)
+                    continue
                 exit_code = process.poll()
                 if exit_code is None:
+                    if (
+                        int(row.get("failure_streak") or 0) > 0
+                        and now_mono - float(row.get("started_monotonic") or now_mono) >= 60.0
+                    ):
+                        row["failure_streak"] = 0
+                        row["restart_backoff_seconds"] = 0.0
                     continue
                 row["last_exit_code"] = int(exit_code)
                 row["restart_count"] = int(row["restart_count"]) + 1
-                row["log"].close()
+                row["failure_streak"] = int(row.get("failure_streak") or 0) + 1
+                delay = min(
+                    60.0,
+                    float(2 ** min(int(row["failure_streak"]) - 1, 6)),
+                )
+                row["restart_backoff_seconds"] = delay
+                row["next_restart_monotonic"] = now_mono + delay
+                if row.get("log") is not None and not row["log"].closed:
+                    row["log"].close()
+                row["process"] = None
                 if stopping:
                     continue
-                time.sleep(0.5)
-                new_process, new_log = _start_worker(
-                    name=name,
-                    script=row["script"],
-                    state_root=state_root,
-                    log_root=log_root,
-                )
-                row["process"] = new_process
-                row["log"] = new_log
-                if name == "ferro-state":
-                    _wait_for_state_writer(state_root, new_process)
             _write_health(state_root, workers, status="RUNNING")
             time.sleep(1.0)
 

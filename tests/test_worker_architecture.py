@@ -34,6 +34,30 @@ def test_business_workers_do_not_construct_wakeful_runtime():
         assert ".core.pop_ready(" not in text
 
 
+def test_neural_worker_owns_only_live_neural_runtime():
+    worker = (ROOT / "scripts" / "run_ferro_neural_worker.py").read_text(
+        encoding="utf-8"
+    )
+    runtime = (
+        ROOT / "src" / "wechat_traffic_agent" / "ferro_neural_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "FerroNeuralRuntime" in worker
+    assert "ContentWakefulRuntime" not in worker
+    assert "build_content_application(" not in worker
+
+    for forbidden in (
+        "FerroBrainLab(",
+        "FerroDreamEngine(",
+        "ResearchDreamEngine(",
+        "CrossDomainTransferLab(",
+        "DevelopmentalWorldTransferLab(",
+        "OpenEndedEvolution(",
+        "DevelopmentalArchitectureSearch(",
+    ):
+        assert forbidden not in runtime
+
+
 def test_only_content_worker_owns_main_application_runtime():
     content = (ROOT / "scripts" / "run_content_cognition_worker.py").read_text(encoding="utf-8")
     assert "build_content_application(" in content
@@ -54,7 +78,7 @@ def test_only_content_worker_owns_main_application_runtime():
 def test_supervisor_has_one_process_per_production_responsibility():
     text = (ROOT / "scripts" / "run_ferro_supervisor.py").read_text(encoding="utf-8")
     expected = {
-        "ferro-state",
+        "ferro-neural",
         "content-cognition",
         "check-x",
         "resource-review",
