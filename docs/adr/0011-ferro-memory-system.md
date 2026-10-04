@@ -1,7 +1,10 @@
 # ADR-0011 — Ferro Memory System architecture contract
 
-Status: Accepted
+Status: Accepted for memory semantics; repository ownership superseded by ADR-0012
 Date: 2026-09-19
+
+Ownership note (2026-10-04): the memory semantics below remain valid during
+migration, but Memory is now a reusable Agent Runtime capability rather than a Ferro-owned target subsystem.
 
 ## Context
 
