@@ -87,6 +87,12 @@ compatibility import only. Episodic, semantic and procedural memory continue to
 use the same formation behavior while their own modules are migrated
 independently.
 
+Episodic memory now lives in `agent_runtime.memory.episodic`.
+Ferro's `memory_episode.py` is a compatibility import only. The Runtime module
+also preserves the older lightweight `Episode` / `EpisodicMemory` API used
+by MemoryGovernor, so this migration does not replace or fork the existing
+Runtime episodic contract.
+
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
 ## Consequences

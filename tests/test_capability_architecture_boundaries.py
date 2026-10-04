@@ -86,3 +86,14 @@ def test_memory_formation_implementation_lives_in_runtime():
         "formation_audit.jsonl",
     ):
         assert forbidden not in source
+
+
+def test_episodic_memory_implementation_lives_in_runtime():
+    source = (PACKAGE / "memory_episode.py").read_text(encoding="utf-8")
+    assert "agent_runtime.memory.episodic" in source
+    for forbidden in (
+        "class EpisodeMemoryService",
+        "def _normalize_event",
+        "TRAJECTORY_CONSOLIDATION",
+    ):
+        assert forbidden not in source
