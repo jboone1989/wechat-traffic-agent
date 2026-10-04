@@ -64,8 +64,13 @@ Ferro's `enrich_relations` method only prepares the research fact packet and
 adapts its current structured cognition call into the Runtime relation
 generator.
 
-Semantic consolidation remains a legacy operation and is not part of this
-extraction commit.
+Semantic consolidation now lives in
+`agent_runtime.memory.consolidation`. Runtime owns the summary hierarchy,
+semantic clustering, vector reuse, child-version cache and stale-summary
+supersession.
+
+Ferro's `consolidate` method now only adapts its current embedding provider and
+structured cognition call into the generic Runtime consolidator.
 
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
