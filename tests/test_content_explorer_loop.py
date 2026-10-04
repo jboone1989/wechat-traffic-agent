@@ -13,6 +13,7 @@ from wechat_traffic_agent.content_goal_loop import (
     _market_expression_fingerprint, _candidate_available_for_pool,
     _normalize_mission_discovery, _compact_website_decision_view,
     _compact_writing_experience, _select_evidence_decision_context,
+    _worldview_decision_context,
     _generation_strategy_receipt,
     _resolve_technique_requirements, _required_techniques_applied,
     _learning_has_concrete_public_trace,
@@ -295,6 +296,83 @@ def test_select_evidence_context_stays_below_chatgpt_message_budget():
     assert "recent_experiments" not in context["x_growth_mission"]
     assert "raw_payload" not in encoded.decode("utf-8")
     assert "irrelevant_blob" not in encoded.decode("utf-8")
+
+
+def test_worldview_context_does_not_replay_full_evidence_or_learning_sources():
+    huge = "FULL_EVIDENCE_BODY_MARKER-" + ("x" * 80000)
+    related = "Adjusted on-chain metrics need out-of-sample validation before reliability claims."
+    source = {
+        "evidence_id": "web:large-source",
+        "source_kind": "web-search",
+        "source": "runtime:web.fetch",
+        "title": "Open Bitcoin Metrics validation study",
+        "summary": "A reproducible dataset documents Bitcoin metrics and explicit definitions.",
+        "url": "https://example.org/obm",
+        "observed_at": NOW.isoformat(),
+        "source_revision": "rev-1",
+        "evidence_refs": ["web:large-source", huge],
+        "evidence_text": huge,
+        "raw_payload": {"body": huge},
+    }
+    beliefs = [{
+        "proposition": (
+            related if index == 37 else
+            f"Belief {index}: reproducible measurement should be tested against unseen observations."
+        ),
+        "stance": 0.2,
+        "confidence": 0.5 + (index % 5) * 0.05,
+        "revision_count": index % 3,
+    } for index in range(80)]
+    learning = {
+        "cycle": "v2-large",
+        "topic": "onchain-metric-measurement-gap",
+        "focus": {
+            "question": "Do adjusted features improve unseen drawdown prediction?",
+            "search_query": "Bitcoin adjusted onchain features holdout prediction",
+            "why_interested": "This tests whether measurement corrections improve a real downstream task.",
+        },
+        "progress": "DEEPENED",
+        "progressed": True,
+        "learning_delta": "The source narrows which raw metrics can be reconstructed reproducibly.",
+        "facts": [{
+            "evidence_id": "web:large-source",
+            "quote": "A bounded exact excerpt about reproducible metric construction.",
+            "observation": "The dataset exposes explicit metric definitions.",
+        }],
+        "related_proposition": related,
+        "next_question": "Does the adjustment improve an unseen prediction benchmark?",
+        "next_query": "OBM adjusted feature unseen drawdown benchmark",
+        "rationale": "The measurement layer is clearer, but predictive value remains untested.",
+        "sources": [source],
+        "application": {"giant": huge},
+        "source_failures": [{"giant": huge}],
+    }
+
+    context = _worldview_decision_context(
+        topic="onchain-metric-measurement-gap",
+        reader_question="Can adjusted Bitcoin features improve unseen drawdown prediction?",
+        source_evidence=source,
+        current_beliefs=beliefs,
+        mind_goal={
+            "goal_id": "goal-1",
+            "origin": "INQUIRY",
+            "description": "Test whether better measurement improves downstream prediction.",
+            "giant": huge,
+        },
+        learning=learning,
+    )
+    encoded = json.dumps(context, ensure_ascii=False)
+
+    assert len(encoded.encode("utf-8")) < 24 * 1024
+    assert "FULL_EVIDENCE_BODY_MARKER" not in encoded
+    assert "evidence_text" not in encoded
+    assert "raw_payload" not in encoded
+    assert "application" not in context["learning"]
+    assert "source_failures" not in context["learning"]
+    assert context["current_beliefs"][0]["proposition"] == related
+    assert context["learning"]["related_proposition"] == related
+    assert context["durable_refs"]["source_evidence_id"] == "web:large-source"
+    assert context["durable_refs"]["full_evidence_retained_locally"] is True
 
 
 def test_writing_experience_projection_drops_large_cycle_payloads():
@@ -661,6 +739,45 @@ def test_selected_evidence_updates_persistent_mind_before_expression(tmp_path):
     form_call = next(call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:"))
     compose_call = next(call for call in runtime.calls if 'Create one original, useful web-ready content artifact' in call)
     assert runtime.calls.index(form_call) < runtime.calls.index(compose_call)
+
+
+def test_worldview_prompt_is_compact_but_durable_belief_keeps_full_evidence(tmp_path):
+    _runtime, legacy, publisher = setup(tmp_path)
+    huge_marker = "FULL-DURABLE-EVIDENCE-" + ("z" * 80000)
+    row = {
+        **candidate(),
+        "summary": str(candidate().get("summary") or ""),
+        "evidence_text": huge_marker,
+        "raw_payload": {"body": huge_marker},
+    }
+
+    class HugeEvidenceExplorer(Explorer):
+        async def collect(self, *, now, active):
+            self.collect_calls += 1
+            return {"items": [row], "failures": [], "observed_at": now.isoformat()}
+
+        async def filter_for_goal(self, **kwargs):
+            self.filter_calls += 1
+            return {"items": [row], "matches": [], "candidate_count": 1}
+
+    runtime, mind = BeliefRuntime(), BeliefMind()
+    worker = v2(
+        legacy,
+        runtime,
+        publisher,
+        mind=mind,
+        explorer=HugeEvidenceExplorer(),
+    )
+    result = asyncio.run(worker.run_once(now=NOW))
+
+    assert result["status"] == "PUBLISHED", result
+    form_call = next(
+        call for call in runtime.calls if call.startswith("FORM_WORLDVIEW:")
+    )
+    assert huge_marker not in form_call
+    assert len(form_call.encode("utf-8")) < 32 * 1024
+    assert mind.recorded[0]["source_evidence"]["evidence_text"] == huge_marker
+    assert mind.recorded[0]["source_evidence"]["raw_payload"]["body"] == huge_marker
 
 
 class QuietBeliefRuntime(BeliefRuntime):

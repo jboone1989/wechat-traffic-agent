@@ -639,6 +639,182 @@ def _compact_evidence_decision_view(rows, *, row_limit=8):
     return compact
 
 
+def _bounded_evidence_refs(value, *, limit=5):
+    """Keep durable reference identifiers, never arbitrary source text."""
+    return [
+        str(ref)
+        for ref in list((value or {}).get("evidence_refs") or ())
+        if 0 < len(str(ref)) <= 200
+    ][: max(1, min(int(limit), 8))]
+
+
+def _compact_worldview_beliefs(
+    rows,
+    *,
+    related_proposition=None,
+    limit=12,
+):
+    """Keep the exact related belief first, then the existing confidence order."""
+    visible = [row for row in list(rows or ()) if isinstance(row, dict)]
+    related = str(related_proposition or "").strip()
+    if related:
+        visible.sort(
+            key=lambda row: 0
+            if str(row.get("proposition") or "") == related
+            else 1
+        )
+    compact = []
+    seen = set()
+    for row in visible:
+        proposition = str(row.get("proposition") or "").strip()
+        if not proposition or proposition in seen:
+            continue
+        seen.add(proposition)
+        compact.append({
+            "proposition": proposition[:500],
+            "stance": row.get("stance"),
+            "confidence": row.get("confidence"),
+            "revision_count": row.get("revision_count"),
+        })
+        if len(compact) >= max(1, min(int(limit), 24)):
+            break
+    return compact
+
+def _compact_worldview_learning(value):
+    """Project research conclusions without replaying acquired source bodies."""
+    if not isinstance(value, dict):
+        return None
+    focus = value.get("focus") if isinstance(value.get("focus"), dict) else {}
+    facts = []
+    for fact in list(value.get("facts") or ())[:5]:
+        if not isinstance(fact, dict):
+            continue
+        facts.append({
+            "evidence_id": str(fact.get("evidence_id") or "")[:160],
+            "quote": str(fact.get("quote") or "")[:700],
+            "observation": str(fact.get("observation") or "")[:600],
+        })
+    sources = []
+    for row in list(value.get("sources") or ())[:5]:
+        if not isinstance(row, dict):
+            continue
+        compact = _compact_evidence_decision_view([row], row_limit=1)[0]
+        compact["evidence_refs"] = _bounded_evidence_refs(row, limit=3)
+        sources.append(compact)
+    return {
+        "cycle": str(value.get("cycle") or "")[:120],
+        "topic": str(value.get("topic") or "")[:120],
+        "focus": {
+            "question": str(focus.get("question") or "")[:400],
+            "search_query": str(focus.get("search_query") or "")[:300],
+            "why_interested": str(focus.get("why_interested") or "")[:600],
+        },
+        "progress": value.get("progress"),
+        "progressed": bool(value.get("progressed")),
+        "learning_delta": str(value.get("learning_delta") or "")[:800],
+        "facts": facts,
+        "related_proposition": value.get("related_proposition"),
+        "next_question": str(value.get("next_question") or "")[:500],
+        "next_query": str(value.get("next_query") or "")[:300],
+        "rationale": str(value.get("rationale") or "")[:600],
+        "sources": sources,
+        "source_projection": {
+            "full_source_bodies": "retained in learning_result.json and evidence archive",
+            "source_count": len(value.get("sources") or ()),
+        },
+    }
+
+
+def _worldview_decision_context(
+    *,
+    topic,
+    reader_question,
+    source_evidence,
+    current_beliefs,
+    mind_goal,
+    learning,
+):
+    """Bound FORM_WORLDVIEW input while preserving canonical evidence locally."""
+    compact_learning = _compact_worldview_learning(learning)
+    source_view = (
+        _compact_evidence_decision_view([source_evidence], row_limit=1)[0]
+        if isinstance(source_evidence, dict)
+        else {}
+    )
+    if isinstance(source_evidence, dict):
+        source_view["evidence_refs"] = _bounded_evidence_refs(
+            source_evidence, limit=3
+        )
+    related = (
+        compact_learning.get("related_proposition")
+        if isinstance(compact_learning, dict)
+        else None
+    )
+    return {
+        "topic": str(topic or "")[:120],
+        "reader_question": str(reader_question or "")[:400],
+        "source_evidence": source_view,
+        "current_beliefs": _compact_worldview_beliefs(
+            current_beliefs,
+            related_proposition=related,
+        ),
+        "mind_goal": _compact_selection_mind_plan({"goal": mind_goal}).get(
+            "goal", {}
+        ),
+        "learning": compact_learning,
+        "durable_refs": {
+            "source_evidence_id": (
+                str(source_evidence.get("evidence_id") or "")[:160]
+                if isinstance(source_evidence, dict)
+                else ""
+            ),
+            "full_evidence_retained_locally": True,
+        },
+    }
+
+
+def _compact_generation_evidence(value):
+    """Give drafting only the attributed facts needed to write, never source bodies."""
+    if not isinstance(value, dict) or not value:
+        return None
+    compact = _compact_evidence_decision_view([value], row_limit=1)[0]
+    compact["summary"] = str(value.get("summary") or "")[:1600]
+    compact["evidence_refs"] = _bounded_evidence_refs(value, limit=5)
+    return compact
+
+
+def _compact_generation_evidence_floor(value):
+    """Project the evidence-floor decision without embedding counter-source bodies."""
+    if hasattr(value, "model_dump"):
+        payload = value.model_dump(mode="json")
+    elif isinstance(value, dict):
+        payload = dict(value)
+    else:
+        return {}
+    payload["counter_evidence"] = _compact_generation_evidence(
+        payload.get("counter_evidence")
+    )
+    return payload
+
+
+def _compact_generation_related_articles(rows):
+    """Keep navigation context, not previously published article bodies."""
+    compact = []
+    for row in list(rows or ())[:3]:
+        if not isinstance(row, dict):
+            continue
+        compact.append({
+            "artifact_id": str(row.get("artifact_id") or "")[:160],
+            "title": str(row.get("title") or "")[:180],
+            "summary": str(row.get("summary") or "")[:600],
+            "tags": [
+                str(tag)[:80]
+                for tag in list(row.get("tags") or ())[:8]
+            ],
+        })
+    return compact
+
+
 def _compact_selection_traffic(value, *, topic_limit=12):
     """Keep only traffic signals that can change an evidence-angle decision."""
     if not isinstance(value, dict):
@@ -2209,12 +2385,14 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'stance ranges from -1 (evidence argues strongly against the proposition) to +1 (strongly supports it). '
                     'reliability is how fit this evidence is for updating that proposition, not a claim of truth. support is the evidence support used inside the inquiry. '
                     'Separate observed facts from interpretation and do not invent facts beyond source_evidence. Return JSON only.\n'
-                    + json.dumps({
-                        'topic': selection.topic, 'reader_question': selection.reader_question,
-                        'source_evidence': selected, 'current_beliefs': current_beliefs,
-                        'mind_goal': mind_plan.get('goal'),
-                        'learning': learning_result,
-                    }, ensure_ascii=False),
+                    + json.dumps(_worldview_decision_context(
+                        topic=selection.topic,
+                        reader_question=selection.reader_question,
+                        source_evidence=selected,
+                        current_beliefs=current_beliefs,
+                        mind_goal=mind_plan.get('goal'),
+                        learning=learning_result,
+                    ), ensure_ascii=False),
                     WorldviewDecision,
                 )
             if learning_result is not None and learning_result['related_proposition'] is not None:
@@ -2696,7 +2874,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if scope_downgraded else ''
         )
         expression_context = ({
-            'learning': learning_result,
+            'learning': _compact_worldview_learning(learning_result),
             'agent_cognition': cognition_decision.model_dump(mode='json'),
             'worldview_decision': belief_decision.model_dump(mode='json'),
             'worldview_update': worldview_update,
@@ -2717,10 +2895,20 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                  'technique_requirements': technique_requirements,
                  'social_style_context': social_style_context,
                  'prospective_experiment': experiment_payload, 'content_strategy': generation_strategy,
-                 'evidence_floor': floor_plan.model_dump(mode='json'),
+                 'evidence_floor': _compact_generation_evidence_floor(floor_plan),
                  'agent_expression_context': expression_context,
-                 'source_material': {'evidence': selected, 'market_context_evidence': market_companion,
-                                     'counter_evidence': counter_payload, 'existing_articles': related},
+                 'source_material': {
+                     'evidence': _compact_generation_evidence(selected),
+                     'market_context_evidence': _compact_generation_evidence(
+                         market_companion
+                     ),
+                     'counter_evidence': _compact_generation_evidence(
+                         counter_payload
+                     ),
+                     'existing_articles': _compact_generation_related_articles(
+                         related
+                     ),
+                 },
                  'writing_requirements': (
                      (f'Write a concise {expression_kind.lower().replace("_", " ")}. Do not pad it to reach a length target; stop when the thought is complete. ' if is_short_note else f'Write at least {minimum_words} words. ')
                      + ('For a research note, clearly state what is known, what remains unresolved, and what evidence would resolve it. ' if expression_kind == 'RESEARCH_NOTE' else '')
