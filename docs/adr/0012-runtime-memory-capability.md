@@ -21,6 +21,16 @@ The first stable surface is:
 - `changes`
 - `health`
 
+## Migration status
+
+The canonical SQLite store has been physically extracted to
+`agent_runtime.memory.durable`. Ferro's `memory_system.py` now only preserves
+the legacy import path and retrieval-view transition hook while existing callers
+move to the Runtime capability boundary.
+
+Retrieval/indexing and cognition-assisted memory operations are intentionally
+not part of this extraction commit.
+
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
 ## Consequences

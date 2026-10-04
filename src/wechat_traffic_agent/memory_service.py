@@ -51,6 +51,7 @@ class MemoryService:
                 db.execute("ALTER TABLE memory_nodes ADD COLUMN vector_revision TEXT NOT NULL DEFAULT ''")
             if 'observed_at' not in {r['name'] for r in db.execute('PRAGMA table_info(evidence_sources)')}:
                 db.execute("ALTER TABLE evidence_sources ADD COLUMN observed_at TEXT NOT NULL DEFAULT ''")
+        self.store.set_transition_hook(self._on_canonical_transition)
         self.sync()
         with self.store._connect() as db:
             missing=db.execute("SELECT * FROM evidence_sources s WHERE NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.node_id='source:'||s.source_id)").fetchall()
@@ -90,6 +91,11 @@ class MemoryService:
             db.execute("DELETE FROM memory_dependencies WHERE parent_id=?", (node_id,))
             db.executemany("INSERT OR IGNORE INTO memory_dependencies VALUES(?,?)", [(node_id,c) for c in children])
         return True
+
+    @staticmethod
+    def _on_canonical_transition(db, memory_id, status):
+        MemoryService.invalidate(db, memory_id)
+        db.execute("UPDATE memory_nodes SET status=? WHERE node_id=?", (status, memory_id))
 
     @staticmethod
     def invalidate(db, child_id):
