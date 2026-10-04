@@ -28,8 +28,17 @@ The canonical SQLite store has been physically extracted to
 the legacy import path and retrieval-view transition hook while existing callers
 move to the Runtime capability boundary.
 
-Retrieval/indexing and cognition-assisted memory operations are intentionally
-not part of this extraction commit.
+Deterministic retrieval/indexing has also moved to
+`agent_runtime.memory.retrieval`: canonical synchronization, FTS, validity,
+graph navigation, changes and ranking fusion are now reusable Runtime code.
+Ferro's MemoryService delegates these operations.
+
+Embedding/HNSW remain in Ferro for this slice and are injected as a dense-search
+implementation. This keeps FastEmbed/hnswlib out of Runtime and preserves the
+existing Python AI ecosystem while the module boundary stabilizes.
+
+Cognition-assisted contextualization, relation enrichment and consolidation
+remain legacy operations and are not part of this extraction commit.
 
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 

@@ -2,23 +2,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import hashlib
 import json
 from pathlib import Path
-import re
+
+from agent_runtime.memory.retrieval import (
+    DurableMemoryRetrieval,
+    fingerprint,
+    terms,
+)
 
 from .memory_system import CanonicalMemoryStore
-from .memory_vector import memory_document
-
-
-def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-
-
-def terms(text):
-    english = re.findall(r"[a-z0-9_]{2,}", text.casefold())
-    chinese = "".join(re.findall(r"[\u3400-\u9fff]", text))
-    return list(dict.fromkeys(english + [chinese[i:i+2] for i in range(len(chinese)-1)]))
 
 
 class MemoryService:
@@ -26,116 +19,41 @@ class MemoryService:
         self.store = CanonicalMemoryStore(Path(state_root))
         self.root = self.store.root
         self.models = models
+        self.retrieval = DurableMemoryRetrieval(self.store)
         with self.store._connect() as db:
             db.executescript("""
-                CREATE TABLE IF NOT EXISTS memory_nodes (
-                    node_id TEXT PRIMARY KEY, node_type TEXT NOT NULL,
-                    body TEXT NOT NULL, prefix TEXT NOT NULL, metadata TEXT NOT NULL,
-                    version TEXT NOT NULL, status TEXT NOT NULL, vector TEXT,
-                    model_id TEXT NOT NULL DEFAULT '', updated_seq INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS memory_dependencies (
-                    parent_id TEXT NOT NULL, child_id TEXT NOT NULL,
-                    PRIMARY KEY(parent_id, child_id)
-                );
-                CREATE INDEX IF NOT EXISTS memory_dependency_child_idx ON memory_dependencies(child_id);
-                CREATE INDEX IF NOT EXISTS memory_nodes_status_idx ON memory_nodes(status,node_type);
-                CREATE VIRTUAL TABLE IF NOT EXISTS memory_nodes_fts USING fts5(node_id UNINDEXED, document);
                 CREATE TABLE IF NOT EXISTS evidence_sources (source_id TEXT PRIMARY KEY,archive TEXT NOT NULL,topic TEXT NOT NULL,source_version TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS memory_model_cache (cache_key TEXT PRIMARY KEY,result TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS memory_node_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT,node_id TEXT NOT NULL,status TEXT NOT NULL,version TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS memory_service_meta (key TEXT PRIMARY KEY, value TEXT);
             """)
         with self.store._connect() as db:
-            if 'vector_revision' not in {r['name'] for r in db.execute('PRAGMA table_info(memory_nodes)')}:
-                db.execute("ALTER TABLE memory_nodes ADD COLUMN vector_revision TEXT NOT NULL DEFAULT ''")
             if 'observed_at' not in {r['name'] for r in db.execute('PRAGMA table_info(evidence_sources)')}:
                 db.execute("ALTER TABLE evidence_sources ADD COLUMN observed_at TEXT NOT NULL DEFAULT ''")
-        self.store.set_transition_hook(self._on_canonical_transition)
+        self.store.set_transition_hook(self.retrieval.canonical_transition_hook)
         self.sync()
         with self.store._connect() as db:
             missing=db.execute("SELECT * FROM evidence_sources s WHERE NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.node_id='source:'||s.source_id)").fetchall()
         for row in missing: self.ingest_source(json.loads(Path(row['archive']).read_text()),topic=row['topic'])
 
     def _node(self, node_id):
-        with self.store._connect() as db:
-            row = db.execute("SELECT * FROM memory_nodes WHERE node_id=?", (node_id,)).fetchone()
-        if row is None:
-            raise KeyError(node_id)
-        node = dict(row)
-        node["metadata"] = json.loads(node["metadata"])
-        return node
+        return self.retrieval.node(node_id)
 
     def put_node(self, node_id, node_type, body, metadata, *, children=(), prefix="", status="ACTIVE", seq=0):
-        if status=='ACTIVE' and children:
-            with self.store._connect() as db:
-                stale=db.execute("SELECT 1 FROM memory_nodes WHERE node_id IN (SELECT value FROM json_each(?)) AND (status!='ACTIVE' OR julianday(json_extract(metadata,'$.valid_until'))<=julianday('now')) LIMIT 1",(json.dumps(list(children)),)).fetchone()
-            if stale:status='DIRTY'
-        version = fingerprint([body, metadata, list(children), prefix, status])
-        with self.store._connect() as db:
-            previous = db.execute("SELECT version,status FROM memory_nodes WHERE node_id=?", (node_id,)).fetchone()
-            if previous and previous["version"] == version and previous["status"] == status:
-                return False
-            if previous:
-                self.invalidate(db, node_id)
-            seq=db.execute("INSERT INTO memory_node_changes(node_id,status,version) VALUES(?,?,?)",(node_id,status,version)).lastrowid
-            db.execute("""INSERT INTO memory_nodes(node_id,node_type,body,prefix,metadata,version,status,updated_seq)
-                VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(node_id) DO UPDATE SET body=excluded.body,
-                prefix=excluded.prefix, metadata=excluded.metadata,version=excluded.version,
-                status=excluded.status,vector=NULL,model_id='',updated_seq=excluded.updated_seq""",
-                (node_id,node_type,body,prefix,json.dumps(metadata,ensure_ascii=False),version,status,seq))
-            db.execute("DELETE FROM memory_nodes_fts WHERE node_id=?", (node_id,))
-            if status == "ACTIVE":
-                document = prefix + " " + body
-                db.execute("INSERT INTO memory_nodes_fts VALUES(?,?)",(node_id," ".join(terms(document))+" "+document))
-            db.execute("DELETE FROM memory_dependencies WHERE parent_id=?", (node_id,))
-            db.executemany("INSERT OR IGNORE INTO memory_dependencies VALUES(?,?)", [(node_id,c) for c in children])
-        return True
-
-    @staticmethod
-    def _on_canonical_transition(db, memory_id, status):
-        MemoryService.invalidate(db, memory_id)
-        db.execute("UPDATE memory_nodes SET status=? WHERE node_id=?", (status, memory_id))
+        return self.retrieval.put_node(
+            node_id,
+            node_type,
+            body,
+            metadata,
+            children=children,
+            prefix=prefix,
+            status=status,
+        )
 
     @staticmethod
     def invalidate(db, child_id):
-        rows=db.execute("""WITH RECURSIVE affected(id) AS (
-            SELECT parent_id FROM memory_dependencies WHERE child_id=?
-            UNION SELECT d.parent_id FROM memory_dependencies d JOIN affected a ON d.child_id=a.id
-        ) SELECT n.node_id,n.version FROM memory_nodes n JOIN affected a ON a.id=n.node_id""",(child_id,)).fetchall()
-        for row in rows:
-            seq=db.execute("INSERT INTO memory_node_changes(node_id,status,version) VALUES(?,?,?)",(row['node_id'],'DIRTY',row['version'])).lastrowid
-            db.execute("UPDATE memory_nodes SET status='DIRTY',updated_seq=? WHERE node_id=?",(seq,row['node_id']))
+        DurableMemoryRetrieval.invalidate(db, child_id)
 
     def sync(self):
-        with self.store._connect() as db:
-            row = db.execute("SELECT value FROM memory_service_meta WHERE key='event_cursor'").fetchone()
-            cursor = int(row[0]) if row else 0
-            events = db.execute("SELECT event_seq,memory_id FROM memory_events WHERE event_seq>? ORDER BY event_seq",(cursor,)).fetchall()
-        for event in events:
-            memory = self.store.get_memory(event["memory_id"])
-            if memory is None:
-                continue
-            payload = memory["payload"]
-            metadata = {"memory_id":memory["memory_id"],"text":memory["text"],"kind":memory["kind"],"memory_type":memory["memory_type"],
-                        "topics":memory["topics"],"entities":memory["entities"],"payload":payload,
-                        "observed_at":memory["observed_at"],"valid_from":memory["valid_from"],"valid_until":memory["valid_until"],
-                        "confidence":memory["confidence"],"canonical_version":memory["content_hash"]}
-            prefix = f"{memory['memory_type']} {memory['kind']}; topics: {', '.join(memory['topics'])}; entities: {', '.join(memory['entities'])}; observed {memory['observed_at']}"
-            self.put_node(memory["memory_id"],"memory",memory_document(memory),metadata,
-                          children=list(dict.fromkeys([*memory["evidence_refs"],*payload.get("derived_from",[])])),
-                          prefix=prefix,status=memory["status"],seq=event["event_seq"])
-        if events:
-            with self.store._connect() as db:
-                db.execute("INSERT OR REPLACE INTO memory_service_meta VALUES('event_cursor',?)",(str(events[-1]["event_seq"]),))
-        # Time alone can invalidate a source of derived claims, without a new
-        # canonical event. Record the expiry once and dirty all ancestors.
-        with self.store._connect() as db:
-            expired=db.execute("SELECT node_id,version FROM memory_nodes WHERE status='ACTIVE' AND julianday(json_extract(metadata,'$.valid_until'))<=julianday('now')").fetchall()
-            for row in expired:
-                self.invalidate(db,row['node_id'])
-                seq=db.execute("INSERT INTO memory_node_changes(node_id,status,version) VALUES(?,?,?)",(row['node_id'],'EXPIRED',row['version'])).lastrowid
-                db.execute("UPDATE memory_nodes SET status='EXPIRED',updated_seq=? WHERE node_id=?",(seq,row['node_id']))
+        self.retrieval.sync()
 
     def ingest_source(self, source, *, topic="", activate=True, observed_at=""):
         body = str(source.get("evidence_text") or source.get("summary") or "")
@@ -334,20 +252,10 @@ class MemoryService:
         with self.store._connect() as db: db.execute("INSERT OR REPLACE INTO memory_service_meta VALUES(?,?)",(key,'done'))
 
     def _valid(self, node):
-        if node["status"]!="ACTIVE":
-            return False
-        until=node["metadata"].get("valid_until")
-        start=node["metadata"].get("valid_from")
-        def date(value):
-            parsed=datetime.fromisoformat(value.replace("Z","+00:00"))
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        now=datetime.now(timezone.utc)
-        return (not until or date(until)>now) and (not start or date(start)<=now)
+        return self.retrieval.valid(node)
 
     def _card(self,node):
-        return {"node_id":node["node_id"],"type":node["node_type"],"text":node["body"][:700],
-                "context":node["prefix"][:300],"version":node["version"],"status":node["status"],
-                "topics":node["metadata"].get("topics",[]),"change_seq":node["updated_seq"]}
+        return self.retrieval.card(node)
 
     def _models(self):
         if self.models is None:
@@ -375,102 +283,26 @@ class MemoryService:
             filter_sql=filter_sql,filter_params=filter_params,limit=limit)
 
     def search(self,query,*,topic="",limit=8,node_types=(),source_ids=()):
-        self.sync()
-        words=terms(query)
-        filter_sql="n.status='ACTIVE'"
-        filter_params=[]
-        if node_types:
-            filter_sql += " AND n.node_type IN (" + ",".join("?" for _ in node_types) + ")"
-            filter_params.extend(node_types)
-        if source_ids:
-            filter_sql += " AND json_extract(n.metadata,'$.evidence_id') IN (SELECT value FROM json_each(?))"
-            filter_params.append(json.dumps(list(source_ids)))
-        match=" OR ".join('"'+w.replace('"','""')+'"' for w in words[:32])
-        with self.store._connect() as db:
-            lexical=db.execute("SELECT memory_nodes_fts.node_id,bm25(memory_nodes_fts) score FROM memory_nodes_fts JOIN memory_nodes n ON n.node_id=memory_nodes_fts.node_id WHERE memory_nodes_fts MATCH ? AND "+filter_sql+" ORDER BY score LIMIT 32",[match,*filter_params]).fetchall() if match else []
-        dense=self.dense_search(query,filter_sql=filter_sql,filter_params=filter_params,limit=32)
-        scores={}
-        for ranks in ([(r["node_id"],r["score"]) for r in lexical],dense):
-            for rank,(node_id,_) in enumerate(ranks,1):
-                scores[node_id]=scores.get(node_id,0)+1/(60+rank)
-        nodes=[]
-        for node_id,score in sorted(scores.items(),key=lambda r:-r[1]):
-            node=self._node(node_id)
-            if self._valid(node) and (not node_types or node["node_type"] in node_types):
-                nodes.append(node)
-        # Structured lookup keeps a durable topic visible even without lexical overlap.
-        if topic and not source_ids:
-            with self.store._connect() as db:
-                ids=db.execute("SELECT node_id FROM memory_nodes WHERE status='ACTIVE' AND EXISTS (SELECT 1 FROM json_each(metadata,'$.topics') WHERE value=?) LIMIT 16",(topic,)).fetchall()
-            present={n["node_id"] for n in nodes}
-            for row in ids:
-                node=self._node(row[0])
-                if node["node_id"] not in present and self._valid(node) and (not node_types or node["node_type"] in node_types): nodes.append(node)
-        if not nodes and source_ids:
-            # Staged excerpts remain reachable before contextualization. This
-            # bootstrap uses lexical/structured candidates and the cross-encoder;
-            # their semantic vectors are created only after an LLM prefix exists.
-            with self.store._connect() as db:
-                staged=db.execute("SELECT node_id FROM memory_nodes n WHERE "+filter_sql+" ORDER BY json_extract(metadata,'$.start'),node_id LIMIT 32",filter_params).fetchall()
-            nodes=[self._node(r[0]) for r in staged]
-            nodes=[n for n in nodes if self._valid(n)]
-        nodes=nodes[:32]
-        if not nodes:
-            return []
-        # The hybrid first stage already combines lexical BM25 and dense ANN
-        # rankings with reciprocal-rank fusion. Cross-encoder reranking loaded
-        # another ~700 MiB model for every search and could kill the entire
-        # cognition cycle even though recall had already succeeded. Keep the
-        # hot path on the fused retrieval ranking; heavier reranking belongs in
-        # optional/offline evaluation, not the publication-critical path.
-        return [self._card(node) for node in nodes[:limit]]
+        return self.retrieval.search(
+            query,
+            topic=topic,
+            limit=limit,
+            node_types=node_types,
+            source_ids=source_ids,
+            dense_search=self.dense_search,
+        )
 
     def read(self,node_id,*,offset=0):
-        self.sync()
-        node=self._node(node_id)
-        if not self._valid(node):
-            return {"status":node["status"],"needs_refresh":True,"version":node["version"]}
-        body=node["body"]
-        return {"type":node["node_type"],"text":body[offset:offset+900],"offset":offset,
-                "next_offset":offset+900 if offset+900<len(body) else None,
-                "version":node["version"],"context":node["prefix"][:300],
-                "evidence_id":node["metadata"].get("evidence_id"),
-                "source_start":node["metadata"].get("start"),"node_id":node_id}
+        return self.retrieval.read(node_id, offset=offset)
 
     def expand(self,node_id,*,offset=0):
-        self.sync()
-        node=self._node(node_id)
-        if not self._valid(node):
-            raise ValueError("summary or source version is stale; search again")
-        with self.store._connect() as db:
-            children=db.execute("SELECT d.child_id FROM memory_dependencies d JOIN memory_nodes n ON n.node_id=d.child_id WHERE parent_id=? ORDER BY COALESCE(json_extract(n.metadata,'$.start'),0),child_id LIMIT 8 OFFSET ?",(node_id,offset)).fetchall()
-        nodes=[self._node(r[0]) for r in children]
-        return [self._card(n) for n in nodes if self._valid(n)]
+        return self.retrieval.expand(node_id, offset=offset)
 
     def relations(self,node_id,*,offset=0):
-        self.sync()
-        node=self._node(node_id)
-        if not self._valid(node): raise ValueError("relationship origin is stale; search again")
-        entities=node["metadata"].get("entities",[])
-        with self.store._connect() as db:
-            rows=db.execute("""SELECT DISTINCT n.node_id FROM memory_nodes n WHERE n.status='ACTIVE' AND (
-                n.node_id IN (SELECT child_id FROM memory_dependencies WHERE parent_id=?) OR
-                n.node_id IN (SELECT parent_id FROM memory_dependencies WHERE child_id=?) OR
-                EXISTS (SELECT 1 FROM json_each(n.metadata,'$.entities') e WHERE e.value IN (SELECT value FROM json_each(?))))
-                ORDER BY n.updated_seq DESC LIMIT 8 OFFSET ?""",(node_id,node_id,json.dumps(entities),offset)).fetchall()
-        nodes=[self._node(r[0]) for r in rows if r[0]!=node_id]
-        return [self._card(n) for n in nodes if self._valid(n)]
+        return self.retrieval.relations(node_id, offset=offset)
 
     def changes(self,since=0,*,limit=8):
-        self.sync()
-        with self.store._connect() as db:
-            rows=db.execute("SELECT * FROM memory_node_changes WHERE seq>? ORDER BY seq LIMIT ?",(since,limit)).fetchall()
-        result=[]
-        for row in rows:
-            try: card=self._card(self._node(row['node_id']))
-            except KeyError: card={"node_id":row['node_id'],"type":"removed_view","text":"","status":"NEEDS_REBUILD"}
-            result.append({**card,"change_seq":row['seq'],"event_status":row['status'],"event_version":row['version']})
-        return result
+        return self.retrieval.changes(since, limit=limit)
 
     def rebuild_views(self):
         # Canonical memories, event history, evidence files and active source
@@ -478,10 +310,10 @@ class MemoryService:
         with self.store._connect() as db:
             sources=db.execute("SELECT * FROM evidence_sources").fetchall()
             db.execute('CREATE TABLE IF NOT EXISTS memory_ann_state(node_id TEXT PRIMARY KEY,label INTEGER NOT NULL,revision TEXT NOT NULL,status TEXT NOT NULL)')
-            for table in ('memory_nodes','memory_dependencies','memory_nodes_fts','memory_model_cache','memory_ann_state'):
+            for table in ('memory_model_cache','memory_ann_state'):
                 db.execute('DELETE FROM '+table)
-            db.execute("DELETE FROM memory_service_meta WHERE key IN ('event_cursor','ann_generation') OR key LIKE 'summary_root:%'")
-        self.sync()
+            db.execute("DELETE FROM memory_service_meta WHERE key='ann_generation' OR key LIKE 'summary_root:%'")
+        self.retrieval.clear_canonical_views()
         for source in sources:
             self.ingest_source(json.loads(Path(source['archive']).read_text()),topic=source['topic'])
 
