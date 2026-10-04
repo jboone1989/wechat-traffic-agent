@@ -48,8 +48,16 @@ source-view rebuild and evidence-revision invalidation to that module.
 The source archive remains byte-for-byte compatible with the existing state
 layout; no second memory database or source store is created.
 
-Cognition-assisted contextualization, relation enrichment and consolidation
-remain legacy operations and are not part of this extraction commit.
+Evidence contextualization now lives in
+`agent_runtime.memory.contextualization`. Runtime owns pending-evidence
+selection, bounded request construction, output validation, prefix persistence,
+FTS refresh and vector invalidation.
+
+Ferro retains only the adapter that invokes its current cognition provider and
+returns `{chunk_ref: prefix}` to the Runtime contextualizer.
+
+Relation enrichment and consolidation remain legacy operations and are not part
+of this extraction commit.
 
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
