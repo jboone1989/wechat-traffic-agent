@@ -33,9 +33,13 @@ Deterministic retrieval/indexing has also moved to
 graph navigation, changes and ranking fusion are now reusable Runtime code.
 Ferro's MemoryService delegates these operations.
 
-Embedding/HNSW remain in Ferro for this slice and are injected as a dense-search
-implementation. This keeps FastEmbed/hnswlib out of Runtime and preserves the
-existing Python AI ecosystem while the module boundary stabilizes.
+The existing local embedding/HNSW implementation now lives in the optional
+`agent_runtime.memory.local_retrieval` provider. It retains lazy FastEmbed and
+hnswlib loading plus the transient bounded inference worker.
+
+Ferro's historical `memory_models.py` and `memory_ann.py` are compatibility
+imports only. Architecture tests forbid FastEmbed/HNSW implementation code from
+returning to those files.
 
 Evidence/source ingestion now lives in `agent_runtime.memory.sources`.
 Ferro delegates exact source archival, version selection, chunk creation,

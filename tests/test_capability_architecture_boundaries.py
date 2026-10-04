@@ -50,3 +50,13 @@ def test_runtime_memory_adapter_is_the_new_boundary():
     source = adapter.read_text(encoding="utf-8")
     assert "MEMORY_CAPABILITY_ID" in source
     assert "LegacyFerroMemoryCapabilityProvider" in source
+
+
+def test_local_semantic_retrieval_implementation_does_not_return_to_ferro():
+    models = (PACKAGE / "memory_models.py").read_text(encoding="utf-8")
+    ann = (PACKAGE / "memory_ann.py").read_text(encoding="utf-8")
+    assert "agent_runtime.memory.local_retrieval" in models
+    assert "agent_runtime.memory.local_retrieval" in ann
+    for forbidden in ("fastembed", "hnswlib", "systemd-run", "TextEmbedding"):
+        assert forbidden not in models
+        assert forbidden not in ann
