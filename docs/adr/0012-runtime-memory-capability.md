@@ -81,6 +81,12 @@ migrate.
 Architecture tests forbid Ferro-specific receipt file names and receipt kinds
 from returning to MemoryService.
 
+The common durable-memory formation pipeline now lives in
+`agent_runtime.memory.formation`. Ferro's `memory_formation.py` is a
+compatibility import only. Episodic, semantic and procedural memory continue to
+use the same formation behavior while their own modules are migrated
+independently.
+
 ADR-0011 remains authoritative for the semantics of existing stored memories during migration, but its repository ownership assumption is superseded by this ADR.
 
 ## Consequences

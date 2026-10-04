@@ -75,3 +75,14 @@ def test_learning_receipt_projection_stays_out_of_memory_service():
     ):
         assert ferro_receipt_detail not in memory_service
         assert ferro_receipt_detail in bridge
+
+
+def test_memory_formation_implementation_lives_in_runtime():
+    source = (PACKAGE / "memory_formation.py").read_text(encoding="utf-8")
+    assert "agent_runtime.memory.formation" in source
+    for forbidden in (
+        "class MemoryFormationPipeline",
+        "def _core_change_explicit",
+        "formation_audit.jsonl",
+    ):
+        assert forbidden not in source
