@@ -20,7 +20,8 @@ from pydantic import BaseModel,Field
 from wechat_traffic_agent.agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 from wechat_traffic_agent.content_loop import ReceiptRuntime
 from wechat_traffic_agent.memory_service import MemoryService
-from wechat_traffic_agent.memory_session import MemorySession,memory_decision
+from agent_runtime.memory.session import MemorySession
+from wechat_traffic_agent.runtime_memory_adapter import memory_decision
 
 original='The worker saves its invocation identity before an external effect. After a restart, it reconciles an unfinished operation with the same identity. A checkpoint alone does not prove the external operation completed.'
 

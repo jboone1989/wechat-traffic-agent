@@ -108,3 +108,12 @@ def test_semantic_memory_implementation_lives_in_runtime():
         "def remember_relation",
     ):
         assert forbidden not in source
+
+
+def test_retrieval_controller_is_owned_by_runtime():
+    assert not (PACKAGE / "memory_session.py").exists()
+    for name in ("learning_research.py", "learning_application.py", "content_loop.py"):
+        source = (PACKAGE / name).read_text()
+        assert "agent_runtime.memory.session" in source
+    service = (PACKAGE / "memory_service.py").read_text()
+    assert "def snapshot(" in service

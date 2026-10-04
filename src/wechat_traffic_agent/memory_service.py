@@ -36,6 +36,14 @@ class MemoryService:
     def _node(self, node_id):
         return self.retrieval.node(node_id)
 
+    def snapshot(self, node_id):
+        """Public provider snapshot for Runtime retrieval checkpoints."""
+        node = self.retrieval.node(node_id)
+        card = self.retrieval.card(node)
+        if not self.retrieval.valid(node):
+            card.update(text="", needs_refresh=True)
+        return card
+
     def put_node(self, node_id, node_type, body, metadata, *, children=(), prefix="", status="ACTIVE", seq=0):
         return self.retrieval.put_node(
             node_id,
@@ -59,7 +67,7 @@ class MemoryService:
 
     async def contextualize(self,runtime,node_ids):
         from .content_loop import _structured
-        from .memory_session import BudgetedRuntime
+        from agent_runtime.memory.session import BudgetedRuntime
         from .runtime_backend import mechanical_memory_runtime
         from pydantic import BaseModel,ConfigDict,Field
         class Prefix(BaseModel):
@@ -100,7 +108,7 @@ class MemoryService:
 
     async def enrich_relations(self,runtime,row):
         from .content_loop import _structured
-        from .memory_session import BudgetedRuntime
+        from agent_runtime.memory.session import BudgetedRuntime
         from .runtime_backend import mechanical_memory_runtime
         from pydantic import BaseModel,ConfigDict,Field
         from typing import Literal
@@ -225,7 +233,7 @@ class MemoryService:
 
     async def consolidate(self,runtime,topic):
         from .content_loop import _structured
-        from .memory_session import BudgetedRuntime
+        from agent_runtime.memory.session import BudgetedRuntime
         from .runtime_backend import mechanical_memory_runtime
         from pydantic import BaseModel,ConfigDict,Field
         class Summary(BaseModel):

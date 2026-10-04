@@ -354,7 +354,10 @@ class ContinuousContentLoop:
         }
 
     async def run_once(self, *, now=None, cycle_id=None):
-        from .memory_session import MemoryContinuationRequired
+        from agent_runtime.memory.session import (
+            MemoryContinuationRequired, MemoryBudgetExhausted,
+            MemoryRequestBudgetExceeded,
+        )
         now = now or datetime.now(timezone.utc)
         if now.utcoffset() is None:
             raise ValueError('timezone required')
@@ -374,6 +377,12 @@ class ContinuousContentLoop:
                 return {**result, 'status': 'ALREADY_PROCESSED', 'previous_status': result['status']}
             try:
                 result = await self._run(folder, cycle, now)
+            except (MemoryBudgetExhausted, MemoryRequestBudgetExceeded) as exc:
+                result = {
+                    'status': 'MEMORY_BUDGET_EXHAUSTED', 'cycle': cycle,
+                    'retryable': False, 'checkpoint': str(exc),
+                    'termination': 'BUDGET_EXHAUSTED',
+                }
             except MemoryContinuationRequired as exc:
                 pending={'status':'MEMORY_RETRIEVAL_PENDING','cycle':cycle,'retryable':True,
                          'focus_topic':getattr(self,'_focus_topic',None),'owner_scope':getattr(self,'_owner_goal',None),

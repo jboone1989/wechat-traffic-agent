@@ -392,3 +392,40 @@ def test_question_relevant_exact_passages_survive_global_excerpt_budget():
                    if value["evidence_id"] == evidence_id)
         assert all(value["quote"] in source["evidence_text"] for value in quotes.values()
                    if value["evidence_id"] == evidence_id)
+
+
+def test_pending_external_search_reuses_receipt_and_sources_after_restart(tmp_path, monkeypatch):
+    from wechat_traffic_agent.memory_service import MemoryService
+    original_ingest = MemoryService.ingest_source
+    interrupted = False
+    def crash_ingest(self, source, **kwargs):
+        nonlocal interrupted
+        if source["evidence_id"] == DETAIL["evidence_id"] and not interrupted:
+            interrupted = True
+            raise RuntimeError("crash after acquisition receipt")
+        return original_ingest(self, source, **kwargs)
+    monkeypatch.setattr(MemoryService, "ingest_source", crash_ingest)
+    class SearchRuntime(Runtime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            if task.startswith("ADVANCE_LEARNING:"):
+                return json.dumps({
+                    "action": "SEARCH_EXTERNAL", "query": "checkpoint implementation receipt",
+                    "ref": "", "offset": 0, "working_summary": "Need concrete implementation",
+                    "missing_information": "Invocation recovery mechanism"})
+            return await super().cognitive_probe(task, max_tokens, output_schema)
+    explorer = Explorer()
+    with pytest.raises(RuntimeError, match="crash after acquisition receipt"):
+        run(tmp_path, SearchRuntime([]), explorer, rounds=0)
+    checkpoint = tmp_path / "cycles/cycle-1/memory_session_step_0.json"
+    state = json.loads(checkpoint.read_text())
+    action_id = state["pending_action"]["action_id"]
+    assert state["external_searches"][0]["action_id"] == action_id
+    refs = state["refs"]
+    result = run(tmp_path, Runtime([step("DEEPENED", DETAIL,
+        query="agent external side effect idempotency restart")]), explorer, rounds=0)
+    resumed = json.loads(checkpoint.read_text())
+    assert explorer.queries == ["checkpoint implementation receipt"]
+    assert all(resumed["refs"][ref] == node for ref, node in refs.items())
+    assert result["sources"] == [DETAIL]
+    assert result["facts"][0]["quote"] == DETAIL["summary"]
+    assert resumed["decision_rounds_used"] == 2

@@ -194,7 +194,7 @@ def recent_reflections(state_root: Path) -> list[dict]:
 
 async def assess_application(*, runtime, folder: Path, state_root: Path, topic: str,
                              next_question: str = "", next_query: str = "") -> dict | None:
-    from .memory_session import BudgetedRuntime
+    from agent_runtime.memory.session import BudgetedRuntime
     runtime=BudgetedRuntime(runtime,folder)
     plan_path = folder / "learning_application_plan.json"
     if not plan_path.exists():
@@ -208,7 +208,8 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
     # Only actual acquisitions made by this cycle after its plan are eligible.
     # The preexisting evidence pool never resolves a new application.
     from .memory_service import MemoryService
-    from .memory_session import MemorySession, memory_decision
+    from agent_runtime.memory.session import MemorySession
+    from .runtime_memory_adapter import memory_decision
     registry = {}
     excluded = []
     acquisitions = [folder / "learning_initial_search.json", *sorted(folder.glob("learning_search_*.json"))]
@@ -280,6 +281,10 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
             "This tests transfer to a new case; it does not establish general improvement or execute code. "
             "Return JSON only.\n",
             payload_builder=packet,contract_builder=contract_builder,validate=validate,
+            outcome_classifier=lambda value: (
+                "EVIDENCE_INCOMPLETE" if value.status == "UNRESOLVED"
+                else "EVIDENCE_SUFFICIENT"
+            ),
         )
         quotes=bindings['quotes']
     else:

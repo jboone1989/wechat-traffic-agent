@@ -158,4 +158,14 @@ def _bounded_int(
     return value
 
 
-__all__ = ["LegacyFerroMemoryCapabilityProvider", "PROVIDER_ID"]
+async def memory_decision(**kwargs):
+    """Bind Ferro's decision formatting to Runtime's retrieval controller."""
+    from agent_runtime.memory.session import memory_decision as run_retrieval
+    from .content_loop import _structured, _structured_prompt
+    return await run_retrieval(
+        **kwargs, decision_runner=_structured, prompt_builder=_structured_prompt,
+        memory_context_builder=lambda payload: payload,
+    )
+
+
+__all__ = ["LegacyFerroMemoryCapabilityProvider", "PROVIDER_ID", "memory_decision"]

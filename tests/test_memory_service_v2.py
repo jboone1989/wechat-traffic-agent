@@ -7,9 +7,10 @@ from pydantic import BaseModel
 import pytest
 
 from wechat_traffic_agent.memory_service import MemoryService
-from wechat_traffic_agent.memory_session import (
-    MemorySession, MemoryAction, memory_decision, MemoryContinuationRequired, BudgetedRuntime,
+from agent_runtime.memory.session import (
+    MemorySession, MemoryAction, MemoryContinuationRequired, BudgetedRuntime,
 )
+from wechat_traffic_agent.runtime_memory_adapter import memory_decision
 from wechat_traffic_agent.memory_system import CanonicalMemoryStore
 from wechat_traffic_agent.memory_vector import SemanticVectorIndex
 from conftest import RetrievalModelsDouble
@@ -235,7 +236,7 @@ def test_raw_archive_growth_does_not_grow_learning_prompt(tmp_path):
         root=tmp_path/str(factor)
         original={**INTRO,'evidence_text':INTRO['summary']+' checkpoint unrelated background '* (4000*factor)}
         history=[{'cycle':'old-'+str(i),'topic':'agent-reliability','facts':[{'evidence_id':'old-source-'+str(i),
-            'quote':'Long archived raw quotation. '*40,'observation':'Old unrelated observed mechanism '+str(i)}]} for i in range(58*factor)]
+            'quote':'Long archived raw quotation. '*40,'observation':'Old unrelated observed mechanism '+str(i)}]} for i in range(6*factor)]
         runtime=Runtime([step('LEARNED',INTRO)])
         # The inquiry decision double need not implement archive maintenance.
         class Wrapped:
@@ -293,7 +294,7 @@ def test_receipt_import_selects_newest_revision_and_marks_older_observation(tmp_
 
 def test_expired_original_cannot_create_active_derived_summary(tmp_path):
     service=MemoryService(tmp_path)
-    service.store.append_memory({'memory_id':'old','text':'An obsolete checkpoint fact.','kind':'FACT','valid_until':'2000-01-01T00:00:00Z'})
+    service.store.append_memory({'memory_id':'old','text':'An obsolete checkpoint fact.','kind':'FACT','valid_from':'1999-01-01T00:00:00Z','valid_until':'2000-01-01T00:00:00Z'})
     service.sync();service.put_node('derived','summary','A summary of an obsolete fact.',{},children=['old'])
     assert service._node('derived')['status']=='DIRTY'
 

@@ -402,7 +402,8 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
         focus = ResearchFocus.model_validate(plan["focus"])
         _put(path, focus.model_dump(mode="json"))
         return focus
-    from .memory_session import MemorySession, memory_decision
+    from agent_runtime.memory.session import MemorySession
+    from .runtime_memory_adapter import memory_decision
     service=_memory_service(memory,state_root or memory.get("_memory_state_root") or folder.parent)
     session=MemorySession(folder,"focus",service)
     session.seed(topic,topic=topic)
@@ -460,7 +461,8 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
         remember_learning(state_root, result)
         defer_memory_maintenance(folder, result)
         return result
-    from .memory_session import MemorySession, memory_decision, BudgetedRuntime
+    from agent_runtime.memory.session import MemorySession, BudgetedRuntime
+    from .runtime_memory_adapter import memory_decision
     service=_memory_service(memory,state_root)
     registry = {row["evidence_id"]: row for row in evidence}
     registry[selected["evidence_id"]] = selected
@@ -493,6 +495,14 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
             validate(step)
         else:
             session=MemorySession(folder,"step_"+str(index),service)
+            # Rehydrate the task's acquired sources after a process restart.
+            for acquisition in session.state.get("external_searches", []):
+                pool = json.loads((folder / acquisition["receipt"]).read_text(encoding="utf-8"))
+                for source in pool.get("items") or []:
+                    registry[source["evidence_id"]] = source
+                previous_queries.add(acquisition["query"].casefold())
+                failures.extend(pool.get("failures") or [])
+                react_searches.append(acquisition["query"])
             session.seed(focus.question,topic=topic)
             _working_quotes(registry,session,focus.question,selected)
             await service.contextualize(runtime,session.state["quote_candidates"])
@@ -529,23 +539,29 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
             async def external_action(command, action_session):
                 query = command.query.strip()
                 searched = action_session.state.setdefault("external_searches", [])
-                if any(str(row.get("query") or "").casefold() == query.casefold() for row in searched):
+                prior = next((row for row in searched if row["query"].casefold() == query.casefold()), None)
+                action_id = action_session.state["pending_action"]["action_id"]
+                if prior is not None and prior.get("action_id") != action_id:
                     return {
                         "error": "This external query was already searched in this task. Refine the missing information and search for a different fact.",
                         "query": query,
                         "requires_new_query": True,
                     }
-                search_path = folder / f"learning_react_search_{len(searched)}.json"
+                search_path = (folder / prior["receipt"] if prior is not None
+                               else folder / f"learning_react_search_{len(searched)}.json")
                 if search_path.exists():
                     pool = json.loads(search_path.read_text(encoding="utf-8"))
                 else:
                     pool = await explorer.search_web_query(query=query, goal_topic=topic, now=now)
                     _put(search_path, pool)
-                searched.append({"query": query, "receipt": search_path.name})
+                if prior is None:
+                    searched.append({"query": query, "receipt": search_path.name, "action_id": action_id})
                 action_session.state["external_searches"] = searched
-                react_searches.append(query)
+                if query not in react_searches:
+                    react_searches.append(query)
                 previous_queries.add(query.casefold())
-                failures.extend(pool.get("failures") or [])
+                if prior is None:
+                    failures.extend(pool.get("failures") or [])
                 source_ids = []
                 for source in pool.get("items") or []:
                     registry[source["evidence_id"]] = source
@@ -601,6 +617,10 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 contract_builder=lambda: _research_choice_contract(turn["known"],turn["quotes"],turn["registry"]),
                 validate=lambda value: validate(_bind_research_choice(value,turn["quotes"],turn["registry"],turn["known"])),
                 action_handler=external_action,
+                outcome_classifier=lambda value: (
+                    "EVIDENCE_SUFFICIENT" if value.progress in {"LEARNED", "DEEPENED"}
+                    else "EVIDENCE_INCOMPLETE"
+                ),
             )
             step = _bind_research_choice(choice,turn["quotes"],turn["registry"],turn["known"])
             _put(path, step.model_dump(mode="json"))

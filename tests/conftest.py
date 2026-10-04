@@ -38,7 +38,7 @@ def maintenance_cognition(monkeypatch):
 
     Wrap the model double underneath BudgetedRuntime, so real budget checks run.
     """
-    from wechat_traffic_agent.memory_session import BudgetedRuntime
+    from agent_runtime.memory.session import BudgetedRuntime
     original=BudgetedRuntime.__init__
     class Cognition:
         def __init__(self,runtime): self.runtime=runtime
@@ -52,6 +52,6 @@ def maintenance_cognition(monkeypatch):
             if output_schema is None:
                 return await self.runtime.cognitive_probe(task,max_tokens=max_tokens)
             return await self.runtime.cognitive_probe(task,max_tokens=max_tokens,output_schema=output_schema)
-    def initialize(self,runtime,folder,budget=None):
-        original(self,Cognition(runtime),folder,budget)
+    def initialize(self,runtime,folder,budget=None,**kwargs):
+        original(self,Cognition(runtime),folder,budget,**kwargs)
     monkeypatch.setattr(BudgetedRuntime,"__init__",initialize)
