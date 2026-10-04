@@ -442,3 +442,94 @@ def test_owner_prompt_uses_current_mind_and_retrieved_history_not_archives(tmp_p
     assert "CHECKPOINT_ARCHIVE_MUST_NOT_ENTER_PROMPT" not in prompt
     assert '"learning_research"' not in prompt
     assert '"durable_interests"' not in prompt
+
+
+def test_owner_decision_prompt_projects_context_instead_of_dumping_full_state(
+    tmp_path,
+    monkeypatch,
+):
+    from wechat_traffic_agent import memory_service
+
+    class FakeMemoryService:
+        def __init__(self, _state_root):
+            pass
+
+        def search(self, _query, **_kwargs):
+            return [
+                {
+                    "node_id": f"memory:{index}",
+                    "type": "memory",
+                    "status": "ACTIVE",
+                    "topics": [f"topic-{index}", "shared", "extra", "overflow"],
+                    "text": ("useful memory " + str(index) + " ") * 80,
+                    "context": "CONTEXT_MUST_NOT_ENTER_DECISION_PROMPT",
+                    "version": "VERSION_MUST_NOT_ENTER_DECISION_PROMPT",
+                    "change_seq": index,
+                }
+                for index in range(8)
+            ]
+
+    monkeypatch.setattr(memory_service, "MemoryService", FakeMemoryService)
+    runtime = Runtime([
+        {
+            "action": "WAIT",
+            "wait_seconds": 300,
+            "rationale": "No further action is needed until the next measured observation.",
+        }
+    ])
+    episode = OwnerAgentEpisode(tmp_path)
+
+    async def execute(_decision):
+        raise AssertionError("WAIT must not execute a tool")
+
+    mind = {
+        "mind_tick": 12,
+        "interests": [
+            {"name": f"interest-{index}", "salience": 0.9, "preference": 0.8}
+            for index in range(20)
+        ],
+        "open_inquiries": [
+            {"inquiry_id": f"q-{index}", "question": "question " + ("x" * 500)}
+            for index in range(20)
+        ],
+        "beliefs": [
+            {"proposition": "belief " + ("y" * 500), "stance": 0.5, "confidence": 0.9}
+            for _ in range(20)
+        ],
+        "recent_belief_changes": [{"raw": "DO_NOT_DUMP_BELIEF_HISTORY"}] * 20,
+        "latest_plan": {"raw": "DO_NOT_DUMP_LATEST_PLAN"},
+        "memory_system": {"raw": "DO_NOT_DUMP_MEMORY_SYSTEM"},
+        "learning_boundary": "DO_NOT_DUMP_LEARNING_BOUNDARY",
+        "strategy_learning": {"outcome_count": 50, "topics": [f"s-{i}" for i in range(30)]},
+    }
+    result = asyncio.run(episode.run(
+        runtime=runtime,
+        owner_goal={"goal_id": "goal-owner", "description": "Advance the real mission"},
+        mission_context={
+            "mission_id": "mission",
+            "description": "Mission description",
+            "roadmap": {
+                "steps": [
+                    {"step_id": f"step-{i}", "title": f"Step {i}", "objective": "z" * 1000, "status": "PLANNED"}
+                    for i in range(20)
+                ]
+            },
+            "current_mind": mind,
+        },
+        tool_executor=execute,
+        now=NOW,
+    ))
+
+    prompt = runtime.prompts[0][0]
+    assert result["status"] == "DECIDED"
+    assert "interest-5" in prompt
+    assert "interest-6" not in prompt
+    assert "memory:2" in prompt
+    assert "memory:3" not in prompt
+    assert "CONTEXT_MUST_NOT_ENTER_DECISION_PROMPT" not in prompt
+    assert "DO_NOT_DUMP_BELIEF_HISTORY" not in prompt
+    assert "DO_NOT_DUMP_LATEST_PLAN" not in prompt
+    assert "DO_NOT_DUMP_MEMORY_SYSTEM" not in prompt
+    assert "DO_NOT_DUMP_LEARNING_BOUNDARY" not in prompt
+    assert '"objective"' not in prompt
+    assert len(prompt) < 20000

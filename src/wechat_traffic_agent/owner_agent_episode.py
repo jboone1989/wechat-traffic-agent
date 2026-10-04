@@ -145,6 +145,186 @@ class OwnerAgentEpisode:
         return value
 
     @staticmethod
+    def _decision_mission_context(mission: Mapping[str, Any]) -> dict[str, Any]:
+        """Project only facts needed to choose the next owner-goal action."""
+        roadmap = mission.get("roadmap") if isinstance(mission.get("roadmap"), Mapping) else {}
+        x_execution = (
+            mission.get("x_execution")
+            if isinstance(mission.get("x_execution"), Mapping)
+            else {}
+        )
+        x_status = (
+            x_execution.get("status")
+            if isinstance(x_execution.get("status"), Mapping)
+            else {}
+        )
+        return {
+            key: mission.get(key)
+            for key in (
+                "mission_id",
+                "goal_id",
+                "description",
+                "metric",
+                "baseline",
+                "target",
+                "current",
+                "trajectory",
+                "pressure",
+                "deadline",
+                "constraints",
+            )
+            if mission.get(key) is not None
+        } | {
+            "roadmap": {
+                "roadmap_id": roadmap.get("roadmap_id"),
+                "version": roadmap.get("version"),
+                "steps": [
+                    {
+                        key: row.get(key)
+                        for key in ("step_id", "title", "status")
+                        if row.get(key) is not None
+                    }
+                    for row in list(roadmap.get("steps") or ())[:4]
+                    if isinstance(row, Mapping)
+                ],
+            },
+            "x_execution": {
+                "configured": x_execution.get("configured"),
+                "transport": x_execution.get("transport"),
+                "selection_authority": x_execution.get("selection_authority"),
+                "available_actions": list(x_execution.get("available_actions") or ()),
+                "profile": x_execution.get("profile"),
+                "status": {
+                    key: x_status.get(key)
+                    for key in ("status", "last_error", "last_success_at")
+                    if x_status.get(key) is not None
+                },
+                "recent_publication_receipts": list(
+                    x_execution.get("recent_publication_receipts") or ()
+                )[-3:],
+            },
+        }
+
+    @staticmethod
+    def _decision_mind_context(current_mind: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose topic/learning state, not the full ContentMind projection."""
+        return {
+            "mind_tick": current_mind.get("mind_tick"),
+            "interests": [
+                {
+                    key: row.get(key)
+                    for key in ("name", "salience", "preference", "familiarity")
+                    if row.get(key) is not None
+                }
+                for row in list(current_mind.get("interests") or ())[:6]
+                if isinstance(row, Mapping)
+            ],
+            "open_inquiries": [
+                {
+                    key: row.get(key)
+                    for key in ("inquiry_id", "question", "origin", "status")
+                    if row.get(key) is not None
+                }
+                for row in list(current_mind.get("open_inquiries") or ())[:6]
+                if isinstance(row, Mapping)
+            ],
+            "beliefs": [
+                {
+                    key: row.get(key)
+                    for key in ("proposition", "stance", "confidence")
+                    if row.get(key) is not None
+                }
+                for row in list(current_mind.get("beliefs") or ())[:4]
+                if isinstance(row, Mapping)
+            ],
+            "resource_awareness": (
+                (current_mind.get("resource_awareness") or {}).get("current")
+                if isinstance(current_mind.get("resource_awareness"), Mapping)
+                else None
+            ),
+            "strategy_learning": {
+                "outcome_count": (
+                    (current_mind.get("strategy_learning") or {}).get("outcome_count")
+                    if isinstance(current_mind.get("strategy_learning"), Mapping)
+                    else 0
+                ),
+                "topics": list(
+                    ((current_mind.get("strategy_learning") or {}).get("topics") or ())
+                    if isinstance(current_mind.get("strategy_learning"), Mapping)
+                    else ()
+                )[-8:],
+            },
+        }
+
+    @staticmethod
+    def _decision_previous_episode(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, Mapping):
+            return None
+        decision = value.get("decision") if isinstance(value.get("decision"), Mapping) else {}
+        outcome = value.get("outcome") if isinstance(value.get("outcome"), Mapping) else {}
+        return {
+            "episode_id": value.get("episode_id"),
+            "status": value.get("status"),
+            "updated_at": value.get("updated_at"),
+            "decision": {
+                key: decision.get(key)
+                for key in ("action", "topic", "publication_surface", "wait_for", "next_action")
+                if decision.get(key) is not None
+            },
+            "outcome": {
+                key: outcome.get(key)
+                for key in ("status", "error_type", "message")
+                if outcome.get(key) is not None
+            },
+        }
+
+    @staticmethod
+    def _decision_steps(value: Any) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for row in list(value or ())[-3:]:
+            if not isinstance(row, Mapping):
+                continue
+            decision = row.get("decision") if isinstance(row.get("decision"), Mapping) else {}
+            result = row.get("result") if isinstance(row.get("result"), Mapping) else {}
+            items = [
+                {
+                    key: item.get(key)
+                    for key in ("evidence_id", "title", "url")
+                    if item.get(key) is not None
+                }
+                for item in list(result.get("items") or ())[:3]
+                if isinstance(item, Mapping)
+            ]
+            projected.append({
+                "index": row.get("index"),
+                "decision": {
+                    key: decision.get(key)
+                    for key in ("action", "query", "topic", "publication_surface")
+                    if decision.get(key) is not None
+                },
+                "result": {
+                    key: result.get(key)
+                    for key in ("status", "query", "new_mentions", "error_type", "message")
+                    if result.get(key) is not None
+                } | ({"items": items} if items else {}),
+            })
+        return projected
+
+    @staticmethod
+    def _decision_memory_context(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "node_id": row.get("node_id"),
+                "type": row.get("type"),
+                "status": row.get("status"),
+                "topics": list(row.get("topics") or ())[:3],
+                "text": str(row.get("text") or "")[:320],
+            }
+            for row in rows[:3]
+            if isinstance(row, Mapping)
+        ]
+
+    @staticmethod
     def _episode_id(goal_id: str, created_at: datetime) -> str:
         bucket = int(created_at.timestamp()) // 1800
         digest = sha256(f"{goal_id}|{bucket}".encode()).hexdigest()[:20]
@@ -379,7 +559,7 @@ class OwnerAgentEpisode:
             {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
             for row in XHistoryLedger(self.state_root).recent(limit=100)
             if row.get("event_type") == "EXPRESSION" and row.get("x_post_id") and row.get("x_url")
-        ][-12:]
+        ][-4:]
         prompt = (
             "OWNER_AGENT_EPISODE: Act as the bounded control core for the current owner goal. "
             + EDITORIAL_SCOPE_INSTRUCTION + " "
@@ -409,16 +589,16 @@ class OwnerAgentEpisode:
             + json.dumps(
                 {
                     "owner_goal": self._compact(dict(owner_goal)),
-                    "mission_context": self._compact({
-                        key: value for key, value in mission.items() if key != "current_mind"
-                    }),
-                    "current_mind": self._compact(current_mind),
-                    "prior_steps": self._compact(list(state.get("steps") or [])),
-                    "previous_episode": self._compact(state.get("previous_episode")),
+                    "mission_context": self._decision_mission_context(mission),
+                    "current_mind": self._decision_mind_context(current_mind),
+                    "prior_steps": self._decision_steps(state.get("steps")),
+                    "previous_episode": self._decision_previous_episode(
+                        state.get("previous_episode")
+                    ),
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "current_time": datetime.now(timezone.utc).isoformat(),
                     "recent_original_posts": recent_posts,
-                    "related_memory": self._compact(related_memory),
+                    "related_memory": self._decision_memory_context(related_memory),
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),
                 },
