@@ -116,6 +116,25 @@ class OwnerChatGPTCognitionRuntime:
             _routing_task_class="owner_dialogue",
         )
 
+    async def mechanical_cognitive_probe(
+        self,
+        task: str,
+        max_tokens: int,
+        output_schema=None,
+    ) -> str:
+        del output_schema
+        return await self.provider.complete(
+            str(task),
+            max_tokens=int(max_tokens),
+            reasoning_effort="low",
+            system=(
+                "You are a bounded memory-processing component. Transform only "
+                "the supplied evidence according to the requested schema. Preserve "
+                "uncertainty and provenance; do not add facts or behavioral framing."
+            ),
+            _routing_task_class="memory",
+        )
+
 
 class IndependentFerroCognitionRuntime:
     """Provider-only Ferro cognition for workers that do not own runtime state."""
@@ -172,6 +191,60 @@ class IndependentFerroCognitionRuntime:
             ),
             _routing_task_class="content",
         )
+
+    async def mechanical_cognitive_probe(
+        self,
+        task: str,
+        max_tokens: int,
+        output_schema=None,
+    ) -> str:
+        del output_schema
+        return await self.provider.complete(
+            str(task),
+            max_tokens=int(max_tokens),
+            reasoning_effort="low",
+            system=(
+                "You are a bounded memory-processing component. Transform only "
+                "the supplied evidence according to the requested schema. Preserve "
+                "uncertainty and provenance; do not add facts or behavioral framing."
+            ),
+            _routing_task_class="memory",
+        )
+
+
+class MechanicalMemoryRuntime:
+    """LLM transport for evidence-preserving memory transforms.
+
+    Contextualization, relation extraction and consolidation do not make
+    behavioral choices, so injecting Ferro's phenotype into those prompts adds
+    bytes without changing the permitted transformation.
+    """
+
+    def __init__(self, runtime) -> None:
+        self.runtime = runtime
+
+    async def cognitive_probe(
+        self,
+        task: str,
+        max_tokens: int,
+        output_schema=None,
+    ) -> str:
+        probe = getattr(self.runtime, "mechanical_cognitive_probe", None)
+        if callable(probe):
+            return await probe(
+                task,
+                max_tokens=max_tokens,
+                output_schema=output_schema,
+            )
+        return await self.runtime.cognitive_probe(
+            task,
+            max_tokens=max_tokens,
+            output_schema=output_schema,
+        )
+
+
+def mechanical_memory_runtime(runtime) -> MechanicalMemoryRuntime:
+    return MechanicalMemoryRuntime(runtime)
 
 
 def _content_advisory_timeout_seconds(environ: Mapping[str, str] | None = None) -> float:

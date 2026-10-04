@@ -7,6 +7,7 @@ import pytest
 
 import wechat_traffic_agent.agent_runtime_chatgpt as agent_chatgpt
 from wechat_traffic_agent.runtime_backend import (
+    MechanicalMemoryRuntime,
     OwnerChatGPTCognitionRuntime,
     _temporary_runtime_llm_environment,
     chatgpt_only_mode,
@@ -174,3 +175,38 @@ def test_owner_chatgpt_cognition_refuses_to_drop_phenotype_silently():
 
     with pytest.raises(RuntimeError, match="requires phenotype_prior"):
         asyncio.run(runtime.cognitive_probe("OWNER_AGENT_EPISODE: choose", 200))
+
+
+def test_mechanical_memory_runtime_uses_same_provider_without_behavior_context():
+    class Provider:
+        def __init__(self):
+            self.prompt = None
+            self.kwargs = None
+
+        async def complete(self, prompt, **kwargs):
+            self.prompt = prompt
+            self.kwargs = kwargs
+            return '{"prefixes":[]}'
+
+    provider = Provider()
+    owner = OwnerChatGPTCognitionRuntime(
+        provider,
+        behavioral_context_provider=lambda: {
+            "phenotype_prior": {"stable_phenotype": {"personality_traits": {}}},
+            "behavioral_state": {},
+        },
+    )
+
+    raw = asyncio.run(
+        MechanicalMemoryRuntime(owner).cognitive_probe(
+            "CONTEXTUALIZE_MEMORY: supplied excerpt only",
+            300,
+        )
+    )
+
+    assert raw == '{"prefixes":[]}'
+    assert provider.prompt == "CONTEXTUALIZE_MEMORY: supplied excerpt only"
+    assert "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT" not in provider.prompt
+    assert "phenotype" not in provider.prompt
+    assert provider.kwargs["_routing_task_class"] == "memory"
+    assert "bounded memory-processing component" in provider.kwargs["system"]
