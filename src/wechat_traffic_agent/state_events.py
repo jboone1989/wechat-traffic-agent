@@ -1,8 +1,8 @@
-"""Append-only boundary between independent workers and Ferro state.
+"""Append-only boundary between independent workers and Ferro's neural owner.
 
-Business workers emit small durable events. Only the state worker applies them
-to ContentWakefulRuntime, so no business worker writes the canonical Ferro
-state directly.
+Business workers emit small durable events. Only the neural worker applies
+events to the live nervous system, so no business worker loads or writes the
+connectome directly.
 """
 from __future__ import annotations
 
