@@ -98,7 +98,7 @@ class LocalBrowserControl:
         found = shutil.which("browser-harness")
         if found:
             return found
-        candidate = Path(sys.executable).resolve().with_name("browser-harness")
+        candidate = Path(sys.executable).with_name("browser-harness")
         if candidate.is_file():
             return str(candidate)
         candidate = Path.home() / "browser-use-venv" / "bin" / "browser-harness"
