@@ -111,6 +111,38 @@ class LearningMemoryBridge:
                     },
                 }
             )
+        answer = str(row.get("answer") or "").strip()
+        facts = row.get("facts") or []
+        understanding_id = "research-understanding:" + str(row["cycle"])
+        if answer and facts and self.service.store.get_memory(understanding_id) is None:
+            # Preserve the explanation, not only its isolated observations.
+            # It remains a qualified synthesis linked to the same source revisions.
+            fact_memories = [self.service.store.get_memory(
+                "research-fact:" + fingerprint([row["cycle"], index, fact])[:28]
+            ) for index, fact in enumerate(facts)]
+            status = "ACTIVE" if all(
+                memory and memory["status"] == "ACTIVE" for memory in fact_memories
+            ) else "DISPUTED"
+            self.service.store.append_memory({
+                "memory_id": understanding_id,
+                "memory_type": "SEMANTIC",
+                "kind": "RESEARCH_UNDERSTANDING",
+                "status": status,
+                "text": answer,
+                "created_at": row.get("observed_at") or datetime.now(timezone.utc).isoformat(),
+                "source_type": "RESEARCH_RECEIPT",
+                "source_ref": row["cycle"],
+                "topics": [row.get("topic", "")],
+                "evidence_refs": list(dict.fromkeys(fact["evidence_id"] for fact in facts)),
+                "payload": {
+                    "cycle": row["cycle"], "focus": row.get("focus"),
+                    "question_status": row.get("question_status", "PARTIAL"),
+                    "epistemic_status": "SOURCE_GROUNDED_SYNTHESIS",
+                    "fact_memory_ids": [memory["memory_id"] for memory in fact_memories if memory],
+                    "receipt_ref": "content/continuous/cycles/" + str(row["cycle"]) + "/learning_result.json",
+                    "derived_from": list(dict.fromkeys("source:" + fact["evidence_id"] for fact in facts)),
+                },
+            })
         if sync:
             self.service.sync()
 

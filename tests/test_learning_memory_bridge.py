@@ -183,3 +183,34 @@ def test_production_learning_modules_use_bridge_directly():
     assert "service.ingest_research(" not in research_source
     assert "service.migrate_receipts(" not in research_source
     assert "MemoryService(state_root).ingest_application" not in application_source
+
+
+def test_source_grounded_explanation_is_retrievable_after_restart(tmp_path):
+    service = MemoryService(tmp_path)
+    raw = source()
+    service.ingest_source(raw, topic="recovery")
+    row = {**research_receipt(raw),
+           "answer": "A worker can reload the persisted checkpoint after restart, restoring its earlier state instead of starting from an empty state.",
+           "question_status": "PARTIAL",
+           "focus": {"question": "How does checkpoint recovery work?"}}
+    LearningMemoryBridge(service).ingest_research(row)
+    restarted = MemoryService(tmp_path)
+    saved = restarted.store.get_memory("research-understanding:cycle-1")
+    assert saved["text"] == row["answer"]
+    assert saved["payload"]["question_status"] == "PARTIAL"
+    assert saved["payload"]["epistemic_status"] == "SOURCE_GROUNDED_SYNTHESIS"
+    assert saved["payload"]["derived_from"] == ["source:source-1"]
+    cards = restarted.search("checkpoint recovery restoring earlier state", node_types=("memory",), limit=8)
+    assert any(card["node_id"] == "research-understanding:cycle-1" for card in cards)
+    LearningMemoryBridge(restarted).ingest_research(row)
+    assert len([m for m in restarted.store.list_memories(limit=None)
+                if m["kind"] == "RESEARCH_UNDERSTANDING"]) == 1
+
+
+def test_explanation_from_superseded_source_remains_disputed(tmp_path):
+    service = MemoryService(tmp_path)
+    newer = source("The worker no longer restores state from a checkpoint after restart.")
+    service.ingest_source(newer, topic="recovery")
+    row = {**research_receipt(source()), "answer": "The old implementation restores state from its persisted checkpoint.", "question_status": "ANSWERED"}
+    LearningMemoryBridge(service).ingest_research(row)
+    assert service.store.get_memory("research-understanding:cycle-1")["status"] == "DISPUTED"
