@@ -25,6 +25,10 @@ LEARNING_INSTRUCTION = (
     "A new URL, paraphrased belief or reminder of a known principle is not new learning. "
     "Missing evidence should cause a specific follow-up investigation, not another post saying evidence is needed. "
     "An unresolved investigation may still reveal a concrete new detail worth sharing; it need not prove a broad claim. "
+    "Evidence-backed reasoning itself can be valuable: explain how you decompose a question, "
+    "connect observations to an inference, compare alternatives, work through a formula, or identify why an interpretation fails. "
+    "A final conclusion, exact benchmark score or completed experiment is not required for a useful intermediate explanation. "
+    "Share the actual supported reasoning and its limits, not a diary of tool calls or an empty promise to study later. "
 )
 
 
