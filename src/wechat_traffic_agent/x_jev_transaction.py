@@ -33,7 +33,7 @@ except Exception as exc:
 '''
 
 TRANSACTION = r"""
-import re, time
+import json, re, time
 from urllib.parse import urlsplit, parse_qs
 from jev_ultrafast.browser import StalePage
 stage = 'identity'
@@ -85,12 +85,30 @@ def find_post(handle):
       text:a.querySelector('[data-testid="tweetText"]')?.innerText || '',
       hrefs:[...a.querySelectorAll('a[href*="/status/"]')].map(e=>e.getAttribute('href')||'')
     })))()''') or []
+    expected = norm(outbound)
     for row in rows:
-        if norm(row.get('text')) != norm(outbound):
+        observed = norm(row.get('text'))
+        exact = observed == expected
+        folded = len(observed) >= 40 and expected.startswith(observed)
+        if not exact and not folded:
             continue
         for href in row.get('hrefs') or []:
             match = re.match(r'^/([^/?#]+)/status/(\d+)(?:[/?#]|$)', str(href))
-            if match and match.group(1).casefold() == handle.casefold():
+            if not match or match.group(1).casefold() != handle.casefold():
+                continue
+            if exact:
+                return match.group(2)
+            # Timeline text can be folded. Follow its observed status link and
+            # verify the complete text before accepting this publication.
+            path = '/' + match.group(1) + '/status/' + match.group(2)
+            navigate('https://x.com' + path)
+            expression = ('(() => {const path=' + json.dumps(path) + ';'
+                'const expected=' + json.dumps(expected, ensure_ascii=False) + ';'
+                'const a=[...document.querySelectorAll("article")].find(a=>'
+                '[...a.querySelectorAll("a[href]")].some(e=>e.getAttribute("href")===path));'
+                'const text=a?.querySelector("[data-testid=tweetText]")?.innerText||"";'
+                'return text.replace(/\\s+/g," ").trim()===expected ? text : null;})()')
+            if norm(wait_value(expression)) == expected:
                 return match.group(2)
     return ''
 

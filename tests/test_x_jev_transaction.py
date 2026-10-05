@@ -140,3 +140,32 @@ class TestJevXRepair(unittest.TestCase):
         row = run(browser, transaction.jev_x_transaction('Hello from Ferro', 'owner'))
         assert row['status'] == 'POSTED'
         assert browser.actions == [('fill', 9), ('click', 20)]
+
+    def test_folded_long_post_is_verified_on_its_observed_status_without_resubmit(self):
+        text = "A supported recovery explanation: " + "aligned states and preserved failure knowledge " * 8
+        class FoldedBrowser(Browser):
+            def evaluate(self, expression):
+                if 'slice(0,20)' in expression:
+                    return [{"text": text[:260], "hrefs": ["/owner/status/long-incorrect", "/owner/status/456"]}]
+                if 'const expected=' in expression:
+                    assert self.url == "https://x.com/owner/status/456"
+                    return text
+                return super().evaluate(expression)
+        browser = FoldedBrowser(existing=True)
+        row = run(browser, transaction.jev_x_reconcile(text, "owner"))
+        assert row["status"] == "POSTED" and row["post_id"] == "456"
+        assert row["verification_only"] and browser.actions == []
+
+    def test_matching_folded_prefix_does_not_accept_different_full_text(self):
+        text = "A supported recovery explanation: " + "aligned states and preserved failure knowledge " * 8
+        class WrongFullText(Browser):
+            def evaluate(self, expression):
+                if 'slice(0,20)' in expression:
+                    return [{"text": text[:260], "hrefs": ["/owner/status/456"]}]
+                if 'const expected=' in expression:
+                    return None
+                return super().evaluate(expression)
+        browser = WrongFullText(existing=True)
+        row = run(browser, transaction.jev_x_reconcile(text, "owner"))
+        assert row["status"] == "PUBLICATION_UNVERIFIED"
+        assert browser.actions == [] and "url" not in row
