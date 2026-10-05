@@ -879,7 +879,8 @@ class XAutonomyLoop:
             )
             prompt += "\n" + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS
 
-        decision = await _structured(model_runtime, prompt, draft_contract)
+        decision = await _structured(model_runtime, prompt, draft_contract,
+                                     max_tokens=6000 if context.get("learning") else 2400)
         if context.get("learning") and decision.format in {"LONG_POST", "ARTICLE"}:
             return await self._owner_longform(
                 folder=folder, context=context, now=now, surface="X_ARTICLE" if decision.format == "ARTICLE" else "X_LONG_POST",
@@ -902,7 +903,7 @@ class XAutonomyLoop:
                         "Explain why the detail matters or how it works; a method name or isolated statistic is insufficient. "
                         "Do not substitute a validation slogan for the discovery.\n"
                         + json.dumps({"rejected_post": decision.post_text, "review": quality}, ensure_ascii=False),
-                        draft_contract)
+                        draft_contract, max_tokens=6000)
                     if context.get("learning") and decision.format in {"LONG_POST", "ARTICLE"}:
                         return await self._owner_longform(
                             folder=folder, context=context, now=now, surface="X_ARTICLE" if decision.format == "ARTICLE" else "X_LONG_POST",
@@ -1063,7 +1064,7 @@ class XAutonomyLoop:
                     "mission":_expression_mission(self.state_root),
                     "recent_posts":_expression_recent_shares(self.history)},ensure_ascii=False))
             runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"longform-draft"/fmt)
-            draft=await _structured(runtime,prompt,ChannelSocialDraft)
+            draft=await _structured(runtime,prompt,ChannelSocialDraft,max_tokens=6000)
             if draft.channel!="X" or draft.format!=fmt:
                 return {"status":"OWNER_FORMAT_MISMATCH","cycle":cycle}
             strategy={"schema_version":"ferro-x-owner-format-request.v1","post_timing":"POST_NOW",
@@ -1094,7 +1095,7 @@ class XAutonomyLoop:
                         + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS + "\n"
                         + json.dumps({"draft": draft.model_dump(mode="json"), "review": quality,
                                       "learning": _expression_model_context(context)["learning"]}, ensure_ascii=False),
-                        ChannelSocialDraft)
+                        ChannelSocialDraft,max_tokens=6000)
                     if draft.channel != "X" or draft.format != fmt:
                         return {"status": "OWNER_FORMAT_MISMATCH", "cycle": cycle}
                     saved["drafts"]["x"] = draft.model_dump(mode="json")

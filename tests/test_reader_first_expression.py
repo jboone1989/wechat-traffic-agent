@@ -98,3 +98,26 @@ def test_developed_numbered_comparison_does_not_require_blank_line_paragraphs(tm
     checked = asyncio.run(review_learning_expression(runtime=model, folder=folder, learning=value,
         text=text, recent_shares=[], label="points", format_name="LONG_POST"))
     assert checked["passed"] and checked["readable_presentation"]
+
+
+def test_shared_structured_helper_preserves_public_prose_and_budget_on_schema_repair():
+    from wechat_traffic_agent.content_loop import _structured
+    class Runtime:
+        tasks = []
+        budgets = []
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            self.tasks.append(task)
+            self.budgets.append(max_tokens)
+            if len(self.tasks) == 1:
+                return json.dumps({"format": "ARTICLE", "post_text": BODY,
+                                  "rationale": "Explain identity and outcome without losing the distinction."})
+            return json.dumps({"format": "ARTICLE", "title": "Identity does not prove the outcome",
+                               "post_text": BODY, "images": [image()],
+                               "rationale": "Explain identity and outcome without losing the distinction."})
+    runtime = Runtime()
+    draft = asyncio.run(_structured(runtime, "Write a reader-oriented illustrated Article.",
+                                    XResearchPostDraft, max_tokens=6000))
+    assert draft.post_text == BODY
+    assert runtime.budgets == [6000, 6000]
+    assert all("every prose field must be ONE short sentence" not in task for task in runtime.tasks)
+    assert all("Shorten generated prose to at most 150 characters" not in task for task in runtime.tasks)

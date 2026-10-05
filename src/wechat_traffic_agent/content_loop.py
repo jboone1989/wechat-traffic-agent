@@ -283,25 +283,26 @@ class ReceiptRuntime:
 
 
 def _structured_prompt(task, contract):
-    prompt = task + '\nBE CONCISE: every prose field must be ONE short sentence, aim for at most 150 characters. '
-    prompt += 'In particular gap, adaptation, instruction, next_practice and rationale must stay short. '
-    prompt += 'Character limits are not word limits. Canonical reference fields such as related_proposition must copy the supplied value exactly, even when longer than the prose target; never shorten or paraphrase them. Quotes may be short exact excerpts. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
+    prompt = task + '\nUse the field-specific schema limits and the task instructions. '
+    prompt += 'Keep administrative metadata such as gap, adaptation, instruction, next_practice and rationale concise. '
+    prompt += 'Public text, articles, answers and supported explanations may use multiple sentences, paragraphs, examples and calculations as needed; do not compress them to one sentence or a universal prose length. '
+    prompt += 'Character limits are not word limits. Canonical reference fields such as related_proposition must copy the supplied value exactly; never shorten or paraphrase them. Quotes must remain exact. Return JSON only, no extra fields. Schema: ' + json.dumps(contract.model_json_schema())
     return prompt
 
 
-async def _structured(runtime, task, contract, validate=None):
+async def _structured(runtime, task, contract, validate=None, *, max_tokens=2400):
     prompt = _structured_prompt(task, contract)
     def checked(raw):
         value = contract.model_validate_json(_extract_json(raw))
         if validate is not None:
             validate(value)
         return value
-    raw = await runtime.cognitive_probe(prompt, max_tokens=2400)
+    raw = await runtime.cognitive_probe(prompt, max_tokens=max_tokens)
     try:
         return checked(raw)
     except ValueError as exc:
-        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Shorten generated prose to at most 150 characters each; preserve exact IDs, canonical reference values such as related_proposition without truncation, and exact quotes. Errors: ' + str(exc)[:2000]
-                                            + '\nPrevious untrusted response: ' + raw, max_tokens=2400)
+        raw = await runtime.cognitive_probe(prompt + '\nOne repair only. Correct the validation errors using the field-specific schema bounds. Preserve developed public explanations, exact IDs, canonical reference values and source quotes; do not globally shorten prose. Errors: ' + str(exc)[:2000]
+                                            + '\nPrevious untrusted response: ' + raw, max_tokens=max_tokens)
         return checked(raw)
 
 
