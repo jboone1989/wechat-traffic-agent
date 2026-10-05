@@ -61,6 +61,34 @@ class XResearchPostDraft(XPostDraft):
         return self
 
 
+PUBLIC_RESEARCH_WRITING_INSTRUCTIONS = (
+    "Write a reader-facing research note, not an abstract of learning.answer. "
+    "Make the useful reasoning reproducible from the public text: introduce the concrete question or puzzle, "
+    "show the relevant observations, then develop how they change or constrain the interpretation. "
+    "Use the supported reasoning_steps as material to explain, not a list to paraphrase. "
+    "When the research contains competing explanations, a calculation, a counterexample or a change of mind, "
+    "let the reader follow that part of the investigation. Show the arithmetic and matched inputs for a calculation; "
+    "explain why a comparison matters and what an alternative would predict where supplied. "
+    "Distinguish source observations, your inference and hypothetical illustrations. "
+    "Do not invent a prior belief, experiment, rejected alternative, result or measurement to make a story. "
+    "Explain unfamiliar terms when they are needed to follow the reasoning. "
+    "A useful partial investigation can stop at the specific point the evidence does not yet resolve; "
+    "it does not need a prediction or final verdict. Avoid a generic uncertainty disclaimer. "
+    "Presentation is part of the explanation: for LONG_POST and ARTICLE, use blank lines between short paragraphs, "
+    "with one reasoning move per paragraph. Open with a specific question or informative lead. "
+    "Use plain-text numbered points or a compact calculation on its own line when they make evidence easier to compare. "
+    "Do not deliver a long research note as one unbroken paragraph. "
+    "Write native X text: no Markdown heading markers, code fences, Markdown tables or Markdown link syntax. "
+    "Use small descriptive labels only where helpful; do not force every note into the same section template "
+    "or add empty headings, decorative emoji, invented hooks or filler. "
+    "Include the relevant supplied public source URL so readers can inspect the evidence. "
+    "Research depth determines space: SHORT_POST is for a genuinely simple, self-contained explanatory step. "
+    "If the useful investigation has several steps, choose LONG_POST and develop them rather than compressing "
+    "question, evidence, reasoning and limitations into a single summary paragraph. "
+    "Only include steps that are supported and useful; length and formatting alone do not create value. "
+)
+
+
 class XExpressionDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     action: Literal["POST", "SKIP"]
@@ -828,20 +856,8 @@ class XAutonomyLoop:
                 "For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists.",
                 "Make the explanation understandable in the post itself; a takeaway and source link do not replace it."
             )
-            prompt += (
-                "\nUse learning.reasoning_steps to develop a PUBLIC evidence-to-inference explanation, "
-                "worked calculation, comparison or limit. Do not merely list a design and its claimed benefit. "
-                "Explain one useful connection: why the stated consequence follows, what would go wrong "
-                "under an alternative, or how a supported step works in an illustrative case. "
-                "Clearly label hypothetical illustrations and distinguish them from source observations. "
-                "For example, if research restores context and environment together while retaining failure memory, "
-                "explain why restoring only one state would leave them inconsistent or why remembered failure "
-                "must survive the rollback. Use this example only when supported by the supplied learning. "
-                "An unfinished investigation can be valuable without a final conclusion. "
-                "SHORT_POST is appropriate only when it preserves that explanatory connection. "
-                "If 280 characters fit only a mechanism summary or conclusion, choose LONG_POST in this same response. "
-                "Let the explanation determine length; do not pad it or manufacture missing evidence."
-            )
+            prompt += "\n" + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS
+
         decision = await _structured(model_runtime, prompt, draft_contract)
         if context.get("learning") and decision.format == "LONG_POST":
             return await self._owner_longform(
@@ -1020,6 +1036,7 @@ class XAutonomyLoop:
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
                 "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
                 "Preserve uncertainty and source attribution. Honor an active temporary daily contract through substantive learning and sharing.\n"
+                + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS + "\n"
                 +json.dumps({**_expression_model_context(context),"persona":_expression_persona(self.state_root),
                     "mission":_expression_mission(self.state_root),
                     "recent_posts":_expression_recent_shares(self.history)},ensure_ascii=False))
@@ -1051,6 +1068,7 @@ class XAutonomyLoop:
                         "REWRITE_LEARNING_EXPRESSION: Repair this rejected research sharing draft as ChannelSocialDraft JSON. "
                         "Keep channel X and format " + fmt + ". Preserve source attribution, the concrete discovery and uncertainty. "
                         "Do not pad the text or substitute generic validation reminders.\n"
+                        + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS + "\n"
                         + json.dumps({"draft": draft.model_dump(mode="json"), "review": quality,
                                       "learning": _expression_model_context(context)["learning"]}, ensure_ascii=False),
                         ChannelSocialDraft)

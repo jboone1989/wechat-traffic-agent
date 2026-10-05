@@ -39,7 +39,7 @@ def test_reasoning_cannot_cite_a_missing_fact():
         ResearchStep.model_validate(value)
 
 
-@pytest.mark.parametrize("first_draft_is_summary", [False, True])
+@pytest.mark.parametrize("first_draft_is_summary", [False, True, "wall"])
 def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp_path, monkeypatch, first_draft_is_summary):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
@@ -47,14 +47,14 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
     quote = "The worker stores a tool invocation ID before execution and reconciles it after restart."
     explanation = (
         "The source saves invocation identity before executing. That gives a restarted worker "
-        "a stable way to match an earlier operation instead of blindly creating a new one. "
+        "a stable way to match an earlier operation instead of blindly creating a new one.\n\n"
         "Identity alone does not tell us whether the external side effect succeeded; "
         "the next step is to inspect the reconciliation result before deciding to retry."
     )
     learning = {"cycle":folder.name, "question_status":"PARTIAL", "answer":explanation,
         "learning_delta":"Persisted identity distinguishes an earlier operation from a new invocation.",
         "reasoning_steps":[{"kind":"INFERENCE","fact_indices":[0],"explanation":explanation}],
-        "sources":[{"evidence_id":"source-1","summary":quote}],
+        "sources":[{"evidence_id":"source-1","summary":quote,"url":"https://example.org/recovery"}],
         "facts":[{"evidence_id":"source-1","quote":quote,"observation":"Identity is saved before execution."}]}
     (folder/"learning_result.json").write_text(json.dumps(learning))
     review = {"concrete_discovery":True,"faithful_to_sources":True,"adds_to_recent_shares":True,
@@ -68,8 +68,18 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
         summary = "The worker saves invocation identity before execution so it can match operations after restart."
         rejected = {**review, "useful_understanding":False, "post_quote":summary,
                     "rationale":"It lists a mechanism and benefit but omits why identity does not prove outcome."}
-        responses = [{"format":"SHORT_POST","post_text":summary,
-                      "rationale":"A compressed mechanism summary."}, rejected, supported, review]
+        if first_draft_is_summary == "wall":
+            wall = explanation.replace("\n\n", " ")
+            rejected = {**review, "useful_understanding": False,
+                        "rationale": "The long note compresses several reasoning moves into one unbroken paragraph."}
+            repaired = {"channel": "X", "format": "LONG_POST", "text": explanation,
+                        "intent": "EXPLAINER", "style_observation_ids": [],
+                        "rationale": "Separate the identity observation and its unresolved outcome implication."}
+            responses = [{"format": "LONG_POST", "post_text": wall,
+                          "rationale": "A correct but unreadable research summary."}, rejected, repaired, review]
+        else:
+            responses = [{"format":"SHORT_POST","post_text":summary,
+                          "rationale":"A compressed mechanism summary."}, rejected, supported, review]
     model = _ModelRuntime(responses)
     browser = _Transport()
     loop = XAutonomyLoop(runtime=_Runtime(),model_runtime=model,state_root=tmp_path,
@@ -84,6 +94,7 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
     assert "reasoning_steps" in model.tasks[0]
     draft = json.loads((folder/"social_expression_drafts.json").read_text())
     assert draft["x_strategy"]["selection_authority"] == "FERRO_LEARNING_EXPRESSION"
+    assert "\n\n" in draft["drafts"]["x"]["text"]
     assert draft["drafts"]["x"]["text"] == explanation
     assert asyncio.run(loop.after_content_cycle(result=result,now=NOW))["status"] == "ALREADY_EXPRESSED"
     assert browser.calls == [explanation]
