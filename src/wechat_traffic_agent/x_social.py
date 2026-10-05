@@ -18,6 +18,7 @@ from .x_mcp import x_publication_enabled, x_writes_enabled
 from .public_persona import public_persona_projection, record_public_interaction
 from .x_growth_mission import follower_count_from_user, x_growth_mission_context
 from .l1_decisions import FerroL1Decisions
+from .x_article_media import ArticleImageSpec
 
 
 class SocialAttentionDecision(BaseModel):
@@ -51,41 +52,59 @@ class XPostDraft(BaseModel):
 
 class XResearchPostDraft(XPostDraft):
     """Choose length while writing, after the actual research is available."""
-    format: Literal["SHORT_POST", "LONG_POST"] = "SHORT_POST"
+    format: Literal["SHORT_POST", "LONG_POST", "ARTICLE"] = "SHORT_POST"
+    title: str | None = Field(default=None, min_length=5, max_length=100)
+    cover_caption: str | None = Field(default=None, max_length=64)
+    images: tuple[ArticleImageSpec, ...] = Field(default=(), max_length=8)
     post_text: str = Field(min_length=20, max_length=8000)
 
     @model_validator(mode="after")
     def short_post_bounds(self):
         if self.format == "SHORT_POST" and len(self.post_text) > 280:
             raise ValueError("Use LONG_POST to preserve an explanation exceeding 280 characters")
+        if self.format == "ARTICLE" and not self.title:
+            raise ValueError("Native X Article requires a title")
+        if self.images and self.format != "ARTICLE":
+            raise ValueError("Inline images require ARTICLE")
+        if sum(image.role == "COVER" for image in self.images) > 1:
+            raise ValueError("An Article has one cover")
+        for image in self.images:
+            if image.role == "INLINE" and (not image.after_text or self.post_text.count(image.after_text) != 1):
+                raise ValueError("Inline image needs a unique exact after_text passage in the article")
         return self
 
 
 PUBLIC_RESEARCH_WRITING_INSTRUCTIONS = (
-    "Write a reader-facing research note, not an abstract of learning.answer. "
-    "Make the useful reasoning reproducible from the public text: introduce the concrete question or puzzle, "
-    "show the relevant observations, then develop how they change or constrain the interpretation. "
-    "Use the supported reasoning_steps as material to explain, not a list to paraphrase. "
-    "When the research contains competing explanations, a calculation, a counterexample or a change of mind, "
-    "let the reader follow that part of the investigation. Show the arithmetic and matched inputs for a calculation; "
-    "explain why a comparison matters and what an alternative would predict where supplied. "
-    "Distinguish source observations, your inference and hypothetical illustrations. "
-    "Do not invent a prior belief, experiment, rejected alternative, result or measurement to make a story. "
-    "Explain unfamiliar terms when they are needed to follow the reasoning. "
-    "A useful partial investigation can stop at the specific point the evidence does not yet resolve; "
-    "it does not need a prediction or final verdict. Avoid a generic uncertainty disclaimer. "
-    "Presentation is part of the explanation: for LONG_POST and ARTICLE, use blank lines between short paragraphs, "
-    "with one reasoning move per paragraph. Open with a specific question or informative lead. "
-    "Use plain-text numbered points or a compact calculation on its own line when they make evidence easier to compare. "
-    "Do not deliver a long research note as one unbroken paragraph. "
-    "Write native X text: no Markdown heading markers, code fences, Markdown tables or Markdown link syntax. "
-    "Use small descriptive labels only where helpful; do not force every note into the same section template "
-    "or add empty headings, decorative emoji, invented hooks or filler. "
-    "Include the relevant supplied public source URL so readers can inspect the evidence. "
-    "Research depth determines space: SHORT_POST is for a genuinely simple, self-contained explanatory step. "
-    "If the useful investigation has several steps, choose LONG_POST and develop them rather than compressing "
-    "question, evidence, reasoning and limitations into a single summary paragraph. "
-    "Only include steps that are supported and useful; length and formatting alone do not create value. "
+    "Organize for an interested reader who has not seen the research conversation. "
+    "First decide what the reader will understand and which background they need; choose the form after that. "
+    "Start with a concrete situation, puzzle or example that makes the question matter. "
+    "Introduce necessary terms in ordinary language before using them in an inference. "
+    "Develop a coherent explanation from relevant observations through a comparison, calculation or causal link. "
+    "Use learning.answer and reasoning_steps as source-supported material, not as an internal diary to copy. "
+    "Reorder, combine or omit research steps to make the idea easier to follow; the research chronology is not an article outline. "
+    "Let readers see why evidence supports an interpretation, what supplied alternatives would predict, "
+    "and which assumptions or limits change its use. When arithmetic matters, show matched inputs and the calculation. "
+    "Distinguish sourced observations, inference and explicitly hypothetical teaching examples. "
+    "Do not invent measurements, experiments, earlier beliefs, rejected alternatives or a change of mind. "
+    "A useful partial investigation can teach a distinction or method without a final verdict or prediction. "
+    "Do not make a search diary, missing-data checklist or generic caution the main payload. "
+    "Use an appropriate lead, descriptive subheadings, paragraphs, lists, worked examples or comparisons "
+    "where they help this particular reader; there is no fixed section order, paragraph count or template. "
+    "Native X text supports plain-text headings and lists; avoid Markdown code fences, table syntax and link syntax. "
+    "Supply relevant public source URLs next to claims or in a clearly identified source section. "
+    "Choose SHORT_POST for one simple self-contained explanation, LONG_POST for a developed explanation, "
+    "or ARTICLE for a piece whose sections and/or explanatory visuals help readers understand. "
+    "Long posts and illustrated Articles are welcome; do not compress useful reasoning to fit a provisional short format. "
+    "ARTICLE requires title and may have cover_caption and images. Choose images only when they explain something: "
+    "a sequence, contrast, structure or sourced comparison, not generic decoration. "
+    "Each image has role COVER/INLINE, mode GRAPHIC/GENERATE/SEARCH, caption and alt_text. "
+    "For an INLINE image, after_text must be an exact unique passage from the article where the image belongs. "
+    "GRAPHIC INLINE renders a flow diagram with 2-6 diagram_labels explaining source-supported steps; "
+    "GRAPHIC COVER is a title cover. GENERATE needs prompt and is for conceptual illustrations, "
+    "not exact data charts, measured results, real screenshots or evidence. SEARCH needs query for licensed Commons images. "
+    "Explain the visual's significance in nearby prose, including its caption if needed; it must not replace a missing inference. "
+    "Length, headings and images alone do not create value. In rationale, briefly explain why this organization "
+    "and chosen format help the reader understand the specific idea. "
 )
 
 
@@ -765,7 +784,7 @@ class XAutonomyLoop:
             return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
                     "reason": "NO_VERIFIED_LEARNING_RECORD"}
         owner_surface=str((context.get("owner_publication_request") or {}).get("decision",{}).get("publication_surface") or "")
-        if owner_directed_x and owner_surface in {"X_LONG_POST","X_ARTICLE"}:
+        if owner_directed_x and owner_surface in {"X_LONG_POST","X_ARTICLE"} and not context.get("learning"):
             return await self._owner_longform(folder=folder,context=context,now=now,surface=owner_surface)
         blocker = self._active_publication_blocker(now=now)
         if blocker is not None:
@@ -795,6 +814,7 @@ class XAutonomyLoop:
             }
         if (
             not owner_directed_x
+            and not context.get("learning")
             and x_strategy
             and str(x_strategy.get("x_format") or "SHORT_POST") != "SHORT_POST"
             and not self.history.has_event(cycle=cycle, event_type="EXPRESSION")
@@ -840,10 +860,11 @@ class XAutonomyLoop:
             draft_contract = XResearchPostDraft
             prompt = prompt.replace(
                 "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format.",
-                "Write the post; do not reconsider whether to POST or SKIP. The earlier SHORT_POST selection is provisional."
+                "Write the post; do not reconsider whether to POST or SKIP. Any earlier format selection is provisional."
             ).replace(
                 "Max 280 characters including any URL.",
-                "Return format SHORT_POST (up to 280 characters) or LONG_POST (up to 8000). "
+                "Return format SHORT_POST (up to 280 characters), LONG_POST or ARTICLE (up to 8000). "
+                "For ARTICLE include title, optional cover_caption and images. "
                 "Choose the space needed for a useful explanation; do not pad."
             )
             prompt = prompt.replace(
@@ -859,9 +880,9 @@ class XAutonomyLoop:
             prompt += "\n" + PUBLIC_RESEARCH_WRITING_INSTRUCTIONS
 
         decision = await _structured(model_runtime, prompt, draft_contract)
-        if context.get("learning") and decision.format == "LONG_POST":
+        if context.get("learning") and decision.format in {"LONG_POST", "ARTICLE"}:
             return await self._owner_longform(
-                folder=folder, context=context, now=now, surface="X_LONG_POST",
+                folder=folder, context=context, now=now, surface="X_ARTICLE" if decision.format == "ARTICLE" else "X_LONG_POST",
                 prepared_draft=decision,
             )
         if context.get("learning"):
@@ -882,9 +903,9 @@ class XAutonomyLoop:
                         "Do not substitute a validation slogan for the discovery.\n"
                         + json.dumps({"rejected_post": decision.post_text, "review": quality}, ensure_ascii=False),
                         draft_contract)
-                    if context.get("learning") and decision.format == "LONG_POST":
+                    if context.get("learning") and decision.format in {"LONG_POST", "ARTICLE"}:
                         return await self._owner_longform(
-                            folder=folder, context=context, now=now, surface="X_LONG_POST",
+                            folder=folder, context=context, now=now, surface="X_ARTICLE" if decision.format == "ARTICLE" else "X_LONG_POST",
                             prepared_draft=decision,
                         )
             if not quality["passed"]:
@@ -1009,6 +1030,7 @@ class XAutonomyLoop:
         if prepared_draft is not None:
             draft = ChannelSocialDraft(
                 channel="X", format=fmt, intent="EXPLAINER", text=prepared_draft.post_text,
+                title=prepared_draft.title, cover_caption=prepared_draft.cover_caption, images=prepared_draft.images,
                 style_observation_ids=(), rationale=prepared_draft.rationale[:400],
             )
             _write_json(path, {
@@ -1059,7 +1081,8 @@ class XAutonomyLoop:
                 quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
                     learning=context["learning"], text=(draft.title or "") + "\n" + draft.text,
                     recent_shares=_expression_recent_shares(self.history),
-                    label=f"x_longform_learning_quality_{attempt}", format_name=fmt)
+                    label=f"x_longform_learning_quality_{attempt}", format_name=fmt,
+                    images=[image.model_dump(mode="json") for image in draft.images])
                 if quality["passed"]:
                     break
                 if attempt == 0:

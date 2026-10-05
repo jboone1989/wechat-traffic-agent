@@ -15,6 +15,8 @@ class ArticleImageSpec(BaseModel):
     mode: Literal["GRAPHIC", "GENERATE", "SEARCH"]
     prompt: str = Field(default="", max_length=3000)
     query: str = Field(default="", max_length=200)
+    after_text: str | None = Field(default=None, min_length=5, max_length=500)
+    diagram_labels: tuple[str, ...] = Field(default=(), max_length=6)
     caption: str = Field(default="", max_length=500)
     alt_text: str = Field(min_length=5, max_length=500)
 
@@ -24,6 +26,9 @@ class ArticleImageSpec(BaseModel):
             raise ValueError("Generated image requires an explicit prompt")
         if self.mode == "SEARCH" and not self.query.strip():
             raise ValueError("Image search requires a query")
+        if self.mode == "GRAPHIC" and self.role == "INLINE":
+            if not 2 <= len(self.diagram_labels) <= 6 or any(not label.strip() or len(label) > 180 for label in self.diagram_labels):
+                raise ValueError("Inline graphic needs 2-6 explicit diagram labels, not a generic cover")
         return self
 
 
@@ -110,7 +115,9 @@ async def prepare_article_media(*, draft: dict, folder: Path, search=None, gener
                 raise ValueError("Article media no longer matches its receipt")
         else:
             if spec.mode == "GRAPHIC":
-                receipt = generate_article_cover(title=str(draft["title"]), caption=spec.caption, folder=location)
+                receipt = (generate_article_diagram(labels=spec.diagram_labels, caption=spec.caption, folder=location)
+                           if spec.role == "INLINE" else
+                           generate_article_cover(title=str(draft["title"]), caption=spec.caption, folder=location))
             elif spec.mode == "GENERATE":
                 if generator is None:
                     from .x_image_generation import ChatGPTImageGenerator
@@ -136,7 +143,7 @@ async def prepare_article_media(*, draft: dict, folder: Path, search=None, gener
                 if selected is None:
                     raise RuntimeError("Ferro did not select a licensed image")
                 receipt = await asyncio.to_thread(search.download, selected, location)
-            receipt = {**receipt, "request": request, "role": spec.role, "caption": spec.caption, "alt_text": spec.alt_text}
+            receipt = {**receipt, "request": request, "role": spec.role, "caption": spec.caption, "alt_text": spec.alt_text, "after_text": spec.after_text}
             receipt_path.write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
         receipts.append(receipt)
     cover = next((r for r in receipts if r["role"] == "COVER"), None)
@@ -159,18 +166,12 @@ def generate_article_cover(*, title: str, caption: str, folder: Path) -> dict:
         raise RuntimeError('Article cover font unavailable')
     im=Image.new('RGB',(1500,600),'#102332')
     d=ImageDraw.Draw(im)
-    d.rounded_rectangle((1080,100,1430,500),radius=32,fill='#193f52')
-    # An original abstract continuity illustration; no invented product screenshot.
-    for y,label in [(150,'STATE'),(270,'WORK'),(390,'LEARN')]:
-        d.rounded_rectangle((1110,y,1390,y+70),radius=14,outline='#73dece',width=3)
-        d.text((1140,y+18),label,font=ImageFont.truetype(str(available),26),fill='#d9f9f2')
-    d.line((1250,220,1250,270),fill='#73dece',width=5)
-    d.line((1250,340,1250,390),fill='#73dece',width=5)
+    d.line((70,120,1430,120),fill="#73dece",width=4)
     font=ImageFont.truetype(str(available),62)
     lines=[]
     line=''
     for char in title:
-        if d.textlength(line+char,font=font)>930:
+        if d.textlength(line+char,font=font)>1360:
             lines.append(line);line=char
         else:
             line+=char
@@ -190,3 +191,52 @@ def generate_article_cover(*, title: str, caption: str, folder: Path) -> dict:
         'width':1500,'height':600,'ai_image_model':False}
     (folder/'x_article_media.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2)+'\n')
     return receipt
+
+def generate_article_diagram(*, labels: tuple[str, ...], caption: str, folder: Path) -> dict:
+    """Render declared explanatory steps exactly, rather than substituting a cover."""
+    from PIL import Image, ImageDraw, ImageFont
+    font_path = next((p for p in (
+        Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')) if p.is_file()), None)
+    if font_path is None:
+        raise RuntimeError("Article diagram font unavailable")
+    font = ImageFont.truetype(str(font_path), 30)
+    caption_font = ImageFont.truetype(str(font_path), 25)
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    def wrap(value, width, use_font):
+        lines, line = [], ""
+        for char in value:
+            if measure.textlength(line + char, font=use_font) > width:
+                lines.append(line)
+                line = char
+            else:
+                line += char
+        if line:
+            lines.append(line)
+        return lines
+    rows = [wrap(label, 980, font) for label in labels]
+    caption_lines = wrap(caption, 1080, caption_font)
+    heights = [max(90, len(lines) * 42 + 32) for lines in rows]
+    height = 80 + sum(heights) + 48 * (len(rows)-1) + (len(caption_lines)*36 + 30 if caption_lines else 0)
+    image = Image.new("RGB", (1200, height), "#f6f9fc")
+    draw = ImageDraw.Draw(image)
+    y = 40
+    for index, (lines, box_height) in enumerate(zip(rows, heights)):
+        draw.rounded_rectangle((70, y, 1130, y+box_height), radius=16, fill="#e3eef4", outline="#236078", width=2)
+        for line_index, line in enumerate(lines):
+            draw.text((100, y+16+line_index*42), line, font=font, fill="#153848")
+        y += box_height
+        if index < len(rows)-1:
+            draw.line((600, y+5, 600, y+37), fill="#236078", width=4)
+            draw.polygon(((590, y+30), (610, y+30), (600, y+42)), fill="#236078")
+            y += 48
+    for line_index, line in enumerate(caption_lines):
+        draw.text((70, y+25+line_index*36), line, font=caption_font, fill="#304d5d")
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "explanation_diagram.png"
+    image.save(path)
+    return {"status": "GENERATED", "kind": "EXPLANATORY_DIAGRAM", "path": str(path.resolve()),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "width": 1200, "height": height,
+            "labels": list(labels), "caption": caption, "ai_image_model": False,
+            "creator": "Ferro", "license": "ORIGINAL_WORK"}

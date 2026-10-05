@@ -263,9 +263,16 @@ class XBrowserPublisher:
                 failed={"status":"ARTICLE_MEDIA_FAILED","cycle":cycle,"error_type":type(exc).__name__,"detail":str(exc)}
                 _write_json(folder/"x_article_media_failure.json",failed)
                 return failed
-            captions=[f'{index+1}. {r.get("caption") or r["alt_text"]}' for index,r in enumerate(media["inline"])]
-            if captions:
-                text += "\n\nIllustrations:\n" + "\n".join(captions)
+            for image in media["inline"]:
+                caption = image.get("caption") or image["alt_text"]
+                anchor = image.get("after_text")
+                if anchor:
+                    if text.count(anchor) != 1:
+                        return {"status": "INVALID_IMAGE_PLACEMENT", "cycle": cycle}
+                    if caption not in text:
+                        text = text.replace(anchor, anchor + "\n\n" + caption, 1)
+                else:
+                    text += "\n\n" + caption
             credits=[r.get("attribution") for r in [media["cover"],*media["inline"]] if r.get("attribution")]
             if credits:
                 text += "\n\nImage credits:\n" + "\n".join(credits)

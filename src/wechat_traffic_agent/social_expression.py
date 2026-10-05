@@ -42,6 +42,9 @@ class ChannelSocialDraft(BaseModel):
             raise ValueError("Native image plans belong to X Articles")
         if sum(image.role == "COVER" for image in self.images) > 1:
             raise ValueError("An Article has one cover")
+        for image in self.images:
+            if image.role == "INLINE" and image.after_text and self.text.count(image.after_text) != 1:
+                raise ValueError("Inline image after_text must uniquely match an article passage")
         if self.channel == "OKX" and self.format == "SHORT_POST" and len(self.text) > OKX_SHORT_POST_MAX_CHARS:
             raise ValueError(f"OKX short post must be at most {OKX_SHORT_POST_MAX_CHARS} characters")
         if self.channel == "OKX" and self.format == "LONG_POST":
@@ -246,7 +249,7 @@ class SocialExpressionDraftWorker:
             "x_performance_context is DESCRIPTIVE_STYLE_ONLY and X_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the X draft among evidence-compatible format, pacing, and presentation patterns. The OKX draft must ignore this X performance context. "
             "Both performance contexts are observational, not causal; neither may change factual certainty, evidence_action, topic, grounding, or publication authority. When a context says INSUFFICIENT_SAMPLES, ignore it. "
             "x_growth_mission is MISSION_STRATEGY_ONLY. It may guide the X draft's evidence-compatible emphasis and presentation when that helps the active experiment, but it is not factual evidence and cannot change topic, certainty, evidence_action, publication authority, or force a post. "
-            "x_l1_strategy is the bounded JEV strategy decision. For the X draft, obey its x_format when post_timing=POST_NOW and interaction_mode=ORIGINAL; use its angle and exploration_mode only as presentation strategy, never as factual evidence. HOLD means the draft may be retained for lineage but must not be treated as publication authority. Reply-vs-ignore routing is handled separately at the live mention boundary. "
+            "x_l1_strategy is the bounded JEV strategy decision. For the X draft, x_format is a provisional presentation suggestion; choose the form that makes the evidence understandable when post_timing=POST_NOW and interaction_mode=ORIGINAL; use its angle and exploration_mode only as presentation strategy, never as factual evidence. HOLD means the draft may be retained for lineage but must not be treated as publication authority. Reply-vs-ignore routing is handled separately at the live mention boundary. "
             "public_persona is durable identity: write in that agent's voice and preserve its LivingRuntime affiliation. public_persona.identity_anchor is IDENTITY_ONLY metadata: it may ground who the agent says it is, but it is never a social-performance sample, popularity signal, factual-world evidence, or content-strategy outcome. persona.learning is only STYLE_AND_TOPIC_INTEREST_ONLY: recurring questions may suggest what needs clearer explanation, but cannot change facts, identity, mission, or authority. "
             "Identity expression policy: when the subject is the agent itself, its learning, persistence, public operation, or LivingRuntime, explicitly use public_persona.name in first person at least once so the audience can connect the work to the durable agent identity. For ordinary market observations, do not force a self-introduction or signature. "
             "Promote LivingRuntime by showing concrete work and continuity when relevant; do not append repetitive promotional slogans or force a link into every post. "
@@ -255,7 +258,7 @@ class SocialExpressionDraftWorker:
             "Posts may be assertions, questions, observations, updates, or explainers; choose the form that matches the evidence rather than forcing a market call. "
             "Treat social_evidence_decision.resolution.useful_facts as the information-value boundary: a non-question post must lead with at least one of those supported facts or a direct inference they support. Missing-data caveats may qualify a claim, but must never be the main payload of a DRAFT. "
             "If intent is QUESTION, anchor it in a known fact and ask a genuine unresolved question rather than engagement bait. "
-            "For X ARTICLE, supply a title (5-100 characters), optional cover_caption (<=64 characters), and an images list. Each image has role COVER or INLINE, mode GRAPHIC, GENERATE or SEARCH, alt_text, caption, and prompt for GENERATE or query for SEARCH. Choose visuals by what helps this explanation. GENERATE uses the actual ChatGPT image tool, SEARCH finds licensed Commons images with attribution; GRAPHIC makes an original graphic. Use at most one COVER. INLINE images appear in the article body with captions. An empty images list uses an original graphic cover. Never present generated art as a photo, product screenshot or experimental evidence. "
+            "For X ARTICLE, supply a title (5-100 characters), optional cover_caption (<=64 characters), and an images list. Each image has role COVER or INLINE, mode GRAPHIC, GENERATE or SEARCH, alt_text, caption, and prompt for GENERATE or query for SEARCH. INLINE images need after_text: an exact unique passage in text where they belong. GRAPHIC INLINE needs 2-6 source-supported diagram_labels, while GRAPHIC COVER makes a title cover. Choose visuals by what helps this explanation. GENERATE uses the actual ChatGPT image tool, SEARCH finds licensed Commons images with attribution; GRAPHIC makes an original graphic. Use at most one COVER. INLINE images appear in the article body with captions. An empty images list uses an original graphic cover. Never present generated art as a photo, product screenshot or experimental evidence. "
             "ARTICLE is a real long-form channel artifact, not a teaser. Do not choose it merely because more text is available; choose it only when the cognition supports depth. Do not fabricate numbers or present an inference as measured causation. Return JSON only."
             + question_instruction + "\n"
             + json.dumps({
@@ -291,16 +294,10 @@ class SocialExpressionDraftWorker:
                     raise ValueError(
                         "QUESTION evidence resolution requires QUESTION social intent"
                     )
-                if (
-                    key == "x"
-                    and str(x_strategy.get("post_timing") or "") == "POST_NOW"
-                    and str(x_strategy.get("interaction_mode") or "ORIGINAL") == "ORIGINAL"
-                    and channel.format != str(x_strategy.get("x_format") or "")
-                ):
-                    raise ValueError(
-                        "X draft format must match the bounded JEV L1 strategy"
-                    )
                 valid_drafts[key] = channel.model_dump(mode="json")
+                if key == "x" and channel.format != x_strategy.get("x_format"):
+                    x_strategy = {**x_strategy, "provisional_x_format": x_strategy.get("x_format"),
+                                  "x_format": channel.format, "selection_authority": "FERRO_READER_ORGANIZATION"}
             except ValueError as exc:
                 draft_errors[key] = {
                     "status": "VALIDATION_ERROR",

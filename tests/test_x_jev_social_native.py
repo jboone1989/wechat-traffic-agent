@@ -279,3 +279,37 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertEqual(result['status'],'POSTED')
         self.assertGreaterEqual(browser.image_reads,3)
         self.assertEqual(browser.actions,[])
+
+    def test_article_positions_inline_image_at_the_declared_passage(self):
+        class Anchored(Browser):
+            positioned=False
+            def evaluate(self, expression):
+                if "document.createTreeWalker" in expression:
+                    self.positioned=True
+                    return True
+                return super().evaluate(expression)
+            def call(self, method, **params):
+                if method == "DOM.setFileInputFiles" and params["files"] == ["/tmp/body.png"]:
+                    assert self.positioned
+                return super().call(method, **params)
+        browser=Anchored('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro',prepare_only=True,
+            inline_images=[{'path':'/tmp/body.png','after_text':'verified article body.'}]))
+        self.assertEqual(result['status'],'DRAFT_PREPARED')
+        self.assertTrue(browser.positioned)
+        self.assertFalse(browser.submitted)
+
+    def test_missing_image_anchor_stops_before_upload_and_publication(self):
+        class MissingAnchor(Browser):
+            def evaluate(self, expression):
+                if "document.createTreeWalker" in expression:return False
+                return super().evaluate(expression)
+        browser=MissingAnchor('article')
+        result=execute(browser,jev_x_article(title='Durable agents',text='The complete verified article body.',
+            image_path='/tmp/cover.png',expected_handle='ferro',
+            inline_images=[{'path':'/tmp/body.png','after_text':'missing passage'}]))
+        self.assertEqual(result['status'],'FAILED')
+        self.assertIn('anchor missing',result['detail'])
+        self.assertEqual(browser.uploads,[['/tmp/cover.png']])
+        self.assertFalse(browser.submitted)

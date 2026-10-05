@@ -96,7 +96,7 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
     assert len(model.tasks) == (4 if first_draft_is_summary else 2)
     assert "concise takeaway plus the supplied public URL" not in model.tasks[0]
     assert "explicitly requested an original SHORT_POST" not in model.tasks[0]
-    assert "earlier SHORT_POST selection is provisional" in model.tasks[0]
+    assert "Any earlier format selection is provisional" in model.tasks[0]
     assert "reasoning_steps" in model.tasks[0]
     draft = json.loads((folder/"social_expression_drafts.json").read_text())
     assert draft["x_strategy"]["selection_authority"] == "FERRO_LEARNING_EXPRESSION"

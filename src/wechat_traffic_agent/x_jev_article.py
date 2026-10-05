@@ -160,12 +160,30 @@ def upload_cover():
     return cover
 
 
+
+def position_inline_image(image):
+    anchor=image.get('after_text')
+    if not anchor:
+        return
+    positioned=browser.evaluate("(() => {const anchor="+json.dumps(anchor)+";"
+        "const editor=document.querySelector('[data-testid=composer][contenteditable=true]');"
+        "if(!editor)return false; const walker=document.createTreeWalker(editor,NodeFilter.SHOW_TEXT);"
+        "const nodes=[];let node,body='';while(node=walker.nextNode()){nodes.push({node,start:body.length});body+=node.textContent;}"
+        "const start=body.indexOf(anchor);if(start<0 || body.indexOf(anchor,start+1)>=0)return false;"
+        "const end=start+anchor.length;const item=nodes.find(x=>x.start+x.node.textContent.length>=end);if(!item)return false;"
+        "const range=document.createRange();const block=item.node.parentElement.closest('p,[data-block=true]');"
+        "if(block && editor.contains(block))range.setStartAfter(block);else range.setStart(item.node,end-item.start);"
+        "range.collapse(true);editor.focus();const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);return true;})()")
+    if positioned is not True:
+        raise RuntimeError('Inline image anchor missing or ambiguous in native Article editor')
+
 def upload_inline_images(cover):
     if not inline_images:
         return []
     fill_body()
     inserted=[]
     for image in inline_images:
+        position_inline_image(image)
         browser.call('Page.setInterceptFileChooserDialog',enabled=True)
         try:
             observed({'add media','添加媒体内容'})
