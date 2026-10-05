@@ -204,15 +204,24 @@ def generate_article_diagram(*, labels: tuple[str, ...], caption: str, folder: P
     caption_font = ImageFont.truetype(str(font_path), 25)
     measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
     def wrap(value, width, use_font):
+        import re
         lines, line = [], ""
-        for char in value:
-            if measure.textlength(line + char, font=use_font) > width:
-                lines.append(line)
-                line = char
+        for word in re.findall(r"\S+\s*", value):
+            if measure.textlength(word.strip(), font=use_font) > width:
+                # A long unspaced token (including Chinese text) can wrap by character.
+                for char in word:
+                    if measure.textlength(line+char, font=use_font) > width:
+                        lines.append(line.rstrip())
+                        line = char
+                    else:
+                        line += char
+            elif measure.textlength(line+word, font=use_font) > width:
+                lines.append(line.rstrip())
+                line = word
             else:
-                line += char
-        if line:
-            lines.append(line)
+                line += word
+        if line.strip():
+            lines.append(line.rstrip())
         return lines
     rows = [wrap(label, 980, font) for label in labels]
     caption_lines = wrap(caption, 1080, caption_font)

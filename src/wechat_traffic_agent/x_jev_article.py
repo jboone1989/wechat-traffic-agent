@@ -117,7 +117,15 @@ def observed(labels, kind='click', text=None, preferred=(), selector=None):
 
 def fill_body():
     selector='[data-testid="composer"][contenteditable="true"]'
-    return observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=outbound,selector=selector)
+    paragraphs=re.split(r'\n\s*\n',outbound)
+    editor=observed({'textbox','article body','正文',outbound.casefold()},kind='fill',text=paragraphs[0],selector=selector)
+    # Native Enter creates real Article blocks; insertText of the entire body
+    # leaves all visual paragraphs in one block and pushes every image to its end.
+    for paragraph in paragraphs[1:]:
+        browser.call('Input.dispatchKeyEvent',type='keyDown',key='Enter',code='Enter',windowsVirtualKeyCode=13,nativeVirtualKeyCode=13)
+        browser.call('Input.dispatchKeyEvent',type='keyUp',key='Enter',code='Enter',windowsVirtualKeyCode=13,nativeVirtualKeyCode=13)
+        browser.call('Input.insertText',text=paragraph)
+    return editor
 
 def upload_cover():
     previous_cover=browser.evaluate("(() => [...document.querySelectorAll('main img')].filter(e=>e.naturalWidth>=500 && !e.closest('[contenteditable]') && e.src.startsWith('https://pbs.twimg.com/media/')).map(e=>e.src))()") or []
@@ -171,11 +179,15 @@ def position_inline_image(image):
         "const nodes=[];let node,body='';while(node=walker.nextNode()){nodes.push({node,start:body.length});body+=node.textContent;}"
         "const start=body.indexOf(anchor);if(start<0 || body.indexOf(anchor,start+1)>=0)return false;"
         "const end=start+anchor.length;const item=nodes.find(x=>x.start+x.node.textContent.length>=end);if(!item)return false;"
-        "const range=document.createRange();const block=item.node.parentElement.closest('p,[data-block=true]');"
-        "if(block && editor.contains(block))range.setStartAfter(block);else range.setStart(item.node,end-item.start);"
+        "const range=document.createRange();range.setStart(item.node,end-item.start);"
         "range.collapse(true);editor.focus();const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);return true;})()")
     if positioned is not True:
         raise RuntimeError('Inline image anchor missing or ambiguous in native Article editor')
+    # Lexical must receive a native selection event at a text position; a DOM
+    # range between blocks is not a valid editor text selection.
+    for key,code in [('ArrowLeft',37),('ArrowRight',39)]:
+        browser.call('Input.dispatchKeyEvent',type='keyDown',key=key,code=key,windowsVirtualKeyCode=code,nativeVirtualKeyCode=code)
+        browser.call('Input.dispatchKeyEvent',type='keyUp',key=key,code=key,windowsVirtualKeyCode=code,nativeVirtualKeyCode=code)
 
 def upload_inline_images(cover):
     if not inline_images:

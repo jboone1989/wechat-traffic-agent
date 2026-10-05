@@ -21,7 +21,7 @@ class Browser:
 
     def call(self,method,**params):
         if method=='Page.navigate':self.url=params['url'];return {}
-        if method in {'Page.setInterceptFileChooserDialog','Page.bringToFront'}:return {}
+        if method in {'Page.setInterceptFileChooserDialog','Page.bringToFront','Input.dispatchKeyEvent'}:return {}
         if method=='DOM.getDocument':return {'root':{'nodeId':1}}
         if method=='DOM.querySelector':return {'nodeId':55}
         if method=='DOM.querySelectorAll':return {'nodeIds':[55,56] if self.inline_dialog else [55]}
@@ -313,3 +313,24 @@ class TestJevNativeSocial(unittest.TestCase):
         self.assertIn('anchor missing',result['detail'])
         self.assertEqual(browser.uploads,[['/tmp/cover.png']])
         self.assertFalse(browser.submitted)
+
+    def test_article_uses_native_paragraph_blocks_before_positioning_media(self):
+        class Paragraphs(Browser):
+            enters=0
+            def call(self,method,**params):
+                if method == 'Input.dispatchKeyEvent':
+                    if params['type']=='keyDown':
+                        self.enters+=1
+                        self.values[11]+='\n'
+                    return {}
+                if method == 'Input.insertText':
+                    self.values[11]+=params['text']
+                    return {}
+                return super().call(method,**params)
+        browser=Paragraphs('article')
+        result=execute(browser,jev_x_article(title='Durable agents',
+            text='First explain the known observation.\n\nThen develop its implication.\n\nFinally explain its limit.',
+            image_path='/tmp/cover.png',expected_handle='ferro',prepare_only=True))
+        self.assertEqual(result['status'],'DRAFT_PREPARED')
+        self.assertEqual(browser.enters,2)
+        self.assertIn('Then develop its implication.',browser.values[11])
