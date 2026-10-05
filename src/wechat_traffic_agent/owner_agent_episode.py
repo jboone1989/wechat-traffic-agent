@@ -551,7 +551,7 @@ class OwnerAgentEpisode:
     ) -> OwnerAgentDecision:
         from .editorial_policy import EDITORIAL_SCOPE_INSTRUCTION
         from .x_social import XHistoryLedger
-        from .learning_research import LEARNING_INSTRUCTION
+        from .learning_research import LEARNING_INSTRUCTION, read_research_state, research_trajectory, parked_inquiries
 
         mission = dict(mission_context or {})
         current_mind = mission.get("current_mind") if isinstance(mission.get("current_mind"), Mapping) else {}
@@ -576,6 +576,10 @@ class OwnerAgentEpisode:
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Previous optional 20/200 advice is not a quota. When owner_goal.daily_posting_contract is present, the user's newer temporary minimum is mandatory until explicitly disabled. "
             "For that daily contract, research freely within cryptocurrency, AI and finance, then choose an original X_SHORT_POST, X_LONG_POST or X_ARTICLE; do not choose WEBSITE or AUTO instead. "
+            "Use research_trajectory to recognize the same unanswered question across different topic names. "
+            "After repeated unfinished investigations, seek a specific new artifact or a useful adjacent question. "
+            "A parked inquiry needs its resume_when evidence condition; continue learning elsewhere while it is unavailable. "
+            "Explanation, worked cases and comparisons can be useful without proving a price forecast. "
             "If one angle has no admissible evidence, use SEARCH_WORLD for a new question instead of repeating the same empty query or ending the daily goal. "
             "The minimum is a required result, not permission to invent facts or post repeated claims. "
             "Prioritize a sustainable cadence of useful original posts; replies are secondary. Use recent_original_posts and current_time to notice long publication gaps. "
@@ -598,6 +602,8 @@ class OwnerAgentEpisode:
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "current_time": datetime.now(timezone.utc).isoformat(),
                     "recent_original_posts": recent_posts,
+                    "research_trajectory": research_trajectory(read_research_state(self.state_root)),
+                    "parked_inquiries": parked_inquiries(read_research_state(self.state_root)),
                     "related_memory": self._decision_memory_context(related_memory),
                     "tools": self._tool_contracts(),
                     "remaining_steps": max(0, self.MAX_STEPS - len(list(state.get("steps") or []))),

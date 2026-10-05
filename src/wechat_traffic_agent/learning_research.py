@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -61,6 +62,10 @@ class ResearchFocus(BaseModel):
     question: str = Field(min_length=10, max_length=400)
     search_query: str = Field(min_length=8, max_length=300)
     why_interested: str = Field(min_length=10, max_length=600)
+    approach: Literal["EXPLAIN", "WORKED_EXAMPLE", "COMPARE", "TEST"] = "EXPLAIN"
+    completion_criterion: str = Field(
+        default="Explain the mechanism using a concrete source-supported example.", max_length=500)
+    method_change: str = Field(default="", max_length=500)
     application: KnowledgeApplication | None = None
     application_deferred_reason: str = Field(default="", max_length=400)
 
@@ -83,13 +88,60 @@ class ResearchStep(BaseModel):
     next_question: str = Field(min_length=10, max_length=500)
     next_query: str = Field(min_length=8, max_length=300)
     rationale: str = Field(min_length=10, max_length=600)
+    # Defaults read immutable legacy receipts; new decisions require these fields.
+    question_status: Literal["ANSWERED", "PARTIAL", "BLOCKED"] = "PARTIAL"
+    answer: str = Field(default="", max_length=1200)
+    inquiry_action: Literal["CONTINUE", "CHANGE_METHOD", "PARK", "NEXT_QUESTION"] = "CONTINUE"
+    resume_when: str = Field(default="", max_length=400)
 
     @model_validator(mode="after")
     def progress_needs_observation(self):
         if self.progress in {"LEARNED", "DEEPENED"} and (not self.facts or len(self.learning_delta.strip()) < 10):
             raise ValueError("research progress requires a concrete learning delta and source observation")
+        if self.question_status == "ANSWERED" and (not self.facts or len(self.answer.strip()) < 20):
+            raise ValueError("an answered question requires a source-supported explanation")
+        if self.inquiry_action == "NEXT_QUESTION" and self.question_status != "ANSWERED":
+            raise ValueError("an unfinished question must be continued, changed or parked")
+        if self.inquiry_action == "PARK" and len(self.resume_when.strip()) < 12:
+            raise ValueError("a parked inquiry needs a concrete evidence condition for resuming")
         return self
 
+
+def _research_focus_contract(catalog):
+    fields = {
+        "approach": (ResearchFocus.model_fields["approach"].annotation, Field()),
+        "completion_criterion": (str, Field(min_length=20, max_length=500)),
+        "method_change": (str, Field(max_length=500)),
+    }
+    if catalog:
+        fields["application"] = (application_contract(catalog) | None, Field(
+            description="Optional: test a genuine prediction in an unseen case. Explanation and worked examples need no forecast."))
+    return create_model("TaskResearchFocus", __base__=ResearchFocus, **fields)
+
+
+def parked_inquiries(state: dict) -> list[dict]:
+    return [{
+        "topic": topic, "question": row.get("focus_question") or row.get("question"),
+        "resume_when": row.get("resume_when"), "last_cycle": row.get("last_cycle"),
+    } for topic, row in state.get("inquiries", {}).items()
+      if row.get("inquiry_action") == "PARK"][-6:]
+
+
+def research_trajectory(state: dict, limit: int = 6) -> list[dict]:
+    """Recent question outcomes across topic aliases; originals stay in receipts."""
+    return [{
+        "cycle": row.get("cycle"), "topic": row.get("topic"),
+        "question": str((row.get("focus") or {}).get("question") or "")[:400],
+        "approach": (row.get("focus") or {}).get("approach"),
+        "completion_criterion": (row.get("focus") or {}).get("completion_criterion"),
+        "question_status": row.get("question_status", "UNASSESSED"),
+        "inquiry_action": row.get("inquiry_action"),
+        "answer": str(row.get("answer") or row.get("learning_delta") or "")[:600],
+        "next_question": row.get("next_question"),
+        "resume_when": row.get("resume_when"),
+        "observations": [str(f.get("observation") or "")[:400] for f in (row.get("facts") or [])[:2]],
+        "receipt_ref": "content/continuous/cycles/" + str(row.get("cycle")) + "/learning_result.json",
+    } for row in state.get("history", [])[-limit:]]
 
 
 def _research_step_contract(known: set[str]):
@@ -168,6 +220,10 @@ def _research_choice_contract(known: set[str], quotes: dict, registry: dict):
         related_proposition=(Literal[tuple([None, *_research_belief_refs(known)])], Field(
             description="Choose the supplied belief ID, or null; the host restores the exact proposition.")),
         facts=(tuple[citation, ...], Field(max_length=5)),
+        question_status=(ResearchStep.model_fields["question_status"].annotation, Field()),
+        answer=(str, Field(min_length=20, max_length=1200)),
+        inquiry_action=(ResearchStep.model_fields["inquiry_action"].annotation, Field()),
+        resume_when=(str, Field(max_length=400)),
     )
 
 
@@ -210,6 +266,8 @@ def _research_prompt_memory(memory: dict, topic: str) -> dict:
         "beliefs": memory.get("beliefs") or [],
         "recent_shares": shares[-8:],
         "research": {"inquiries": projected_inquiries, "history": projected_history},
+        "research_trajectory": research_trajectory(research),
+        "parked_inquiries": parked_inquiries(research),
         "knowledge_catalog": compact_catalog(memory.get("knowledge_catalog") or {}),
         "application_feedback": memory.get("application_feedback") or [],
         "outcome_feedback": memory.get("outcome_feedback") or {},
@@ -254,7 +312,7 @@ def _working_projection(memory,topic,session):
     def control(value):
         if isinstance(value,str): return value[:600]
         if isinstance(value,list): return [control(v) for v in value[:min(window,2)]]
-        if isinstance(value,dict): return {k:control(v) for k,v in list(value.items())[:8]}
+        if isinstance(value,dict): return {k:control(v) for k,v in value.items()}
         return value
     for key in ('recent_reflections','application_feedback','outcome_feedback'):
         projected[key]=control(projected[key])
@@ -374,6 +432,7 @@ def research_memory(mind: Any, state_root: Path, topic: str = "") -> dict[str, A
     with service.store._connect() as db:
         archived=db.execute("SELECT json_extract(payload_json,'$.fact.evidence_id') source_id,json_extract(payload_json,'$.fact.quote') quote,json_extract(payload_json,'$.source_urls') urls FROM memories WHERE kind='RESEARCH_OBSERVATION'").fetchall()
         sources=db.execute("SELECT json_extract(metadata,'$.url') url FROM memory_nodes WHERE node_type='source'").fetchall()
+        evidence_bodies=db.execute("SELECT body FROM memory_nodes WHERE node_type='evidence'").fetchall()
     archived_ids=[r['source_id'] for r in archived if r['source_id']]
     archived_quotes=[r['quote'] for r in archived if r['quote']]
     archived_urls=[url for r in archived for url in (json.loads(r['urls']) if r['urls'] else [])]
@@ -387,6 +446,8 @@ def research_memory(mind: Any, state_root: Path, topic: str = "") -> dict[str, A
             "recent_reflections": recent_reflections(state_root),
             "known_source_ids": list(dict.fromkeys([*archived_ids,*(value for row in history for value in row.get("source_evidence_ids") or [])])),
             "known_source_urls": list(dict.fromkeys([*archived_urls,*(value for row in history for value in row["source_urls"])])),
+            "known_evidence_hashes": list({
+                hashlib.sha256(row["body"].strip().encode()).hexdigest() for row in evidence_bodies}),
             "known_quotes": list(dict.fromkeys([*archived_quotes,*(fact["quote"] for row in history for fact in row["facts"])]))}
 
 
@@ -410,15 +471,16 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
     catalog = memory.get("knowledge_catalog") or {}
     def contract_builder():
         visible=dict(list(catalog.items())[:session.state.get('prompt_window',8)])
-        return (create_model(
-            "ApplicationResearchFocus", __base__=ResearchFocus,
-            application=(application_contract(visible) | None, Field(
-                description="Use a saved fact to predict an unseen case before acquiring evidence; null needs a concrete deferral reason.")),
-        ) if visible else ResearchFocus)
+        return _research_focus_contract(visible)
 
     def validate_focus(value):
-        if catalog and value.application is None and len(value.application_deferred_reason.strip()) < 10:
-            raise ValueError("choose a knowledge application or explain why no supplied fact supports a test")
+        if value.approach == "TEST" and value.application is None:
+            raise ValueError("a prediction test needs a precommitted application")
+        trajectory = research_trajectory(memory.get("research") or {})
+        same = [row for row in trajectory if row["question"].casefold() == value.question.casefold()
+                and row["question_status"] in {"PARTIAL", "BLOCKED", "UNASSESSED"}]
+        if len(same) >= 2 and len(value.method_change.strip()) < 20:
+            raise ValueError("repeated unfinished research requires a concrete method change or a different question")
 
     focus = await memory_decision(
         runtime=runtime, session=session, instruction="PLAN_LEARNING: " + LEARNING_INSTRUCTION +
@@ -427,12 +489,19 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
         "Compare the concrete facts already learned, not just belief summaries. "
         "Use outcome_feedback (measured action/prediction outcomes) and application_feedback to revise the next action and confidence after a refutation or an untested attempt. "
         "Use recent_reflections to choose a concrete change in this investigation, not another reflective paragraph. "
-        "When knowledge_catalog contains a usable fact, apply it to a NEW case: select its memory_ref, "
-        "commit a narrow prediction, concrete falsifier and confidence BEFORE the search. "
-        "Make question/search_query acquire the evidence needed to test that prediction from a source not previously read. "
-        "The prediction must concern a case or observation you have not seen, never repeat the saved fact. "
-        "Do not pretend a search executes a benchmark. If no fact supports such a test, set application=null "
-        "and give a concrete application_deferred_reason; discovery can still continue. "
+        "Choose approach EXPLAIN, WORKED_EXAMPLE, COMPARE or TEST and a question-specific completion_criterion: "
+        "what you should be able to explain, calculate, distinguish or verify after this investigation. "
+        "Learn how a mechanism works, use it in a concrete worked case, or compare implementations. "
+        "Existing knowledge is a foundation, not a requirement to forecast market performance. "
+        "Set application=null for explanation or worked examples; say briefly why a prediction test is not needed. "
+        "Only for a genuine unseen-case prediction use TEST, select memory_ref and commit prediction, falsifier "
+        "and confidence BEFORE acquiring the relevant observation. Re-reading a page may expose a new case; "
+        "only evidence you had not seen at commitment can resolve the prediction. "
+        "Do not pretend a search executes a benchmark. "
+        "research_trajectory spans topic aliases: compare meanings, not slugs. After two unfinished attempts "
+        "at the same unknown, method_change must name what failed and the concrete new artifact or method. "
+        "If that artifact is unavailable, choose a useful adjacent question; do not keep chasing the same forecast. "
+        "Parked inquiries should resume only when their stated evidence condition is available. "
         "If searches repeatedly leave the same question unanswered, change the method: target "
         "a source repository, dataset, benchmark table or reproducible worked example; identify "
         "the specific missing artifact in the question. Do not repeat a general validation query. "
@@ -473,6 +542,14 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
     failures = []
     attempts = []
     react_searches = []
+    known_observations = {
+        " ".join(str(fact.get("observation") or "").casefold().split())
+        for row in (memory.get("research") or {}).get("history", [])
+        for fact in row.get("facts") or [] if fact.get("observation")
+    }
+    known_observations.update(" ".join(str(fact.get("observation") or "").casefold().split())
+                              for fact in (memory.get("knowledge_catalog") or {}).values()
+                              if fact.get("observation"))
     previous_queries = {str(row.get("search_query") or "").casefold() for row in registry.values()}
     legacy_rounds = 0 if search_rounds is None else max(0, search_rounds)
     for index in range(legacy_rounds + 1):
@@ -487,6 +564,10 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 source = registry.get(fact.evidence_id)
                 if source is None or fact.quote not in str(source.get("evidence_text") or source.get("summary") or ""):
                     raise ValueError("learning fact quote must occur in its supplied source")
+            if step.progress in {"LEARNED", "DEEPENED"} and all(
+                " ".join(fact.observation.casefold().split()) in known_observations for fact in step.facts
+            ):
+                raise ValueError("already learned observations are REPEATED, not new learning")
             if step.progress in {"REPEATED", "UNRESOLVED"} and step.next_query.casefold() in previous_queries:
                 raise ValueError("continued learning requires a different factual search query")
 
@@ -593,6 +674,15 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 "even if phrased differently. Identify the precise new observation, not just a new URL. "
                 "When the same uncertainty persists, next_query must seek the missing code, dataset, "
                 "result table or worked example rather than another overview. "
+                "Assess focus.completion_criterion directly. question_status ANSWERED means you can now explain "
+                "or use the requested mechanism/case; PARTIAL means the question is still open despite a useful fact; "
+                "BLOCKED means the required artifact is unavailable. A small new detail never alone implies ANSWERED. "
+                "Write answer as the actual supported explanation, steps, calculation, distinction or example, "
+                "including its scope and missing part. Do not just announce that a source or method exists. "
+                "Keep inquiry_action CONTINUE while progressing, CHANGE_METHOD when the approach failed, "
+                "PARK with a concrete resume_when when repeated attempts lack the necessary artifact, or "
+                "NEXT_QUESTION only after ANSWERED. The next question of PARTIAL must target the unfinished criterion. "
+                "Do not abandon a useful explanation to ask whether it predicts prices unless this is a TEST focus. "
                 "Decide what you actually learned about the focus question. LEARNED/DEEPENED requires "
                 "a specific new fact, mechanism, counterexample, implementation detail or narrowed uncertainty, "
                 "with a source_quote_id selected from source_quotes. The host retrieves the exact excerpt; do not copy or invent quotation text. Merely saying claims need evidence "
@@ -618,14 +708,14 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 validate=lambda value: validate(_bind_research_choice(value,turn["quotes"],turn["registry"],turn["known"])),
                 action_handler=external_action,
                 outcome_classifier=lambda value: (
-                    "EVIDENCE_SUFFICIENT" if value.progress in {"LEARNED", "DEEPENED"}
+                    "EVIDENCE_SUFFICIENT" if value.question_status == "ANSWERED" and focus.approach != "TEST"
                     else "EVIDENCE_INCOMPLETE"
                 ),
             )
             step = _bind_research_choice(choice,turn["quotes"],turn["registry"],turn["known"])
             _put(path, step.model_dump(mode="json"))
         attempts.append(step.model_dump(mode="json"))
-        if step.progress in {"LEARNED", "DEEPENED"} or index == legacy_rounds:
+        if step.question_status == "ANSWERED" or step.inquiry_action == "PARK" or index == legacy_rounds:
             break
         search_path = folder / f"learning_search_{index}.json"
         if search_path.exists():
@@ -652,8 +742,17 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
         next_question=result["next_question"], next_query=result["next_query"])
     if application is not None:
         result["application"] = application
-        result["next_question"] = application["assessment"]["next_question"]
-        result["next_query"] = application["assessment"]["next_query"]
+        if focus.approach == "TEST":
+            if application["assessment"]["status"] != "UNRESOLVED":
+                result["question_status"] = "ANSWERED"
+                result["inquiry_action"] = "NEXT_QUESTION"
+                result["next_question"] = application["assessment"]["next_question"]
+                result["next_query"] = application["assessment"]["next_query"]
+            else:
+                if result["question_status"] == "ANSWERED":
+                    result["question_status"] = "PARTIAL"
+                if result["inquiry_action"] == "NEXT_QUESTION":
+                    result["inquiry_action"] = "CONTINUE"
     _put(folder / "learning_result.json", result)
     remember_learning(state_root, result)
     defer_memory_maintenance(folder, result)
@@ -672,6 +771,9 @@ def remember_learning(state_root: Path, result: dict) -> None:
         trace = {key: result[key] for key in (
             'cycle', 'topic', 'focus', 'progress', 'learning_delta',
             'related_proposition', 'next_question', 'next_query', 'observed_at')}
+        for key in ("question_status", "answer", "inquiry_action", "resume_when"):
+            if key in result:
+                trace[key] = result[key]
         trace['facts'] = result['facts']
         trace['source_evidence_ids'] = [row['evidence_id'] for row in result['sources']]
         trace['source_urls'] = [row['url'] for row in result['sources'] if row.get('url')]
@@ -680,5 +782,7 @@ def remember_learning(state_root: Path, result: dict) -> None:
             "search_query": result['next_query'], "last_progress": result['progress'],
             "last_learning_delta": result['learning_delta'], "last_cycle": result['cycle'],
             "why_interested": result['focus']['why_interested'],
-            "facts": result['facts']}
+            "focus_question": result["focus"]["question"],
+            "facts": result['facts'],
+            **{key: result[key] for key in ("question_status", "answer", "inquiry_action", "resume_when") if key in result}}
         _replace(Path(state_root) / "content" / "learning" / "research.json", state)

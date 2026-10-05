@@ -55,12 +55,12 @@ def knowledge_catalog(history: list[dict], topic: str = "") -> dict[str, dict]:
     rows = {}
     for row in reversed(history):
         for fact in row.get("facts") or []:
-            identity = json.dumps([row["cycle"], fact["evidence_id"], fact["observation"]],
+            identity = json.dumps([fact["quote"], fact["observation"]],
                                   ensure_ascii=False)
             ref = "knowledge-" + hashlib.sha256(identity.encode()).hexdigest()[:12]
-            rows[ref] = {"cycle": row["cycle"], "topic": row.get("topic", ""),
+            rows.setdefault(ref, {"cycle": row["cycle"], "topic": row.get("topic", ""),
                          **fact, "source_urls": row.get("source_urls") or [],
-                         "observed_at": row.get("observed_at")}
+                         "observed_at": row.get("observed_at")})
     # Keep related facts and their most recent counterexamples, without copying
     # the complete history into the model a second time.
     terms = set(topic.casefold().replace("-", " ").split())
@@ -114,6 +114,7 @@ def commit_application(folder: Path, focus, memory: dict) -> dict | None:
         "prior_quotes": list(dict.fromkeys(
             [fact["quote"], *memory.get("known_quotes", []),
              *(item["quote"] for row in prior for item in row.get("facts") or [])])),
+        "prior_evidence_hashes": memory.get("known_evidence_hashes") or [],
         "feedback_cycles": [row["cycle"] for row in memory.get("application_feedback") or []],
         "reflection_refs": [row["reflection_ref"] for row in memory.get("recent_reflections") or []],
     }
@@ -212,7 +213,9 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
     from .runtime_memory_adapter import memory_decision
     registry = {}
     excluded = []
-    acquisitions = [folder / "learning_initial_search.json", *sorted(folder.glob("learning_search_*.json"))]
+    acquisitions = [folder / "learning_initial_search.json",
+                    *sorted(folder.glob("learning_search_*.json")),
+                    *sorted(folder.glob("learning_react_search_*.json"))]
     for path in acquisitions:
         if not path.exists():
             continue
@@ -221,10 +224,11 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
             excluded.append({"receipt": path.name, "reason": "ACQUIRED_BEFORE_COMMIT"})
             continue
         for row in pool.get("items") or []:
-            url = source_key(row.get("url") or "")
-            if (row["evidence_id"] in plan["prior_source_ids"]
-                    or (url and url in plan["prior_source_urls"])):
-                excluded.append({"evidence_id": row["evidence_id"], "reason": "PREVIOUSLY_SEEN_SOURCE"})
+            body = str(row.get("evidence_text") or row.get("summary") or "").strip()
+            # A URL identifies a container, not an observation. Changed pages or
+            # unread sections remain eligible; unchanged/reposted facts do not.
+            if body and any(body in quote for quote in plan["prior_quotes"]):
+                excluded.append({"evidence_id": row["evidence_id"], "reason": "PREVIOUSLY_SEEN_EVIDENCE"})
                 continue
             registry[row["evidence_id"]] = row
     service=MemoryService(state_root)
@@ -232,6 +236,7 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
     session=MemorySession(folder,"application",service)
     session.seed(plan["question"],topic=topic)
     prior_quotes=set(plan["prior_quotes"])
+    prior_hashes=set(plan.get("prior_evidence_hashes") or [])
     bindings={}
     def packet():
         if session.state.get('status')=='DECIDED':
@@ -251,7 +256,9 @@ async def assess_application(*, runtime, folder: Path, state_root: Path, topic: 
             if node['node_type']!='evidence' or source_id not in registry or not service._valid(node): continue
             source_body=str(registry[source_id].get('evidence_text') or registry[source_id].get('summary') or '')
             if node['body'] not in source_body: continue
-            if node['body'] in prior_quotes: continue
+            if (any(node['body'].strip() in quote for quote in prior_quotes)
+                    or hashlib.sha256(node['body'].strip().encode()).hexdigest() in prior_hashes):
+                continue
             key='Q'+str(len(quotes)+1)
             quotes[key]={'evidence_id':source_id,'quote':node['body']}
             visible[key]={'quote':node['body'],'title':node['metadata'].get('title','')[:200]}

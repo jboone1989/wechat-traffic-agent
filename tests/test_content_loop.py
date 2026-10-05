@@ -26,11 +26,14 @@ class Runtime:
         if task.startswith('PLAN_LEARNING:'):
             return json.dumps({'question':'How does the supplied mechanism work in practice?',
                 'search_query':'mechanism implementation primary evidence',
-                'why_interested':'I want to understand the specific mechanism behind this observation.'})
+                'why_interested':'I want to understand the specific mechanism behind this observation.',
+                'approach':'EXPLAIN','completion_criterion':'Explain the concrete mechanism and its supported observation.','method_change':''})
         if task.startswith('ADVANCE_LEARNING:'):
             data=json.JSONDecoder().raw_decode(task.split('\n',1)[1])[0]
             source=data['primary_source']
             return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
+                'question_status':'ANSWERED','inquiry_action':'NEXT_QUESTION','resume_when':'',
+                'answer':'The source explains the mechanism with a concrete observation and its limited scope.',
                 'learning_delta':'The source adds a concrete observation about the current question.',
                 'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
                           if value['evidence_id']==source['evidence_id']),

@@ -11,7 +11,9 @@ def test_publication_keeps_exact_verified_facts_and_current_goal():
         "cycle": "real-cycle",
         "source_evidence": source,
         "learning": {"sources": [source], "facts": [{"quote": "Persist invocation ID before dispatch."}],
-                     "learning_delta": "Invocation ID survives worker restart."},
+                     "learning_delta": "Invocation ID survives worker restart.",
+                     "answer": "A persisted invocation ID lets a restarted worker reconcile the prior operation.",
+                     "question_status": "ANSWERED", "inquiry_action": "NEXT_QUESTION"},
         "mind_plan": {"goal": {"goal_id": "owner-daily", "description": "Share useful learning"},
                       "required_topic": "restart", "available_topics": ["unrelated"] * 2000},
         "cognition": {"worth_saying": True, "what_changed": "Restart reconciliation matters."},
@@ -21,6 +23,8 @@ def test_publication_keeps_exact_verified_facts_and_current_goal():
     projected = _expression_model_context(context)
     assert projected["learning"]["facts"] == original["learning"]["facts"]
     assert projected["learning"]["learning_delta"] == original["learning"]["learning_delta"]
+    assert projected["learning"]["answer"] == original["learning"]["answer"]
+    assert projected["learning"]["question_status"] == "ANSWERED"
     assert projected["cognition"] == original["cognition"]
     assert projected["prediction"] == original["prediction"]
     assert projected["mind_plan"]["goal"] == original["mind_plan"]["goal"]

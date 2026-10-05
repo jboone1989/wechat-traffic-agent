@@ -45,7 +45,7 @@ def seed(state):
 
 def focus(memory):
     return ResearchFocus(
-        question=QUESTION, search_query=QUERY,
+        question=QUESTION, search_query=QUERY, approach="TEST",
         why_interested="Apply the saved restart lesson to a previously unseen worker implementation.",
         application=KnowledgeApplication(memory_ref=next(iter(memory["knowledge_catalog"])),
             prediction="The second worker will persist invocation identity before the external operation.",
@@ -74,6 +74,8 @@ class Runtime:
         if task.startswith("ADVANCE_LEARNING:"):
             return json.dumps({
                 "progress": "DEEPENED", "evidence_id": data["sources"][0]["evidence_id"],
+                "question_status": "ANSWERED", "inquiry_action": "NEXT_QUESTION", "resume_when": "",
+                "answer": "The second worker persists the ID after the side effect, leaving a crash window that can repeat the operation.",
                 "learning_delta": "The newly studied worker saves identity too late to prevent repeated external operations.",
                 "facts": [{"source_quote_id": next(iter(data["source_quotes"])),
                            "observation": "The second worker saves identity only after the side effect."}],
@@ -332,3 +334,73 @@ def test_changed_focus_cannot_reuse_an_existing_prediction_receipt(tmp_path):
     changed = original.model_copy(update={"search_query": "different worker implementation source query"})
     with pytest.raises(ValueError, match="differs from its precommitted"):
         commit_application(folder, changed, memory)
+
+
+@pytest.mark.parametrize("same_url", [False, True])
+def test_react_acquisition_and_new_observation_on_old_page_are_eligible(tmp_path, same_url):
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path/"react-case"
+    commit_application(folder, focus(memory), memory)
+    source = {**NEW, "url": OLD["url"]} if same_url else NEW
+    _put(folder/"learning_react_search_0.json", {"items": [source]})
+    result = asyncio.run(assess_application(runtime=Runtime(), folder=folder,
+        state_root=tmp_path, topic="worker-reliability"))
+    assert result["assessment"]["status"] == "REFUTED"
+    assert result["evidence"][0]["quote"] == NEW["summary"]
+    assert result["acquisition_receipts"] == ["learning_react_search_0.json"]
+
+
+def test_unresolved_prediction_does_not_overwrite_explanation_followup(tmp_path):
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path/"explanation"
+    selected = focus(memory).model_copy(update={"approach": "EXPLAIN"})
+    commit_application(folder, selected, memory)
+    _put(folder/"learning_react_search_0.json", {"items": [NEW]})
+    result = asyncio.run(investigate_learning(runtime=Runtime(status="UNRESOLVED"),
+        explorer=None, folder=folder, state_root=tmp_path, topic="worker-reliability",
+        focus=selected, memory=memory, evidence=[NEW], selected=NEW, now=NOW, search_rounds=0))
+    assert result["application"]["assessment"]["status"] == "UNRESOLVED"
+    assert result["next_query"] == "generic worker checkpoint design overview"
+    assert result["application"]["assessment"]["next_query"] == NEXT
+
+
+def test_repeated_receipts_share_one_knowledge_reference():
+    from wechat_traffic_agent.learning_application import knowledge_catalog
+    fact = {"evidence_id": OLD["evidence_id"], "quote": OLD["summary"],
+            "observation": "The first worker saves invocation identity before execution."}
+    catalog = knowledge_catalog([{"cycle": "a", "facts": [fact]}, {"cycle": "b", "facts": [fact]}])
+    assert len(catalog) == 1
+    assert next(iter(catalog.values()))["cycle"] == "b"
+
+
+def test_reacquired_unchanged_excerpt_seen_before_commit_is_not_new_evidence(tmp_path):
+    from hashlib import sha256
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    memory["known_evidence_hashes"] = [sha256(NEW["summary"].encode()).hexdigest()]
+    folder = tmp_path/"already-read"
+    commit_application(folder, focus(memory), memory)
+    _put(folder/"learning_react_search_0.json", {"items": [NEW]})
+    runtime = Runtime(status="CONFIRMED")
+    result = asyncio.run(assess_application(runtime=runtime, folder=folder,
+        state_root=tmp_path, topic="worker-reliability"))
+    assert result["assessment"]["status"] == "UNRESOLVED"
+    assert not runtime.calls
+
+
+def test_test_focus_remains_partial_when_prediction_is_unresolved(tmp_path):
+    seed(tmp_path)
+    memory = research_memory(None, tmp_path)
+    folder = tmp_path/"unfinished-test"
+    selected = focus(memory)
+    commit_application(folder, selected, memory)
+    _put(folder/"learning_react_search_0.json", {"items": [NEW]})
+    result = asyncio.run(investigate_learning(runtime=Runtime(status="UNRESOLVED"),
+        explorer=None, folder=folder, state_root=tmp_path, topic="worker-reliability",
+        focus=selected, memory=memory, evidence=[NEW], selected=NEW, now=NOW, search_rounds=0))
+    assert result["progressed"]
+    assert result["question_status"] == "PARTIAL"
+    assert result["inquiry_action"] == "CONTINUE"
+    assert result["application"]["brier_score"] is None

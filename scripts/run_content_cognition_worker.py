@@ -100,9 +100,12 @@ def _commit_pending_reflections(state_root: Path, content_mind: ContentMind) -> 
         content_mind.record_daily_reflection(
             target_date=str(row.get("target_date") or ""),
             reflection_text=str(row.get("reflection_text") or ""),
-            evidence_refs=tuple(
-                str(ref) for ref in row.get("evidence_refs") or () if str(ref)
-            ),
+            # This persisted receipt proves the reflection happened; it is
+            # self-memory provenance, never evidence for a world claim.
+            evidence_refs=tuple(dict.fromkeys([
+                str(path.relative_to(state_root)),
+                *(str(ref) for ref in row.get("evidence_refs") or () if str(ref)),
+            ])),
         )
         row["status"] = "COMMITTED"
         row["committed_at"] = datetime.now(timezone.utc).isoformat()

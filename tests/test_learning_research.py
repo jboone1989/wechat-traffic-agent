@@ -29,6 +29,10 @@ DETAIL = {'evidence_id':'implementation', 'title':'Checkpoint implementation',
 
 def step(progress, source, *, related=KNOWN, query='agent checkpoint reconcile invocation restart'):
     return {'progress':progress, 'evidence_id':source['evidence_id'],
+        'question_status':'ANSWERED' if progress in {'LEARNED','DEEPENED'} else 'BLOCKED',
+        'answer':'The persisted invocation ID lets a restarted worker reconcile an earlier operation before running it again.',
+        'inquiry_action':'NEXT_QUESTION' if progress in {'LEARNED','DEEPENED'} else 'CHANGE_METHOD',
+        'resume_when':'',
         'learning_delta':('An invocation ID is persisted before execution to reconcile work after restart.'
                           if progress in {'LEARNED','DEEPENED'} else ''),
         'facts':([{'evidence_id':source['evidence_id'], 'quote':source['summary'],
@@ -429,3 +433,63 @@ def test_pending_external_search_reuses_receipt_and_sources_after_restart(tmp_pa
     assert result["sources"] == [DETAIL]
     assert result["facts"][0]["quote"] == DETAIL["summary"]
     assert resumed["decision_rounds_used"] == 2
+
+
+def test_new_detail_does_not_mark_unanswered_question_sufficient(tmp_path):
+    value = step("DEEPENED", DETAIL, query="worker crash reconciliation result table")
+    value.update(question_status="PARTIAL", inquiry_action="CONTINUE",
+                 answer="Persisted identity survives restart, but this source does not show how the external outcome is reconciled.")
+    result = asyncio.run(investigate_learning(runtime=Runtime([value]), explorer=Explorer(),
+        folder=tmp_path/"cycles/cycle-1", state_root=tmp_path, topic="agent-reliability",
+        focus=FOCUS, memory={"beliefs": [{"proposition": KNOWN}], "research": {"history": []}},
+        evidence=[DETAIL], selected=DETAIL, now=NOW, search_rounds=0))
+    assert result["progressed"] is True
+    assert result["question_status"] == "PARTIAL"
+    session = json.loads((tmp_path/"cycles/cycle-1/memory_session_step_0.json").read_text())
+    assert session["termination"] == "EVIDENCE_INCOMPLETE"
+    assert read_research_state(tmp_path)["inquiries"]["agent-reliability"]["question_status"] == "PARTIAL"
+
+
+def test_prediction_not_required_to_explain_saved_mechanism(tmp_path):
+    memory = {"knowledge_catalog": {"K1": {"observation": "Invocation identity survives restart."}},
+              "research": {"history": []}}
+    runtime = Runtime([])
+    result = asyncio.run(choose_research_focus(runtime=runtime,
+        folder=tmp_path/"explain", topic="agent-reliability", memory=memory))
+    assert result.approach == "EXPLAIN" and result.application is None
+    assert not (tmp_path/"explain/learning_application_plan.json").exists()
+
+
+def test_unfinished_questions_are_visible_across_topic_aliases(tmp_path):
+    from wechat_traffic_agent.learning_research import _working_projection
+    state = {"inquiries": {}, "history": [
+        {"cycle": str(i), "topic": "btc-regime-" + str(i), "focus": {"question": "Does HMM improve BTC forecasts?"},
+         "question_status": "PARTIAL", "inquiry_action": "CHANGE_METHOD",
+         "learning_delta": "A regime input was located.", "facts": []}
+        for i in range(3)]}
+    session = SimpleNamespace(state={"prompt_window": 8})
+    projection = _working_projection({"research": state}, "new-btc-slug", session)
+    assert len(projection["research_trajectory"]) == 3
+    assert all(row["question_status"] == "PARTIAL" for row in projection["research_trajectory"])
+    assert projection["research"]["history"] == []
+
+
+def test_parked_inquiry_keeps_resume_condition_after_restart(tmp_path):
+    value = step("UNRESOLVED", INTRO)
+    value.update(inquiry_action="PARK", resume_when="A timestamped out-of-sample result table becomes available.",
+                 answer="The source repeats the principle but supplies no execution result, so the application cannot yet be checked.")
+    result = run(tmp_path, Runtime([value]), Explorer(), rounds=0)
+    inquiry = read_research_state(tmp_path)["inquiries"]["agent-reliability"]
+    assert inquiry["inquiry_action"] == "PARK" and inquiry["resume_when"] == result["resume_when"]
+    replay = run(tmp_path, Runtime([]), Explorer(), rounds=0)
+    assert replay == result
+
+
+def test_exact_known_observation_cannot_count_again_as_progress(tmp_path):
+    value = step("DEEPENED", DETAIL)
+    memory = {"beliefs": [{"proposition": KNOWN}], "research": {"history": [
+        {"cycle": "prior", "topic": "other-slug", "facts": value["facts"]}]}}
+    with pytest.raises(ValueError, match="already learned observations"):
+        asyncio.run(investigate_learning(runtime=Runtime([value, value]), explorer=Explorer(),
+            folder=tmp_path/"cycles/repeat", state_root=tmp_path, topic="agent-reliability",
+            focus=FOCUS, memory=memory, evidence=[DETAIL], selected=DETAIL, now=NOW, search_rounds=0))

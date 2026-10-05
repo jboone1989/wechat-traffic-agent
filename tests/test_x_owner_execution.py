@@ -3,6 +3,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 import pytest
+
+pytestmark = pytest.mark.usefixtures("maintenance_cognition")
 from wechat_traffic_agent.content_loop import _put
 from wechat_traffic_agent.x_owner_execution import SCHEMA, owner_x_publication_request, prepare_owner_x_expression
 from wechat_traffic_agent.x_social import XAutonomyLoop
@@ -117,11 +119,14 @@ def test_content_executor_stops_after_real_cognition_for_owner_x(tmp_path):
             if task.startswith('PLAN_LEARNING:'):
                 return json.dumps({'question':'How does validation reduce model uncertainty?',
                     'search_query':'validation model uncertainty experiment',
-                    'why_interested':'I want to understand the concrete validation mechanism.'})
+                    'why_interested':'I want to understand the concrete validation mechanism.',
+                    'approach':'EXPLAIN','completion_criterion':'Explain how concrete validation reduces model uncertainty.','method_change':''})
             if task.startswith('ADVANCE_LEARNING:'):
                 data=json.JSONDecoder().raw_decode(task.split('\n',1)[1])[0]
                 source=data['sources'][0]
                 return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
+                'question_status':'ANSWERED','inquiry_action':'NEXT_QUESTION','resume_when':'',
+                'answer':'The source explains the mechanism with a concrete observation and its limited scope.',
                     'learning_delta':'Validation evidence reduces uncertainty about model reliability.',
                     'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
                               if value['evidence_id']==source['evidence_id']),

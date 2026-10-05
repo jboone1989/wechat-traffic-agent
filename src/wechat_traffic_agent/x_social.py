@@ -97,7 +97,7 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
         learning_projection = {key: learning[key] for key in (
             "schema_version", "cycle", "topic", "focus", "evidence_id", "facts",
             "learning_delta", "next_question", "next_query", "progress", "progressed",
-            "related_proposition", "rationale",
+            "related_proposition", "rationale", "answer", "question_status", "inquiry_action", "resume_when",
         ) if key in learning}
         learning_projection["sources"] = [{
             **{key: row[key] for key in (
@@ -771,7 +771,8 @@ class XAutonomyLoop:
                if owner_directed_x else "Jev L1 has already selected POST_NOW and SHORT_POST. ")
             +             "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format. "
             "The post must arise from the supplied cognition, not invent a new topic. For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists. "
-            "Share what you actually learned: lead with the concrete learning_delta, observation, mechanism or counterexample in learning. "
+            "Share what you actually learned: use learning.answer to explain a mechanism, useful step, "
+            "distinction or implication with concrete support, rather than listing a method name or isolated fact. "
             "Use learning.sources as attributed factual input alongside source_evidence. Preserve concrete names, measurements or implementation details when supplied. "
             "Do not compress the discovery into a generic moral such as 'agents need measurable outcomes'. "
             "Compare recent_shares by meaning, not wording; a short post must retain the new detail that distinguishes this step. "
@@ -809,6 +810,7 @@ class XAutonomyLoop:
                     decision = await _structured(model_runtime,
                         prompt + "\nREWRITE_LEARNING_EXPRESSION: The independent final-text check rejected the draft. "
                         "Retain a specific supported detail from learning.facts, with source attribution; preserve uncertainty. "
+                        "Explain why the detail matters or how it works; a method name or isolated statistic is insufficient. "
                         "Do not substitute a validation slogan for the discovery.\n"
                         + json.dumps({"rejected_post": decision.post_text, "review": quality}, ensure_ascii=False),
                         XPostDraft)
@@ -936,7 +938,9 @@ class XAutonomyLoop:
             prompt=("X_OWNER_LONGFORM_DRAFT: Ferro selected "+fmt+" through its persisted autonomous publication decision. "
                 "Write in the supplied public persona from persisted cognition and attributed source only. "
                 "Share the actual learning_delta and concrete observations from learning, with attribution to learning.sources. "
-                "Explain what you were trying to understand, what you found, why it changed or deepened your understanding, and the next unknown. "
+                "Use learning.answer for the source-supported explanation or worked case. Give the reader "
+                "a mechanism, calculation, comparison consequence or concrete step they can understand or use. "
+                "Do not force every explanation to end in an unresolved forecast. "
                 "Do not replace the discovery with generic evidence reminders or a repeated slogan. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
                 "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "

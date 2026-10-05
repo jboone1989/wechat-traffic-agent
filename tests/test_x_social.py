@@ -728,9 +728,9 @@ def test_research_post_quality_repairs_thin_text_before_any_browser_write(tmp_pa
     (folder / "learning_result.json").write_text(json.dumps(learning))
     thin = "Regimes need validation on unseen data before we can trust them."
     repaired = "A clustering study reports 11 regimes with volatility filtering versus 6 with size-matched random sampling. I still need to test prediction."
-    rejected = {"concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
+    rejected = {"useful_understanding": False, "reader_takeaway": "The post only repeats a generic validation principle.", "concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
                 "source_fact_id": None, "post_quote": None, "rationale": "The post drops the supplied measured comparison and repeats a validation reminder."}
-    approved = {"concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
+    approved = {"useful_understanding": True, "reader_takeaway": "The comparison explains that selecting high-volatility examples changes the recovered regime count.", "concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
                 "source_fact_id": "fact-0", "post_quote": "11 regimes with volatility filtering versus 6",
                 "rationale": "The attributed sampling comparison is concrete and distinct from prior generic validation posts."}
     model = _ModelRuntime([
@@ -780,6 +780,8 @@ def test_learning_quality_allows_unresolved_inquiry_with_verified_concrete_fact(
         "model; whether that lowers unseen drawdown error is still unresolved."
     )
     approved = {
+        "useful_understanding": True,
+        "reader_takeaway": "This fixture preserves an attributed implementation detail.",
         "concrete_discovery": True,
         "faithful_to_sources": True,
         "adds_to_recent_shares": True,
@@ -804,7 +806,7 @@ def test_learning_quality_rejects_forged_post_quote_or_source_reference(tmp_path
     quote = "Volatility filtering recovered eleven distinct Bitcoin market regimes."
     learning = {"progress": "LEARNED", "sources": [{"evidence_id": "paper", "summary": quote}],
                 "facts": [{"evidence_id": "paper", "quote": quote}]}
-    forged = {"concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
+    forged = {"useful_understanding": True, "reader_takeaway": "The comparison explains that selecting high-volatility examples changes the recovered regime count.", "concrete_discovery": True, "faithful_to_sources": True, "adds_to_recent_shares": True,
               "source_fact_id": "fact-0", "post_quote": "Eleven regimes improve future predictions.",
               "rationale": "This invented assertion must not pass exact public text validation."}
     with pytest.raises(ValueError, match="exact excerpt"):
@@ -825,7 +827,7 @@ def test_cached_research_longform_cannot_bypass_quality_before_native_publisher(
              "style_observation_ids": [], "rationale": "The draft repeats a broad verification principle."}
     (folder / "social_expression_drafts.json").write_text(json.dumps({
         "status": "DRAFT_READY", "drafts": {"x": draft}, "x_strategy": {}}))
-    rejected = {"concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
+    rejected = {"useful_understanding": False, "reader_takeaway": "The post only repeats a generic validation principle.", "concrete_discovery": False, "faithful_to_sources": True, "adds_to_recent_shares": False,
                 "source_fact_id": None, "post_quote": None,
                 "rationale": "This draft repeats a generic reminder and contains no concrete observation."}
     transport = _BrowserTransport()
@@ -838,3 +840,19 @@ def test_cached_research_longform_cannot_bypass_quality_before_native_publisher(
     assert result["status"] == "HELD_BY_LEARNING_QUALITY"
     assert transport.calls == []
     assert len(model.tasks) == 3
+
+
+def test_isolated_fact_without_explanation_fails_reader_value_check(tmp_path):
+    from wechat_traffic_agent.learning_expression_quality import review_learning_expression
+    quote = "Volatility filtering recovered eleven regimes versus six in a random sample."
+    text = "The study reports eleven regimes."
+    learning = {"sources": [{"evidence_id": "paper", "summary": quote}],
+                "facts": [{"evidence_id": "paper", "quote": quote}]}
+    review = {"concrete_discovery": True, "faithful_to_sources": True,
+              "adds_to_recent_shares": True, "useful_understanding": False,
+              "reader_takeaway": "Only a count is stated; no cause, comparison or usable implication is explained.",
+              "source_fact_id": "fact-0", "post_quote": text,
+              "rationale": "An isolated number without explanation does not provide useful understanding."}
+    result = asyncio.run(review_learning_expression(runtime=_ModelRuntime([review]),
+        folder=tmp_path, learning=learning, text=text, recent_shares=[], label="quality"))
+    assert result["passed"] is False and result["concrete_discovery"] is True
