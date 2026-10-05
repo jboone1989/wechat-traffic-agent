@@ -818,11 +818,29 @@ class XAutonomyLoop:
                 "Return format SHORT_POST (up to 280 characters) or LONG_POST (up to 8000). "
                 "Choose the space needed for a useful explanation; do not pad."
             )
+            prompt = prompt.replace(
+                "The durable owner controller explicitly requested an original SHORT_POST on X in this cycle.",
+                "The durable owner controller requested an original research post on X; explain the supplied learning."
+            ).replace(
+                "Jev L1 has already selected POST_NOW and SHORT_POST.",
+                "Jev L1 selected POST_NOW; the research determines the space needed for its explanation."
+            ).replace(
+                "For LONGFORM/RESEARCH_NOTE/METHOD_NOTE, a concise takeaway plus the supplied public URL is useful when one exists.",
+                "Make the explanation understandable in the post itself; a takeaway and source link do not replace it."
+            )
             prompt += (
-                "\nUse learning.reasoning_steps to explain how the evidence leads to an inference, "
-                "worked calculation, distinction or limit. An unfinished investigation can be valuable "
-                "without a final conclusion. Preserve the useful steps rather than only the last number. "
-                "If these steps cannot fit 280 characters, choose LONG_POST in this same response."
+                "\nUse learning.reasoning_steps to develop a PUBLIC evidence-to-inference explanation, "
+                "worked calculation, comparison or limit. Do not merely list a design and its claimed benefit. "
+                "Explain one useful connection: why the stated consequence follows, what would go wrong "
+                "under an alternative, or how a supported step works in an illustrative case. "
+                "Clearly label hypothetical illustrations and distinguish them from source observations. "
+                "For example, if research restores context and environment together while retaining failure memory, "
+                "explain why restoring only one state would leave them inconsistent or why remembered failure "
+                "must survive the rollback. Use this example only when supported by the supplied learning. "
+                "An unfinished investigation can be valuable without a final conclusion. "
+                "SHORT_POST is appropriate only when it preserves that explanatory connection. "
+                "If 280 characters fit only a mechanism summary or conclusion, choose LONG_POST in this same response. "
+                "Let the explanation determine length; do not pad it or manufacture missing evidence."
             )
         decision = await _structured(model_runtime, prompt, draft_contract)
         if context.get("learning") and decision.format == "LONG_POST":

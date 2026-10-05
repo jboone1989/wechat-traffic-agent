@@ -39,7 +39,8 @@ def test_reasoning_cannot_cite_a_missing_fact():
         ResearchStep.model_validate(value)
 
 
-def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp_path, monkeypatch):
+@pytest.mark.parametrize("first_draft_is_summary", [False, True])
+def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp_path, monkeypatch, first_draft_is_summary):
     monkeypatch.setenv("CONTENT_X_PUBLICATION_ENABLED", "1")
     monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
     folder, result = cycle_context(tmp_path)
@@ -60,15 +61,25 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
         "useful_understanding":True,"reader_takeaway":"Saved identity permits matching an earlier operation but does not prove its outcome.",
         "source_fact_id":"fact-0","post_quote":"Identity alone does not tell us whether the external side effect succeeded",
         "rationale":"The intermediate distinction is useful while the recovery question remains unfinished."}
-    model = _ModelRuntime([{"format":"LONG_POST","post_text":explanation,
-        "rationale":"Preserve the evidence-to-inference explanation without cutting its limit."},review])
+    supported = {"format":"LONG_POST","post_text":explanation,
+                 "rationale":"Preserve the evidence-to-inference explanation without cutting its limit."}
+    responses = [supported, review]
+    if first_draft_is_summary:
+        summary = "The worker saves invocation identity before execution so it can match operations after restart."
+        rejected = {**review, "useful_understanding":False, "post_quote":summary,
+                    "rationale":"It lists a mechanism and benefit but omits why identity does not prove outcome."}
+        responses = [{"format":"SHORT_POST","post_text":summary,
+                      "rationale":"A compressed mechanism summary."}, rejected, supported, review]
+    model = _ModelRuntime(responses)
     browser = _Transport()
     loop = XAutonomyLoop(runtime=_Runtime(),model_runtime=model,state_root=tmp_path,
         base_url="",browser_publish_transport=browser)
     outcome = asyncio.run(loop.after_content_cycle(result=result,now=NOW))
     assert outcome["status"] == "POSTED" and outcome["format"] == "LONG_POST"
     assert browser.calls == [explanation]
-    assert len(model.tasks) == 2
+    assert len(model.tasks) == (4 if first_draft_is_summary else 2)
+    assert "concise takeaway plus the supplied public URL" not in model.tasks[0]
+    assert "explicitly requested an original SHORT_POST" not in model.tasks[0]
     assert "earlier SHORT_POST selection is provisional" in model.tasks[0]
     assert "reasoning_steps" in model.tasks[0]
     draft = json.loads((folder/"social_expression_drafts.json").read_text())
