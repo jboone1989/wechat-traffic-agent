@@ -81,3 +81,26 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
 def test_short_research_format_still_enforces_actual_character_limit():
     with pytest.raises(ValueError, match="Use LONG_POST"):
         XResearchPostDraft(format="SHORT_POST",post_text="x"*281,rationale="A supported explanation.")
+
+
+def test_learning_reaches_reasoning_with_a_large_history_archive(tmp_path):
+    history = [{
+        "cycle": f"historical-{index}", "topic": "older-topic",
+        "focus": {"question": "Previous investigation " * 30,
+                  "completion_criterion": "Explain a supported mechanism " * 20},
+        "answer": "Previously supported explanation " * 40,
+        "next_question": "A different unknown to investigate " * 12,
+        "facts": [{"evidence_id": DETAIL["evidence_id"], "quote": DETAIL["summary"],
+                   "observation": "A historical observation " * 20}],
+        "reasoning_steps": [{"kind": "INFERENCE", "fact_indices": [0],
+                             "explanation": "Previous evidence-to-inference account " * 20}],
+    } for index in range(6)]
+    memory = {"beliefs": [{"proposition": KNOWN}], "research": {"history": history}}
+    runtime = Runtime([step("DEEPENED", DETAIL)])
+    result = asyncio.run(investigate_learning(
+        runtime=runtime, explorer=Explorer(), folder=tmp_path/"cycles/bounded-history",
+        state_root=tmp_path, topic="recovery", focus=FOCUS, memory=memory,
+        evidence=[DETAIL], selected=DETAIL, now=NOW, search_rounds=0))
+    assert result["reasoning_steps"]
+    assert result["progress"] == "DEEPENED"
+    assert memory["research"]["history"] == history

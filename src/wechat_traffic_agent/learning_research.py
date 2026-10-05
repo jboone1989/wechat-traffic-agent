@@ -348,6 +348,10 @@ def _working_projection(memory,topic,session):
     for key in ('recent_reflections','application_feedback','outcome_feedback'):
         projected[key]=control(projected[key])
     projected['research']['inquiries']=control(projected['research']['inquiries'])
+    # History summaries must obey the same shrinking window as source excerpts.
+    # Full explanations remain reachable through each original receipt_ref.
+    projected['research_trajectory']=[control(row) for row in projected['research_trajectory'][-window:]]
+    projected['parked_inquiries']=[control(row) for row in projected['parked_inquiries'][-window:]]
     projected['knowledge_catalog']=dict(list(projected['knowledge_catalog'].items())[:window])
     projected["recent_shares"]=[{k:(str(v)[:600] if v is not None else v) for k,v in r.items()}
                                 for r in projected["recent_shares"][-4:]]
