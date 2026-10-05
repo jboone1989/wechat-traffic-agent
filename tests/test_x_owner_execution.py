@@ -127,6 +127,8 @@ def test_content_executor_stops_after_real_cognition_for_owner_x(tmp_path):
                 return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
                 'question_status':'ANSWERED','inquiry_action':'NEXT_QUESTION','resume_when':'',
                 'answer':'The source explains the mechanism with a concrete observation and its limited scope.',
+                'reasoning_steps':[{'kind':'INFERENCE','fact_indices':[0],
+                    'explanation':'Validation evidence can narrow uncertainty, while this source alone does not establish the best validation method.'}],
                     'learning_delta':'Validation evidence reduces uncertainty about model reliability.',
                     'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
                               if value['evidence_id']==source['evidence_id']),

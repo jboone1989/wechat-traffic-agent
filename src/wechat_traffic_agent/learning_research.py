@@ -77,6 +77,20 @@ class ResearchFact(BaseModel):
     observation: str = Field(min_length=10, max_length=600)
 
 
+class ResearchReasoningStep(BaseModel):
+    """A public, evidence-backed explanation, not a transcript of private deliberation."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    kind: Literal["OBSERVATION", "INFERENCE", "CALCULATION", "COUNTEREXAMPLE"]
+    explanation: str = Field(min_length=20, max_length=700)
+    fact_indices: tuple[int, ...] = Field(min_length=1, max_length=5)
+
+    @model_validator(mode="after")
+    def indices_in_range(self):
+        if any(index < 0 or index >= 5 for index in self.fact_indices):
+            raise ValueError("reasoning fact indices must be zero-based positions in facts")
+        return self
+
+
 class ResearchStep(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     progress: Literal["LEARNED", "DEEPENED", "REPEATED", "UNRESOLVED"]
@@ -91,6 +105,7 @@ class ResearchStep(BaseModel):
     # Defaults read immutable legacy receipts; new decisions require these fields.
     question_status: Literal["ANSWERED", "PARTIAL", "BLOCKED"] = "PARTIAL"
     answer: str = Field(default="", max_length=1200)
+    reasoning_steps: tuple[ResearchReasoningStep, ...] = Field(default=(), max_length=6)
     inquiry_action: Literal["CONTINUE", "CHANGE_METHOD", "PARK", "NEXT_QUESTION"] = "CONTINUE"
     resume_when: str = Field(default="", max_length=400)
 
@@ -98,6 +113,9 @@ class ResearchStep(BaseModel):
     def progress_needs_observation(self):
         if self.progress in {"LEARNED", "DEEPENED"} and (not self.facts or len(self.learning_delta.strip()) < 10):
             raise ValueError("research progress requires a concrete learning delta and source observation")
+        for step in self.reasoning_steps:
+            if any(index >= len(self.facts) for index in step.fact_indices):
+                raise ValueError("reasoning must refer to facts actually present in this receipt")
         if self.question_status == "ANSWERED" and (not self.facts or len(self.answer.strip()) < 20):
             raise ValueError("an answered question requires a source-supported explanation")
         if self.inquiry_action == "NEXT_QUESTION" and self.question_status != "ANSWERED":
@@ -137,6 +155,10 @@ def research_trajectory(state: dict, limit: int = 6) -> list[dict]:
         "question_status": row.get("question_status", "UNASSESSED"),
         "inquiry_action": row.get("inquiry_action"),
         "answer": str(row.get("answer") or row.get("learning_delta") or "")[:600],
+        "reasoning_steps": [
+            {**step, "explanation": str(step.get("explanation") or "")[:400]}
+            for step in row.get("reasoning_steps", [])[-2:]
+        ],
         "next_question": row.get("next_question"),
         "resume_when": row.get("resume_when"),
         "observations": [str(f.get("observation") or "")[:400] for f in (row.get("facts") or [])[:2]],
@@ -222,6 +244,8 @@ def _research_choice_contract(known: set[str], quotes: dict, registry: dict):
         facts=(tuple[citation, ...], Field(max_length=5)),
         question_status=(ResearchStep.model_fields["question_status"].annotation, Field()),
         answer=(str, Field(min_length=20, max_length=1200)),
+        reasoning_steps=(tuple[ResearchReasoningStep, ...], Field(max_length=6,
+            description="Public explanation linking supplied facts to implications, calculations or limits; not private deliberation.")),
         inquiry_action=(ResearchStep.model_fields["inquiry_action"].annotation, Field()),
         resume_when=(str, Field(max_length=400)),
     )
@@ -252,7 +276,10 @@ def _research_prompt_memory(memory: dict, topic: str) -> dict:
         **{key: row[key] for key in (
             "cycle", "topic", "focus", "progress", "learning_delta",
             "related_proposition", "next_question", "next_query", "observed_at",
+            "question_status", "answer",
         ) if key in row},
+        "reasoning_steps": [{**step, "explanation": str(step.get("explanation") or "")[:400]}
+                            for step in row.get("reasoning_steps", [])[-2:]],
         "facts": [{"observation": fact["observation"]} for fact in row.get("facts") or []],
         "receipt_ref": "content/continuous/cycles/" + str(row.get("cycle")) + "/learning_result.json",
     } for row in chosen]
@@ -555,7 +582,9 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
     for index in range(legacy_rounds + 1):
         path = folder / f"learning_step_{index}.json"
 
-        def validate(step):
+        def validate(step, *, require_reasoning=False):
+            if require_reasoning and step.progress in {"LEARNED", "DEEPENED"} and not step.reasoning_steps:
+                raise ValueError("new learning needs an evidence-backed explanation, not only a result")
             if step.evidence_id not in registry:
                 raise ValueError("learning evidence_id must match supplied evidence")
             if step.related_proposition is not None and step.related_proposition not in known:
@@ -679,6 +708,15 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 "BLOCKED means the required artifact is unavailable. A small new detail never alone implies ANSWERED. "
                 "Write answer as the actual supported explanation, steps, calculation, distinction or example, "
                 "including its scope and missing part. Do not just announce that a source or method exists. "
+                "Write reasoning_steps as a concise PUBLIC explanation for another learner: link an observation "
+                "to what follows from it, a worked calculation, a comparison or a rejected interpretation. "
+                "Each step cites zero-based fact_indices in your facts array. Distinguish source observations "
+                "from your inferences; state assumptions and limits in the explanation. This is a shareable "
+                "evidence-based account, not private deliberation or a log of searches. An unfinished inquiry "
+                "can contain valuable reasoning; do not replace it with only the final number or 'more data needed'. "
+                "When reporting a ratio, explain numerator/denominator or why a changed denominator matters "
+                "if the sources support it. For a comparison, explain what is being compared and what it can "
+                "or cannot establish. Never invent a mechanism that is absent from supplied evidence. "
                 "Keep inquiry_action CONTINUE while progressing, CHANGE_METHOD when the approach failed, "
                 "PARK with a concrete resume_when when repeated attempts lack the necessary artifact, or "
                 "NEXT_QUESTION only after ANSWERED. The next question of PARTIAL must target the unfinished criterion. "
@@ -705,7 +743,7 @@ async def investigate_learning(*, runtime, explorer, folder: Path, state_root: P
                 "Return JSON only.\n",
                 payload_builder=payload_builder,
                 contract_builder=lambda: _research_choice_contract(turn["known"],turn["quotes"],turn["registry"]),
-                validate=lambda value: validate(_bind_research_choice(value,turn["quotes"],turn["registry"],turn["known"])),
+                validate=lambda value: validate(_bind_research_choice(value,turn["quotes"],turn["registry"],turn["known"]), require_reasoning=True),
                 action_handler=external_action,
                 outcome_classifier=lambda value: (
                     "EVIDENCE_SUFFICIENT" if value.question_status == "ANSWERED" and focus.approach != "TEST"
@@ -771,7 +809,7 @@ def remember_learning(state_root: Path, result: dict) -> None:
         trace = {key: result[key] for key in (
             'cycle', 'topic', 'focus', 'progress', 'learning_delta',
             'related_proposition', 'next_question', 'next_query', 'observed_at')}
-        for key in ("question_status", "answer", "inquiry_action", "resume_when"):
+        for key in ("question_status", "answer", "reasoning_steps", "inquiry_action", "resume_when"):
             if key in result:
                 trace[key] = result[key]
         trace['facts'] = result['facts']
@@ -784,5 +822,5 @@ def remember_learning(state_root: Path, result: dict) -> None:
             "why_interested": result['focus']['why_interested'],
             "focus_question": result["focus"]["question"],
             "facts": result['facts'],
-            **{key: result[key] for key in ("question_status", "answer", "inquiry_action", "resume_when") if key in result}}
+            **{key: result[key] for key in ("question_status", "answer", "reasoning_steps", "inquiry_action", "resume_when") if key in result}}
         _replace(Path(state_root) / "content" / "learning" / "research.json", state)

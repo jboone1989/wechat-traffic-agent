@@ -33,6 +33,9 @@ def step(progress, source, *, related=KNOWN, query='agent checkpoint reconcile i
         'answer':'The persisted invocation ID lets a restarted worker reconcile an earlier operation before running it again.',
         'inquiry_action':'NEXT_QUESTION' if progress in {'LEARNED','DEEPENED'} else 'CHANGE_METHOD',
         'resume_when':'',
+        'reasoning_steps':([{'kind':'INFERENCE', 'fact_indices':[0],
+            'explanation':'Because invocation identity survives a restart, a worker can match the earlier operation before executing again; identity alone does not prove its outcome.'}]
+            if progress in {'LEARNED','DEEPENED'} else []),
         'learning_delta':('An invocation ID is persisted before execution to reconcile work after restart.'
                           if progress in {'LEARNED','DEEPENED'} else ''),
         'facts':([{'evidence_id':source['evidence_id'], 'quote':source['summary'],

@@ -76,6 +76,8 @@ class Runtime:
                 "progress": "DEEPENED", "evidence_id": data["sources"][0]["evidence_id"],
                 "question_status": "ANSWERED", "inquiry_action": "NEXT_QUESTION", "resume_when": "",
                 "answer": "The second worker persists the ID after the side effect, leaving a crash window that can repeat the operation.",
+                "reasoning_steps":[{"kind":"COUNTEREXAMPLE","fact_indices":[0],
+                    "explanation":"Because this worker saves identity after the effect, a crash between those steps loses the match to an already executed operation; persistence timing changes recovery behavior."}],
                 "learning_delta": "The newly studied worker saves identity too late to prevent repeated external operations.",
                 "facts": [{"source_quote_id": next(iter(data["source_quotes"])),
                            "observation": "The second worker saves identity only after the side effect."}],

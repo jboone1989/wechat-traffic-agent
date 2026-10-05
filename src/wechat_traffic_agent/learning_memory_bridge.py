@@ -128,7 +128,9 @@ class LearningMemoryBridge:
                 "memory_type": "SEMANTIC",
                 "kind": "RESEARCH_UNDERSTANDING",
                 "status": status,
-                "text": answer,
+                "text": answer + ("\n\nEvidence-backed explanation:\n" + "\n".join(
+                    step["explanation"] for step in row.get("reasoning_steps", [])
+                ) if row.get("reasoning_steps") else ""),
                 "created_at": row.get("observed_at") or datetime.now(timezone.utc).isoformat(),
                 "source_type": "RESEARCH_RECEIPT",
                 "source_ref": row["cycle"],
@@ -137,6 +139,7 @@ class LearningMemoryBridge:
                 "payload": {
                     "cycle": row["cycle"], "focus": row.get("focus"),
                     "question_status": row.get("question_status", "PARTIAL"),
+                    "reasoning_steps": row.get("reasoning_steps", []),
                     "epistemic_status": "SOURCE_GROUNDED_SYNTHESIS",
                     "fact_memory_ids": [memory["memory_id"] for memory in fact_memories if memory],
                     "receipt_ref": "content/continuous/cycles/" + str(row["cycle"]) + "/learning_result.json",

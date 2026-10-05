@@ -743,7 +743,7 @@ def _compact_worldview_learning(value):
         "progress": value.get("progress"),
         "progressed": bool(value.get("progressed")),
         "learning_delta": str(value.get("learning_delta") or "")[:800],
-        **{key: value[key] for key in ("answer", "question_status", "inquiry_action", "resume_when") if key in value},
+        **{key: value[key] for key in ("answer", "reasoning_steps", "question_status", "inquiry_action", "resume_when") if key in value},
         "facts": facts,
         "related_proposition": value.get("related_proposition"),
         "next_question": str(value.get("next_question") or "")[:500],
@@ -2580,6 +2580,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'METHOD_NOTE is appropriate when a METHOD or TOOL source reveals a concrete tactic, workflow, open-source library, or research technique worth testing; present it as a candidate to verify, never as already adopted. '
                     'THOUGHT is appropriate for a concise, evidence-grounded reflection or question from actual learning. '
                     'Ferro researches its own interests and shares along the way. A belief formation or revision creates no publication obligation. '
+                    'Use learning.reasoning_steps to share an evidence-backed explanation: the observations, what follows from them, and limits. '
+                    'A useful intermediate calculation, distinction, counterexample or reason for rejecting an interpretation can be worth sharing before the question is answered. '
+                    'Do not discard this reasoning just because no final conclusion or belief change exists. A search diary or a bare promise to investigate is insufficient. '
                     'Use the concrete learning_delta and observations, not another generic reminder that evidence is needed. '
                     'Learning includes a new mechanism, implementation detail, comparison, counterexample or narrowed uncertainty, even if the broad inquiry remains open. '
                     'The same evidence may support a concise post and a later illustrated explanation when the latter adds supported context or a useful framework. A new belief change or fresh source is not required for a useful new expression. Choose depth by evidence quality; padding or repeating a prior point is not useful. Compare recent_public_expressions before deciding there is additional public value. Do not use traffic demand as evidence that a thought is true. Do not invent a belief change. Return JSON only.'

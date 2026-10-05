@@ -34,6 +34,8 @@ class Runtime:
             return json.dumps({'progress':'LEARNED','evidence_id':source['evidence_id'],
                 'question_status':'ANSWERED','inquiry_action':'NEXT_QUESTION','resume_when':'',
                 'answer':'The source explains the mechanism with a concrete observation and its limited scope.',
+                'reasoning_steps':[{'kind':'INFERENCE','fact_indices':[0],
+                    'explanation':'This observation supports the documented case; it does not by itself establish that the same mechanism works in another case.'}],
                 'learning_delta':'The source adds a concrete observation about the current question.',
                 'facts':[{'source_quote_id':next(key for key, value in data['source_quotes'].items()
                           if value['evidence_id']==source['evidence_id']),

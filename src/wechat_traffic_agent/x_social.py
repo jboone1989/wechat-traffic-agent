@@ -49,6 +49,18 @@ class XPostDraft(BaseModel):
     rationale: str = Field(min_length=10, max_length=500)
 
 
+class XResearchPostDraft(XPostDraft):
+    """Choose length while writing, after the actual research is available."""
+    format: Literal["SHORT_POST", "LONG_POST"] = "SHORT_POST"
+    post_text: str = Field(min_length=20, max_length=8000)
+
+    @model_validator(mode="after")
+    def short_post_bounds(self):
+        if self.format == "SHORT_POST" and len(self.post_text) > 280:
+            raise ValueError("Use LONG_POST to preserve an explanation exceeding 280 characters")
+        return self
+
+
 class XExpressionDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     action: Literal["POST", "SKIP"]
@@ -97,7 +109,7 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
         learning_projection = {key: learning[key] for key in (
             "schema_version", "cycle", "topic", "focus", "evidence_id", "facts",
             "learning_delta", "next_question", "next_query", "progress", "progressed",
-            "related_proposition", "rationale", "answer", "question_status", "inquiry_action", "resume_when",
+            "related_proposition", "rationale", "answer", "reasoning_steps", "question_status", "inquiry_action", "resume_when",
         ) if key in learning}
         learning_projection["sources"] = [{
             **{key: row[key] for key in (
@@ -795,7 +807,29 @@ class XAutonomyLoop:
             "source_policy": "EXACT_VERIFIED_FACTS_AND_SOURCE_METADATA; FULL_RESEARCH_IN_CYCLE_RECEIPT",
             "plan_policy": "CURRENT_GOAL_AND_TOPIC; CANDIDATES_RETAINED_IN_MIND_PLAN_RECEIPT",
         })
-        decision = await _structured(model_runtime, prompt, XPostDraft)
+        draft_contract = XPostDraft
+        if context.get("learning"):
+            draft_contract = XResearchPostDraft
+            prompt = prompt.replace(
+                "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format.",
+                "Write the post; do not reconsider whether to POST or SKIP. The earlier SHORT_POST selection is provisional."
+            ).replace(
+                "Max 280 characters including any URL.",
+                "Return format SHORT_POST (up to 280 characters) or LONG_POST (up to 8000). "
+                "Choose the space needed for a useful explanation; do not pad."
+            )
+            prompt += (
+                "\nUse learning.reasoning_steps to explain how the evidence leads to an inference, "
+                "worked calculation, distinction or limit. An unfinished investigation can be valuable "
+                "without a final conclusion. Preserve the useful steps rather than only the last number. "
+                "If these steps cannot fit 280 characters, choose LONG_POST in this same response."
+            )
+        decision = await _structured(model_runtime, prompt, draft_contract)
+        if context.get("learning") and decision.format == "LONG_POST":
+            return await self._owner_longform(
+                folder=folder, context=context, now=now, surface="X_LONG_POST",
+                prepared_draft=decision,
+            )
         if context.get("learning"):
             from .learning_expression_quality import review_learning_expression
             quality_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle / "learning-quality")
@@ -813,7 +847,12 @@ class XAutonomyLoop:
                         "Explain why the detail matters or how it works; a method name or isolated statistic is insufficient. "
                         "Do not substitute a validation slogan for the discovery.\n"
                         + json.dumps({"rejected_post": decision.post_text, "review": quality}, ensure_ascii=False),
-                        XPostDraft)
+                        draft_contract)
+                    if context.get("learning") and decision.format == "LONG_POST":
+                        return await self._owner_longform(
+                            folder=folder, context=context, now=now, surface="X_LONG_POST",
+                            prepared_draft=decision,
+                        )
             if not quality["passed"]:
                 return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle, "quality": quality}
         me, _identity_receipt = await self._publication_identity(now=now)
@@ -920,7 +959,7 @@ class XAutonomyLoop:
             "owner_execution_request": context.get("owner_publication_request") or None,
         }
 
-    async def _owner_longform(self, *, folder, context, now, surface):
+    async def _owner_longform(self, *, folder, context, now, surface, prepared_draft=None):
         """Execute Ferro's selected X format without a website publication prerequisite."""
         from .social_expression import ChannelSocialDraft
         from .x_browser import XBrowserPublisher
@@ -933,12 +972,26 @@ class XAutonomyLoop:
             return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
                     "reason": "NO_VERIFIED_LEARNING_RECORD"}
         path=folder/"social_expression_drafts.json"
+        if prepared_draft is not None:
+            draft = ChannelSocialDraft(
+                channel="X", format=fmt, intent="EXPLAINER", text=prepared_draft.post_text,
+                style_observation_ids=(), rationale=prepared_draft.rationale[:400],
+            )
+            _write_json(path, {
+                "status": "DRAFT_READY", "cycle": cycle, "drafts": {"x": draft.model_dump(mode="json")},
+                "x_strategy": {"schema_version": "ferro-research-format.v1", "post_timing": "POST_NOW",
+                    "x_format": fmt, "interaction_mode": "ORIGINAL", "selection_authority": "FERRO_LEARNING_EXPRESSION"},
+                "evidence_decision": {"source_evidence": context.get("source_evidence")},
+            })
         existing=_read_json(path)
         if existing.get("status")!="DRAFT_READY" or (existing.get("drafts",{}).get("x",{}).get("format") != fmt):
             prompt=("X_OWNER_LONGFORM_DRAFT: Ferro selected "+fmt+" through its persisted autonomous publication decision. "
                 "Write in the supplied public persona from persisted cognition and attributed source only. "
                 "Share the actual learning_delta and concrete observations from learning, with attribution to learning.sources. "
-                "Use learning.answer for the source-supported explanation or worked case. Give the reader "
+                "Use learning.answer and reasoning_steps for the source-supported explanation or worked case. "
+                "Show how observations support an inference, calculation or distinction, and where it stops. "
+                "Useful intermediate reasoning is shareable without a final conclusion; keep its assumptions and limits. "
+                "Give the reader "
                 "a mechanism, calculation, comparison consequence or concrete step they can understand or use. "
                 "Do not force every explanation to end in an unresolved forecast. "
                 "Do not replace the discovery with generic evidence reminders or a repeated slogan. "
@@ -998,7 +1051,7 @@ class XAutonomyLoop:
             self._clear_publication_blocker(now=now,receipt_id=receipt_id)
             return {**result,"status":"POSTED" if result['status']=='POSTED' else "ALREADY_EXPRESSED",
                 "post_id":publication["post_id"],"url":publication["url"],"receipt_id":receipt_id,
-                "format":fmt,"owner_execution_request":context["owner_publication_request"]}
+                "format":fmt,"owner_execution_request":context.get("owner_publication_request")}
         return result
 
     async def _publish_through_browser(self, *, text: str):
