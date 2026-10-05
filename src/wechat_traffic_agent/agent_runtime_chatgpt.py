@@ -61,11 +61,14 @@ class AgentRuntimeChatGPTProvider:
         cls,
         *,
         fallback: Any | None = None,
+        session_id: str | None = None,
     ) -> "AgentRuntimeChatGPTProvider":
         if fallback is not None:
             raise ValueError("Ferro ChatGPT fallback providers are not supported")
         try:
-            provider = ChatGPTBrowserProvider.from_environment()
+            provider = ChatGPTBrowserProvider.from_environment(
+                session_id=session_id,
+            )
         except (ChatGPTBrowserProviderError, OSError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         return cls(provider=provider)

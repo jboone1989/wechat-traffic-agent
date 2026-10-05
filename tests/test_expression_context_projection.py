@@ -63,3 +63,24 @@ def test_expression_omits_comparison_archives_but_keeps_application_assessment()
     assert projected["learning"]["projection"]["receipt_ref"].endswith("application-cycle/learning_result.json")
     assert len(json.dumps(projected)) < len(json.dumps(context)) / 20
     assert context == original
+
+
+def test_expression_drops_interest_index_but_retains_current_goal_and_facts():
+    context = {
+        "mind_plan": {"goal": {"description": "Learn and share a mechanism"},
+            "endogenous_goal": {"goal_id": "g1", "description": "Study worker restart",
+                "interest_refs": ["historical-interest-" + str(i) for i in range(10000)]}},
+        "learning": {"facts": [{"quote": "Persist invocation before dispatch."}],
+            "learning_delta": "Invocation receipts survive worker restart.",
+            "application": {"knowledge": {"fact": "Persist before dispatch"},
+                "assessment": {"status": "UNRESOLVED"}, "feedback_cycles": ["old"] * 10000}},
+    }
+    original = copy.deepcopy(context)
+    result = _expression_model_context(context)
+    assert result["mind_plan"]["endogenous_goal"]["description"] == "Study worker restart"
+    assert "interest_refs" not in result["mind_plan"]["endogenous_goal"]
+    assert result["learning"]["facts"] == context["learning"]["facts"]
+    assert result["learning"]["application"]["assessment"] == {"status": "UNRESOLVED"}
+    assert "feedback_cycles" not in result["learning"]["application"]
+    assert len(json.dumps(result)) < 1000
+    assert context == original

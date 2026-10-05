@@ -80,6 +80,7 @@ def main() -> int:
     cognition = load_independent_ferro_cognition_runtime(
         state_root=state_root,
         behavioral_context_provider=behavioral_context,
+        session_id="ferro-reflect",
     )
 
     if not scheduler.pending("REFLECT"):

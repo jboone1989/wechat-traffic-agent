@@ -18,6 +18,8 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wechat_traffic_agent.behavioral_state import build_behavioral_state, build_phenotype_prior
+from wechat_traffic_agent.runtime_backend import load_independent_ferro_cognition_runtime
 from wechat_traffic_agent.content_mind import ContentMind
 from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
 from wechat_traffic_agent.okx_orbit import OKXOrbitPublisher
@@ -154,8 +156,26 @@ def main() -> int:
         wakeful=state_client,
     )
 
+    def publication_behavioral_context():
+        behavioral_state = build_behavioral_state(state_client.behavioral_projection())
+        prior = build_phenotype_prior(behavioral_state)
+        return {
+            "phenotype_prior": {key: prior[key] for key in (
+                "schema_version", "stable_phenotype", "dynamic_modulation",
+            )},
+            "behavioral_state": {key: behavioral_state[key] for key in (
+                "relationship", "behavioral_directives", "salient_expression_profile",
+                "expression_policy",
+            )},
+        }
+
+    publication_runtime = load_independent_ferro_cognition_runtime(
+        state_root=state_root,
+        behavioral_context_provider=publication_behavioral_context,
+        session_id="ferro-x-expression",
+    )
     social_expression_loop = SocialExpressionDraftWorker(
-        runtime=app.domain_runtime,
+        runtime=publication_runtime,
         state_root=state_root,
     )
     okx_orbit_publisher = OKXOrbitPublisher(state_root=state_root)
@@ -172,7 +192,7 @@ def main() -> int:
         )
         x_loop = XAutonomyLoop(
             runtime=app.runtime,
-            model_runtime=app.domain_runtime,
+            model_runtime=publication_runtime,
             state_root=state_root,
             base_url=os.environ.get("CONTENT_WEB_BASE_URL", ""),
             growth_mission=x_growth_mission,

@@ -73,6 +73,14 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
             "cycle", "goal", "endogenous_goal", "required_topic", "focus_kind",
             "external_mission_id", "owner_goal_id",
         ) if key in plan}
+        endogenous_goal = plan.get("endogenous_goal")
+        if isinstance(endogenous_goal, dict):
+            projected["mind_plan"]["endogenous_goal"] = {
+                key: endogenous_goal[key] for key in (
+                    "goal_id", "description", "origin", "intrinsic_drives",
+                    "expected_value", "confidence",
+                ) if key in endogenous_goal
+            }
     source = context.get("source_evidence")
     learning = context.get("learning") or {}
     if isinstance(source, dict) and source and isinstance(learning, dict):
@@ -86,7 +94,11 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
                 ).encode()).hexdigest(),
             }
     if isinstance(learning, dict) and learning:
-        learning_projection = dict(learning)
+        learning_projection = {key: learning[key] for key in (
+            "schema_version", "cycle", "topic", "focus", "evidence_id", "facts",
+            "learning_delta", "next_question", "next_query", "progress", "progressed",
+            "related_proposition", "rationale",
+        ) if key in learning}
         learning_projection["sources"] = [{
             **{key: row[key] for key in (
                 "evidence_id", "title", "summary", "url", "source", "source_kind", "learning_kind",
@@ -98,8 +110,9 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
         application = learning.get("application")
         if isinstance(application, dict):
             learning_projection["application"] = {
-                key: value for key, value in application.items()
-                if key not in {"prior_quotes", "prior_source_ids", "prior_source_urls"}
+                key: application[key] for key in (
+                    "knowledge", "application", "assessment", "evidence", "brier_score",
+                ) if key in application
             }
         learning_projection["projection"] = {
             "receipt_ref": "content/continuous/cycles/" + str(
@@ -108,6 +121,27 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
         }
         projected["learning"] = learning_projection
     return projected
+
+
+def _expression_persona(state_root: Path) -> dict[str, Any]:
+    """Voice and affiliation are inputs; interaction archives stay in persona storage."""
+    persona = public_persona_projection(state_root)
+    return {key: value for key, value in persona.items() if key != "learning"}
+
+
+def _expression_mission(state_root: Path) -> dict[str, Any]:
+    """The active experiment constrains writing; the roadmap belongs to its planner."""
+    mission = x_growth_mission_context(state_root)
+    return {key: mission[key] for key in (
+        "status", "mission_id", "goal_id", "description", "metric", "target",
+        "deadline", "constraints", "active_experiment", "audience_feedback",
+        "owner_strategy_advice", "generation_authority", "publication_authority",
+    ) if key in mission}
+
+
+def _expression_recent_shares(history) -> list[dict[str, Any]]:
+    return [{key: row[key] for key in ("text", "recorded_at") if key in row}
+            for row in history.recent_public_shares(limit=20)]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -515,7 +549,7 @@ class XAutonomyLoop:
                 + json.dumps({
                     "mention": row,
                     "agent_handle": me.get("username"),
-                    "public_persona": public_persona_projection(self.state_root),
+                    "public_persona": _expression_persona(self.state_root),
                     "relationship_context": relationship_context,
                     "l1_attention": l1_attention,
                 }, ensure_ascii=False)
@@ -730,7 +764,7 @@ class XAutonomyLoop:
             return await self._owner_longform(folder=folder, context=context, now=now, surface=surface)
         model_runtime = ReceiptRuntime(self.model_runtime, self.root / "expression-model-calls" / cycle)
         public_url = _find_url(context.get("publication"))
-        x_mission = x_growth_mission_context(self.state_root)
+        x_mission = _expression_mission(self.state_root)
         prompt = (
             "X_EXPRESSION_DRAFT: "
             + ("The durable owner controller explicitly requested an original SHORT_POST on X in this cycle. L1 timing remains advisory for this execution request. "
@@ -747,8 +781,8 @@ class XAutonomyLoop:
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
             "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
             + json.dumps({**_expression_model_context(context), "public_url": public_url,
-                          "recent_shares": self.history.recent_public_shares(limit=20),
-                          "public_persona": public_persona_projection(self.state_root),
+                          "recent_shares": _expression_recent_shares(self.history),
+                          "public_persona": _expression_persona(self.state_root),
                           "x_growth_mission": x_mission,
                           "x_l1_strategy": x_strategy}, ensure_ascii=False)
         )
@@ -767,7 +801,7 @@ class XAutonomyLoop:
             for attempt in range(2):
                 quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
                     learning=context["learning"], text=decision.post_text,
-                    recent_shares=self.history.recent_public_shares(limit=20),
+                    recent_shares=_expression_recent_shares(self.history),
                     label=f"x_learning_quality_{attempt}")
                 if quality["passed"]:
                     break
@@ -911,9 +945,9 @@ class XAutonomyLoop:
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
                 "An empty images list uses an original graphic cover. Never claim generated art is a real product screenshot or evidence. "
                 "Preserve uncertainty and source attribution. Honor an active temporary daily contract through substantive learning and sharing.\n"
-                +json.dumps({**_expression_model_context(context),"persona":public_persona_projection(self.state_root),
-                    "mission":x_growth_mission_context(self.state_root),
-                    "recent_posts":self.history.recent_public_shares(limit=20)},ensure_ascii=False))
+                +json.dumps({**_expression_model_context(context),"persona":_expression_persona(self.state_root),
+                    "mission":_expression_mission(self.state_root),
+                    "recent_posts":_expression_recent_shares(self.history)},ensure_ascii=False))
             runtime=ReceiptRuntime(self.model_runtime,self.root/"expression-model-calls"/cycle/"longform-draft"/fmt)
             draft=await _structured(runtime,prompt,ChannelSocialDraft)
             if draft.channel!="X" or draft.format!=fmt:
@@ -932,7 +966,7 @@ class XAutonomyLoop:
                 draft = ChannelSocialDraft.model_validate(saved["drafts"]["x"])
                 quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
                     learning=context["learning"], text=(draft.title or "") + "\n" + draft.text,
-                    recent_shares=self.history.recent_public_shares(limit=20),
+                    recent_shares=_expression_recent_shares(self.history),
                     label=f"x_longform_learning_quality_{attempt}")
                 if quality["passed"]:
                     break
@@ -943,7 +977,7 @@ class XAutonomyLoop:
                         "Keep channel X and format " + fmt + ". Preserve source attribution, the concrete discovery and uncertainty. "
                         "Do not pad the text or substitute generic validation reminders.\n"
                         + json.dumps({"draft": draft.model_dump(mode="json"), "review": quality,
-                                      "learning": context["learning"]}, ensure_ascii=False),
+                                      "learning": _expression_model_context(context)["learning"]}, ensure_ascii=False),
                         ChannelSocialDraft)
                     if draft.channel != "X" or draft.format != fmt:
                         return {"status": "OWNER_FORMAT_MISMATCH", "cycle": cycle}
@@ -1022,7 +1056,7 @@ class XAutonomyLoop:
             "X_PREDICTION_OUTCOME: One or more previously dated predictions now have a matured recorded outcome. "
             "Write a concise correction/update only if the supplied settlement supports one. Clearly label the result as CONFIRMED, REFUTED, or INCONCLUSIVE exactly as recorded; do not reinterpret it. "
             "No investment advice or invented facts. Max 280 characters. Return JSON only.\n"
-            + json.dumps({"settlements": terminal, "cycle_context": context}, ensure_ascii=False)
+            + json.dumps({"settlements": terminal, "cycle_context": _expression_model_context(context)}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XExpressionDecision)
         if decision.action != "POST" or not decision.post_text:

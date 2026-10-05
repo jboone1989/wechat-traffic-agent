@@ -49,7 +49,7 @@ def _install_provider(monkeypatch, provider):
     monkeypatch.setattr(
         agent_chatgpt.AgentRuntimeChatGPTProvider,
         "from_environment",
-        classmethod(lambda cls, *, fallback=None: provider),
+        classmethod(lambda cls, *, fallback=None, session_id=None: provider),
     )
 
 
@@ -210,3 +210,40 @@ def test_mechanical_memory_runtime_uses_same_provider_without_behavior_context()
     assert "phenotype" not in provider.prompt
     assert provider.kwargs["_routing_task_class"] == "memory"
     assert "bounded memory-processing component" in provider.kwargs["system"]
+
+
+def test_expression_runtime_preserves_behavior_once_without_runtime_state(tmp_path):
+    from wechat_traffic_agent.content_loop import ReceiptRuntime
+    from wechat_traffic_agent.runtime_backend import IndependentFerroCognitionRuntime
+    class Provider:
+        async def complete(self, prompt, **kwargs):
+            self.prompt = prompt
+            return '{"post_text":"A supported discovery.","rationale":"Specific source evidence supports this."}'
+    provider = Provider()
+    runtime = IndependentFerroCognitionRuntime(provider, behavioral_context_provider=lambda: {
+        **_behavioral_context(), "memory": "must not inject global memory",
+        "operational_state": "must not inject operational state",
+    })
+    receipt = ReceiptRuntime(runtime, tmp_path / "calls")
+    asyncio.run(receipt.cognitive_probe("X_EXPRESSION_DRAFT: supplied discovery only", 2400))
+    assert provider.prompt.count("FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT") == 1
+    assert "phenotype_prior" in provider.prompt and "behavioral_state" in provider.prompt
+    assert "X_EXPRESSION_DRAFT: supplied discovery only" in provider.prompt
+    assert "must not inject" not in provider.prompt
+    assert (tmp_path / "calls/0.json").exists()
+
+
+def test_worker_cognition_sessions_are_distinct(monkeypatch):
+    from wechat_traffic_agent.runtime_backend import load_independent_ferro_cognition_runtime, load_optional_advisory_backend
+    sessions = []
+    def factory(cls, *, fallback=None, session_id=None):
+        sessions.append(session_id)
+        return _FakeAgentRuntimeProvider()
+    monkeypatch.setattr(agent_chatgpt.AgentRuntimeChatGPTProvider,
+                        "from_environment", classmethod(factory))
+    load_optional_advisory_backend()
+    load_public_chat_backend()
+    load_owner_cognition_runtime(behavioral_context_provider=_behavioral_context)
+    load_independent_ferro_cognition_runtime(
+        behavioral_context_provider=_behavioral_context, session_id="ferro-x-expression")
+    assert sessions == ["ferro-content-cognition", "ferro-public-chat", "ferro-owner-cognition", "ferro-x-expression"]

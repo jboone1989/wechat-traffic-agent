@@ -98,3 +98,17 @@ def test_supervisor_has_one_process_per_production_responsibility():
     }
     for worker in expected:
         assert f'"{worker}"' in text
+
+
+def test_social_drafting_uses_publication_runtime_not_full_cognition():
+    tree = ast.parse((ROOT / "scripts/run_content_cognition_worker.py").read_text())
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    for name, keyword in (("XAutonomyLoop", "model_runtime"),
+                          ("SocialExpressionDraftWorker", "runtime")):
+        call = next(node for node in calls if isinstance(node.func, ast.Name) and node.func.id == name)
+        value = next(kw.value for kw in call.keywords if kw.arg == keyword)
+        assert isinstance(value, ast.Name) and value.id == "publication_runtime"
+    factory = next(node for node in calls if isinstance(node.func, ast.Name)
+                   and node.func.id == "load_independent_ferro_cognition_runtime")
+    session = next(kw.value for kw in factory.keywords if kw.arg == "session_id")
+    assert session.value == "ferro-x-expression"

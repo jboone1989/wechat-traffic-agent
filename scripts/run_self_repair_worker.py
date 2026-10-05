@@ -60,6 +60,7 @@ def main() -> int:
     planner_runtime = load_independent_ferro_cognition_runtime(
         state_root=state_root,
         behavioral_context_provider=behavioral_context,
+        session_id="ferro-self-repair",
     )
 
     capability_root = state_root / "worker_runtime" / "self_repair"

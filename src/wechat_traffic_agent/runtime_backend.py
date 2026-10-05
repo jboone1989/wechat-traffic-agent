@@ -293,12 +293,19 @@ def chatgpt_only_mode(environ: Mapping[str, str] | None = None) -> bool:
     return True
 
 
-def load_optional_advisory_backend(*, state_root: Path | None = None):
+def load_optional_advisory_backend(
+    *,
+    state_root: Path | None = None,
+    session_id: str = "ferro-content-cognition",
+):
     """Load Ferro's only advisory backend: Agent Runtime ChatGPT."""
     from agent_runtime.backends import LegacyProviderBackend
     from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(
+        fallback=None,
+        session_id=session_id,
+    )
     advisory_timeout = max(
         _content_advisory_timeout_seconds(),
         provider.timeout_seconds,
@@ -311,7 +318,11 @@ def load_optional_advisory_backend(*, state_root: Path | None = None):
         default_duration_seconds=advisory_timeout,
     )
 
-def load_public_chat_backend(*, state_root: Path | None = None):
+def load_public_chat_backend(
+    *,
+    state_root: Path | None = None,
+    session_id: str = "ferro-public-chat",
+):
     """Load public chat through Agent Runtime ChatGPT.
 
     Public chat uses the same Agent Runtime browser provider as Ferro's other
@@ -320,7 +331,10 @@ def load_public_chat_backend(*, state_root: Path | None = None):
     from agent_runtime.backends import LegacyProviderBackend
     from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(
+        fallback=None,
+        session_id=session_id,
+    )
     if not provider.available:
         return None
     if state_root is not None:
@@ -337,6 +351,7 @@ def load_owner_cognition_runtime(
     *,
     state_root: Path | None = None,
     behavioral_context_provider: Callable[[], Mapping[str, Any]],
+    session_id: str = "ferro-owner-cognition",
 ):
     """Load Ferro's authoritative owner-goal cognition route.
 
@@ -346,7 +361,10 @@ def load_owner_cognition_runtime(
     """
     from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(
+        fallback=None,
+        session_id=session_id,
+    )
     if not provider.available:
         raise RuntimeError(
             "owner cognition requires available Agent Runtime ChatGPT provider"
@@ -368,11 +386,15 @@ def load_independent_ferro_cognition_runtime(
     *,
     state_root: Path | None = None,
     behavioral_context_provider: Callable[[], Mapping[str, Any]],
+    session_id: str,
 ):
     """Load ChatGPT cognition without creating or mutating Agent Runtime state."""
     from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
 
-    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    provider = AgentRuntimeChatGPTProvider.from_environment(
+        fallback=None,
+        session_id=session_id,
+    )
     if not provider.available:
         raise RuntimeError(
             "independent Ferro cognition requires available Agent Runtime ChatGPT provider"

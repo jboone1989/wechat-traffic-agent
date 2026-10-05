@@ -189,7 +189,7 @@ class ReceiptRuntime:
     """Reuse exact model requests and append receipts for changed requests."""
     def __init__(self, runtime, root):
         self.runtime, self.root, self.index = runtime, root, 0
-        self.agent_manifest = runtime.agent_manifest
+        self.agent_manifest = getattr(runtime, 'agent_manifest', None)
 
     async def cognitive_probe(self, task, max_tokens, output_schema=None):
         return await self._probe(

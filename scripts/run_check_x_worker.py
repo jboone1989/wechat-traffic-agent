@@ -61,6 +61,7 @@ def main() -> int:
     cognition_runtime = load_independent_ferro_cognition_runtime(
         state_root=state_root,
         behavioral_context_provider=behavioral_context,
+        session_id="ferro-check-x",
     )
     x_loop = XAutonomyLoop(
         runtime=None,

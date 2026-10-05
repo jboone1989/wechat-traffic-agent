@@ -60,7 +60,7 @@ def test_chatgpt_adapter_uses_agent_runtime_provider_only(monkeypatch):
     monkeypatch.setattr(
         chatgpt_module.ChatGPTBrowserProvider,
         "from_environment",
-        classmethod(lambda cls: fake),
+        classmethod(lambda cls, *, session_id=None: fake),
     )
 
     provider = AgentRuntimeChatGPTProvider.from_environment()
