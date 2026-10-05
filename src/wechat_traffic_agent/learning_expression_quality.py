@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, create_model
@@ -56,7 +57,8 @@ def verified_learning_facts(learning: dict) -> dict[str, dict]:
 
 
 async def review_learning_expression(*, runtime, folder: Path, learning: dict,
-                                     text: str, recent_shares: list, label: str) -> dict:
+                                     text: str, recent_shares: list, label: str,
+                                     format_name: str = "SHORT_POST") -> dict:
     sources = {row["evidence_id"]: row for row in learning.get("sources", [])
                if isinstance(row, dict) and row.get("evidence_id")}
     facts = verified_learning_facts(learning)
@@ -119,8 +121,22 @@ async def review_learning_expression(*, runtime, folder: Path, learning: dict,
                             for key, row in sources.items()],
                 "recent_shares": recent_shares}, ensure_ascii=False),
             contract, validate=validate)
-        result = {"passed": review.concrete_discovery and review.faithful_to_sources and review.adds_to_recent_shares and review.useful_understanding,
-                  **review.model_dump(mode="json")}
+        # The writer must preserve native paragraph layout even when the model
+        # overlooks presentation while finding a useful fact in a wall of text.
+        readable_presentation = (
+            format_name not in {"LONG_POST", "ARTICLE"}
+            or len([part for part in re.split(r"\n\s*\n", text.strip()) if part.strip()]) >= 2
+        )
+        result = {"passed": review.concrete_discovery and review.faithful_to_sources
+                  and review.adds_to_recent_shares and review.useful_understanding and readable_presentation,
+                  **review.model_dump(mode="json"),
+                  "readable_presentation": readable_presentation}
+        if not readable_presentation:
+            result["presentation_feedback"] = (
+                "Separate the long research note into blank-line-separated paragraphs. "
+                "Give each evidence, calculation, inference or limit room to be followed; "
+                "adding labels without developing the reasoning is insufficient."
+            )
     _replace(folder / (label + ".json"), {"schema_version": "ferro-learning-expression-quality.v1",
         "learning_cycle": learning.get("cycle"), "text": text,
         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(), **result})

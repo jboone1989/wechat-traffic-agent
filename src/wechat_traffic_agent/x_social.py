@@ -871,7 +871,7 @@ class XAutonomyLoop:
                 quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
                     learning=context["learning"], text=decision.post_text,
                     recent_shares=_expression_recent_shares(self.history),
-                    label=f"x_learning_quality_{attempt}")
+                    label=f"x_learning_quality_{attempt}", format_name=decision.format)
                 if quality["passed"]:
                     break
                 if attempt == 0:
@@ -1059,7 +1059,7 @@ class XAutonomyLoop:
                 quality = await review_learning_expression(runtime=quality_runtime, folder=folder,
                     learning=context["learning"], text=(draft.title or "") + "\n" + draft.text,
                     recent_shares=_expression_recent_shares(self.history),
-                    label=f"x_longform_learning_quality_{attempt}")
+                    label=f"x_longform_learning_quality_{attempt}", format_name=fmt)
                 if quality["passed"]:
                     break
                 if attempt == 0:

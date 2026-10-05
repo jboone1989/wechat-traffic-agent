@@ -70,8 +70,9 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
                     "rationale":"It lists a mechanism and benefit but omits why identity does not prove outcome."}
         if first_draft_is_summary == "wall":
             wall = explanation.replace("\n\n", " ")
-            rejected = {**review, "useful_understanding": False,
-                        "rationale": "The long note compresses several reasoning moves into one unbroken paragraph."}
+            # The model approving correct content cannot override the owner's
+            # requirement that long explanations actually retain paragraph layout.
+            rejected = review
             repaired = {"channel": "X", "format": "LONG_POST", "text": explanation,
                         "intent": "EXPLAINER", "style_observation_ids": [],
                         "rationale": "Separate the identity observation and its unresolved outcome implication."}
@@ -87,6 +88,11 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
     outcome = asyncio.run(loop.after_content_cycle(result=result,now=NOW))
     assert outcome["status"] == "POSTED" and outcome["format"] == "LONG_POST"
     assert browser.calls == [explanation]
+    if first_draft_is_summary == "wall":
+        first = json.loads((folder / "x_longform_learning_quality_0.json").read_text())
+        assert first["useful_understanding"] is True
+        assert first["readable_presentation"] is False and first["passed"] is False
+        assert "presentation_feedback" in first
     assert len(model.tasks) == (4 if first_draft_is_summary else 2)
     assert "concise takeaway plus the supplied public URL" not in model.tasks[0]
     assert "explicitly requested an original SHORT_POST" not in model.tasks[0]
