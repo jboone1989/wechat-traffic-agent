@@ -184,10 +184,19 @@ class DailyPostingGoal:
             status = self.status(now)
             progress = _read(self.root / "progress.json")
             failures = 0
+            def contains_status(value, expected):
+                if isinstance(value, dict):
+                    if value.get("status") == expected:
+                        return True
+                    return any(contains_status(item, expected) for item in value.values())
+                if isinstance(value, list):
+                    return any(contains_status(item, expected) for item in value)
+                return False
+
+            succeeded = False
             if task == "CONTENT_COGNITION":
                 previous_count = int(progress.get("published", status["published"])) if progress.get("date") == status["date"] else status["published"]
-                succeeded = status["published"] > previous_count or any(
-                    value.get("status") == "POSTED" for value in result.values() if isinstance(value, dict))
+                succeeded = status["published"] > previous_count or contains_status(result, "POSTED")
                 failures = 0 if succeeded or not status["enabled"] or not status["remaining"] else (int(progress.get("consecutive_no_publication", 0)) + 1 if progress.get("date") == status["date"] else 1)
                 left = max(60, int((_time(status["deadline"]) - now).total_seconds()))
                 delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
@@ -197,6 +206,20 @@ class DailyPostingGoal:
                     "consecutive_no_publication": failures, "last_result_status": result.get("status"),
                 })
             errors = []
+            def compact_error(value, marker):
+                raw = str(value.get("detail") or value.get("message") or value.get("reason") or marker)
+                lines = []
+                for raw_line in raw.replace("\r", "\n").splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("Fetching ") and "%|" in line:
+                        continue
+                    if "unauthenticated requests to the HF Hub" in line:
+                        continue
+                    lines.append(line)
+                return " ".join(lines)[:700] or marker
+
             def scan(value):
                 if isinstance(value, dict):
                     marker = str(value.get("status") or "")
@@ -204,7 +227,7 @@ class DailyPostingGoal:
                                   "X_PUBLICATION_CAPABILITY_UNAVAILABLE", "PUBLICATION_UNVERIFIED",
                                   "X_RESOURCE_BLOCKED", "HELD_BY_X_SAFETY", "X_OBSERVATION_FAILED"} or marker.endswith(("_UNAVAILABLE", "_FAILED", "_ERROR", "_BLOCKED")):
                         errors.append({"status": marker, "error_type": value.get("error_type"),
-                            "message": str(value.get("detail") or value.get("message") or value.get("reason") or marker)[:500]})
+                            "message": compact_error(value, marker)})
                     for item in value.values():
                         scan(item)
                 elif isinstance(value, list):
@@ -214,9 +237,39 @@ class DailyPostingGoal:
             if errors or (status["enabled"] and status["remaining"] and failures >= 3):
                 detail = json.dumps(errors[:3], ensure_ascii=False) if errors else "连续三次生产尝试没有真实发布，可能是选题或证据获取停滞。"
                 key = ("unresolved:" if failures >= 3 else "blocker:") + status["date"] + ":" + sha256(detail.encode()).hexdigest()[:12]
-                self._queue(key, "Ferro 发帖流程需要协助" if failures >= 3 else "Ferro 发帖流程阻塞",
+                if task == "CONTENT_COGNITION":
+                    title = "Ferro 下一轮内容生产需要协助" if failures >= 3 else "Ferro 下一轮内容生产阻塞"
+                else:
+                    title = "Ferro 发帖流程需要协助" if failures >= 3 else "Ferro 发帖流程阻塞"
+                if task == "CONTENT_COGNITION" and status["published"]:
+                    publication_note = (
+                        f"此前 {status['published']} 条均已验证发布；当前错误发生在后续生产尝试，"
+                        "不会撤销或重发这些帖子。\n"
+                    )
+                elif status["published"]:
+                    publication_note = (
+                        f"当前已验证发布计数仍为 {status['published']}；本次任务错误不会改变该计数。\n"
+                    )
+                else:
+                    publication_note = ""
+                quota_limited = any("CHATGPTWEBUSAGE_LIMIT" in row["message"] or "You have hit your limit" in row["message"] for row in errors)
+                if quota_limited:
+                    next_step = (
+                        "ChatGPT 网页当前达到使用上限；原待处理请求保持不变，没有重复提交。"
+                        "系统稍后再试，额度恢复后从该请求继续。"
+                    )
+                elif failures >= 3:
+                    next_step = "多次自动尝试仍未解决，需要检查对应模型、浏览器或主机通道；待处理工作仍保留。"
+                elif status["enabled"] and task == "CONTENT_COGNITION":
+                    next_step = "当前轮次未完成，5分钟后重试；若持续失败再升级为需要协助。"
+                else:
+                    next_step = "该任务保持未完成状态并继续重试；已发布内容不受影响。"
+                self._queue(key, title,
                     f"北京时间 {status['date']} 已发布 {status['published']}/{status['minimum']}。\n"
-                    f"阻塞：{detail}\n" + ("多次自动尝试仍未解决，需要你检查浏览器登录、主机及模型通道；自动重试仍继续。" if failures >= 3 else ("正在自动修复，5分钟后重试；仍不能推进时会另行求助。" if status["enabled"] and task == "CONTENT_COGNITION" else "已交给自动修复；尚未解决时保留告警并继续求助。")), now)
+                    + publication_note
+                    + f"当前失败任务：{task}。\n"
+                    + f"阻塞：{detail}\n"
+                    + next_step, now)
 
     def reconcile(self, now, *, watch_heartbeat=False):
         config = _read(self.config_path)

@@ -204,3 +204,71 @@ def test_failed_posting_attempt_retains_future_retry_time(tmp_path):
     assert core.pop_ready() is None
     current[0]=NOW+timedelta(minutes=5)
     assert core.pop_ready().task=="CONTENT_COGNITION"
+
+
+def test_blocker_after_verified_posts_is_labeled_as_next_round(tmp_path):
+    goal=configured(tmp_path)
+    post(tmp_path,1)
+    goal.observe(
+        "CONTENT_COGNITION",
+        {
+            "status":"CHATGPT_UNAVAILABLE",
+            "error_type":"AgentRuntimeChatGPTProviderError",
+            "message":(
+                'CHATGPTWEBUSAGE_LIMIT: native page says "You have hit your limit; '
+                'please try again later"; original pending receipt preserved'
+            ),
+        },
+        NOW+timedelta(minutes=1),
+    )
+    goal.reconcile(NOW+timedelta(minutes=1))
+    notes=[
+        json.loads(path.read_text())
+        for path in (tmp_path/"operator/mailbox/notifications").glob("*.json")
+    ]
+    note=next(row for row in notes if "下一轮内容生产阻塞" in row["title"])
+    assert "下一轮内容生产阻塞" in note["title"]
+    assert "此前 1 条均已验证发布" in note["message"]
+    assert "不会撤销或重发这些帖子" in note["message"]
+    assert "网页当前达到使用上限" in note["message"]
+    assert "原待处理请求保持不变" in note["message"]
+
+
+def test_nested_posted_receipt_resets_no_publication_counter(tmp_path):
+    goal=configured(tmp_path)
+    goal.observe(
+        "CONTENT_COGNITION",
+        {
+            "status":"OK",
+            "pipeline":{
+                "publication":{"status":"POSTED"},
+                "post_processing":{"status":"ERROR","message":"later cleanup failed"},
+            },
+        },
+        NOW,
+    )
+    progress=json.loads((goal.root/"progress.json").read_text())
+    assert progress["consecutive_no_publication"]==0
+
+
+def test_memory_model_download_progress_is_removed_from_operator_alert(tmp_path):
+    goal=configured(tmp_path)
+    goal.observe(
+        "CONTENT_COGNITION",
+        {
+            "status":"ERROR",
+            "message":(
+                "MEMORY_MODEL_FAILED:\n"
+                "Warning: You are sending unauthenticated requests to the HF Hub.\n"
+                "Fetching 5 files: 100%|##########| 5/5\n"
+                "returncode=137 worker killed"
+            ),
+        },
+        NOW,
+    )
+    goal.reconcile(NOW)
+    note=json.loads(next((tmp_path/"operator/mailbox/notifications").glob("*.json")).read_text())
+    assert "MEMORY_MODEL_FAILED" in note["message"]
+    assert "returncode=137 worker killed" in note["message"]
+    assert "Fetching 5 files" not in note["message"]
+    assert "unauthenticated requests" not in note["message"]
