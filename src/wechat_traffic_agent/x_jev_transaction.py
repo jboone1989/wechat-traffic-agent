@@ -77,6 +77,76 @@ def navigate(url):
         time.sleep(0.15)
     raise RuntimeError('X navigation did not reach ' + url)
 
+
+verified_publication = {}
+
+def verify_public_text(path):
+    # The body must be exact; only one trailing URL may be rendered as a card.
+    match = re.search(r'\s+(https?://[^\s]+)\s*$', outbound)
+    body = norm(outbound[:match.start()]) if match else norm(outbound)
+    expression = ('(() => {const path=' + json.dumps(path) + ';'
+        'const expected=' + json.dumps(norm(outbound)) + ';const body=' + json.dumps(body) + ';'
+        'const a=[...document.querySelectorAll("article")].find(a=>'
+        '[...a.querySelectorAll("a[href]")].some(e=>e.getAttribute("href")===path));'
+        'const text=a?.querySelector("[data-testid=tweetText]")?.innerText||"";'
+        'const normalized=text.replace(/\\s+/g," ").trim();'
+        'return normalized===expected||normalized===body ? text : null;})()')
+    observed = wait_value(expression)
+    if norm(observed) == norm(outbound):
+        verified_publication.update(published_text=observed, verified_links=[])
+        return True
+    match = re.search(r'\s+(https?://[^\s]+)\s*$', outbound)
+    if not match or norm(observed) != norm(outbound[:match.start()]):
+        return False
+    source_url = match.group(1)
+    scroll = ('(() => {const path=' + json.dumps(path) + ';'
+        'const a=[...document.querySelectorAll("article")].find(a=>'
+        '[...a.querySelectorAll("a[href]")].some(e=>e.getAttribute("href")===path));'
+        'const card=a?.querySelector("[data-testid=\\"card.wrapper\\"]");'
+        'if(!card)return false;card.scrollIntoView({block:"center"});return true;})()')
+    if not wait_value(scroll, 10.0):
+        return False
+    page = browser.observe(screenshot=False)
+    candidates = []
+    for action in page.get('actions') or []:
+        if action.get('kind') != 'click':
+            continue
+        meta = browser.evaluate('(() => {const e=window.__jevFast?.nodes.get(' + str(action['node']) + ');'
+            'const card=e?.closest("[data-testid=\\"card.wrapper\\"]");'
+            'const a=card?.closest("article");const path=' + json.dumps(path) + ';'
+            'if(!a||![...a.querySelectorAll("a[href]")].some(x=>x.getAttribute("href")===path))return null;'
+            'const link=e.closest("a[href]");return link?.target==="_blank"?{href:link.href}:null;})()')
+        if meta:
+            candidates.append((action, meta))
+    if len(candidates) != 1:
+        return False
+    before = {row['targetId'] for row in browser.call('Target.getTargets')['targetInfos']}
+    browser.act(candidates[0][0], page)
+    deadline = time.monotonic() + 20.0
+    created = None
+    matched = False
+    while time.monotonic() < deadline:
+        rows = browser.call('Target.getTargets')['targetInfos']
+        owned = [row for row in rows if row['targetId'] not in before
+                 and row.get('openerId') == browser.target]
+        if len(owned) > 1:
+            raise RuntimeError('Source card verification opened ambiguous targets')
+        if owned:
+            created = owned[0]
+            if created.get('url') == source_url:
+                matched = True
+                break
+        time.sleep(0.15)
+    if created:
+        if not browser.call('Target.closeTarget', targetId=created['targetId']).get('success'):
+            raise RuntimeError('Source verification target could not be retired')
+    if not matched:
+        return False
+    verified_publication.update(published_text=observed,
+        verified_links=[{'url':source_url,'href':candidates[0][1]['href'],'rendering':'LINK_CARD'}])
+    return True
+
+
 def find_post(handle):
     navigate('https://x.com/' + handle)
     if not wait_value('Boolean(document.querySelector("article"))', 12.0):
@@ -97,18 +167,13 @@ def find_post(handle):
             if not match or match.group(1).casefold() != handle.casefold():
                 continue
             if exact:
+                verified_publication.update(published_text=row.get('text'), verified_links=[])
                 return match.group(2)
             # Timeline text can be folded. Follow its observed status link and
             # verify the complete text before accepting this publication.
             path = '/' + match.group(1) + '/status/' + match.group(2)
             navigate('https://x.com' + path)
-            expression = ('(() => {const path=' + json.dumps(path) + ';'
-                'const expected=' + json.dumps(expected, ensure_ascii=False) + ';'
-                'const a=[...document.querySelectorAll("article")].find(a=>'
-                '[...a.querySelectorAll("a[href]")].some(e=>e.getAttribute("href")===path));'
-                'const text=a?.querySelector("[data-testid=tweetText]")?.innerText||"";'
-                'return text.replace(/\\s+/g," ").trim()===expected ? text : null;})()')
-            if norm(wait_value(expression)) == expected:
+            if verify_public_text(path):
                 return match.group(2)
     return ''
 
@@ -210,7 +275,7 @@ try:
         if not post_id:
             raise RuntimeError('Jev submit has no verified public status URL')
     result = {'status':'POSTED','post_id':post_id,'url':f'https://x.com/{handle}/status/{post_id}',
-              'handle':handle,'duplicate_found':duplicate,'action_count':action_count,'executor':'JEV_AGENT_RUNTIME'}
+              'handle':handle,'duplicate_found':duplicate,'action_count':action_count,'executor':'JEV_AGENT_RUNTIME', **verified_publication}
 except Exception as exc:
     result = {'status':'PUBLICATION_UNVERIFIED' if attempted else 'FAILED', 'stage':stage,
               'attempted':attempted, 'action_count':action_count,
@@ -231,7 +296,7 @@ try:
         raise RuntimeError('No matching public status was observed after uncertain submit')
     result = {'status':'POSTED','post_id':post_id,'url':f'https://x.com/{handle}/status/{post_id}',
               'handle':handle,'duplicate_found':True,'action_count':0,'executor':'JEV_AGENT_RUNTIME',
-              'verification_only':True}
+              'verification_only':True, **verified_publication}
 except Exception as exc:
     result = {'status':'PUBLICATION_UNVERIFIED','stage':'reconcile','attempted':True,
               'action_count':0,'verification_only':True,'error_type':type(exc).__name__,'detail':str(exc)}

@@ -7,6 +7,7 @@ import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import time
 from typing import Any
@@ -240,7 +241,8 @@ class LocalHarnessXTransport:
             return self._run_jev_once(script)
         except BrowserRuntimeUnavailable as exc:
             # Focus setup precedes the supplied transaction: no script action has run.
-            if "Emulation.setFocusEmulationEnabled timed out" not in str(exc):
+            if not any(marker in str(exc) for marker in (
+                    "Emulation.setFocusEmulationEnabled timed out", "Page.enable timed out")):
                 raise
             self._rebind_x_tab()
             return self._run_jev_once(script)
@@ -364,7 +366,8 @@ class LocalHarnessXTransport:
         if self.expected_handle and handle.casefold()!=self.expected_handle.casefold():
             raise BrowserRuntimeUnavailable("X transaction identity mismatch")
         return XBrowserPublishResult(post_id=str(body["post_id"]),url=str(body["url"]),handle=handle,
-            duplicate_found=bool(body.get("duplicate_found")),provider=self.provider_name)
+            duplicate_found=bool(body.get("duplicate_found")),provider=self.provider_name,
+            observed_text=body.get("published_text"),verified_links=tuple(body.get("verified_links") or ()))
 
     async def identity(self) -> dict[str, Any]:
         body = await asyncio.to_thread(
@@ -397,14 +400,24 @@ class LocalHarnessXTransport:
         previous = _read_json(checkpoint)
         if previous.get("status") == "POSTED":
             return self._verified_result(previous)
-        if previous.get("attempted") or previous.get("status") == "SUBMIT_PENDING":
-            body = self._run_jev_sync(jev_x_reconcile(text, self.expected_handle))
-        else:
-            _write_json(checkpoint, {**previous, "status": "PREPARING",
-                "account_id": self.account_id, "expected_handle": self.expected_handle,
-                "text_sha256": hashlib.sha256(text.encode()).hexdigest()})
-            body = self._run_jev_sync(jev_x_transaction(
-                text, self.expected_handle, str(checkpoint)))
+        try:
+            if previous.get("attempted") or previous.get("status") == "SUBMIT_PENDING":
+                body = self._run_jev_sync(jev_x_reconcile(text, self.expected_handle))
+            else:
+                _write_json(checkpoint, {**previous, "status": "PREPARING",
+                    "account_id": self.account_id, "expected_handle": self.expected_handle,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest()})
+                body = self._run_jev_sync(jev_x_transaction(
+                    text, self.expected_handle, str(checkpoint)))
+        except subprocess.TimeoutExpired:
+            persisted = _read_json(checkpoint)
+            if not persisted.get("attempted"):
+                raise
+            # The durable submit checkpoint survives process timeout. Recovery
+            # only observes the post; it never composes or submits again.
+            body = self._run_jev_sync(
+                jev_x_reconcile(text, self.expected_handle), refresh_target=True)
+
         if (body.get("status") == "PUBLICATION_UNVERIFIED"
                 and body.get("stage") == "verify"
                 and "Runtime.evaluate timed out" in str(body.get("detail") or "")):
@@ -439,6 +452,8 @@ class LocalHarnessXTransport:
             handle=handle,
             duplicate_found=bool(body.get("duplicate_found")),
             provider=self.provider_name,
+            observed_text=body.get("published_text"),
+            verified_links=tuple(body.get("verified_links") or ()),
         )
 
     @staticmethod

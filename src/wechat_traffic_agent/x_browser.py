@@ -34,6 +34,8 @@ class XBrowserPublishResult:
     handle: str
     duplicate_found: bool = False
     provider: str = "UNKNOWN"
+    observed_text: str | None = None
+    verified_links: tuple[dict[str, Any], ...] = ()
 
 
 class XBrowserTransport(Protocol):
@@ -289,12 +291,13 @@ class XBrowserPublisher:
             return {"status": "PUBLICATION_UNVERIFIED", "cycle": cycle, "detail": str(exc)}
         except (XBrowserSessionUnavailable, RuntimeError) as exc:
             return {"status": "SESSION_UNAVAILABLE", "cycle": cycle, "detail": str(exc)}
+        public_text = published.observed_text if published.observed_text is not None else text
         publication = {
             "schema_version": "content-x-browser-publication.v1", "status": "POSTED",
             "cycle": cycle, "published_at": (datetime.now(timezone.utc) if fmt=="ARTICLE" else now).isoformat(), "draft_sha256": digest,
             "format":fmt, "article_media":media if fmt=="ARTICLE" else None,
             "mission_baseline": baseline,
-            "published_text":text,
+            "published_text":public_text, "verified_links":list(published.verified_links),
             "post_id": published.post_id, "url": published.url, "handle": published.handle,
             "duplicate_found": published.duplicate_found,
             "source": f"{published.provider} + X Web UI", "publication_authority": True,
@@ -317,7 +320,7 @@ class XBrowserPublisher:
             history.append({
                 "event_type": "EXPRESSION", "cycle": cycle,
                 "cognition": cognition, "expression_kind": cognition.get("expression_kind") or fmt,
-                "text": text, "x_post_id": published.post_id, "x_url": published.url,
+                "text": public_text, "verified_links":list(published.verified_links), "x_post_id": published.post_id, "x_url": published.url,
                 "runtime_receipt_id": None, "worldview": worldview, "prediction": prediction,
                 "inquiry_refs": list((plan.get("goal") or {}).get("inquiry_refs") or ()) if isinstance(plan.get("goal"), dict) else [],
                 "source_evidence_refs": [],

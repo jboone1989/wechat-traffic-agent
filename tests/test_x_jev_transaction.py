@@ -147,7 +147,7 @@ class TestJevXRepair(unittest.TestCase):
             def evaluate(self, expression):
                 if 'slice(0,20)' in expression:
                     return [{"text": text[:260], "hrefs": ["/owner/status/long-incorrect", "/owner/status/456"]}]
-                if 'const expected=' in expression:
+                if 'const path=' in expression and 'const normalized=text.replace' in expression:
                     assert self.url == "https://x.com/owner/status/456"
                     return text
                 return super().evaluate(expression)
@@ -162,7 +162,7 @@ class TestJevXRepair(unittest.TestCase):
             def evaluate(self, expression):
                 if 'slice(0,20)' in expression:
                     return [{"text": text[:260], "hrefs": ["/owner/status/456"]}]
-                if 'const expected=' in expression:
+                if 'const path=' in expression and 'const normalized=text.replace' in expression:
                     return None
                 return super().evaluate(expression)
         browser = WrongFullText(existing=True)
