@@ -272,7 +272,7 @@ def test_model_driven_workspace_uses_model_chosen_queries_until_model_stops(
     class Router:
         def recall(self, query, *, limit, now=None):
             assert query == "term premium forecast failures"
-            assert limit == 3
+            assert limit == 2
             return [{
                 "memory_id": "mem-term-premium",
                 "memory_type": "EPISODIC",
