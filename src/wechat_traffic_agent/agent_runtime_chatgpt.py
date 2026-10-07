@@ -97,11 +97,11 @@ class AgentRuntimeChatGPTProvider:
         }
 
     def _end_cognition_episode(self) -> None:
-        """Explicitly detach a completed episode's ChatGPT conversation.
+        """Detach the durable carrier so the next model call starts a fresh chat.
 
         The authenticated browser/profile remains persistent. Ferro's own
-        Memory system is the durable cognitive history. A model response does
-        not end an episode: callers must explicitly signal its completion.
+        Memory system is the durable cognitive history; ChatGPT conversation
+        history is only a carrier for one completed cognition episode.
         """
         raw_path = getattr(self._provider, "conversation_state_path", None)
         if raw_path is None:
@@ -139,13 +139,13 @@ class AgentRuntimeChatGPTProvider:
         tmp.replace(path)
 
     async def complete(self, prompt: str, **kwargs: Any) -> str:
-        end_episode = bool(kwargs.pop("_end_cognition_episode", False))
+        continue_episode = bool(kwargs.pop("_continue_cognition_episode", False))
         try:
             text = await self._provider.complete(prompt + _JSON_BROWSER_FORMAT, **self._kwargs(kwargs))
         except (ChatGPTBrowserProviderError, OSError, RuntimeError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         self._record_provenance()
-        if end_episode:
+        if not continue_episode:
             self._end_cognition_episode()
         return text
 
@@ -155,7 +155,7 @@ class AgentRuntimeChatGPTProvider:
         schema: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        end_episode = bool(kwargs.pop("_end_cognition_episode", False))
+        continue_episode = bool(kwargs.pop("_continue_cognition_episode", False))
         try:
             value = await self._provider.structured(
                 prompt + _JSON_BROWSER_FORMAT,
@@ -165,7 +165,7 @@ class AgentRuntimeChatGPTProvider:
         except (ChatGPTBrowserProviderError, OSError, RuntimeError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         self._record_provenance()
-        if end_episode:
+        if not continue_episode:
             self._end_cognition_episode()
         return value
 
