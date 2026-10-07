@@ -19,7 +19,7 @@ MIND_SCHEMA = "content-mind:v1"
 # host/session ingestion authority used by VirtualBrain's own experience→goal eval.
 AUTHORITY_ID = "session"
 MAX_PLANS = 32
-MAX_EVENT_IDS = 256
+MAX_EVENT_IDS = 512
 MAX_STRATEGY_OUTCOMES = 512
 MIN_STRATEGY_PROFILE_SAMPLES = 2
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
