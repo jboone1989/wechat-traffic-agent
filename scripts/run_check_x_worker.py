@@ -23,6 +23,7 @@ from wechat_traffic_agent.state_events import FerroStateClient
 from wechat_traffic_agent.task_scheduler import IndependentTaskScheduler
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 from wechat_traffic_agent.worker_runtime import WorkerHeartbeat
+from wechat_traffic_agent.x_browser import XBrowserPublisher
 from wechat_traffic_agent.x_social import XAutonomyLoop
 
 
@@ -72,9 +73,11 @@ def main() -> int:
         social_observer=state_client.observe_social_interaction,
         social_context_provider=state_client.relationship,
     )
+    x_publisher = XBrowserPublisher(state_root=state_root)
     runner = WakefulContentTaskRunner(
         state_root=state_root,
         x_loop=x_loop,
+        x_browser_publisher=x_publisher,
         wakeful=None,
         stop_requested=lambda: stopping,
     )

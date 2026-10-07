@@ -85,6 +85,13 @@ def test_only_content_worker_owns_main_application_runtime():
     assert 'state_root / "worker_runtime" / "self_repair"' in repair
 
 
+def test_check_x_worker_owns_publication_reconciliation_capability():
+    text = (ROOT / "scripts" / "run_check_x_worker.py").read_text(encoding="utf-8")
+    assert "XBrowserPublisher" in text
+    assert "x_browser_publisher=x_publisher" in text
+    assert "build_content_application(" not in text
+
+
 def test_supervisor_has_one_process_per_production_responsibility():
     text = (ROOT / "scripts" / "run_ferro_supervisor.py").read_text(encoding="utf-8")
     expected = {
