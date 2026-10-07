@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
 
 from pydantic import ValidationError
@@ -79,56 +79,6 @@ class TestDomainSearch(unittest.TestCase):
         checkpoint.write_text("{invalid")
         with self.assertRaises(json.JSONDecodeError):
             discovery_interests(self.root)
-
-    def test_model_requests_memory_before_final_search_when_memory_exists(self):
-        memory_db = self.root / "application/memory_system/memory.db"
-        memory_db.parent.mkdir(parents=True)
-        memory_db.touch()
-        context_request = {
-            "memory_queries": ["prior stablecoin reserve verification outcomes"]
-        }
-        choice = {
-            "domain": "CRYPTOCURRENCY",
-            "query": "stablecoin reserve proof audit",
-            "question": "Which reserve verification methods expose the strongest evidence?",
-            "rationale": "Use prior evidence gaps to choose a more discriminating public search.",
-        }
-        runtime = SimpleNamespace(
-            agent_manifest=None,
-            cognitive_probe=AsyncMock(
-                side_effect=[json.dumps(context_request), json.dumps(choice)]
-            ),
-        )
-        router = SimpleNamespace(recall=lambda query, limit: [{
-            "memory_id": "mem-1",
-            "memory_type": "SEMANTIC",
-            "kind": "KNOWLEDGE",
-            "text": "Prior research found attestations differ from independently verifiable reserves.",
-            "confidence": 0.82,
-            "importance": 0.9,
-            "topics": ["stablecoin-reserves"],
-            "entities": [],
-            "evidence_refs": ["source:reserve-study"],
-        }])
-        with patch(
-            "wechat_traffic_agent.memory_retrieval.MemoryRouter",
-            return_value=router,
-        ):
-            plan = asyncio.run(plan_x_search(
-                runtime=runtime,
-                state_root=self.root,
-                folder=self.root / "workspace",
-                mission={},
-                persona={},
-                previous={},
-            ))
-        self.assertEqual(plan.query, choice["query"])
-        self.assertEqual(runtime.cognitive_probe.await_count, 2)
-        first_prompt = runtime.cognitive_probe.await_args_list[0].args[0]
-        final_prompt = runtime.cognitive_probe.await_args_list[1].args[0]
-        self.assertIn("X_SEARCH_CONTEXT_REQUEST", first_prompt)
-        self.assertIn("prior stablecoin reserve verification outcomes", final_prompt)
-        self.assertIn("independently verifiable reserves", final_prompt)
 
     def test_public_persona_preserves_owner_scope_before_identity_initialization(self):
         from wechat_traffic_agent.public_persona import public_persona_projection

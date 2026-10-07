@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import wechat_traffic_agent.agent_runtime_chatgpt as agent_chatgpt
+import wechat_traffic_agent.runtime_backend as runtime_backend
+from agent_runtime.backends.model import AgentRequest, AgentRunMode
 from wechat_traffic_agent.runtime_backend import (
+    ContentBoundedLegacyProviderBackend,
     MechanicalMemoryRuntime,
     OwnerChatGPTCognitionRuntime,
+    _model_driven_memory_workspace,
     _temporary_runtime_llm_environment,
     chatgpt_only_mode,
     load_owner_cognition_runtime,
@@ -247,3 +253,124 @@ def test_worker_cognition_sessions_are_distinct(monkeypatch):
     load_independent_ferro_cognition_runtime(
         behavioral_context_provider=_behavioral_context, session_id="ferro-x-expression")
     assert sessions == ["ferro-content-cognition", "ferro-public-chat", "ferro-owner-cognition", "ferro-x-expression"]
+
+
+def test_model_driven_workspace_uses_model_chosen_queries_until_model_stops(
+    monkeypatch,
+    tmp_path,
+):
+    memory_db = tmp_path / "application/memory_system/memory.db"
+    memory_db.parent.mkdir(parents=True)
+    memory_db.touch()
+
+    class Provider:
+        structured = AsyncMock(side_effect=[
+            {"memory_queries": ["term premium forecast failures"]},
+            {"memory_queries": []},
+        ])
+
+    class Router:
+        def recall(self, query, *, limit, now=None):
+            assert query == "term premium forecast failures"
+            assert limit == 4
+            return [{
+                "memory_id": "mem-term-premium",
+                "memory_type": "EPISODIC",
+                "kind": "RESEARCH_OUTCOME",
+                "text": "Prior test found decomposition evidence but no validated forecast edge.",
+                "payload": {"status": "REFUTED"},
+                "confidence": 0.91,
+                "importance": 0.88,
+                "created_at": "2026-10-06T00:00:00+00:00",
+                "source_ref": "research:term-premium",
+                "topics": ["term-premium"],
+                "entities": [],
+                "evidence_refs": ["evidence:term-premium-test"],
+            }]
+
+    monkeypatch.setattr(
+        "wechat_traffic_agent.memory_retrieval.MemoryRouter",
+        lambda _root: Router(),
+    )
+    provider = Provider()
+    workspace = asyncio.run(_model_driven_memory_workspace(
+        provider,
+        tmp_path,
+        task="RESEARCH: determine whether the term premium has predictive value",
+        context={"decision_frame": {"decision_type": "RESEARCH"}},
+    ))
+
+    assert provider.structured.await_count == 2
+    assert workspace["queries"] == ["term premium forecast failures"]
+    assert workspace["memory"][0]["memory_id"] == "mem-term-premium"
+    assert workspace["memory"][0]["payload"]["status"] == "REFUTED"
+    second_prompt = provider.structured.await_args_list[1].args[0]
+    assert "no validated forecast edge" in second_prompt
+
+
+def test_agent_runtime_backend_adds_model_requested_workspace(monkeypatch, tmp_path):
+    workspace = {
+        "schema_version": "ferro-cognitive-workspace.v1",
+        "queries": ["prior repair outcome"],
+        "memory": [{"memory_id": "m1", "text": "A prior repair regressed."}],
+    }
+    expand = AsyncMock(return_value=workspace)
+    monkeypatch.setattr(runtime_backend, "_model_driven_memory_workspace", expand)
+
+    class Backend:
+        backend_id = "fake"
+        capabilities = SimpleNamespace(advisory_reasoning=True)
+        provider = SimpleNamespace()
+
+        async def run(self, request):
+            self.request = request
+            return SimpleNamespace(final_response="ok")
+
+    backend = Backend()
+    wrapper = ContentBoundedLegacyProviderBackend(
+        backend,
+        default_duration_seconds=45,
+        state_root=tmp_path,
+    )
+    request = AgentRequest(
+        mode=AgentRunMode.ADVISORY,
+        task="REPAIR: choose the next diagnostic move",
+        context={"decision_frame": {"decision_type": "REPAIR"}},
+        routing_task_class="content",
+    )
+    asyncio.run(wrapper.run(request))
+
+    assert expand.await_count == 1
+    assert backend.request.context["model_requested_workspace"] == workspace
+    assert backend.request.max_duration_seconds == 45
+
+
+def test_agent_runtime_backend_skips_workspace_for_mechanical_memory(monkeypatch, tmp_path):
+    expand = AsyncMock(return_value={"queries": ["should not happen"], "memory": []})
+    monkeypatch.setattr(runtime_backend, "_model_driven_memory_workspace", expand)
+
+    class Backend:
+        backend_id = "fake"
+        capabilities = SimpleNamespace(advisory_reasoning=True)
+        provider = SimpleNamespace()
+
+        async def run(self, request):
+            self.request = request
+            return SimpleNamespace(final_response="ok")
+
+    backend = Backend()
+    wrapper = ContentBoundedLegacyProviderBackend(
+        backend,
+        default_duration_seconds=45,
+        state_root=tmp_path,
+    )
+    request = AgentRequest(
+        mode=AgentRunMode.ADVISORY,
+        task="CONTEXTUALIZE_MEMORY: transform supplied evidence only",
+        context={},
+        routing_task_class="memory",
+    )
+    asyncio.run(wrapper.run(request))
+
+    assert expand.await_count == 0
+    assert "model_requested_workspace" not in backend.request.context

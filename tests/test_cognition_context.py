@@ -224,14 +224,9 @@ def test_cognition_snapshot_unifies_current_harness_state():
         == "information_need_global_retrieval_then_dependency_and_counterevidence; "
         "surface_disclosure_and_runtime_projector_are_final_bounds"
     )
-    assert "internal_pressure" in {
-        item["need_id"]
-        for item in context["decision_context"]["information_needs"]
-    }
-    assert all(
-        "question" not in item
-        for item in context["decision_context"]["information_needs"]
-    )
+    assert "information_needs" not in context["decision_context"]
+    assert context["decision_context"]["role"] == "SEED_WORKSPACE_NOT_REASONING_BOUNDARY"
+    assert context["decision_context"]["model_may_reframe"] is True
     assert (
         context["epistemic_contract"]["model_inference"]
         == "unverified_until_observed"
@@ -678,7 +673,7 @@ def test_context_contract_violation_enters_self_maintenance(monkeypatch, tmp_pat
     assert problem["status"] == "DIAGNOSING"
 
 
-def test_model_decision_context_does_not_repeat_full_prompt_in_information_needs():
+def test_model_decision_context_does_not_expose_host_information_needs():
     prompt = "X_EXPRESSION_DRAFT: " + ("research context " * 300)
     context = build_ferro_cognition_context(
         application=_application(),
@@ -686,7 +681,5 @@ def test_model_decision_context_does_not_repeat_full_prompt_in_information_needs
         wakeful=_Wakeful(),
         prompt=prompt,
     )
-    needs = context["decision_context"]["information_needs"]
-    assert needs
-    assert all("question" not in row for row in needs)
-    assert "X_EXPRESSION_DRAFT" not in json.dumps(needs, ensure_ascii=False)
+    assert "information_needs" not in context["decision_context"]
+    assert context["decision_context"]["role"] == "SEED_WORKSPACE_NOT_REASONING_BOUNDARY"

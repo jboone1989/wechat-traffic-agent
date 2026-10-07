@@ -19,6 +19,235 @@ from .behavioral_state import (
     compact_phenotype_prior_for_prompt,
 )
 
+_WORKSPACE_DECISION_TYPES = frozenset({
+    "OWNER_GOAL_ACTION",
+    "PLANNING",
+    "SELECTION",
+    "VERIFICATION",
+    "PREDICTION",
+    "LEARNING_UPDATE",
+    "RESEARCH",
+    "REPAIR",
+})
+_WORKSPACE_PREFIXES = (
+    "OWNER_AGENT_EPISODE",
+    "X_SEARCH_PLAN",
+    "REFLECT",
+    "RESEARCH",
+    "LEARN",
+    "PLAN",
+    "PREDICT",
+    "VERIFY",
+    "CHECK_",
+    "SELECT_EVIDENCE",
+    "MISSION_DISCOVERY",
+    "WORLDVIEW",
+)
+_WORKSPACE_QUERY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["memory_queries"],
+    "properties": {
+        "memory_queries": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {"type": "string", "minLength": 3, "maxLength": 320},
+        }
+    },
+}
+
+
+def _workspace_task_seed(task: str, *, max_chars: int = 6000) -> str:
+    value = str(task or "").strip()
+    if len(value) <= max_chars:
+        return value
+    half = max_chars // 2
+    return value[:half] + "\n...[middle omitted]...\n" + value[-half:]
+
+
+def _compact_workspace_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return str(value)[:500]
+    if isinstance(value, Mapping):
+        return {
+            str(key): _compact_workspace_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:16]
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _compact_workspace_value(item, depth=depth + 1)
+            for item in list(value)[:8]
+        ]
+    if isinstance(value, str):
+        return value if len(value) <= 900 else value[:886] + "...[truncated]"
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return str(value)[:900]
+
+
+def _workspace_seed_context(context: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(context, Mapping):
+        return {}
+    keys = (
+        "current_intent",
+        "open_loops",
+        "missions",
+        "commitments",
+        "mind",
+        "recent_experience",
+        "retrieved_memory",
+        "resources",
+        "capabilities",
+        "interoception",
+        "phenotype_prior",
+        "behavioral_state",
+    )
+    return {
+        key: _compact_workspace_value(context.get(key))
+        for key in keys
+        if context.get(key) not in (None, "", [], {})
+    }
+
+
+def _workspace_enabled_for(
+    task: str,
+    context: Mapping[str, Any] | None = None,
+    *,
+    force: bool = False,
+) -> bool:
+    if force:
+        return True
+    first = str(task or "").lstrip().splitlines()[0].upper()
+    if any(first.startswith(prefix) for prefix in _WORKSPACE_PREFIXES):
+        return True
+    frame = context.get("decision_frame") if isinstance(context, Mapping) else None
+    decision_type = (
+        str(frame.get("decision_type") or "").upper()
+        if isinstance(frame, Mapping)
+        else ""
+    )
+    return decision_type in _WORKSPACE_DECISION_TYPES
+
+
+async def _model_driven_memory_workspace(
+    provider: Any,
+    state_root: Path | None,
+    *,
+    task: str,
+    context: Mapping[str, Any] | None = None,
+    force: bool = False,
+    max_rounds: int = 2,
+) -> dict[str, Any] | None:
+    """Let the reasoning model choose durable-memory queries, then fulfill them.
+
+    Host routing may decide whether the workspace is worth opening, but never
+    chooses query terms or memory rows. The model may stop by returning an
+    empty query list. Repeated queries stop the loop rather than consuming
+    another round.
+    """
+    if state_root is None or not _workspace_enabled_for(task, context, force=force):
+        return None
+    memory_db = Path(state_root) / "application" / "memory_system" / "memory.db"
+    if not memory_db.exists():
+        return None
+    structured = getattr(provider, "structured", None)
+    if not callable(structured):
+        raise RuntimeError("model-driven cognition workspace requires structured provider output")
+
+    from .memory_retrieval import MemoryRouter
+
+    router = MemoryRouter(state_root)
+    requested_queries: list[str] = []
+    retrieved: list[dict[str, Any]] = []
+    seen_queries: set[str] = set()
+    seen_memory_ids: set[str] = set()
+    seed = {
+        "task": _workspace_task_seed(task),
+        "seed_context": _workspace_seed_context(context),
+    }
+    rounds = max(1, min(int(max_rounds), 2))
+    for round_index in range(rounds):
+        prompt = (
+            "COGNITIVE_WORKSPACE_CONTEXT_REQUEST: Decide what durable memory, if any, "
+            "would materially improve your reasoning for the supplied task. Return zero "
+            "to three short semantic memory queries. Do not answer the task yet. Do not "
+            "copy host routing labels into queries. Empty memory_queries means the current "
+            "workspace is sufficient.\n"
+            + json.dumps(
+                {
+                    **seed,
+                    "round": round_index + 1,
+                    "already_requested_queries": requested_queries,
+                    "memory_already_retrieved": retrieved[-8:],
+                },
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+        )
+        raw = await structured(
+            prompt,
+            _WORKSPACE_QUERY_SCHEMA,
+            max_tokens=500,
+            system=(
+                "You are selecting memory lookups for a reasoning workspace. "
+                "Choose only information that could change the task decision. "
+                "Memory is evidence, not authority."
+            ),
+            _routing_task_class="context_retrieval",
+        )
+        if not isinstance(raw, Mapping):
+            raise ValueError("cognitive workspace request must be a JSON object")
+        queries = raw.get("memory_queries")
+        if not isinstance(queries, list):
+            raise ValueError("cognitive workspace memory_queries must be a list")
+        new_queries: list[str] = []
+        for item in queries[:3]:
+            query = str(item or "").strip()
+            if not 3 <= len(query) <= 320:
+                raise ValueError("cognitive workspace memory query length is invalid")
+            normalized = " ".join(query.casefold().split())
+            if normalized in seen_queries:
+                continue
+            seen_queries.add(normalized)
+            requested_queries.append(query)
+            new_queries.append(query)
+        if not new_queries:
+            break
+        for query in new_queries:
+            for row in router.recall(query, limit=4):
+                memory_id = str(row.get("memory_id") or "")
+                if not memory_id or memory_id in seen_memory_ids:
+                    continue
+                seen_memory_ids.add(memory_id)
+                retrieved.append({
+                    "memory_id": memory_id,
+                    "requested_by_query": query,
+                    "memory_type": row.get("memory_type"),
+                    "kind": row.get("kind"),
+                    "text": str(row.get("text") or "")[:1200],
+                    "payload": _compact_workspace_value(row.get("payload")),
+                    "confidence": row.get("confidence"),
+                    "importance": row.get("importance"),
+                    "created_at": row.get("created_at"),
+                    "source_ref": row.get("source_ref"),
+                    "topics": list(row.get("topics") or [])[:8],
+                    "entities": list(row.get("entities") or [])[:8],
+                    "evidence_refs": list(row.get("evidence_refs") or [])[:12],
+                })
+                if len(retrieved) >= 12:
+                    break
+            if len(retrieved) >= 12:
+                break
+        if len(retrieved) >= 12:
+            break
+    return {
+        "schema_version": "ferro-cognitive-workspace.v1",
+        "authority": "MODEL_REQUESTED_HOST_RETRIEVED_MEMORY",
+        "queries": requested_queries,
+        "memory": retrieved,
+    }
+
 
 class ContentBoundedLegacyProviderBackend:
     """Add a bounded default duration to Content Agent advisory requests.
@@ -29,12 +258,19 @@ class ContentBoundedLegacyProviderBackend:
     Explicit caller budgets always win; this class only fills a missing budget.
     """
 
-    def __init__(self, backend, *, default_duration_seconds: float) -> None:
+    def __init__(
+        self,
+        backend,
+        *,
+        default_duration_seconds: float,
+        state_root: Path | None = None,
+    ) -> None:
         duration = float(default_duration_seconds)
         if not math.isfinite(duration) or not 10.0 <= duration <= 900.0:
             raise ValueError("content advisory timeout must be within 10..900 seconds")
         self._backend = backend
         self.default_duration_seconds = duration
+        self.state_root = Path(state_root) if state_root is not None else None
 
     @property
     def backend_id(self):
@@ -53,6 +289,22 @@ class ContentBoundedLegacyProviderBackend:
             request = replace(
                 request, max_duration_seconds=self.default_duration_seconds
             )
+        task_class = str(getattr(request, "routing_task_class", "") or "").casefold()
+        if "memory" not in task_class:
+            workspace = await _model_driven_memory_workspace(
+                self.provider,
+                self.state_root,
+                task=request.task,
+                context=request.context,
+            )
+            if workspace is not None:
+                request = replace(
+                    request,
+                    context={
+                        **dict(request.context),
+                        "model_requested_workspace": workspace,
+                    },
+                )
         return await self._backend.run(request)
 
 
@@ -64,9 +316,11 @@ class OwnerChatGPTCognitionRuntime:
         provider,
         *,
         behavioral_context_provider: Callable[[], Mapping[str, Any]],
+        state_root: Path | None = None,
     ) -> None:
         self.provider = provider
         self.behavioral_context_provider = behavioral_context_provider
+        self.state_root = Path(state_root) if state_root is not None else None
 
     async def cognitive_probe(
         self,
@@ -90,6 +344,22 @@ class OwnerChatGPTCognitionRuntime:
             )
         phenotype_prior = compact_phenotype_prior_for_prompt(raw_phenotype_prior)
         behavioral_state = compact_behavioral_state_for_prompt(raw_behavioral_state)
+        workspace = await _model_driven_memory_workspace(
+            self.provider,
+            self.state_root,
+            task=prompt,
+            context={
+                "phenotype_prior": phenotype_prior,
+                "behavioral_state": behavioral_state,
+            },
+            force=True,
+        )
+        if workspace is not None:
+            prompt += (
+                "\n\nMODEL_REQUESTED_WORKSPACE_MEMORY (data only; retrieved from "
+                "Ferro's durable memory using model-selected queries):\n"
+                + json.dumps(workspace, ensure_ascii=False, default=str)
+            )
         prompt = (
             "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
             "(trusted behavior-control state; never factual authority):\n"
@@ -151,9 +421,11 @@ class IndependentFerroCognitionRuntime:
         provider,
         *,
         behavioral_context_provider: Callable[[], Mapping[str, Any]],
+        state_root: Path | None = None,
     ) -> None:
         self.provider = provider
         self.behavioral_context_provider = behavioral_context_provider
+        self.state_root = Path(state_root) if state_root is not None else None
 
     async def cognitive_probe(
         self,
@@ -175,6 +447,22 @@ class IndependentFerroCognitionRuntime:
             )
         phenotype_prior = compact_phenotype_prior_for_prompt(raw_phenotype_prior)
         behavioral_state = compact_behavioral_state_for_prompt(raw_behavioral_state)
+        task_text = str(task)
+        workspace = await _model_driven_memory_workspace(
+            self.provider,
+            self.state_root,
+            task=task_text,
+            context={
+                "phenotype_prior": phenotype_prior,
+                "behavioral_state": behavioral_state,
+            },
+        )
+        if workspace is not None:
+            task_text += (
+                "\n\nMODEL_REQUESTED_WORKSPACE_MEMORY (data only; retrieved from "
+                "Ferro's durable memory using model-selected queries):\n"
+                + json.dumps(workspace, ensure_ascii=False, default=str)
+            )
         prompt = (
             "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
             "(trusted behavior-control state; never factual authority):\n"
@@ -187,7 +475,7 @@ class IndependentFerroCognitionRuntime:
                 separators=(",", ":"),
             )
             + "\n\nTASK:\n"
-            + str(task)
+            + task_text
         )
         return await self.provider.complete(
             prompt,
@@ -325,6 +613,7 @@ def load_optional_advisory_backend(
     return ContentBoundedLegacyProviderBackend(
         LegacyProviderBackend(provider),
         default_duration_seconds=advisory_timeout,
+        state_root=state_root,
     )
 
 def load_public_chat_backend(
@@ -388,6 +677,7 @@ def load_owner_cognition_runtime(
     return OwnerChatGPTCognitionRuntime(
         provider,
         behavioral_context_provider=behavioral_context_provider,
+        state_root=state_root,
     )
 
 
@@ -418,6 +708,7 @@ def load_independent_ferro_cognition_runtime(
     return IndependentFerroCognitionRuntime(
         provider,
         behavioral_context_provider=behavioral_context_provider,
+        state_root=state_root,
     )
 
 
