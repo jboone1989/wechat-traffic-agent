@@ -8,7 +8,7 @@ import pytest
 pytestmark = pytest.mark.usefixtures("maintenance_cognition")
 
 from wechat_traffic_agent.learning_research import (
-    ResearchFocus, investigate_learning, choose_research_focus,
+    ADVANCE_LEARNING_INSTRUCTION, ResearchFocus, investigate_learning, choose_research_focus,
     read_research_state, research_memory,
 )
 
@@ -25,6 +25,15 @@ DETAIL = {'evidence_id':'implementation', 'title':'Checkpoint implementation',
           'summary':'The worker stores a tool invocation ID before execution and reconciles it after restart.',
           'evidence_refs':['ref-detail'], 'source_revision':'detail-v1',
           'search_query':'agent checkpoint reconcile invocation restart', 'url':'https://example.com/code'}
+
+
+def test_advance_learning_instruction_is_compact_but_keeps_retrieval_contract():
+    assert len(ADVANCE_LEARNING_INSTRUCTION) < 2200
+    for required in (
+        'completion_criterion', 'source_quote_id', 'reasoning_steps',
+        'SEARCH_EXTERNAL', 'PARTIAL', 'PARK', 'NEXT_QUESTION',
+    ):
+        assert required in ADVANCE_LEARNING_INSTRUCTION
 
 
 def step(progress, source, *, related=KNOWN, query='agent checkpoint reconcile invocation restart'):
