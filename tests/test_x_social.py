@@ -667,6 +667,12 @@ def test_x_only_cycle_without_social_draft_gets_real_l1_strategy_before_l2_text(
     assert model.l1_decisions.strategy_calls
     strategy = json.loads((folder / "x_l1_strategy.json").read_text())
     assert strategy["post_timing"] == "POST_NOW"
+    persisted = json.loads((folder / "social_expression_drafts.json").read_text())
+    assert persisted["status"] == "DRAFT_READY"
+    assert persisted["drafts"]["x"]["format"] == "SHORT_POST"
+    assert persisted["drafts"]["x"]["text"] == (
+        "Jev chose the action; Sol only wrote this grounded sentence."
+    )
     assert model.tasks[0].startswith("X_EXPRESSION_DRAFT")
     assert "Decide whether" not in model.tasks[0]
 

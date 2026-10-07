@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from wechat_traffic_agent.fast_decision import FastDecisionResult
@@ -679,3 +680,17 @@ def test_context_contract_violation_enters_self_maintenance(monkeypatch, tmp_pat
     )
     assert problem["failure_site"] == "cognition_context.py:capability_contract"
     assert problem["status"] == "DIAGNOSING"
+
+
+def test_model_decision_context_does_not_repeat_full_prompt_in_information_needs():
+    prompt = "X_EXPRESSION_DRAFT: " + ("research context " * 300)
+    context = build_ferro_cognition_context(
+        application=_application(),
+        mind=_Mind(),
+        wakeful=_Wakeful(),
+        prompt=prompt,
+    )
+    needs = context["decision_context"]["information_needs"]
+    assert needs
+    assert all("question" not in row for row in needs)
+    assert "X_EXPRESSION_DRAFT" not in json.dumps(needs, ensure_ascii=False)
