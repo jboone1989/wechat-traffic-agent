@@ -17,6 +17,8 @@ NOW = datetime(2026, 9, 20, 0, 0, tzinfo=timezone.utc)
 class FakeSubstrate:
     def __init__(self) -> None:
         self.calls = []
+        self.feedback = []
+        self.weight = 1.0
 
     def stimulate(self, currents, observed_at, *, source_event_id=None, feedback_eligible=None):
         self.calls.append((dict(currents), observed_at, source_event_id, feedback_eligible))
@@ -38,6 +40,48 @@ class FakeSubstrate:
             "active_neurons": 700 + len(self.calls),
             "response_spike_pattern_digest": f"sha256:{len(self.calls):064x}",
         }
+
+    def apply_feedback(self, feedback, *, utility):
+        self.feedback.append((feedback.source_event_id, feedback.outcome_id, utility))
+        if not feedback.pathway:
+            return {"status": "NO_PROVENANCE_MATCH", "changed_synapse_count": 0}
+        self.weight += float(utility) * 0.05
+        return {"status": "APPLIED", "changed_synapse_count": 1}
+
+    def snapshot(self):
+        return {"kind": "fake", "weight": self.weight}
+
+
+def test_learning_changes_neural_state_only_after_grounded_settlement(tmp_path: Path):
+    substrate = FakeSubstrate()
+    engine = NeuralTasteEngine(tmp_path, substrate=substrate)
+    chosen = engine.rank_topics(["hmm", "probabilistic-models"], now=NOW, contexts={
+        "hmm": {"preference": 0.6, "knowledge_gap": 0.8},
+        "probabilistic-models": {"preference": 0.6, "knowledge_gap": 0.8},
+    })
+    assert chosen["status"] == "RANKED"
+    assert all(call[3] is False for call in substrate.calls)
+    before = substrate.weight
+    committed = engine.commit_study(
+        cycle="learning:1", topic="hmm",
+        features={"preference": 0.6, "knowledge_gap": 0.8}, now=NOW,
+    )
+    assert committed["status"] == "COMMITTED"
+    assert substrate.calls[-1][3] is True
+    assert substrate.weight == before
+    result = engine.settle_study(
+        cycle="learning:1", topic="hmm", outcome_id="outcome:1",
+        utility=0.5, now=NOW + timedelta(minutes=1),
+    )
+    assert result["status"] == "SETTLED"
+    assert result["plasticity"]["changed_synapse_count"] == 1
+    assert substrate.weight > before
+    duplicate = NeuralTasteEngine(tmp_path, substrate=substrate).settle_study(
+        cycle="learning:1", topic="hmm", outcome_id="outcome:1",
+        utility=0.5, now=NOW + timedelta(minutes=2),
+    )
+    assert duplicate["status"] == "ALREADY_SETTLED"
+    assert len(substrate.feedback) == 1
 
 
 def test_neural_taste_is_persistent_and_llm_free(tmp_path: Path):

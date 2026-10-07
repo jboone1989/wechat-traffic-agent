@@ -118,9 +118,30 @@ class FerroNeuralRuntime:
             "environments": dict(environments) if isinstance(environments, dict) else {},
         }
 
-    def rank_neural_taste(self, topics, now: datetime | None = None) -> dict:
+    def rank_neural_taste(self, topics, now: datetime | None = None, contexts=None) -> dict:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        result = self.neural_taste.rank_topics(topics, now=now)
+        result = self.neural_taste.rank_topics(topics, contexts=contexts, now=now)
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def commit_interest_study(self, *, cycle: str, topic: str, features=None,
+                              now: datetime | None = None) -> dict:
+        result = self.neural_taste.commit_study(
+            cycle=cycle, topic=topic, features=features, now=now,
+        )
+        persist = getattr(self.core, "_persist", None)
+        if callable(persist):
+            persist()
+        return result
+
+    def settle_interest_study(self, *, cycle: str, topic: str, outcome_id: str,
+                              utility: float, now: datetime | None = None) -> dict:
+        result = self.neural_taste.settle_study(
+            cycle=cycle, topic=topic, outcome_id=outcome_id,
+            utility=utility, now=now,
+        )
         persist = getattr(self.core, "_persist", None)
         if callable(persist):
             persist()

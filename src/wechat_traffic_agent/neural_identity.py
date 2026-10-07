@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+from types import SimpleNamespace
 import json
 import math
 import os
@@ -55,13 +56,20 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def _hash_currents(label: str, *, floor: float = 0.08, ceiling: float = 0.92) -> dict[str, float]:
-    digest = sha256(label.encode("utf-8")).digest()
-    span = ceiling - floor
-    return {
-        channel: floor + span * (digest[index] / 255.0)
-        for index, channel in enumerate(_CHANNELS)
-    }
+def _interest_currents(features: Mapping[str, float]) -> dict[str, float]:
+    """Give LIF meaningful inquiry/learning signals, not hashes of labels."""
+    novelty = _clamp(float(features.get("novelty", 1.0)))
+    gap = _clamp(float(features.get("knowledge_gap", 0.55)))
+    potential = _clamp(float(features.get("progress_potential", 0.55)))
+    preference = _clamp(float(features.get("preference", 0.5)))
+    salience = _clamp(float(features.get("salience", 0.0)))
+    return {"curiosity": _clamp(0.2 + novelty * 0.35 + gap * 0.45),
+            "opportunity": _clamp(0.15 + potential * 0.55 + preference * 0.30),
+            "prediction_due": _clamp(gap * 0.7),
+            "social_attention": _clamp(salience * 0.4),
+            "task_urgency": _clamp(gap * 0.25),
+            "resource_pressure": 0.0, "threat_risk": 0.0,
+            "error_recovery": _clamp((1.0 - potential) * 0.20)}
 
 
 def _positive(delta: Mapping[str, Any], name: str) -> float:
@@ -95,11 +103,21 @@ class NeuralTasteEngine:
         self,
         topics: Iterable[str],
         *,
+        contexts: Mapping[str, Mapping[str, float]] | None = None,
         now: datetime | None = None,
         max_candidates: int = 12,
     ) -> dict[str, Any]:
         now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        candidates = sorted({str(topic).strip() for topic in topics if str(topic).strip()})[: max(1, min(24, int(max_candidates)))]
+        contexts = contexts or {}
+        available = sorted({str(topic).strip() for topic in topics if str(topic).strip()})
+        if available:
+            offset = int(self.state.get("ranking_count") or 0) % len(available)
+            available = available[offset:] + available[:offset]
+        # Equal/unknown interests rotate instead of permanently favoring A-Z.
+        candidates = sorted(available, key=lambda topic: -sum(
+            _interest_currents(contexts.get(topic, {}))[channel]
+            for channel in ("curiosity", "opportunity", "prediction_due")
+        ))[: max(1, min(24, int(max_candidates)))]
         if not candidates:
             return {"status": "NO_CANDIDATES", "ranking": [], "selected_topic": None}
         if self.substrate is None:
@@ -110,7 +128,7 @@ class NeuralTasteEngine:
             }
         ranking: list[dict[str, Any]] = []
         for index, topic in enumerate(candidates):
-            currents = _hash_currents("taste:" + topic)
+            currents = _interest_currents(contexts.get(topic, {}))
             event_id = f"neural-taste:{sha256(topic.encode()).hexdigest()[:16]}:{int(now.timestamp())}:{index}"
             burst = dict(self.substrate.stimulate(
                 currents,
@@ -134,6 +152,7 @@ class NeuralTasteEngine:
             ranking.append({
                 "topic": topic,
                 "score": round(score, 6),
+                "interest_inputs": dict(contexts.get(topic, {})),
                 "appetite": round(appetite, 6),
                 "aversion": round(aversion, 6),
                 "spikes": int(burst.get("spikes") or 0),
@@ -161,6 +180,73 @@ class NeuralTasteEngine:
         })
         _write_json(self.path, self.state)
         return {"status": "RANKED", **record}
+
+    def commit_study(
+        self, *, cycle: str, topic: str,
+        features: Mapping[str, float] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Tie the actual study to an eligible LIF trace for later reinforcement."""
+        if not cycle or not topic:
+            raise ValueError("interest study requires cycle and topic")
+        commitments = dict(self.state.get("commitments") or {})
+        existing = commitments.get(cycle)
+        if existing is not None:
+            if existing["topic"] != topic:
+                raise ValueError("interest study topic changed after commitment")
+            return {**existing, "status": "ALREADY_COMMITTED"}
+        if self.substrate is None:
+            return {"status": "CONNECTOME_UNAVAILABLE"}
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        currents = _interest_currents(features or {})
+        event_id = "interest-study:" + sha256(f"{cycle}|{topic}".encode()).hexdigest()[:24]
+        burst = self.substrate.stimulate(
+            currents, now, source_event_id=event_id, feedback_eligible=True,
+        )
+        record = {
+            "cycle": cycle, "topic": topic, "source_event_id": event_id,
+            "currents": currents, "features": dict(features or {}),
+            "committed_at": now.isoformat(), "status": "PENDING",
+            "spikes": int(burst.get("spikes") or 0),
+        }
+        commitments[cycle] = record
+        self.state["commitments"] = dict(list(commitments.items())[-64:])
+        _write_json(self.path, self.state)
+        return {**record, "status": "COMMITTED"}
+
+    def settle_study(
+        self, *, cycle: str, topic: str, outcome_id: str,
+        utility: float, now: datetime | None = None,
+    ) -> dict[str, Any]:
+        commitments = dict(self.state.get("commitments") or {})
+        record = dict(commitments.get(cycle) or {})
+        if not record:
+            return {"status": "NO_STUDY_COMMITMENT", "cycle": cycle}
+        if topic != record["topic"] or not outcome_id:
+            raise ValueError("interest settlement identity mismatch")
+        if record["status"] == "SETTLED":
+            if record.get("outcome_id") != outcome_id:
+                raise ValueError("interest study already settled with another outcome")
+            return {**record, "status": "ALREADY_SETTLED"}
+        now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        utility = max(-1.0, min(1.0, float(utility)))
+        if utility == 0.0:
+            plasticity = {"status": "NO_LEARNING_REWARD"}
+        else:
+            feedback = SimpleNamespace(
+                outcome_id=outcome_id, source_event_id=record["source_event_id"],
+                observed_at=now, pathway=tuple(
+                    key for key, value in record["currents"].items() if value > 0.10
+                ),
+            )
+            plasticity = dict(self.substrate.apply_feedback(feedback, utility=utility))
+            self.substrate.snapshot()
+        record.update(status="SETTLED", outcome_id=outcome_id,
+                      utility=utility, plasticity=plasticity)
+        commitments[cycle] = record
+        self.state["commitments"] = commitments
+        _write_json(self.path, self.state)
+        return {"status": "SETTLED", **record}
 
     def projection(self) -> dict[str, Any]:
         return {

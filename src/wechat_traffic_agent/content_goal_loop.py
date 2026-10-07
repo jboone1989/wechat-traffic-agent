@@ -1723,17 +1723,25 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             # N10/N13: when no owner/bootstrap/dream/mission authority already
             # owns the cycle, Ferro's neural taste may either seed a topic or
             # prospectively compete with the rational cortex's endogenous choice.
+            neural_candidates = list(mind_plan.get('available_topics') or snapshot['topics'])
             if (
                 self.neural_runtime is not None
                 and not getattr(self, '_focus_topic', None)
-                and snapshot['topics']
+                and neural_candidates
                 and not mission_priority
             ):
                 goal = mind_plan.get('goal')
                 origin = str(goal.get('origin') or '') if isinstance(goal, dict) else ''
                 contestable = goal is None or origin in {'INTEREST', 'INQUIRY'}
                 if contestable:
-                    taste = self.neural_runtime.rank_neural_taste(snapshot['topics'], now)
+                    from .interest_learning import topic_contexts
+                    contexts = topic_contexts(
+                        self.state, neural_candidates,
+                        self.mind.public_projection() if self.mind is not None else {},
+                    )
+                    taste = self.neural_runtime.rank_neural_taste(
+                        neural_candidates, now, contexts=contexts,
+                    )
                     neural_topic = str(taste.get('selected_topic') or '').strip() or None
                     ego_topic = str(mind_plan.get('required_topic') or '').strip() or None
                     contest = self.neural_runtime.choose_brain_or_cortex(
@@ -2367,11 +2375,56 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         worldview_update = None
         if learning_focus is not None:
             from .learning_research import investigate_learning, learning_receipt
+            from .interest_learning import learning_reward, topic_contexts
+            interest_commit_path = folder / 'interest_study_commitment.json'
+            if interest_commit_path.exists():
+                interest_commit = json.loads(interest_commit_path.read_text(encoding='utf-8'))
+            elif (folder / 'learning_result.json').exists():
+                # Resumed/legacy result cannot become a prospective neural trial.
+                interest_commit = {'status': 'PRIOR_RESULT_NO_PRECOMMIT'}
+                _put(interest_commit_path, interest_commit)
+            elif self.neural_runtime is not None:
+                study_features = topic_contexts(
+                    self.state, [selection.topic],
+                    self.mind.public_projection() if self.mind is not None else {},
+                )[selection.topic]
+                interest_commit = self.neural_runtime.commit_interest_study(
+                    cycle=cycle, topic=selection.topic, features=study_features, now=now,
+                )
+                _put(interest_commit_path, interest_commit)
+            else:
+                interest_commit = {'status': 'NO_NEURAL_OWNER'}
+                _put(interest_commit_path, interest_commit)
             learning_result = await investigate_learning(
                 runtime=runtime, explorer=self.explorer, folder=folder,
                 state_root=self.state, topic=selection.topic, focus=learning_focus,
                 memory=learning_memory, evidence=evidence, selected=selected, now=now,
             )
+            interest_result_path = folder / 'interest_learning.json'
+            if not interest_result_path.exists():
+                feedback = learning_reward(learning_result)
+                neural_settlement = (
+                    self.neural_runtime.settle_interest_study(
+                        cycle=cycle, topic=selection.topic,
+                        outcome_id='interest-learning:' + cycle,
+                        utility=feedback['utility'], now=now,
+                    )
+                    if self.neural_runtime is not None
+                    and interest_commit.get('status') in {'COMMITTED', 'ALREADY_COMMITTED'}
+                    else {'status': 'NO_STUDY_COMMITMENT'}
+                )
+                mind_settlement = (
+                    self.mind.observe_learning_interest(
+                        cycle=cycle, topic=selection.topic,
+                        reward=feedback, evidence_refs=feedback['source_evidence_ids'],
+                    )
+                    if self.mind is not None
+                    and hasattr(self.mind, 'observe_learning_interest')
+                    else {'status': 'NO_MIND'}
+                )
+                _put(interest_result_path, {
+                    'feedback': feedback, 'neural': neural_settlement, 'mind': mind_settlement,
+                })
             selected = next(row for row in learning_result['sources']
                             if row['evidence_id'] == learning_result['evidence_id'])
             selection = selection.model_copy(update={

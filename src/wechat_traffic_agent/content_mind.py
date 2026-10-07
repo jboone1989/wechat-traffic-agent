@@ -834,6 +834,48 @@ class ContentMind:
             "causal_claim": False,
         }
 
+    def observe_learning_interest(
+        self, *, cycle: str, topic: str, reward: Mapping[str, Any],
+        evidence_refs: Iterable[str],
+    ) -> dict[str, Any]:
+        """Only research progress, never content-process success, changes preference."""
+        event_id = f"interest-learning:{cycle}"
+        if event_id in self._observed_event_ids:
+            interest = self.session.interests.get(topic)
+            return {"status": "ALREADY_OBSERVED",
+                    "interest": interest.__dict__ if interest else None}
+        utility = float(reward.get("utility") or 0.0)
+        if not 0.0 <= utility <= 1.0:
+            raise ValueError("interest reward outside [0, 1]")
+        topic = str(topic).strip()
+        if not topic:
+            raise ValueError("learning interest requires topic")
+        refs = list(dict.fromkeys(
+            [f"cycle:{cycle}", *[str(ref) for ref in evidence_refs if str(ref).strip()]]
+        ))
+        before = self.session.interests.get(topic)
+        feedback = (
+            {"name": topic, "novelty": 1.0 if before is None else
+             max(0.0, 1.0 - float(before.familiarity)),
+             "effort": 0.0, "learning_rate": 0.15}
+            if utility > 0.0 else None
+        )
+        self.session.ingest_life_experience(
+            {"event_id": event_id, "tick": int(self.session.tick),
+             "summary": f"Research on {topic}: {reward.get('kind')}; utility={utility}.",
+             "evidence_refs": refs, "significance": utility,
+             "source": "research-learning", "confidence": 1.0,
+             "outcome": utility, "domain": "research-learning"},
+            authority_id=AUTHORITY_ID, interest_feedback=feedback,
+        )
+        self._observed_event_ids.append(event_id)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+        self._persist()
+        interest = self.session.interests.get(topic)
+        return {"status": "OBSERVED", "reward_kind": reward.get("kind"),
+                "preference_updated": feedback is not None,
+                "interest": interest.__dict__ if interest else None}
+
     def observe_process_experience(
         self,
         *,
@@ -843,7 +885,7 @@ class ContentMind:
         model_calls: int,
         evidence_refs: Iterable[str],
     ) -> dict[str, Any]:
-        """Learn topic preference only from bounded process outcome, never audience claims."""
+        """Record process experience without rewarding topic interest."""
         event_id = f"content-process:{cycle}"
         if event_id in self._observed_event_ids:
             interest = self.session.interests.get(topic)
@@ -854,8 +896,6 @@ class ContentMind:
         refs = list(dict.fromkeys(str(ref).strip() for ref in evidence_refs if str(ref).strip()))
         if not refs:
             raise ValueError("Content Mind process experience requires evidence_refs")
-        before = self.session.interests.get(topic)
-        novelty = 1.0 if before is None else max(0.0, 1.0 - float(before.familiarity))
         effort = min(1.0, max(0.05, int(model_calls) / 8.0))
         outcome = 1.0 if passed else 0.0
         self.session.ingest_life_experience(
@@ -874,12 +914,6 @@ class ContentMind:
                 "domain": "content-process",
             },
             authority_id=AUTHORITY_ID,
-            interest_feedback={
-                "name": topic,
-                "novelty": novelty,
-                "effort": effort,
-                "learning_rate": 0.15,
-            },
         )
         self._observed_event_ids.append(event_id)
         self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
@@ -898,8 +932,18 @@ class ContentMind:
         """Return bounded inspectable state for later public presentation."""
         snapshot = self.session.snapshot()
         interests = []
+        latest_exposure = {}
+        for event in snapshot["interests"].get("history", []):
+            name = str(event.get("name") or "")
+            provenance = event.get("provenance") or {}
+            observed = provenance.get("observed_at")
+            if name and observed:
+                latest_exposure[name] = max(latest_exposure.get(name, ""), str(observed))
         for name, state in snapshot["interests"]["items"].items():
-            interests.append({"name": name, **{k: float(v) for k, v in state.items()}})
+            interests.append({
+                "name": name, **{k: float(v) for k, v in state.items()},
+                "last_observed_at": latest_exposure.get(name),
+            })
         interests.sort(key=lambda row: (-row["salience"], -row["preference"], row["name"]))
         inquiries = [
             {"inquiry_id": key, "question": value.get("question"), "origin": value.get("origin"),

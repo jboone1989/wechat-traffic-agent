@@ -6,7 +6,7 @@ from wechat_traffic_agent.content_mind import ContentMind
 from wechat_traffic_agent.memory_system import CanonicalMemoryStore
 
 
-def test_process_experience_causes_persistent_endogenous_topic_goal(tmp_path: Path):
+def test_research_progress_not_post_success_forms_interest(tmp_path: Path):
     root = tmp_path / "state"
     mind = ContentMind(root=root, subject_id="content-agent")
 
@@ -24,7 +24,15 @@ def test_process_experience_causes_persistent_endogenous_topic_goal(tmp_path: Pa
     assert observed["status"] == "OBSERVED"
     assert observed["outcome_kind"] == "PROCESS_ONLY"
     assert observed["audience_outcome_used"] is False
-    assert observed["interest"]["name"] == "common"
+    assert observed["interest"] is None
+    assert mind.plan_for_cycle(cycle="v2-150", available_topics=("common", "rare"))["goal"] is None
+    learned = mind.observe_learning_interest(
+        cycle="v2-100", topic="common",
+        reward={"utility": 0.5, "kind": "GROUNDED_UNDERSTANDING"},
+        evidence_refs=("web:research-1",),
+    )
+    assert learned["preference_updated"]
+    assert learned["interest"]["name"] == "common"
 
     plan = mind.plan_for_cycle(cycle="v2-200", available_topics=("common", "rare"))
     assert plan["goal"]["origin"] == "INTEREST"
@@ -39,6 +47,11 @@ def test_restart_preserves_goal_and_duplicate_experience_is_idempotent(tmp_path:
         cycle="v2-100", topic="rare", passed=True, model_calls=2,
         evidence_refs=("cycle:v2-100",),
     )
+    first.observe_learning_interest(
+        cycle="v2-100", topic="rare",
+        reward={"utility": 0.5, "kind": "GROUNDED_UNDERSTANDING"},
+        evidence_refs=("web:learning-rare",),
+    )
     planned = first.plan_for_cycle(cycle="v2-200", available_topics=("common", "rare"))
 
     restarted = ContentMind(root=root, subject_id="content-agent")
@@ -46,9 +59,10 @@ def test_restart_preserves_goal_and_duplicate_experience_is_idempotent(tmp_path:
     assert replay == planned
     assert replay["required_topic"] == "rare"
 
-    duplicate = restarted.observe_process_experience(
-        cycle="v2-100", topic="rare", passed=True, model_calls=2,
-        evidence_refs=("cycle:v2-100",),
+    duplicate = restarted.observe_learning_interest(
+        cycle="v2-100", topic="rare",
+        reward={"utility": 0.5, "kind": "GROUNDED_UNDERSTANDING"},
+        evidence_refs=("web:learning-rare",),
     )
     assert duplicate["status"] == "ALREADY_OBSERVED"
     projection = restarted.public_projection()

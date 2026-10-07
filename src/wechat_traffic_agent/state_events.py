@@ -183,6 +183,18 @@ class FerroStateEventApplier:
             return dict(self.wakeful.rank_neural_taste(
                 list(payload.get("topics") or ()),
                 observed_at,
+                contexts=dict(payload.get("contexts") or {}),
+            ))
+        if kind == "COMMIT_INTEREST_STUDY":
+            return dict(self.wakeful.commit_interest_study(
+                cycle=str(payload["cycle"]), topic=str(payload["topic"]),
+                features=dict(payload.get("features") or {}), now=observed_at,
+            ))
+        if kind == "SETTLE_INTEREST_STUDY":
+            return dict(self.wakeful.settle_interest_study(
+                cycle=str(payload["cycle"]), topic=str(payload["topic"]),
+                outcome_id=str(payload["outcome_id"]),
+                utility=float(payload["utility"]), now=observed_at,
             ))
         if kind == "CHOOSE_BRAIN_OR_CORTEX":
             return dict(self.wakeful.choose_brain_or_cortex(
@@ -216,10 +228,28 @@ class FerroStateClient:
         self.state_root = Path(state_root)
         self.bus = FerroStateEventBus(self.state_root)
 
-    def rank_neural_taste(self, topics, now: datetime) -> dict[str, Any]:
+    def rank_neural_taste(self, topics, now: datetime, contexts=None) -> dict[str, Any]:
         return self.bus.request(
             "RANK_NEURAL_TASTE",
-            {"topics": list(topics or ())},
+            {"topics": list(topics or ()), "contexts": dict(contexts or {})},
+            observed_at=now,
+        )
+
+    def commit_interest_study(self, *, cycle: str, topic: str,
+                              features=None, now: datetime) -> dict[str, Any]:
+        return self.bus.request(
+            "COMMIT_INTEREST_STUDY",
+            {"cycle": cycle, "topic": topic, "features": dict(features or {})},
+            observed_at=now,
+        )
+
+    def settle_interest_study(self, *, cycle: str, topic: str,
+                              outcome_id: str, utility: float,
+                              now: datetime) -> dict[str, Any]:
+        return self.bus.request(
+            "SETTLE_INTEREST_STUDY",
+            {"cycle": cycle, "topic": topic, "outcome_id": outcome_id,
+             "utility": float(utility)},
             observed_at=now,
         )
 
