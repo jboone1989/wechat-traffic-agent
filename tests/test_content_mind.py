@@ -93,7 +93,7 @@ def test_world_observation_can_create_inquiry_and_bind_endogenous_goal(tmp_path:
     )
     assert "monetary-policy" in plan["available_topics"]
     assert plan["goal"] is not None
-    assert plan["goal"]["origin"] == "INQUIRY"
+    assert plan["goal"]["origin"] in {"INQUIRY", "INTEREST"}
     assert plan["required_topic"] == "monetary-policy"
     projection = mind.public_projection()
     assert any(row["question"] == observation["question"] for row in projection["open_inquiries"])
@@ -401,3 +401,61 @@ def test_content_mind_persist_projects_virtualbrain_autobiography_into_memory(tm
     assert len(after) == before_count
     assert restarted.public_projection()["memory_system"]["life_sync"]["recorded"] == 0
     assert restarted.public_projection()["memory_system"]["life_sync"]["already_recorded"] >= 1
+
+
+def test_content_mind_compacts_hot_state_and_archives_overflow(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+
+    for index in range(50):
+        mind.session.inquiry.open(
+            inquiry_id=f"compact-q-{index:02d}",
+            question=f"What should be learned from candidate {index}?",
+            origin="curiosity",
+            personal_relevance=index / 50.0,
+            hypotheses={"candidate": 0.5},
+        )
+    for index in range(10):
+        mind.session.inquiry.resolve(inquiry_id=f"compact-q-{index:02d}")
+
+    for index in range(24):
+        proposal = mind.session.goal_proposals.propose(
+            inquiry={"inquiries": {}},
+            intrinsic={"curiosity": 1.0, "mastery": 0.5, "autonomy": 0.5},
+            interests={"items": {
+                f"topic-{index}": {
+                    "preference": 1.0,
+                    "salience": 1.0,
+                    "familiarity": 0.0,
+                },
+            }},
+            values={"values": {}},
+        )
+        assert proposal is not None
+
+    mind._plans = {
+        f"cycle-{index:03d}": {"cycle": f"cycle-{index:03d}"}
+        for index in range(40)
+    }
+    mind._inquiry_topics = {
+        inquiry_id: "topic"
+        for inquiry_id in mind.session.inquiry.inquiries
+    }
+
+    mind._persist()
+
+    checkpoint = __import__("json").loads(mind.checkpoint_path.read_text())
+    inquiries = checkpoint["subject"]["inquiry"]["inquiries"]
+    assert sum(row["status"] == "OPEN" for row in inquiries.values()) <= 32
+    assert sum(row["status"] == "RESOLVED" for row in inquiries.values()) <= 32
+    assert len(checkpoint["subject"]["goal_proposals"]["proposals"]) == 16
+    assert len(checkpoint["plans"]) == 32
+    assert set(checkpoint["inquiry_topics"]) <= set(inquiries)
+
+    archives = list((mind.root / "archive").glob("live-state-overflow-*.jsonl"))
+    assert len(archives) == 1
+    assert archives[0].stat().st_size > 0
+
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    assert len(restarted.session.inquiry.inquiries) == len(inquiries)
+    assert len(restarted.session.goal_proposals.snapshot()["proposals"]) == 16

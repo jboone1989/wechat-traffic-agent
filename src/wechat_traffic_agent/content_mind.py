@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -18,8 +18,8 @@ MIND_SCHEMA = "content-mind:v1"
 # AutobiographicalSelf.TRUSTED_EXPERIENCE_SOURCES. "session" is the canonical
 # host/session ingestion authority used by VirtualBrain's own experience→goal eval.
 AUTHORITY_ID = "session"
-MAX_PLANS = 128
-MAX_EVENT_IDS = 512
+MAX_PLANS = 32
+MAX_EVENT_IDS = 256
 MAX_STRATEGY_OUTCOMES = 512
 MIN_STRATEGY_PROFILE_SAMPLES = 2
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
@@ -50,8 +50,13 @@ class ContentMind:
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
         self._inquiry_topics: dict[str, str] = {}
+        had_checkpoint = self.checkpoint_path.exists()
         self._restore()
-        self._life_memory_last_sync = self._sync_life_memory(limit=256)
+        self._life_memory_last_sync = self._sync_life_memory(
+            limit=4096 if had_checkpoint else 256
+        )
+        if had_checkpoint and self._compact_live_state():
+            self._write_checkpoint()
 
     @property
     def checkpoint_path(self) -> Path:
@@ -103,7 +108,81 @@ class ContentMind:
         except Exception as exc:
             return {"status": "ERROR", "error_type": type(exc).__name__, "recorded": 0, "already_recorded": 0}
 
-    def _persist(self) -> None:
+    def _archive_live_overflow(
+        self,
+        *,
+        inquiries: Mapping[str, Any],
+        autobiography: Mapping[str, Any],
+        goal_proposals: list[Mapping[str, Any]],
+    ) -> None:
+        if (
+            not inquiries.get("inquiries")
+            and not autobiography.get("events")
+            and not autobiography.get("narrative_revisions")
+            and not goal_proposals
+        ):
+            return
+        archive_root = self.root / "archive"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        path = archive_root / (
+            "live-state-overflow-"
+            + datetime.now(timezone.utc).strftime("%Y-%m")
+            + ".jsonl"
+        )
+        payload = {
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "inquiries": dict(inquiries),
+            "autobiography": dict(autobiography),
+            "goal_proposals": [dict(row) for row in goal_proposals],
+        }
+        with path.open("a", encoding="utf-8", newline="") as handle:
+            handle.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+
+    def _compact_live_state(self) -> bool:
+        before = self.session.snapshot()
+        removed_inquiries = self.session.inquiry.compact(
+            max_open=32,
+            max_resolved=32,
+        )
+        removed_autobiography = self.session.autobiography.compact(
+            max_events=256,
+            max_revisions=64,
+        )
+        removed_goals = self.session.goal_proposals.compact(max_proposals=16)
+
+        live_inquiry_ids = set(self.session.inquiry.inquiries)
+        self._inquiry_topics = {
+            inquiry_id: topic
+            for inquiry_id, topic in self._inquiry_topics.items()
+            if inquiry_id in live_inquiry_ids
+        }
+        if len(self._plans) > MAX_PLANS:
+            for key in sorted(self._plans)[: len(self._plans) - MAX_PLANS]:
+                self._plans.pop(key, None)
+        self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+
+        self._archive_live_overflow(
+            inquiries=removed_inquiries,
+            autobiography=removed_autobiography,
+            goal_proposals=removed_goals,
+        )
+        after = self.session.snapshot()
+        return before != after or bool(
+            removed_inquiries.get("inquiries")
+            or removed_autobiography.get("events")
+            or removed_autobiography.get("narrative_revisions")
+            or removed_goals
+        )
+
+    def _write_checkpoint(self) -> None:
         payload = {
             "schema_version": MIND_SCHEMA,
             "subject_id": self.subject_id,
@@ -115,11 +194,22 @@ class ContentMind:
         }
         tmp = self.checkpoint_path.with_suffix(".json.tmp")
         tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
             encoding="utf-8",
         )
         os.replace(tmp, self.checkpoint_path)
-        self._life_memory_last_sync = self._sync_life_memory(limit=64)
+
+    def _persist(self) -> None:
+        # Export all current life evidence before reducing the hot working set.
+        self._life_memory_last_sync = self._sync_life_memory(limit=4096)
+        self._compact_live_state()
+        self._write_checkpoint()
 
     def persist_resource_awareness(self) -> None:
         """Persist provider-neutral resource state after a governed external observation."""
