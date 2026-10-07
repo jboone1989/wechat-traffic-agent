@@ -168,7 +168,7 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
         ) if key in learning}
         learning_projection["sources"] = [{
             **{key: row[key] for key in (
-                "evidence_id", "title", "summary", "url", "source", "source_kind", "learning_kind",
+                "evidence_id", "title", "url", "source_kind",
             ) if key in row},
             "source_receipt_sha256": hashlib.sha256(json.dumps(
                 row, sort_keys=True, ensure_ascii=False,
@@ -229,8 +229,18 @@ def _expression_mission(state_root: Path) -> dict[str, Any]:
 
 
 def _expression_recent_shares(history) -> list[dict[str, Any]]:
-    return [{key: row[key] for key in ("text", "recorded_at") if key in row}
-            for row in history.recent_public_shares(limit=6)]
+    rows: list[dict[str, Any]] = []
+    for row in history.recent_public_shares(limit=6):
+        text = str(row.get("text") or "")
+        compact = {
+            "text": text[:480],
+            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            "text_truncated": len(text) > 480,
+        }
+        if row.get("recorded_at") is not None:
+            compact["recorded_at"] = row["recorded_at"]
+        rows.append(compact)
+    return rows
 
 
 def _read_json(path: Path) -> dict[str, Any]:
