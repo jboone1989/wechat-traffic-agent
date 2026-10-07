@@ -120,22 +120,36 @@ def _workspace_memory_summary(row: Mapping[str, Any]) -> dict[str, Any]:
         ):
             value = payload.get(key)
             if value not in (None, "", [], {}):
-                payload_summary[key] = _compact_workspace_value(value, depth=3)
-            if len(payload_summary) >= 4:
+                compact = _compact_workspace_value(value, depth=3)
+                if isinstance(compact, str):
+                    excerpt = compact
+                else:
+                    excerpt = json.dumps(
+                        compact,
+                        ensure_ascii=False,
+                        default=str,
+                        separators=(",", ":"),
+                    )
+                payload_summary[key] = (
+                    excerpt
+                    if len(excerpt) <= 300
+                    else excerpt[:286] + "...[truncated]"
+                )
+            if len(payload_summary) >= 3:
                 break
     return {
         "memory_id": str(row.get("memory_id") or ""),
         "memory_type": row.get("memory_type"),
         "kind": row.get("kind"),
-        "text": str(row.get("text") or "")[:900],
+        "text": str(row.get("text") or "")[:700],
         "payload_summary": payload_summary,
         "confidence": row.get("confidence"),
         "importance": row.get("importance"),
         "created_at": row.get("created_at"),
         "source_ref": row.get("source_ref"),
-        "topics": list(row.get("topics") or [])[:6],
-        "entities": list(row.get("entities") or [])[:6],
-        "evidence_refs": list(row.get("evidence_refs") or [])[:8],
+        "topics": list(row.get("topics") or [])[:4],
+        "entities": list(row.get("entities") or [])[:4],
+        "evidence_refs": list(row.get("evidence_refs") or [])[:6],
     }
 
 
@@ -259,7 +273,7 @@ async def _model_driven_memory_workspace(
         if not new_queries:
             break
         for query in new_queries:
-            for row in router.recall(query, limit=3):
+            for row in router.recall(query, limit=2):
                 memory_id = str(row.get("memory_id") or "")
                 if not memory_id or memory_id in seen_memory_ids:
                     continue
@@ -268,11 +282,11 @@ async def _model_driven_memory_workspace(
                     **_workspace_memory_summary(row),
                     "requested_by_query": query,
                 })
-                if len(retrieved) >= 8:
+                if len(retrieved) >= 6:
                     break
-            if len(retrieved) >= 8:
+            if len(retrieved) >= 6:
                 break
-        if len(retrieved) >= 8:
+        if len(retrieved) >= 6:
             break
     return {
         "schema_version": "ferro-cognitive-workspace.v1",
