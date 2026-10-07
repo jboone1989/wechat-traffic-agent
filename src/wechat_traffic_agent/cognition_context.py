@@ -639,9 +639,15 @@ def build_ferro_cognition_context(
     ]
     llm_decision_context = {
         "schema_version": decision_context.get("schema_version"),
-        "information_needs": list(
-            decision_context.get("information_needs") or []
-        ),
+        "information_needs": [
+            {
+                key: row.get(key)
+                for key in ("need_id", "source_hints", "priority", "contradictory")
+                if row.get(key) is not None
+            }
+            for row in list(decision_context.get("information_needs") or [])
+            if isinstance(row, Mapping)
+        ],
         "fact_index": selected_fact_index,
         "candidate_count": int(decision_context.get("candidate_count") or 0),
         "selected_count": int(decision_context.get("selected_count") or 0),

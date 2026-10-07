@@ -132,6 +132,14 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
             "cycle", "goal", "endogenous_goal", "required_topic", "focus_kind",
             "external_mission_id", "owner_goal_id",
         ) if key in plan}
+        goal = plan.get("goal")
+        if isinstance(goal, dict):
+            projected["mind_plan"]["goal"] = {
+                key: goal[key] for key in (
+                    "goal_id", "description", "origin", "expected_value",
+                    "confidence", "interest_refs", "inquiry_refs", "value_refs",
+                ) if key in goal
+            }
         endogenous_goal = plan.get("endogenous_goal")
         if isinstance(endogenous_goal, dict):
             projected["mind_plan"]["endogenous_goal"] = {
@@ -185,22 +193,44 @@ def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
 def _expression_persona(state_root: Path) -> dict[str, Any]:
     """Voice and affiliation are inputs; interaction archives stay in persona storage."""
     persona = public_persona_projection(state_root)
-    return {key: value for key, value in persona.items() if key != "learning"}
+    return {
+        key: persona[key]
+        for key in (
+            "status", "name", "self_description", "role", "affiliation",
+            "mission", "voice_traits", "identity_anchor",
+        )
+        if persona.get(key) is not None
+    }
 
 
 def _expression_mission(state_root: Path) -> dict[str, Any]:
     """The active experiment constrains writing; the roadmap belongs to its planner."""
     mission = x_growth_mission_context(state_root)
-    return {key: mission[key] for key in (
+    projected = {key: mission[key] for key in (
         "status", "mission_id", "goal_id", "description", "metric", "target",
-        "deadline", "constraints", "active_experiment", "audience_feedback",
-        "owner_strategy_advice", "generation_authority", "publication_authority",
+        "deadline", "generation_authority", "publication_authority",
     ) if key in mission}
+    experiment = mission.get("active_experiment")
+    if isinstance(experiment, dict):
+        projected["active_experiment"] = {
+            key: experiment[key] for key in (
+                "experiment_id", "status", "strategy", "settlement_metric",
+                "measurement_window_hours",
+            ) if key in experiment
+        }
+    feedback = mission.get("audience_feedback")
+    if isinstance(feedback, dict):
+        projected["audience_feedback"] = {
+            key: feedback[key]
+            for key in ("action", "active", "current", "peak")
+            if key in feedback
+        }
+    return projected
 
 
 def _expression_recent_shares(history) -> list[dict[str, Any]]:
     return [{key: row[key] for key in ("text", "recorded_at") if key in row}
-            for row in history.recent_public_shares(limit=20)]
+            for row in history.recent_public_shares(limit=6)]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -911,6 +941,35 @@ class XAutonomyLoop:
                         )
             if not quality["passed"]:
                 return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle, "quality": quality}
+        # Persist the exact short-post draft before any browser action. If
+        # submission succeeds but verification is interrupted, CHECK_X can
+        # reconcile this same text through the durable X transaction receipt
+        # without calling the writing model again.
+        existing_draft = _read_json(folder / "social_expression_drafts.json")
+        persisted_strategy = dict(x_strategy)
+        if owner_directed_x:
+            persisted_strategy["post_timing"] = "POST_NOW"
+            persisted_strategy["interaction_mode"] = "ORIGINAL"
+            persisted_strategy["selection_authority"] = "FERRO_OWNER_EPISODE"
+        _write_json(folder / "social_expression_drafts.json", {
+            **existing_draft,
+            "status": "DRAFT_READY",
+            "cycle": cycle,
+            "drafts": {
+                "x": {
+                    "channel": "X",
+                    "format": "SHORT_POST",
+                    "intent": str(cognition.get("expression_kind") or "THOUGHT"),
+                    "text": decision.post_text,
+                    "title": None,
+                    "cover_caption": None,
+                    "images": [],
+                    "style_observation_ids": [],
+                    "rationale": decision.rationale[:400],
+                }
+            },
+            "x_strategy": persisted_strategy,
+        })
         me, _identity_receipt = await self._publication_identity(now=now)
         baseline = None
         if self.growth_mission is not None and isinstance(mission_binding, dict) and mission_binding.get("bound"):

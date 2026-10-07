@@ -227,6 +227,10 @@ def test_cognition_snapshot_unifies_current_harness_state():
         item["need_id"]
         for item in context["decision_context"]["information_needs"]
     }
+    assert all(
+        "question" not in item
+        for item in context["decision_context"]["information_needs"]
+    )
     assert (
         context["epistemic_contract"]["model_inference"]
         == "unverified_until_observed"

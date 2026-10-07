@@ -1562,6 +1562,7 @@ class WakefulContentTaskRunner:
             return {"task": "CHECK_X", "status": "DISABLED"}
         try:
             result = self._run_async(self.x_loop.observe(now=now))
+            reconciliation = self._reconcile_x_publication_backlog(now=now)
             if (result.get("discovery") or {}).get("source","MENTIONS")=="MENTIONS":
                 count = int(result.get("new_mentions") or 0)
                 if count > 0:
@@ -1570,9 +1571,83 @@ class WakefulContentTaskRunner:
                         {"count": count},
                         observed_at=now,
                     )
-            return {"task": "CHECK_X", "status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED", "x_social_observation": result}
+            return {
+                "task": "CHECK_X",
+                "status": "OK" if str(result.get("status") or "").startswith("OK") else "DEGRADED",
+                "x_social_observation": result,
+                "x_publication_reconciliation": reconciliation,
+            }
         except Exception as exc:  # noqa: BLE001
             return {"task": "CHECK_X", "status": "DEGRADED", "x_social_observation": self._error(exc)}
+
+    def _reconcile_x_publication_backlog(self, *, now: datetime) -> dict[str, Any]:
+        publisher = getattr(self, "x_browser_publisher", None)
+        state_root = getattr(self, "state_root", None)
+        if publisher is None or state_root is None:
+            return {"status": "NO_PUBLISHER"}
+        cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
+        if not cycles_root.is_dir():
+            return {"status": "NO_PENDING_PUBLICATION"}
+        try:
+            folders = sorted(
+                (path for path in cycles_root.iterdir() if path.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )[:200]
+        except OSError:
+            return {"status": "NO_PENDING_PUBLICATION"}
+        for folder in folders:
+            try:
+                receipt = json.loads(
+                    (folder / "x_social_expression.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if str(receipt.get("status") or "") != "PUBLICATION_UNVERIFIED":
+                continue
+            try:
+                draft = json.loads(
+                    (folder / "social_expression_drafts.json").read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            if str(draft.get("status") or "") != "DRAFT_READY":
+                continue
+            result = self._run_async(
+                publisher.after_content_cycle(cycle=folder.name, now=now)
+            )
+            status = str(result.get("status") or "")
+            if status in {"POSTED", "ALREADY_POSTED"}:
+                publication = (
+                    result.get("publication")
+                    if isinstance(result.get("publication"), dict)
+                    else {}
+                )
+                normalized = {
+                    "status": "POSTED" if status == "POSTED" else "ALREADY_EXPRESSED",
+                    "cycle": folder.name,
+                    "post_id": publication.get("post_id"),
+                    "url": publication.get("url"),
+                    "transport": publication.get("source"),
+                }
+                path = folder / "x_social_expression.json"
+                tmp = path.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(normalized, ensure_ascii=False, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                tmp.replace(path)
+                return {
+                    "status": "RECONCILED",
+                    "cycle": folder.name,
+                    "publication": normalized,
+                }
+            return {
+                "status": "STILL_UNVERIFIED",
+                "cycle": folder.name,
+                "result": result,
+            }
+        return {"status": "NO_PENDING_PUBLICATION"}
 
     def _okx_ai_marketplace(self, now: datetime) -> dict[str, Any]:
         marketplace = getattr(self, "okx_ai_marketplace", None)
@@ -2371,8 +2446,11 @@ class WakefulContentTaskRunner:
                 x_status = str(x_receipt.get("status") or "")
                 if x_status in {
                     "POSTED", "ALREADY_EXPRESSED", "SKIPPED", "RECOVERY_INVALIDATED",
-                    "HELD_BY_LEARNING_QUALITY",
+                    "HELD_BY_LEARNING_QUALITY", "PUBLICATION_UNVERIFIED",
                 }:
+                    # Once a concrete draft has been submitted, publication
+                    # verification belongs to CHECK_X. Never re-enter model
+                    # expression just because the browser receipt is pending.
                     continue
                 if blocker_active and x_status in {
                     "X_CREDITS_DEPLETED",
@@ -2492,6 +2570,13 @@ class WakefulContentTaskRunner:
                         encoding="utf-8",
                     )
                     tmp.replace(receipt)
+                    if str(x_result.get("status") or "") == "PUBLICATION_UNVERIFIED":
+                        rows["x_publication_reconciliation"] = self.task_scheduler.schedule(
+                            "CHECK_X",
+                            now + timedelta(seconds=5),
+                            reason="reconcile unverified X publication without rerunning cognition",
+                            relevant_refs=(cycle,),
+                        )
             except Exception as exc:  # noqa: BLE001
                 rows["x_social_expression"] = self._social_stage_error(
                     exc, stage="x_social_expression", continuous=continuous, now=now

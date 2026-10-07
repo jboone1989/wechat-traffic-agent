@@ -94,3 +94,52 @@ def test_long_share_history_has_an_explicit_budget_without_truncating_posts(tmp_
     assert rows[0]["text_omitted_for_budget"] and rows[0]["text_sha256"]
     assert rows[0]["x_url"] == "https://x.com/owner/status/0"
     assert all(len(row["text"]) == 9000 for row in history.recent())
+
+
+def test_unverified_publication_leaves_cognition_backlog_and_reconciles_in_check_x(tmp_path):
+    from datetime import datetime, timezone
+    from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
+
+    cycle = "v2-unverified-x"
+    folder = tmp_path / "content/continuous/cycles" / cycle
+    folder.mkdir(parents=True)
+    (folder / "result.json").write_text(json.dumps({"status":"HELD_BY_CHECKS","cycle":cycle}))
+    (folder / "cognition.json").write_text(json.dumps({"worth_saying":True}))
+    (folder / "x_social_expression.json").write_text(
+        json.dumps({"status":"PUBLICATION_UNVERIFIED","cycle":cycle})
+    )
+    (folder / "social_expression_drafts.json").write_text(json.dumps({
+        "status":"DRAFT_READY","cycle":cycle,
+        "drafts":{"x":{"channel":"X","format":"SHORT_POST","text":"exact persisted text"}},
+        "x_strategy":{"post_timing":"POST_NOW","interaction_mode":"ORIGINAL"},
+    }))
+
+    class Growth:
+        def publication_binding(self, *, cycle):
+            return {"status":"BOUND_X_EXPRESSION","bound":True,"cycle":cycle}
+
+    class XLoop:
+        growth_mission = Growth()
+
+    class Publisher:
+        def __init__(self): self.calls=[]
+        async def after_content_cycle(self, *, cycle, now):
+            self.calls.append((cycle, now))
+            return {"status":"POSTED","cycle":cycle,"publication":{
+                "post_id":"123","url":"https://x.com/owner/status/123","source":"JEV_AGENT_RUNTIME"
+            }}
+
+    publisher=Publisher()
+    runner=WakefulContentTaskRunner.__new__(WakefulContentTaskRunner)
+    runner.state_root=tmp_path
+    runner.x_loop=XLoop()
+    runner.x_browser_publisher=publisher
+
+    assert runner._social_stage_backlog_candidate() is None
+    now=datetime.now(timezone.utc)
+    reconciled=runner._reconcile_x_publication_backlog(now=now)
+    assert reconciled["status"]=="RECONCILED"
+    assert publisher.calls==[(cycle,now)]
+    receipt=json.loads((folder/"x_social_expression.json").read_text())
+    assert receipt["status"]=="POSTED"
+    assert receipt["post_id"]=="123"
