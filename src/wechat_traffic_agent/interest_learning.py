@@ -36,10 +36,19 @@ def topic_contexts(
         familiarity = _unit(interest.get("familiarity"), 0.0)
         salience = _unit(interest.get("salience"), 0.0)
         last_observed = interest.get("last_observed_at")
-        if last_observed:
-            observed = datetime.fromisoformat(str(last_observed).replace("Z", "+00:00"))
-            if observed.tzinfo is None or observed.utcoffset() is None:
-                raise ValueError("interest observation timestamp must include timezone")
+        observed = None
+        if isinstance(last_observed, str) and last_observed.strip():
+            try:
+                observed = datetime.fromisoformat(
+                    last_observed.strip().replace("Z", "+00:00")
+                )
+            except ValueError:
+                observed = None
+        if observed is not None and (
+            observed.tzinfo is None or observed.utcoffset() is None
+        ):
+            observed = None
+        if observed is not None:
             elapsed_days = max(
                 0.0, (datetime.now(timezone.utc) - observed).total_seconds() / 86400.0,
             )

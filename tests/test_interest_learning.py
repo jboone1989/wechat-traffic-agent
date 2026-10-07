@@ -56,6 +56,21 @@ def test_topic_context_uses_durable_knowledge_and_preference(tmp_path):
     assert context["btc-hmm"]["preference"] == 0.8
 
 
+def test_topic_context_ignores_legacy_tick_mislabelled_as_timestamp(tmp_path):
+    root = tmp_path / "state"
+    context = topic_contexts(root, ["ai-memory"], {
+        "interests": [{
+            "name": "ai-memory",
+            "preference": 0.7,
+            "familiarity": 0.2,
+            "salience": 0.9,
+            "last_observed_at": "1172",
+        }],
+    })
+    assert context["ai-memory"]["salience"] == 0.9
+    assert context["ai-memory"]["preference"] == 0.7
+
+
 def test_neural_event_dispatch_binds_commitment_and_settlement():
     calls = []
     owner = SimpleNamespace(
