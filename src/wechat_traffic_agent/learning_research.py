@@ -364,8 +364,10 @@ def _working_projection(memory,topic,session):
     projected['research_trajectory']=[control(row) for row in projected['research_trajectory'][-window:]]
     projected['parked_inquiries']=[control(row) for row in projected['parked_inquiries'][-window:]]
     projected['knowledge_catalog']=dict(list(projected['knowledge_catalog'].items())[:window])
+    share_window=max(1,min(window,2))
     projected["recent_shares"]=[{k:(str(v)[:600] if v is not None else v) for k,v in r.items()}
-                                for r in projected["recent_shares"][-4:]]
+                                for r in projected["recent_shares"][-share_window:]]
+    projected["projection"]["shares_supplied"]=len(projected["recent_shares"])
     projected["recent_reflections"]=projected["recent_reflections"][-2:]
     projected["application_feedback"]=projected["application_feedback"][-2:]
     projected["interests"]=projected["interests"][:6]
