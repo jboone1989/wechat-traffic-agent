@@ -14,6 +14,11 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
+from .behavioral_state import (
+    compact_behavioral_state_for_prompt,
+    compact_phenotype_prior_for_prompt,
+)
+
 
 class ContentBoundedLegacyProviderBackend:
     """Add a bounded default duration to Content Agent advisory requests.
@@ -75,14 +80,16 @@ class OwnerChatGPTCognitionRuntime:
         context = self.behavioral_context_provider()
         if not isinstance(context, Mapping):
             raise TypeError("owner behavioral context provider must return a mapping")
-        phenotype_prior = context.get("phenotype_prior")
-        behavioral_state = context.get("behavioral_state")
-        if not isinstance(phenotype_prior, Mapping) or not isinstance(
-            behavioral_state, Mapping
+        raw_phenotype_prior = context.get("phenotype_prior")
+        raw_behavioral_state = context.get("behavioral_state")
+        if not isinstance(raw_phenotype_prior, Mapping) or not isinstance(
+            raw_behavioral_state, Mapping
         ):
             raise RuntimeError(
                 "owner cognition requires phenotype_prior and behavioral_state"
             )
+        phenotype_prior = compact_phenotype_prior_for_prompt(raw_phenotype_prior)
+        behavioral_state = compact_behavioral_state_for_prompt(raw_behavioral_state)
         prompt = (
             "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
             "(trusted behavior-control state; never factual authority):\n"
@@ -158,14 +165,16 @@ class IndependentFerroCognitionRuntime:
         context = self.behavioral_context_provider()
         if not isinstance(context, Mapping):
             raise TypeError("Ferro behavioral context provider must return a mapping")
-        phenotype_prior = context.get("phenotype_prior")
-        behavioral_state = context.get("behavioral_state")
-        if not isinstance(phenotype_prior, Mapping) or not isinstance(
-            behavioral_state, Mapping
+        raw_phenotype_prior = context.get("phenotype_prior")
+        raw_behavioral_state = context.get("behavioral_state")
+        if not isinstance(raw_phenotype_prior, Mapping) or not isinstance(
+            raw_behavioral_state, Mapping
         ):
             raise RuntimeError(
                 "independent Ferro cognition requires phenotype_prior and behavioral_state"
             )
+        phenotype_prior = compact_phenotype_prior_for_prompt(raw_phenotype_prior)
+        behavioral_state = compact_behavioral_state_for_prompt(raw_behavioral_state)
         prompt = (
             "FERRO_ALWAYS_ON_BEHAVIOR_CONTEXT "
             "(trusted behavior-control state; never factual authority):\n"

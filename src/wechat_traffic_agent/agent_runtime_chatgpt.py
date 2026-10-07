@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from agent_runtime.llm import ChatGPTBrowserProvider, ChatGPTBrowserProviderError
@@ -94,12 +96,57 @@ class AgentRuntimeChatGPTProvider:
             "assistant_message_count": metadata.get("assistant_message_count"),
         }
 
+    def _end_cognition_episode(self) -> None:
+        """Detach the durable carrier so the next model call starts a fresh chat.
+
+        The authenticated browser/profile remains persistent. Ferro's own
+        Memory system is the durable cognitive history; ChatGPT conversation
+        history is only a carrier for one completed cognition episode.
+        """
+        raw_path = getattr(self._provider, "conversation_state_path", None)
+        if raw_path is None:
+            return
+        path = Path(raw_path)
+        try:
+            journal = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+            return
+        if not isinstance(journal, dict) or journal.get("pending"):
+            return
+        url = str(journal.get("conversation_url") or "")
+        if not url:
+            return
+        history = [
+            row for row in list(journal.get("episode_history") or [])
+            if isinstance(row, dict)
+        ]
+        completed = journal.get("last_completed")
+        completed = completed if isinstance(completed, dict) else {}
+        history.append({
+            "conversation_url": url,
+            "request_id": completed.get("request_id"),
+            "payload_sha256": completed.get("payload_sha256"),
+        })
+        journal["episode_history"] = history[-16:]
+        journal["conversation_url"] = None
+        journal["conversation_transition"] = None
+        journal["page_turns_since_refresh"] = 0
+        tmp = path.with_name(path.name + ".episode.tmp")
+        tmp.write_text(
+            json.dumps(journal, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+
     async def complete(self, prompt: str, **kwargs: Any) -> str:
+        continue_episode = bool(kwargs.pop("_continue_cognition_episode", False))
         try:
             text = await self._provider.complete(prompt + _JSON_BROWSER_FORMAT, **self._kwargs(kwargs))
         except (ChatGPTBrowserProviderError, OSError, RuntimeError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         self._record_provenance()
+        if not continue_episode:
+            self._end_cognition_episode()
         return text
 
     async def structured(
@@ -108,6 +155,7 @@ class AgentRuntimeChatGPTProvider:
         schema: dict[str, Any],
         **kwargs: Any,
     ) -> dict[str, Any]:
+        continue_episode = bool(kwargs.pop("_continue_cognition_episode", False))
         try:
             value = await self._provider.structured(
                 prompt + _JSON_BROWSER_FORMAT,
@@ -117,6 +165,8 @@ class AgentRuntimeChatGPTProvider:
         except (ChatGPTBrowserProviderError, OSError, RuntimeError, ValueError) as exc:
             raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
         self._record_provenance()
+        if not continue_episode:
+            self._end_cognition_episode()
         return value
 
     async def stream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:

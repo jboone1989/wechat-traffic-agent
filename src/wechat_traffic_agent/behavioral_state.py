@@ -469,4 +469,54 @@ def build_phenotype_prior(
     }
 
 
-__all__ = ["build_behavioral_state", "build_phenotype_prior"]
+def compact_behavioral_state_for_prompt(
+    behavioral_state: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Project full behavioral state into a small model-control envelope."""
+    state = _mapping(behavioral_state)
+    return {
+        "schema_version": "ferro-behavioral-prompt.v1",
+        "affect": dict(_mapping(state.get("affect"))),
+        "drives": dict(_mapping(state.get("drives"))),
+        "intention": dict(_mapping(state.get("intention"))),
+        "personality_traits": dict(_mapping(state.get("personality_traits"))),
+        "psychodynamics": dict(_mapping(state.get("psychodynamics"))),
+        "relationship": state.get("relationship"),
+        "dominant_affect": state.get("dominant_affect"),
+        "dominant_drive": state.get("dominant_drive"),
+        "realization_targets": [
+            {
+                "source": str(row.get("source") or ""),
+                "strength": row.get("strength"),
+                "realization": str(row.get("realization") or ""),
+            }
+            for row in list(state.get("realization_targets") or [])[:4]
+            if isinstance(row, Mapping)
+        ],
+        "behavioral_directives": [
+            str(row)
+            for row in list(state.get("behavioral_directives") or [])[:6]
+            if str(row)
+        ],
+    }
+
+
+def compact_phenotype_prior_for_prompt(
+    phenotype_prior: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Keep stable identity and live modulation without expression duplication."""
+    prior = _mapping(phenotype_prior)
+    return {
+        "schema_version": "ferro-phenotype-prompt.v1",
+        "stable_phenotype": dict(_mapping(prior.get("stable_phenotype"))),
+        "dynamic_modulation": dict(_mapping(prior.get("dynamic_modulation"))),
+        "retrieval_policy": dict(_mapping(prior.get("retrieval_policy"))),
+    }
+
+
+__all__ = [
+    "build_behavioral_state",
+    "build_phenotype_prior",
+    "compact_behavioral_state_for_prompt",
+    "compact_phenotype_prior_for_prompt",
+]

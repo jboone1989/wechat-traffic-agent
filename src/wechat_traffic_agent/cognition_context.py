@@ -7,7 +7,12 @@ import json
 import re
 from typing import Any, Mapping
 
-from .behavioral_state import build_behavioral_state, build_phenotype_prior
+from .behavioral_state import (
+    build_behavioral_state,
+    build_phenotype_prior,
+    compact_behavioral_state_for_prompt,
+    compact_phenotype_prior_for_prompt,
+)
 from .capability_contracts import CapabilityContractMonitor
 from .context_compiler import compile_surface_metadata, infer_decision_frame
 from .decision_context import build_ferro_decision_context, extract_commitments
@@ -381,8 +386,10 @@ def build_ferro_cognition_context(
         if isinstance(wake.get("neural_social"), Mapping)
         else {}
     )
-    behavioral_state = build_behavioral_state(wake)
-    phenotype_prior = build_phenotype_prior(behavioral_state)
+    full_behavioral_state = build_behavioral_state(wake)
+    full_phenotype_prior = build_phenotype_prior(full_behavioral_state)
+    behavioral_state = compact_behavioral_state_for_prompt(full_behavioral_state)
+    phenotype_prior = compact_phenotype_prior_for_prompt(full_phenotype_prior)
     relationship_rows = [
         dict(row)
         for row in list(social_projection.get("recent_relationships") or ())
@@ -632,7 +639,6 @@ def build_ferro_cognition_context(
             "context_id": row.get("context_id"),
             "source": row.get("source"),
             "kind": row.get("kind"),
-            "selection": row.get("selection"),
         }
         for row in list(decision_context.get("selected_facts") or [])
         if isinstance(row, Mapping)
@@ -769,7 +775,26 @@ def build_ferro_cognition_context(
         },
         "decision_frame": metadata["decision_frame"],
         "decision_context": llm_decision_context,
-        "context_receipt": metadata["context_receipt"],
+        "context_receipt": {
+            key: metadata["context_receipt"].get(key)
+            for key in (
+                "schema_version",
+                "receipt_id",
+                "decision_type",
+                "selected_chars_estimate",
+                "candidate_counts",
+                "downstream_budget_chars",
+                "budget_utilization_estimate",
+                "selection_policy",
+            )
+            if metadata["context_receipt"].get(key) is not None
+        } | {
+            "selection_summary": {
+                "retrieval_policy": selection_summary["retrieval_policy"],
+                "selected_sources": selection_summary["selected_sources"],
+                "always_on_sources": selection_summary["always_on_sources"],
+            }
+        },
         "current_intent": selected_current_intent,
         "open_loops": metadata["open_loops"],
         "missions": selected_mission_state,
@@ -814,8 +839,14 @@ def build_ferro_cognition_context(
     }
 
     if state_root is not None:
+        contract_snapshot = {
+            **snapshot,
+            "phenotype_prior": full_phenotype_prior,
+            "behavioral_state": full_behavioral_state,
+            "context_receipt": metadata["context_receipt"],
+        }
         contract_report = CapabilityContractMonitor(state_root).observe_context(
-            snapshot,
+            contract_snapshot,
             now=now,
         )
         snapshot["capability_contracts"] = contract_report

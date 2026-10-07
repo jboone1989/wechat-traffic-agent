@@ -580,12 +580,8 @@ def test_behavioral_state_is_not_a_retrieval_candidate_anymore():
         str(row.get("context_id") or "")
         for row in context["decision_context"]["fact_index"]
     }
-    rejected_ids = {
-        str(row.get("context_id") or "")
-        for row in receipt["selection_summary"]["rejected_candidates"]
-    }
     assert "internal:behavioral" not in selected_ids
-    assert "internal:behavioral" not in rejected_ids
+    assert "rejected_candidates" not in receipt["selection_summary"]
     assert context["phenotype_prior"]["stable_phenotype"]["personality_traits"]
 
 
