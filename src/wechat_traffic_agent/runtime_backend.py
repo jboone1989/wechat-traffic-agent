@@ -109,6 +109,50 @@ def _workspace_seed_context(context: Mapping[str, Any] | None) -> dict[str, Any]
     }
 
 
+def _workspace_memory_summary(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Small evidence-bearing memory view for iterative workspace reasoning."""
+    payload = row.get("payload")
+    payload_summary: dict[str, Any] = {}
+    if isinstance(payload, Mapping):
+        for key in (
+            "status", "outcome", "conclusion", "result", "hypothesis",
+            "proposition", "question", "lesson", "summary",
+        ):
+            value = payload.get(key)
+            if value not in (None, "", [], {}):
+                payload_summary[key] = _compact_workspace_value(value, depth=3)
+            if len(payload_summary) >= 4:
+                break
+    return {
+        "memory_id": str(row.get("memory_id") or ""),
+        "memory_type": row.get("memory_type"),
+        "kind": row.get("kind"),
+        "text": str(row.get("text") or "")[:900],
+        "payload_summary": payload_summary,
+        "confidence": row.get("confidence"),
+        "importance": row.get("importance"),
+        "created_at": row.get("created_at"),
+        "source_ref": row.get("source_ref"),
+        "topics": list(row.get("topics") or [])[:6],
+        "entities": list(row.get("entities") or [])[:6],
+        "evidence_refs": list(row.get("evidence_refs") or [])[:8],
+    }
+
+
+def _workspace_round_memory(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Do not resend full retrieved payloads merely to choose the next lookup."""
+    return [
+        {
+            "memory_id": row.get("memory_id"),
+            "kind": row.get("kind"),
+            "text": str(row.get("text") or "")[:500],
+            "source_ref": row.get("source_ref"),
+            "topics": list(row.get("topics") or [])[:4],
+        }
+        for row in rows[-6:]
+    ]
+
+
 def _workspace_enabled_for(
     task: str,
     context: Mapping[str, Any] | None = None,
@@ -178,7 +222,7 @@ async def _model_driven_memory_workspace(
                     **seed,
                     "round": round_index + 1,
                     "already_requested_queries": requested_queries,
-                    "memory_already_retrieved": retrieved[-8:],
+                    "memory_already_retrieved": _workspace_round_memory(retrieved),
                 },
                 ensure_ascii=False,
                 default=str,
@@ -215,31 +259,20 @@ async def _model_driven_memory_workspace(
         if not new_queries:
             break
         for query in new_queries:
-            for row in router.recall(query, limit=4):
+            for row in router.recall(query, limit=3):
                 memory_id = str(row.get("memory_id") or "")
                 if not memory_id or memory_id in seen_memory_ids:
                     continue
                 seen_memory_ids.add(memory_id)
                 retrieved.append({
-                    "memory_id": memory_id,
+                    **_workspace_memory_summary(row),
                     "requested_by_query": query,
-                    "memory_type": row.get("memory_type"),
-                    "kind": row.get("kind"),
-                    "text": str(row.get("text") or "")[:1200],
-                    "payload": _compact_workspace_value(row.get("payload")),
-                    "confidence": row.get("confidence"),
-                    "importance": row.get("importance"),
-                    "created_at": row.get("created_at"),
-                    "source_ref": row.get("source_ref"),
-                    "topics": list(row.get("topics") or [])[:8],
-                    "entities": list(row.get("entities") or [])[:8],
-                    "evidence_refs": list(row.get("evidence_refs") or [])[:12],
                 })
-                if len(retrieved) >= 12:
+                if len(retrieved) >= 8:
                     break
-            if len(retrieved) >= 12:
+            if len(retrieved) >= 8:
                 break
-        if len(retrieved) >= 12:
+        if len(retrieved) >= 8:
             break
     return {
         "schema_version": "ferro-cognitive-workspace.v1",

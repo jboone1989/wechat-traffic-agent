@@ -272,7 +272,7 @@ def test_model_driven_workspace_uses_model_chosen_queries_until_model_stops(
     class Router:
         def recall(self, query, *, limit, now=None):
             assert query == "term premium forecast failures"
-            assert limit == 4
+            assert limit == 3
             return [{
                 "memory_id": "mem-term-premium",
                 "memory_type": "EPISODIC",
@@ -303,7 +303,7 @@ def test_model_driven_workspace_uses_model_chosen_queries_until_model_stops(
     assert provider.structured.await_count == 2
     assert workspace["queries"] == ["term premium forecast failures"]
     assert workspace["memory"][0]["memory_id"] == "mem-term-premium"
-    assert workspace["memory"][0]["payload"]["status"] == "REFUTED"
+    assert workspace["memory"][0]["payload_summary"]["status"] == "REFUTED"
     second_prompt = provider.structured.await_args_list[1].args[0]
     assert "no validated forecast edge" in second_prompt
 
