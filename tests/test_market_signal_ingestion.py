@@ -1,5 +1,7 @@
 """Offline regression tests for independent market-signal ingestion."""
 from __future__ import annotations
+import asyncio
+from functools import wraps
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -12,6 +14,13 @@ from wechat_traffic_agent.sources.market_pipeline import MarketSignalCollector, 
 from wechat_traffic_agent.sources.market_signals import (
     BINANCE_TICKERS, BLOCKBEATS, BTC_ETF_FLOWS, parse_rss, significant_moves,
 )
+
+def run_coroutine(function):
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(function(*args, **kwargs))
+    return wrapper
+
 
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 NEWS = "https://www.theblockbeats.info/flash/123"
@@ -57,7 +66,7 @@ def transport(*, btc_change=1.5, newer=False, failure=None, etf=False):
     return httpx.MockTransport(respond)
 
 
-@pytest.mark.asyncio
+@run_coroutine
 async def test_bootstrap_does_not_publish_existing_news(tmp_path, monkeypatch):
     monkeypatch.delenv("COINGLASS_API_KEY", raising=False)
     async with httpx.AsyncClient(transport=transport()) as client:
@@ -67,7 +76,7 @@ async def test_bootstrap_does_not_publish_existing_news(tmp_path, monkeypatch):
     assert MarketSignalStore(tmp_path).recent(now=NOW) == []
 
 
-@pytest.mark.asyncio
+@run_coroutine
 async def test_news_and_price_events_require_change_and_are_deduplicated(tmp_path, monkeypatch):
     monkeypatch.delenv("COINGLASS_API_KEY", raising=False)
     async with httpx.AsyncClient(transport=transport()) as client:
@@ -88,7 +97,7 @@ async def test_news_and_price_events_require_change_and_are_deduplicated(tmp_pat
     assert len(MarketSignalStore(tmp_path).recent(now=NOW)) == 3
 
 
-@pytest.mark.asyncio
+@run_coroutine
 async def test_provider_outage_does_not_erase_others_or_arm_baseline(tmp_path, monkeypatch):
     monkeypatch.delenv("COINGLASS_API_KEY", raising=False)
     async with httpx.AsyncClient(transport=transport(failure="newsflash")) as client:
@@ -98,10 +107,11 @@ async def test_provider_outage_does_not_erase_others_or_arm_baseline(tmp_path, m
     assert any(row["name"] == "blockbeats-newsflash" and row["status"] == "FAILED" for row in failed["providers"])
     async with httpx.AsyncClient(transport=transport(newer=True)) as client:
         recovered = await MarketSignalCollector(tmp_path, client=client).run_once(now=NOW)
-    assert recovered["new_research_events"] == 0  # first success is still a baseline
+    flash = next(row for row in recovered["providers"] if row["name"] == "blockbeats-newsflash")
+    assert flash["baseline"] is True  # previous failure is not successful first observation
 
 
-@pytest.mark.asyncio
+@run_coroutine
 async def test_optional_coin_glass_daily_etf_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("COINGLASS_API_KEY", "offline-test")
     async with httpx.AsyncClient(transport=transport(etf=True)) as client:
