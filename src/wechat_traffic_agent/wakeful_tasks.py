@@ -702,12 +702,23 @@ class WakefulContentTaskRunner:
             # provider-availability state, not a process-fatal error. Keep any
             # durable owner episode checkpoint intact and re-enter cognition
             # later instead of letting the exception escape to systemd.
+            detail = str(exc)
+            failure_code = (
+                "CHATGPT_REPLY_TIMEOUT" if "response exceeded" in detail
+                else "CHATGPT_BROWSER_LOCK_TIMEOUT" if "profile lock exceeded" in detail
+                else "CHATGPT_BROWSER_TARGET_LOST" if "No target with given id found" in detail
+                else "CHATGPT_MODEL_TURN_UNRESOLVED" if "CARRIER_LOST_WITHOUT_DURABLE_CONVERSATION_URL" in detail
+                else "CHATGPT_WEB_USAGE_LIMIT" if "CHATGPT_WEB_USAGE_LIMIT" in detail
+                else "CHATGPT_BROWSER_TRANSPORT_ERROR" if "browser-harness command failed" in detail
+                else "CHATGPT_PROVIDER_ERROR"
+            )
             result = {
                 "task": task,
                 "status": "CHATGPT_UNAVAILABLE",
+                "failure_code": failure_code,
                 "retryable": True,
                 "error_type": type(exc).__name__,
-                "message": str(exc)[:500],
+                "message": detail[:500],
             }
             try:
                 result["provider_recovery"] = self.task_scheduler.schedule(
