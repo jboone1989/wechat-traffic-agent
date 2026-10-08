@@ -106,6 +106,36 @@ class FerroNeuralRuntime:
         self.brain_cortex = BrainCortexLedger(self.state_root)
         self.psychodynamics = PsychodynamicState(self.state_root)
 
+    def brain_lab_projection(self) -> dict[str, Any]:
+        """Read the real saved game state without taking over training."""
+        from .neural_playground import FerroBrainLab
+        return FerroBrainLab(
+            self.state_root,
+            substrate=getattr(self.core.reflex, "substrate", None),
+        ).projection()
+
+    def brain_lab_live_projection(self) -> dict[str, Any]:
+        """Read a fresh persisted game frame for the live visualizer."""
+        from .neural_playground import FerroBrainLab
+        return FerroBrainLab(
+            self.state_root,
+            substrate=getattr(self.core.reflex, "substrate", None),
+        ).live_projection()
+
+    def dream_projection(self) -> dict[str, Any]:
+        """Reconstruct published dream summaries; do not execute dream steps."""
+        from .neural_dreaming import FerroDreamEngine
+        from .research_dream import ResearchDreamEngine
+        from .awe_hillclimb import FerroAWEHillclimb
+        return {
+            **FerroDreamEngine(
+                self.state_root,
+                substrate=getattr(self.core.reflex, "substrate", None),
+            ).projection(),
+            "research_dream": ResearchDreamEngine(self.state_root).projection(),
+            "awe_hillclimb": FerroAWEHillclimb(self.state_root).projection(),
+        }
+
     def _brain_lab_projection(self) -> dict[str, Any]:
         path = self.state_root / "application" / "brain_lab.json"
         try:

@@ -35,3 +35,20 @@ def test_public_state_client_forwards_projection_requests(tmp_path, monkeypatch)
     assert client.brain_lab_live_projection() == {"source": "BRAIN_LAB_LIVE_PROJECTION"}
     assert client.dream_projection() == {"source": "DREAM_PROJECTION"}
     assert queries == ["BRAIN_LAB_PROJECTION", "BRAIN_LAB_LIVE_PROJECTION", "DREAM_PROJECTION"]
+
+
+def test_neural_owner_reads_game_and_dream_projections_without_running_games(tmp_path):
+    from types import SimpleNamespace
+    from wechat_traffic_agent.ferro_neural_runtime import FerroNeuralRuntime
+    owner = object.__new__(FerroNeuralRuntime)
+    owner.state_root = tmp_path
+    owner.core = SimpleNamespace(reflex=SimpleNamespace(substrate=None))
+    before = list(tmp_path.rglob("brain_lab.json"))
+    snapshot = owner.brain_lab_projection()
+    live = owner.brain_lab_live_projection()
+    assert snapshot["schema_version"] == "ferro-brain-lab.v1"
+    assert live["schema_version"] == snapshot["schema_version"]
+    assert snapshot["total_steps"] == live["total_steps"] == 0
+    assert before == list(tmp_path.rglob("brain_lab.json"))
+    dreams = owner.dream_projection()
+    assert "research_dream" in dreams and "awe_hillclimb" in dreams
