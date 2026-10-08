@@ -704,7 +704,8 @@ class WakefulContentTaskRunner:
             # later instead of letting the exception escape to systemd.
             detail = str(exc)
             failure_code = (
-                "CHATGPT_REPLY_TIMEOUT" if "response exceeded" in detail
+                "CHATGPT_EPHEMERAL_NO_REPLY" if "CHATGPT_EPHEMERAL_NO_REPLY" in detail
+                else "CHATGPT_REPLY_TIMEOUT" if "response exceeded" in detail
                 else "CHATGPT_BROWSER_LOCK_TIMEOUT" if "profile lock exceeded" in detail
                 else "CHATGPT_BROWSER_TARGET_LOST" if "No target with given id found" in detail
                 else "CHATGPT_MODEL_TURN_UNRESOLVED" if "CARRIER_LOST_WITHOUT_DURABLE_CONVERSATION_URL" in detail
