@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from wechat_traffic_agent.automatic_website import AutomaticAgentWebChannel
 from wechat_traffic_agent.channels.web import StaticWebsiteConfig
 from wechat_traffic_agent.content_artifact import ContentKind
-from wechat_traffic_agent.content_publication_store import ContentPublicationStore
+from wechat_traffic_agent.content_publication_store import ContentPublicationStore, COLLECTIONS
 from wechat_traffic_agent.site_audit import audit_static_site
 from wechat_traffic_agent.site_cli import _load_artifacts, _curate_web_taxonomy
 from wechat_traffic_agent.web_editorial import resolve_rendered_inventory
@@ -46,21 +46,58 @@ def migrate(*, state_root: Path, public_root: Path, config: StaticWebsiteConfig,
     homepage = AutomaticAgentWebChannel(config)._home(artifacts, categories)
     if "data:image/webp;base64" not in homepage or "/data/articles.json" not in homepage:
         raise ValueError("home must retain the original image and load the independent catalogue")
-    name = "ferro-content-driven-" + sha256(homepage.encode("utf-8")).hexdigest()[:18]
+    name = "ferro-content-mounted-" + sha256((homepage + "mount:v1").encode("utf-8")).hexdigest()[:18]
     target = public_root / "releases" / name
     target.parent.mkdir(parents=True, exist_ok=True)
     if not target.exists():
         stage = Path(tempfile.mkdtemp(prefix=".site-design-", dir=public_root / "releases"))
         try:
             shutil.rmtree(stage)
-            shutil.copytree(old_design, stage, copy_function=os.link)
+            shutil.copytree(old_design, stage, copy_function=os.link, symlinks=True)
             temporary_home = stage / ".home-data.tmp"
             temporary_home.write_text(homepage, encoding="utf-8")
             temporary_home.chmod(0o644)
             os.replace(temporary_home, stage / "index.html")
+            # The dynamic /screeps/ endpoint is served by 8104. Its legacy
+            # static placeholder predates the normal page metadata contract.
+            screeps = stage / "screeps" / "index.html"
+            if screeps.is_file():
+                page = screeps.read_text(encoding="utf-8")
+                extra = ""
+                if 'name="description"' not in page:
+                    extra += '<meta name="description" content="Ferro Screeps experiments and neural sensorimotor work">'
+                if 'rel="canonical"' not in page:
+                    extra += '<link rel="canonical" href="' + config.base_url + '/screeps/">'
+                if extra:
+                    if "</head>" not in page:
+                        raise ValueError("legacy Screeps metadata cannot be repaired")
+                    temp_screeps = stage / "screeps" / ".index.tmp"
+                    temp_screeps.write_text(page.replace("</head>", extra + "</head>", 1), encoding="utf-8")
+                    temp_screeps.chmod(0o644)
+                    os.replace(temp_screeps, screeps)
+            # The public server follows these stable mount paths without any
+            # Nginx change. Future articles only move content-current.
+            for name in (*COLLECTIONS, "sitemap.xml", "feed.xml", "data"):
+                mount = stage / name
+                if mount.is_symlink() or mount.is_file():
+                    mount.unlink()
+                elif mount.is_dir():
+                    shutil.rmtree(mount)
+                mount.symlink_to(store.current / name)
+            if not all((stage / name).exists() for name in (*COLLECTIONS, "sitemap.xml", "feed.xml", "data")):
+                raise RuntimeError("content mounts are incomplete")
             audit = audit_static_site(stage, expect_indexable=config.indexable)
             if not audit.passed:
-                raise ValueError("new design audit failed: " + json.dumps(audit.model_dump(mode="json")))
+                from wechat_traffic_agent.site_audit import _PageParser
+                missing = []
+                for document in sorted(stage.rglob("*.html")):
+                    parser = _PageParser()
+                    parser.feed(document.read_text(encoding="utf-8"))
+                    if not (parser.has_title and parser.has_description and parser.has_canonical):
+                        missing.append(document.relative_to(stage).as_posix())
+                raise ValueError("new design audit failed: " + json.dumps({
+                    **audit.model_dump(mode="json"), "missing_metadata": missing[:30],
+                }))
             os.replace(stage, target)
         finally:
             if stage.exists():
@@ -81,6 +118,7 @@ def migrate(*, state_root: Path, public_root: Path, config: StaticWebsiteConfig,
         "hero_preserved": True,
         "data_feed_in_home": True,
         "site_shell_independent_of_content": True,
+        "content_mounts": list(COLLECTIONS) + ["sitemap.xml", "feed.xml", "data"],
         "bootstrap": bootstrap,
     }
     return report

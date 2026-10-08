@@ -113,3 +113,7 @@ def test_migrate_static_shell_to_independent_content_plane(tmp_path):
     assert "data:image/webp;base64" in page
     assert "/data/articles.json" in page
     assert (publisher.public / "content-current" / "articles.json").is_file()
+    for mounted in ("articles", "guides", "research", "notes", "archive",
+                    "topics", "sitemap.xml", "feed.xml", "data"):
+        assert (publisher.public / "current" / mounted).is_symlink()
+        assert (publisher.public / "current" / mounted).exists()
