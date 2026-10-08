@@ -281,6 +281,35 @@ changes during the modularization. Article SQLite remains authoritative;
 - This stage creates no new process or JSON state files and leaves
   the existing event and publication paths unchanged.
 
+## Scoped cognition and organism observation pipeline (stage 11)
+
+- `cognition_scope_planner.py` chooses relevant owner mission rows, a
+  mission-anchored retrieval query, current owner goals and the matching
+  latest plan. This is a pure policy operation: it neither scans all memory
+  nor makes LLM calls. Generic owner-controller prompt wording no longer
+  becomes an accidental memory-search target.
+- `build_ferro_cognition_context()` now **379 lines** (originally 661,
+  previously 483). Further work remains to separate capability collection
+  from prompt metadata compilation; do not introduce a parallel memory or
+  state store just to shorten the method.
+- `organism_observations.py` is the one *existing-file read adapter* for
+  resource/service/model evidence and settled-world rewards. It returns
+  typed `ResourceObservations` and `RewardObservations`. It does not
+  compute drives, decide actions or persist state.
+- `organism_signal_calculator.py` computes freshness-bound signals and
+  organism summary from those observations and the current neural/body
+  inputs. Missing or stale signals remain UNKNOWN. The calculator has
+  injected signal/freshness ports and does no direct disk IO.
+- `OrganismStateService.refresh()` is **27 lines** (previously 467).
+  Its single responsibility is reading observed evidence, computing one
+  state update, and saving through the existing state path. The old
+  on-disk schema and bounded history remain unchanged; no new JSON
+  queues, daemons, processes or microservices were introduced.
+- `tests/test_organism_cognition_ports.py` verifies owner scope selection,
+  injected observation IO, independent signal computation, UNKNOWN
+  propagation and import/method-size contracts. Existing organism and
+  cognition closure regression tests verify behavioral compatibility.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:

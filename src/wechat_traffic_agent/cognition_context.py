@@ -276,59 +276,14 @@ def build_ferro_cognition_context(
         if (domain_runtime := getattr(application, "domain_runtime", None)) is not None
         else {"active": [], "recent_experiments": []}
     )
-    if owner_scope:
-        scoped_goal_id = str(owner_scope.get("goal_id") or "")
-        scoped_mission_id = str(owner_scope.get("mission_id") or "")
-        active = [
-            row for row in list(mission_state.get("active") or [])
-            if (
-                (scoped_goal_id and str(row.get("goal_id") or "") == scoped_goal_id)
-                or (
-                    scoped_mission_id
-                    and str(row.get("mission_id") or "") == scoped_mission_id
-                )
-            )
-        ]
-        active_mission_ids = {
-            str(row.get("mission_id") or "")
-            for row in active
-            if str(row.get("mission_id") or "")
-        }
-        mission_state = {
-            "active": active,
-            "recent_experiments": [
-                row for row in list(mission_state.get("recent_experiments") or [])
-                if str(row.get("mission_id") or "") in active_mission_ids
-            ],
-        }
-    # The owner controller prompt contains generic orchestration words such as
-    # "current", "evidence", "goal" and "action".  Using the whole prompt as
-    # a memory-retrieval query made unrelated rates/crypto memories look
-    # relevant.  Owner retrieval is anchored only to the actual objective,
-    # mission and bounded topic.  Ordinary cognition still uses its prompt.
-    if owner_mode:
-        query_parts = [
-            str((owner_scope or {}).get("description") or ""),
-            str((owner_scope or {}).get("topic") or ""),
-            *[
-                " ".join(
-                    (
-                        str(row.get("description") or ""),
-                        str(row.get("metric") or ""),
-                    )
-                )
-                for row in mission_state.get("active") or []
-            ],
-        ]
-    else:
-        query_parts = [
-            str(prompt),
-            *[
-                str(row.get("description") or "")
-                for row in mission_state.get("active") or []
-            ],
-        ]
-    query_context = " ".join(part for part in query_parts if part.strip())
+    from .cognition_scope_planner import CognitionScopePlanner
+    scope = CognitionScopePlanner().prepare(
+        owner_scope=owner_scope, owner_mode=owner_mode, prompt=prompt,
+        mission_state=mission_state, current_intent=packet.current_intent,
+        projection=projection, compact_latest_plan=_compact_latest_plan,
+    )
+    mission_state, query_context = scope.missions, scope.query
+    intents, latest_plan = scope.intents, scope.latest_plan
 
     neural_life = wake.get("neural_life") if isinstance(wake, Mapping) else {}
     if not isinstance(neural_life, Mapping):
@@ -395,65 +350,6 @@ def build_ferro_cognition_context(
         for row in list(social_projection.get("recent_relationships") or ())
         if isinstance(row, Mapping)
     ][:8]
-
-    intents = list(packet.current_intent)
-    owner_goal_ids: set[str] = set()
-    if owner_mode:
-        owner_goal_ids = (
-            {str(owner_scope.get("goal_id") or "")}
-            if owner_scope and str(owner_scope.get("goal_id") or "")
-            else {
-                str(row.get("goal_id") or "")
-                for row in mission_state.get("active") or []
-                if str(row.get("goal_id") or "")
-            }
-        )
-        scoped_intents = []
-        for row in intents:
-            if str(row.get("goal_id") or "") not in owner_goal_ids:
-                continue
-            item = dict(row)
-            kind = str(item.get("kind") or "")
-            if kind == "GOAL":
-                item["authority"] = "OWNER_OBJECTIVE"
-            else:
-                continue
-            scoped_intents.append(item)
-        intents = scoped_intents
-        # Keep one owner objective in current_intent. The bound mission is
-        # already present in missions.active with metric/trajectory/constraints;
-        # repeating it here makes one objective look like competing intents.
-
-    latest_plan = _compact_latest_plan(projection.get("latest_plan"))
-    if owner_mode and isinstance(latest_plan, Mapping):
-        plan_goal = (
-            latest_plan.get("goal")
-            if isinstance(latest_plan.get("goal"), Mapping)
-            else {}
-        )
-        plan_goal_id = str(
-            latest_plan.get("owner_goal_id")
-            or plan_goal.get("goal_id")
-            or ""
-        )
-        if owner_goal_ids and plan_goal_id not in owner_goal_ids:
-            latest_plan = None
-    if owner_mode:
-        # Current mission rows remain bounded, while durable historical outcomes
-        # are retrieved globally through MemoryRouter and full life history.
-        compact_experiments = []
-        for row in list(mission_state.get("recent_experiments") or [])[-2:]:
-            if not isinstance(row, Mapping):
-                continue
-            compact_experiments.append({
-                **dict(row),
-                "strategy": _clip(row.get("strategy"), 800),
-                "expected_effect": _clip(row.get("expected_effect"), 500),
-            })
-        mission_state = {
-            **mission_state,
-            "recent_experiments": compact_experiments,
-        }
 
     state_root = (
         getattr(mind, "state_root", None)
