@@ -88,3 +88,51 @@ A future release may claim self-learning only if it shows all of:
 - no measurable regression on previously mastered tasks.
 
 More memories, model self-ratings, and richer prose are **not** success metrics.
+
+
+## Executable procedural transfer loop (next release)
+
+`LearningTransfer` is an explicit domain adapter around the existing
+Agent Runtime procedural memory. It does **not** maintain a second knowledge
+graph or promote model-generated introspection as an observed fact.
+
+1. `MemoryLifeRuntime.select_process_variant` proposes a prior skill.
+2. `LearningTransfer.assign` creates an immutable SQLite precommitment for
+   the actual content cycle, before executing anything. Only
+   `RETRY_ONCE_SAFE` has an implemented behavior-changing hook; a "DIRECT"
+   or merely rephrased procedure is not falsely scored as an applied skill.
+3. An independent control arm executes the previous direct path. The learned
+   arm can retry **one unchanged checker call** but cannot weaken evidence
+   rules or rewrite the draft after the check. The arm is deterministically
+   assigned from the cycle ID; crash recovery uses the original assignment.
+4. After execution, `settle` stores content checks and actual article
+   publication receipts with the evidence references. Unpublished drafts and
+   unsupported success claims are never counted as published outcomes.
+5. An existing matured 24-hour nginx pageview observation attaches to the
+   correct cycle as a separate versioned real-world measurement. New revision
+   evidence is required to revise a measurement, and a pageview change alone
+   never proves causal improvement.
+6. The next trial checks matched *topic + action + candidate identity*
+   outcomes. Before at least six scored observations from **each** arm,
+   no preference is made. Afterwards a greater-than-15-point observed
+   difference shifts future assignments, while retaining control trials.
+   A negative result shifts future choices toward the baseline. No policy
+   change is allowed based on unresolved trials or unrelated topics.
+7. `scripts/audit_ferro_learning.py` exposes assigned arms, verified
+   outcomes and mature external observations separately from memory counts.
+   It does not claim causal improvement from small samples.
+
+**Evidence limits:** This is a deployed, operational, prospective method
+comparison, not yet an observed gain. The online checker reliability outcome
+is not an audience-growth metric. Exposure and source topics differ between
+cycles; even with randomized arms, outcome comparison requires adequate
+samples and monitoring for regressions. Publication receipts identify article
+routes, but independent HTTP confirmation and mature audience response are
+separate measurements.
+
+**Further generalized skill learning:** Only the implemented verifier-retry
+skill is presently governed by this controller. Other domains (research-tool
+selection, web layout edits, X composition, economic models) require an
+explicit executable action hook and externally grounded scoring rule before
+their lessons may be promoted. Do not generalize the current controller's
+effect to those tasks.

@@ -30,6 +30,7 @@ from .content_action_prediction import bind_action_prediction, forecast_strategy
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
 from .memory_life import MemoryLifeRuntime
+from .learning_transfer import LearningTransfer
 from .models import TopicSignal
 from .public_activity import emit_public_activity
 from .prospective_predictions import (
@@ -1134,6 +1135,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
         self.predictions = ProspectivePredictionLedger(self.state)
         self.memory_life = MemoryLifeRuntime(self.state)
+        self.learning_transfer = LearningTransfer(self.state)
         if explorer is None:
             web_searcher = None
             x_searcher = None
@@ -1277,6 +1279,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 mature_outcomes = collect_mature_strategy_outcomes(
                     state_root=self.state, account=self.base_url, as_of=cycle_now,
                 )
+                # Mature nginx observations close the real-world feedback
+                # branch of prior learning trials. These do not by themselves
+                # establish causality, and are never self-reported rewards.
+                self.learning_transfer.observe_world(mature_outcomes)
                 strategy_sync = self.mind.observe_strategy_outcomes(mature_outcomes)
                 _put(strategy_sync_path, strategy_sync)
                 if strategy_sync.get('applied'):
@@ -2876,15 +2882,20 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 'topic': selection.topic,
             },
         )
-        process_steps = list((process_skill or {}).get('steps') or default_process_steps)
-        retry_verification_once = str((process_skill or {}).get('policy_action') or 'DIRECT') == 'RETRY_ONCE_SAFE'
+        transfer_selection = self.learning_transfer.assign(
+            cycle=cycle, topic=selection.topic, candidate=process_skill,
+        )
+        process_steps = list(transfer_selection['steps'])
+        retry_verification_once = transfer_selection['policy_action'] == 'RETRY_ONCE_SAFE'
         _put(folder / 'memory_process_variant.json', {
             'status': 'SELECTED' if process_skill is not None else 'BASELINE_NO_PRIOR_PROCEDURE',
             'action': 'content-create-verify-publish',
-            'procedure_id': str((process_skill or {}).get('procedure_id') or ''),
-            'variant_id': str((process_skill or {}).get('variant_id') or ''),
-            'policy_action': str((process_skill or {}).get('policy_action') or 'DIRECT'),
-            'policy_reason': str((process_skill or {}).get('policy_reason') or ''),
+            'procedure_id': transfer_selection['procedure_id'],
+            'variant_id': transfer_selection['variant_id'],
+            'arm': transfer_selection['arm'],
+            'candidate_key': transfer_selection['candidate_key'],
+            'comparison_at_assignment': transfer_selection['comparison_at_assignment'],
+            'policy_action': transfer_selection['policy_action'],
             'steps': process_steps,
             'causal_claim': False,
         })
@@ -3525,4 +3536,19 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             )
         except Exception as exc:
             result['memory_life'] = {'status': 'ERROR', 'error_type': type(exc).__name__}
+        # The same precommitted trial now receives a genuine result from this
+        # checked content cycle. Knowledge use, action arm, and outcome are
+        # linked durably; no change is labelled an improvement before a
+        # comparator has sufficient independent completed observations.
+        try:
+            result['learning_transfer'] = self.learning_transfer.settle(
+                cycle=cycle, outcome=str(result.get('status') or 'UNKNOWN'),
+                evidence_refs=memory_refs,
+                publication_receipt=result.get('publication'),
+                verified_checks=not bool(passes),
+            )
+        except Exception as exc:
+            result['learning_transfer'] = {
+                'status': 'ERROR', 'error_type': type(exc).__name__,
+            }
         return result

@@ -66,6 +66,32 @@ def _procedures(db):
             "observed_failures": failures}
 
 
+def _action_transfer(state_root: Path) -> dict:
+    """Separate precommitted action choices from independently observed effects."""
+    path = state_root / "content/learning/transfer.sqlite3"
+    if not path.is_file():
+        return {"status": "NO_TRIALS", "measured": 0, "mature_external": 0}
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as db:
+        grouped = {
+            arm: {"assigned": n, "verified": scored, "success": successes}
+            for arm, n, scored, successes in db.execute(
+                "SELECT arm,COUNT(*),COUNT(success),"
+                " SUM(CASE WHEN success=1 THEN 1 ELSE 0 END)"
+                " FROM trials GROUP BY arm"
+            )
+        }
+        count = db.execute("SELECT COUNT(DISTINCT outcome_id) FROM world_outcomes").fetchone()[0]
+        revisions = db.execute("SELECT COUNT(*) FROM world_outcomes").fetchone()[0]
+    return {
+        "status": "RECORDED",
+        "arms": grouped,
+        "measured": sum(row["verified"] for row in grouped.values()),
+        "mature_external": count,
+        "world_outcome_revisions": revisions,
+        "causal_improvement_proven": False,
+    }
+
+
 def audit(state_root: Path):
     source = state_root / "application/memory_system/memory.db"
     with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as db:
@@ -82,6 +108,7 @@ def audit(state_root: Path):
             "research_question_status": _understandings(db),
             "application_validation": _applications(db),
             "procedure_outcomes": _procedures(db),
+            "action_transfer": _action_transfer(state_root),
             "interpretation": (
                 "Memory volume and self-reported reflections are not learning. "
                 "Only evidence-backed new understanding, changed action and "

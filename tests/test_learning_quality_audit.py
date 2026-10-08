@@ -62,3 +62,25 @@ def test_historical_unresolved_outcomes_are_archived_not_deleted(tmp_path):
     assert store.get_memory("learning-application:legacy-untested")["status"] == "ARCHIVED"
     assert store.get_memory("learning-application:cycle-application")["status"] == "ACTIVE"
     assert archive(tmp_path, apply=True)["unresolved_archived"] == 0
+
+
+def test_action_transfer_metrics_measure_verifiable_trials_only(tmp_path):
+    from wechat_traffic_agent.learning_transfer import LearningTransfer
+    audit = runpy.run_path(str(
+        Path(__file__).resolve().parents[1] / "scripts/audit_ferro_learning.py"
+    ))["audit"]
+    # Seed only the canonical memory schema; action transfer lives in its
+    # own SQLite ledger and is not confused with accumulated memory count.
+    MemoryService(tmp_path)
+    ledger = LearningTransfer(tmp_path)
+    candidate = {
+        "procedure_id": "process:publish",
+        "variant_id": "retry",
+        "steps": ["retry checker once"],
+        "policy_action": "RETRY_ONCE_SAFE",
+    }
+    ledger.assign(cycle="trial-1", topic="ai", candidate=candidate)
+    ledger.settle(cycle="trial-1", outcome="DRAFT_CREATED", evidence_refs=["draft:1"])
+    first = audit(tmp_path)["action_transfer"]
+    assert first["measured"] == 0 and first["mature_external"] == 0
+    assert sum(v["assigned"] for v in first["arms"].values()) == 1
