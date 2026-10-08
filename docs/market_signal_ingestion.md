@@ -18,8 +18,9 @@ Official market APIs / crypto news RSS / ETF daily flows
 - **Binance Spot**: public `/api/v3/ticker/24hr` for BTC, ETH, SOL, BNB, XRP.
   Emits a market-move event only when the absolute 24-hour change crosses a *higher* 3% band after a previous observed baseline; not on every tick. Volume floor: 10m USDT.
 - **BlockBeats**: its published RSS v2 **newsflash** and **article** feeds.
+- **PANews**: official RSS XML endpoint for articles and newsflashes (the site documents the format; production reachability remains unverified).
 - **CoinGlass BTC ETF flows**: the documented `/api/etf/bitcoin/flow-history` endpoint, enabled only when `COINGLASS_API_KEY` is present. This is **delayed daily data**, not live order flow.
-- **Jin10 and PANews**: **not preconfigured**. They are supported through the opt-in RSS connector once verified URLs/rights are available. Do not claim these as working live integrations before confirmation.
+- **Jin10**: **not preconfigured**. It is supported through the opt-in RSS connector after a verified feed URL/access agreement is available. Do not count this as a working live source.
 - Existing OKX price evidence and Runtime Web/X search remain unchanged.
 
 Each source has its own success/failure row. On the first *successful* fetch, old items establish a baseline and never trigger a posting storm. A failed first fetch does not establish a baseline. SQLite deduplicates by source/kind/external ID, expires old rows after 30 days, and caps the number of research candidates. Nothing new is written into Ferro's autobiographical memory until its existing learning system justifies it.
