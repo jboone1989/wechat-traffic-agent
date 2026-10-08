@@ -73,7 +73,11 @@ def main():
             "results_claimed": False,
         }, ensure_ascii=False))
         return 0
-    provider = build_chatgpt_only_provider(state_root=root)
+    # One physical JEV Chrome/profile, but a distinct owned conversation and
+    # durable receipt. Never consume the production cognition pending request.
+    provider = build_chatgpt_only_provider(
+        state_root=root, session_id="ferro-learning-evaluation",
+    )
     report = asyncio.run(evaluate_learning(
         provider=provider, snapshot_root=root, benchmark_path=opts.benchmark,
         ledger_path=opts.ledger, model_id=opts.model_id,

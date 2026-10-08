@@ -159,3 +159,37 @@ pair; no measured model score was obtained.
 
 Neither richer prompts, a higher model self-rating, nor the presence of
 more memory records constitutes evidence that Ferro has learned effectively.
+
+
+## Browser transport isolation and first real-model pair (2026-10-08)
+
+The evaluator uses the original authenticated **JEV shared Chrome profile** at
+`127.0.0.1:9600`, but now passes the logical
+`session_id="ferro-learning-evaluation"` to the existing Agent Runtime
+ChatGPT provider. This gives evaluation an independent conversation/receipt
+and, when the production shared browser carrier has an unresolved submission,
+its own tab **in the same Chrome process**. It does not create another
+browser instance, login session, API route or memory service.
+
+Previously both evaluation and production used `chatgpt-cognition`,
+whose pending request was acknowledged as clicked without appearing in the
+server conversation. The baseline evaluation then spent time recovering
+an unrelated production request instead of answering the benchmark.
+The live page inspection confirmed no matching user text or assistant
+reply on the bound conversation; the original pending receipt was not
+deleted or overwritten.
+
+After isolating the logical session, a real-model run produced:
+- Run ID: `a6d14600a0d94a53a332165d7c1af968`.
+- `1/1` scored exploratory fact-retention case, memory OFF correct,
+  memory ON correct, pairwise wins/losses `0/0`.
+- `PROVISIONAL` unreviewed answer key, only one question from one
+  source group. **Neither a memory benefit nor long-term learning gains
+  are established.**
+- Browser transport confirmed both model turns completed and the same
+  frozen evidence snapshot was preserved.
+
+Do not rerun evaluation using the production `chatgpt-cognition` journal;
+the separate receipt name is part of its runtime contract. Production
+pending model requests must be reconciled by their owning session rather
+than silently cleared for evaluation.
