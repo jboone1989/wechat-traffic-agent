@@ -63,3 +63,18 @@ def test_revisions_retain_original_cutoff_and_conflict_behavior(tmp_path):
     with pytest.raises(FileExistsError):
         store.record(row(value=22))
     assert len(store.as_of(T + timedelta(days=6))) == 1
+
+
+def test_filtered_channel_report_uses_indexed_subset(tmp_path):
+    store = ChannelEvidenceStore(tmp_path / "records")
+    store.record(row(channel="website", account="site"))
+    store.record(row(channel="x", account="social", publication_id="p-x"))
+    store.record(row(channel="website", account="other", publication_id="p-other"))
+    cutoff = T + timedelta(days=4)
+    assert len(store.as_of(cutoff)) == 3
+    assert len(store.as_of(cutoff, channel="website", account="site")) == 1
+    assert store.as_of(cutoff, channel="x", account="site") == []
+    assert store.report(
+        channel="website", account="site", cutoff=cutoff,
+        dimension="strategy_version",
+    )["status"] == "DESCRIPTIVE_ONLY"

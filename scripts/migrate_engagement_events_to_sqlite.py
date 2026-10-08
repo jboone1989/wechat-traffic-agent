@@ -14,7 +14,7 @@ from wechat_traffic_agent.website_engagement import (
 )
 
 
-def migrate(state_root: Path):
+def migrate(state_root: Path, *, retire_legacy: bool = False):
     root = Path(state_root) / "content" / "website_engagement"
     old = sorted((root / "events").glob("*/*.json"))
     store = WebsiteEngagementStore(root)
@@ -23,24 +23,26 @@ def migrate(state_root: Path):
     with sqlite3.connect(path) as conn:
         integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
         count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        indexed = {
-            key for (key,) in conn.execute("SELECT event_id FROM events").fetchall()
-        }
+        indexed = dict(conn.execute("SELECT event_id, payload FROM events"))
     for original in old:
         event = WebsiteEngagementEvent.model_validate_json(
             original.read_text(encoding="utf-8")
         )
-        if event.event_id not in indexed:
-            raise RuntimeError("event migration lost " + event.event_id)
+        indexed_event = indexed.get(event.event_id)
+        if indexed_event is None or WebsiteEngagementEvent.model_validate_json(indexed_event) != event:
+            raise RuntimeError("event migration content mismatch: " + event.event_id)
     if integrity != "ok" or count < len(old):
         raise RuntimeError("engagement migration failed integrity verification")
+    if retire_legacy:
+        for original in old:
+            original.unlink()
     return {
         "status": "VERIFIED_SQLITE",
         "legacy_event_files": len(old),
         "indexed_events": count,
         "integrity": integrity,
         "database": str(path),
-        "legacy_event_files_preserved": True,
+        "retired_legacy_event_files": len(old) if retire_legacy else 0,
         **result,
     }
 
@@ -48,8 +50,9 @@ def migrate(state_root: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-root", type=Path, required=True)
+    parser.add_argument("--retire-legacy", action="store_true")
     opts = parser.parse_args()
-    print(json.dumps(migrate(opts.state_root)))
+    print(json.dumps(migrate(opts.state_root, retire_legacy=opts.retire_legacy)))
 
 
 if __name__ == "__main__":

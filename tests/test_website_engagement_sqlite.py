@@ -48,3 +48,27 @@ def test_indexed_event_conflict_never_overwrites_record(tmp_path):
         assert "conflicts" in str(exc)
     else:
         raise AssertionError("same event identity must not overwrite data")
+
+
+def test_verified_migration_retires_only_duplicate_legacy_event_files(tmp_path):
+    from pathlib import Path
+    import runpy
+    script = Path(__file__).resolve().parents[1] / "scripts/migrate_engagement_events_to_sqlite.py"
+    migrate = runpy.run_path(str(script))["migrate"]
+    state = tmp_path / "state"
+    root = state / "content/website_engagement"
+    path = root / "events" / T.strftime("%Y-%m-%d") / ("a"*32 + ".json")
+    path.parent.mkdir(parents=True)
+    event = WebsiteEngagementEvent(
+        event_id="a"*32, visitor_hash="b"*64, session_hash="c"*64,
+        route="/articles/history/", event_type="page_view", observed_at=T,
+    )
+    path.write_text(event.model_dump_json())
+    report = migrate(state, retire_legacy=False)
+    assert report["legacy_event_files"] == 1
+    assert path.exists()
+    result = migrate(state, retire_legacy=True)
+    assert result["retired_legacy_event_files"] == 1
+    assert not path.exists()
+    stored = WebsiteEngagementStore(root).events(start=T, end=T + timedelta(days=1))
+    assert stored == [event]

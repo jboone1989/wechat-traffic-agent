@@ -93,9 +93,11 @@ class ChannelEvidenceStore:
             row, decode=ChannelEvidence.model_validate_json, identity_hash=digest,
         )
 
-    def as_of(self, cutoff: datetime) -> list[ChannelEvidence]:
+    def as_of(self, cutoff: datetime, *, channel: str | None = None,
+              account: str | None = None) -> list[ChannelEvidence]:
         return self._table().as_of(
             cutoff, decode=ChannelEvidence.model_validate_json, identity_hash=digest,
+            channel=channel, account=account,
         )
 
     def migrate_legacy(self) -> dict:
@@ -112,7 +114,7 @@ class ChannelEvidenceStore:
         if dimension not in {"topic", "title_version", "structure_version", "strategy_version"}:
             raise ValueError("unsupported comparison dimension")
         groups = {}
-        rows = [r for r in self.as_of(cutoff) if r.channel == channel and r.account == account]
+        rows = self.as_of(cutoff, channel=channel, account=account)
         for row in rows:
             # Group all comparability constraints, including the age of the measured window.
             scope = {k: getattr(row, k) for k in ("metric", "metric_definition", "unit", "objective", "distribution_cohort", "source")}

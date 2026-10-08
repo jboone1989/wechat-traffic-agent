@@ -49,7 +49,7 @@ class EvidenceTable:
                 yield conn
 
     @staticmethod
-    def upsert(conn, row, *, identity_hash: str, duplicate_ok: bool) -> None:
+    def upsert(conn, row, *, identity_hash: str) -> None:
         payload = row.model_dump_json()
         old = conn.execute(
             "SELECT payload FROM evidence WHERE identity_hash=? AND revision=?",
@@ -58,8 +58,6 @@ class EvidenceTable:
         if old:
             if old["payload"] != payload:
                 raise FileExistsError("evidence identity/revision conflict")
-            if duplicate_ok:
-                return
             return
         conn.execute(
             "INSERT INTO evidence(identity_hash,revision,channel,account,observed_at,payload) "
@@ -81,11 +79,12 @@ class EvidenceTable:
             key = identity_hash(row.identity())
             if path.parent.name != key or path.name != f"{row.revision:05d}.json":
                 raise ValueError("legacy evidence file path/identity mismatch")
-            self.upsert(conn, row, identity_hash=key, duplicate_ok=True)
+            self.upsert(conn, row, identity_hash=key)
         conn.execute("INSERT INTO migration(name) VALUES('legacy-json-v1')")
         return len(paths)
 
-    def as_of(self, cutoff: datetime, *, decode, identity_hash) -> list:
+    def as_of(self, cutoff: datetime, *, decode, identity_hash,
+              channel: str | None = None, account: str | None = None) -> list:
         if cutoff.utcoffset() is None:
             raise ValueError("cutoff must be timezone-aware")
         if not self.path.is_file() and not self.root.exists():
@@ -94,11 +93,16 @@ class EvidenceTable:
             self.import_legacy(conn, decode=decode, identity_hash=identity_hash)
             # Ordered by identity, descending revision: first row in each
             # identity group is the correct revision as of this cutoff.
-            records = conn.execute(
-                "SELECT identity_hash, payload FROM evidence "
-                "WHERE observed_at <= ? ORDER BY identity_hash, revision DESC",
-                (cutoff.astimezone(timezone.utc).isoformat(),),
-            ).fetchall()
+            sql = "SELECT identity_hash, payload FROM evidence WHERE observed_at <= ?"
+            args = [cutoff.astimezone(timezone.utc).isoformat()]
+            if channel is not None:
+                sql += " AND channel=?"
+                args.append(channel)
+            if account is not None:
+                sql += " AND account=?"
+                args.append(account)
+            sql += " ORDER BY identity_hash, revision DESC"
+            records = conn.execute(sql, args).fetchall()
         latest = {}
         for record in records:
             key = record["identity_hash"]
@@ -109,7 +113,7 @@ class EvidenceTable:
     def write(self, row, *, decode, identity_hash) -> Path:
         with self.connect() as conn:
             self.import_legacy(conn, decode=decode, identity_hash=identity_hash)
-            self.upsert(conn, row, identity_hash=identity_hash(row.identity()), duplicate_ok=True)
+            self.upsert(conn, row, identity_hash=identity_hash(row.identity()))
         return self.path
 
     def count(self, *, decode, identity_hash):

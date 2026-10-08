@@ -31,13 +31,19 @@ SNAPSHOT_PREFIXES = (
 
 
 def _source_refs(state_root: Path) -> set[str]:
-    # Query the authoritative evidence table, not thousands of legacy files.
-    # Its first read imports old records transactionally where necessary.
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from wechat_traffic_agent.channel_evidence import ChannelEvidenceStore
+    # Read only the indexed SQLite table, without requiring the app runtime
+    # or scanning legacy receipt files after migration.
+    import sqlite3
     root = state_root / "content" / "channel_evidence"
-    refs = ChannelEvidenceStore(root).all_evidence_refs() if root.exists() else set()
+    db = root / "evidence.sqlite3"
+    refs = set()
+    if db.is_file():
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            for (payload,) in conn.execute("SELECT payload FROM evidence"):
+                refs.update(json.loads(payload).get("evidence_refs") or ())
+    elif root.exists():
+        for path in root.glob("*/*.json"):
+            refs.update(json.loads(path.read_text(encoding="utf-8")).get("evidence_refs") or ())
     return {
         ref.removeprefix(prefix)
         for ref in refs
