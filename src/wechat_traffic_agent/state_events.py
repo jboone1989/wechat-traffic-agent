@@ -213,6 +213,21 @@ class FerroStateEventApplier:
                 "status": "OK",
                 "snapshot": dict(self.wakeful.public_snapshot()),
             }
+        if kind == "BRAIN_LAB_PROJECTION":
+            return {
+                "status": "OK",
+                "projection": dict(self.wakeful.brain_lab_projection()),
+            }
+        if kind == "BRAIN_LAB_LIVE_PROJECTION":
+            return {
+                "status": "OK",
+                "projection": dict(self.wakeful.brain_lab_live_projection()),
+            }
+        if kind == "DREAM_PROJECTION":
+            return {
+                "status": "OK",
+                "projection": dict(self.wakeful.dream_projection()),
+            }
         if kind == "SOCIAL_OBSERVATION":
             return dict(self.wakeful.observe_social_interaction(
                 actor=str(payload.get("actor") or ""),
@@ -286,6 +301,30 @@ class FerroStateClient:
             observed_at=datetime.now(timezone.utc),
         )
         return dict(result.get("snapshot") or {})
+
+    def brain_lab_projection(self) -> dict[str, Any]:
+        result = self.bus.request(
+            "BRAIN_LAB_PROJECTION",
+            {},
+            observed_at=datetime.now(timezone.utc),
+        )
+        return dict(result["projection"])
+
+    def brain_lab_live_projection(self) -> dict[str, Any]:
+        result = self.bus.request(
+            "BRAIN_LAB_LIVE_PROJECTION",
+            {},
+            observed_at=datetime.now(timezone.utc),
+        )
+        return dict(result["projection"])
+
+    def dream_projection(self) -> dict[str, Any]:
+        result = self.bus.request(
+            "DREAM_PROJECTION",
+            {},
+            observed_at=datetime.now(timezone.utc),
+        )
+        return dict(result["projection"])
 
     def observe_social_interaction(
         self,
