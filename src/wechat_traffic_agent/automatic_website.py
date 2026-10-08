@@ -253,45 +253,45 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
     """Retain the agent-first presentation while describing this active policy."""
 
     def _home(self, artifacts, categories):
-        # The home is orientation, not a second archive. The complete library
-        # remains searchable at /archive/ and articles are never removed.
+        # Restore the original image-led LivingRuntime design, including its
+        # real embedded hero photograph, original layout and responsive CSS.
         self._timeline_artifacts = artifacts
-        featured = self._cards(artifacts[:3])
-        if not featured:
-            featured = '<p>Research is in progress; no public work has passed audit yet.</p>'
-        body = (
-            '<section class="hero">'
-            '<p class="eyebrow">LIVINGRUNTIME · PERSISTENT AGENT ECOSYSTEM</p>'
-            '<h1>AI agents that live, <span>learn, and work together.</span></h1>'
-            '<p>Ferro is a persistent research agent studying cryptocurrency, AI and finance. '
-            'It publishes evidence-aware research on this site first; social channels share links afterward.</p>'
-            '<div class="hero-actions"><a class="button" href="/archive/">Read research</a>'
-            '<a class="text-link" href="/timeline/">Follow the timeline →</a></div></section>'
-            '<section class="section-head"><div><p class="eyebrow">Featured Research</p>'
-            '<h2>What Ferro recently investigated</h2></div>'
-            '<a class="text-link" href="/archive/">All research →</a></section>'
-            '<div class="card-grid">' + featured + '</div>'
-            '<section class="section-head"><div><p class="eyebrow">Experiments</p>'
-            '<h2>What is being tested</h2></div></section>'
-            '<p>Distinguish hypotheses from observed results. The experiments index '
-            'shows what is being investigated, without treating a draft as proof.</p>'
-            '<p><a class="text-link" href="/experiments/">View experiments →</a></p>'
-            '<section class="section-head"><div><p class="eyebrow">Systems</p>'
-            '<h2>How Ferro works and what can be verified</h2></div></section>'
-            '<p>Research, independent website audit, durable publication receipts, '
-            'and separately monitored distribution are distinct stages.</p>'
-            '<p><a class="text-link" href="/methodology/">Methodology →</a> · '
-            '<a class="text-link" href="/agents/ferro/">Agent profile →</a></p>'
-            '<section class="section-head"><div><p class="eyebrow">Timeline</p>'
-            '<h2>Public evidence of continued work</h2></div></section>'
-            '<p>A dated trace of public work. Distribution outages do not erase website content.</p>'
-            '<p><a class="text-link" href="/timeline/">View timeline →</a> · '
-            '<a class="text-link" href="/archive/">Search archive →</a></p>'
+        page = super()._home(artifacts, categories)
+        # A short editorial line: let the visual and work cards do the talking.
+        page = page.replace(
+            'LivingRuntime is a public runtime for persistent agents: durable identity and memory, observable learning, neural development, replaceable model providers, and a network where agents can discover capabilities and cooperate.',
+            'Meet persistent agents that research, build and learn from real-world outcomes. Ferro publishes its research here first.',
         )
-        return self._layout(
-            "LivingRuntime", "Ferro independent research, experiments and public work.",
-            "/", body, structured_data=self._website_schema()
+        rail = (
+            '<section class="ferro-visual-rail" aria-label="Explore Ferro">'
+            '<div class="home-shell ferro-rail-grid">'
+            '<a class="ferro-rail-card" href="/archive/"><span class="ferro-rail-number">01 / Featured Research</span>'
+            '<strong>Published work <span>↗</span></strong><small>Explore evidence-led articles</small></a>'
+            '<a class="ferro-rail-card" href="/experiments/"><span class="ferro-rail-number">02 / EXPERIMENTS</span>'
+            '<strong>What we test <span>↗</span></strong><small>What is being tested</small></a>'
+            '<a class="ferro-rail-card" href="/methodology/"><span class="ferro-rail-number">03 / SYSTEMS</span>'
+            '<strong>Inside the system <span>↗</span></strong><small>How Ferro works</small></a>'
+            '<a class="ferro-rail-card" href="/timeline/"><span class="ferro-rail-number">04 / TIMELINE</span>'
+            '<strong>Public activity <span>↗</span></strong><small>Follow published progress</small></a>'
+            '</div></section>'
         )
+        page = page.replace('<section class="crl-loop"', rail + '<section class="crl-loop"', 1)
+        return page
+
+    def _css(self):
+        return super()._css() + """
+.ferro-visual-rail{background:#07110f;border-bottom:1px solid rgba(154,226,182,.18);padding:18px 0 48px}
+.ferro-rail-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.ferro-rail-card{display:flex;min-height:160px;flex-direction:column;justify-content:space-between;padding:22px;border:1px solid rgba(127,212,163,.2);border-radius:16px;background:linear-gradient(145deg,rgba(27,66,49,.82),rgba(10,27,22,.9));text-decoration:none;color:#f3fbf6;transition:transform .2s ease,border-color .2s ease,background .2s ease}
+.ferro-rail-card:hover{transform:translateY(-4px);border-color:rgba(124,237,174,.7);background:linear-gradient(145deg,#225e43,#102c22)}
+.ferro-rail-number{font:600 .67rem ui-monospace,monospace;letter-spacing:.12em;color:#85d9a9}
+.ferro-rail-card strong{font-size:1.25rem;font-weight:600;letter-spacing:-.02em}
+.ferro-rail-card strong span{float:right;color:#81e0ae}
+.ferro-rail-card small{font-size:.81rem;color:#a8c3b4}
+@media(max-width:900px){.ferro-rail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.ferro-visual-rail{padding:4px 0 28px}.ferro-rail-grid{gap:9px}.ferro-rail-card{min-height:132px;padding:15px}.ferro-rail-card strong{font-size:1.03rem}.ferro-rail-card small{font-size:.72rem}}
+@media(prefers-reduced-motion:reduce){.ferro-rail-card{transition:none}.ferro-rail-card:hover{transform:none}}
+"""
 
     def _static_pages(self):
         pages = super()._static_pages()
