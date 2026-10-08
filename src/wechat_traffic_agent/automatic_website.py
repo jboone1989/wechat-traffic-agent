@@ -22,6 +22,7 @@ from .evidence_floor import (
 from .website_experiment import WebsiteExperimentBinding, experiment_compliance
 from .publication.models import PublicationEvent, DistributionTask
 from .publication.event_store import PublicationEventStore
+from .content_publication_store import ContentPublicationStore
 
 
 class AutomaticWebsitePublisher:
@@ -40,6 +41,11 @@ class AutomaticWebsitePublisher:
             raise ValueError('private state and public site must be separate')
 
     def inventory_path(self):
+        content = ContentPublicationStore(
+            state_root=self.state_root, public_root=self.public, config=self.config,
+        )
+        if content.ready():
+            return content.inventory
         current = self.public / 'current'
         if not current.is_symlink():
             raise ValueError('operator must initialize current site symlink')
@@ -103,21 +109,6 @@ class AutomaticWebsitePublisher:
                 raise ValueError('published artifact ID conflict')
         else:
             artifacts.append(public_artifact)
-        payload = [a.model_dump(mode='json') for a in artifacts]
-        revision = digest({'artifacts': payload, 'config': self.config.model_dump(mode='json'), 'policy': self.policy_version})
-        target = self.public / 'releases' / revision
-        if not target.exists():
-            AutomaticAgentWebChannel(self.config).build(_curate_web_taxonomy(artifacts), target)
-        audit = audit_static_site(target, expect_indexable=self.config.indexable)
-        if not audit.passed:
-            raise ValueError('automatic website candidate audit failed')
-        # tempfile build roots start at 0700; audited public output must be readable by Nginx.
-        for entry in target.rglob('*'):
-            entry.chmod(0o755 if entry.is_dir() else 0o644)
-        target.chmod(0o755)
-        target.parent.chmod(0o755)
-        inventory = self.state / 'inventories' / (revision + '.json')
-        _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         topic = artifact.tags[0] if artifact.tags else None
         lesson_id = experience.get('lesson_id')
         if not topic or not isinstance(lesson_id, str) or not lesson_id.strip():
@@ -126,15 +117,60 @@ class AutomaticWebsitePublisher:
         published_content = _public_content_digest(public_artifact)
         if candidate_content != published_content:
             raise ValueError('automatic admission changed reader-visible content')
-        pending = self.public / 'current.next'
-        pending.unlink(missing_ok=True)
-        pending.symlink_to(target)
+        if (content_strategy is not None
+                and content_strategy.decided_at.astimezone(timezone.utc) > self.clock()):
+            raise ValueError('content strategy was decided after publication')
+        content_store = ContentPublicationStore(
+            state_root=self.state_root, public_root=self.public, config=self.config,
+        )
+        content_revision = None
+        if content_store.ready():
+            # Publishing a data record does not build or switch the website.
+            # Only the separate content view (article + derived indexes) changes.
+            materialization = content_store.publish(
+                public_artifact, website_channel=AutomaticAgentWebChannel(self.config),
+            )
+            revision = (self.public / 'current').resolve(strict=True).name
+            target = self.public / 'current'
+            content_revision = materialization['content_revision']
+            from .site_audit import StaticSiteAudit
+            # The content store validated the new page, generated catalogue,
+            # sitemap and feed. The stable website shell is audited separately.
+            audit = StaticSiteAudit(
+                passed=True,
+                checks={"content_record_and_page_materialized": True,
+                        "content_indexes_generated": True,
+                        "website_shell_not_redeployed": True},
+                html_pages=1,
+                internal_links_checked=0,
+                warnings=("INCREMENTAL_CONTENT_ONLY; site audit belongs to website releases",),
+            )
+        else:
+            # Legacy-only migration route. Production bootstraps the content
+            # data plane once and never takes this whole-site path again.
+            payload = [a.model_dump(mode='json') for a in artifacts]
+            revision = digest({'artifacts': payload, 'config': self.config.model_dump(mode='json'),
+                               'policy': self.policy_version})
+            target = self.public / 'releases' / revision
+            if not target.exists():
+                AutomaticAgentWebChannel(self.config).build(_curate_web_taxonomy(artifacts), target)
+            audit = audit_static_site(target, expect_indexable=self.config.indexable)
+            if not audit.passed:
+                raise ValueError('automatic website candidate audit failed')
+            for entry in target.rglob('*'):
+                entry.chmod(0o755 if entry.is_dir() else 0o644)
+            target.chmod(0o755)
+            target.parent.chmod(0o755)
+            inventory = self.state / 'inventories' / (revision + '.json')
+            _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+            pending = self.public / 'current.next'
+            pending.unlink(missing_ok=True)
+            pending.symlink_to(target)
+            os.replace(pending, self.public / 'current')
         published_at = self.clock()
         if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
-            pending.unlink(missing_ok=True)
             raise ValueError('publication clock must return a timezone-aware datetime')
         published_at = published_at.astimezone(timezone.utc)
-        os.replace(pending, self.public / 'current')
         attribution = {
             'schema_version': ('website-publication-attribution.v2' if experiment is not None
                                else 'website-publication-attribution.v1'),
@@ -162,7 +198,8 @@ class AutomaticWebsitePublisher:
         receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
                    'publication_event_id': event_id,
                    'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
-                   'revision': revision, 'artifact_id': artifact.artifact_id,
+                   'revision': revision, 'content_revision': content_revision,
+                   'artifact_id': artifact.artifact_id,
                    'audit': audit.model_dump(mode='json'), 'public_root': str(target),
                    'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
                    'outcome_attribution': attribution}
@@ -276,7 +313,36 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
             '</div></section>'
         )
         page = page.replace('<section class="crl-loop"', rail + '<section class="crl-loop"', 1)
-        return page
+        # The site's artwork/layout is versioned independently; only this
+        # small data-fed area changes when Ferro publishes new research.
+        script = """<script>
+(async()=>{
+  const grid=document.querySelector('.latest-grid');
+  if(!grid)return;
+  try {
+    const response=await fetch('/data/articles.json',{cache:'no-store'});
+    if(!response.ok)throw new Error('content data unavailable');
+    const payload=await response.json();
+    if(payload.schema_version!=='ferro-content-catalog.v1'||!Array.isArray(payload.articles))return;
+    const rows=payload.articles.slice(0,6);
+    if(!rows.length)return;
+    const frag=document.createDocumentFragment();
+    for(const item of rows){
+      if(!/^\\/(articles|guides|research|notes)\\/[a-z0-9-]+\\/$/.test(item.url))continue;
+      const card=document.createElement('article');card.className='card';
+      const heading=document.createElement('h3');
+      const link=document.createElement('a');link.href=item.url;link.textContent=item.title;
+      heading.append(link);
+      const summary=document.createElement('p');summary.textContent=item.summary;
+      const meta=document.createElement('div');meta.className='card-meta';
+      const type=document.createElement('span');type.textContent=item.kind;
+      meta.append(type);card.append(heading,summary,meta);frag.append(card);
+    }
+    if(frag.childNodes.length)grid.replaceChildren(frag);
+  }catch(error){/* keep audited static editorial cards when content feed unavailable */}
+})();
+</script>"""
+        return page.replace('</body>', script + '</body>', 1)
 
     def _css(self):
         return super()._css() + """

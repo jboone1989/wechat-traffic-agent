@@ -50,6 +50,12 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
     parsed_base = urlsplit(base_url)
     if parsed_base.scheme not in {"http", "https"} or not parsed_base.netloc:
         raise ValueError("absolute Website base URL required")
+    content_root = site_root.parent / "content-current"
+    rendered_root = (
+        content_root if content_root.is_symlink()
+        and (content_root / "articles.json").is_file()
+        else site_root
+    )
     artifacts = _load_artifacts(artifacts_path)
     if len(artifacts) > 200:
         raise ValueError("editorial inventory exceeds the 200-article budget")
@@ -58,15 +64,15 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
     routes = {_route_for(a): a.artifact_id for a in artifacts}
     if len(routes) != len(artifacts):
         raise ValueError("duplicate inventory routes")
-    rendered = {"/" + str(p.parent.relative_to(site_root)) + "/"
+    rendered = {"/" + str(p.parent.relative_to(rendered_root)) + "/"
                 for category in ("articles", "guides", "research", "notes")
-                for p in (site_root / category).glob("*/index.html")}
+                for p in (rendered_root / category).glob("*/index.html")}
     if rendered != set(routes):
         raise ValueError("rendered website and canonical article inventory disagree")
     rows, edges, topics = [], set(), {}
     for a in sorted(artifacts, key=lambda x: x.artifact_id):
         route = _route_for(a)
-        html = (site_root / route.lstrip("/") / "index.html").read_text()
+        html = (rendered_root / route.lstrip("/") / "index.html").read_text()
         links = _Links()
         links.feed(html)
         for href in links.links:
@@ -83,7 +89,7 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
                      "rendered_sha256": hashlib.sha256(html.encode()).hexdigest()})
     snapshot = {"version": "website-inventory:v1", "base_url": base_url.rstrip("/"),
                 "articles": rows, "topics": {k: sorted(v) for k, v in sorted(topics.items())},
-                "indexed_topics": sorted(k for k in topics if (site_root / "topics" / k / "index.html").exists()),
+                "indexed_topics": sorted(k for k in topics if (rendered_root / "topics" / k / "index.html").exists()),
                 "article_links": sorted(edges), "link_scope": "article main content including related cards; excludes global navigation",
                 "inbound_counts": {a.artifact_id: sum(dst == a.artifact_id for _, dst in edges) for a in artifacts}}
     if len(json.dumps(snapshot)) > 2_000_000:
@@ -103,6 +109,9 @@ def resolve_rendered_inventory(
     inventories_dir = Path(inventories_dir)
     if not site_root.is_symlink():
         return fallback_path
+    independent = inventories_dir.parent / "articles.json"
+    if independent.is_file() and (site_root.parent / "content-current" / "articles.json").is_file():
+        return independent
     direct = inventories_dir / (site_root.resolve().name + ".json")
     if direct.exists():
         return direct
