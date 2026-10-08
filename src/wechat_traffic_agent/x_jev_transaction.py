@@ -151,30 +151,36 @@ def find_post(handle):
     navigate('https://x.com/' + handle)
     if not wait_value('Boolean(document.querySelector("article"))', 12.0):
         raise RuntimeError('X profile timeline did not become observable')
-    rows = browser.evaluate('''(() => [...document.querySelectorAll('article')].slice(0,20).map(a=>({
-      text:a.querySelector('[data-testid="tweetText"]')?.innerText || '',
-      hrefs:[...a.querySelectorAll('a[href*="/status/"]')].map(e=>e.getAttribute('href')||'')
-    })))()''') or []
     expected = norm(outbound)
-    for row in rows:
-        observed = norm(row.get('text'))
-        exact = observed == expected
-        folded = len(observed) >= 40 and expected.startswith(observed)
-        if not exact and not folded:
-            continue
-        for href in row.get('hrefs') or []:
-            match = re.match(r'^/([^/?#]+)/status/(\d+)(?:[/?#]|$)', str(href))
-            if not match or match.group(1).casefold() != handle.casefold():
+    # A temporarily unverified post may fall beyond the first 20 timeline
+    # entries before the next reconciliation. Scroll the existing profile,
+    # never submit the text again, and bound the number of observed batches.
+    for batch in range(8):
+        rows = browser.evaluate('''(() => [...document.querySelectorAll('article')].slice(0,20).map(a=>({
+          text:a.querySelector('[data-testid="tweetText"]')?.innerText || '',
+          hrefs:[...a.querySelectorAll('a[href*="/status/"]')].map(e=>e.getAttribute('href')||'')
+        })))()''') or []
+        for row in rows:
+            observed = norm(row.get('text'))
+            exact = observed == expected
+            folded = len(observed) >= 40 and expected.startswith(observed)
+            if not exact and not folded:
                 continue
-            if exact:
-                verified_publication.update(published_text=row.get('text'), verified_links=[])
-                return match.group(2)
-            # Timeline text can be folded. Follow its observed status link and
-            # verify the complete text before accepting this publication.
-            path = '/' + match.group(1) + '/status/' + match.group(2)
-            navigate('https://x.com' + path)
-            if verify_public_text(path):
-                return match.group(2)
+            for href in row.get('hrefs') or []:
+                match = re.match(r'^/([^/?#]+)/status/(\d+)(?:[/?#]|$)', str(href))
+                if not match or match.group(1).casefold() != handle.casefold():
+                    continue
+                if exact:
+                    verified_publication.update(published_text=row.get('text'), verified_links=[])
+                    return match.group(2)
+                path = '/' + match.group(1) + '/status/' + match.group(2)
+                navigate('https://x.com' + path)
+                if verify_public_text(path):
+                    return match.group(2)
+                return ''
+        if batch < 7:
+            browser.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
+            time.sleep(0.5)
     return ''
 
 def observe_action(kind):

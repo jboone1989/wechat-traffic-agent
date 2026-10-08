@@ -44,6 +44,8 @@ class Browser:
             return '/' + self.handle
         if 'ready:document.readyState' in expression:
             return {'url': self.url, 'ready': 'complete'}
+        if 'window.scrollTo(' in expression:
+            return True
         if 'Boolean(document.querySelector("article"))' in expression:
             return True
         if 'slice(0,20)' in expression:

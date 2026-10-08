@@ -44,6 +44,8 @@ class Browser:
             return '/' + self.handle
         if 'ready:document.readyState' in expression:
             return {'url': self.url, 'ready': 'complete'}
+        if 'window.scrollTo(' in expression:
+            return True
         if 'Boolean(document.querySelector("article"))' in expression:
             return True
         if 'slice(0,20)' in expression:
@@ -167,5 +169,28 @@ class TestJevXRepair(unittest.TestCase):
                 return super().evaluate(expression)
         browser = WrongFullText(existing=True)
         row = run(browser, transaction.jev_x_reconcile(text, "owner"))
-        assert row["status"] == "PUBLICATION_UNVERIFIED"
         assert browser.actions == [] and "url" not in row
+        assert row["status"] == "PUBLICATION_UNVERIFIED"
+
+    def test_reconcile_finds_post_beyond_first_timeline_batch(self):
+        class OlderPost(Browser):
+            def __init__(self):
+                super().__init__()
+                self.scrolls = 0
+            def evaluate(self, expression):
+                if 'window.scrollTo(' in expression:
+                    self.scrolls += 1
+                    return True
+                if 'slice(0,20)' in expression:
+                    if self.scrolls < 2:
+                        return []
+                    return [{'text': 'Hello from Ferro',
+                             'hrefs': ['/owner/status/424242']}]
+                return super().evaluate(expression)
+        browser = OlderPost()
+        receipt = run(browser, transaction.jev_x_reconcile('Hello from Ferro', 'owner'))
+        assert receipt['status'] == 'POSTED'
+        assert receipt['post_id'] == '424242'
+        assert receipt['verification_only'] is True
+        assert browser.scrolls == 2
+        assert browser.actions == []
