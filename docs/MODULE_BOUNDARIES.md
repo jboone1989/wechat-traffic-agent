@@ -132,15 +132,48 @@ changes during the modularization. Article SQLite remains authoritative;
   research execution, fallback behavior, typed event delivery, publication
   ordering, withheld publication behavior and module import boundaries.
 
+## Editorial choice, inquiry, worldview and public chat (stage 6)
+
+- `content_goal_contracts.py` exports stable selection and worldview decision schemas,
+  allowing feature modules to import contracts without importing the giant runner.
+- `evidence_choice_service.py` owns goal/topic constrained evidence selection,
+  deterministic recovery from invalid model selections, related-article binding
+  and live-market catalyst verification. `EvidenceChoiceRequest/Result` and
+  injected decision, title and source policy ports let it run without a full
+  agent, website publisher, or X browser.
+- `learning_inquiry_service.py` owns prospective interest commitment, research
+  execution, reward settlement and an explicit `COGNITION_ONLY` result when
+  no new supported understanding exists. Its commitments/receipts are still
+  restart-stable; it does not originate or claim neural preferences.
+- `worldview_assessment_service.py` owns evidence-grounded worldview decisions,
+  durable belief recording, and optional dated predictions. An unchanged belief
+  produces **no prediction**. Existing decision and proposal receipts are
+  reused after a restart.
+- `web_api/public_chat.py` owns both JSON and SSE public conversation endpoints,
+  sharing one input admission, state snapshot, social feedback, prompt compiler
+  and guarded model output path. PublicChatPorts is explicitly injected by
+  the web composition root; the handler has no operator session/browser imports
+  and it doesn't start a separate service. The public reasoning summary is
+  deliberately distinct from private model reasoning.
+- `tests/test_public_chat_inquiry_boundaries.py` and
+  `tests/test_research_worldview_feature_ports.py` use in-memory fakes to
+  exercise these features without booting the full Ferro agent, and verify
+  method-length and import boundaries.
+- **Still incomplete:** `ContinuousContentLoop._run` is **1,105** lines,
+  down from 2,284; `LiveAgentService._app` is **1,128** lines, down
+  from 2,485. Remaining hard responsibilities are editorial planning,
+  writing and verification, and private-owner chat/session orchestration.
+  These need explicit services; a moved monolith is not an acceptable finish.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
 
-1. Continue breaking the 1,354-line `ContinuousContentLoop._run` into research selection,
+1. Continue breaking the 1,105-line `ContinuousContentLoop._run` into research selection,
    verification, cognition, editorial admission and publication use cases
    with explicit request/result objects. No domain use case reads another
    module's private cycle files.
-2. Continue separating HTTP/API handlers from the 1,488-line `LiveAgentService._app` and
+2. Continue separating HTTP/API handlers from the 1,128-line `LiveAgentService._app` and
    replace direct internal state scans with narrow read interfaces. Site API
    and operator API should have separate application compositions.
 3. Replace the wakeful mixins' implicit shared-`self` dependencies with
