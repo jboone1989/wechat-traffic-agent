@@ -97,6 +97,55 @@ python scripts/run_learning_evaluation.py \
   --compare-before RUN_ID --compare-after RUN_ID
 ```
 
+## Reference benchmark and validity rules (2026-10-08)
+
+The first pilot is too small and its multiple-choice responses are biased
+toward the obviously cautious choice. Correct guesses are *not* evidence
+that knowledge was transferred. We will not promote this pilot as a
+proof. As a mature direction, follow
+[MemoryAgentBench](https://github.com/HUST-AI-HYZ/MemoryAgentBench):
+Accurate Retrieval, Test-Time Learning, Long-Range Understanding, and
+Conflict Resolution. Prefer independently curated held-out examples over
+rewording Ferro's own research notes. We reuse its assessment dimensions,
+not an unreviewed claim of official benchmark scores.
+
+**Anti-pseudoreplication:** The scorecard clusters all items whose
+`source_refs` overlap, including indirect (transitive) links, so 48
+paraphrases of one paper count as one independent source group. A
+statistically supported comparison requires at least 24 scored items,
+12 independent source groups, coverage in every transfer split, and a
+positive paired sign test at the *source-cluster* level. These thresholds
+are an early reporting gate, not a sufficient causal proof.
+
+**Review separation:** Setting `review_status: APPROVED` in a dataset
+does not validate the gold key. A separately authored review receipt must
+bind the exact dataset SHA-256, every case ID, reviewer attribution,
+review date and checked source evidence. It is a record of attestation,
+**not cryptographic verification of the reviewer's identity or correctness**.
+To supply the receipt:
+
+```bash
+python scripts/run_learning_evaluation.py \
+  --snapshot-root /home/ubuntu/ferro-learning-eval-20261008-a \
+  --benchmark content/learning/ferro_evaluation_pilot_v1.json \
+  --ledger /home/ubuntu/ferro-learning-eval-20261008-a/evals.sqlite3 \
+  --review-receipt path/to/independent_review.json
+```
+
+Receipt fields: `benchmark_sha256`, `reviewed_case_ids`,
+`reviewed_by`, `reviewed_at`, `source_evidence_checked: true`.
+A changed question or gold option invalidates the receipt. Without
+the receipt the evaluator still records exploratory measurements but
+cannot label them evidence of memory benefit.
+
+The exploratory one-case factual pilot in VM09 state uses an active
+source-linked memory about the guidance/retrieval factorial counts.
+It is intentionally **not** a formal test, because its gold is sourced
+from Ferro's own research record and has not been independently audited.
+Its frozen lexical retrieval check found the relevant record. The remote
+host requested execution approval before running the real ChatGPT-only
+pair; no measured model score was obtained.
+
 ## What can be claimed today
 
 - New research was stored: supported by original source-linked memory rows.

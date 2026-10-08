@@ -19,6 +19,7 @@ from wechat_traffic_agent.awe_contestant import AWE_SENTINEL
 from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
 from wechat_traffic_agent.learning_evaluation import (
     evaluate_learning, load_benchmark, snapshot_digest, compare_runs,
+    load_review_receipt,
 )
 
 
@@ -30,6 +31,7 @@ def main():
     parser.add_argument("--model-id", default="jev-chatgpt")
     parser.add_argument("--retrieval-mode", choices=("lexical", "full"), default="lexical")
     parser.add_argument("--inspect-only", action="store_true")
+    parser.add_argument("--review-receipt", type=Path)
     parser.add_argument("--compare-before")
     parser.add_argument("--compare-after")
     opts = parser.parse_args()
@@ -44,6 +46,10 @@ def main():
     if not (root / AWE_SENTINEL).is_file():
         parser.error("isolated AWE snapshot required; refusing production state")
     spec, cases, digest = load_benchmark(opts.benchmark)
+    review = load_review_receipt(
+        opts.review_receipt, benchmark_sha256=digest,
+        case_ids=[case.case_id for case in cases],
+    )
     if opts.inspect_only:
         # An actual read-only retrieval check on the frozen memory snapshot,
         # not a fabricated model score or evidence of improved reasoning.
@@ -59,7 +65,8 @@ def main():
             "benchmark_id": spec["benchmark_id"],
             "benchmark_sha256": digest,
             "snapshot_sha256": snapshot_digest(root),
-            "review_status": spec.get("review_status", "PROVISIONAL"),
+            "review_status": review["status"],
+            "review_receipt_sha256": review["receipt_sha256"],
             "retrieval_mode": opts.retrieval_mode,
             "model_calls": len(cases) * 2,
             "retrieval_candidates_by_case": retrieval,
@@ -70,7 +77,7 @@ def main():
     report = asyncio.run(evaluate_learning(
         provider=provider, snapshot_root=root, benchmark_path=opts.benchmark,
         ledger_path=opts.ledger, model_id=opts.model_id,
-        retrieval_mode=opts.retrieval_mode,
+        retrieval_mode=opts.retrieval_mode, review_receipt=opts.review_receipt,
     ))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["scorecard"]["cases_scored"] == len(cases) else 2

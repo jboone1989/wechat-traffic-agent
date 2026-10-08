@@ -58,6 +58,34 @@ def load_benchmark(path: Path):
     return payload, cases, sha256(raw).hexdigest()
 
 
+def load_review_receipt(path: Path | None, *, benchmark_sha256: str,
+                        case_ids: list[str]) -> dict:
+    """External gold-review attestation bound to an immutable benchmark hash.
+
+    This checks completeness and provenance, not the reviewer's identity or
+    correctness. Human verification remains a separate responsibility.
+    """
+    if path is None:
+        return {"status": "PROVISIONAL", "receipt_sha256": None}
+    raw = Path(path).read_bytes()
+    receipt = json.loads(raw)
+    if receipt.get("benchmark_sha256") != benchmark_sha256:
+        raise ValueError("review receipt does not match frozen benchmark")
+    if sorted(receipt.get("reviewed_case_ids") or []) != sorted(case_ids):
+        raise ValueError("gold review must cover every case exactly once")
+    if not str(receipt.get("reviewed_by") or "").strip():
+        raise ValueError("gold review needs reviewer attribution")
+    if not str(receipt.get("reviewed_at") or "").strip():
+        raise ValueError("gold review needs a review timestamp")
+    if not receipt.get("source_evidence_checked"):
+        raise ValueError("reviewer must attest source evidence was checked")
+    return {
+        "status": "REVIEW_RECEIPT_RECORDED",
+        "receipt_sha256": sha256(raw).hexdigest(),
+        "reviewed_by": str(receipt["reviewed_by"]),
+    }
+
+
 def snapshot_digest(snapshot_root: Path) -> str:
     """Freeze a readable fingerprint without ever modifying the memory corpus."""
     from .memory_system import CanonicalMemoryStore
@@ -82,28 +110,84 @@ def paired_p_value(wins: int, losses: int) -> float:
     return min(1., 2 * sum(comb(n, j) for j in range(k + 1)) / (2 ** n))
 
 
+def _source_clusters(rows: list[dict]) -> list[list[dict]]:
+    """Merge overlapping source-ref sets, including transitive overlaps."""
+    parents: dict[str, str] = {}
+
+    def root(value: str) -> str:
+        parents.setdefault(value, value)
+        if parents[value] != value:
+            parents[value] = root(parents[value])
+        return parents[value]
+
+    def union(a: str, b: str) -> None:
+        parents[root(b)] = root(a)
+
+    for row in rows:
+        refs = sorted({str(v) for v in row.get("source_refs") or []})
+        for ref in refs[1:]:
+            union(refs[0], ref)
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        refs = sorted({str(v) for v in row.get("source_refs") or []})
+        key = root(refs[0]) if refs else "missing:" + str(row.get("case_id"))
+        grouped.setdefault(key, []).append(row)
+    return list(grouped.values())
+
+
+def _independent_signs(clusters: list[list[dict]]) -> tuple[int, int]:
+    net = [
+        sum(int(bool(row["with_memory_correct"])) -
+            int(bool(row["without_memory_correct"])) for row in group)
+        for group in clusters
+    ]
+    return sum(value > 0 for value in net), sum(value < 0 for value in net)
+
+
+
 def scorecard(rows: list[dict]) -> dict:
     by_split = {}
+    valid = [r for r in rows if r["status"] == "SCORED"]
     for split in ("retention", "near_transfer", "far_transfer"):
-        valid = [r for r in rows if r["split"] == split and r["status"] == "SCORED"]
-        win = sum(r["with_memory_correct"] and not r["without_memory_correct"] for r in valid)
-        loss = sum(r["without_memory_correct"] and not r["with_memory_correct"] for r in valid)
+        subset = [r for r in valid if r["split"] == split]
+        win = sum(r["with_memory_correct"] and not r["without_memory_correct"] for r in subset)
+        loss = sum(r["without_memory_correct"] and not r["with_memory_correct"] for r in subset)
+        clusters = _source_clusters(subset)
+        independent_win, independent_loss = _independent_signs(clusters)
         by_split[split] = {
-            "scored": len(valid), "wins": win, "losses": loss,
-            "no_memory_correct": sum(bool(r["without_memory_correct"]) for r in valid),
-            "with_memory_correct": sum(bool(r["with_memory_correct"]) for r in valid),
-            "paired_p_value": paired_p_value(win, loss),
+            "scored": len(subset), "wins": win, "losses": loss,
+            "no_memory_correct": sum(bool(r["without_memory_correct"]) for r in subset),
+            "with_memory_correct": sum(bool(r["with_memory_correct"]) for r in subset),
+            "independent_source_groups": len(clusters),
+            "source_group_wins": independent_win,
+            "source_group_losses": independent_loss,
+            "paired_p_value": paired_p_value(independent_win, independent_loss),
         }
-    scored = sum(s["scored"] for s in by_split.values())
-    wins = sum(s["wins"] for s in by_split.values())
-    losses = sum(s["losses"] for s in by_split.values())
-    # Fixed threshold is a cautious reporting gate, NOT causal proof:
-    # independent withheld cases and a controlled frozen corpus are essential.
-    supported = scored >= 20 and wins + losses >= 10 and wins > losses
-    supported = supported and paired_p_value(wins, losses) <= .05
-    return {"cases_scored": scored, "wins": wins, "losses": losses,
-            "by_split": by_split, "evidence_of_memory_benefit": supported,
-            "long_term_capability_improvement_proven": False}
+    clusters = _source_clusters(valid)
+    wins, losses = _independent_signs(clusters)
+    scored = len(valid)
+    independent_sources = len(clusters)
+    # Provisional heuristic, not a proof. All splits and distinct sources
+    # must be represented to reduce paraphrase/repeated-source inflation.
+    supported = (
+        scored >= 24 and independent_sources >= 12
+        and all(s["scored"] >= 6 and s["independent_source_groups"] >= 3
+                for s in by_split.values())
+        and wins + losses >= 10 and wins > losses
+        and paired_p_value(wins, losses) <= .05
+    )
+    return {
+        "cases_scored": scored,
+        "wins": sum(bool(r["with_memory_correct"]) and not bool(r["without_memory_correct"]) for r in valid),
+        "losses": sum(bool(r["without_memory_correct"]) and not bool(r["with_memory_correct"]) for r in valid),
+        "independent_source_groups": independent_sources,
+        "source_group_wins": wins,
+        "source_group_losses": losses,
+        "paired_source_group_p_value": paired_p_value(wins, losses),
+        "by_split": by_split,
+        "evidence_of_memory_benefit": supported,
+        "long_term_capability_improvement_proven": False,
+    }
 
 
 class LearningEvalLedger:
@@ -195,12 +279,17 @@ def compare_runs(ledger_path: Path, before_run: str, after_run: str) -> dict:
 
 async def evaluate_learning(*, provider, snapshot_root: Path,
                             benchmark_path: Path, ledger_path: Path,
-                            model_id: str, retrieval_mode: str = "lexical") -> dict:
+                            model_id: str, retrieval_mode: str = "lexical",
+                            review_receipt: Path | None = None) -> dict:
     """Evaluate on isolated snapshot, never on Ferro's production state."""
     root = Path(snapshot_root).resolve()
     if not (root / AWE_SENTINEL).is_file():
         raise ValueError("evaluation requires isolated external-benchmark snapshot")
     payload, cases, digest = load_benchmark(benchmark_path)
+    review = load_review_receipt(
+        review_receipt, benchmark_sha256=digest,
+        case_ids=[case.case_id for case in cases],
+    )
     initial_snapshot = snapshot_digest(root)
     arms = {
         False: FerroExternalEvalContestant(state_root=root, provider=provider,
@@ -232,10 +321,11 @@ async def evaluate_learning(*, provider, snapshot_root: Path,
     if snapshot_digest(root) != initial_snapshot:
         raise RuntimeError("benchmark mutated its learning memory corpus")
     report = scorecard(outcomes)
-    review_status = payload.get("review_status", "PROVISIONAL")
+    review_status = review["status"]
     report["benchmark_review_status"] = review_status
+    report["review_receipt_sha256"] = review["receipt_sha256"]
     report["retrieval_mode"] = retrieval_mode
-    if review_status != "APPROVED":
+    if review_status != "REVIEW_RECEIPT_RECORDED":
         report["evidence_of_memory_benefit"] = False
     run = {
         "run_id": uuid4().hex, "benchmark_id": payload["benchmark_id"],

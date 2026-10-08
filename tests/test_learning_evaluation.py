@@ -9,7 +9,7 @@ from wechat_traffic_agent.awe_contestant import AWE_SENTINEL
 from wechat_traffic_agent.memory_system import CanonicalMemoryStore
 from wechat_traffic_agent.learning_evaluation import (
     evaluate_learning, load_benchmark, paired_p_value, scorecard,
-    LearningEvalLedger, compare_runs,
+    LearningEvalLedger, compare_runs, load_review_receipt,
 )
 
 
@@ -150,3 +150,101 @@ def test_frozen_runs_detect_forgetting_without_pretending_causality(tmp_path):
     assert report["long_term_capability_improvement_proven"] is False
     with pytest.raises(ValueError, match="changed memory snapshot"):
         compare_runs(ledger.path, "before", "before")
+
+
+def test_rephrasing_one_source_cannot_falsely_prove_learning():
+    # Twenty-four winning questions about one article must NOT be treated
+    # as twenty-four independent findings.
+    rows = [
+        {
+            "case_id": f"paraphrase-{i}",
+            "split": ("retention", "near_transfer", "far_transfer")[i % 3],
+            "status": "SCORED", "source_refs": ["paper:one"],
+            "with_memory_correct": 1, "without_memory_correct": 0,
+        }
+        for i in range(48)
+    ]
+    result = scorecard(rows)
+    assert result["wins"] == 48
+    assert result["independent_source_groups"] == 1
+    assert result["source_group_wins"] == 1
+    assert result["evidence_of_memory_benefit"] is False
+
+
+def test_independent_group_gate_and_zero_validity():
+    rows = [
+        {
+            "case_id": f"source-{i}",
+            "split": ("retention", "near_transfer", "far_transfer")[i % 3],
+            "status": "SCORED", "source_refs": [f"published:source:{i}"],
+            "with_memory_correct": 1, "without_memory_correct": 0,
+        }
+        for i in range(24)
+    ]
+    result = scorecard(rows)
+    assert result["independent_source_groups"] == 24
+    assert result["source_group_wins"] == 24
+    # Statistical evidence is only one gate; independent review also required.
+    assert result["evidence_of_memory_benefit"] is True
+    rows[0]["status"] = "ERROR"
+    assert scorecard(rows)["cases_scored"] == 23
+    assert scorecard(rows)["evidence_of_memory_benefit"] is False
+
+
+def test_transitively_shared_sources_count_as_one_independent_cluster():
+    rows = [
+        {"case_id": "a", "split": "retention", "status": "SCORED",
+         "source_refs": ["source:1", "source:2"],
+         "with_memory_correct": 1, "without_memory_correct": 0},
+        {"case_id": "b", "split": "near_transfer", "status": "SCORED",
+         "source_refs": ["source:2", "source:3"],
+         "with_memory_correct": 1, "without_memory_correct": 0},
+        {"case_id": "c", "split": "far_transfer", "status": "SCORED",
+         "source_refs": ["source:3", "source:4"],
+         "with_memory_correct": 1, "without_memory_correct": 0},
+    ]
+    result = scorecard(rows)
+    assert result["wins"] == 3
+    assert result["independent_source_groups"] == 1
+    assert result["source_group_wins"] == 1
+    assert result["evidence_of_memory_benefit"] is False
+
+
+def test_approval_label_without_independent_receipt_cannot_certify_evidence(tmp_path):
+    root, path = _fixture(tmp_path)
+    benchmark = json.loads(path.read_text())
+    benchmark["review_status"] = "APPROVED"
+    path.write_text(json.dumps(benchmark))
+    result = asyncio.run(evaluate_learning(
+        provider=MemorySensitiveProvider(), snapshot_root=root,
+        benchmark_path=path, ledger_path=tmp_path / "status.sqlite3",
+        model_id="test-provider",
+    ))
+    assert result["scorecard"]["benchmark_review_status"] == "PROVISIONAL"
+    assert result["scorecard"]["evidence_of_memory_benefit"] is False
+
+
+def test_review_receipt_requires_same_frozen_case_ids_and_sha(tmp_path):
+    _, path = _fixture(tmp_path)
+    from wechat_traffic_agent.learning_evaluation import load_benchmark
+    spec, cases, digest = load_benchmark(path)
+    review = {
+        "benchmark_sha256": digest,
+        "reviewed_case_ids": [c.case_id for c in cases],
+        "reviewed_by": "external-reviewer",
+        "reviewed_at": "2026-10-08T14:00:00Z",
+        "source_evidence_checked": True,
+    }
+    receipt = tmp_path / "review.json"
+    receipt.write_text(json.dumps(review))
+    valid = load_review_receipt(
+        receipt, benchmark_sha256=digest, case_ids=[c.case_id for c in cases]
+    )
+    assert valid["status"] == "REVIEW_RECEIPT_RECORDED"
+    review["benchmark_sha256"] = "stale-edited-benchmark"
+    receipt.write_text(json.dumps(review))
+    with pytest.raises(ValueError, match="frozen benchmark"):
+        load_review_receipt(
+            receipt, benchmark_sha256=digest,
+            case_ids=[c.case_id for c in cases],
+        )
