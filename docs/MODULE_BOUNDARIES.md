@@ -310,6 +310,33 @@ changes during the modularization. Article SQLite remains authoritative;
   propagation and import/method-size contracts. Existing organism and
   cognition closure regression tests verify behavioral compatibility.
 
+## Wakeful neural phases and behavioral modulation (stage 12)
+
+- `behavioral_modulation_rules.py` is the pure policy engine for affect,
+  personality, drive, conflict and social-relationship expression cues.
+  The existing `build_behavioral_state()` now only normalizes inputs,
+  applies the independent rule compiler, and exposes the same bounded
+  behavioral contract. Rules cannot change factual authority or permissions.
+- `neural_stimulus_dispatcher.py` emits drive/body and dream-derived events
+  through an injected core. `neural_authority_coordinator.py` separately
+  handles prospective action recommendations, the owner-goal authority gate,
+  personality adaptation and bounded motor scheduling. X availability is\n  supplied as an explicit composition-root setting, not read implicitly\n  by the feature.
+- `neural_development_sensors.py` observes active developmental needs and
+  extension sensors without scheduling tasks. `neural_development_scheduler.py`
+  independently schedules candidate-world experiments, architecture
+  revalidation, transfer and evolution consolidation using explicit ports.
+- `neural_continuity_coordinator.py` updates cortex/individuality/organism
+  continuity and schedules only *newly due* delayed outcome checks.
+  It returns the due signature; `ContentWakefulRuntime` owns that short-lived
+  comparison state. The same owner-goal gate and idempotent wake IDs remain.
+- `ContentWakefulRuntime.refresh_neural_life()` shrank from **413 to 92 lines**;
+  `build_behavioral_state()` shrank from **337 to 76 lines**.
+  The new methods are <=100 lines, have no import dependency on the giant
+  wakeful entrypoint and create no additional process or state-file queue.
+- `tests/test_neural_feature_boundaries.py` tests these feature ports with
+  stand-alone fakes, alongside the existing dream, personality, development,
+  owner-control, and wakeful scheduling regression tests.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
