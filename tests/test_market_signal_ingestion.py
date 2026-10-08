@@ -57,7 +57,7 @@ def transport(*, btc_change=1.5, newer=False, failure=None, etf=False):
                  "flow_usd": 100_000_000},
                 *([{"timestamp": int(NOW.timestamp()*1000), "flow_usd": -200_000_000}] if newer else []),
             ]})
-        if "api.theblockbeats.news" in url:
+        if "api.theblockbeats.news" in url or "panewslab" in url:
             items = [("Baseline report", NEWS, "Wed, 07 Oct 2026 11:00:00 +0000")]
             if newer:
                 items.append(("New market research", NEWS + "4", "Thu, 08 Oct 2026 11:20:00 +0000"))
@@ -83,9 +83,9 @@ async def test_news_and_price_events_require_change_and_are_deduplicated(tmp_pat
         await MarketSignalCollector(tmp_path, client=client).run_once(now=NOW)
     async with httpx.AsyncClient(transport=transport(btc_change=4.0, newer=True)) as client:
         report = await MarketSignalCollector(tmp_path, client=client).run_once(now=NOW)
-    assert report["new_research_events"] == 3
+    assert report["new_research_events"] == 4
     evidence = market_research_candidates(state_root=tmp_path, now=NOW)
-    assert len(evidence) == 3
+    assert len(evidence) == 4
     assert any(row["source_kind"] == "public-api" for row in evidence)
     assert any(row["source_kind"] == "rss" for row in evidence)
     from wechat_traffic_agent.content_explorer import EvidenceCandidate
@@ -94,7 +94,7 @@ async def test_news_and_price_events_require_change_and_are_deduplicated(tmp_pat
     async with httpx.AsyncClient(transport=transport(btc_change=4.0, newer=True)) as client:
         again = await MarketSignalCollector(tmp_path, client=client).run_once(now=NOW)
     assert again["new_research_events"] == 0
-    assert len(MarketSignalStore(tmp_path).recent(now=NOW)) == 3
+    assert len(MarketSignalStore(tmp_path).recent(now=NOW)) == 4
 
 
 @run_coroutine
