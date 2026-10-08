@@ -1145,10 +1145,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             if capability_runtime is not None and "x.search" in capability_runtime.available_capabilities():
                 x_source = RuntimeXSearch(capability_runtime)
                 x_searcher = lambda query, now: x_source.search(query=query, now=now)
+            from .sources.market_bridge import collect_market_evidence
             explorer = GoalEvidenceExplorer(
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
-                market_fetcher=collect_okx_public_market,
+                market_fetcher=lambda now: collect_market_evidence(
+                    now=now, state_root=self.state, baseline_fetcher=collect_okx_public_market,
+                ),
                 trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
                 web_searcher=web_searcher,
             )
