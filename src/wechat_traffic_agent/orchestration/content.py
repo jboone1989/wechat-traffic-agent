@@ -29,6 +29,68 @@ class ContentTaskMethods:
         ).strip()
         return revision[:128] or "unknown"
 
+
+    @staticmethod
+    def _recovery_attempts(cycles_root: Path, prefix: str):
+        completed: list[tuple[Path, str, str, str | None]] = []
+        if cycles_root.exists():
+            for folder in sorted(cycles_root.glob(prefix + "*")):
+                result_file = folder / "result.json"
+                if not result_file.exists():
+                    continue
+                try:
+                    payload = json.loads(result_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                runtime_revision = None
+                recovery_file = folder / "recovery.json"
+                if recovery_file.exists():
+                    try:
+                        recovery_payload = json.loads(
+                            recovery_file.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        recovery_payload = None
+                    if isinstance(recovery_payload, dict):
+                        value = str(
+                            recovery_payload.get("runtime_revision") or ""
+                        ).strip()
+                        runtime_revision = value or None
+                completed.append((
+                    folder,
+                    str(payload.get("status") or "").upper(),
+                    str(payload.get("error_type") or ""),
+                    runtime_revision,
+                ))
+
+        return completed
+
+    @staticmethod
+    def _mission_attempts(cycles_root: Path, source_cycle: str, goal_id: str):
+        completed: list[tuple[dict[str, Any], str]] = []
+        if cycles_root.exists():
+            for folder in cycles_root.glob("v2-mission-followup-*"):
+                metadata_path = folder / "mission_followup.json"
+                result_file = folder / "result.json"
+                if not metadata_path.exists() or not result_file.exists():
+                    continue
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    payload = json.loads(result_file.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
+                if str(metadata.get("followup_of") or "") != source_cycle:
+                    continue
+                if str(metadata.get("goal_id") or "") != goal_id:
+                    continue
+                completed.append(
+                    (metadata, str(payload.get("status") or "").upper())
+                )
+        completed.sort(key=lambda item: int(item[0].get("attempt") or 0))
+
+        return completed
+
+
     def _content_recovery(
         self,
         *,
@@ -64,36 +126,7 @@ class ContentTaskMethods:
 
         cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
         prefix = f"v2-recovery-{base_epoch}-"
-        completed: list[tuple[Path, str, str, str | None]] = []
-        if cycles_root.exists():
-            for folder in sorted(cycles_root.glob(prefix + "*")):
-                result_file = folder / "result.json"
-                if not result_file.exists():
-                    continue
-                try:
-                    payload = json.loads(result_file.read_text(encoding="utf-8"))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
-                runtime_revision = None
-                recovery_file = folder / "recovery.json"
-                if recovery_file.exists():
-                    try:
-                        recovery_payload = json.loads(
-                            recovery_file.read_text(encoding="utf-8")
-                        )
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        recovery_payload = None
-                    if isinstance(recovery_payload, dict):
-                        value = str(
-                            recovery_payload.get("runtime_revision") or ""
-                        ).strip()
-                        runtime_revision = value or None
-                completed.append((
-                    folder,
-                    str(payload.get("status") or "").upper(),
-                    str(payload.get("error_type") or ""),
-                    runtime_revision,
-                ))
+        completed = self._recovery_attempts(cycles_root, prefix)
 
         for folder, status, _error_type, _revision in reversed(completed):
             if status not in retryable_statuses:
@@ -280,26 +313,7 @@ class ContentTaskMethods:
             return None
 
         cycles_root = Path(state_root) / "content" / "continuous" / "cycles"
-        completed: list[tuple[dict[str, Any], str]] = []
-        if cycles_root.exists():
-            for folder in cycles_root.glob("v2-mission-followup-*"):
-                metadata_path = folder / "mission_followup.json"
-                result_file = folder / "result.json"
-                if not metadata_path.exists() or not result_file.exists():
-                    continue
-                try:
-                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-                    payload = json.loads(result_file.read_text(encoding="utf-8"))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    continue
-                if str(metadata.get("followup_of") or "") != source_cycle:
-                    continue
-                if str(metadata.get("goal_id") or "") != goal_id:
-                    continue
-                completed.append(
-                    (metadata, str(payload.get("status") or "").upper())
-                )
-        completed.sort(key=lambda item: int(item[0].get("attempt") or 0))
+        completed = self._mission_attempts(cycles_root, source_cycle, goal_id)
 
         for metadata, status in reversed(completed):
             if status != "COGNITION_ONLY":
@@ -352,14 +366,54 @@ class ContentTaskMethods:
         return metadata
 
     def _content(
-        self,
-        now: datetime,
-        *,
-        focus_topic: str | None,
+        self, now: datetime, *, focus_topic: str | None,
         relevant_refs: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
-        rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
+        rows.update({"task": "CONTENT_COGNITION",
+                     "status": "OK" if result is not None else "DEGRADED"})
+        self._maintain_content_site(rows, now)
+        if result is None or not result.generation_ready:
+            return rows
+        if self.continuous_loop is not None:
+            self._recover_social_stage_backlog(rows=rows, now=now)
+        owner = self._start_owner_content(rows, now, focus_topic, relevant_refs)
+        if owner is None:
+            return rows
+        (focus_topic, owner_goal, owner_cycle_id, owner_active,
+         owner_bound, owner_seed, control) = owner
+        self._observe_site_editorial(rows, now)
+        if self.continuous_loop is None:
+            return rows
+        self._observe_search_console(rows, now)
+        cycle = self._prepare_content_cycle(rows, now, focus_topic, owner_cycle_id, owner_active)
+        if cycle is None:
+            return rows
+        preflight, directed_id, cycle_id, recovery, mission_followup = cycle
+        decision = self._admit_content_resources(rows, now, preflight, cycle_id)
+        if decision is None:
+            return rows
+        options = self._content_execution_options(
+            rows, now, focus_topic, owner_goal, owner_seed, owner_active,
+            control, decision, cycle_id, directed_id,
+        )
+        continuous = self._run_async(self.continuous_loop.run_once(**options))
+        rows["continuous_content"] = continuous
+        self._finish_content_recovery(rows, recovery, continuous, now)
+        self._finish_content_mission(rows, mission_followup, continuous, now)
+        self._emit_content_prediction(rows, continuous, now)
+        self._settle_content_resources(rows, decision, continuous, cycle_id, now)
+        if continuous.get("status") in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
+            self._handle_content_nonpublication(rows, continuous, preflight, cycle_id, now)
+            self._complete_content_owner(rows, owner_goal, owner_active, owner_bound, continuous, now)
+            return rows
+        self._run_social_stage(rows=rows, continuous=continuous, now=now)
+        self._schedule_content_followup(rows, continuous, now)
+        self._complete_content_owner(rows, owner_goal, owner_active, owner_bound, continuous, now)
+        rows["cognition_state_event"] = self.state_events.emit("MARK_COGNITION", observed_at=now)
+        return rows
+
+    def _maintain_content_site(self, rows, now):
         publisher = getattr(getattr(self, "continuous_loop", None), "publisher", None)
         maintainer = getattr(publisher, "maintain", None)
         if callable(maintainer):
@@ -368,18 +422,9 @@ class ContentTaskMethods:
             except Exception as exc:
                 rows["website_maintenance"] = self._error(exc)
                 rows["website_maintenance"]["status"] = "NEEDS_REPAIR"
-        # Site health must be observable even if cognition or X is unavailable.
-        if result is None or not result.generation_ready:
-            return rows
-        # Finish already-grounded external X work before asking the owner
-        # controller what to do next. Otherwise a fresh owner cognition can
-        # perpetually preempt a mission expression that is one downstream
-        # action away from changing the world.
-        if self.continuous_loop is not None:
-            self._recover_social_stage_backlog(
-                rows=rows,
-                now=now,
-            )
+
+    def _start_owner_content(self, rows, now, focus_topic, relevant_refs):
+        control = {}
         owner_goal = self._active_owner_goal_context(
             relevant_refs=relevant_refs,
             now=now,
@@ -424,10 +469,10 @@ class ContentTaskMethods:
             ):
                 rows["status"] = "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
                 rows["owner_cognition_blocker"] = control
-                return rows
+                return None
             if str(control.get("status") or "") == "UNRESOLVED_ACTION_REQUIRED":
                 rows["status"] = "OWNER_ACTION_REQUIRED_BUT_UNRESOLVED"
-                return rows
+                return None
             if str(control.get("status") or "") == "DECIDED":
                 decision = (
                     control.get("decision")
@@ -463,26 +508,30 @@ class ContentTaskMethods:
                             goal_id=str(owner_goal.get("goal_id") or ""),
                         )
                     rows["status"] = "OWNER_AGENT_WAITING"
-                    return rows
+                    return None
                 if action == "RUN_CONTENT_PIPELINE":
                     focus_topic = str(decision.get("topic") or "").strip() or None
                     owner_seed_evidence = self._owner_agent_seed_evidence(control)
+        return (focus_topic, owner_goal, owner_directed_cycle_id, owner_episode_active,
+                owner_episode_bound, owner_seed_evidence, control)
+
+    def _observe_site_editorial(self, rows, now):
         if self.web_worker is not None:
             try:
                 rows["web_editorial"] = self._run_async(self.web_worker.run_once(now=now))
             except Exception as exc:  # noqa: BLE001
                 rows["web_editorial"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        if self.continuous_loop is None:
-            return rows
-        # Strategy selection consumes traffic context, so refresh GSC immediately before it.
-        # This preserves the pre-Wakeful ordering contract without restoring a monolithic poll loop.
+
+    def _observe_search_console(self, rows, now):
         if self.gsc_collector is not None:
             try:
                 rows["google_search_console"] = self.gsc_collector.collect(now=now)
             except Exception as exc:  # noqa: BLE001
                 rows["google_search_console"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+
+    def _prepare_content_cycle(self, rows, now, focus_topic, owner_directed_cycle_id, owner_episode_active):
         focus_cycle_id = (
             owner_directed_cycle_id
             if owner_episode_active and focus_topic
@@ -510,7 +559,7 @@ class ContentTaskMethods:
                         "previous_status": recovery.get("previous_status"),
                         "attempt_count": recovery.get("attempt_count"),
                     }
-                    return rows
+                    return None
                 if recovery["status"] == "ALREADY_RECOVERED":
                     recovered_cycle = str(recovery.get("recovery_cycle") or "")
                     recovered_preflight = self.continuous_loop.preflight(
@@ -534,7 +583,7 @@ class ContentTaskMethods:
                             "previous_status": recovery.get("previous_status"),
                             "attempt_count": recovery.get("attempt_count"),
                         }
-                        return rows
+                        return None
                 elif recovery["status"] == "READY":
                     directed_cycle_id = str(recovery["recovery_cycle"])
                     preflight = self.continuous_loop.preflight(
@@ -565,13 +614,16 @@ class ContentTaskMethods:
                         "attempt_count": mission_followup.get("attempt_count"),
                         "result_status": mission_followup.get("result_status"),
                     }
-                    return rows
+                    return None
                 directed_cycle_id = str(mission_followup["followup_cycle"])
                 preflight = self.continuous_loop.preflight(
                     now=now,
                     cycle_id=directed_cycle_id,
                 )
         cycle_id = str(preflight["cycle"])
+        return preflight, directed_cycle_id, cycle_id, recovery, mission_followup
+
+    def _admit_content_resources(self, rows, now, preflight, cycle_id):
         if preflight["status"] == "ALREADY_PROCESSED":
             decision = {"status": "SKIPPED_NOOP", "decision": "NO_RESOURCE_ACTION", "cycle": cycle_id}
         else:
@@ -583,7 +635,14 @@ class ContentTaskMethods:
         if decision.get("decision") not in {"EXECUTE", "NO_RESOURCE_ACTION"}:
             rows["continuous_content"] = {"status": "RESOURCE_DEFERRED", "cycle": cycle_id, "resource_decision": decision}
             rows["status"] = "DEFERRED"
-            return rows
+            return None
+
+        return decision
+
+    def _content_execution_options(
+        self, rows, now, focus_topic, owner_goal, owner_seed_evidence,
+        owner_episode_active, control, decision, cycle_id, directed_cycle_id,
+    ):
         if owner_goal is not None:
             rows["owner_goal_context"] = {
                 "goal_id": owner_goal["goal_id"],
@@ -649,10 +708,10 @@ class ContentTaskMethods:
                         "publication_authority": False,
                     })
                     content_run_kwargs["publication_surface"] = surface
-        continuous = self._run_async(
-            self.continuous_loop.run_once(**content_run_kwargs)
-        )
-        rows["continuous_content"] = continuous
+
+        return content_run_kwargs
+
+    def _finish_content_recovery(self, rows, recovery, continuous, now):
         if recovery is not None and recovery.get("status") == "READY":
             recovery_path = (
                 Path(self.state_root)
@@ -686,6 +745,8 @@ class ContentTaskMethods:
             )
             tmp.replace(recovery_path)
             rows["content_cycle_recovery"] = finished
+
+    def _finish_content_mission(self, rows, mission_followup, continuous, now):
         if mission_followup is not None and mission_followup.get("status") == "READY":
             followup_path = (
                 Path(self.state_root)
@@ -721,6 +782,8 @@ class ContentTaskMethods:
             )
             tmp.replace(followup_path)
             rows["content_mission_followup"] = finished_followup
+
+    def _emit_content_prediction(self, rows, continuous, now):
         action_prediction = continuous.get("action_prediction") if isinstance(continuous, dict) else None
         prediction_id = str((action_prediction or {}).get("prediction_id") or "")
         if prediction_id:
@@ -733,6 +796,8 @@ class ContentTaskMethods:
             except Exception as exc:  # noqa: BLE001
                 rows["neural_action_commitment"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+
+    def _settle_content_resources(self, rows, decision, continuous, cycle_id, now):
         if decision.get("decision") == "EXECUTE":
             try:
                 rows["resource_cycle_result"] = self.resource_economy.end_cycle(
@@ -743,113 +808,108 @@ class ContentTaskMethods:
             except Exception as exc:  # noqa: BLE001
                 rows["resource_cycle_result"] = self._error(exc)
                 rows["status"] = "DEGRADED"
-        if continuous.get("status") in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}:
-            if continuous.get("status") == "ERROR":
-                rows["status"] = "DEGRADED"
-                error_type = str(continuous.get("error_type") or "")
-                if error_type == "LLMProviderError":
-                    try:
-                        rows["provider_recovery"] = self.task_scheduler.schedule(
+
+    def _handle_content_nonpublication(self, rows, continuous, preflight, cycle_id, now):
+        if continuous.get("status") == "ERROR":
+            rows["status"] = "DEGRADED"
+            self._record_content_failure(rows, continuous, now)
+        elif continuous.get("status") == "ALREADY_PROCESSED":
+            self._replay_prior_content_publication(rows, preflight, cycle_id, now)
+
+    def _record_content_failure(self, rows, continuous, now):
+        error_type = str(continuous.get("error_type") or "")
+        if error_type == "LLMProviderError":
+            try:
+                rows["provider_recovery"] = self.task_scheduler.schedule(
+                    "CONTENT_COGNITION",
+                    now + timedelta(seconds=300),
+                    reason="retry content cognition after provider outage",
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["provider_recovery"] = self._error(exc)
+        else:
+            state_root = getattr(self, "state_root", None)
+            cycle = str(continuous.get("cycle") or "").strip()
+            if state_root is not None and cycle:
+                result_path = (
+                    Path(state_root)
+                    / "content"
+                    / "continuous"
+                    / "cycles"
+                    / cycle
+                    / "result.json"
+                )
+                followup_identity = self._mission_followup_identity(
+                    prior=continuous,
+                    result_path=result_path,
+                )
+                if (
+                    followup_identity is not None
+                    and str(followup_identity.get("reason") or "")
+                    == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
+                ):
+                    owner_goal_id = str(
+                        continuous.get("owner_goal_id") or ""
+                    ).strip()
+                    rows["mission_followup_schedule"] = {
+                        **self.task_scheduler.schedule(
                             "CONTENT_COGNITION",
-                            now + timedelta(seconds=300),
-                            reason="retry content cognition after provider outage",
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        rows["provider_recovery"] = self._error(exc)
-                else:
-                    state_root = getattr(self, "state_root", None)
-                    cycle = str(continuous.get("cycle") or "").strip()
-                    if state_root is not None and cycle:
-                        result_path = (
-                            Path(state_root)
-                            / "content"
-                            / "continuous"
-                            / "cycles"
-                            / cycle
-                            / "result.json"
-                        )
-                        followup_identity = self._mission_followup_identity(
-                            prior=continuous,
-                            result_path=result_path,
-                        )
-                        if (
-                            followup_identity is not None
-                            and str(followup_identity.get("reason") or "")
-                            == "EXTERNAL_MISSION_DISCOVERY_INTERRUPTED"
-                        ):
-                            owner_goal_id = str(
-                                continuous.get("owner_goal_id") or ""
-                            ).strip()
-                            rows["mission_followup_schedule"] = {
-                                **self.task_scheduler.schedule(
-                                    "CONTENT_COGNITION",
-                                    now + timedelta(seconds=5),
-                                    reason=str(
-                                        followup_identity.get("reason") or ""
-                                    ),
-                                    relevant_refs=(
-                                        (owner_goal_id,)
-                                        if owner_goal_id
-                                        else ()
-                                    ),
-                                ),
-                                "seconds": 5,
-                                "goal_id": str(
-                                    followup_identity.get("goal_id") or ""
-                                ),
-                                "mission_id": str(
-                                    followup_identity.get("mission_id") or ""
-                                ),
-                            }
-                self_maintenance = getattr(self, "self_maintenance", None)
-                if self_maintenance is not None:
-                    try:
-                        rows["self_maintenance"] = self_maintenance.ingest_failure(continuous, now=now)
-                        self.task_scheduler.schedule(
-                            "SELF_REPAIR",
-                            now + timedelta(seconds=60),
-                            reason="repair content failure",
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        rows["self_maintenance"] = self._error(exc)
-            elif continuous.get("status") == "ALREADY_PROCESSED":
-                result_path_raw = str(preflight.get("result_path") or "").strip()
-                if result_path_raw:
-                    try:
-                        prior = json.loads(
-                            Path(result_path_raw).read_text(encoding="utf-8")
-                        )
-                    except (OSError, ValueError, json.JSONDecodeError):
-                        prior = {}
-                    if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY"}:
-                        self._run_social_stage(
-                            rows=rows,
-                            continuous=prior,
-                            now=now,
-                        )
-                        rows["social_stage_replay"] = {
-                            "status": "REPLAYED",
-                            "cycle": str(prior.get("cycle") or cycle_id),
-                            "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
-                        }
-                        rows["cognition_state_event"] = self.state_events.emit(
-                            "MARK_COGNITION",
-                            observed_at=now,
-                        )
-            if owner_episode_active or owner_episode_bound:
-                complete = getattr(self.owner_agent_episode, "complete", None)
-                if callable(complete):
-                    rows["owner_agent_episode_completion"] = complete(
-                        outcome=continuous,
-                        now=now,
-                        goal_id=(
-                            str(owner_goal.get("goal_id") or "")
-                            if isinstance(owner_goal, dict)
-                            else None
+                            now + timedelta(seconds=5),
+                            reason=str(
+                                followup_identity.get("reason") or ""
+                            ),
+                            relevant_refs=(
+                                (owner_goal_id,)
+                                if owner_goal_id
+                                else ()
+                            ),
                         ),
-                    )
-            return rows
-        self._run_social_stage(rows=rows, continuous=continuous, now=now)
+                        "seconds": 5,
+                        "goal_id": str(
+                            followup_identity.get("goal_id") or ""
+                        ),
+                        "mission_id": str(
+                            followup_identity.get("mission_id") or ""
+                        ),
+                    }
+        self_maintenance = getattr(self, "self_maintenance", None)
+        if self_maintenance is not None:
+            try:
+                rows["self_maintenance"] = self_maintenance.ingest_failure(continuous, now=now)
+                self.task_scheduler.schedule(
+                    "SELF_REPAIR",
+                    now + timedelta(seconds=60),
+                    reason="repair content failure",
+                )
+            except Exception as exc:  # noqa: BLE001
+                rows["self_maintenance"] = self._error(exc)
+
+    def _replay_prior_content_publication(self, rows, preflight, cycle_id, now):
+        result_path_raw = str(preflight.get("result_path") or "").strip()
+        if result_path_raw:
+            try:
+                prior = json.loads(
+                    Path(result_path_raw).read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError, json.JSONDecodeError):
+                prior = {}
+            if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY"}:
+                self._run_social_stage(
+                    rows=rows,
+                    continuous=prior,
+                    now=now,
+                )
+                rows["social_stage_replay"] = {
+                    "status": "REPLAYED",
+                    "cycle": str(prior.get("cycle") or cycle_id),
+                    "reason": "PUBLISHED_CYCLE_DOWNSTREAM_RECOVERY",
+                }
+                rows["cognition_state_event"] = self.state_events.emit(
+                    "MARK_COGNITION",
+                    observed_at=now,
+                )
+
+    def _schedule_content_followup(self, rows, continuous, now):
         followup_identity = None
         state_root = getattr(self, "state_root", None)
         cycle = str(continuous.get("cycle") or "").strip()
@@ -902,23 +962,22 @@ class ContentTaskMethods:
                 "mission_id": str(followup_identity.get("mission_id") or ""),
                 "reason": reason,
             }
-        if owner_episode_active or owner_episode_bound:
-            complete = getattr(self.owner_agent_episode, "complete", None)
-            if callable(complete):
-                owner_outcome = continuous
-                if continuous.get("publication_surface") in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}:
-                    owner_outcome = {**continuous, **rows.get("x_social_expression", {"status": "X_PUBLICATION_UNRESOLVED"})}
-                rows["owner_agent_episode_completion"] = complete(
-                    outcome=owner_outcome,
-                    now=now,
-                    goal_id=(
-                        str(owner_goal.get("goal_id") or "")
-                        if isinstance(owner_goal, dict)
-                        else None
-                    ),
-                )
-        rows["cognition_state_event"] = self.state_events.emit(
-            "MARK_COGNITION",
-            observed_at=now,
+
+    def _complete_content_owner(self, rows, owner_goal, owner_active, owner_bound, continuous, now):
+        if not (owner_active or owner_bound):
+            return
+        complete = getattr(self.owner_agent_episode, "complete", None)
+        if not callable(complete):
+            return
+        owner_outcome = continuous
+        if (continuous.get("status") not in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}
+                and continuous.get("publication_surface") in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}):
+            owner_outcome = {
+                **continuous,
+                **rows.get("x_social_expression", {"status": "X_PUBLICATION_UNRESOLVED"}),
+            }
+        rows["owner_agent_episode_completion"] = complete(
+            outcome=owner_outcome,
+            now=now,
+            goal_id=(str(owner_goal.get("goal_id") or "") if isinstance(owner_goal, dict) else None),
         )
-        return rows

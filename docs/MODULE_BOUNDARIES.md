@@ -52,6 +52,34 @@ workers. Do **not** start extra processes or deploy these working-branch
 changes during the modularization. Article SQLite remains authoritative;
 `articles.json`, HTML and feeds are rebuildable projections.
 
+## Short-function refactor (stage 3)
+
+- `orchestration/content.py`: the 571-line `_content` function now coordinates short
+  methods for owner decisions, site checks, cycle recovery, resource admission,
+  content execution, receipt persistence, social follow-up and owner completion.
+  Recovered cycles must use their new cycle ID, not the base ID.
+- `website/automatic_website.py`: the 128-line `publish` is now a short
+  coordinator around admission, timestamp validation, incremental/legacy
+  rendering, attribution and durable publication events.
+- `tests/test_short_function_boundaries.py` enforces a maximum of 100 lines
+  per method in these two refactored modules and exercises recovery identity
+  and disabled content-pipeline observer behavior.
+- `scripts/audit_function_lengths.py` scans all Ferro production code. At
+  this milestone 144 legacy functions remain above 100 lines; this is an
+  incremental target, **not** global completion. Most extracted helpers are
+  below 50 lines and no touched method exceeds 100.
+- Next genuine hard boundaries: the 2,284-line
+  `ContinuousContentLoop._run` and the 2,485-line
+  `LiveAgentService._app`. Their inputs, outputs and local state must be
+  separated by use case and API route groups, not hidden in one new wrapper.
+
+- `orchestration/resources.py`: the former 313-line resource-review method is
+  now a coordinator over model pressure, infrastructure observation, provider
+  discovery, evidence verification, provider trials and outcome feedback.
+  Evolution deliberation uses separate need selection and proposal methods.
+  Short-function tests also cover this module. The latest repository audit is
+  **142** functions exceeding 100 lines; that backlog is still real.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:

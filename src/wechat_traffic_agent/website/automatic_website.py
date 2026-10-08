@@ -98,130 +98,149 @@ class AutomaticWebsitePublisher:
         return report
 
     def publish(self, *, artifact: ContentArtifact, experience: dict, cycle_root: Path):
+        admitted = self._admit(artifact, experience)
+        public_artifact, articles, experiment, strategy, topic, lesson_id, content_hash = admitted
+        published_at = self._publication_time(strategy)
+        revision, target, content_revision, audit = self._materialize(public_artifact, articles)
+        attribution = self._attribution(
+            public_artifact, experiment, strategy, topic, lesson_id, content_hash, published_at,
+        )
+        return self._record_publication(
+            artifact, experience, cycle_root, published_at, attribution,
+            revision, target, content_revision, audit, content_hash,
+        )
+
+    def _admit(self, artifact: ContentArtifact, experience: dict):
         if artifact.public_safe or not experience.get('automated_checks_passed'):
             raise ValueError('automatic admission requires a private draft with passing checks')
         if experience['draft_sha256'] != digest(artifact.model_dump(mode='json')):
             raise ValueError('self-check is not bound to this draft')
         experiment = _validated_experiment(artifact, experience)
-        content_strategy = _validated_content_strategy(artifact, experience, experiment)
+        strategy = _validated_content_strategy(artifact, experience, experiment)
         _validated_evidence_floor(artifact, experience)
-        # This is a distinct machine policy, never a fabricated human review.
         public_artifact = artifact.model_copy(update={'public_safe': True})
-        artifacts = _load_artifacts(self.inventory_path())
-        existing = next((a for a in artifacts if a.artifact_id == artifact.artifact_id), None)
-        if existing:
-            if existing != public_artifact:
-                raise ValueError('published artifact ID conflict')
-        else:
-            artifacts.append(public_artifact)
+        articles = _load_artifacts(self.inventory_path())
+        existing = next((a for a in articles if a.artifact_id == artifact.artifact_id), None)
+        if existing and existing != public_artifact:
+            raise ValueError('published artifact ID conflict')
+        if not existing:
+            articles.append(public_artifact)
         topic = artifact.tags[0] if artifact.tags else None
         lesson_id = experience.get('lesson_id')
         if not topic or not isinstance(lesson_id, str) or not lesson_id.strip():
             raise ValueError('automatic outcome attribution requires topic and lesson_id')
-        candidate_content = _public_content_digest(artifact)
-        published_content = _public_content_digest(public_artifact)
-        if candidate_content != published_content:
+        content_hash = _public_content_digest(artifact)
+        if content_hash != _public_content_digest(public_artifact):
             raise ValueError('automatic admission changed reader-visible content')
-        if (content_strategy is not None
-                and content_strategy.decided_at.astimezone(timezone.utc) > self.clock()):
+        return public_artifact, articles, experiment, strategy, topic, lesson_id, content_hash
+
+    def _publication_time(self, strategy: ContentStrategyBinding | None) -> datetime:
+        if strategy is not None and strategy.decided_at.astimezone(timezone.utc) > self.clock():
             raise ValueError('content strategy was decided after publication')
-        # Validate the publication clock before touching any public materialization.
-        # A failed admission must not advance the live website symlink.
+        # Validate before changing the live website or article data.
         published_at = self.clock()
         if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
             raise ValueError('publication clock must return a timezone-aware datetime')
-        published_at = published_at.astimezone(timezone.utc)
-        content_store = ContentPublicationStore(
+        return published_at.astimezone(timezone.utc)
+
+    def _materialize(self, artifact: ContentArtifact, articles: list[ContentArtifact]):
+        store = ContentPublicationStore(
             state_root=self.state_root, public_root=self.public, config=self.config,
         )
-        content_revision = None
-        if content_store.ready():
-            # Publishing a data record does not build or switch the website.
-            # Only the separate content view (article + derived indexes) changes.
-            materialization = content_store.publish(
-                public_artifact, website_channel=AutomaticAgentWebChannel(self.config),
-            )
-            revision = (self.public / 'current').resolve(strict=True).name
-            target = self.public / 'current'
-            content_revision = materialization['content_revision']
-            from wechat_traffic_agent.site_audit import StaticSiteAudit
-            # The content store validated the new page, generated catalogue,
-            # sitemap and feed. The stable website shell is audited separately.
-            audit = StaticSiteAudit(
-                passed=True,
-                checks={"content_record_and_page_materialized": True,
-                        "content_indexes_generated": True,
-                        "website_shell_not_redeployed": True},
-                html_pages=1,
-                internal_links_checked=0,
-                warnings=("INCREMENTAL_CONTENT_ONLY; site audit belongs to website releases",),
-            )
-        else:
-            # Legacy-only migration route. Production bootstraps the content
-            # data plane once and never takes this whole-site path again.
-            payload = [a.model_dump(mode='json') for a in artifacts]
-            revision = digest({'artifacts': payload, 'config': self.config.model_dump(mode='json'),
-                               'policy': self.policy_version})
-            target = self.public / 'releases' / revision
-            if not target.exists():
-                AutomaticAgentWebChannel(self.config).build(_curate_web_taxonomy(artifacts), target)
-            audit = audit_static_site(target, expect_indexable=self.config.indexable)
-            if not audit.passed:
-                raise ValueError('automatic website candidate audit failed')
-            for entry in target.rglob('*'):
-                entry.chmod(0o755 if entry.is_dir() else 0o644)
-            target.chmod(0o755)
-            target.parent.chmod(0o755)
-            inventory = self.state / 'inventories' / (revision + '.json')
-            _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
-            pending = self.public / 'current.next'
-            pending.unlink(missing_ok=True)
-            pending.symlink_to(target)
-            os.replace(pending, self.public / 'current')
-        attribution = {
+        if store.ready():
+            return self._materialize_incremental(artifact, store)
+        return self._materialize_legacy(articles)
+
+    def _materialize_incremental(self, artifact, store):
+        # Only the article and derived content views change; the site shell stays put.
+        result = store.publish(artifact, website_channel=AutomaticAgentWebChannel(self.config))
+        revision = (self.public / 'current').resolve(strict=True).name
+        from wechat_traffic_agent.site_audit import StaticSiteAudit
+        audit = StaticSiteAudit(
+            passed=True,
+            checks={'content_record_and_page_materialized': True,
+                    'content_indexes_generated': True,
+                    'website_shell_not_redeployed': True},
+            html_pages=1, internal_links_checked=0,
+            warnings=('INCREMENTAL_CONTENT_ONLY; site audit belongs to website releases',),
+        )
+        return revision, self.public / 'current', result['content_revision'], audit
+
+    def _materialize_legacy(self, articles: list[ContentArtifact]):
+        # This remains a legacy migration route, not the normal publishing path.
+        payload = [a.model_dump(mode='json') for a in articles]
+        revision = digest({
+            'artifacts': payload, 'config': self.config.model_dump(mode='json'),
+            'policy': self.policy_version,
+        })
+        target = self.public / 'releases' / revision
+        if not target.exists():
+            AutomaticAgentWebChannel(self.config).build(_curate_web_taxonomy(articles), target)
+        audit = audit_static_site(target, expect_indexable=self.config.indexable)
+        if not audit.passed:
+            raise ValueError('automatic website candidate audit failed')
+        for entry in target.rglob('*'):
+            entry.chmod(0o755 if entry.is_dir() else 0o644)
+        target.chmod(0o755)
+        target.parent.chmod(0o755)
+        inventory = self.state / 'inventories' / (revision + '.json')
+        _write_once(inventory, json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+        pending = self.public / 'current.next'
+        pending.unlink(missing_ok=True)
+        pending.symlink_to(target)
+        os.replace(pending, self.public / 'current')
+        return revision, target, None, audit
+
+    @staticmethod
+    def _attribution(artifact, experiment, strategy, topic, lesson_id, content_hash, published_at):
+        value = {
             'schema_version': ('website-publication-attribution.v2' if experiment is not None
                                else 'website-publication-attribution.v1'),
             'published_at': published_at.isoformat(),
-            'public_route': _route_for(public_artifact),
-            'published_content_sha256': published_content,
-            'agent_candidate_sha256': candidate_content,
+            'public_route': _route_for(artifact),
+            'published_content_sha256': content_hash,
+            'agent_candidate_sha256': content_hash,
             'topic': topic,
             'title_version': 'sha256:' + digest({'title': artifact.title}),
             'structure_version': 'sha256:' + digest({
-                'kind': artifact.kind.value,
-                'headings': [section.heading for section in artifact.sections],
+                'kind': artifact.kind.value, 'headings': [s.heading for s in artifact.sections],
             }),
             'strategy_version': (experiment.strategy_version if experiment is not None
                                  else 'lesson:' + lesson_id.strip()),
             'practice_version': 'lesson:' + lesson_id.strip(),
         }
-        if content_strategy is not None:
-            attribution['content_strategy'] = content_strategy.model_dump(mode='json')
-            if content_strategy.decided_at.astimezone(timezone.utc) > published_at:
+        if strategy is not None:
+            value['content_strategy'] = strategy.model_dump(mode='json')
+            if strategy.decided_at.astimezone(timezone.utc) > published_at:
                 raise ValueError('content strategy was decided after publication')
         if experiment is not None:
-            attribution['experiment'] = experiment.model_dump(mode='json')
-        event_id = digest({'artifact_id': artifact.artifact_id, 'content_hash': published_content})
-        receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
-                   'publication_event_id': event_id,
-                   'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
-                   'revision': revision, 'content_revision': content_revision,
-                   'artifact_id': artifact.artifact_id,
-                   'audit': audit.model_dump(mode='json'), 'public_root': str(target),
-                   'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
-                   'outcome_attribution': attribution}
-        _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+            value['experiment'] = experiment.model_dump(mode='json')
+        return value
 
-        # Stable identity survives reruns and does not duplicate outbound tasks.
+    def _record_publication(
+        self, artifact, experience, cycle_root, published_at, attribution,
+        revision, target, content_revision, audit, content_hash,
+    ):
+        event_id = digest({'artifact_id': artifact.artifact_id, 'content_hash': content_hash})
+        receipt = {
+            'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
+            'publication_event_id': event_id,
+            'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
+            'revision': revision, 'content_revision': content_revision,
+            'artifact_id': artifact.artifact_id, 'audit': audit.model_dump(mode='json'),
+            'public_root': str(target),
+            'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
+            'outcome_attribution': attribution,
+        }
+        _write_once(
+            cycle_root / 'publication.json',
+            json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n',
+        )
         event = PublicationEvent(
-            event_id=event_id,
-            artifact_id=artifact.artifact_id,
-            canonical_url=receipt['site_url'],
-            title=artifact.title,
-            summary=artifact.summary,
-            topics=artifact.tags,
-            published_at=published_at,
-            content_hash=published_content,
+            event_id=event_id, artifact_id=artifact.artifact_id,
+            canonical_url=receipt['site_url'], title=artifact.title,
+            summary=artifact.summary, topics=artifact.tags,
+            published_at=published_at, content_hash=content_hash,
         )
         self.publication_sink(event)
         return receipt

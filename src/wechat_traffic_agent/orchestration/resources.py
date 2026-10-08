@@ -74,6 +74,18 @@ class ResourceTaskMethods:
 
     def _resource(self, now: datetime) -> dict[str, Any]:
         rows: dict[str, Any] = {"task": "RESOURCE_REVIEW", "status": "OK"}
+        pressure, chatgpt_only = self._observe_model_pressure(rows, now)
+        infra_pressure, initial_pressure = self._observe_infrastructure_pressure(rows, now)
+        pressure, pressure_rank = self._emit_resource_pressure(rows, now, pressure, infra_pressure)
+        self._discover_resource_options(rows, now, chatgpt_only, pressure)
+        self._verify_resource_options(rows, now, chatgpt_only)
+        self._trial_resource_options(rows, now, chatgpt_only)
+        self._record_resource_world_effect(
+            rows, initial_pressure, infra_pressure, pressure_rank,
+        )
+        return rows
+
+    def _observe_model_pressure(self, rows, now):
         pressure = "UNKNOWN"
         from wechat_traffic_agent.runtime_backend import chatgpt_only_mode
         chatgpt_only = chatgpt_only_mode()
@@ -99,6 +111,9 @@ class ResourceTaskMethods:
             rows["resource_observation"] = self._error(exc)
             rows["status"] = "DEGRADED"
 
+        return pressure, chatgpt_only
+
+    def _observe_infrastructure_pressure(self, rows, now):
         infrastructure_pressure = "UNKNOWN"
         initial_infrastructure_pressure = "UNKNOWN"
         state_root = getattr(self, "state_root", None) or getattr(
@@ -156,6 +171,9 @@ class ResourceTaskMethods:
                 rows["survival_resource_observation"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
+        return infrastructure_pressure, initial_infrastructure_pressure
+
+    def _emit_resource_pressure(self, rows, now, pressure, infrastructure_pressure):
         pressure_rank = {"UNKNOWN": 0, "NORMAL": 1, "WATCH": 2, "CONSERVE": 3, "CRITICAL": 4}
         combined_pressure = max(
             (pressure, infrastructure_pressure),
@@ -168,6 +186,9 @@ class ResourceTaskMethods:
             observed_at=now,
         )
 
+        return pressure, pressure_rank
+
+    def _discover_resource_options(self, rows, now, chatgpt_only, pressure):
         rows["llm_provider_mode"] = (
             "AGENT_RUNTIME_CHATGPT_ONLY" if chatgpt_only else "MULTI_PROVIDER"
         )
@@ -205,6 +226,8 @@ class ResourceTaskMethods:
             except Exception as exc:  # noqa: BLE001
                 rows["capability_evolution"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+
+    def _verify_resource_options(self, rows, now, chatgpt_only):
         if chatgpt_only:
             rows["resource_verification"] = {"status": "SKIPPED_CHATGPT_ONLY"}
             rows["provider_leads"] = {"status": "SKIPPED_CHATGPT_ONLY"}
@@ -225,149 +248,167 @@ class ResourceTaskMethods:
             except Exception as exc:  # noqa: BLE001
                 rows["provider_verification"] = self._error(exc)
                 rows["status"] = "DEGRADED"
+
+    def _trial_resource_options(self, rows, now, chatgpt_only):
         if chatgpt_only:
             rows["provider_trial_plans"] = {"status": "SKIPPED_CHATGPT_ONLY"}
             rows["provider_trials"] = {"status": "SKIPPED_CHATGPT_ONLY"}
             rows["capability_windfall"] = {"status": "SKIPPED_CHATGPT_ONLY"}
-        else:
-            try:
-                trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
-                rows["provider_trial_plans"] = trial_plans
-                plans = list(trial_plans.get("plans") or [])
-                local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
-                autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
-                credential_resolutions = []
-                for credential_env in trial_plans.get("available_credential_envs") or []:
-                    credential_resolutions.extend(self.human_assistance.fulfill_matching(
-                        kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
-                        detail_value=str(credential_env), now=now,
-                        evidence_refs=(f"env-presence:{credential_env}",),
-                    ))
-                if credential_resolutions:
-                    rows["provider_access_resolution"] = {
-                        "status": "FULFILLED",
-                        "request_ids": [row.get("request_id") for row in credential_resolutions],
-                    }
-                if autonomous_pending:
-                    rows["resource_followup"] = {
-                        **self.task_scheduler.schedule(
-                            "RESOURCE_REVIEW",
-                            now + timedelta(seconds=300),
-                            reason="unverified autonomous resource/provider evidence remains",
-                        ),
-                        "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
-                        "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
-                        "delay_seconds": 300,
-                    }
-                ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
-                if ready is not None and not chatgpt_only:
-                    trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
-                    rows["provider_trials"] = trial_result
-                    if bool(trial_result.get("replan_required")):
-                        rows["resource_followup"] = {
-                            **self.task_scheduler.schedule(
-                                "RESOURCE_REVIEW",
-                                now + timedelta(seconds=300),
-                                reason="provider trial evidence requires alternate routes",
-                            ),
-                            "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
-                            "delay_seconds": 300,
-                        }
-                    resolutions = []
-                    for provider in trial_result.get("providers") or []:
-                        if int(provider.get("completed_count") or 0) <= 0:
-                            continue
-                        fulfilled = self.human_assistance.fulfill_matching(
-                            kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
-                            detail_value=str(provider.get("credential_env") or ""), now=now,
-                            evidence_refs=tuple(str(x) for x in provider.get("trial_ids") or () if x),
-                        )
-                        resolutions.extend(fulfilled)
-                    if resolutions:
-                        rows["provider_access_resolution"] = {
-                            "status": "FULFILLED",
-                            "request_ids": [row.get("request_id") for row in resolutions],
-                        }
-                    elif any(
-                        code in {"HTTP_401", "HTTP_403"}
-                        for provider in trial_result.get("providers") or []
-                        for code in provider.get("error_codes") or []
-                    ):
-                        rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
-                probe_windfall = getattr(
-                    self.resource_scout, "probe_capability_windfall", None
+            return
+        try:
+            trial_plans, plans, local_status, autonomous_pending = self._plan_provider_trials(rows, now)
+            ready = self._run_planned_provider_trials(rows, now, trial_plans, plans, chatgpt_only)
+            self._probe_provider_windfall(rows, now, chatgpt_only)
+            self._request_provider_credentials(
+                rows, now, plans, local_status, autonomous_pending, ready, trial_plans, chatgpt_only,
+            )
+        except Exception as exc:  # noqa: BLE001
+            rows["provider_trial_plans"] = self._error(exc)
+            rows["status"] = "DEGRADED"
+
+    def _plan_provider_trials(self, rows, now):
+        trial_plans = self.resource_scout.plan_trials(now=now, limit=3)
+        rows["provider_trial_plans"] = trial_plans
+        plans = list(trial_plans.get("plans") or [])
+        local_status = str((trial_plans.get("local_inference") or {}).get("status") or "UNKNOWN")
+        autonomous_pending = bool(trial_plans.get("autonomous_work_pending"))
+        credential_resolutions = []
+        for credential_env in trial_plans.get("available_credential_envs") or []:
+            credential_resolutions.extend(self.human_assistance.fulfill_matching(
+                kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                detail_value=str(credential_env), now=now,
+                evidence_refs=(f"env-presence:{credential_env}",),
+            ))
+        if credential_resolutions:
+            rows["provider_access_resolution"] = {
+                "status": "FULFILLED",
+                "request_ids": [row.get("request_id") for row in credential_resolutions],
+            }
+        if autonomous_pending:
+            rows["resource_followup"] = {
+                **self.task_scheduler.schedule(
+                    "RESOURCE_REVIEW",
+                    now + timedelta(seconds=300),
+                    reason="unverified autonomous resource/provider evidence remains",
+                ),
+                "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                "pending_provider_verification_count": int(trial_plans.get("pending_provider_verification_count") or 0),
+                "delay_seconds": 300,
+            }
+
+        return trial_plans, plans, local_status, autonomous_pending
+
+    def _run_planned_provider_trials(self, rows, now, trial_plans, plans, chatgpt_only):
+        ready = next((item for item in plans if item.get("status") == "READY_TO_TRIAL"), None)
+        if ready is not None and not chatgpt_only:
+            trial_result = self.resource_scout.run_ready_trials(now=now, provider_limit=2)
+            rows["provider_trials"] = trial_result
+            if bool(trial_result.get("replan_required")):
+                rows["resource_followup"] = {
+                    **self.task_scheduler.schedule(
+                        "RESOURCE_REVIEW",
+                        now + timedelta(seconds=300),
+                        reason="provider trial evidence requires alternate routes",
+                    ),
+                    "pending_verification_count": int(trial_plans.get("pending_verification_count") or 0),
+                    "delay_seconds": 300,
+                }
+            resolutions = []
+            for provider in trial_result.get("providers") or []:
+                if int(provider.get("completed_count") or 0) <= 0:
+                    continue
+                fulfilled = self.human_assistance.fulfill_matching(
+                    kind="MODEL_RESOURCE_ACCESS", detail_key="credential_env",
+                    detail_value=str(provider.get("credential_env") or ""), now=now,
+                    evidence_refs=tuple(str(x) for x in provider.get("trial_ids") or () if x),
                 )
-                if callable(probe_windfall) and not chatgpt_only:
-                    try:
-                        windfall = probe_windfall(now=now)
-                        rows["capability_windfall"] = windfall
-                        if windfall.get("status") == "AVAILABLE":
-                            self._record_windfall_pending(windfall, now)
-                            sync_policy = getattr(
-                                self.resource_economy, "sync_llm_routing_policy", None
-                            )
-                            if callable(sync_policy):
-                                rows["llm_routing_policy"] = sync_policy(now=now)
-                            schedule = getattr(
-                                self.wakeful, "schedule_windfall_reflection", None
-                            )
-                            if callable(schedule):
-                                schedule(now, seconds=60)
-                                rows["windfall_feast"] = {
-                                    "status": "SCHEDULED",
-                                    "task": "REFLECT",
-                                    "reason": "new high-capability free model verified",
-                                    "model": windfall.get("model"),
-                                    "capability_tier": windfall.get("capability_tier"),
-                                    "capability_score": windfall.get("capability_score"),
-                                }
-                    except Exception as exc:  # noqa: BLE001
-                        rows["capability_windfall"] = self._error(exc)
-                        rows["status"] = "DEGRADED"
+                resolutions.extend(fulfilled)
+            if resolutions:
+                rows["provider_access_resolution"] = {
+                    "status": "FULFILLED",
+                    "request_ids": [row.get("request_id") for row in resolutions],
+                }
+            elif any(
+                code in {"HTTP_401", "HTTP_403"}
+                for provider in trial_result.get("providers") or []
+                for code in provider.get("error_codes") or []
+            ):
+                rows["provider_access_resolution"] = {"status": "CREDENTIAL_REJECTED"}
 
-                if chatgpt_only:
-                    rows["provider_trials"] = {"status": "SKIPPED_CHATGPT_ONLY"}
-                    rows["capability_windfall"] = {"status": "SKIPPED_CHATGPT_ONLY"}
+        return ready
 
-                top = plans[0] if plans else None
-                if (
-                    not chatgpt_only
-                    and not autonomous_pending
-                    and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
-                    and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
-                ):
-                    request = self.human_assistance.request(
-                        kind="MODEL_RESOURCE_ACCESS",
-                        urgency="NORMAL",
-                        summary=(
-                            f"我已验证 {top['provider_label']} 是当前更值得试的低成本模型资源，"
-                            "但本机资源压力不适合新增本地推理栈，而且我缺少访问凭据。"
-                        ),
-                        requested_action=(
-                            f"请在官方 {top['signup_url']} 创建/获取 {top['credential_env']}，"
-                            "并把它配置到 Content Agent 的受保护服务器环境中；不要通过聊天或企业微信发送密钥明文。"
-                        ),
-                        now=now,
-                        details={
-                            "plan_id": top.get("plan_id"),
-                            "lead_id": top.get("lead_id"),
-                            "provider_label": top.get("provider_label"),
-                            "credential_env": top.get("credential_env"),
-                            "signup_url": top.get("signup_url"),
-                            "priority_score": top.get("priority_score"),
-                            "reasons": top.get("reasons"),
-                            "local_inference": trial_plans.get("local_inference"),
-                        },
+    def _probe_provider_windfall(self, rows, now, chatgpt_only):
+        probe_windfall = getattr(
+            self.resource_scout, "probe_capability_windfall", None
+        )
+        if callable(probe_windfall) and not chatgpt_only:
+            try:
+                windfall = probe_windfall(now=now)
+                rows["capability_windfall"] = windfall
+                if windfall.get("status") == "AVAILABLE":
+                    self._record_windfall_pending(windfall, now)
+                    sync_policy = getattr(
+                        self.resource_economy, "sync_llm_routing_policy", None
                     )
-                    rows["provider_access_request"] = {
-                        "request_id": request.get("request_id"),
-                        "delivery_status": request.get("delivery_status"),
-                        "kind": request.get("kind"),
-                    }
+                    if callable(sync_policy):
+                        rows["llm_routing_policy"] = sync_policy(now=now)
+                    schedule = getattr(
+                        self.wakeful, "schedule_windfall_reflection", None
+                    )
+                    if callable(schedule):
+                        schedule(now, seconds=60)
+                        rows["windfall_feast"] = {
+                            "status": "SCHEDULED",
+                            "task": "REFLECT",
+                            "reason": "new high-capability free model verified",
+                            "model": windfall.get("model"),
+                            "capability_tier": windfall.get("capability_tier"),
+                            "capability_score": windfall.get("capability_score"),
+                        }
             except Exception as exc:  # noqa: BLE001
-                rows["provider_trial_plans"] = self._error(exc)
+                rows["capability_windfall"] = self._error(exc)
                 rows["status"] = "DEGRADED"
 
+    def _request_provider_credentials(
+        self, rows, now, plans, local_status, autonomous_pending, ready, trial_plans, chatgpt_only,
+    ):
+        top = plans[0] if plans else None
+        if (
+            not chatgpt_only
+            and not autonomous_pending
+            and ready is None and top is not None and top.get("status") == "NEEDS_CREDENTIAL"
+            and local_status == "DEFER_LOCAL_RESOURCE_PRESSURE"
+        ):
+            request = self.human_assistance.request(
+                kind="MODEL_RESOURCE_ACCESS",
+                urgency="NORMAL",
+                summary=(
+                    f"我已验证 {top['provider_label']} 是当前更值得试的低成本模型资源，"
+                    "但本机资源压力不适合新增本地推理栈，而且我缺少访问凭据。"
+                ),
+                requested_action=(
+                    f"请在官方 {top['signup_url']} 创建/获取 {top['credential_env']}，"
+                    "并把它配置到 Content Agent 的受保护服务器环境中；不要通过聊天或企业微信发送密钥明文。"
+                ),
+                now=now,
+                details={
+                    "plan_id": top.get("plan_id"),
+                    "lead_id": top.get("lead_id"),
+                    "provider_label": top.get("provider_label"),
+                    "credential_env": top.get("credential_env"),
+                    "signup_url": top.get("signup_url"),
+                    "priority_score": top.get("priority_score"),
+                    "reasons": top.get("reasons"),
+                    "local_inference": trial_plans.get("local_inference"),
+                },
+            )
+            rows["provider_access_request"] = {
+                "request_id": request.get("request_id"),
+                "delivery_status": request.get("delivery_status"),
+                "kind": request.get("kind"),
+            }
+
+    def _record_resource_world_effect(self, rows, initial_infrastructure_pressure, infrastructure_pressure, pressure_rank):
         initial_rank = pressure_rank.get(str(initial_infrastructure_pressure).upper(), 0)
         final_rank = pressure_rank.get(str(infrastructure_pressure).upper(), 0)
         if initial_rank > 0 and final_rank > 0:
@@ -384,7 +425,6 @@ class ResourceTaskMethods:
                 "after": str(infrastructure_pressure).upper(),
                 "world_grounded": True,
             }
-        return rows
 
     def _self_repair(self, now: datetime) -> dict[str, Any]:
         result = self._self_repair_recovery(now, max_items=3)
@@ -579,29 +619,40 @@ class ResourceTaskMethods:
         deliberate = getattr(runtime, "deliberate_evolution_need", None)
         if runtime is None or not callable(deliberate):
             return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
-
         from wechat_traffic_agent.runtime_backend import chatgpt_only_mode
-        pending_windfall = (
-            None if chatgpt_only_mode() else self._load_windfall_pending()
-        )
+        pending_windfall = None if chatgpt_only_mode() else self._load_windfall_pending()
         needs = list(getattr(runtime, "evolution_needs", ()) or ())
         if not needs:
             if pending_windfall is not None:
                 return self._windfall_deliberation(runtime, pending_windfall, now)
             return {"status": "NO_OPEN_NEEDS"}
+        candidate = self._select_unproposed_need(runtime, needs)
+        if candidate is None:
+            if pending_windfall is not None:
+                return self._windfall_deliberation(runtime, pending_windfall, now)
+            return {"status": "ALREADY_PROPOSED", "open_need_count": len(needs)}
+        if not bool(getattr(runtime, "has_advisory_backend", False)):
+            return {
+                "status": "BACKEND_UNAVAILABLE",
+                "need_id": str(getattr(candidate, "need_id", "") or ""),
+                "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
+            }
+        windfall_active = self._evolution_windfall_active()
+        return self._propose_evolution_need(
+            runtime, deliberate, candidate, pending_windfall, windfall_active, now,
+        )
 
-        active_hypothesis_needs: set[str] = set()
-        for hypothesis in list(
-            getattr(runtime, "evolution_hypotheses", ()) or ()
-        ):
+    @staticmethod
+    def _select_unproposed_need(runtime, needs):
+        active_ids = set()
+        for hypothesis in list(getattr(runtime, "evolution_hypotheses", ()) or ()):
             status = getattr(hypothesis, "status", "")
             status_value = str(getattr(status, "value", status))
             if status_value not in {"PROPOSED", "SUPPORTED"}:
                 continue
             need_id = str(getattr(hypothesis, "need_id", "") or "")
             if need_id:
-                active_hypothesis_needs.add(need_id)
-
+                active_ids.add(need_id)
         ordered = sorted(
             needs,
             key=lambda item: (
@@ -610,52 +661,35 @@ class ResourceTaskMethods:
             ),
             reverse=True,
         )
-        candidate = next(
+        return next(
             (
-                item
-                for item in ordered
-                if str(getattr(item, "need_id", "") or "")
-                not in active_hypothesis_needs
+                item for item in ordered
+                if str(getattr(item, "need_id", "") or "") not in active_ids
             ),
             None,
         )
-        if candidate is None:
-            if pending_windfall is not None:
-                return self._windfall_deliberation(runtime, pending_windfall, now)
-            return {
-                "status": "ALREADY_PROPOSED",
-                "open_need_count": len(needs),
-            }
-        if not bool(getattr(runtime, "has_advisory_backend", False)):
-            return {
-                "status": "BACKEND_UNAVAILABLE",
-                "need_id": str(getattr(candidate, "need_id", "") or ""),
-                "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
-            }
 
-        windfall_active = False
+    def _evolution_windfall_active(self) -> bool:
+        from wechat_traffic_agent.runtime_backend import chatgpt_only_mode
         state_root = getattr(self, "state_root", None)
-        if state_root is not None and not chatgpt_only_mode():
-            policy_path = (
-                state_root / "application" / "llm_resource_pool" / "policy.json"
-            )
-            try:
-                import json
-                policy = json.loads(policy_path.read_text(encoding="utf-8"))
-                windfall_active = bool(
-                    isinstance(policy, dict) and policy.get("windfall_active")
-                )
-            except (OSError, ValueError, TypeError):
-                windfall_active = False
+        if state_root is None or chatgpt_only_mode():
+            return False
+        policy_path = state_root / "application" / "llm_resource_pool" / "policy.json"
+        try:
+            policy = json.loads(policy_path.read_text(encoding="utf-8"))
+            return bool(isinstance(policy, dict) and policy.get("windfall_active"))
+        except (OSError, ValueError, TypeError):
+            return False
+
+    def _propose_evolution_need(
+        self, runtime, deliberate, candidate, pending_windfall, windfall_active, now,
+    ):
         token_budget = 1800 if windfall_active else 800
         fallback_reason = None
         try:
-            hypothesis = self._run_async(
-                deliberate(
-                    str(getattr(candidate, "need_id")),
-                    max_tokens=token_budget,
-                )
-            )
+            hypothesis = self._run_async(deliberate(
+                str(getattr(candidate, "need_id")), max_tokens=token_budget,
+            ))
         except ValueError as exc:
             if not str(exc).startswith("evolution "):
                 raise
@@ -664,25 +698,15 @@ class ResourceTaskMethods:
         persist = getattr(runtime, "persist", None)
         if callable(persist):
             persist()
-        hypothesis_id = str(
-            getattr(hypothesis, "hypothesis_id", "") or ""
-        )
+        hypothesis_id = str(getattr(hypothesis, "hypothesis_id", "") or "")
         if pending_windfall is not None and windfall_active:
-            self._consume_windfall_pending(
-                pending_windfall, hypothesis_id, now
-            )
-        expected_fitness = dict(
-            getattr(hypothesis, "expected_fitness", {}) or {}
-        )
+            self._consume_windfall_pending(pending_windfall, hypothesis_id, now)
+        expected_fitness = dict(getattr(hypothesis, "expected_fitness", {}) or {})
         return {
             "status": "PROPOSED_FALLBACK" if fallback_reason else "PROPOSED",
             "need_id": str(getattr(candidate, "need_id", "") or ""),
-            "hypothesis_id": str(
-                getattr(hypothesis, "hypothesis_id", "") or ""
-            ),
-            "confidence": float(
-                getattr(hypothesis, "confidence", 0.0) or 0.0
-            ),
+            "hypothesis_id": hypothesis_id,
+            "confidence": float(getattr(hypothesis, "confidence", 0.0) or 0.0),
             "fitness_dimensions": sorted(expected_fitness),
             "pressure": float(getattr(candidate, "pressure", 0.0) or 0.0),
             "observed_at": now.isoformat(),
