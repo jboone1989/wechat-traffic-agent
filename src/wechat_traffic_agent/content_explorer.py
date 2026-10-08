@@ -277,18 +277,25 @@ class GoalEvidenceExplorer:
     def __init__(self, *, state_root: Path, feeds, rss_fetcher,
                  trading_fetcher: TradingFetcher | None = None,
                  market_fetcher: MarketFetcher | None = None,
-                 web_searcher: WebSearcher | None = None) -> None:
+                 web_searcher: WebSearcher | None = None,
+                 market_signal_reader: Callable[[datetime], list[dict[str, Any]]] | None = None) -> None:
         self.state_root = Path(state_root)
         self.feeds = tuple(feeds)
         self.rss_fetcher = rss_fetcher
         self.trading_fetcher = trading_fetcher
         self.market_fetcher = market_fetcher
         self.web_searcher = web_searcher
+        self.market_signal_reader = market_signal_reader
 
     async def collect(self, *, now: datetime, active: bool) -> dict[str, Any]:
         rss = await self.rss_fetcher(self.feeds, now)
         items = [_rss_candidate(row, rss["observed_at"]) for row in rss["items"][:40]]
         failures = list(rss.get("failures") or ())
+        if self.market_signal_reader is not None:
+            try:
+                items.extend(self.market_signal_reader(now))
+            except Exception as exc:
+                failures.append({"source": "market-signal-store", "error_type": type(exc).__name__})
         if active and self.market_fetcher is not None:
             try:
                 items.extend(await self.market_fetcher(now))
