@@ -337,6 +337,44 @@ changes during the modularization. Article SQLite remains authoritative;
   stand-alone fakes, alongside the existing dream, personality, development,
   owner-control, and wakeful scheduling regression tests.
 
+## Interoception and cognition presentation ports (stage 13)
+
+- `interoception_task_classifier.py` is a deterministic, stateless symptom
+  classifier for task statuses, retries, fallbacks, capability contracts and
+  quantitative prediction/world-utility evidence. Its public classifier is
+  still imported from the old path for compatibility. No episode files,
+  L1 provider or repair scheduler is accessed by this module.
+- `interoception_health_assessment.py` enriches a deterministic classification
+  through an injected L1 health assessor. Its only side effect is that injected
+  call; exceptions are represented as symptoms, not swallowed as healthy.
+- `interoception_episode_ledger.py` owns existing fault episode files,
+  recurrence receipts and verified recovery streaks. Persistence paths and
+  recovery thresholds are injected; there is no new storage location.
+  `interoception_state_projection.py` purely computes the next visible
+  distress/fault projection, and `interoception_diagnosis_receipt.py`
+  builds a bounded handoff request without scheduling repair.
+- `InteroceptiveFaultSystem.observe()` is now **100 lines** (previously
+  335), composing these independent ports. Original state schemas, episode
+  signatures, lifecycle boundaries and classification meanings are unchanged.
+- `cognition_environment_reader.py` collects runtime capability inventory,
+  evidence-bound beliefs, relationships, and bounded behavior/phenotype
+  context from explicit runtime inputs. It does not query memory or write.
+  `cognition_selection_receipts.py` exposes source-count and provenance
+  summaries but never includes host information-need question text in
+  the model-facing decision context. `cognition_snapshot_presentation.py`
+  composes the model-facing snapshot and suppresses neural control signals
+  for an active owner goal, without retrieving anything.
+- `build_ferro_cognition_context()` is now **211 lines**, down from 661
+  at the start of the refactor. The remaining source/decision selection and
+  surface metadata compilation can be independently audited next.
+- `tests/test_interoception_cognition_ports.py` checks the independent
+  ports for L1 escalation, fault recurrence/recovery, snapshot accuracy,
+  omitted internal retrieval questions and owner-goal control suppression.
+- No daemon, alternate data store, or new file queue was added. A broader
+  legacy `test_wakeful_interoception.py` baseline currently has five
+  failures in repair-signal forwarding, observed before this stage's edits;
+  they remain a separate integration blocker, not an accepted success.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
