@@ -2082,259 +2082,44 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     'candidate_count': 0, 'source_failures': [], 'reason': 'UNBOUND_GOAL_TOPIC'}
         mind_goal_active = required_topic is not None
 
-        candidates_path = folder / 'evidence_candidates.json'
-        if candidates_path.exists():
-            evidence_pool = json.loads(candidates_path.read_text())
-        elif prefetched_evidence_pool is not None:
-            evidence_pool = prefetched_evidence_pool
-            _put(candidates_path, evidence_pool)
-        elif owner_seed_items:
-            evidence_pool = {
-                'items': [
-                    row for row in owner_seed_items
-                    if _candidate_available_for_pool(self.inbox, row)
-                ],
-                'failures': [],
-                'observed_at': now.isoformat(),
-                'signal_kind': 'owner-agent preflight public evidence',
-                'seed_source': 'OWNER_AGENT_EPISODE_SEARCH_WORLD',
-            }
-            _put(candidates_path, evidence_pool)
-        else:
-            self._activity(cycle, 'OBSERVE', 'I’m scanning available signals',
-                           'I’m checking configured feeds, local evidence, and available research sources for something worth pursuing.')
-            evidence_pool = await self.explorer.collect(now=now, active=mind_goal_active)
-            evidence_pool['items'] = [row for row in evidence_pool['items']
-                                      if _candidate_available_for_pool(self.inbox, row)]
-            _put(candidates_path, evidence_pool)
-            self._activity(cycle, 'OBSERVE', 'I finished the first scan',
-                           f"Collected {len(evidence_pool.get('items', []))} usable candidate signals.", status='completed')
-
-        traffic_path = folder / 'traffic_context.json'
-        if traffic_path.exists():
-            traffic_context = TrafficLearningContext.model_validate_json(traffic_path.read_text(encoding='utf-8'))
-        else:
-            traffic_context = self.traffic_learning.build(
-                website=snapshot, as_of=cycle_now, trend_candidates=evidence_pool['items']
-            )
-            _put(traffic_path, traffic_context.model_dump(mode='json'))
-        traffic_payload = traffic_context.model_dump(mode='json')
-        ranked_topics = sorted(traffic_context.topics, key=lambda row: (-row.priority_score, row.topic))
-        traffic_topic = next(
-            (row.topic for row in ranked_topics if row.search_rows > 0 or row.trend_hits > 0), None
+        from .research_evidence_service import EvidencePolicies, EvidenceRequest, ResearchEvidenceService
+        research = ResearchEvidenceService(
+            explorer=self.explorer, inbox=self.inbox, traffic_learning=self.traffic_learning,
+            runtime=self.runtime, mind=self.mind, state_root=self.state,
+            publication_surface=getattr(self, '_publication_surface', 'AUTO'),
+            activity=self._activity,
+            policies=EvidencePolicies(
+                _candidate_available_for_pool, _owner_focus_candidate_matches,
+                _owner_focus_search_query, _owner_focus_anchor_terms,
+                _allow_unconstrained_output_fallback,
+            ),
         )
-        effective_topic = required_topic or traffic_topic
-        goal_active = effective_topic is not None
-        # A reality-born inquiry may introduce a cognitive topic that does not yet exist in the
-        # Website taxonomy. It can constrain research without forcing a fake pre-existing tag.
-        traffic_payload['cognitive_topic'] = required_topic
-        traffic_payload['selected_topic'] = effective_topic
-        goal_origin = str(public_goal.get('origin') or '')
-        traffic_payload['selection_authority'] = (
-            'EXTERNAL_MISSION'
-            if required_topic and goal_origin == 'EXTERNAL_MISSION'
-            else 'VIRTUALBRAIN_GOAL'
-            if required_topic
-            else 'TRAFFIC_OPPORTUNITY'
-            if traffic_topic
-            else 'UNCONSTRAINED'
+        research_request = EvidenceRequest(
+            folder, cycle, now, cycle_now, snapshot, required_topic, public_goal,
+            mind_plan, owner_goal, owner_seed_items, prefetched_evidence_pool,
+            owner_focus_fast_path,
         )
-
-        exploration_path = folder / 'exploration.json'
-        topic_context = []
-        for row in snapshot['articles']:
-            artifact = row['artifact']
-            if effective_topic and artifact['artifact_id'] in snapshot['topics'].get(effective_topic, []):
-                topic_context.append({
-                    'artifact_id': artifact['artifact_id'],
-                    'title': artifact['title'],
-                    'summary': artifact['summary'][:500],
-                })
-        explorer_runtime = ReceiptRuntime(self.runtime, folder / 'explorer_calls')
-        learning_memory = None
-        learning_focus = None
+        research_result = await research.run(research_request)
+        evidence_pool = research_result.evidence_pool
+        traffic_context = research_result.traffic_context
+        traffic_payload = research_result.traffic_payload
+        effective_topic = research_result.effective_topic
+        goal_active = research_result.goal_active
+        topic_context = research_result.topic_context
+        explorer_runtime = research_result.explorer_runtime
+        learning_memory = research_result.learning_memory
+        learning_focus = research_result.learning_focus
         learning_result = None
-        if (callable(getattr(self.mind, 'record_research_belief', None))
-                or str(getattr(self, '_publication_surface', 'AUTO')).startswith('X_')):
-            from .learning_research import research_memory, choose_research_focus
-            learning_memory = research_memory(self.mind, self.state, topic=str(effective_topic or ''))
-            learning_focus = await choose_research_focus(
-                runtime=explorer_runtime, folder=folder, topic=str(effective_topic or ''),
-                memory=learning_memory, state_root=self.state,
-            )
-            self._activity(cycle, 'LEARN', 'I’m following a concrete research question',
-                           learning_focus.question)
-        if exploration_path.exists():
-            exploration = json.loads(exploration_path.read_text())
-        else:
-            self._activity(cycle, 'OBSERVE', 'I’m matching evidence to my current goal',
-                           f"Filtering candidates for {effective_topic or 'the best traffic opportunity'}.")
-            initial_candidates = list(evidence_pool['items'])
-            research_sources = {'items': [], 'failures': []}
-            if learning_focus is not None:
-                research_path = folder / 'learning_initial_search.json'
-                if research_path.exists():
-                    research_sources = json.loads(research_path.read_text(encoding='utf-8'))
-                else:
-                    research_sources = await self.explorer.search_web_query(
-                        query=learning_focus.search_query,
-                        goal_topic=str(effective_topic or 'autonomous-research'), now=now,
-                    )
-                    _put(research_path, research_sources)
-                initial_candidates = list({
-                    row['evidence_id']: row
-                    for row in [*initial_candidates, *research_sources.get('items', [])]
-                }.values())
-            if owner_focus_fast_path and effective_topic and learning_focus is None:
-                initial_candidates = [
-                    row for row in initial_candidates
-                    if _owner_focus_candidate_matches(row, effective_topic)
-                ]
-            initial = await self.explorer.filter_for_goal(
-                runtime=explorer_runtime,
-                goal_topic=(learning_focus.question if learning_focus is not None
-                            else str(effective_topic or '')),
-                topic_context=topic_context,
-                candidates=initial_candidates,
-            )
-            exploration = dict(initial)
-            source_failures = [*evidence_pool.get('failures', []),
-                               *research_sources.get('failures', [])]
-            if goal_active and not initial['items'] and learning_focus is None:
-                web_path = folder / 'web_search.json'
-                if web_path.exists():
-                    web_pool = json.loads(web_path.read_text())
-                else:
-                    search_web = getattr(self.explorer, 'search_web', None)
-                    search_mission_web = getattr(
-                        self.explorer, 'search_web_query', None
-                    )
-                    mission_discovery = (
-                        mind_plan.get('mission_discovery')
-                        if isinstance(mind_plan.get('mission_discovery'), dict)
-                        else {}
-                    )
-                    mission_query = str(
-                        mission_discovery.get('search_query') or ''
-                    ).strip()
-                    self._activity(cycle, 'OBSERVE', 'I don’t have a strong local match, so I’m searching the web',
-                                   f"Looking for fresh public evidence about {effective_topic}.")
-                    owner_query = (
-                        _owner_focus_search_query(owner_goal, effective_topic)
-                        if owner_focus_fast_path and effective_topic
-                        else ''
-                    )
-                    if learning_focus is not None and callable(search_mission_web):
-                        web_pool = await search_mission_web(
-                            query=learning_focus.search_query,
-                            goal_topic=str(effective_topic), now=now,
-                        )
-                    elif mission_query and callable(search_mission_web):
-                        web_pool = await search_mission_web(
-                            query=mission_query,
-                            goal_topic=str(effective_topic),
-                            now=now,
-                        )
-                    elif owner_query and callable(search_mission_web):
-                        web_pool = await search_mission_web(
-                            query=owner_query,
-                            goal_topic=str(effective_topic),
-                            now=now,
-                        )
-                    elif search_web is not None:
-                        web_pool = await search_web(
-                            goal_topic=str(effective_topic), now=now
-                        )
-                    else:
-                        web_pool = {'items': [], 'failures': [], 'query': None}
-                    web_pool['items'] = [row for row in web_pool['items']
-                                         if _candidate_available_for_pool(self.inbox, row)]
-                    if owner_focus_fast_path and effective_topic and learning_focus is None:
-                        web_pool['items'] = [
-                            row for row in web_pool['items']
-                            if _owner_focus_candidate_matches(row, effective_topic)
-                        ]
-                        web_pool['owner_focus_query'] = owner_query
-                        web_pool['owner_focus_anchors'] = list(
-                            _owner_focus_anchor_terms(effective_topic)
-                        )
-                    _put(web_path, web_pool)
-                source_failures.extend(web_pool.get('failures', []))
-                if web_pool['items']:
-                    web_filtered = await self.explorer.filter_for_goal(
-                        runtime=explorer_runtime, goal_topic=str(effective_topic),
-                        topic_context=topic_context, candidates=web_pool['items'],
-                    )
-                    exploration = dict(web_filtered)
-                    exploration['initial_candidate_count'] = initial.get('candidate_count', 0)
-                    exploration['web_candidate_count'] = web_filtered.get('candidate_count', 0)
-                    exploration['candidate_count'] = (exploration['initial_candidate_count'] +
-                                                      exploration['web_candidate_count'])
-                    exploration['fallback'] = 'web-search'
-                elif search_web is not None:
-                    exploration['initial_candidate_count'] = initial.get('candidate_count', 0)
-                    exploration['web_candidate_count'] = 0
-                    exploration['fallback'] = 'web-search'
-            exploration['source_failures'] = source_failures
-            _put(exploration_path, exploration)
-            self._activity(cycle, 'OBSERVE', 'I finished checking the evidence',
-                           f"Reviewed {exploration.get('candidate_count', 0)} candidates; {len(exploration.get('items', []))} remain relevant.",
-                           status='completed')
+        exploration = research_result.exploration
 
-        evidence = exploration['items']
-        if (
-            not evidence
-            and evidence_pool.get('items')
-            and _allow_unconstrained_output_fallback(
-                goal_active=goal_active,
-                goal_origin=goal_origin,
-                owner_goal=owner_goal,
-            )
-        ):
-            # Output-first fallback: persist that the endogenous goal had no match, then use the
-            # available evidence pool rather than wasting the entire production slot. The model
-            # still has to bind the article to a real site topic and real evidence below.
-            evidence = list(evidence_pool['items'][:12])
-            exploration = {**exploration, 'items': evidence, 'fallback': 'output-first-unconstrained'}
-            _put(folder / 'output_fallback.json', {
-                'reason': 'GOAL_EVIDENCE_MISS', 'candidate_count': len(evidence),
-                'original_topic': effective_topic, 'selection_authority': 'OUTPUT_FALLBACK',
-            })
-            effective_topic = None
-            goal_active = False
-            traffic_payload['selected_topic'] = None
-            traffic_payload['selection_authority'] = 'OUTPUT_FALLBACK'
-            self._activity(cycle, 'OBSERVE', 'My current interest had no usable match, so I’m switching to a viable story',
-                           f"Keeping the missed goal in memory while considering {len(evidence)} real evidence items for this production slot.",
-                           status='completed')
-        if not evidence:
-            from .learning_application import assess_application
-            await assess_application(
-                runtime=explorer_runtime, folder=folder, state_root=self.state,
-                topic=str(effective_topic or 'autonomous-research'),
-            )
-            if self.mind is not None and hasattr(self.mind, 'record_research_belief'):
-                cognition = {
-                    'cognition_state': 'NO_MATERIAL_CHANGE', 'worth_saying': False,
-                    'expression_kind': 'NONE',
-                    'what_changed': 'No admissible fresh evidence changed my current view.',
-                    'what_matters': 'Keep observing rather than manufacture a conclusion from an empty evidence set.',
-                    'belief_proposition': None,
-                    'rationale': 'A persistent agent can complete a cognition cycle without forcing an expression.',
-                }
-                _put(folder / 'cognition.json', cognition)
-                self._activity(cycle, 'DECIDE', 'Nothing changed enough to justify publishing',
-                               cognition['what_matters'], status='completed')
-                return {'status': 'COGNITION_ONLY', 'cycle': cycle, 'mind_plan': mind_plan,
-                        'cognition': cognition, 'candidate_count': exploration.get('candidate_count', 0),
-                        'source_failures': exploration.get('source_failures', evidence_pool.get('failures', []))}
-            status = 'NO_RELEVANT_EVIDENCE' if goal_active else 'NO_FRESH_EVIDENCE'
-            self._activity(cycle, 'OBSERVE', 'I don’t have enough evidence to write yet',
-                           'The current evidence scan did not produce an admissible item, so this cycle stops here.',
-                           status='stopped')
-            return {'status': status, 'cycle': cycle, 'mind_plan': mind_plan,
-                    'candidate_count': exploration.get('candidate_count', 0),
-                    'source_failures': exploration.get('source_failures', evidence_pool.get('failures', []))}
+        admission = await research.admit(research_request, research_result, goal_origin=goal_origin)
+        if admission.early_result is not None:
+            return admission.early_result
+        evidence = admission.evidence
+        exploration = admission.exploration
+        traffic_payload = admission.traffic_payload
+        effective_topic = admission.effective_topic
+        goal_active = admission.goal_active
         runtime = ReceiptRuntime(self.runtime, folder / 'model_calls')
         existing = inputs['previous_titles'] + [r['artifact']['title'] for r in snapshot['articles']]
         def validate_selection(value):
@@ -3557,49 +3342,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                                   'selected_source_kind': selected['source_kind'],
                                   'market_context_evidence_id': (market_companion.get('evidence_id') if market_companion else None),
                                   'evidence_refs': selected['evidence_refs']}}
-        if self.mind is not None:
-            self._activity(cycle, 'LEARN', 'I’m recording what happened in this cycle',
-                           'Updating bounded process experience from this cycle; no audience-effect claim is made here.')
-            refs = [f'cycle:{cycle}', 'evidence:' + selected['evidence_id'], *selected['evidence_refs'],
-                    'draft-sha256:' + experience['draft_sha256']]
-            explorer_calls = len(list((folder / 'explorer_calls').glob('*.json')))
-            mind_experience = self.mind.observe_process_experience(
-                cycle=cycle, topic=selection.topic, passed=bool(passes),
-                model_calls=runtime.index + explorer_calls, evidence_refs=list(dict.fromkeys(refs)))
-            _put(folder / 'mind_experience.json', mind_experience)
-            result['mind_experience'] = mind_experience
-            self._activity(cycle, 'LEARN', 'I saved what I learned from the process',
-                           f"Mind tick advanced with {'a passing' if passes else 'a held'} process result.", status='completed')
-        if passes and self.publisher:
-            self._activity(cycle, 'CREATE', 'I’m publishing the verified article',
-                           f"Publishing {artifact.title} to the public site.")
-            result['publication'] = self.publisher.publish(artifact=artifact, experience=experience, cycle_root=folder)
-            result['status'] = 'PUBLISHED'
-            self._activity(cycle, 'LEARN', 'Published — and I recorded the result',
-                           f"{artifact.title} is public; the cycle is complete.", status='completed')
-        memory_refs = list(dict.fromkeys([
-            f'cycle:{cycle}', 'evidence:' + selected['evidence_id'], *selected['evidence_refs'],
-            'draft-sha256:' + experience['draft_sha256'],
-        ]))
-        try:
-            result['memory_life'] = self.memory_life.observe_process_outcome(
-                process_id='content-cycle:' + cycle,
-                topic=selection.topic,
-                action='content-create-verify-publish',
-                success=bool(passes),
-                outcome=str(result.get('status') or 'UNKNOWN'),
-                evidence_refs=memory_refs,
-                capabilities=['content.generate', 'content.verify', *(['content.publish'] if self.publisher else [])],
-                steps=process_steps,
-                verification=['automated_checks_passed=true', 'evidence floor PASS', 'persist cycle evidence refs'],
-                failure_mode='' if passes else str(floor_check.status or 'content_checks_failed'),
-                recovery_step='' if passes else (
-                    'retry once with the frozen artifact when the failure is checker-only; '
-                    'otherwise repair missing evidence or failed checks before publishing'
-                ),
-                expected_cost={'model_calls': runtime.index + len(list((folder / 'explorer_calls').glob('*.json')))},
-                observed_at=now.isoformat(),
-            )
-        except Exception as exc:
-            result['memory_life'] = {'status': 'ERROR', 'error_type': type(exc).__name__}
-        return result
+        from .content_cycle_completion import ContentCycleCompletion
+        completion = ContentCycleCompletion(
+            publisher=self.publisher, mind=self.mind, memory_life=self.memory_life,
+            activity=self._activity,
+        )
+        return completion.complete(
+            result, artifact=artifact, experience=experience, folder=folder,
+            cycle=cycle, topic=selection.topic, passed=bool(passes),
+            evidence_id=selected['evidence_id'], evidence_refs=selected['evidence_refs'],
+            runtime_calls=runtime.index, process_steps=process_steps,
+            failure_mode=str(floor_check.status or 'content_checks_failed'),
+            observed_at=now,
+        )

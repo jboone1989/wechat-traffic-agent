@@ -99,15 +99,48 @@ changes during the modularization. Article SQLite remains authoritative;
   streaming chat and most of the content writer still remain in long
   functions; no independent deployment or additional process is intended.
 
+## Event and use-case isolation (stage 5)
+
+- `research_evidence_service.py` owns candidate admission, traffic demand context,
+  self-directed research focus, primary and fallback web searches, and evidence
+  admissibility. Callers supply an `EvidenceRequest` and explicit `EvidencePolicies`;
+  it returns typed `EvidenceResult` and `EvidenceAdmission`. The module does not
+  import `content_goal_loop.py`, construct an owner controller, or load browser state.
+  The researcher can run alone with fake explorer, traffic and storage ports.
+- `content_lifecycle_events.py` is a **typed in-process event router**, not another
+  durable JSON event queue. `DraftChecked` triggers `MindProcessFeedback`, while
+  `ContentCycleSettled` triggers `MemoryLifeFeedback` after publication admission.
+  Both observers are independently injected; writing/publication need not import
+  their implementations. Subscribers retain existing receipt semantics.
+- Real public publication continues through `PublicationEvent` and the durable,
+  idempotent distribution outbox. The neural worker retains ownership of the
+  existing cross-worker `FerroStateEventBus`. Do not copy those events into
+  a new general-purpose file bus. Immediate ask/answer decisions should remain
+  ordinary calls, not eventual event requests.
+- `web_api/operator_resources.py`, `operator_browser.py` and
+  `operator_login.py` now own resource/survival, account/browser and
+  authentication/OAuth routes respectively. They use explicitly injected
+  clients, controls and authorization callbacks; they no longer import
+  `live_agent.py`. No additional server, process or browser is started.
+- After this stage the long entrypoints are **still unfinished**:
+  `ContinuousContentLoop._run` is about **1,354** lines (previously 2,284),
+  and `LiveAgentService._app` is about **1,488** lines (previously 2,485).
+  The remaining work is isolating evidence selection, cognition and editorial
+  verification, plus public/owner chat streaming. Replacing a 1,000-line method
+  with another 1,000-line method in a different file is not completion.
+- `tests/test_event_driven_feature_boundaries.py` verifies independent
+  research execution, fallback behavior, typed event delivery, publication
+  ordering, withheld publication behavior and module import boundaries.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
 
-1. Continue breaking the 1,602-line `ContinuousContentLoop._run` into research selection,
+1. Continue breaking the 1,354-line `ContinuousContentLoop._run` into research selection,
    verification, cognition, editorial admission and publication use cases
    with explicit request/result objects. No domain use case reads another
    module's private cycle files.
-2. Continue separating HTTP/API handlers from the 2,320-line `LiveAgentService._app` and
+2. Continue separating HTTP/API handlers from the 1,488-line `LiveAgentService._app` and
    replace direct internal state scans with narrow read interfaces. Site API
    and operator API should have separate application compositions.
 3. Replace the wakeful mixins' implicit shared-`self` dependencies with
