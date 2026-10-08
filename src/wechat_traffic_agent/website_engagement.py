@@ -204,12 +204,22 @@ class WebsiteEngagementOutcomeCollector:
                 if window_end > now: continue
                 if coverage_start > published_at:
                     coverage_missing.append({"publication_id": publication["revision"], "window": label}); continue
+                # Skip already-recorded metric windows BEFORE producing a
+                # new snapshot. Otherwise each observer tick changes
+                # observed_at and generates another unused JSON file.
+                missing_metrics = [
+                    metric for metric in METRICS
+                    if (publication["revision"], published_at, window_end, metric, SOURCE)
+                    not in existing
+                ]
+                if not missing_metrics:
+                    continue
                 metrics = _metrics_for_route(self.events.events(start=published_at, end=window_end), route=attr["public_route"], window_end=window_end)
                 snapshot = {"schema_version":"website-engagement-snapshot.v1","publication_id":publication["revision"],"artifact_id":publication["artifact_id"],"route":attr["public_route"],"window":label,"window_start":published_at.isoformat(),"window_end":window_end.isoformat(),"observed_at":now.isoformat(),"metrics":metrics,"coverage_start":coverage_start.isoformat(),"privacy":"Only HMACed random visitor/session tokens are persisted; no IP, user-agent, referrer, or page text.","causal_claim":False}
                 snapshot_id = digest(snapshot); _write_once_json(self.snapshot_root / f"{snapshot_id}.json", snapshot)
-                for metric, value in metrics.items():
+                for metric in missing_metrics:
+                    value = metrics[metric]
                     key=(publication["revision"], published_at, window_end, metric, SOURCE)
-                    if key in existing: continue
                     definition, unit = METRICS[metric]
                     row = ChannelEvidence(channel="website",account=self.account,publication_id=publication["revision"],artifact_id=publication["artifact_id"],published_content_sha256=attr["published_content_sha256"],agent_candidate_sha256=attr["agent_candidate_sha256"],topic=attr["topic"],title_version=attr["title_version"],structure_version=attr["structure_version"],strategy_version=attr["strategy_version"],objective="website_engagement",distribution_cohort="first-party-anonymous-events:v1",metric=metric,metric_definition=definition,unit=unit,value=float(value),published_at=published_at,window_start=published_at,window_end=window_end,observed_at=now,revision=1,source=SOURCE,evidence_refs=(f"website-publication:{publication['revision']}",f"website-engagement-snapshot:sha256:{snapshot_id}"))
                     path=self.evidence.record(row); existing.add(key); recorded.append({"publication_id":publication["revision"],"window":label,"metric":metric,"value":value,"evidence_path":str(path)})
