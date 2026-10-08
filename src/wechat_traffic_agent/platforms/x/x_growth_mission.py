@@ -1,0 +1,1689 @@
+"""Bridge a measurable X audience objective into Agent Runtime External Missions.
+
+This module does not publish, follow, like, repost, or browse X. It only consumes
+an official X identity observation, updates the mission metric, settles bounded
+experiments from elapsed follower outcomes, and asks Agent Runtime for the next
+advisory experiment.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+MISSION_METRIC = "x.followers"
+MISSION_SCHEMA = "content-agent-x-growth-mission.v1"
+DEFAULT_TARGET = 5000
+DEFAULT_DURATION_DAYS = 30
+DEFAULT_EXPERIMENT_HOURS = 24
+MIN_OBSERVATION_INTERVAL = timedelta(hours=6)
+MISSION_PLANNING_CONTEXT_REF = "x-mission-planning-context:v1"
+MISSION_BASELINE_GUARDRAIL_SCHEMA = "content-agent-x-mission-baseline-guardrails.v1"
+MISSION_AUDIENCE_FEEDBACK_WINDOW = timedelta(hours=72)
+MISSION_AUDIENCE_DECLINE_THRESHOLD = 0.02
+MISSION_PROGRESS_SCHEMA = "content-agent-x-growth-roadmap-progress.v1"
+MISSION_PUBLICATION_BASELINE_SCHEMA = "content-agent-x-mission-publication-baseline.v1"
+
+MISSION_CONSTRAINTS = (
+    "obey applicable law",
+    "obey current X platform and automation policy",
+    "use the authenticated Agent Runtime-owned Jev browser for X actions",
+    "do not use artificial account-metric inflation",
+    "do not use churn, reciprocal-engagement schemes, or indiscriminate following",
+    "do not use automated likes or unsolicited repetitive replies",
+    "preserve account survival and long-term reputation",
+    "respect resource budget and existing execution authority",
+)
+
+
+def _enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _active_execution_blocker(
+    state_root: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    row = _read_json(Path(state_root) / "content" / "x" / "publication_blocker.json")
+    if str(row.get("status") or "") != "ACTIVE":
+        return None
+    # A depleted API provider no longer blocks X publication because Ferro has
+    # authenticated browser transports. Only a publication-wide capability
+    # failure should be exposed as an execution blocker.
+    if (
+        str(row.get("blocker") or "") == "X_CREDITS_DEPLETED"
+        or str(row.get("resource") or "") == "X_API_CREDITS"
+    ):
+        return None
+    raw = str(row.get("retry_after") or "")
+    try:
+        retry_after = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return row
+    if retry_after.tzinfo is None or retry_after.utcoffset() is None:
+        return row
+    stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if stamp >= retry_after.astimezone(timezone.utc):
+        return None
+    return row
+
+
+def follower_count_from_user(user: dict[str, Any]) -> int | None:
+    """Return the official public followers_count without inventing a zero."""
+    public_metrics = user.get("public_metrics")
+    if not isinstance(public_metrics, dict):
+        return None
+    raw = public_metrics.get("followers_count")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    value = int(raw)
+    return value if value >= 0 else None
+
+
+def x_growth_mission_context(state_root: Path) -> dict[str, Any]:
+    payload = _read_json(Path(state_root) / "content" / "x" / "growth_mission.json")
+    if payload.get("schema_version") != MISSION_SCHEMA:
+        return {
+            "status": "UNAVAILABLE",
+            "generation_authority": "NONE",
+            "publication_authority": False,
+        }
+    blocker = _active_execution_blocker(Path(state_root))
+    payload = {**payload, "execution_blocker": blocker}
+    advice = _read_json(Path(state_root) / "content" / "x" / "strategy_advice.json")
+    if advice.get("authority") == "ADVISORY_ONLY":
+        payload["owner_strategy_advice"] = advice
+    return payload
+
+
+class XGrowthMissionCoordinator:
+    def __init__(
+        self,
+        *,
+        runtime: Any,
+        state_root: Path,
+        target: int = DEFAULT_TARGET,
+        duration_days: int = DEFAULT_DURATION_DAYS,
+        experiment_hours: int = DEFAULT_EXPERIMENT_HOURS,
+        enabled: bool = True,
+    ) -> None:
+        self.runtime = runtime
+        self.state_root = Path(state_root)
+        self.target = max(1, int(target))
+        self.duration = timedelta(days=max(1, int(duration_days)))
+        self.experiment_window = timedelta(hours=max(6, int(experiment_hours)))
+        self.enabled = bool(enabled)
+        self.path = self.state_root / "content" / "x" / "growth_mission.json"
+
+    @classmethod
+    def from_environment(cls, *, runtime: Any, state_root: Path) -> "XGrowthMissionCoordinator":
+        return cls(
+            runtime=runtime,
+            state_root=state_root,
+            target=int(os.environ.get("CONTENT_X_GROWTH_TARGET", str(DEFAULT_TARGET))),
+            duration_days=int(
+                os.environ.get("CONTENT_X_GROWTH_DURATION_DAYS", str(DEFAULT_DURATION_DAYS))
+            ),
+            experiment_hours=int(
+                os.environ.get(
+                    "CONTENT_X_GROWTH_EXPERIMENT_HOURS",
+                    str(DEFAULT_EXPERIMENT_HOURS),
+                )
+            ),
+            enabled=_enabled("CONTENT_X_GROWTH_MISSION_ENABLED"),
+        )
+
+    def _mission(self) -> Any | None:
+        missions = list(getattr(self.runtime, "external_missions", ()) or ())
+        matching = [row for row in missions if str(getattr(row, "metric", "")) == MISSION_METRIC]
+        active = [
+            row
+            for row in matching
+            if _enum_value(getattr(row, "status", "")) == "ACTIVE"
+        ]
+        return active[-1] if active else (matching[-1] if matching else None)
+
+    def _ensure_mission(
+        self,
+        *,
+        followers: int,
+        now: datetime,
+        evidence_refs: list[str],
+    ) -> Any:
+        mission = self._mission()
+        if mission is not None:
+            # Migrate the retired transport constraint without changing Ferro's experiment.
+            old="use official X API/OAuth for automated X actions"
+            if old in list(getattr(mission,"constraints",()) or ()):
+                mission.constraints=["use the authenticated Agent Runtime-owned Jev browser for X actions" if c==old else c for c in mission.constraints]
+                self._persist_runtime()
+            return mission
+        if followers >= self.target:
+            raise ValueError("X growth mission target must exceed the current follower count")
+        create = getattr(self.runtime, "submit_external_mission", None)
+        if not callable(create):
+            raise RuntimeError("Agent Runtime External Mission capability is unavailable")
+        from agent_runtime.goals import MissionDirection
+
+        mission = create(
+            (
+                f"Grow Ferro's real X audience from {followers:,} to "
+                f"{self.target:,} followers within {self.duration.days} days"
+            ),
+            metric=MISSION_METRIC,
+            baseline=float(followers),
+            target=float(self.target),
+            deadline=now + self.duration,
+            direction=MissionDirection.AT_LEAST,
+            constraints=list(MISSION_CONSTRAINTS),
+            evidence_refs=list(dict.fromkeys(evidence_refs)),
+            issued_by="operator",
+        )
+        self._persist_runtime()
+        return mission
+
+    def _should_record(self, mission: Any, followers: int, now: datetime) -> bool:
+        latest = self.runtime.missions.latest_observation(mission.mission_id)
+        if int(latest.value) != followers:
+            return True
+        return now - latest.observed_at >= MIN_OBSERVATION_INTERVAL
+
+    def _running_experiment(self, mission_id: str) -> Any | None:
+        rows = [
+            row
+            for row in self.runtime.missions.experiments
+            if row.mission_id == mission_id
+            and _enum_value(row.status) == "RUNNING"
+        ]
+        return rows[-1] if rows else None
+
+    def _open_experiment(self, mission_id: str) -> Any | None:
+        rows = [
+            row
+            for row in self.runtime.missions.experiments
+            if row.mission_id == mission_id
+            and _enum_value(row.status) in {"PROPOSED", "RUNNING"}
+        ]
+        return rows[-1] if rows else None
+
+    def _experiment_window(self, experiment: Any) -> timedelta:
+        raw = getattr(experiment, "measurement_window_hours", None)
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            hours = float(raw)
+            if hours > 0:
+                return timedelta(hours=hours)
+        return self.experiment_window
+
+    def _experiment_contract_matches(self, experiment: Any) -> bool:
+        raw = getattr(experiment, "measurement_window_hours", None)
+        metric = getattr(experiment, "settlement_metric", None)
+        if not isinstance(raw, (int, float)) or isinstance(raw, bool):
+            return False
+        expected_hours = self.experiment_window.total_seconds() / 3600.0
+        return (
+            abs(float(raw) - expected_hours) <= 1e-9
+            and str(metric or "").strip() == MISSION_METRIC
+        )
+
+    def _experiment_outcome(
+        self,
+        *,
+        mission: Any,
+        experiment: Any,
+        followers: int,
+        now: datetime,
+        evidence_refs: list[str],
+    ) -> dict[str, Any] | None:
+        started_at = getattr(experiment, "started_at", None)
+        before = getattr(experiment, "before_value", None)
+        if started_at is None or before is None:
+            return None
+        experiment_window = self._experiment_window(experiment)
+        due_at = started_at + experiment_window
+        if now < due_at:
+            return {
+                "status": "RUNNING",
+                "experiment_id": experiment.experiment_id,
+                "due_at": due_at.isoformat(),
+            }
+
+        remaining_at_start = max(
+            experiment_window.total_seconds(),
+            (mission.deadline - started_at).total_seconds(),
+        )
+        required_remaining = max(0.0, float(mission.target) - float(before))
+        expected_delta = required_remaining * (
+            experiment_window.total_seconds() / remaining_at_start
+        )
+        actual_delta = float(followers) - float(before)
+        from agent_runtime.goals import MissionConclusion
+
+        if actual_delta > 0 and actual_delta >= 0.8 * expected_delta:
+            conclusion = MissionConclusion.SUPPORTED
+        elif actual_delta <= 0 and expected_delta >= 1.0:
+            conclusion = MissionConclusion.REFUTED
+        else:
+            conclusion = MissionConclusion.INCONCLUSIVE
+
+        settle = getattr(self.runtime, "settle_mission_experiment", None)
+        if not callable(settle):
+            raise RuntimeError("Agent Runtime mission settlement capability is unavailable")
+        settled = settle(
+            experiment.experiment_id,
+            result_value=float(followers),
+            conclusion=conclusion,
+            evidence_refs=list(dict.fromkeys(evidence_refs)),
+            notes=(
+                "Follower change over the bounded measurement window was used as "
+                "mission feedback. This is observational feedback, not a causal "
+                "claim that the experiment alone caused the change. "
+                f"actual_delta={actual_delta:.2f}; expected_pace_delta={expected_delta:.2f}."
+            ),
+        )
+        from wechat_traffic_agent.world_learning import WorldLearningLedger
+        world_learning = WorldLearningLedger(self.state_root)
+        world_action = world_learning.find_by_metadata(
+            "mission_experiment_id",
+            experiment.experiment_id,
+        )
+        world_settlement = None
+        if world_action is not None:
+            if expected_delta > 0:
+                actual_utility = max(-1.0, min(1.0, actual_delta / expected_delta))
+            else:
+                actual_utility = 1.0 if actual_delta > 0 else (-1.0 if actual_delta < 0 else 0.0)
+            world_settlement = world_learning.settle(
+                action_id=str(world_action["action_id"]),
+                window="mission_window",
+                actual_utility=actual_utility,
+                evidence_refs=list(dict.fromkeys([
+                    *evidence_refs,
+                    f"mission-experiment:{experiment.experiment_id}:settled",
+                ])),
+                now=now,
+                counterfactual=(
+                    "Follower movement may include unrelated causes; settlement is "
+                    "observational and must not be interpreted as causal attribution."
+                ),
+            )
+        self._persist_runtime()
+        return {
+            "status": "SETTLED",
+            "experiment_id": settled.experiment_id,
+            "conclusion": conclusion.value,
+            "actual_delta": actual_delta,
+            "expected_pace_delta": expected_delta,
+            "world_learning_action_id": (
+                None if world_action is None else world_action.get("action_id")
+            ),
+            "world_learning_settlement": world_settlement,
+        }
+
+    def _planning_context(self) -> dict[str, Any]:
+        return {
+            "owner_strategy_advice": _read_json(self.state_root / "content" / "x" / "strategy_advice.json"),
+            "schema_version": MISSION_PLANNING_CONTEXT_REF,
+            "measurement": {
+                "follower_metric_source": (
+                    "authenticated Jev X profile follower display (precision recorded)"
+                ),
+                "prospective_follower_snapshots": "AVAILABLE",
+                "post_public_metrics": (
+                    "VISIBLE_COUNTERS_ON_VERIFIED_X_PUBLIC_PAGES"
+                ),
+                "historical_post_level_follower_attribution": "UNAVAILABLE",
+                "post_level_profile_visits": "UNAVAILABLE",
+                "post_level_follows": "UNAVAILABLE",
+                "retrospective_90_day_new_follower_uplift": "UNAVAILABLE",
+                "browser_fallback_is_metric_authority": False,
+                "authenticated_jev_identity_is_metric_authority": True,
+                "causal_attribution": (
+                    "UNAVAILABLE; use bounded prospective observational evidence"
+                ),
+            },
+            "execution": {
+                "website_content_pipeline": "AVAILABLE",
+                "x_publication": (
+                    "AVAILABLE through the authenticated Runtime-owned Jev browser; "
+                    "public content verification is required"
+                ),
+                "publication_starts_experiment": True,
+                "automated_follow_like_repost": "FORBIDDEN_BY_MISSION_CONSTRAINTS",
+            },
+            "experiment_contract": {
+                "measurement_window_hours": (
+                    self.experiment_window.total_seconds() / 3600.0
+                ),
+                "settlement_metric": MISSION_METRIC,
+            },
+            "learning": {
+                "measurement_window_hours": (
+                    self.experiment_window.total_seconds() / 3600.0
+                ),
+                "settlement_metric": MISSION_METRIC,
+                "settlement_is_causal_claim": False,
+                "replan_when_required_evidence_is_unavailable": True,
+            },
+            "operator_authority": {
+                "mission_goal_is_approved": True,
+                "routine_bounded_execution_requires_new_operator_approval": False,
+                "existing_execution_gates_remain_authoritative": True,
+            },
+        }
+
+    def _audience_feedback_state(
+        self,
+        *,
+        mission: Any,
+        followers: int,
+        now: datetime,
+    ) -> dict[str, Any]:
+        cutoff = now - MISSION_AUDIENCE_FEEDBACK_WINDOW
+        points: list[tuple[datetime, float, str]] = []
+        if mission.created_at >= cutoff:
+            points.append((mission.created_at, float(mission.baseline), "mission-baseline"))
+        for row in list(getattr(self.runtime.missions, "observations", ()) or ()):
+            if (
+                row.mission_id == mission.mission_id
+                and row.source == "official-x-identity"
+                and row.observed_at >= cutoff
+            ):
+                points.append((row.observed_at, float(row.value), row.observation_id))
+        points.append((now, float(followers), "current-official-x-identity"))
+        peak_at, peak_value, peak_ref = max(points, key=lambda item: item[1])
+        decline_ratio = (
+            0.0
+            if peak_value <= 0
+            else max(0.0, (peak_value - float(followers)) / peak_value)
+        )
+        active = decline_ratio > MISSION_AUDIENCE_DECLINE_THRESHOLD
+        return {
+            "active": active,
+            "authority": "STRATEGY_FEEDBACK_ONLY",
+            "window_hours": MISSION_AUDIENCE_FEEDBACK_WINDOW.total_seconds() / 3600.0,
+            "decline_threshold": MISSION_AUDIENCE_DECLINE_THRESHOLD,
+            "current": float(followers),
+            "peak": peak_value,
+            "peak_at": peak_at.isoformat(),
+            "peak_ref": peak_ref,
+            "decline_ratio": decline_ratio,
+            "action": (
+                "REASSESS_CONTENT_STRATEGY"
+                if active
+                else "CONTINUE_EXPERIMENT"
+            ),
+        }
+
+    def _baseline_guardrail_report(
+        self,
+        *,
+        mission: Any,
+        roadmap: Any,
+        step: Any,
+        followers: int,
+        identity_receipt_id: str,
+        now: datetime,
+        audience_feedback: dict[str, Any],
+    ) -> tuple[Path, dict[str, Any]]:
+        payload = {
+            "schema_version": MISSION_BASELINE_GUARDRAIL_SCHEMA,
+            "generated_at": now.isoformat(),
+            "mission_id": mission.mission_id,
+            "roadmap_id": roadmap.roadmap_id,
+            "roadmap_version": roadmap.version,
+            "step_id": step.step_id,
+            "step_title": step.title,
+            "step_exit_criteria": step.exit_criteria,
+            "baseline": {
+                "metric": MISSION_METRIC,
+                "value": float(followers),
+                "source": "authenticated Jev X profile follower display (precision recorded)",
+                "identity_receipt_id": str(identity_receipt_id),
+            },
+            "measurement": {
+                "prospective_follower_snapshots": "ENABLED",
+                "minimum_required_cadence_hours": 24.0,
+                "runtime_record_interval_hours": (
+                    MIN_OBSERVATION_INTERVAL.total_seconds() / 3600.0
+                ),
+                "authoritative_source": "official-x-identity",
+                "browser_fallback_is_metric_authority": False,
+                "authenticated_jev_identity_is_metric_authority": True,
+                "causal_attribution": False,
+                "post_public_metrics_when_available": [
+                    "impression_count",
+                    "like_count",
+                    "reply_count",
+                    "retweet_count",
+                    "quote_count",
+                    "bookmark_count",
+                ],
+                "unavailable_metrics": [
+                    "historical_post_level_follower_attribution",
+                    "post_level_profile_visits",
+                    "post_level_follows",
+                ],
+            },
+            "guardrails": {
+                "audience_feedback": audience_feedback,
+                "prohibited_tactics": [
+                    "artificial follower inflation",
+                    "follow-churn",
+                    "reciprocal-follow or reciprocal-engagement schemes",
+                    "indiscriminate following",
+                    "automated likes",
+                    "unsolicited repetitive replies",
+                ],
+                "policy_constraints": list(mission.constraints),
+                "ratification": {
+                    "basis": (
+                        "operator-issued mission with observational "
+                        "audience feedback"
+                    ),
+                    "new_human_approval_event": False,
+                    "existing_execution_gates_remain_authoritative": True,
+                },
+            },
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
+        }
+        material = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        artifact_id = (
+            "x-mission-baseline-guardrails:sha256:"
+            + hashlib.sha256(material).hexdigest()
+        )
+        payload["artifact_id"] = artifact_id
+        workspace = (
+            self.state_root
+            / "content"
+            / "x"
+            / "missions"
+            / str(mission.mission_id)
+        )
+        path = workspace / "baseline_guardrails.json"
+        _write_json(path, payload)
+        return path, payload
+
+    def _advance_ready_baseline_step(
+        self,
+        *,
+        mission: Any,
+        followers: int,
+        identity_receipt_id: str,
+        now: datetime,
+        evidence_refs: list[str],
+        audience_feedback: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        start = getattr(self.runtime, "start_mission_step", None)
+        complete = getattr(self.runtime, "complete_mission_step", None)
+        if (
+            roadmap is None
+            or not callable(schedule_method)
+            or not callable(start)
+            or not callable(complete)
+        ):
+            return None
+        schedule = schedule_method(max_parallelism=3)
+        required_tags = {
+            "x_api_oauth_read",
+            "analytics",
+            "legal_policy_review",
+            "brand_review",
+        }
+        candidate = None
+        for item in schedule.items:
+            if item.mission_id != mission.mission_id:
+                continue
+            if _enum_value(item.status) not in {"READY", "RUNNING"}:
+                continue
+            step = self.runtime.missions.get_step(item.step_id)
+            if not required_tags.issubset(set(step.resource_tags)):
+                continue
+            if "prospective follower snapshots" not in step.exit_criteria.lower():
+                continue
+            candidate = step
+            break
+        if candidate is None:
+            return None
+        started = start(candidate.step_id)
+        path, report = self._baseline_guardrail_report(
+            mission=mission,
+            roadmap=roadmap,
+            step=started,
+            followers=followers,
+            identity_receipt_id=identity_receipt_id,
+            now=now,
+            audience_feedback=audience_feedback,
+        )
+        completed = complete(
+            candidate.step_id,
+            evidence_refs=list(
+                dict.fromkeys(
+                    [
+                        *evidence_refs,
+                        str(report["artifact_id"]),
+                        MISSION_PLANNING_CONTEXT_REF,
+                    ]
+                )
+            ),
+        )
+        self._persist_runtime()
+        return {
+            "status": "COMPLETED",
+            "step_id": completed.step_id,
+            "title": completed.title,
+            "artifact_id": report["artifact_id"],
+            "artifact_path": str(path),
+            "completed_at": (
+                None
+                if completed.completed_at is None
+                else completed.completed_at.isoformat()
+            ),
+        }
+
+
+    @staticmethod
+    def _is_publication_step(step: Any) -> bool:
+        tags = {str(value) for value in getattr(step, "resource_tags", ())}
+        return bool(
+            {"x_api_oauth_write", "x_publication_gated"} & tags
+            and "content_creation" in tags
+        )
+
+    def _record_publication_for_roadmap(
+        self,
+        *,
+        mission: Any,
+        publication_receipt_id: str,
+        post_id: str,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        start_method = getattr(self.runtime, "start_mission_step", None)
+        if not callable(schedule_method) or not callable(start_method):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return None
+        steps = {step.step_id: step for step in roadmap.steps}
+        schedule = schedule_method(max_parallelism=3)
+        selected = None
+        selected_status = None
+        for item in schedule.items:
+            if item.mission_id != mission.mission_id:
+                continue
+            status = _enum_value(item.status)
+            if status not in {"READY", "RUNNING"}:
+                continue
+            step = steps.get(item.step_id)
+            if step is not None and self._is_publication_step(step):
+                selected = step
+                selected_status = status
+                break
+        if selected is None:
+            return {"status": "NO_READY_PUBLICATION_STEP"}
+
+        if selected_status == "READY":
+            selected = start_method(selected.step_id)
+            transition_status = "STARTED"
+        else:
+            transition_status = "RECORDED"
+
+        workspace = (
+            self.state_root
+            / "content"
+            / "x"
+            / "missions"
+            / str(mission.mission_id)
+        )
+        progress_path = workspace / "roadmap_progress.json"
+        progress = _read_json(progress_path)
+        if (
+            progress.get("schema_version") != MISSION_PROGRESS_SCHEMA
+            or progress.get("roadmap_id") != roadmap.roadmap_id
+        ):
+            progress = {
+                "schema_version": MISSION_PROGRESS_SCHEMA,
+                "mission_id": mission.mission_id,
+                "roadmap_id": roadmap.roadmap_id,
+                "roadmap_version": roadmap.version,
+                "steps": {},
+            }
+        step_rows = progress.setdefault("steps", {})
+        row = step_rows.setdefault(
+            selected.step_id,
+            {
+                "title": selected.title,
+                "started_at": (
+                    None
+                    if selected.started_at is None
+                    else selected.started_at.isoformat()
+                ),
+                "publications": [],
+            },
+        )
+        publications = row.setdefault("publications", [])
+        if not any(
+            isinstance(item, dict)
+            and item.get("publication_receipt_id") == str(publication_receipt_id)
+            for item in publications
+        ):
+            publications.append(
+                {
+                    "publication_receipt_id": str(publication_receipt_id),
+                    "post_id": str(post_id),
+                    "published_at": now.isoformat(),
+                }
+            )
+        row["publication_count"] = len(publications)
+        progress["updated_at"] = now.isoformat()
+        _write_json(progress_path, progress)
+        digest = hashlib.sha256(progress_path.read_bytes()).hexdigest()
+        progress_ref = f"x-mission-roadmap-progress:sha256:{digest}"
+        selected.evidence_refs = list(
+            dict.fromkeys(
+                [
+                    *selected.evidence_refs,
+                    str(publication_receipt_id),
+                    f"x-post:{str(post_id)}",
+                    progress_ref,
+                ]
+            )
+        )
+        self._persist_runtime()
+        return {
+            "status": transition_status,
+            "step_id": selected.step_id,
+            "title": selected.title,
+            "publication_count": len(publications),
+            "progress_ref": progress_ref,
+        }
+
+
+    async def _ensure_roadmap(self, mission: Any) -> dict[str, Any]:
+        needs_revision = getattr(self.runtime.missions, "roadmap_needs_revision", None)
+        latest = getattr(self.runtime.missions, "latest_roadmap", None)
+        if not callable(needs_revision) or not callable(latest):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        roadmap = latest(mission.mission_id)
+        context_applied = (
+            roadmap is not None
+            and MISSION_PLANNING_CONTEXT_REF in set(roadmap.evidence_refs)
+        )
+        if not needs_revision(mission.mission_id) and context_applied:
+            return {
+                "status": "ACTIVE",
+                "roadmap_id": roadmap.roadmap_id,
+                "version": roadmap.version,
+            }
+        if not bool(getattr(self.runtime, "has_advisory_backend", False)):
+            return {"status": "BACKEND_UNAVAILABLE"}
+        deliberate = getattr(self.runtime, "deliberate_mission_roadmap", None)
+        if not callable(deliberate):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        force_revision = roadmap is not None and not context_applied
+        roadmap = await deliberate(
+            mission.mission_id,
+            max_tokens=1800,
+            force_revision=force_revision,
+            planning_context=self._planning_context(),
+            evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+        )
+        self._persist_runtime()
+        return {
+            "status": "REPLANNED" if force_revision else "PLANNED",
+            "roadmap_id": roadmap.roadmap_id,
+            "version": roadmap.version,
+            "rationale": roadmap.rationale,
+            "step_count": len(roadmap.steps),
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
+        }
+
+    async def _ensure_experiment(self, mission: Any) -> dict[str, Any]:
+        existing = self._open_experiment(mission.mission_id)
+        existing_status = None if existing is None else _enum_value(existing.status)
+        context_applied = (
+            existing is not None
+            and MISSION_PLANNING_CONTEXT_REF in set(existing.evidence_refs)
+        )
+        contract_matches = (
+            existing is not None and self._experiment_contract_matches(existing)
+        )
+        if existing is not None and (
+            existing_status == "RUNNING" or (context_applied and contract_matches)
+        ):
+            return {
+                "status": existing_status,
+                "experiment_id": existing.experiment_id,
+                "strategy": existing.strategy,
+                "planning_context_ref": (
+                    MISSION_PLANNING_CONTEXT_REF if context_applied else None
+                ),
+                "measurement_window_hours": getattr(
+                    existing, "measurement_window_hours", None
+                ),
+                "settlement_metric": getattr(existing, "settlement_metric", None),
+            }
+
+        force_revision = (
+            existing is not None
+            and existing_status == "PROPOSED"
+            and (not context_applied or not contract_matches)
+        )
+        if not bool(getattr(self.runtime, "has_advisory_backend", False)):
+            if force_revision:
+                return {
+                    "status": "REPLAN_BACKEND_UNAVAILABLE",
+                    "experiment_id": existing.experiment_id,
+                }
+            return {"status": "BACKEND_UNAVAILABLE"}
+        deliberate = getattr(self.runtime, "deliberate_external_mission", None)
+        if not callable(deliberate):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE"}
+        experiment = await deliberate(
+            mission.mission_id,
+            max_tokens=900,
+            force_revision=force_revision,
+            planning_context=self._planning_context(),
+            evidence_refs=[MISSION_PLANNING_CONTEXT_REF],
+        )
+        self._persist_runtime()
+        return {
+            "status": "REPLANNED" if force_revision else "PROPOSED",
+            "experiment_id": experiment.experiment_id,
+            "strategy": experiment.strategy,
+            "expected_effect": experiment.expected_effect,
+            "risk_notes": list(experiment.risk_notes),
+            "planning_context_ref": MISSION_PLANNING_CONTEXT_REF,
+            "measurement_window_hours": experiment.measurement_window_hours,
+            "settlement_metric": experiment.settlement_metric,
+        }
+
+    def publication_binding(self, *, cycle: str) -> dict[str, Any]:
+        """Return whether a content cycle is still bound to the active X mission."""
+        mission = self._mission()
+        if mission is None or _enum_value(mission.status) != "ACTIVE":
+            return {"status": "NO_ACTIVE_MISSION", "bound": False}
+        cycle = str(cycle or "").strip()
+        if not cycle:
+            return {"status": "MISSING_CYCLE", "bound": False}
+        folder = self.state_root / "content" / "continuous" / "cycles" / cycle
+        plan = _read_json(folder / "mind_plan.json")
+        goal = plan.get("goal") if isinstance(plan.get("goal"), dict) else {}
+        mission_id = str(plan.get("external_mission_id") or "").strip()
+        from wechat_traffic_agent.x_owner_execution import owner_x_publication_request
+        owner_request = owner_x_publication_request(folder)
+        if (
+            (str(goal.get("origin") or "") != "EXTERNAL_MISSION" and not owner_request)
+            or mission_id != str(mission.mission_id)
+        ):
+            return {"status": "NOT_EXTERNAL_MISSION", "bound": False, "cycle": cycle}
+        if (folder / "output_fallback.json").exists():
+            return {"status": "OUTPUT_FALLBACK", "bound": False, "cycle": cycle}
+        discovery = _read_json(folder / "mission_discovery.json")
+        if not owner_request and str(discovery.get("mission_id") or "") != str(mission.mission_id):
+            return {"status": "MISSION_DISCOVERY_MISMATCH", "bound": False, "cycle": cycle}
+        result = _read_json(folder / "result.json")
+        result_status = str(result.get("status") or "").upper()
+        required_topic = str(plan.get("required_topic") or "").strip()
+        evidence_floor = _read_json(folder / "evidence_floor_check.json")
+        owner_x_ready = bool(owner_request) and result_status == "X_EXPRESSION_READY"
+        if not owner_x_ready and str(evidence_floor.get("status") or "") != "PASS":
+            return {"status": "EVIDENCE_FLOOR_NOT_PASSED", "bound": False, "cycle": cycle}
+
+        binding_status = "BOUND"
+        bound_topic = required_topic
+        admission: dict[str, Any] = {"surface": "WEBSITE"}
+        if owner_x_ready:
+            expression = _read_json(folder / "x_expression_context.json")
+            source = expression.get("source_evidence") or {}
+            cognition = _read_json(folder / "cognition.json")
+            if not (cognition.get("worth_saying") and source.get("evidence_id")
+                    and source.get("summary") and source.get("evidence_refs")
+                    and result.get("source_evidence_id") == source.get("evidence_id")):
+                return {"status": "X_EXPRESSION_ADMISSION_FAILED", "bound": False, "cycle": cycle}
+            binding_status = "BOUND_X_EXPRESSION"
+            admission = {"surface": "X", "owner_execution_request": True,
+                         "source_evidence_id": source["evidence_id"]}
+        elif result_status == "PUBLISHED":
+            publication = _read_json(folder / "publication.json")
+            outcome = (
+                publication.get("outcome_attribution")
+                if isinstance(publication.get("outcome_attribution"), dict)
+                else {}
+            )
+            published_topic = str(outcome.get("topic") or "").strip()
+            if required_topic and published_topic != required_topic:
+                return {
+                    "status": "MISSION_TOPIC_MISMATCH",
+                    "bound": False,
+                    "cycle": cycle,
+                    "required_topic": required_topic,
+                    "published_topic": published_topic,
+                }
+            bound_topic = published_topic or required_topic
+        elif result_status == "HELD_BY_CHECKS":
+            # Website admission contains article-specific editorial constraints
+            # (learned writing techniques, long-form structure, opening-mode
+            # experiments).  Those constraints must not silently become X
+            # publication policy.  A held mission cycle may continue to X only
+            # from grounded, useful cognition with attributable source evidence.
+            cognition = _read_json(folder / "cognition.json")
+            experience = _read_json(folder / "experience.json")
+            self_check = (
+                experience.get("self_check")
+                if isinstance(experience.get("self_check"), dict)
+                else {}
+            )
+            draft_path = str(result.get("draft_path") or "").strip()
+            draft: dict[str, Any] = {}
+            if draft_path:
+                try:
+                    candidate = Path(draft_path).resolve()
+                    drafts_root = (self.state_root / "content" / "drafts").resolve()
+                    if candidate.is_relative_to(drafts_root):
+                        draft = _read_json(candidate)
+                except (OSError, RuntimeError, ValueError):
+                    draft = {}
+            artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
+            source_refs = [
+                row
+                for row in list(artifact.get("source_refs") or ())
+                if isinstance(row, dict)
+                and str(row.get("ref_id") or "").strip()
+                and str(row.get("source") or "").strip()
+            ]
+            x_admitted = all(
+                (
+                    bool(cognition.get("worth_saying")),
+                    bool(self_check.get("grounded")),
+                    bool(self_check.get("useful")),
+                    bool(source_refs),
+                )
+            )
+            if not x_admitted:
+                return {
+                    "status": "X_EXPRESSION_ADMISSION_FAILED",
+                    "bound": False,
+                    "cycle": cycle,
+                    "admission": {
+                        "worth_saying": bool(cognition.get("worth_saying")),
+                        "grounded": bool(self_check.get("grounded")),
+                        "useful": bool(self_check.get("useful")),
+                        "source_ref_count": len(source_refs),
+                    },
+                }
+            decision = (
+                discovery.get("decision")
+                if isinstance(discovery.get("decision"), dict)
+                else {}
+            )
+            discovered_topic = str(decision.get("topic") or "").strip()
+            if required_topic and discovered_topic and discovered_topic != required_topic:
+                return {
+                    "status": "MISSION_TOPIC_MISMATCH",
+                    "bound": False,
+                    "cycle": cycle,
+                    "required_topic": required_topic,
+                    "published_topic": discovered_topic,
+                }
+            binding_status = "BOUND_X_EXPRESSION"
+            bound_topic = required_topic or discovered_topic
+            admission = {
+                "surface": "X",
+                "website_status": result_status,
+                "website_checks_passed": bool(result.get("automated_checks_passed")),
+                "x_evidence_admission": True,
+                "source_ref_count": len(source_refs),
+            }
+        else:
+            return {"status": "MISSION_CONTENT_NOT_PUBLISHED", "bound": False, "cycle": cycle}
+
+        experiment = self._open_experiment(mission.mission_id)
+        return {
+            "status": binding_status,
+            "bound": True,
+            "cycle": cycle,
+            "mission_id": mission.mission_id,
+            "experiment_id": None if experiment is None else experiment.experiment_id,
+            "topic": bound_topic,
+            "admission": admission,
+        }
+
+    def record_publication_baseline(
+        self,
+        *,
+        cycle: str,
+        user: dict[str, Any],
+        identity_receipt_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Persist a prospective official-X follower snapshot immediately before publication."""
+        binding = self.publication_binding(cycle=cycle)
+        if not bool(binding.get("bound")):
+            return {"status": "NOT_MISSION_BOUND", "binding": binding}
+        followers = follower_count_from_user(user)
+        if followers is None:
+            return {"status": "FOLLOWER_METRIC_UNAVAILABLE", "binding": binding}
+        mission = self._mission()
+        if mission is None:
+            return {"status": "NO_ACTIVE_MISSION", "binding": binding}
+        experiment = self._open_experiment(mission.mission_id)
+        if experiment is None or _enum_value(experiment.status) not in {"PROPOSED", "RUNNING"}:
+            return {
+                "status": "NO_PROPOSED_EXPERIMENT",
+                "experiment_id": None if experiment is None else experiment.experiment_id,
+                "binding": binding,
+            }
+        observe = getattr(self.runtime, "observe_mission_metric", None)
+        if not callable(observe):
+            return {"status": "RUNTIME_CAPABILITY_UNAVAILABLE", "binding": binding}
+        evidence_ref = f"x-mission-prepublication:{cycle}"
+        observation = observe(
+            mission.mission_id,
+            value=float(followers),
+            source=f"official-x-identity:pre-publication:{cycle}",
+            evidence_refs=[str(identity_receipt_id), evidence_ref],
+        )
+        self._persist_runtime()
+        payload = {
+            "schema_version": MISSION_PUBLICATION_BASELINE_SCHEMA,
+            "status": "RECORDED",
+            "cycle": str(cycle),
+            "mission_id": mission.mission_id,
+            "experiment_id": experiment.experiment_id,
+            "followers": float(followers),
+            "identity_receipt_id": str(identity_receipt_id),
+            "observation_id": observation.observation_id,
+            "observed_at": observation.observed_at.isoformat(),
+            "publication_authority": False,
+        }
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        _write_json(folder / "x_mission_publication_baseline.json", payload)
+        return payload
+
+    def _publication_baseline(self, *, cycle: str, experiment_id: str) -> dict[str, Any]:
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        payload = _read_json(folder / "x_mission_publication_baseline.json")
+        if (
+            payload.get("schema_version") != MISSION_PUBLICATION_BASELINE_SCHEMA
+            or payload.get("status") != "RECORDED"
+            or payload.get("cycle") != str(cycle)
+            or payload.get("experiment_id") != str(experiment_id)
+            or not str(payload.get("observation_id") or "").strip()
+        ):
+            return {}
+        return payload
+
+    def _repair_invalid_roadmap_publication(
+        self,
+        *,
+        mission: Any,
+        cycle: str,
+        publication_receipt_id: str,
+        post_id: str,
+        reason: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Remove invalid publication progress and undo a step start caused by it."""
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return {"status": "NO_ROADMAP"}
+        workspace = (
+            self.state_root / "content" / "x" / "missions" / str(mission.mission_id)
+        )
+        progress_path = workspace / "roadmap_progress.json"
+        progress = _read_json(progress_path)
+        if (
+            progress.get("schema_version") != MISSION_PROGRESS_SCHEMA
+            or progress.get("roadmap_id") != roadmap.roadmap_id
+        ):
+            return {"status": "NO_MATCHING_ROADMAP_PROGRESS"}
+
+        receipt_path = (
+            self.state_root
+            / "content"
+            / "continuous"
+            / "cycles"
+            / str(cycle)
+            / "x_browser_publication.json"
+        )
+        receipt = _read_json(receipt_path)
+        transition = (
+            receipt.get("mission_experiment_transition")
+            if isinstance(receipt.get("mission_experiment_transition"), dict)
+            else {}
+        )
+        step_transition = (
+            transition.get("roadmap_step_transition")
+            if isinstance(transition.get("roadmap_step_transition"), dict)
+            else {}
+        )
+        transition_step_id = str(step_transition.get("step_id") or "").strip()
+        transition_status = str(step_transition.get("status") or "").strip()
+        transition_progress_ref = str(step_transition.get("progress_ref") or "").strip()
+
+        step_rows = (
+            progress.get("steps") if isinstance(progress.get("steps"), dict) else {}
+        )
+        matched_step_id = None
+        if transition_step_id and transition_step_id in step_rows:
+            matched_step_id = transition_step_id
+        else:
+            for step_id, row in step_rows.items():
+                if not isinstance(row, dict):
+                    continue
+                publications = row.get("publications")
+                if not isinstance(publications, list):
+                    continue
+                if any(
+                    isinstance(item, dict)
+                    and str(item.get("publication_receipt_id") or "")
+                    == str(publication_receipt_id)
+                    and str(item.get("post_id") or "") == str(post_id)
+                    for item in publications
+                ):
+                    matched_step_id = str(step_id)
+                    break
+        if not matched_step_id:
+            return {"status": "NO_MATCHING_PUBLICATION"}
+
+        row = step_rows.get(matched_step_id)
+        if not isinstance(row, dict):
+            return {"status": "NO_MATCHING_PUBLICATION"}
+        publications = row.get("publications")
+        if not isinstance(publications, list):
+            publications = []
+        kept = [
+            item
+            for item in publications
+            if not (
+                isinstance(item, dict)
+                and str(item.get("publication_receipt_id") or "")
+                == str(publication_receipt_id)
+                and str(item.get("post_id") or "") == str(post_id)
+            )
+        ]
+        if len(kept) == len(publications):
+            return {"status": "NO_MATCHING_PUBLICATION"}
+
+        row["publications"] = kept
+        row["publication_count"] = len(kept)
+        invalidations = row.setdefault("invalidations", [])
+        if isinstance(invalidations, list) and not any(
+            isinstance(item, dict)
+            and item.get("publication_receipt_id") == str(publication_receipt_id)
+            for item in invalidations
+        ):
+            invalidations.append(
+                {
+                    "publication_receipt_id": str(publication_receipt_id),
+                    "post_id": str(post_id),
+                    "cycle": str(cycle),
+                    "reason": str(reason)[:500],
+                    "invalidated_at": now.astimezone(timezone.utc).isoformat(),
+                }
+            )
+
+        step = self.runtime.missions.get_step(matched_step_id)
+        invalid_refs = {
+            str(publication_receipt_id),
+            f"x-post:{str(post_id)}",
+        }
+        if transition_progress_ref:
+            invalid_refs.add(transition_progress_ref)
+        step.evidence_refs = [
+            ref for ref in step.evidence_refs if str(ref) not in invalid_refs
+        ]
+
+        step_reset = False
+        if (
+            transition_status == "STARTED"
+            and not kept
+            and step.started_at is not None
+            and step.completed_at is None
+            and step.cancelled_at is None
+        ):
+            step.started_at = None
+            row["started_at"] = None
+            step_reset = True
+
+        progress["updated_at"] = now.astimezone(timezone.utc).isoformat()
+        _write_json(progress_path, progress)
+        self._persist_runtime()
+        return {
+            "status": "REPAIRED",
+            "step_id": matched_step_id,
+            "publication_count": len(kept),
+            "step_reset_to_ready": step_reset,
+        }
+
+    def _reconcile_invalidated_roadmap_publications(
+        self, *, mission: Any, now: datetime
+    ) -> dict[str, Any] | None:
+        """Self-heal roadmap progress left behind by older invalidation logic."""
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        if roadmap is None:
+            return None
+        progress_path = (
+            self.state_root
+            / "content"
+            / "x"
+            / "missions"
+            / str(mission.mission_id)
+            / "roadmap_progress.json"
+        )
+        progress = _read_json(progress_path)
+        if (
+            progress.get("schema_version") != MISSION_PROGRESS_SCHEMA
+            or progress.get("roadmap_id") != roadmap.roadmap_id
+        ):
+            return None
+        candidates: list[tuple[str, str, str, str]] = []
+        step_rows = (
+            progress.get("steps") if isinstance(progress.get("steps"), dict) else {}
+        )
+        for row in step_rows.values():
+            if not isinstance(row, dict):
+                continue
+            publications = row.get("publications")
+            if not isinstance(publications, list):
+                continue
+            for item in publications:
+                if not isinstance(item, dict):
+                    continue
+                receipt_id = str(item.get("publication_receipt_id") or "").strip()
+                post_id = str(item.get("post_id") or "").strip()
+                prefix = "x-browser-publication:"
+                if not receipt_id.startswith(prefix) or not post_id:
+                    continue
+                remainder = receipt_id[len(prefix):]
+                suffix = ":" + post_id
+                if not remainder.endswith(suffix):
+                    continue
+                cycle = remainder[: -len(suffix)]
+                receipt = _read_json(
+                    self.state_root
+                    / "content"
+                    / "continuous"
+                    / "cycles"
+                    / cycle
+                    / "x_browser_publication.json"
+                )
+                invalidation = (
+                    receipt.get("mission_experiment_invalidation")
+                    if isinstance(
+                        receipt.get("mission_experiment_invalidation"), dict
+                    )
+                    else {}
+                )
+                if (
+                    str(invalidation.get("publication_receipt_id") or "") == receipt_id
+                    and str(invalidation.get("post_id") or "") == post_id
+                ):
+                    candidates.append(
+                        (
+                            cycle,
+                            receipt_id,
+                            post_id,
+                            str(invalidation.get("reason") or "invalid mission publication"),
+                        )
+                    )
+        repairs = [
+            self._repair_invalid_roadmap_publication(
+                mission=mission,
+                cycle=cycle,
+                publication_receipt_id=receipt_id,
+                post_id=post_id,
+                reason=reason,
+                now=now,
+            )
+            for cycle, receipt_id, post_id, reason in candidates
+        ]
+        applied = [row for row in repairs if row.get("status") == "REPAIRED"]
+        if not repairs:
+            return None
+        return {
+            "status": "REPAIRED" if applied else "NO_CHANGE",
+            "repair_count": len(applied),
+            "repairs": repairs,
+        }
+
+    def repair_invalid_experiment_start(
+        self,
+        *,
+        cycle: str,
+        publication_receipt_id: str,
+        post_id: str,
+        reason: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        """Repair a start that was created from a publication later proven unbound."""
+        mission = self._mission()
+        if mission is None:
+            return {"status": "NO_ACTIVE_MISSION"}
+        experiment = self._running_experiment(mission.mission_id)
+        if experiment is None:
+            return {"status": "NO_RUNNING_EXPERIMENT"}
+        payload = _read_json(self.path)
+        active = payload.get("active_experiment")
+        if not isinstance(active, dict):
+            return {"status": "PROJECTION_MISSING"}
+        if str(active.get("experiment_id") or "") != experiment.experiment_id:
+            return {"status": "START_EVIDENCE_MISMATCH", "experiment_id": experiment.experiment_id}
+        projected_receipt = str(active.get("publication_receipt_id") or "").strip()
+        projected_post = str(active.get("x_post_id") or "").strip()
+        expected_receipt = str(publication_receipt_id).strip()
+        expected_post = str(post_id).strip()
+        if projected_receipt or projected_post:
+            evidence_matches = (
+                projected_receipt == expected_receipt
+                and projected_post == expected_post
+            )
+        else:
+            refs = {str(ref) for ref in experiment.evidence_refs}
+            evidence_matches = (
+                expected_receipt in refs
+                and f"x-post:{expected_post}" in refs
+            )
+        if not evidence_matches:
+            return {"status": "START_EVIDENCE_MISMATCH", "experiment_id": experiment.experiment_id}
+        from agent_runtime.goals import MissionExperimentStatus
+        experiment.status = MissionExperimentStatus.PROPOSED
+        experiment.started_at = None
+        experiment.before_value = None
+        invalid_refs = {str(publication_receipt_id), f"x-post:{str(post_id)}"}
+        experiment.evidence_refs = [ref for ref in experiment.evidence_refs if ref not in invalid_refs]
+        self._persist_runtime()
+        active["status"] = "PROPOSED"
+        active["started_at"] = None
+        active.pop("publication_receipt_id", None)
+        active.pop("x_post_id", None)
+        active["start_invalidation"] = {
+            "cycle": str(cycle),
+            "publication_receipt_id": str(publication_receipt_id),
+            "post_id": str(post_id),
+            "reason": str(reason)[:500],
+            "invalidated_at": now.astimezone(timezone.utc).isoformat(),
+        }
+        payload["as_of"] = now.astimezone(timezone.utc).isoformat()
+        _write_json(self.path, payload)
+        folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
+        receipt = _read_json(folder / "x_browser_publication.json")
+        if receipt.get("status") == "POSTED":
+            receipt["mission_experiment_invalidation"] = dict(active["start_invalidation"])
+            _write_json(folder / "x_browser_publication.json", receipt)
+        roadmap_repair = self._repair_invalid_roadmap_publication(
+            mission=mission,
+            cycle=str(cycle),
+            publication_receipt_id=str(publication_receipt_id),
+            post_id=str(post_id),
+            reason=str(reason),
+            now=now,
+        )
+        return {
+            "status": "REPAIRED_TO_PROPOSED",
+            "experiment_id": experiment.experiment_id,
+            "roadmap_repair": roadmap_repair,
+            **active["start_invalidation"],
+        }
+
+    def start_experiment_from_publication(
+        self,
+        *,
+        cycle: str,
+        publication_receipt_id: str,
+        post_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"status": "DISABLED"}
+        mission = self._mission()
+        if mission is None or _enum_value(mission.status) != "ACTIVE":
+            return {"status": "NO_ACTIVE_MISSION"}
+        if not str(publication_receipt_id).strip() or not str(post_id).strip():
+            raise ValueError("mission experiment publication evidence is required")
+        binding = self.publication_binding(cycle=cycle)
+        if not bool(binding.get("bound")):
+            return {"status": "NOT_MISSION_BOUND", "binding": binding}
+        experiment = self._open_experiment(mission.mission_id)
+        if experiment is None:
+            return {"status": "NO_PROPOSED_EXPERIMENT"}
+        baseline = self._publication_baseline(
+            cycle=str(cycle),
+            experiment_id=experiment.experiment_id,
+        )
+        if not baseline:
+            return {
+                "status": "PREPUBLICATION_BASELINE_REQUIRED",
+                "experiment_id": experiment.experiment_id,
+                "binding": binding,
+            }
+        roadmap_step_transition = self._record_publication_for_roadmap(
+            mission=mission,
+            publication_receipt_id=str(publication_receipt_id).strip(),
+            post_id=str(post_id).strip(),
+            now=now.astimezone(timezone.utc),
+        )
+        if experiment is None:
+            return {
+                "status": "NO_PROPOSED_EXPERIMENT",
+                "roadmap_step_transition": roadmap_step_transition,
+            }
+        status = _enum_value(experiment.status)
+        if status == "RUNNING":
+            experiment.evidence_refs = list(dict.fromkeys([*experiment.evidence_refs,
+                str(publication_receipt_id), f"x-post:{post_id}",
+                str(baseline.get("observation_id") or "")]))
+            self._persist_runtime()
+            return {
+                "status": "ALREADY_RUNNING",
+                "experiment_id": experiment.experiment_id,
+                "roadmap_step_transition": roadmap_step_transition,
+            }
+        if status != "PROPOSED":
+            return {
+                "status": "NOT_STARTABLE",
+                "experiment_id": experiment.experiment_id,
+                "experiment_status": status,
+                "roadmap_step_transition": roadmap_step_transition,
+            }
+        experiment.evidence_refs = list(
+            dict.fromkeys(
+                [
+                    *experiment.evidence_refs,
+                    str(baseline.get("identity_receipt_id") or ""),
+                    str(baseline.get("observation_id") or ""),
+                    str(publication_receipt_id).strip(),
+                    f"x-post:{str(post_id).strip()}",
+                ]
+            )
+        )
+        started = self.runtime.start_mission_experiment(experiment.experiment_id)
+        from wechat_traffic_agent.world_learning import WorldLearningLedger
+        world_learning = WorldLearningLedger(self.state_root)
+        world_action = world_learning.commit(
+            action_kind="X_MISSION_PUBLICATION",
+            prediction=(
+                "The verified X publication will produce follower outcome evidence "
+                "over the bounded mission measurement window."
+            ),
+            expected_utility=0.0,
+            confidence=0.5,
+            evidence_refs=[
+                str(publication_receipt_id).strip(),
+                f"x-post:{str(post_id).strip()}",
+                f"mission-experiment:{experiment.experiment_id}",
+                str(baseline.get("observation_id") or ""),
+            ],
+            now=now.astimezone(timezone.utc),
+            windows=(("mission_window", self._experiment_window(started)),),
+            metadata={
+                "mission_id": mission.mission_id,
+                "mission_experiment_id": experiment.experiment_id,
+                "cycle": str(cycle),
+                "post_id": str(post_id).strip(),
+                "publication_receipt_id": str(publication_receipt_id).strip(),
+                "causal_claim": False,
+            },
+        )
+        self._persist_runtime()
+        payload = _read_json(self.path)
+        active = payload.get("active_experiment")
+        if (
+            payload.get("mission_id") == mission.mission_id
+            and isinstance(active, dict)
+            and active.get("experiment_id") == started.experiment_id
+        ):
+            active["status"] = "RUNNING"
+            active["started_at"] = (
+                None if started.started_at is None else started.started_at.isoformat()
+            )
+            active["publication_receipt_id"] = str(publication_receipt_id).strip()
+            active["x_post_id"] = str(post_id).strip()
+            active["baseline_observation_id"] = str(baseline.get("observation_id") or "")
+            active["baseline_followers"] = baseline.get("followers")
+            payload["as_of"] = now.astimezone(timezone.utc).isoformat()
+            payload["roadmap_publication_transition"] = roadmap_step_transition
+            _write_json(self.path, payload)
+        return {
+            "status": "STARTED",
+            "experiment_id": started.experiment_id,
+            "started_at": (
+                None if started.started_at is None else started.started_at.isoformat()
+            ),
+            "publication_receipt_id": str(publication_receipt_id).strip(),
+            "x_post_id": str(post_id).strip(),
+            "baseline_observation_id": str(baseline.get("observation_id") or ""),
+            "baseline_followers": baseline.get("followers"),
+            "roadmap_step_transition": roadmap_step_transition,
+            "world_learning_action_id": world_action.get("action_id"),
+        }
+
+    async def observe_identity(
+        self,
+        *,
+        user: dict[str, Any],
+        identity_receipt_id: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"status": "DISABLED"}
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("X mission observation time must be timezone-aware")
+        now = now.astimezone(timezone.utc)
+        followers = follower_count_from_user(user)
+        if followers is None:
+            payload = {
+                "schema_version": MISSION_SCHEMA,
+                "status": "FOLLOWER_METRIC_UNAVAILABLE",
+                "as_of": now.isoformat(),
+                "metric": MISSION_METRIC,
+                "target": self.target,
+                "generation_authority": "MISSION_STRATEGY_ONLY",
+                "publication_authority": False,
+            }
+            _write_json(self.path, payload)
+            return payload
+
+        evidence_refs = [
+            str(identity_receipt_id),
+            f"x-followers:{followers}:{int(now.timestamp())}",
+        ]
+        mission = self._ensure_mission(
+            followers=followers,
+            now=now,
+            evidence_refs=evidence_refs,
+        )
+        roadmap_reconciliation = self._reconcile_invalidated_roadmap_publications(
+            mission=mission,
+            now=now,
+        )
+        observation = None
+        if self._should_record(mission, followers, now):
+            observation = self.runtime.observe_mission_metric(
+                mission.mission_id,
+                value=float(followers),
+                source="official-x-identity",
+                evidence_refs=evidence_refs,
+            )
+            self._persist_runtime()
+            evidence_refs.append(observation.observation_id)
+
+        settlement = None
+        running = self._running_experiment(mission.mission_id)
+        if running is not None:
+            settlement = self._experiment_outcome(
+                mission=mission,
+                experiment=running,
+                followers=followers,
+                now=now,
+                evidence_refs=evidence_refs,
+            )
+
+        mission = self.runtime.missions.get(mission.mission_id)
+        audience_feedback = self._audience_feedback_state(
+            mission=mission,
+            followers=followers,
+            now=now,
+        )
+        roadmap_result = None
+        experiment_result = None
+        roadmap_execution = None
+        if _enum_value(mission.status) == "ACTIVE":
+            roadmap_result = await self._ensure_roadmap(mission)
+            experiment_result = await self._ensure_experiment(mission)
+            roadmap_execution = self._advance_ready_baseline_step(
+                mission=mission,
+                followers=followers,
+                identity_receipt_id=identity_receipt_id,
+                now=now,
+                evidence_refs=evidence_refs,
+                audience_feedback=audience_feedback,
+            )
+
+        progress = self.runtime.mission_progress(mission.mission_id)
+        active_experiment = self._open_experiment(mission.mission_id)
+        roadmap = self.runtime.missions.latest_roadmap(mission.mission_id)
+        schedule_method = getattr(self.runtime, "mission_portfolio_schedule", None)
+        schedule_rows: list[dict[str, Any]] = []
+        if callable(schedule_method):
+            schedule = schedule_method(max_parallelism=3)
+            schedule_rows = [
+                {
+                    "step_id": item.step_id,
+                    "title": item.title,
+                    "status": item.status.value,
+                    "planned_start": (
+                        None if item.planned_start is None else item.planned_start.isoformat()
+                    ),
+                    "planned_finish": (
+                        None if item.planned_finish is None else item.planned_finish.isoformat()
+                    ),
+                    "lane": item.lane,
+                    "blocked_by": list(item.blocked_by),
+                    "resource_tags": list(item.resource_tags),
+                }
+                for item in schedule.items
+                if item.mission_id == mission.mission_id
+            ]
+        payload = {
+            "schema_version": MISSION_SCHEMA,
+            "status": mission.status.value,
+            "as_of": now.isoformat(),
+            "mission_id": mission.mission_id,
+            "goal_id": mission.goal_id,
+            "description": mission.description,
+            "metric": mission.metric,
+            "baseline": mission.baseline,
+            "target": mission.target,
+            "current": progress.current_value,
+            "deadline": mission.deadline.isoformat(),
+            "progress": progress.progress,
+            "expected_progress": progress.expected_progress,
+            "trajectory": progress.trajectory,
+            "pressure": progress.pressure,
+            "exploration_rate": progress.exploration_rate,
+            "resource_willingness": progress.resource_willingness,
+            "projected_value": progress.projected_value,
+            "remaining_seconds": progress.remaining_seconds,
+            "constraints": list(mission.constraints),
+            "metric_observation_id": (
+                None if observation is None else observation.observation_id
+            ),
+            "settlement": settlement,
+            "roadmap_transition": roadmap_result,
+            "roadmap_execution": roadmap_execution,
+            "roadmap_reconciliation": roadmap_reconciliation,
+            "audience_feedback": audience_feedback,
+            "roadmap": (
+                None
+                if roadmap is None
+                else {
+                    "roadmap_id": roadmap.roadmap_id,
+                    "version": roadmap.version,
+                    "rationale": roadmap.rationale,
+                    "steps": schedule_rows,
+                }
+            ),
+            "experiment_transition": experiment_result,
+            "active_experiment": (
+                None
+                if active_experiment is None
+                else {
+                    "experiment_id": active_experiment.experiment_id,
+                    "strategy": active_experiment.strategy,
+                    "expected_effect": active_experiment.expected_effect,
+                    "risk_notes": list(active_experiment.risk_notes),
+                    "status": active_experiment.status.value,
+                    "started_at": (
+                        None
+                        if active_experiment.started_at is None
+                        else active_experiment.started_at.isoformat()
+                    ),
+                    "measurement_window_hours": (
+                        active_experiment.measurement_window_hours
+                        if active_experiment.measurement_window_hours is not None
+                        else self.experiment_window.total_seconds() / 3600.0
+                    ),
+                    "settlement_metric": (
+                        active_experiment.settlement_metric or MISSION_METRIC
+                    ),
+                }
+            ),
+            "generation_authority": "MISSION_STRATEGY_ONLY",
+            "publication_authority": False,
+            "causal_claim": False,
+            "policy_mode": "VERIFIED_X_TRANSPORT_ROUTING",
+            "execution_blocker": (
+                _active_execution_blocker(self.state_root, now=now)
+            ),
+        }
+        _write_json(self.path, payload)
+        return payload
+
+    def _persist_runtime(self) -> None:
+        persist = getattr(self.runtime, "persist", None)
+        if callable(persist):
+            persist()
+
+
+__all__ = [
+    "DEFAULT_DURATION_DAYS",
+    "DEFAULT_EXPERIMENT_HOURS",
+    "DEFAULT_TARGET",
+    "MISSION_CONSTRAINTS",
+    "MISSION_METRIC",
+    "XGrowthMissionCoordinator",
+    "follower_count_from_user",
+    "x_growth_mission_context",
+]

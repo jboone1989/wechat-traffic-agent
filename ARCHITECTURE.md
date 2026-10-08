@@ -1,5 +1,8 @@
 # Architecture boundary
 
+See [functional module boundaries](docs/MODULE_BOUNDARIES.md) for Ferro's
+feature packages, dependency direction and staged migration status.
+
 This repository is a domain agent hosted by Agent Runtime.
 
 It owns only:
