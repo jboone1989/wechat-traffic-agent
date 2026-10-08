@@ -165,11 +165,44 @@ changes during the modularization. Article SQLite remains authoritative;
   writing and verification, and private-owner chat/session orchestration.
   These need explicit services; a moved monolith is not an acceptable finish.
 
+## Operator dialogue and editorial strategy (stage 7)
+
+- `operator_private_chat_handlers.py` owns the authenticated owner conversation
+  use case: prompt assembly, behavioral inputs, structured envelope repair,
+  bounded read-only tool loops, durable memory/proposal receipts and native SSE
+  streaming. Constructor ports explicitly supply agent runtime, conversation,
+  memory, account registry, authorization and snapshot access. Streamed replies
+  have separate generation, tool, repair and persistence phases; all feature
+  methods are <=100 lines. `owner_dialogue_policy.py` owns the one canonical
+  owner system prompt and generation budgets (re-exported from the original
+  module for compatibility). No browser/HTTP service starts here.
+- `method_evidence_binding_service.py` binds METHOD_NOTE cognition to exact
+  observed or verified method evidence, and returns a typed HOLD outcome when
+  there is no support. `writing_practice_service.py` selects and persists
+  technique practice after expression is warranted, without publishing.
+  `editorial_strategy_service.py` performs forecasts before strategy binding,
+  chooses existing process variants, and registers prospective outcomes.
+- `web_api/public_status.py` and `web_api/operator_pages.py` own public
+  telemetry/activity streams and operator dashboards/observability endpoints.
+  `web_api/app_factory.py` composes one Starlette application from independently
+  injected handlers. Browser/OAuth controls are imported at actual adapter
+  creation, not at module import time, so a connected fake/alternative provider
+  can be substituted and the server does not eagerly launch another browser.
+- `LiveAgentService._app` is **19 lines** (originally 2,485), with no HTTP
+  business handlers. `ContinuousContentLoop._run` is **945 lines** (originally
+  2,284); its remaining long phases are article generation/brief assembly and
+  deterministic quality verification/one bounded draft repair. The latter must
+  be separate feature use cases, not hidden in a new monolith.
+- `counter_evidence_service.py` owns bounded counter-evidence discovery. Missing\n  contrary evidence results in a saved lower-claim writing requirement and a\n  strict post-draft claim check; its plan and missing-evidence receipts are\n  reused after restart. The content runner does not call the counter-search\n  adapter directly.\n- `tests/test_owner_editorial_feature_boundaries.py` runs owner streaming,
+  method evidence grounding, writing practice, strategy forecast ordering,
+  counter-evidence restart/reuse, and import/size contracts against injected fakes, alongside the existing
+  owner chat and content regression suites.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
 
-1. Continue breaking the 1,105-line `ContinuousContentLoop._run` into research selection,
+1. Continue breaking the 897-line `ContinuousContentLoop._run` into research selection,
    verification, cognition, editorial admission and publication use cases
    with explicit request/result objects. No domain use case reads another
    module's private cycle files.
