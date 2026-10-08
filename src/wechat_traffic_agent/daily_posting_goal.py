@@ -91,14 +91,20 @@ class DailyPostingGoal:
         date = local.date().isoformat()
         midnight = datetime.combine(local.date() + timedelta(days=1), datetime.min.time(), zone)
         posts = [row for row in self.publications() if _time(row["published_at"]).astimezone(zone).date() == local.date()]
+        from .publication.event_store import PublicationEventStore
+        outbox = PublicationEventStore(self.state_root)
+        website_first = any(outbox.events.glob("*.json"))
+        attempted = outbox.attempt_count(local_date=local.date(), timezone_info=zone) if website_first else 0
         minimum = int(config["minimum_original_posts"])
+        measured = attempted if website_first else len(posts)
         progress = _read(self.root / "progress.json")
         first_attempt = max(_time(config["activated_at"]), datetime.combine(local.date(), datetime.min.time(), zone))
         next_attempt = (progress.get("next_attempt_at") if progress.get("date") == date else None) or first_attempt.isoformat()
         return {
             "enabled": bool(config["enabled"]), "temporary": True, "timezone": config["timezone"],
             "date": date, "minimum": minimum, "published": len(posts),
-            "remaining": max(0, minimum - len(posts)), "deadline": midnight.isoformat(),
+            "attempted": attempted, "metric": ("DISTRIBUTION_ATTEMPTS" if website_first else "VERIFIED_X_POSTS"),
+            "remaining": max(0, minimum - measured), "deadline": midnight.isoformat(),
             "next_attempt_at": next_attempt, "goal_id": "ferro-daily-post:" + date,
             "notifications_enabled": bool(config.get("notifications_enabled", True)),
         }
@@ -111,12 +117,12 @@ class DailyPostingGoal:
             "goal_id": status["goal_id"], "origin": "USER", "priority": 1.0,
             "created_at": now.isoformat(), "daily_posting_contract": status,
             "description": (
-                f"临时 X 分发目标：北京时间 {status['date']} 结束前，同步至少 {status['minimum']} 条原创内容至 X。"
+                f"临时官网分发目标：北京时间 {status['date']} 结束前，完成至少 {status['minimum']} 次官网内容分发尝试。"
                 f"已验证 X 发布 {status['published']} 条，还差 {status['remaining']} 条。"
                 "用户最新要求：Ferro 的自有网站是首发渠道和权威内容库存；先完成网站内容研究、"
                 "审核、公开发布与持续维护，再将网站内容提炼成带原文链接的 X 帖子。"
                 "X 仅是推广同步渠道，X 浏览器故障不能阻塞官网生产或维护。"
-                "只计真实验证的 X 同步链接到 X 目标；网站文章另计入官网成果。"
+                "只计由真实官网 PublicationEvent 派生的分发尝试；X 成功链接另行统计。"
                 "自由选择加密货币、AI、金融及交叉方向，充分使用搜索，按证据质量选择网站文章深度。"
                 "网站上线后派生 X 短帖或长帖，同一证据不重复灌水。"
                 "网站 URL 及成功 X 同步链接都应通过现有企业微信通知；阻塞需明确记录。"
@@ -196,6 +202,32 @@ class DailyPostingGoal:
             deliveries = self._deliver(config, now)
         return {"status": "ENQUEUED", "key": key, "deliveries": deliveries}
 
+    def notify_distribution_result(self, *, task, now):
+        """Deliver the real X URL or a distinct, explicit failed attempt to WeCom."""
+        config = _read(self.config_path)
+        if not config or not config.get("notifications_enabled", True):
+            return {"status": "NOTIFICATIONS_DISABLED"}
+        status = str(task.status)
+        if status not in {"SUCCESS", "RETRY_PENDING", "FAILED_PERMANENT"}:
+            return {"status": "NOT_TERMINAL_ATTEMPT"}
+        key = "distribution:" + task.distribution_id + ":" + status + ":" + str(task.attempts)
+        if status == "SUCCESS":
+            if not str(task.published_url or "").startswith("https://x.com/"):
+                raise ValueError("successful X distribution requires a verified X URL")
+            title = "Ferro 官网内容已同步到 X"
+            message = ("PublicationEvent: " + task.event_id + "\\n"
+                       + task.published_url + "\\n官网首发保持独立。")
+        else:
+            title = "Ferro X 分发失败，官网发布不受影响"
+            message = ("PublicationEvent: " + task.event_id + "\\n"
+                       + "状态: " + status + "; attempt: " + str(task.attempts)
+                       + "\\n错误: " + str(task.last_error or "unverified")
+                       + "\\n官网仍是已发布的事实源。")
+        with self._lock():
+            self._queue(key, title, message, now)
+            deliveries = self._deliver(config, now)
+        return {"status": "ENQUEUED", "key": key, "deliveries": deliveries}
+
     def observe(self, task, result, now):
         if not self.config_path.exists():
             return
@@ -214,13 +246,14 @@ class DailyPostingGoal:
 
             succeeded = False
             if task == "CONTENT_COGNITION":
-                previous_count = int(progress.get("published", status["published"])) if progress.get("date") == status["date"] else status["published"]
-                succeeded = status["published"] > previous_count or contains_status(result, "POSTED")
+                count = status["attempted"] if status["metric"] == "DISTRIBUTION_ATTEMPTS" else status["published"]
+                previous_count = int(progress.get("count", count)) if progress.get("date") == status["date"] else count
+                succeeded = count > previous_count or contains_status(result, "POSTED")
                 failures = 0 if succeeded or not status["enabled"] or not status["remaining"] else (int(progress.get("consecutive_no_publication", 0)) + 1 if progress.get("date") == status["date"] else 1)
                 left = max(60, int((_time(status["deadline"]) - now).total_seconds()))
                 delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
                 _write(self.root / "progress.json", {
-                    "date": status["date"], "published": status["published"],
+                    "date": status["date"], "published": status["published"], "attempted": status["attempted"], "count": count,
                     "last_attempt_at": now.isoformat(), "next_attempt_at": (now + timedelta(seconds=max(60, delay))).isoformat(),
                     "consecutive_no_publication": failures, "last_result_status": result.get("status"),
                 })

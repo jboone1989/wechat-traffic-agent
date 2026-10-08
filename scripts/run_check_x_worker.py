@@ -25,6 +25,10 @@ from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 from wechat_traffic_agent.worker_runtime import WorkerHeartbeat
 from wechat_traffic_agent.x_browser import XBrowserPublisher
 from wechat_traffic_agent.x_social import XAutonomyLoop
+from wechat_traffic_agent.x_browser import x_browser_writes_enabled
+from wechat_traffic_agent.publication.event_store import PublicationEventStore, DistributionWorker
+from wechat_traffic_agent.publication.x_distribution import publish_x
+from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
 
 
 INTERVAL_SECONDS = 1800
@@ -104,6 +108,21 @@ def main() -> int:
                 now=now,
                 relevant_refs=tuple(wake.relevant_refs),
             )
+            # The same independent CHECK_X process drains one website event per
+            # tick. X browser failures remain inside the distribution outbox.
+            distribution = None
+            if x_browser_writes_enabled():
+                distribution = DistributionWorker(
+                    PublicationEventStore(state_root),
+                    {"x": lambda event, task: publish_x(
+                        event, task, state_root=state_root
+                    )},
+                ).run_once()
+                if distribution is not None:
+                    # Delivery failures are separately recorded by WeCom's durable mailbox.
+                    DailyPostingGoal(state_root).notify_distribution_result(
+                        task=distribution, now=datetime.now(timezone.utc),
+                    )
             scheduler.schedule(
                 "CHECK_X",
                 datetime.now(timezone.utc) + timedelta(seconds=INTERVAL_SECONDS),
@@ -111,7 +130,8 @@ def main() -> int:
             )
             heartbeat.write(
                 status="RUNNING",
-                detail=str(result.get("status") or "UNKNOWN"),
+                detail=(str(result.get("status") or "UNKNOWN") +
+                        ("; distribution=" + distribution.status if distribution else "")),
             )
         return 0
     finally:

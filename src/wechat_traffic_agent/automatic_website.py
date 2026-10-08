@@ -1,6 +1,7 @@
 """Explicit Website-only automatic admission, audited builds and atomic activation."""
 from __future__ import annotations
 
+import html
 import json
 import os
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from .evidence_floor import (
     EvidenceFloorCheck, EvidenceFloorPlan, artifact_risk_cues, verify_evidence_floor_publication,
 )
 from .website_experiment import WebsiteExperimentBinding, experiment_compliance
+from .publication.models import PublicationEvent, DistributionTask
+from .publication.event_store import PublicationEventStore
 
 
 class AutomaticWebsitePublisher:
@@ -26,7 +29,8 @@ class AutomaticWebsitePublisher:
 
     def __init__(self, *, state_root, public_root, starter_path, config,
                  clock: Callable[[], datetime] | None = None):
-        self.state = Path(state_root) / 'content/automatic_website'
+        self.state_root = Path(state_root)
+        self.state = self.state_root / 'content/automatic_website'
         self.public = Path(public_root)
         self.starter = Path(starter_path)
         self.config = config
@@ -154,13 +158,34 @@ class AutomaticWebsitePublisher:
                 raise ValueError('content strategy was decided after publication')
         if experiment is not None:
             attribution['experiment'] = experiment.model_dump(mode='json')
+        event_id = digest({'artifact_id': artifact.artifact_id, 'content_hash': published_content})
         receipt = {'policy_version': self.policy_version, 'reviewer_kind': 'AUTOMATED',
+                   'publication_event_id': event_id,
                    'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
                    'revision': revision, 'artifact_id': artifact.artifact_id,
                    'audit': audit.model_dump(mode='json'), 'public_root': str(target),
                    'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
                    'outcome_attribution': attribution}
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
+
+        # Stable identity survives reruns and does not duplicate outbound tasks.
+        store = PublicationEventStore(self.state_root)
+        event = PublicationEvent(
+            event_id=event_id,
+            artifact_id=artifact.artifact_id,
+            canonical_url=receipt['site_url'],
+            title=artifact.title,
+            summary=artifact.summary,
+            topics=artifact.tags,
+            published_at=published_at,
+            content_hash=published_content,
+        )
+        store.save_event(event)
+        store.enqueue_distribution(DistributionTask(
+            distribution_id=digest({'event_id': event_id, 'channel': 'x'}),
+            event_id=event.event_id,
+            channel='x',
+        ))
         return receipt
 
 
@@ -228,16 +253,45 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
     """Retain the agent-first presentation while describing this active policy."""
 
     def _home(self, artifacts, categories):
-        page = super()._home(artifacts, categories)
-        page = page.replace('public admission remains a separate human-controlled decision',
-                            'public admission is a separate automated source and Website quality gate')
-        page = page.replace('Human-gated publishing', 'Audited automatic publishing')
-        page = page.replace('Use outcomes to improve the next choice', 'Practice, review, and adapt the next article')
-        page = page.replace('Channel-scoped outcomes become durable evidence for future strategy decisions instead of silently rewriting past results.',
-                            'Versioned writing exercises and article self-checks inform the next run. Mature Website pageview outcomes are recorded separately as descriptive evidence and do not yet control strategy.')
-        page = page.replace('Outcome evidence can change future content strategy, but it cannot bypass editorial admission.',
-                            'Writing experience informs the next attempt. Automatic publication requires a separate source check and complete Website audit.')
-        return page
+        # The home is orientation, not a second archive. The complete library
+        # remains searchable at /archive/ and articles are never removed.
+        self._timeline_artifacts = artifacts
+        featured = self._cards(artifacts[:3])
+        if not featured:
+            featured = '<p>Research is in progress; no public work has passed audit yet.</p>'
+        body = (
+            '<section class="hero">'
+            '<p class="eyebrow">LIVINGRUNTIME · PERSISTENT AGENT ECOSYSTEM</p>'
+            '<h1>AI agents that live, <span>learn, and work together.</span></h1>'
+            '<p>Ferro is a persistent research agent studying cryptocurrency, AI and finance. '
+            'It publishes evidence-aware research on this site first; social channels share links afterward.</p>'
+            '<div class="hero-actions"><a class="button" href="/archive/">Read research</a>'
+            '<a class="text-link" href="/timeline/">Follow the timeline →</a></div></section>'
+            '<section class="section-head"><div><p class="eyebrow">Featured Research</p>'
+            '<h2>What Ferro recently investigated</h2></div>'
+            '<a class="text-link" href="/archive/">All research →</a></section>'
+            '<div class="card-grid">' + featured + '</div>'
+            '<section class="section-head"><div><p class="eyebrow">Experiments</p>'
+            '<h2>What is being tested</h2></div></section>'
+            '<p>Distinguish hypotheses from observed results. The experiments index '
+            'shows what is being investigated, without treating a draft as proof.</p>'
+            '<p><a class="text-link" href="/experiments/">View experiments →</a></p>'
+            '<section class="section-head"><div><p class="eyebrow">Systems</p>'
+            '<h2>How Ferro works and what can be verified</h2></div></section>'
+            '<p>Research, independent website audit, durable publication receipts, '
+            'and separately monitored distribution are distinct stages.</p>'
+            '<p><a class="text-link" href="/methodology/">Methodology →</a> · '
+            '<a class="text-link" href="/agents/ferro/">Agent profile →</a></p>'
+            '<section class="section-head"><div><p class="eyebrow">Timeline</p>'
+            '<h2>Public evidence of continued work</h2></div></section>'
+            '<p>A dated trace of public work. Distribution outages do not erase website content.</p>'
+            '<p><a class="text-link" href="/timeline/">View timeline →</a> · '
+            '<a class="text-link" href="/archive/">Search archive →</a></p>'
+        )
+        return self._layout(
+            "LivingRuntime", "Ferro independent research, experiments and public work.",
+            "/", body, structured_data=self._website_schema()
+        )
 
     def _static_pages(self):
         pages = super()._static_pages()
@@ -266,5 +320,29 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
             '<h2>Continuity</h2><p>Existing source content is deduplicated across restarts. A bounded scheduled attempt '
             'cannot turn a failed self-check into an unlimited rewrite or publication loop.</p>',
             'Writing practice, experience reuse and the limits of automated self-assessment.'
+        )
+        chronology = sorted(
+            getattr(self, '_timeline_artifacts', []),
+            key=lambda item: item.updated_at or item.created_at,
+            reverse=True,
+        )[:30]
+        rows = ''.join(
+            '<article class="work-item"><p class="eyebrow">Public research · '
+            + html.escape(item.kind.value.upper()) + '</p>'
+            + '<time datetime="' + html.escape((item.updated_at or item.created_at).isoformat(), quote=True)
+            + '">' + html.escape((item.updated_at or item.created_at).strftime('%Y-%m-%d')) + '</time>'
+            + '<h2><a href="' + html.escape(_route_for(item), quote=True) + '">'
+            + html.escape(item.title) + '</a></h2><p>'
+            + html.escape(item.summary) + '</p></article>'
+            for item in chronology
+        )
+        pages['/timeline/'] = (
+            'Ferro Public Timeline',
+            '<header class="page-head"><p class="eyebrow">PUBLIC RECORD</p>'
+            '<h1>What Ferro has made public</h1>'
+            '<p>Dates reflect artifact records, not independently measured learning '
+            'or private deliberation. Each entry links to a live public artifact.</p></header>'
+            + '<div class="work-grid">' + (rows or '<p>No audited work yet.</p>') + '</div>',
+            'Chronology of Ferro public research with traceable artifact links.',
         )
         return pages

@@ -2568,6 +2568,14 @@ class WakefulContentTaskRunner:
                     )
                 except (OSError, ValueError, KeyError) as exc:
                     rows["website_notification"] = self._error(exc)
+            if site_receipt.get("publication_event_id"):
+                # X is a separate durable outbox; cognition never waits on Jev.
+                rows["x_syndication"] = {
+                    "status": "QUEUED",
+                    "event_id": site_receipt["publication_event_id"],
+                    "cycle": cycle,
+                }
+                return
         direct_x = continuous.get("status") == "X_EXPRESSION_READY"
         social_loop = getattr(self, "social_expression_loop", None)
         if social_loop is not None and not direct_x:
