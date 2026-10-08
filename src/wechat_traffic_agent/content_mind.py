@@ -152,10 +152,11 @@ class ContentMind:
             max_open=32,
             max_resolved=32,
         )
-        removed_autobiography = self.session.autobiography.compact(
-            max_events=256,
-            max_revisions=64,
-        )
+        # Interest feedback, developmental history, and other learned state
+        # retain provenance links to autobiography event IDs. Until their
+        # dependencies are archived/relinkable, these events are live anchors,
+        # not disposable history.
+        removed_autobiography = {"events": [], "narrative_revisions": []}
         removed_goals = self.session.goal_proposals.compact(max_proposals=16)
 
         live_inquiry_ids = set(self.session.inquiry.inquiries)
