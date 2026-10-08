@@ -13,6 +13,7 @@ import httpx
 BLOCKBEATS = {
     "blockbeats-newsflash": "https://api.theblockbeats.news/v2/rss/newsflash",
     "blockbeats-articles": "https://api.theblockbeats.news/v2/rss/article",
+    "panews": "https://www.panewslab.com/rss.xml?lang=en&type=NORMAL%2CNEWS",
 }
 BINANCE_TICKERS = "https://api.binance.com/api/v3/ticker/24hr"
 BTC_ETF_FLOWS = "https://open-api-v4.coinglass.com/api/etf/bitcoin/flow-history"
