@@ -492,130 +492,21 @@ def build_ferro_cognition_context(
         now=now,
         budget_chars=12_000 if owner_mode else 18_000,
     )
-    selected = (
-        decision_context.get("selected")
-        if isinstance(decision_context.get("selected"), Mapping)
-        else {}
+    from .cognition_selected_projection import project_selected_cognition
+    views = project_selected_cognition(decision_context, projection)
+    selected_current_intent, selected_mission_state, mind_section = (
+        views.current_intent, views.missions, views.mind,
     )
-
-    selected_current_intent = [
-        dict(row)
-        for row in list(selected.get("goal") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_missions = [
-        dict(row)
-        for row in list(selected.get("mission") or [])
-        if isinstance(row, Mapping) and row.get("mission_id")
-    ]
-    selected_experiments = [
-        dict(row)
-        for row in list(selected.get("experiment") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_mission_state = {
-        "active": selected_missions,
-        "recent_experiments": selected_experiments,
-    }
-    selected_plan = next(
-        (
-            dict(row)
-            for row in list(selected.get("plan") or [])
-            if isinstance(row, Mapping)
-        ),
-        None,
+    recent_experience, retrieved_memory, selected_resources = (
+        views.experience, views.memory, views.resources,
     )
-    selected_strategy_topics = [
-        str(row.get("topic") or "")
-        for row in list(selected.get("strategy") or [])
-        if isinstance(row, Mapping) and str(row.get("topic") or "")
-    ]
-    mind_section = {
-        "mind_schema": projection.get("mind_schema"),
-        "mind_tick": projection.get("mind_tick"),
-        "interests": [
-            dict(row)
-            for row in list(selected.get("interest") or [])
-            if isinstance(row, Mapping)
-        ],
-        "open_inquiries": [
-            dict(row)
-            for row in list(selected.get("inquiry") or [])
-            if isinstance(row, Mapping)
-        ],
-        "beliefs": [
-            dict(row)
-            for row in list(selected.get("belief") or [])
-            if isinstance(row, Mapping)
-        ],
-        "recent_belief_changes": [
-            dict(row)
-            for row in list(selected.get("belief_change") or [])
-            if isinstance(row, Mapping)
-        ],
-        "latest_plan": selected_plan,
-        "strategy_learning": {
-            "outcome_count": int(
-                ((projection.get("strategy_learning") or {}).get("outcome_count") or 0)
-            ),
-            "topics": selected_strategy_topics,
-        },
-        "learning_boundary": _clip(projection.get("learning_boundary"), 1200),
-    }
-    recent_experience = [
-        dict(row)
-        for row in list(selected.get("experience") or [])
-        if isinstance(row, Mapping)
-    ]
-    retrieved_memory = [
-        dict(row)
-        for row in list(selected.get("memory") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_resources = next(
-        (
-            dict(row)
-            for row in list(selected.get("resource") or [])
-            if isinstance(row, Mapping)
-        ),
-        {},
+    selected_capabilities, selected_capability_beliefs = (
+        views.capabilities, views.capability_beliefs,
     )
-    selected_capabilities = [
-        str(row)
-        for row in list(selected.get("capability") or [])
-        if str(row)
-    ]
-    selected_capability_beliefs = [
-        dict(row)
-        for row in list(selected.get("capability_belief") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_relationships = [
-        dict(row)
-        for row in list(selected.get("relationship") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_commitments = [
-        dict(row)
-        for row in list(selected.get("commitment") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_operational = next(
-        (
-            dict(row)
-            for row in list(selected.get("operational") or [])
-            if isinstance(row, Mapping)
-        ),
-        {},
+    selected_relationships, selected_commitments = (
+        views.relationships, views.commitments,
     )
-    selected_internal = [
-        dict(row)
-        for row in list(selected.get("internal") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_neural_life: dict[str, Any] = {}
-    for row in selected_internal:
-        selected_neural_life.update(row)
+    selected_operational, selected_neural_life = views.operational, views.neural_life
 
     raw_interoception = read_interoceptive_projection(state_root)
     interoception = {
@@ -831,85 +722,16 @@ def build_ferro_cognition_context(
         "epistemic_contract": metadata["epistemic_contract"],
     }
 
-    if state_root is not None:
-        contract_snapshot = {
-            **snapshot,
-            "phenotype_prior": full_phenotype_prior,
-            "behavioral_state": full_behavioral_state,
-            "context_receipt": metadata["context_receipt"],
-        }
-        contract_report = CapabilityContractMonitor(state_root).observe_context(
-            contract_snapshot,
-            now=now,
-        )
-        snapshot["capability_contracts"] = contract_report
-        if contract_report.get("violations") and not contract_report.get("duplicate"):
-            sensed = InteroceptiveFaultSystem(state_root).observe(
-                "CONTENT_COGNITION",
-                {
-                    "task": "CONTENT_COGNITION",
-                    "status": "OK",
-                    "cycle": contract_report.get("observation_id"),
-                    "capability_contracts": contract_report,
-                },
-                now=now,
-            )
-            diagnostic_failure = sensed.get("diagnostic_failure")
-            if bool(sensed.get("should_diagnose")) and isinstance(diagnostic_failure, dict):
-                top_contract = next(
-                    (
-                        row
-                        for row in list(contract_report.get("violations") or [])
-                        if isinstance(row, Mapping)
-                    ),
-                    {},
-                )
-                contract_subsystem = str(top_contract.get("subsystem") or "context")
-                failure_site = (
-                    "behavioral_state.py:capability_contract"
-                    if contract_subsystem == "neural"
-                    else "cognition_context.py:capability_contract"
-                )
-                from .self_maintenance import SelfMaintenanceService
-
-                maintenance = SelfMaintenanceService(
-                    state_root=state_root,
-                    evolution_runtime=domain_runtime,
-                    capability_runtime=app_runtime,
-                )
-                snapshot["capability_contract_diagnosis"] = maintenance.ingest_failure(
-                    {
-                        **diagnostic_failure,
-                        "task": "CONTENT_COGNITION",
-                        "error_type": "CAPABILITY_CONTRACT_VIOLATION",
-                        "failure_site": failure_site,
-                        "message": (
-                            "capability contract violation: "
-                            + str(top_contract.get("kind") or "unknown")
-                            + "; expected="
-                            + str(top_contract.get("expected") or "")[:300]
-                            + "; observed="
-                            + str(top_contract.get("observed") or "")[:400]
-                        ),
-                    },
-                    now=now,
-                )
-            updated_interoception = dict(sensed.get("projection") or {})
-            snapshot["interoception"] = {
-                key: updated_interoception.get(key)
-                for key in (
-                    "schema_version",
-                    "status",
-                    "updated_at",
-                    "distress",
-                    "confidence_in_self",
-                    "active_episode_ids",
-                    "suspected_faults",
-                    "symptoms",
-                    "latest_observation_id",
-                )
-                if updated_interoception.get(key) is not None
-            }
+    from .cognition_contract_observer import CognitionContractObserver
+    CognitionContractObserver(
+        state_root=state_root, monitor_factory=CapabilityContractMonitor,
+        fault_factory=InteroceptiveFaultSystem,
+    ).observe(
+        snapshot, full_phenotype_prior=full_phenotype_prior,
+        full_behavioral_state=full_behavioral_state,
+        context_receipt=metadata["context_receipt"],
+        now=now, domain_runtime=domain_runtime, app_runtime=app_runtime,
+    )
     return snapshot
 
 

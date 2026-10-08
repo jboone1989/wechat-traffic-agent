@@ -249,6 +249,38 @@ changes during the modularization. Article SQLite remains authoritative;
   Prior wakeful-suite baseline failures and parallel working-tree changes
   remain separate integration tasks; no main merge or deployment is implied.
 
+## Decision evidence retrieval and cognition projections (stage 10)
+
+- `decision_candidate_retrieval.py` owns the only canonical-memory read
+  used by this decision-context builder. Its injected router port returns
+  bounded candidates, recall ranks, and per-need error receipts. Older
+  facts are shadowed only when a newer fact explicitly supersedes a
+  *specific shared dependency*; a shared owner goal alone is insufficient.
+- `decision_fact_selection.py` is an **in-memory, no-IO** selector. Separate
+  methods preserve current owner anchors, select marginal information-need
+  coverage, expand specific causal dependencies within the fact budget,
+  and produce selected/rejected explanations. The decision policy remains
+  validated centrally; a memory outage does not give permission to invent
+  evidence. Every method is at most 100 lines.
+- `build_decision_context()` is now **92 lines**, down from 471. It plans
+  information needs, composes retrieval and scoring, and delegates bounded
+  selection; it does not mix memory access with set-cover internals.
+- `cognition_selected_projection.py` converts bounded selected facts
+  into prompt sections using pure functions, with no memory retrieval,
+  model invocation, file serialization or contract observation.
+- `cognition_contract_observer.py` owns the separate side-effect boundary
+  for capability contract monitoring, fault sensing and self-maintenance
+  diagnosis. The 483-line cognition-context builder supplies one snapshot
+  and explicit runtime adapters; duplicate violations do not rerun diagnosis.
+  It previously spanned 661 lines. Further decomposition of source
+  collection and metadata compilation is still needed.
+- `tests/test_cognition_decision_module_boundaries.py` exercises these
+  features without starting Ferro, including missing memory, supersession,
+  fact-budget selection, duplicate diagnostics, and pure projection. The
+  larger content and Web regressions also continue to pass.
+- This stage creates no new process or JSON state files and leaves
+  the existing event and publication paths unchanged.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
