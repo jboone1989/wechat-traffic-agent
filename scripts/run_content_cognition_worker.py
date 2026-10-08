@@ -309,6 +309,47 @@ def main() -> int:
         stop_requested=lambda: stopping,
     )
 
+    # The old monolith owned HTTP 8104 (public pages/operator) and 8103
+    # (signed Agent Network). The independent worker split must retain them.
+    # Reuse this already-open application; never create a second neural owner.
+    from wechat_traffic_agent.live_agent import build_live_agent_service, live_agent_enabled
+    from wechat_traffic_agent.network_service import ContentNetworkService, network_enabled
+
+    live_agent_service = None
+    network_service = None
+    if live_agent_enabled():
+        live_agent_service = build_live_agent_service(
+            state_root=state_root,
+            application=app,
+            mind=content_mind,
+            wakeful=state_client,
+        )
+        live_agent_service.start()
+        print(f"Ferro public HTTP ready at 127.0.0.1:{live_agent_service.port}", flush=True)
+
+    if network_enabled():
+        network_service = ContentNetworkService.from_environment(
+            root=state_root,
+            application=app,
+        )
+        try:
+            network_service.start()
+        except Exception as exc:
+            print(
+                json.dumps({
+                    "public_network_startup": "FAILED",
+                    "error_type": type(exc).__name__,
+                    "message": str(exc)[:400],
+                }),
+                file=sys.stderr,
+                flush=True,
+            )
+            network_service = None
+        else:
+            print(f"Ferro Agent Network ready at 127.0.0.1:{network_service.port}", flush=True)
+
+    runner.network_service = network_service
+
     now = datetime.now(timezone.utc)
     _daily_schedule(posting_goal, scheduler, now)
     heartbeat.write(status="RUNNING")
@@ -358,6 +399,10 @@ def main() -> int:
             )
         return 0
     finally:
+        if live_agent_service is not None:
+            live_agent_service.stop()
+        if network_service is not None:
+            network_service.stop()
         app.close()
         heartbeat.write(status="STOPPED")
 
