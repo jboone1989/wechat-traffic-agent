@@ -47,8 +47,8 @@ def _source_refs(state_root: Path) -> set[str]:
 
 def prune(state_root: Path, *, now: datetime,
           apply: bool = False, limit: int = 10000,
-          min_cycle_age_days: int = 7,
-          min_source_age_days: int = 7) -> dict:
+          min_cycle_age_days: int = 1,
+          min_source_age_days: int = 2) -> dict:
     if now.utcoffset() is None:
         raise ValueError("now must be timezone aware")
     if limit < 1:
@@ -134,8 +134,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--state-root", type=Path, required=True)
     p.add_argument("--limit", type=int, default=10000)
-    p.add_argument("--min-cycle-age-days", type=int, default=7)
-    p.add_argument("--min-source-age-days", type=int, default=7)
+    p.add_argument("--min-cycle-age-days", type=int, default=1)
+    p.add_argument("--min-source-age-days", type=int, default=2)
     p.add_argument("--apply", action="store_true")
     args = p.parse_args()
     print(json.dumps(prune(

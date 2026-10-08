@@ -22,8 +22,8 @@ Do not delete these based on age or size alone.
 
 | Ephemeral record | Lifecycle |
 | --- | --- |
-| Full `inputs.json` (news + website inventory + prompt context) | Used for in-flight recovery; remove after a terminal result. Legacy completed cycles: prune after 7 days. |
-| Unlinked `website-engagement-snapshot.v1` metric snapshots | Avoid writing if its metric window is already recorded; prune after 7 days with no committed ChannelEvidence reference. |
+| Full `inputs.json` (news + website inventory + prompt context) | Used for in-flight recovery; remove after a terminal result. Legacy completed cycles: prune after 1 day. |
+| Unlinked `website-engagement-snapshot.v1` metric snapshots | Avoid writing if its metric window is already recorded; prune after 2 days with no committed ChannelEvidence reference. |
 | Result of read-only neural projections | Respond once, then discard; not a memory. |
 | Intermediate model contexts, candidate dumps, temporary search results | Keep only while a task may resume; do not confuse them with evidence sources. |
 | Ordinary logs and observability buffers | Short retention; keep incident diagnostics when still needed. |
