@@ -30,6 +30,7 @@ class FerroStateEventBus:
         payload: dict[str, Any] | None = None,
         *,
         observed_at: datetime | None = None,
+        expects_reply: bool = False,
     ) -> dict[str, Any]:
         now = (observed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
         event_id = "state-event:" + uuid4().hex
@@ -39,6 +40,7 @@ class FerroStateEventBus:
             "kind": str(kind).strip().upper(),
             "observed_at": now.isoformat(),
             "payload": dict(payload or {}),
+            "expects_reply": bool(expects_reply),
         }
         path = self.pending_root / (event_id.replace(":", "_") + ".json")
         tmp = path.with_suffix(".tmp")
@@ -66,10 +68,17 @@ class FerroStateEventBus:
 
     def acknowledge(self, path: Path, result: dict[str, Any]) -> None:
         event = json.loads(path.read_text(encoding="utf-8"))
+        # Applied payloads may contain huge sensor snapshots already present
+        # in the neural state. Preserve compact receipt metadata and result,
+        # not the repeatedly copied input.
         receipt = {
-            **event,
+            "schema_version": event["schema_version"],
+            "event_id": event["event_id"],
+            "kind": event["kind"],
+            "observed_at": event["observed_at"],
             "applied_at": datetime.now(timezone.utc).isoformat(),
             "result": dict(result or {}),
+            "expects_reply": bool(event.get("expects_reply")),
         }
         target = self.applied_root / path.name
         tmp = target.with_suffix(".tmp")
@@ -88,6 +97,9 @@ class FerroStateEventBus:
         except FileNotFoundError:
             return None
         value = row.get("result")
+        if row.get("expects_reply"):
+            # A synchronous projection has exactly one requester.
+            path.unlink(missing_ok=True)
         return dict(value) if isinstance(value, dict) else {}
 
     def request(
@@ -98,7 +110,7 @@ class FerroStateEventBus:
         observed_at: datetime | None = None,
         timeout_seconds: float = 10.0,
     ) -> dict[str, Any]:
-        receipt = self.emit(kind, payload, observed_at=observed_at)
+        receipt = self.emit(kind, payload, observed_at=observed_at, expects_reply=True)
         deadline = time.monotonic() + max(0.1, float(timeout_seconds))
         while time.monotonic() < deadline:
             result = self.result(str(receipt["event_id"]))

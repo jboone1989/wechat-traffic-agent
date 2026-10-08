@@ -101,3 +101,62 @@ def test_check_x_runner_does_not_require_wakeful_runtime(tmp_path):
     assert len(events) == 1
     assert events[0][1]["kind"] == "X_MENTIONS"
     assert events[0][1]["payload"]["count"] == 2
+
+
+def test_async_neural_receipt_does_not_duplicate_large_input_state(tmp_path):
+    bus = FerroStateEventBus(tmp_path)
+    projection = {"big_live_snapshot": "x" * 100_000}
+    bus.emit("INTEROCEPTIVE_FAULT", {"projection": projection}, observed_at=NOW)
+    [(path, event)] = bus.pending()
+    assert len(path.read_bytes()) > 100_000
+    bus.acknowledge(path, {"status": "APPLIED", "episode_id": "signal-1"})
+    [(receipt,)] = [tuple(bus.applied_root.glob("*.json"))]
+    row = receipt.read_text()
+    assert "big_live_snapshot" not in row
+    assert len(row) < 600
+    assert "signal-1" in row
+
+
+def test_request_reply_is_consumed_not_accumulated_as_memory(tmp_path):
+    bus = FerroStateEventBus(tmp_path)
+    row = bus.emit("PUBLIC_SNAPSHOT", {}, observed_at=NOW, expects_reply=True)
+    [(path, _event)] = bus.pending()
+    bus.acknowledge(path, {"status": "OK", "snapshot": {"public": "x" * 120000}})
+    assert len(list(bus.applied_root.glob("*.json"))) == 1
+    assert bus.result(row["event_id"])["snapshot"]["public"] == "x" * 120000
+    assert not list(bus.applied_root.glob("*.json"))
+
+
+def test_old_neural_receipts_compact_without_losing_result(tmp_path):
+    import json
+    import os
+    from datetime import timedelta
+    from pathlib import Path
+    import runpy
+    script = Path(__file__).resolve().parents[1] / "scripts" / "compact_state_event_receipts.py"
+    compact = runpy.run_path(str(script))["compact"]
+    bus = FerroStateEventBus(tmp_path)
+    event = bus.emit("INTEROCEPTIVE_FAULT", {"projection": {"deep_copy": "x" * 90_000}}, observed_at=NOW)
+    [(path, row)] = bus.pending()
+    bus.acknowledge(path, {"status": "APPLIED", "episode_id": "memory-already-ingested"})
+    receipt = next(bus.applied_root.glob("*.json"))
+    legacy = {**row, "applied_at": NOW.isoformat(), "result": {"status": "APPLIED", "episode_id": "memory-already-ingested"}}
+    receipt.write_text(json.dumps(legacy))
+    old = (NOW - timedelta(days=2)).timestamp()
+    os.utime(receipt, (old, old))
+    request = bus.emit("PUBLIC_SNAPSHOT", {}, observed_at=NOW)
+    [(qpath, _)] = bus.pending()
+    bus.acknowledge(qpath, {"status": "OK", "snapshot": {"huge": "y" * 100_000}})
+    snapshot_receipt = next(x for x in bus.applied_root.glob("*.json") if x != receipt)
+    os.utime(snapshot_receipt, (old, old))
+    previous_bytes = receipt.stat().st_size
+    dry = compact(bus.applied_root, now=NOW, age_hours=24, limit=10, apply=False)
+    assert dry["counts"] == {"compact_fault": 1, "expire_query": 1}
+    assert receipt.stat().st_size == previous_bytes
+    done = compact(bus.applied_root, now=NOW, age_hours=24, limit=10, apply=True)
+    assert done["counts"] == dry["counts"]
+    assert receipt.stat().st_size < 900
+    compacted = json.loads(receipt.read_text())
+    assert compacted["result"]["episode_id"] == "memory-already-ingested"
+    assert len(compacted["input_sha256"]) == 64
+    assert not snapshot_receipt.exists()
