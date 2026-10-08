@@ -45,7 +45,7 @@ def api(change=1.0, include_new=False, fail=None, etf=False):
             if include_new:
                 data.append({"timestamp": int(NOW.timestamp()*1000), "flow_usd": -70000000})
             return httpx.Response(200, json={"code": "0", "data": data})
-        if "theblockbeats" in url:
+        if "theblockbeats" in url or "panewslab" in url:
             return httpx.Response(200, content=rss("Baseline", *(["Fresh"] if include_new else [])))
         raise AssertionError(url)
     return httpx.MockTransport(fetch)
@@ -75,9 +75,9 @@ def test_crossing_then_dedup(tmp_path, monkeypatch):
             return await pipeline.MarketSignalCollector(tmp_path, client=client).run_once(now=NOW)
     assert asyncio.run(poll(1.0, False))["new_research_events"] == 0
     second = asyncio.run(poll(4.0, True))
-    assert second["new_research_events"] == 3
+    assert second["new_research_events"] == 4
     rows = bridge.market_research_candidates(state_root=tmp_path, now=NOW)
-    assert len(rows) == 3 and any(row["source_kind"] == "public-api" for row in rows)
+    assert len(rows) == 4 and any(row["source_kind"] == "public-api" for row in rows)
     assert asyncio.run(poll(4.0, True))["new_research_events"] == 0
 
 
