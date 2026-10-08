@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from wechat_traffic_agent.content_admission import _write_once
-from wechat_traffic_agent.web_editorial import digest
+from .fingerprint import digest
 
 
 class ChannelEvidence(BaseModel):

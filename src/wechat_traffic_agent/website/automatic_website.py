@@ -20,7 +20,8 @@ from wechat_traffic_agent.evidence_floor import (
     EvidenceFloorCheck, EvidenceFloorPlan, artifact_risk_cues, verify_evidence_floor_publication,
 )
 from wechat_traffic_agent.website_experiment import WebsiteExperimentBinding, experiment_compliance
-from wechat_traffic_agent.publication.models import PublicationEvent, DistributionTask
+from wechat_traffic_agent.publication.models import PublicationEvent
+from wechat_traffic_agent.publication.dispatch import DurablePublicationDispatch, PublicationSink
 from wechat_traffic_agent.publication.event_store import PublicationEventStore
 from wechat_traffic_agent.content_publication_store import ContentPublicationStore
 
@@ -29,13 +30,17 @@ class AutomaticWebsitePublisher:
     policy_version = 'website-automatic-admission:v3'
 
     def __init__(self, *, state_root, public_root, starter_path, config,
-                 clock: Callable[[], datetime] | None = None):
+                 clock: Callable[[], datetime] | None = None,
+                 publication_sink: PublicationSink | None = None):
         self.state_root = Path(state_root)
         self.state = self.state_root / 'content/automatic_website'
         self.public = Path(public_root)
         self.starter = Path(starter_path)
         self.config = config
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.publication_sink = publication_sink or DurablePublicationDispatch(
+            PublicationEventStore(self.state_root),
+        ).record
         private, public = Path(state_root).resolve(), self.public.resolve()
         if private == public or private in public.parents or public in private.parents:
             raise ValueError('private state and public site must be separate')
@@ -120,6 +125,12 @@ class AutomaticWebsitePublisher:
         if (content_strategy is not None
                 and content_strategy.decided_at.astimezone(timezone.utc) > self.clock()):
             raise ValueError('content strategy was decided after publication')
+        # Validate the publication clock before touching any public materialization.
+        # A failed admission must not advance the live website symlink.
+        published_at = self.clock()
+        if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
+            raise ValueError('publication clock must return a timezone-aware datetime')
+        published_at = published_at.astimezone(timezone.utc)
         content_store = ContentPublicationStore(
             state_root=self.state_root, public_root=self.public, config=self.config,
         )
@@ -167,10 +178,6 @@ class AutomaticWebsitePublisher:
             pending.unlink(missing_ok=True)
             pending.symlink_to(target)
             os.replace(pending, self.public / 'current')
-        published_at = self.clock()
-        if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
-            raise ValueError('publication clock must return a timezone-aware datetime')
-        published_at = published_at.astimezone(timezone.utc)
         attribution = {
             'schema_version': ('website-publication-attribution.v2' if experiment is not None
                                else 'website-publication-attribution.v1'),
@@ -206,7 +213,6 @@ class AutomaticWebsitePublisher:
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
 
         # Stable identity survives reruns and does not duplicate outbound tasks.
-        store = PublicationEventStore(self.state_root)
         event = PublicationEvent(
             event_id=event_id,
             artifact_id=artifact.artifact_id,
@@ -217,12 +223,7 @@ class AutomaticWebsitePublisher:
             published_at=published_at,
             content_hash=published_content,
         )
-        store.save_event(event)
-        store.enqueue_distribution(DistributionTask(
-            distribution_id=digest({'event_id': event_id, 'channel': 'x'}),
-            event_id=event.event_id,
-            channel='x',
-        ))
+        self.publication_sink(event)
         return receipt
 
 

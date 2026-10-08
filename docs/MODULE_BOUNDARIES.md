@@ -1,69 +1,92 @@
-# Ferro functional module boundaries
+# Ferro feature isolation: one deployment, separate capabilities
 
-Ferro is a **domain agent**, not a second general-purpose agent runtime.
-Agent Runtime owns lifecycle, identity, goals, generic cognition, generic
-memory, recovery, authorization, and execution policy. The Ferro repository
-owns editorial domain behavior and integrations.
+Ferro remains one deployed product supervised by `run_ferro_supervisor.py`.
+"Independently deployable" is a **code boundary goal**, not an instruction to
+create microservices, separate databases, extra containers, or network hops.
+Agent Runtime remains the owner of generic identity, goals, memory primitives,
+model backends and scheduling. Ferro owns its domain behavior.
 
-## Actual code layout (migration stage 1)
+## Feature ownership after the second pass
 
-| Package | Owns | Must not own |
+| Feature | Implementation | Dependencies allowed |
 | --- | --- | --- |
-| `editorial/` | Canonical content contracts, admission, provenance, drafts, articles in SQLite, publication records | Site layout or X browser sessions |
-| `website/` | Web publishing projection, presentation, website feedback, public experiment evaluation | Canonical article database writes except through editorial APIs |
-| `channels/` | HTML renderers, public site pages and channel-specific presentation | Agent decisions, authoritative content state |
-| `platforms/browser/` | Shared browser lifecycle, account and session isolation, takeover | Publication policy or content selection |
-| `platforms/x/` | X-specific posting, articles, metrics and external outcomes | Agent-wide goal planning and durable memory |
-| `publication/` | Durable publication events and distribution receipts | Site rebuilds or independent agent state machine |
-| `sources/` | Read-only external evidence connectors | Publishing actuators |
-| `scripts/` | Thin production entrypoints and explicit migrations | Core domain algorithms |
+| Editorial | `editorial/` | Pydantic contracts, SQLite, model-independent evidence; no website/HTTP/X |
+| Website | `website/` + `channels/` | Editorial content and injected publication event sink |
+| Publication | `publication/` | Immutable publication events, channel-neutral outbox; not X transport |
+| X | `platforms/x/` | Browser session adapter, publication event contract |
+| Browser | `platforms/browser/` | Browser/session resources only; no editorial decisions |
+| Wakeful task handlers | `orchestration/{owner,content,social,neural,resources,observation}.py` | Injected host runtime services, not website templates |
+| External sources | `sources/` | Read-only evidence providers |
+| Runtime shell | `wakeful_tasks.py`, worker scripts and supervisor | Wires handlers, admission, lifecycle and result recording |
 
-The unchanged flat modules still include orchestration, learning, organism,
-memory, and operations code. **Stage 1 does not claim those are finished.**
-Subsequent stages should create `orchestration/`, `cognition/`,
-`learning/`, `memory/`, and `operations/` and break up large classes
-by responsibilities. Do not promote one giant `core/` package.
+### Enforced contracts
 
-## Dependency direction
+1. `editorial.routing._route_for` and `editorial.fingerprint.digest` are
+   canonical; the HTML renderer simply re-exports them. The article SQLite
+   repository does **not** import the site renderer or website policy.
+2. The SQLite repository owns article records; `website.content_publication_store`
+   owns generated HTML, derived listings, feed, and content symlink. That
+   materialization layer is **not** an article repository.
+3. `website.AutomaticWebsitePublisher` accepts a `PublicationSink`. The default
+   in-process sink writes immutable publication events and schedules downstream
+   distribution through `publication.DurablePublicationDispatch`. Other
+   sinks can be injected without changing website code.
+4. The X-specific distribution adapter is in `platforms/x/distribution.py`,
+   not publication. Publication owns only events, tasks and verified receipts.
+5. Importing `editorial.article_repository` must not import web, X, wakeful
+   orchestration or Agent Runtime. Root package public exports are lazy.
+6. The wakeful dispatcher delegates 43 methods to six capability mixins; its
+   entrypoint stays stable. Each group can be tested in isolation with fake
+   host components, but **mixins still access shared host fields**, so this is
+   an intermediate boundary, not independent deployability yet.
 
-1. Workers / API endpoints compose feature services; they do not contain
-   transport implementations, HTML layouts, or SQL.
-2. Editorial content and evidence are the stable business contracts.
-3. Website and X are independent consumers of admitted content.
-   Updating the site layout does not rewrite articles; publishing an article
-   does not regenerate the entire site.
-4. Browser sessions are transport infrastructure. The X adapter requests
-   a session from the browser layer and returns externally verifiable receipts.
-5. SQLite is authoritative for published articles. A generated HTML page or
-   `articles.json` is a disposable projection, never another source of truth.
-6. Generic cognition and memory mechanisms belong to Agent Runtime.
-   Ferro-specific memory observations and learning evaluators plug into them.
-7. Cross-feature communication should use explicit functions, records and
-   event/receipt contracts rather than direct filesystem scraping.
+## Compatibility and state
 
-## Compatibility during migration
+Top-level module names stay available as compatibility aliases to the same
+canonical module objects. The alias for
+`editorial.content_publication_store` now points to the website component.
+No code or state is duplicated by those aliases.
 
-Top-level import paths (`wechat_traffic_agent.x_social`, etc.) are tiny
-`sys.modules` aliases to the same implementation object now in its feature
-package. There is **one implementation**, not duplicated state or shadow
-classes. They allow existing tests, workers, third-party callers and mocks to
-keep using old imports without simultaneous whole-repository import rewrites.
-New implementation modules should import feature packages directly whenever
-possible. Remove compatibility aliases after all users migrate and tests pass.
+Keep the existing `content-agent.service` supervisor and its independent
+workers. Do **not** start extra processes or deploy these working-branch
+changes during the modularization. Article SQLite remains authoritative;
+`articles.json`, HTML and feeds are rebuildable projections.
 
-## Out of scope in stage 1
+## Remaining steps to independently deployable code
 
-- Moving, editing or resetting uncommitted changes in Agent Runtime.
-- Live service reload, database migration, or domain deploy.
-- Redesign of website layouts.
-- Removing authoritative memory state without a measured retention test.
-- Splitting `content_goal_loop.py`, `wakeful_tasks.py`, or `live_agent.py`:
-  these need behavior-focused extraction plus regression coverage, not another
-  single-file relocation.
+These are substantive, not folder moves:
 
-## Acceptance
+1. Break the 2,284-line `ContinuousContentLoop._run` into research selection,
+   verification, cognition, editorial admission and publication use cases
+   with explicit request/result objects. No domain use case reads another
+   module's private cycle files.
+2. Separate HTTP/API routing from the 2,485-line `LiveAgentService._app` and
+   replace direct internal state scans with narrow read interfaces. Site API
+   and operator API should have separate application compositions.
+3. Replace the wakeful mixins' implicit shared-`self` dependencies with
+   explicit feature service constructors and ports. Retain one in-process
+   wiring layer and existing worker scheduling.
+4. Move Ferro-specific memory/learning **policies** behind interfaces to
+   Agent Runtime's memory/learning machinery. Do not clone generic engines.
+5. Add per-feature import contract tests plus replayable integration contracts.
+   Prove a feature can run against an injected fake upstream/downstream port
+   with no other feature instantiated.
+6. Only after boundary tests pass, migrate internal imports to canonical
+   package paths and delete temporary compatibility aliases.
 
-- Feature modules import through canonical and compatibility paths.
-- Article CRUD + website rendering and X/browser regressions pass.
-- All changed files reviewed and committed separately from unrelated work.
-- Live deployment only after the remaining service suite and health checks pass.
+No independent service deployment is planned. A feature being separately
+deployable means its input, output, storage responsibility and initialization
+are explicit; communication can remain ordinary Python calls.
+
+## Verification and known baseline failures
+
+`tests/test_independent_feature_boundaries.py` checks imports and task
+delegation. Article/site publication and distribution tests verify that
+swapping sinks preserves publication receipts. Some older wakeful suite tests
+already fail at baseline `e055a1a`: 41 failed and 82 passed on the original
+single-file runner and the same 41 failed/82 passed after extraction. A
+worker-neural ownership test also fails in the baseline. These are **not**
+evidence of new regression, but still need fixing before integration/deploy.
+
+Do not merge or deploy until the full suite is checked against a known
+baseline and other concurrent working tree changes are reconciled.

@@ -11,8 +11,8 @@ from pathlib import Path
 import sqlite3
 
 from wechat_traffic_agent.content_artifact import ContentArtifact
-from wechat_traffic_agent.channels.web import _route_for
-from wechat_traffic_agent.web_editorial import digest
+from .routing import _route_for
+from .fingerprint import digest
 
 
 class ArticleRepository:

@@ -19,11 +19,7 @@ from wechat_traffic_agent.draft_inbox import ContentDraftInbox, ContentDraftReco
 from wechat_traffic_agent.models import TopicSignal
 from wechat_traffic_agent.site_cli import _load_artifacts
 from wechat_traffic_agent.trading_draft_worker import default_trading_research_audience
-
-
-def digest(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                     separators=(",", ":")).encode()).hexdigest()
+from wechat_traffic_agent.editorial.fingerprint import digest
 
 
 class _Links(HTMLParser):

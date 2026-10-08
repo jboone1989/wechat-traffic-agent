@@ -1,35 +1,4 @@
-"""One X adapter: syndicate an audited website URL through the existing Jev session."""
-from __future__ import annotations
-
-import asyncio
-from pathlib import Path
-
-from .models import PublicationEvent, DistributionTask
-
-
-def x_share_text(event: PublicationEvent) -> str:
-    """Link to the canonical article, never synthesize another research claim."""
-    suffix = "\n\n" + event.canonical_url
-    budget = 280 - len(suffix)
-    if budget < 20:
-        raise ValueError("canonical URL is too long for an X post")
-    lead = " ".join((event.title + " — " + event.summary).split())
-    if len(lead) > budget:
-        lead = lead[: budget - 1].rsplit(" ", 1)[0].rstrip(" ,.;") + "…"
-    return lead + suffix
-
-
-def publish_x(event: PublicationEvent, task: DistributionTask, *, state_root: Path) -> dict:
-    from ..x_browser import XBrowserTransportRouter, x_browser_writes_enabled
-    if task.channel != "x":
-        raise ValueError("X adapter cannot publish other channels")
-    if not x_browser_writes_enabled():
-        raise RuntimeError("X publishing is disabled")
-    publication = asyncio.run(
-        XBrowserTransportRouter(state_root=Path(state_root)).publish(text=x_share_text(event))
-    )
-    post_id = str(publication.post_id or "").strip()
-    url = str(publication.url or "").strip()
-    if not post_id or not url.startswith("https://x.com/") or post_id not in url:
-        raise RuntimeError("Jev did not return a verified X post ID and URL")
-    return {"status": "POSTED", "url": url, "post_id": post_id}
+"""Backward-compatible alias; X transport belongs to the X platform feature."""
+from importlib import import_module as _import_module
+import sys as _sys
+_sys.modules[__name__] = _import_module("wechat_traffic_agent.platforms.x.distribution")

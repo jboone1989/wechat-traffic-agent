@@ -18,11 +18,11 @@ ROOT = Path(__file__).resolve().parents[1] / "src" / "wechat_traffic_agent"
 GROUPS = {
     "editorial": (
         "article_repository", "content_artifact", "content_admission",
-        "content_publication_store", "draft_inbox", "editorial_policy",
+        "draft_inbox", "editorial_policy",
         "editorial_intervention", "channel_evidence",
     ),
     "website": (
-        "automatic_website", "site_audit", "web_editorial",
+        "automatic_website", "content_publication_store", "site_audit", "web_editorial",
         "website_engagement", "website_engagement_client",
         "website_experiment", "website_experiment_evaluation",
         "web_outcome_evidence", "gsc_search_console",
