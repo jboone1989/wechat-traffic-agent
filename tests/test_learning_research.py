@@ -505,3 +505,41 @@ def test_exact_known_observation_cannot_count_again_as_progress(tmp_path):
         asyncio.run(investigate_learning(runtime=Runtime([value, value]), explorer=Explorer(),
             folder=tmp_path/"cycles/repeat", state_root=tmp_path, topic="agent-reliability",
             focus=FOCUS, memory=memory, evidence=[DETAIL], selected=DETAIL, now=NOW, search_rounds=0))
+
+
+def test_repeated_unfinished_inquiry_requires_changed_external_action(tmp_path):
+    # Two completed attempts with the same question but different aliases
+    # must change what Ferro actually searches next, not only its prose.
+    prior = {"inquiries": {}, "history": [
+        {"cycle": "old-" + str(i), "topic": "another-topic-" + str(i),
+         "focus": {"question": FOCUS.question, "approach": "EXPLAIN",
+                   "search_query": FOCUS.search_query},
+         "question_status": "PARTIAL", "inquiry_action": "CONTINUE",
+         "facts": []} for i in range(2)
+    ]}
+    memory = {"research": prior, "beliefs": [], "knowledge_catalog": [],
+              "recent_shares": [], "interests": []}
+    # Static model output: continuing the same broad source search must fail.
+    with pytest.raises(ValueError, match="change its search query"):
+        asyncio.run(choose_research_focus(
+            runtime=Runtime([]), folder=tmp_path/"duplicate", topic="agent-reliability",
+            memory=memory, state_root=tmp_path,
+        ))
+
+    class Changed(Runtime):
+        async def cognitive_probe(self, task, max_tokens, output_schema=None):
+            if task.startswith("PLAN_LEARNING:"):
+                return ResearchFocus(
+                    question=FOCUS.question,
+                    why_interested=FOCUS.why_interested,
+                    search_query="github source implementation of worker recovery invocation id",
+                    method_change="Read source implementation instead of repeating a generic checklist search.",
+                    approach="EXPLAIN",
+                ).model_dump_json()
+            return await super().cognitive_probe(task, max_tokens, output_schema)
+
+    focus = asyncio.run(choose_research_focus(
+        runtime=Changed([]), folder=tmp_path/"changed", topic="agent-reliability",
+        memory=memory, state_root=tmp_path,
+    ))
+    assert "source implementation" in focus.search_query

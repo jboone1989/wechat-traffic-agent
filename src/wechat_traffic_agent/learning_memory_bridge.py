@@ -28,6 +28,11 @@ class LearningMemoryBridge:
         *,
         sync: bool = True,
     ) -> None:
+        # REPEATED and UNRESOLVED are task feedback, not new knowledge.
+        # Keep their cycle receipts for method correction; never promote the
+        # same source observation into canonical memory with a fresh cycle ID.
+        if row.get("progress") in {"REPEATED", "UNRESOLVED"}:
+            return
         for index, fact in enumerate(row.get("facts") or []):
             memory_id = (
                 "research-fact:"
@@ -153,11 +158,17 @@ class LearningMemoryBridge:
         self,
         row: dict[str, Any],
     ) -> None:
+        assessment = row["assessment"]
+        # A prediction with no settled outcome is not acquired expertise.
+        # Persist it in the recoverable application-feedback state, not the
+        # agent's long-term episodic "lessons". Keeping hundreds of unresolved
+        # outcomes there crowds out actual refutations and transfers.
+        if assessment["status"] == "UNRESOLVED":
+            return
         memory_id = (
             "learning-application:"
             + str(row["cycle"])
         )
-        assessment = row["assessment"]
         if (
             self.service.store.get_memory(memory_id)
             is None
