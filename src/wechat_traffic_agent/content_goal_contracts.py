@@ -20,3 +20,13 @@ class WorldviewDecision(Contract):
     reliability: float = Field(ge=0.0, le=1.0)
     support: float = Field(ge=0.0, le=1.0)
     rationale: str = Field(min_length=10, max_length=600)
+
+
+class CognitionDecision(Contract):
+    cognition_state: Literal["BELIEF_CHANGED", "INVESTIGATING", "NO_MATERIAL_CHANGE"]
+    worth_saying: bool
+    expression_kind: Literal["LONGFORM", "RESEARCH_NOTE", "METHOD_NOTE", "THOUGHT", "NONE"]
+    what_changed: str = Field(min_length=5, max_length=600)
+    what_matters: str = Field(min_length=5, max_length=600)
+    belief_proposition: str | None = Field(default=None, max_length=500)
+    rationale: str = Field(min_length=10, max_length=600)

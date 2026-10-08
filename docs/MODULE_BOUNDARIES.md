@@ -193,22 +193,73 @@ changes during the modularization. Article SQLite remains authoritative;
   2,284); its remaining long phases are article generation/brief assembly and
   deterministic quality verification/one bounded draft repair. The latter must
   be separate feature use cases, not hidden in a new monolith.
-- `counter_evidence_service.py` owns bounded counter-evidence discovery. Missing\n  contrary evidence results in a saved lower-claim writing requirement and a\n  strict post-draft claim check; its plan and missing-evidence receipts are\n  reused after restart. The content runner does not call the counter-search\n  adapter directly.\n- `tests/test_owner_editorial_feature_boundaries.py` runs owner streaming,
+- `counter_evidence_service.py` owns bounded counter-evidence discovery. Missing
+  contrary evidence results in a saved lower-claim writing requirement and a
+  strict post-draft claim check; its plan and missing-evidence receipts are
+  reused after restart. The content runner does not call the counter-search
+  adapter directly.
+- `tests/test_owner_editorial_feature_boundaries.py` runs owner streaming,
   method evidence grounding, writing practice, strategy forecast ordering,
   counter-evidence restart/reuse, and import/size contracts against injected fakes, alongside the existing
   owner chat and content regression suites.
+
+## Grounded writer, verifier and publication receipts (stage 8)
+
+- `draft_generation_service.py` accepts a typed request and injected source,
+  strategy and context projections. It compiles the bounded editorial brief,
+  constructs cited TopicSignal inputs, performs initial draft generation, and
+  applies the existing one-time lower-claim rewrite when counter-evidence is
+  missing. Its methods are 74 lines or fewer; it never decides publication.
+- `draft_verification_service.py` owns exact-source-quote validation,
+  section evidence coverage, learned-technique checks, minimum length and
+  perspective checks. Its single retry uses the same frozen draft/evidence
+  and writes a receipt; it does not rewrite content or relax any criterion.
+- `draft_repair_service.py` performs at most one missing-technique repair
+  and calls the same verifier in strict mode, including title uniqueness and
+  lower-claim conditions. It cannot bypass the publication gate.
+- `draft_outcome_service.py` persists the reviewed draft and the process
+  receipt and returns a result; only `ContentCycleCompletion` owns the
+  subsequent publication/outbox action and typed feedback notification.
+- `expression_decision_service.py` decides whether cognition warrants
+  public expression and returns `COGNITION_ONLY` when not. Prior decisions
+  remain restart-stable and a previously forced no-output from partial
+  learning may be reconsidered only with concrete public evidence.
+- `ContinuousContentLoop._run` is **378 lines**, down from **2,284**.
+  Remaining work is shortening its goal/research/cognition phase composition
+  using typed phase outputs; do not merely move 378 lines into another runner.
+  `tests/test_draft_feature_boundaries.py` checks invalid quotes, frozen
+  retry admission, independent module imports and function-length contracts.
+
+## Typed in-process phase orchestration (stage 9)
+
+- `ContinuousContentLoop._run` is now **15 lines** (originally 2,284).
+  It only calls the goal, research, cognition, editorial planning, draft
+  generation and verification/completion phases, propagating an existing
+  terminal result when one phase stops early.
+- The six phase methods are **87, 79, 93, 73, 60, and 97 lines**.
+  Each phase only composes the separately testable use-case services.
+  Explicit, frozen `_CycleGoalStage`, `_CycleResearchStage`,
+  `_CycleCognitionStage`, `_CycleEditorialPlan`, and `_CycleDraftStage`
+  objects carry phase outputs; they are short-lived **in-memory values**, not
+  large JSON snapshots, a new queue, or an additional process.
+- `tests/test_draft_feature_boundaries.py` enforces the <=50-line entrypoint
+  and <=100-line phase limits as well as evidence and retry admission contracts.
+- The **full repository is not yet fully short-method compliant**: older
+  long methods elsewhere still require a separate audit and refactor.
+  Prior wakeful-suite baseline failures and parallel working-tree changes
+  remain separate integration tasks; no main merge or deployment is implied.
 
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
 
-1. Continue breaking the 897-line `ContinuousContentLoop._run` into research selection,
-   verification, cognition, editorial admission and publication use cases
+1. Keep the 15-line `ContinuousContentLoop._run` as composition only and avoid
+   reintroducing domain work into any of its six <=100-line phase methods
    with explicit request/result objects. No domain use case reads another
    module's private cycle files.
-2. Continue separating HTTP/API handlers from the 1,128-line `LiveAgentService._app` and
-   replace direct internal state scans with narrow read interfaces. Site API
-   and operator API should have separate application compositions.
+2. Keep the 19-line `LiveAgentService._app` as composition-only, and replace
+   residual direct internal state scans with narrow read interfaces. Public
+   and operator endpoints already have separately injected handler sets.
 3. Replace the wakeful mixins' implicit shared-`self` dependencies with
    explicit feature service constructors and ports. Retain one in-process
    wiring layer and existing worker scheduling.
