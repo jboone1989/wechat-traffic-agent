@@ -5,7 +5,7 @@ tasks. Swap this sink for a message-bus adapter if deployed as a separate proces
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from wechat_traffic_agent.editorial.fingerprint import digest
@@ -17,10 +17,15 @@ class PublicationSink(Protocol):
     def __call__(self, event: PublicationEvent) -> None: ...
 
 
+def default_distribution_channels() -> tuple[str, ...]:
+    from wechat_traffic_agent.platforms.binance_square import square_enabled
+    return ("x", "binance_square") if square_enabled() else ("x",)
+
+
 @dataclass
 class DurablePublicationDispatch:
     store: PublicationEventStore
-    channels: tuple[str, ...] = ("x",)
+    channels: tuple[str, ...] = field(default_factory=default_distribution_channels)
 
     def record(self, event: PublicationEvent) -> None:
         self.store.save_event(event)
