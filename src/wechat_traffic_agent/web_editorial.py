@@ -53,7 +53,7 @@ def website_snapshot(artifacts_path: Path, site_root: Path, base_url: str) -> di
     content_root = site_root.parent / "content-current"
     rendered_root = (
         content_root if content_root.is_symlink()
-        and (content_root / "articles.json").is_file()
+        and (content_root / "data" / "articles.json").is_file()
         else site_root
     )
     artifacts = _load_artifacts(artifacts_path)
@@ -109,9 +109,15 @@ def resolve_rendered_inventory(
     inventories_dir = Path(inventories_dir)
     if not site_root.is_symlink():
         return fallback_path
-    independent = inventories_dir.parent / "articles.json"
-    if independent.is_file() and (site_root.parent / "content-current" / "articles.json").is_file():
-        return independent
+    independent = inventories_dir.parent / "articles.sqlite3"
+    if independent.is_file() and (site_root.parent / "content-current").is_symlink():
+        from .article_repository import ArticleRepository
+        if ArticleRepository(independent).initialized():
+            return independent
+    # Only for a pre-migration deployment; never override a live database.
+    legacy = inventories_dir.parent / "articles.json"
+    if legacy.is_file() and (site_root.parent / "content-current" / "articles.json").is_file():
+        return legacy
     direct = inventories_dir / (site_root.resolve().name + ".json")
     if direct.exists():
         return direct

@@ -1562,6 +1562,40 @@ class LiveAgentService:
             return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
         async def status(_request: Request):
+            if _request.query_params.get("content") == "articles":
+                # Public home reads SQLite directly; the JSON and HTML files
+                # in the Nginx document root are only presentation caches.
+                from .article_repository import ArticleRepository
+                from .channels.web import _route_for
+                repo = ArticleRepository(
+                    self.state_root / "content" / "automatic_website" / "articles.sqlite3"
+                )
+                try:
+                    artifacts = repo.list_artifacts()
+                except (FileNotFoundError, ValueError) as exc:
+                    return JSONResponse(
+                        {"error": "article_database_unavailable", "detail": str(exc)},
+                        status_code=503,
+                        headers={"Cache-Control": "no-store"},
+                    )
+                articles = sorted(
+                    (a for a in artifacts if a.public_safe),
+                    key=lambda a: a.updated_at or a.created_at,
+                    reverse=True,
+                )
+                return JSONResponse({
+                    "schema_version": "ferro-content-catalog.v1",
+                    "source": "sqlite",
+                    "articles": [{
+                        "artifact_id": a.artifact_id,
+                        "title": a.title,
+                        "summary": a.summary,
+                        "kind": a.kind.value,
+                        "tags": list(a.tags),
+                        "url": _route_for(a),
+                        "updated_at": (a.updated_at or a.created_at).isoformat(),
+                    } for a in articles],
+                }, headers={"Cache-Control": "no-store"})
             try:
                 payload = await asyncio.wait_for(
                     asyncio.to_thread(

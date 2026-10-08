@@ -88,6 +88,10 @@ def _indexed_topic_slugs(artifacts: list[ContentArtifact]) -> set[str]:
 
 
 def _load_artifacts(path: Path) -> list[ContentArtifact]:
+    path = Path(path)
+    if path.suffix in {".sqlite3", ".db"}:
+        from .article_repository import ArticleRepository
+        return ArticleRepository(path).list_artifacts()
     files = _artifact_files(path)
     artifacts: list[ContentArtifact] = []
     for file_path in files:

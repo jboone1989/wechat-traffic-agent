@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 
+from .article_repository import ArticleRepository
 from .channels.web import _route_for
 from .site_cli import _load_artifacts, _curate_web_taxonomy
 from .web_editorial import digest
@@ -27,20 +28,33 @@ class ContentPublicationStore:
         self.public_root = Path(public_root)
         self.config = config
         self.private_root = self.state_root / "content" / "automatic_website"
-        self.inventory = self.private_root / "articles.json"
+        self.legacy_inventory = self.private_root / "articles.json"
+        self.inventory = self.private_root / "articles.sqlite3"
+        self.repo = ArticleRepository(self.inventory)
         self.data_releases = self.public_root / "content-releases"
         self.current = self.public_root / "content-current"
 
     def ready(self) -> bool:
-        return self.current.is_symlink() and (self.current / "articles.json").is_file()
+        return self.current.is_symlink() and self.repo.initialized()
 
     def bootstrap(self, *, site_root: Path, legacy_inventory: Path) -> dict:
         """One-time extraction of existing published data from the website."""
         if self.ready():
             return {"status": "ALREADY_READY", "revision": self.current.resolve().name}
+        site_root = Path(site_root)
+        # Production is already on the independent content mount: import its
+        # legacy JSON once into SQLite, but never rebuild or move the site.
+        if self.current.is_symlink() and not self.repo.initialized():
+            source = self.legacy_inventory if self.legacy_inventory.is_file() else (
+                self.current / "articles.json"
+            )
+            if not source.is_file():
+                raise ValueError("legacy article migration source missing")
+            artifacts = _load_artifacts(source)
+            count = self.repo.initialize(artifacts)
+            return {"status": "MIGRATED_TO_SQLITE", "count": count, "revision": self.current.resolve().name}
         if self.current.exists() or self.current.is_symlink():
             raise ValueError("content-current exists but is not a valid content release")
-        site_root = Path(site_root)
         if not site_root.is_symlink():
             raise ValueError("site shell must already be activated")
         artifacts = _load_artifacts(legacy_inventory)
@@ -65,11 +79,11 @@ class ContentPublicationStore:
                 if stage.exists():
                     shutil.rmtree(stage)
         self.private_root.mkdir(parents=True, exist_ok=True)
-        if self.inventory.exists():
-            if json.loads(self.inventory.read_text(encoding="utf-8")) != payload:
-                raise ValueError("existing independent inventory differs from rendered website")
+        if self.repo.initialized():
+            if [a.model_dump(mode="json") for a in self.repo.list_artifacts()] != payload:
+                raise ValueError("existing SQLite inventory differs from rendered website")
         else:
-            self._atomic(self.inventory, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            self.repo.initialize(artifacts)
         pending = self.public_root / "content-current.next"
         pending.unlink(missing_ok=True)
         pending.symlink_to(target)
@@ -132,11 +146,22 @@ class ContentPublicationStore:
         self.private_root.mkdir(parents=True, exist_ok=True)
         with (self.private_root / ".content-publish.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            artifacts = _load_artifacts(self.inventory)
+            artifacts = self.repo.list_artifacts()
             for old in artifacts:
                 if old.artifact_id == artifact.artifact_id:
                     if old != artifact:
                         raise ValueError("published artifact ID conflict")
+                    if not (self.current / _route_for(artifact).lstrip("/") / "index.html").exists():
+                        # DB commit may have survived a crash before the cache
+                        # pointer swap. Reattach the already validated snapshot.
+                        revision = digest([a.model_dump(mode="json") for a in artifacts])
+                        prepared = self.data_releases / revision
+                        if not (prepared / _route_for(artifact).lstrip("/") / "index.html").is_file():
+                            raise RuntimeError("SQLite article lacks a complete public cache snapshot")
+                        pending = self.public_root / "content-current.next"
+                        pending.unlink(missing_ok=True)
+                        pending.symlink_to(prepared)
+                        os.replace(pending, self.current)
                     return {
                         "status": "ALREADY_PUBLISHED",
                         "revision": self.current.resolve().name,
@@ -199,7 +224,7 @@ class ContentPublicationStore:
                         raise ValueError("invalid content sitemap/feed") from exc
                     self._atomic(stage / "sitemap.xml", website_channel._sitemap(routes, ordered))
                     self._atomic(stage / "feed.xml", website_channel._feed(ordered))
-                    self._atomic(stage / "articles.json", json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+                    (stage / "articles.json").unlink(missing_ok=True)  # legacy export, no longer a store
                     self._atomic(stage / "data" / "articles.json", self._catalog(ordered))
                     self._validate_pages(stage, [route])
                     stage.chmod(0o755)
@@ -207,14 +232,13 @@ class ContentPublicationStore:
                 finally:
                     if stage.exists():
                         shutil.rmtree(stage)
-            # Public content pointer moves first. If interrupted before the
-            # inventory update, replay reconstructs the same content revision
-            # and finishes the private catalogue (no loss of the new article).
+            # SQLite is authoritative; the immutable content-releases tree is
+            # just a presentation cache for Nginx's static routes.
+            self.repo.insert(artifact)
             pending = self.public_root / "content-current.next"
             pending.unlink(missing_ok=True)
             pending.symlink_to(target)
             os.replace(pending, self.current)
-            self._atomic(self.inventory, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             return {
                 "status": "PUBLISHED",
                 "revision": (self.public_root / "current").resolve().name,

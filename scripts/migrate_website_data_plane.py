@@ -44,7 +44,7 @@ def migrate(*, state_root: Path, public_root: Path, config: StaticWebsiteConfig,
         "Notes": [a for a in artifacts if a.kind is ContentKind.NOTE],
     }
     homepage = AutomaticAgentWebChannel(config)._home(artifacts, categories)
-    if "data:image/webp;base64" not in homepage or "/data/articles.json" not in homepage:
+    if "data:image/webp;base64" not in homepage or "/api/agent/status?content=articles" not in homepage:
         raise ValueError("home must retain the original image and load the independent catalogue")
     name = "ferro-content-mounted-" + sha256((homepage + "mount:v1").encode("utf-8")).hexdigest()[:18]
     target = public_root / "releases" / name

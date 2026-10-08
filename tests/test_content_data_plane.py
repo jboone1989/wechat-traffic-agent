@@ -69,7 +69,8 @@ def test_incremental_publishing_does_not_rebuild_or_redeploy_website(tmp_path, m
     assert site.resolve(strict=True) == original
     assert set((publisher.public / "releases").iterdir()) == original_site_releases
     assert (site / "index.html").read_bytes() == old_home
-    assert len(json.loads(data.inventory.read_text())) == 5
+    assert data.repo.count() == 5
+    assert not (data.current / "articles.json").exists()
     assert len(website_snapshot(publisher.inventory_path(), site, publisher.config.base_url)["articles"]) == 5
 
 
@@ -82,7 +83,7 @@ def test_failed_article_checks_do_not_switch_content_or_site(tmp_path):
     assert outcome["status"] == "HELD_BY_CHECKS"
     assert (publisher.public / "current").resolve() == site
     assert store.current.resolve() == content
-    assert len(json.loads(store.inventory.read_text())) == 3
+    assert store.repo.count() == 3
 
 
 def test_migrate_static_shell_to_independent_content_plane(tmp_path):
@@ -111,9 +112,41 @@ def test_migrate_static_shell_to_independent_content_plane(tmp_path):
     assert result["site_design_release"] != old.name
     page = (publisher.public / "current" / "index.html").read_text()
     assert "data:image/webp;base64" in page
-    assert "/data/articles.json" in page
-    assert (publisher.public / "content-current" / "articles.json").is_file()
+    assert "/api/agent/status?content=articles" in page
+    migrated = ContentPublicationStore(state_root=tmp_path / "state", public_root=publisher.public, config=publisher.config)
+    assert migrated.inventory.is_file()
+    assert migrated.repo.count() == 3
     for mounted in ("articles", "guides", "research", "notes", "archive",
                     "topics", "sitemap.xml", "feed.xml", "data"):
         assert (publisher.public / "current" / mounted).is_symlink()
         assert (publisher.public / "current" / mounted).exists()
+
+
+def test_sqlite_commit_survives_interrupted_cache_swap(tmp_path, monkeypatch):
+    import os
+    from wechat_traffic_agent.automatic_website import AutomaticAgentWebChannel
+    _, loop, publisher = setup(tmp_path)
+    store = _bootstrap(tmp_path, publisher)
+    old_revision = store.current.resolve().name
+    original_replace = os.replace
+    fired = []
+    def interrupted(source, destination):
+        if Path(destination) == store.current and not fired:
+            fired.append(True)
+            raise RuntimeError("simulated process restart before cache pointer swap")
+        return original_replace(source, destination)
+    monkeypatch.setattr("wechat_traffic_agent.content_publication_store.os.replace", interrupted)
+    result = asyncio.run(loop.run_once(now=NOW))
+    assert result["status"] == "ERROR"
+    assert store.repo.count() == 4
+    assert store.current.resolve().name == old_revision
+    monkeypatch.setattr("wechat_traffic_agent.content_publication_store.os.replace", original_replace)
+    artifact = next(a for a in store.repo.list_artifacts() if a.artifact_id not in {
+        "guide-backtest-reading-001", "article-risk-001", "research-model-001"
+    })
+    # Recover by recomputing the prebuilt immutable cache rather than writing
+    # a second copy to the SQLite database.
+    response = store.publish(artifact, website_channel=AutomaticAgentWebChannel(publisher.config))
+    assert response["status"] == "ALREADY_PUBLISHED"
+    assert store.repo.count() == 4
+    assert (store.current / response["route"].lstrip("/") / "index.html").is_file()

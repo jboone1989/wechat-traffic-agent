@@ -320,7 +320,7 @@ class AutomaticAgentWebChannel(ContentAgentWebChannel):
   const grid=document.querySelector('.latest-grid');
   if(!grid)return;
   try {
-    const response=await fetch('/data/articles.json',{cache:'no-store'});
+    const response=await fetch('/api/agent/status?content=articles',{cache:'no-store'});
     if(!response.ok)throw new Error('content data unavailable');
     const payload=await response.json();
     if(payload.schema_version!=='ferro-content-catalog.v1'||!Array.isArray(payload.articles))return;
