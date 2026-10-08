@@ -31,18 +31,19 @@ SNAPSHOT_PREFIXES = (
 
 
 def _source_refs(state_root: Path) -> set[str]:
-    out: set[str] = set()
+    # Query the authoritative evidence table, not thousands of legacy files.
+    # Its first read imports old records transactionally where necessary.
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from wechat_traffic_agent.channel_evidence import ChannelEvidenceStore
     root = state_root / "content" / "channel_evidence"
-    for path in root.rglob("*.json"):
-        # Any unreadable evidence means we cannot prove a snapshot unreferenced.
-        row = json.loads(path.read_text(encoding="utf-8"))
-        for ref in row.get("evidence_refs", ()):
-            if not isinstance(ref, str):
-                continue
-            for prefix in SNAPSHOT_PREFIXES:
-                if ref.startswith(prefix):
-                    out.add(ref.removeprefix(prefix))
-    return out
+    refs = ChannelEvidenceStore(root).all_evidence_refs() if root.exists() else set()
+    return {
+        ref.removeprefix(prefix)
+        for ref in refs
+        for prefix in SNAPSHOT_PREFIXES
+        if ref.startswith(prefix)
+    }
 
 
 def prune(state_root: Path, *, now: datetime,

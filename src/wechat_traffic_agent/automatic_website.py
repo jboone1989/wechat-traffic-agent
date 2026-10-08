@@ -120,6 +120,12 @@ class AutomaticWebsitePublisher:
         if (content_strategy is not None
                 and content_strategy.decided_at.astimezone(timezone.utc) > self.clock()):
             raise ValueError('content strategy was decided after publication')
+        # Validate the publication timestamp before mutating either the
+        # article database or the public website release pointer.
+        published_at = self.clock()
+        if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
+            raise ValueError('publication clock must return a timezone-aware datetime')
+        published_at = published_at.astimezone(timezone.utc)
         content_store = ContentPublicationStore(
             state_root=self.state_root, public_root=self.public, config=self.config,
         )
@@ -167,10 +173,6 @@ class AutomaticWebsitePublisher:
             pending.unlink(missing_ok=True)
             pending.symlink_to(target)
             os.replace(pending, self.public / 'current')
-        published_at = self.clock()
-        if not isinstance(published_at, datetime) or published_at.utcoffset() is None:
-            raise ValueError('publication clock must return a timezone-aware datetime')
-        published_at = published_at.astimezone(timezone.utc)
         attribution = {
             'schema_version': ('website-publication-attribution.v2' if experiment is not None
                                else 'website-publication-attribution.v1'),

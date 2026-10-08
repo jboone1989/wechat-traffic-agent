@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .channel_evidence import ChannelEvidence, ChannelEvidenceStore
+from .website_engagement_sqlite import EngagementEventsTable
 from .web_editorial import digest
 
 SOURCE = "first-party-engagement:v1"
@@ -147,39 +148,43 @@ class WebsiteEngagementStore:
             raise ValueError("engagement coverage schema mismatch")
         return _utc(datetime.fromisoformat(str(payload["started_at"])))
 
-    def record_payload(self, payload: dict, *, observed_at: datetime, audience_class: Literal["public", "operator"] = "public") -> dict:
+    def _events_db(self) -> EngagementEventsTable:
+        return EngagementEventsTable(self.root)
+
+    def record_payload(self, payload: dict, *, observed_at: datetime,
+                       audience_class: Literal["public", "operator"] = "public") -> dict:
         raw = WebsiteEngagementInput.model_validate(payload)
         observed_at = _utc(observed_at).replace(microsecond=0)
         key = self._key()
-        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, acquisition=raw.acquisition, device_class=raw.device_class, audience_class=audience_class, observed_at=observed_at)
-        path = self.events_root / observed_at.strftime("%Y-%m-%d") / f"{event.event_id}.json"
-        stable = _stable_event(event)
-        if path.exists():
-            existing = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if _stable_event(existing) != stable:
-                raise ValueError("engagement event_id conflicts with existing event")
-            return {"status": "DUPLICATE", "event_id": event.event_id, "publication_authority": False}
-        try:
-            _write_once_json(path, event.model_dump(mode="json"))
-        except FileExistsError:
-            existing = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if _stable_event(existing) != stable:
-                raise ValueError("engagement event_id conflicts with existing event") from None
-            return {"status": "DUPLICATE", "event_id": event.event_id, "publication_authority": False}
-        return {"status": "RECORDED", "event_id": event.event_id, "publication_authority": False}
+        event = WebsiteEngagementEvent(
+            event_id=raw.event_id,
+            visitor_hash=_hmac_token(key, raw.visitor_token),
+            session_hash=_hmac_token(key, raw.session_token),
+            event_type=raw.event_type, route=raw.route,
+            target_route=raw.target_route, acquisition=raw.acquisition,
+            device_class=raw.device_class, audience_class=audience_class,
+            observed_at=observed_at,
+        )
+        status = self._events_db().record(
+            event, decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
+        return {"status": status, "event_id": event.event_id, "publication_authority": False}
 
     def events(self, *, start: datetime, end: datetime) -> list[WebsiteEngagementEvent]:
         start, end = _utc(start), _utc(end)
         if not start < end:
             raise ValueError("engagement event range must be non-empty")
-        rows = []
-        for path in sorted(self.events_root.glob("*/*.json")):
-            row = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if path.name != f"{row.event_id}.json":
-                raise ValueError("engagement event filename mismatch")
-            if start <= row.observed_at.astimezone(timezone.utc) < end:
-                rows.append(row)
-        return rows
+        return self._events_db().events(
+            start, end, decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
+
+    def migrate_legacy_events(self) -> dict:
+        return self._events_db().count(
+            decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
 
 class WebsiteEngagementOutcomeCollector:
     def __init__(self, *, state_root: Path, account: str) -> None:

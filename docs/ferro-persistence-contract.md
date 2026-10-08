@@ -33,6 +33,21 @@ facts/sources have been imported into canonical memory and their downstream
 consumers have been switched to database reads. Replacing all legacy cycle
 files at once would break X outcome verification and historical display.
 
+## Indexed operational databases
+
+- `content/channel_evidence/evidence.sqlite3`: authority for versioned
+  website/X/OKX/channel metrics and their source references; indexed by
+  observation time and by channel/account. No new row-level JSON.
+- `content/website_engagement/events.sqlite3`: authority for first-party
+  visitor/session-hashed events, globally deduplicated by event ID and indexed
+  by event time and route. No new daily JSON event files.
+- Historical row JSON is kept as a read-only migration archive until existing
+  publication-receipt references are converted. It is not used for queries
+  after the transactional import.
+- Channel source snapshots are separate immutable evidence; they remain only
+  when retained by the reference/retention policy. Do not treat them as indexed
+  measurement rows.
+
 ## Cleanup invariants
 
 - Never prune an unfinished cycle, an unacknowledged external action, the

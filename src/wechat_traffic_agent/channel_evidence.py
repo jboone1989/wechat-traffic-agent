@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .content_admission import _write_once
+from .channel_evidence_sqlite import EvidenceTable
 from .web_editorial import digest
 
 
@@ -84,27 +84,29 @@ class ChannelEvidenceStore:
     def __init__(self, root: Path):
         self.root = Path(root)
 
+    def _table(self) -> EvidenceTable:
+        return EvidenceTable(self.root)
+
     def record(self, row: ChannelEvidence) -> Path:
         row = ChannelEvidence.model_validate_json(row.model_dump_json())
-        key = digest(row.identity())
-        path = self.root / key / f"{row.revision:05d}.json"
-        _write_once(path, row.model_dump_json(indent=2) + "\n")
-        return path
+        return self._table().write(
+            row, decode=ChannelEvidence.model_validate_json, identity_hash=digest,
+        )
 
     def as_of(self, cutoff: datetime) -> list[ChannelEvidence]:
-        if cutoff.utcoffset() is None:
-            raise ValueError("cutoff must be timezone-aware")
-        latest = {}
-        for path in sorted(self.root.glob("*/*.json")):
-            row = ChannelEvidence.model_validate_json(path.read_text())
-            key = digest(row.identity())
-            if path.parent.name != key or path.name != f"{row.revision:05d}.json":
-                raise ValueError("channel evidence filename/identity mismatch")
-            if row.observed_at > cutoff:
-                continue
-            if key not in latest or row.revision > latest[key].revision:
-                latest[key] = row
-        return list(latest.values())
+        return self._table().as_of(
+            cutoff, decode=ChannelEvidence.model_validate_json, identity_hash=digest,
+        )
+
+    def migrate_legacy(self) -> dict:
+        return self._table().count(
+            decode=ChannelEvidence.model_validate_json, identity_hash=digest,
+        )
+
+    def all_evidence_refs(self) -> set[str]:
+        return self._table().evidence_refs(
+            decode=ChannelEvidence.model_validate_json, identity_hash=digest,
+        )
 
     def report(self, *, channel: str, account: str, cutoff: datetime, dimension: str):
         if dimension not in {"topic", "title_version", "structure_version", "strategy_version"}:

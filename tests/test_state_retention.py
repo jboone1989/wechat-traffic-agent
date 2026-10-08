@@ -41,10 +41,11 @@ def test_prune_keeps_unfinished_work_and_referenced_source(tmp_path):
         path.write_text(json.dumps({"schema_version": schema}))
         if name != "fresh":
             _touch_old(path)
+    from test_channel_evidence import row
+    from wechat_traffic_agent.channel_evidence import ChannelEvidenceStore
     evidence = tmp_path / "content/channel_evidence"
-    evidence.mkdir(parents=True)
-    (evidence / "committed.json").write_text(
-        json.dumps({"evidence_refs": ["website-engagement-snapshot:sha256:keep"]})
+    ChannelEvidenceStore(evidence).record(
+        row(evidence_refs=("website-engagement-snapshot:sha256:keep",))
     )
 
     first = prune(tmp_path, now=NOW, limit=99, apply=False)
