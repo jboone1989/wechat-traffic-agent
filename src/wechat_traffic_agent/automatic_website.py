@@ -45,6 +45,43 @@ class AutomaticWebsitePublisher:
             inventories_dir=self.state / 'inventories',
         )
 
+    def maintain(self, *, now: datetime) -> dict:
+        """Audit the live site independently of X and model availability.
+
+        Recheck on an active-release change, at least daily. The next
+        publication rebuilds the archive, topic indexes, sitemap and feed.
+        """
+        if now.tzinfo is None:
+            raise ValueError('website maintenance time must be timezone-aware')
+        current = self.public / 'current'
+        if not current.is_symlink():
+            raise RuntimeError('website live release symlink is missing')
+        revision = current.resolve().name
+        today = now.astimezone(timezone.utc).date().isoformat()
+        receipt = self.state / 'maintenance' / (today + '.json')
+        if receipt.exists():
+            prior = json.loads(receipt.read_text(encoding='utf-8'))
+            if prior.get('release') == revision and prior.get('status') == 'HEALTHY':
+                return prior
+        from .web_editorial import website_snapshot
+        snapshot = website_snapshot(self.inventory_path(), current, self.config.base_url)
+        audit = audit_static_site(current, expect_indexable=self.config.indexable)
+        report = {
+            'schema_version': 'ferro-website-maintenance.v1',
+            'status': 'HEALTHY' if audit.passed else 'NEEDS_REPAIR',
+            'checked_at': now.astimezone(timezone.utc).isoformat(),
+            'release': revision,
+            'base_url': self.config.base_url,
+            'article_count': len(snapshot['articles']),
+            'topic_count': len(snapshot['topics']),
+            'audit': audit.model_dump(mode='json'),
+        }
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        temp = receipt.with_suffix('.json.tmp')
+        temp.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True) + '\n', encoding='utf-8')
+        os.replace(temp, receipt)
+        return report
+
     def publish(self, *, artifact: ContentArtifact, experience: dict, cycle_root: Path):
         if artifact.public_safe or not experience.get('automated_checks_passed'):
             raise ValueError('automatic admission requires a private draft with passing checks')
@@ -121,6 +158,7 @@ class AutomaticWebsitePublisher:
                    'draft_sha256': experience['draft_sha256'], 'experience_sha256': digest(experience),
                    'revision': revision, 'artifact_id': artifact.artifact_id,
                    'audit': audit.model_dump(mode='json'), 'public_root': str(target),
+                   'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
                    'outcome_attribution': attribution}
         _write_once(cycle_root / 'publication.json', json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n')
         return receipt

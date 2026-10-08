@@ -175,6 +175,20 @@ def test_social_expression_drafts_are_channel_specific_and_non_publishing(tmp_pa
     assert replay["status"] == "ALREADY_DRAFTED"
     assert len(runtime.calls) == 2
 
+def test_x_draft_syndicates_actual_website_canonical_url(tmp_path):
+    state, cycle, result = setup_cycle(tmp_path)
+    site_url = "https://ferro.example/research/why-memory-matters/"
+    result["publication"]["site_url"] = site_url
+    worker = SocialExpressionDraftWorker(runtime=Runtime(), state_root=state)
+    value = asyncio.run(worker.after_content_cycle(result=result, now=NOW))
+    assert value["status"] == "DRAFTED"
+    saved = json.loads((state / "content/continuous/cycles" / cycle / "social_expression_drafts.json").read_text())
+    assert saved["drafts"]["x"]["text"].endswith(
+        "Read the full article: " + site_url
+    )
+    assert site_url not in saved["drafts"]["okx"]["text"]
+    assert saved["publication_authority"] is False
+
 
 def test_seek_then_question_uses_supplemental_evidence_without_forcing_a_claim(tmp_path):
     state, cycle, result = setup_cycle(tmp_path)

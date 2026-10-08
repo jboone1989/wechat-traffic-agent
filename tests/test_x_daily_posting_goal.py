@@ -58,6 +58,25 @@ def test_mailbox_queue_is_not_delivery_and_replay_does_not_duplicate(tmp_path):
     assert goal.reconcile(NOW+timedelta(seconds=90))["deliveries"][0]["status"]=="DELIVERED"
     assert goal.reconcile(NOW+timedelta(seconds=120))["deliveries"]==[]
 
+def test_website_publication_notifies_without_x_post_and_deduplicates(tmp_path):
+    goal = configured(tmp_path)
+    args = {"artifact_id": "note-101", "content_sha256": "content-abc",
+            "title": "The evidence behind agent memory",
+            "url": "https://ferro.example/notes/agent-memory/", "now": NOW}
+    first = goal.notify_website_publication(**args)
+    assert first["status"] == "ENQUEUED"
+    assert goal.status(NOW)["published"] == 0
+    second = goal.notify_website_publication(**args)
+    assert first["key"] == second["key"]
+    notes = list((tmp_path / "operator/mailbox/notifications").glob("*.json"))
+    assert len(notes) == 1
+    note = json.loads(notes[0].read_text())
+    assert note["kind"] == "FERRO_WEBSITE"
+    assert args["url"] in note["message"]
+    assert "Ferro 官网已发布" == note["title"]
+    goal.notify_website_publication(**{**args, "content_sha256": "content-updated"})
+    assert len(list((tmp_path / "operator/mailbox/notifications").glob("*.json"))) == 2
+
 def test_minimum_met_resets_next_day_without_stopping_autonomous_posts(tmp_path, monkeypatch):
     # Only the external wake envelope is replaced; exercise the real quota scheduler.
     class Wake:

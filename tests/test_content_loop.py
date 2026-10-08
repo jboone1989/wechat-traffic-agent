@@ -505,3 +505,22 @@ def test_changed_input_preserves_interrupted_request_and_appends_new_receipt(tmp
     replay=Runtime()
     asyncio.run(ReceiptRuntime(replay,root).cognitive_probe("new projected input",100))
     assert replay.calls==[]
+
+def test_site_maintenance_and_public_url_are_first_class(tmp_path, monkeypatch):
+    runtime, worker, publisher = setup(tmp_path)
+    result = asyncio.run(worker.run_once(now=NOW))
+    assert result["status"] == "PUBLISHED"
+    publication = result["publication"]
+    assert publication["site_url"] == (
+        publisher.config.base_url + publication["outcome_attribution"]["public_route"]
+    )
+    first = publisher.maintain(now=NOW)
+    assert first["status"] == "HEALTHY"
+    assert first["article_count"] >= 1
+    assert first["audit"]["passed"] is True
+    assert (publisher.state / "maintenance" / (NOW.date().isoformat() + ".json")).is_file()
+    monkeypatch.setattr(
+        "wechat_traffic_agent.automatic_website.audit_static_site",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("repeat audit")),
+    )
+    assert publisher.maintain(now=NOW) == first

@@ -111,11 +111,15 @@ class DailyPostingGoal:
             "goal_id": status["goal_id"], "origin": "USER", "priority": 1.0,
             "created_at": now.isoformat(), "daily_posting_contract": status,
             "description": (
-                f"临时硬目标：北京时间 {status['date']} 结束前，在 X 真实发布至少 {status['minimum']} 条原创帖子或图文。"
-                f"已发布 {status['published']} 条，还差 {status['remaining']} 条。"
-                "只计已验证发布，回复和草稿不计。自由选择加密货币、AI、金融及交叉方向，充分使用搜索；"
-                "按证据质量选择短帖、长帖或图文。同一证据可以支持不同有用表达，不重复灌水。"
-                "每次发布的链接通过现有企业微信通知；流程阻塞需修复或明确求助。"
+                f"临时 X 分发目标：北京时间 {status['date']} 结束前，同步至少 {status['minimum']} 条原创内容至 X。"
+                f"已验证 X 发布 {status['published']} 条，还差 {status['remaining']} 条。"
+                "用户最新要求：Ferro 的自有网站是首发渠道和权威内容库存；先完成网站内容研究、"
+                "审核、公开发布与持续维护，再将网站内容提炼成带原文链接的 X 帖子。"
+                "X 仅是推广同步渠道，X 浏览器故障不能阻塞官网生产或维护。"
+                "只计真实验证的 X 同步链接到 X 目标；网站文章另计入官网成果。"
+                "自由选择加密货币、AI、金融及交叉方向，充分使用搜索，按证据质量选择网站文章深度。"
+                "网站上线后派生 X 短帖或长帖，同一证据不重复灌水。"
+                "网站 URL 及成功 X 同步链接都应通过现有企业微信通知；阻塞需明确记录。"
                 "这是用户当前明确的最低数量要求，取代此前20条仅作建议的设置。"
                 "不要因某个选题无证据就结束整个目标，应换问题或搜索。"
                 "只关闭此临时数量规则后，才恢复完全自主的数量决策。"
@@ -168,14 +172,29 @@ class DailyPostingGoal:
                 target = operator_root / "mailbox/notifications" / (notification_id + ".json")
                 if not target.exists():
                     _write(target, {"notification_id": notification_id, "created_at": row["created_at"],
-                        "agent_id": "content-agent", "cycle": 0, "kind": "FERRO_X_POSTING",
+                        "agent_id": "content-agent", "cycle": 0, "kind": ("FERRO_WEBSITE" if row["key"].startswith("website:") else "FERRO_X_POSTING"),
                         "title": row["title"], "message": row["message"],
-                        "evidence_refs": ["ferro-x-posting:" + row["event_id"]]})
+                        "evidence_refs": [("ferro-website:" if row["key"].startswith("website:") else "ferro-x-posting:") + row["event_id"]]})
                 row.update(status="ENQUEUED", last_checked_at=now.isoformat(),
                     delivery_status=delivery.get("status", "PENDING"), last_error=delivery.get("last_error"))
             _write(path, row)
             results.append({"event_id": row["event_id"], "status": row["status"], "notification_id": notification_id})
         return results
+
+    def notify_website_publication(self, *, artifact_id, content_sha256, title, url, now):
+        """Enqueue each audited first-party article once, independently of X."""
+        config = _read(self.config_path)
+        if not config or not config.get("notifications_enabled", True):
+            return {"status": "NOTIFICATIONS_DISABLED"}
+        if not (str(artifact_id).strip() and str(content_sha256).strip()
+                and str(title).strip() and str(url).startswith("https://")):
+            raise ValueError("website notice requires a verified publication identity and URL")
+        key = "website:" + str(artifact_id) + ":" + str(content_sha256)
+        with self._lock():
+            self._queue(key, "Ferro 官网已发布",
+                f"{title}\n{url}\n官网首发已完成；X 同步为后续独立任务。", now)
+            deliveries = self._deliver(config, now)
+        return {"status": "ENQUEUED", "key": key, "deliveries": deliveries}
 
     def observe(self, task, result, now):
         if not self.config_path.exists():

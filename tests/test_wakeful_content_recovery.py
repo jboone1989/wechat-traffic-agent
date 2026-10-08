@@ -1396,3 +1396,44 @@ def test_rejected_learning_expression_leaves_backlog_for_new_research(tmp_path):
         "quality": {"passed": False, "rationale": "The draft repeats a validation reminder."}}))
     runner = WakefulContentTaskRunner(state_root=tmp_path)
     assert runner._social_stage_backlog_candidate() is None
+
+def test_website_first_syndication_waits_for_verified_site_receipt(tmp_path):
+    runner, loop, _economy, _wakeful, social, x_publisher, _okx, *_ = _runner(tmp_path)
+    loop.publisher = object()  # Production installs AutomaticWebsitePublisher.
+    cycle = "site-first-cycle"
+    rows = {"status": "OK"}
+    result = {"status": "PUBLISHED", "cycle": cycle}
+    runner._run_social_stage(rows=rows, continuous=result, now=NOW)
+    assert rows["x_syndication"]["status"] == "WEBSITE_PUBLICATION_REQUIRED"
+    assert not social.calls and not x_publisher.calls
+    folder = tmp_path / "state/content/continuous/cycles" / cycle
+    folder.mkdir(parents=True)
+    (folder / "publication.json").write_text(json.dumps({
+        "audit": {"passed": False},
+        "outcome_attribution": {"public_route": "/notes/site-first/"},
+    }))
+    rows = {"status": "OK"}
+    runner._run_social_stage(rows=rows, continuous=result, now=NOW)
+    assert rows["x_syndication"]["status"] == "WEBSITE_PUBLICATION_UNVERIFIED"
+    assert not social.calls
+    (folder / "publication.json").write_text(json.dumps({
+        "audit": {"passed": True},
+        "outcome_attribution": {"public_route": "/notes/site-first/"},
+    }))
+    rows = {"status": "OK"}
+    runner._run_social_stage(rows=rows, continuous=result, now=NOW)
+    assert "x_syndication" not in rows
+    assert len(social.calls) == 1
+    assert len(x_publisher.calls) == 1
+
+
+def test_website_first_does_not_replay_old_unpublished_x_only_cycle(tmp_path):
+    runner = WakefulContentTaskRunner(state_root=tmp_path)
+    runner.continuous_loop = type("SiteLoop", (), {"publisher": object()})()
+    folder = tmp_path / "content/continuous/cycles/v2-old-x"
+    folder.mkdir(parents=True)
+    (folder / "result.json").write_text(json.dumps({
+        "status": "X_EXPRESSION_READY", "cycle": "v2-old-x",
+    }))
+    (folder / "cognition.json").write_text(json.dumps({"worth_saying": True}))
+    assert runner._social_stage_backlog_candidate() is None

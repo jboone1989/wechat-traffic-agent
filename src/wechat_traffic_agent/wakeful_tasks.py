@@ -2414,6 +2414,11 @@ class WakefulContentTaskRunner:
             result_status = str(result.get("status") or "").upper()
             if result_status not in {"PUBLISHED", "HELD_BY_CHECKS", "X_EXPRESSION_READY"}:
                 continue
+            if (
+                result_status in {"HELD_BY_CHECKS", "X_EXPRESSION_READY"}
+                and getattr(getattr(self, "continuous_loop", None), "publisher", None) is not None
+            ):
+                continue  # First-party website content now takes priority over legacy X-only work.
             try:
                 cognition = json.loads(
                     (folder / "cognition.json").read_text(encoding="utf-8")
@@ -2512,6 +2517,57 @@ class WakefulContentTaskRunner:
         now: datetime,
     ) -> None:
         """Run idempotent downstream social work for an already-published cycle."""
+        cycle = str(continuous.get("cycle") or "")
+        # Only publish downstream social extracts from an audited website
+        # article. Old owner X-only episodes may still be in the backlog, but
+        # they must not preempt new first-party publishing.
+        site_publisher = getattr(getattr(self, "continuous_loop", None), "publisher", None)
+        if site_publisher is not None:
+            folder = Path(self.state_root) / "content" / "continuous" / "cycles" / cycle
+            publication_path = folder / "publication.json"
+            if not publication_path.exists():
+                rows["x_syndication"] = {
+                    "status": "WEBSITE_PUBLICATION_REQUIRED", "cycle": cycle,
+                }
+                return
+            try:
+                site_receipt = json.loads(publication_path.read_text(encoding="utf-8"))
+            except (ValueError, OSError) as exc:
+                rows["x_syndication"] = self._error(exc)
+                rows["status"] = "DEGRADED"
+                return
+            if not (
+                isinstance(site_receipt, dict)
+                and isinstance(site_receipt.get("outcome_attribution"), dict)
+                and site_receipt["outcome_attribution"].get("public_route")
+                and (site_receipt.get("audit") or {}).get("passed") is True
+            ):
+                rows["x_syndication"] = {"status": "WEBSITE_PUBLICATION_UNVERIFIED", "cycle": cycle}
+                return
+            if hasattr(site_publisher, "config"):
+                route = str(site_receipt["outcome_attribution"]["public_route"])
+                site_url = str(site_receipt.get("site_url") or (
+                    site_publisher.config.base_url.rstrip("/") + route
+                ))
+                rows["website_publication"] = {
+                    "status": "PUBLISHED", "cycle": cycle,
+                    "url": site_url, "artifact_id": site_receipt.get("artifact_id"),
+                }
+                try:
+                    from .daily_posting_goal import DailyPostingGoal
+                    title = ""
+                    draft = continuous.get("draft_path")
+                    if draft and Path(draft).is_file():
+                        content_draft = json.loads(Path(draft).read_text(encoding="utf-8"))
+                        title = str((content_draft.get("artifact") or {}).get("title") or "")
+                    rows["website_notification"] = DailyPostingGoal(self.state_root).notify_website_publication(
+                        artifact_id=site_receipt.get("artifact_id"),
+                        content_sha256=site_receipt["outcome_attribution"].get("published_content_sha256"),
+                        title=title or site_url.rsplit("/", 2)[-2],
+                        url=site_url, now=now,
+                    )
+                except (OSError, ValueError, KeyError) as exc:
+                    rows["website_notification"] = self._error(exc)
         direct_x = continuous.get("status") == "X_EXPRESSION_READY"
         social_loop = getattr(self, "social_expression_loop", None)
         if social_loop is not None and not direct_x:
@@ -3305,6 +3361,15 @@ class WakefulContentTaskRunner:
     ) -> dict[str, Any]:
         result, rows = self._runtime_tick(now)
         rows.update({"task": "CONTENT_COGNITION", "status": "OK" if result is not None else "DEGRADED"})
+        publisher = getattr(getattr(self, "continuous_loop", None), "publisher", None)
+        maintainer = getattr(publisher, "maintain", None)
+        if callable(maintainer):
+            try:
+                rows["website_maintenance"] = maintainer(now=now)
+            except Exception as exc:
+                rows["website_maintenance"] = self._error(exc)
+                rows["website_maintenance"]["status"] = "NEEDS_REPAIR"
+        # Site health must be observable even if cognition or X is unavailable.
         if result is None or not result.generation_ready:
             return rows
         # Finish already-grounded external X work before asking the owner
@@ -3555,6 +3620,20 @@ class WakefulContentTaskRunner:
             if owner_episode_active and decision.get("decision") in {"EXECUTE", "NO_RESOURCE_ACTION"}:
                 owner_decision = (control.get("decision") or {})
                 surface = str(owner_decision.get("publication_surface") or "AUTO")
+                if (
+                    surface in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}
+                    and getattr(self.continuous_loop, "publisher", None) is not None
+                ):
+                    # Older durable episodes can retain an X-only decision
+                    # after the owner has made Website the primary channel.
+                    # Preserve the cognition and topic, but never let that
+                    # stored surface bypass first-party publication.
+                    rows["website_first_routing"] = {
+                        "status": "WEBSITE_FIRST", "previous_surface": surface,
+                    }
+                    surface = "WEBSITE"
+                if surface == "WEBSITE":
+                    content_run_kwargs["publication_surface"] = surface
                 if surface in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}:
                     from .content_loop import _put
                     from .x_growth_mission import x_growth_mission_context

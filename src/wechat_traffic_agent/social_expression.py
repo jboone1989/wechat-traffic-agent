@@ -244,6 +244,7 @@ class SocialExpressionDraftWorker:
         )
         prompt = (
             "SOCIAL_EXPRESSION_DRAFT: Render the same persisted cognition for two social channels. Do not invent a new topic or new facts. "
+            "The website publication is the canonical original. The X post is a concise, faithful syndication excerpt and must link back to the original published website article. Never treat X as the original source. "
             "Use only the website artifact plus supplemental_evidence from the social evidence decision as factual input. social_style_context is STYLE_ONLY: use structure and pacing only, never copy wording, persona, certainty, or calls to action. "
             "social_performance_context is DESCRIPTIVE_STYLE_ONLY and OKX_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the OKX draft among evidence-compatible format, pacing, and presentation patterns. The X draft must ignore this OKX performance context. "
             "x_performance_context is DESCRIPTIVE_STYLE_ONLY and X_ONLY: when its generation_authority is STYLE_ONLY, it may guide only the X draft among evidence-compatible format, pacing, and presentation patterns. The OKX draft must ignore this X performance context. "
@@ -283,6 +284,20 @@ class SocialExpressionDraftWorker:
                 channel = ChannelSocialDraft.model_validate(
                     candidate.model_dump(mode="json")
                 )
+                if key == "x":
+                    # Bind derivative social writing to the real canonical
+                    # website URL, not to a model-invented link.
+                    site_url = str(publication.get("site_url") or "").strip()
+                    if site_url:
+                        from urllib.parse import urlsplit
+                        url = urlsplit(site_url)
+                        if url.scheme != "https" or not url.netloc:
+                            raise ValueError("published website has no secure canonical URL")
+                        if site_url not in channel.text:
+                            channel = ChannelSocialDraft.model_validate({
+                                **channel.model_dump(mode="json"),
+                                "text": channel.text.rstrip() + "\n\nRead the full article: " + site_url,
+                            })
                 if any(
                     style_id not in allowed_style_ids
                     for style_id in channel.style_observation_ids
