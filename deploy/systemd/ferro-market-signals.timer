@@ -1,0 +1,10 @@
+[Unit]
+Description=Observe market and news sources every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=ferro-market-signals.service
+
+[Install]
+WantedBy=timers.target
