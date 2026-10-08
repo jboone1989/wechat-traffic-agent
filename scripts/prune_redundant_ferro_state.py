@@ -79,8 +79,18 @@ def prune(state_root: Path, *, now: datetime,
             outcome = json.loads(result.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if outcome.get("status") not in TERMINAL_RESULTS or outcome.get("retryable") is True:
+        if outcome.get("status") not in TERMINAL_RESULTS:
             continue
+        if outcome.get("retryable") is True:
+            # An abandoned ERROR may be marked retryable even though run_once
+            # already persists result.json and won't reuse the old snapshot.
+            # Retain those inputs for 7 days, then allow fresh re-acquisition.
+            stale_error = (
+                outcome.get("status") == "ERROR"
+                and result.stat().st_mtime < (now - timedelta(days=7)).timestamp()
+            )
+            if not stale_error:
+                continue
         size = target.stat().st_size
         eligible["finished_cycle_inputs"] += 1
         reclaimed["finished_cycle_inputs"] += size

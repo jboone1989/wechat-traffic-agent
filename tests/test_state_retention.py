@@ -107,3 +107,22 @@ def test_finished_content_cycle_discards_its_large_input_snapshot(tmp_path):
     assert (cycle / "result.json").is_file()
     assert not (cycle / "inputs.json").exists()
     assert (cycle / "publication.json").is_file()
+
+
+def test_old_retryable_error_drops_input_but_keeps_diagnostic(tmp_path):
+    script = Path(__file__).resolve().parents[1] / "scripts/prune_redundant_ferro_state.py"
+    prune = runpy.run_path(str(script))["prune"]
+    for label, days in (("abandoned", 9), ("recent", 1)):
+        folder = tmp_path / "content/continuous/cycles" / label
+        folder.mkdir(parents=True)
+        (folder / "inputs.json").write_text("large transient context")
+        (folder / "result.json").write_text(json.dumps({"status": "ERROR", "retryable": True}))
+        (folder / "error_diagnostic.json").write_text(json.dumps({"error_type": "TransientFailure"}))
+        for name in ("inputs.json", "result.json"):
+            _touch_old(folder / name, days=days)
+    result = prune(tmp_path, now=NOW, limit=10, apply=True)
+    assert result["file_count"]["finished_cycle_inputs"] == 1
+    assert not (tmp_path / "content/continuous/cycles/abandoned/inputs.json").exists()
+    assert (tmp_path / "content/continuous/cycles/abandoned/result.json").exists()
+    assert (tmp_path / "content/continuous/cycles/abandoned/error_diagnostic.json").exists()
+    assert (tmp_path / "content/continuous/cycles/recent/inputs.json").exists()
