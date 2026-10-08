@@ -1417,12 +1417,8 @@ class LiveAgentService:
         from starlette.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
         from starlette.routing import Route, WebSocketRoute
         from starlette.websockets import WebSocket, WebSocketDisconnect
-        from .channels.agent_live_page import live_agent_document
-        from .channels.neural_life_page import neural_life_document
-        from .channels.agent_talk_page import talk_agent_document
         from .neural_telemetry import NeuralTelemetrySampler
         from .neural_circuit import NeuralCircuitInspector
-        from .website_engagement_client import first_party_engagement_script
         from .account_management import AccountManager
         from .x_oauth_headless import XOAuthHeadlessManager, XOAuthSessionError
         from .channels.operator_console_page import operator_console_document
@@ -1482,120 +1478,31 @@ class LiveAgentService:
 
         engagement_enabled = (os.environ.get("CONTENT_WEB_ENGAGEMENT_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-        def public_document(document: str) -> str:
-            if not engagement_enabled:
-                return document
-            return document.replace("</body>", first_party_engagement_script() + "</body>", 1)
-
-        async def live_page(_request: Request):
-            return HTMLResponse(public_document(live_agent_document()), headers={"Cache-Control": "no-cache"})
-
-        async def talk_page(_request: Request):
-            return HTMLResponse(public_document(talk_agent_document()), headers={"Cache-Control": "no-cache"})
-
-        async def neural_life_page(_request: Request):
-            return HTMLResponse(public_document(neural_life_document()), headers={"Cache-Control": "no-cache"})
-
-        async def brain_lab_page(_request: Request):
-            return HTMLResponse(public_document(brain_lab_document()), headers={"Cache-Control": "no-cache"})
-
-        async def screeps_page(_request: Request):
-            return HTMLResponse(public_document(screeps_live_document()), headers={"Cache-Control": "no-cache"})
-
-        async def screeps_status(request: Request):
-            include_frames = str(request.query_params.get("include") or "").strip().lower() in {
-                "frames", "replay", "all"
-            }
-            payload = await asyncio.to_thread(
-                ScreepsObservatory(self.state_root).snapshot,
-                include_frames=include_frames,
-            )
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-
-        async def brain_lab_status(request: Request):
-            view = str(request.query_params.get("view") or "").strip().lower()
-            if view == "live":
-                if self.wakeful is None or not hasattr(
-                    self.wakeful, "brain_lab_live_projection"
-                ):
-                    return JSONResponse(
-                        {"error": "brain_lab_unavailable"},
-                        status_code=503,
-                    )
-                return JSONResponse(
-                    dict(self.wakeful.brain_lab_live_projection()),
-                    headers={"Cache-Control": "no-store"},
-                )
-            if view == "telemetry":
-                detail = str(request.query_params.get("detail") or "full").strip().lower()
-                compact = detail in {"compact", "mobile", "low"}
-                payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
-                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-            if view == "circuit-catalog":
-                payload = await asyncio.to_thread(neural_circuit.catalog)
-                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-            if view == "circuit":
-                detail = str(request.query_params.get("detail") or "full").strip().lower()
-                compact = detail in {"compact", "mobile", "low"}
-                selector = str(request.query_params.get("selector") or "").strip()
-                payload = await asyncio.to_thread(neural_circuit.circuit, selector, compact=compact)
-                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-            if view == "neuron":
-                neuron_id = str(request.query_params.get("id") or "").strip()
-                payload = await asyncio.to_thread(neural_circuit.neuron, neuron_id)
-                return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-            if self.wakeful is None or not hasattr(self.wakeful, "brain_lab_projection"):
-                return JSONResponse({"error": "brain_lab_unavailable"}, status_code=503)
-            payload = dict(
-                await asyncio.to_thread(self.wakeful.brain_lab_projection)
-            )
-            if hasattr(self.wakeful, "dream_projection"):
-                payload["dreaming"] = await asyncio.to_thread(
-                    self.wakeful.dream_projection
-                )
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
-
-        async def neural_telemetry_status(request: Request):
-            detail = str(request.query_params.get("detail") or "full").strip().lower()
-            compact = detail in {"compact", "mobile", "low"}
-            payload = await asyncio.to_thread(neural_telemetry.snapshot, compact=compact)
-            return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+        from .web_api.public_views import PublicViews
+        public_views = PublicViews(
+            self, telemetry=neural_telemetry, circuit=neural_circuit,
+            engagement_enabled=engagement_enabled,
+        )
+        live_page = public_views.live_page
+        talk_page = public_views.talk_page
+        neural_life_page = public_views.neural_life_page
+        brain_lab_page = public_views.brain_lab_page
+        screeps_page = public_views.screeps_page
+        screeps_status = public_views.screeps_status
+        brain_lab_status = public_views.brain_lab_status
+        neural_telemetry_status = public_views.neural_telemetry_status
 
         async def status(_request: Request):
             if _request.query_params.get("content") == "articles":
-                # Public home reads SQLite directly; the JSON and HTML files
-                # in the Nginx document root are only presentation caches.
-                from .article_repository import ArticleRepository
-                from .channels.web import _route_for
-                repo = ArticleRepository(
-                    self.state_root / "content" / "automatic_website" / "articles.sqlite3"
-                )
+                from .web_api.catalog import article_catalog
                 try:
-                    artifacts = repo.list_artifacts()
+                    catalog = article_catalog(self.state_root)
                 except (FileNotFoundError, ValueError) as exc:
                     return JSONResponse(
                         {"error": "article_database_unavailable", "detail": str(exc)},
-                        status_code=503,
-                        headers={"Cache-Control": "no-store"},
+                        status_code=503, headers={"Cache-Control": "no-store"},
                     )
-                articles = sorted(
-                    (a for a in artifacts if a.public_safe),
-                    key=lambda a: a.updated_at or a.created_at,
-                    reverse=True,
-                )
-                return JSONResponse({
-                    "schema_version": "ferro-content-catalog.v1",
-                    "source": "sqlite",
-                    "articles": [{
-                        "artifact_id": a.artifact_id,
-                        "title": a.title,
-                        "summary": a.summary,
-                        "kind": a.kind.value,
-                        "tags": list(a.tags),
-                        "url": _route_for(a),
-                        "updated_at": (a.updated_at or a.created_at).isoformat(),
-                    } for a in articles],
-                }, headers={"Cache-Control": "no-store"})
+                return JSONResponse(catalog, headers={"Cache-Control": "no-store"})
             try:
                 payload = await asyncio.wait_for(
                     asyncio.to_thread(
@@ -3800,88 +3707,12 @@ class LiveAgentService:
             response.delete_cookie("ferro_operator_audience", path="/")
             return response
 
-        routes = [
-            Route("/live", live_page, methods=["GET"]),
-            Route("/live/", live_page, methods=["GET"]),
-            Route("/talk", talk_page, methods=["GET"]),
-            Route("/talk/", talk_page, methods=["GET"]),
-            Route("/neural", neural_life_page, methods=["GET"]),
-            Route("/neural/", neural_life_page, methods=["GET"]),
-            Route("/brain", brain_lab_page, methods=["GET"]),
-            Route("/brain/", brain_lab_page, methods=["GET"]),
-            Route("/screeps", screeps_page, methods=["GET"]),
-            Route("/screeps/", screeps_page, methods=["GET"]),
-            Route("/agents/ferro/live", live_page, methods=["GET"]),
-            Route("/agents/ferro/live/", live_page, methods=["GET"]),
-            Route("/agents/ferro/talk", talk_page, methods=["GET"]),
-            Route("/agents/ferro/talk/", talk_page, methods=["GET"]),
-            Route("/agents/ferro/neural", neural_life_page, methods=["GET"]),
-            Route("/agents/ferro/neural/", neural_life_page, methods=["GET"]),
-            Route("/agents/ferro/brain", brain_lab_page, methods=["GET"]),
-            Route("/agents/ferro/brain/", brain_lab_page, methods=["GET"]),
-            Route("/agents/ferro/screeps", screeps_page, methods=["GET"]),
-            Route("/agents/ferro/screeps/", screeps_page, methods=["GET"]),
-            Route("/api/agent/brain-lab", brain_lab_status, methods=["GET"]),
-            Route("/api/agent/screeps", screeps_status, methods=["GET"]),
-            Route("/api/agent/neural-telemetry", neural_telemetry_status, methods=["GET"]),
-            Route("/api/agent/status", status, methods=["GET"]),
-            Route("/api/agent/stream", stream, methods=["GET"]),
-            Route("/api/agent/chat", chat, methods=["POST"]),
-        ]
+        from .web_api.route_registry import public_routes, operator_routes
+        # Endpoints share one in-process runtime; route registration remains independent.
+        endpoints = locals()
+        routes = public_routes(endpoints)
         if operator_console is not None:
-            routes.extend([
-                Route("/operator", operator_page, methods=["GET"]),
-                Route("/operator/", operator_page, methods=["GET"]),
-                Route("/operator/chat", operator_private_chat_page, methods=["GET"]),
-                Route("/operator/chat/", operator_private_chat_page, methods=["GET"]),
-                Route("/operator/llm", operator_llm_audit_page, methods=["GET"]),
-                Route("/operator/llm/", operator_llm_audit_page, methods=["GET"]),
-                Route("/operator/audience", operator_audience_page, methods=["GET"]),
-                Route("/operator/audience/", operator_audience_page, methods=["GET"]),
-                Route("/operator/api/audience", operator_audience_api, methods=["GET"]),
-                Route("/operator/api/llm-requests", operator_llm_requests, methods=["GET"]),
-                Route("/operator/api/chat", operator_chat_get, methods=["GET"]),
-                Route("/operator/api/chat", operator_chat_post, methods=["POST"]),
-                Route("/operator/api/chat/stream", operator_chat_stream, methods=["POST"]),
-                Route("/operator/api/chat/goal-draft", operator_chat_goal_draft, methods=["POST"]),
-                Route("/operator/api/chat/goals/{proposal_id:path}/activate", operator_chat_goal_activate, methods=["POST"]),
-                Route("/operator/api/request-login", operator_request_login, methods=["POST"]),
-                Route("/operator/api/login-delivery/email", operator_email_settings, methods=["POST"]),
-                Route("/operator/api/session", operator_session_status, methods=["GET"]),
-                Route("/operator/api/session", operator_login, methods=["POST"]),
-                Route("/operator/api/status", operator_status, methods=["GET"]),
-                Route("/operator/api/accounts/x/oauth/start", operator_x_oauth_start, methods=["POST"]),
-                Route("/operator/api/accounts/x/oauth/complete", operator_x_oauth_complete, methods=["POST"]),
-                Route("/operator/api/accounts/x/oauth/cancel", operator_x_oauth_cancel, methods=["POST"]),
-                Route("/operator/api/account-instances/{account_id}", operator_account_instance_delete, methods=["DELETE"]),
-                WebSocketRoute("/operator/browser/x/websockify", operator_novnc_websocket),
-                Route("/operator/browser/x/{path:path}", operator_novnc_asset, methods=["GET"]),
-                Route("/operator/api/accounts/x/browser/status", operator_browser_status, methods=["GET"]),
-                WebSocketRoute("/operator/api/accounts/{provider_id}/login/stream", operator_account_stream),
-                Route("/operator/api/accounts/{provider_id}/connect", operator_account_connect, methods=["POST"]),
-                Route("/operator/api/accounts/{provider_id}/verify", operator_account_verify, methods=["POST"]),
-                Route("/operator/api/accounts/{provider_id}/login/snapshot", operator_account_snapshot, methods=["GET"]),
-                Route("/operator/api/accounts/{provider_id}/login/click", operator_account_login_click, methods=["POST"]),
-                Route("/operator/api/accounts/{provider_id}/login/type", operator_account_login_type, methods=["POST"]),
-                Route("/operator/api/accounts/{provider_id}/login/key", operator_account_login_key, methods=["POST"]),
-                Route("/operator/api/accounts/{provider_id}/login/stop", operator_account_login_stop, methods=["POST"]),
-                Route("/operator/api/browser/local/start", operator_local_browser_start, methods=["POST"]),
-                Route("/operator/api/browser/local/snapshot", operator_local_browser_snapshot, methods=["GET"]),
-                Route("/operator/api/browser/local/click", operator_local_browser_click, methods=["POST"]),
-                Route("/operator/api/browser/local/type", operator_local_browser_type, methods=["POST"]),
-                Route("/operator/api/browser/local/key", operator_local_browser_key, methods=["POST"]),
-                Route("/operator/api/browser/local/stop", operator_local_browser_stop, methods=["POST"]),
-                Route("/operator/api/requests/{request_id}/decision", operator_resource_decision, methods=["POST"]),
-                Route("/operator/api/survival/needs/{need_id}/decision", operator_survival_need_decision, methods=["POST"]),
-                Route("/operator/api/survival/hosts/bootstrap", operator_bootstrap_remote_host, methods=["POST"]),
-                Route("/operator/api/survival/hosts", operator_register_remote_host, methods=["POST"]),
-                Route("/operator/api/survival/hosts/{host_id}/verify", operator_verify_remote_host, methods=["POST"]),
-                Route("/operator/api/survival/offload", operator_plan_service_offload, methods=["POST"]),
-                Route("/operator/api/survival/offload/{action_id}/execute", operator_execute_service_offload, methods=["POST"]),
-                Route("/operator/api/secrets/{env_name}", operator_store_secret, methods=["POST"]),
-                Route("/operator/api/resources/{env_name}", operator_store_resource_metadata, methods=["POST"]),
-                Route("/operator/api/logout", operator_logout, methods=["POST"]),
-            ])
+            routes.extend(operator_routes(endpoints))
         app = Starlette(routes=routes)
         if operator_console is not None:
             public_url = str(os.environ.get("CONTENT_OPERATOR_PUBLIC_URL") or "").strip()

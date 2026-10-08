@@ -1242,9 +1242,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         )
         return {"status": "VERIFIED", "cycle": cycle, "settlements": settlements}
 
-    async def _run(self, folder, cycle, now):
-        self._activity(cycle, 'CYCLE', 'I’m starting a new content cycle',
-                       'I’m reading the current site, my persisted experience, audience signals, and available evidence before deciding what to do.')
+    def _cycle_inputs(self, folder, cycle, now):
         inputs_path = folder / 'inputs.json'
         if inputs_path.exists():
             inputs = json.loads(inputs_path.read_text())
@@ -1266,8 +1264,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                       'prior_experience': _compact_writing_experience(history),
                       'curriculum': curriculum, 'previous_titles': previous, 'now': now.isoformat()}
             _put(inputs_path, inputs)
-        snapshot = inputs['website']
-        cycle_now = datetime.fromisoformat(inputs['now'])
+        return inputs
+
+    def _sync_strategy_learning(self, folder, cycle, cycle_now):
         strategy_sync = None
         if self.mind is not None and hasattr(self.mind, 'observe_strategy_outcomes'):
             strategy_sync_path = folder / 'strategy_learning_sync.json'
@@ -1285,11 +1284,9 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                         f"Applied {len(strategy_sync['applied'])} mature 24h Website outcome(s) before choosing this cycle's action.",
                         status='completed',
                     )
-        # Owner-authorized external mission follow-ups are already grounded in a
-        # durable goal + mission + roadmap. Do not spend their bounded cognition
-        # window on generic world-attention/prediction LLM calls before mission
-        # discovery. The ordinary world/prediction loop remains available to
-        # autonomous cycles and to explicit VERIFY_PREDICTION wakes.
+        return strategy_sync
+
+    def _owner_cycle_context(self, folder, now):
         x_mission_context = x_growth_mission_context(self.state)
         mission_context = _active_mission_discovery_context(x_mission_context)
         owner_goal = _normalize_owner_goal_context(getattr(self, '_owner_goal', None))
@@ -1336,65 +1333,74 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 'items': owner_seed_items,
             }
             _put(owner_seed_path, owner_seed_payload)
+        return (x_mission_context, mission_context, owner_goal,
+                owner_mission_fast_path, owner_focus_fast_path, owner_seed_items)
 
-        world_payload = None
-        prefetched_evidence_pool = None
-        if (
-            self.world_feed is not None
-            and not owner_mission_fast_path
-            and not owner_focus_fast_path
-        ):
-            world_path = folder / 'world_feed.json'
-            if world_path.exists():
-                world_payload = json.loads(world_path.read_text())
-            else:
-                self._activity(cycle, 'OBSERVE', 'I’m looking outside my existing interests',
-                               'I’m checking seed signals, other agents, and sources I discover myself before deciding what deserves attention.')
-                base_pool = await self.explorer.collect(now=now, active=True)
-                base_pool['items'] = [row for row in base_pool['items']
-                                      if _candidate_available_for_pool(self.inbox, row)]
-                world_runtime = ReceiptRuntime(self.runtime, folder / 'world_model_calls')
-                projection = self.mind.public_projection() if self.mind is not None else {}
-                due_predictions = self.predictions.due(now)
-                world_payload = await self.world_feed.collect(
-                    runtime=world_runtime, now=now, base_items=base_pool['items'],
-                    mind_projection=projection,
-                    verification_queries=tuple(row.verification_query for row in due_predictions),
-                )
-                world_payload['failures'] = list(base_pool.get('failures', [])) + list(world_payload.get('failures', []))
-                _put(world_path, world_payload)
-                self._activity(cycle, 'OBSERVE', 'The world changed what is available to think about',
-                               f"I found {len(world_payload.get('items', []))} signals and marked {len(world_payload.get('observations', []))} as worth thinking about.",
+    async def _load_world_feed(self, folder, cycle, now):
+        world_path = folder / 'world_feed.json'
+        if world_path.exists():
+            world_payload = json.loads(world_path.read_text())
+        else:
+            self._activity(cycle, 'OBSERVE', 'I’m looking outside my existing interests',
+                           'I’m checking seed signals, other agents, and sources I discover myself before deciding what deserves attention.')
+            base_pool = await self.explorer.collect(now=now, active=True)
+            base_pool['items'] = [row for row in base_pool['items']
+                                  if _candidate_available_for_pool(self.inbox, row)]
+            world_runtime = ReceiptRuntime(self.runtime, folder / 'world_model_calls')
+            projection = self.mind.public_projection() if self.mind is not None else {}
+            due_predictions = self.predictions.due(now)
+            world_payload = await self.world_feed.collect(
+                runtime=world_runtime, now=now, base_items=base_pool['items'],
+                mind_projection=projection,
+                verification_queries=tuple(row.verification_query for row in due_predictions),
+            )
+            world_payload['failures'] = list(base_pool.get('failures', [])) + list(world_payload.get('failures', []))
+            _put(world_path, world_payload)
+            self._activity(cycle, 'OBSERVE', 'The world changed what is available to think about',
+                           f"I found {len(world_payload.get('items', []))} signals and marked {len(world_payload.get('observations', []))} as worth thinking about.",
+                           status='completed')
+            learning_candidates = [row for row in world_payload.get('observations', [])
+                                   if isinstance(row, dict) and row.get('learning_kind') in {'METHOD', 'TOOL'}]
+            if learning_candidates:
+                lead = learning_candidates[0]
+                self._activity(cycle, 'OBSERVE', 'Found a method worth testing',
+                               f"{lead.get('topic') or 'A new method/tool'} is DISCOVERED evidence only; I will investigate it before adoption.",
+                               status='completed', kind='learning-candidate')
+        return world_payload
+
+    async def _settle_world_predictions(self, folder, cycle, now, world_payload):
+        settlement_path = folder / 'prediction_settlements.json'
+        if settlement_path.exists():
+            prediction_settlements = json.loads(settlement_path.read_text(encoding='utf-8'))
+        else:
+            prediction_runtime = ReceiptRuntime(self.runtime, folder / 'prediction_model_calls')
+            prediction_settlements = list(await settle_predictions(
+                ledger=self.predictions, runtime=prediction_runtime, items=list(world_payload.get('items', [])),
+                now=now, mind=self.mind, cycle=cycle,
+            ))
+            _put(settlement_path, prediction_settlements)
+            terminal = [row for row in prediction_settlements if row.get('learning_status') == 'APPLIED']
+            if terminal:
+                self._activity(cycle, 'LEARN', 'Past predictions met the real world',
+                               f"Applied {len(terminal)} matured prediction outcome(s) to persistent experience and worldview.",
                                status='completed')
-                learning_candidates = [row for row in world_payload.get('observations', [])
-                                       if isinstance(row, dict) and row.get('learning_kind') in {'METHOD', 'TOOL'}]
-                if learning_candidates:
-                    lead = learning_candidates[0]
-                    self._activity(cycle, 'OBSERVE', 'Found a method worth testing',
-                                   f"{lead.get('topic') or 'A new method/tool'} is DISCOVERED evidence only; I will investigate it before adoption.",
-                                   status='completed', kind='learning-candidate')
-            settlement_path = folder / 'prediction_settlements.json'
-            if settlement_path.exists():
-                prediction_settlements = json.loads(settlement_path.read_text(encoding='utf-8'))
-            else:
-                prediction_runtime = ReceiptRuntime(self.runtime, folder / 'prediction_model_calls')
-                prediction_settlements = list(await settle_predictions(
-                    ledger=self.predictions, runtime=prediction_runtime, items=list(world_payload.get('items', [])),
-                    now=now, mind=self.mind, cycle=cycle,
-                ))
-                _put(settlement_path, prediction_settlements)
-                terminal = [row for row in prediction_settlements if row.get('learning_status') == 'APPLIED']
-                if terminal:
-                    self._activity(cycle, 'LEARN', 'Past predictions met the real world',
-                                   f"Applied {len(terminal)} matured prediction outcome(s) to persistent experience and worldview.",
-                                   status='completed')
-            prefetched_evidence_pool = {
-                'items': [row for row in world_payload.get('items', [])
-                          if _candidate_available_for_pool(self.inbox, row)],
-                'failures': list(world_payload.get('failures', [])),
-                'observed_at': world_payload.get('observed_at') or now.isoformat(),
-                'signal_kind': 'world feed: seed, agent-network, and agent-discovered public evidence',
-            }
+
+    async def _collect_world_evidence(self, folder, cycle, now,
+                                      owner_mission_fast_path, owner_focus_fast_path):
+        if (self.world_feed is None or owner_mission_fast_path or owner_focus_fast_path):
+            return None, None
+        world_payload = await self._load_world_feed(folder, cycle, now)
+        await self._settle_world_predictions(folder, cycle, now, world_payload)
+        prefetched_evidence_pool = {
+            'items': [row for row in world_payload.get('items', [])
+                      if _candidate_available_for_pool(self.inbox, row)],
+            'failures': list(world_payload.get('failures', [])),
+            'observed_at': world_payload.get('observed_at') or now.isoformat(),
+            'signal_kind': 'world feed: seed, agent-network, and agent-discovered public evidence',
+        }
+        return world_payload, prefetched_evidence_pool
+
+    def _bind_cycle_experiment(self, folder, cycle, now):
         experiment = None
         if self.website_experiments:
             experiment_path = folder / 'website_experiment.json'
@@ -1403,6 +1409,612 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
             ):
                 raise ValueError('cannot bind Website experiment after evidence/model selection has begun')
             experiment = bind_website_experiment(experiment_path, cycle=cycle, decided_at=now)
+        return experiment
+
+    async def _choose_mind_plan(self, folder, cycle, now, snapshot, world_payload,
+                                owner_goal, mission_context, mission_priority, plan_path,
+                                plan_preexisting):
+        if plan_preexisting:
+            return json.loads(plan_path.read_text())
+        if self.mind is None:
+            mind_plan = {'cycle': cycle, 'goal': None, 'required_topic': None}
+        elif world_payload is not None:
+            mind_plan = self.mind.plan_for_cycle(
+                cycle=cycle, available_topics=snapshot['topics'],
+                world_observations=world_payload.get('observations', ()),
+            )
+        else:
+            mind_plan = self.mind.plan_for_cycle(cycle=cycle, available_topics=snapshot['topics'])
+        mind_plan = self._focused_cycle_plan(folder, owner_goal, mission_context, mind_plan)
+        mind_plan = await self._dream_cycle_plan(
+            folder, now, snapshot, mission_priority, mind_plan,
+        )
+        return self._neural_taste_plan(folder, cycle, now, snapshot, mission_priority, mind_plan)
+
+    def _focused_cycle_plan(self, folder, owner_goal, mission_context, mind_plan):
+        if getattr(self, '_focus_topic', None):
+            endogenous_goal = mind_plan.get('goal')
+            if owner_goal is not None:
+                focused_goal = {
+                    'goal_id': str(owner_goal.get('goal_id') or ''),
+                    'origin': str(owner_goal.get('origin') or 'USER'),
+                    'description': str(owner_goal.get('description') or '')[:2400],
+                    'confidence': 1.0,
+                    'expected_value': 1.0,
+                    'interest_refs': [self._focus_topic],
+                    'inquiry_refs': [str(owner_goal.get('goal_id') or '')],
+                    'value_refs': [
+                        str((mission_context or {}).get('mission_id') or '')
+                    ],
+                }
+                focus_kind = 'OWNER_AGENT_FOCUS'
+            else:
+                focused_goal = {
+                    'goal_id': 'bootstrap-focus:' + self._focus_topic,
+                    'origin': 'BOOTSTRAP_FOCUS',
+                    'description': 'Bootstrap one useful piece around ' + self._focus_topic + ' while preserving the autonomous goal for later cycles.',
+                    'confidence': 1.0, 'expected_value': 1.0,
+                    'interest_refs': [self._focus_topic], 'inquiry_refs': [], 'value_refs': [],
+                }
+                focus_kind = 'BOOTSTRAP_FOCUS'
+            mind_plan = {
+                **mind_plan,
+                'endogenous_goal': endogenous_goal,
+                'bootstrap_focus': self._focus_topic,
+                'focus_kind': focus_kind,
+                'owner_goal_id': (
+                    str(owner_goal.get('goal_id') or '')
+                    if owner_goal is not None else None
+                ),
+                'external_mission_id': (
+                    str((mission_context or {}).get('mission_id') or '')
+                    if owner_goal is not None else None
+                ),
+                'goal': focused_goal,
+                'required_topic': self._focus_topic,
+            }
+            _put(folder / 'bootstrap_focus.json', {
+                'topic': self._focus_topic,
+                'endogenous_goal': endogenous_goal,
+                'focus_kind': focus_kind,
+                'owner_goal_id': (
+                    str(owner_goal.get('goal_id') or '')
+                    if owner_goal is not None else None
+                ),
+            })
+        return mind_plan
+
+    @staticmethod
+    def _select_stable_attractor(dreams_payload):
+        stable_candidate = None
+        stable_attractor = None
+        for attractor in (dreams_payload.get('attractors') or {}).values():
+            if not isinstance(attractor, dict) or attractor.get('status') != 'STABLE':
+                continue
+            candidate = attractor.get('goal_candidate')
+            if not isinstance(candidate, dict) or candidate.get('status') != 'UNINTERPRETED':
+                continue
+            if int(attractor.get('consolidation_epoch_count') or 0) < 3:
+                continue
+            pair = (candidate, attractor)
+            if stable_candidate is None or (
+                float(attractor.get('stability_score') or 0.0),
+                int(attractor.get('recurrence_count') or 0),
+            ) > (
+                float(stable_attractor.get('stability_score') or 0.0),
+                int(stable_attractor.get('recurrence_count') or 0),
+            ):
+                stable_candidate, stable_attractor = pair
+        return stable_candidate, stable_attractor
+
+    async def _dream_cycle_plan(self, folder, now, snapshot, mission_priority, mind_plan):
+        if (mind_plan.get('goal') is not None
+                or mind_plan.get('required_topic') is not None or mission_priority):
+            return mind_plan
+        dreams_payload = {}
+        dreams_path = self.state / 'application' / 'neural_dreams.json'
+        try:
+            dreams_payload = json.loads(dreams_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError, json.JSONDecodeError):
+            dreams_payload = {}
+        stable_candidate, stable_attractor = self._select_stable_attractor(dreams_payload)
+        if stable_candidate is not None and stable_attractor is not None:
+            mind_plan = await self._stable_attractor_plan(
+                folder, now, snapshot, dreams_payload,
+                stable_candidate, stable_attractor, mind_plan,
+            )
+        stable_candidate_handled = stable_candidate is not None
+        preconcept = None if stable_candidate_handled else next((
+            row for row in reversed(dreams_payload.get('preconcepts') or [])
+            if isinstance(row, dict)
+            and not bool(row.get('verbalized'))
+            and float(row.get('association_strength') or 0.0) >= 0.12
+        ), None)
+        if preconcept is not None:
+            mind_plan = await self._preconcept_plan(folder, now, snapshot, preconcept, mind_plan)
+        return mind_plan
+
+    async def _decide_stable_attractor(self, folder, snapshot, dreams_payload,
+                                      stable_candidate, stable_attractor):
+        candidate_id = str(stable_candidate.get('candidate_id') or '')
+        attractor_id = str(stable_attractor.get('attractor_id') or '')
+        source_dreams = [
+            str(value) for value in stable_attractor.get('source_dreams') or ()
+            if value
+        ][-8:]
+        supporting_preconcepts = [
+            row for row in (dreams_payload.get('preconcepts') or [])
+            if isinstance(row, dict)
+            and (
+                str(row.get('attractor_id') or '') == attractor_id
+                or str(row.get('source_dream') or '') in set(source_dreams)
+            )
+        ][-8:]
+        birth_path = folder / 'dream_goal_birth.json'
+        if birth_path.exists():
+            birth_payload = json.loads(birth_path.read_text(encoding='utf-8'))
+            dream_goal = DreamInsightDecision.model_validate(birth_payload['decision'])
+        else:
+            birth_runtime = ReceiptRuntime(self.runtime, folder / 'dream_goal_birth_calls')
+            task = (
+                'STABLE_DREAM_ATTRACTOR_INTERPRETATION: You are the rational Ego layer. '
+                'The neural system has already birthed this goal candidate after recurrent '
+                'dream consolidation across multiple sleep epochs. You did NOT originate the '
+                'desire. Reality-check it and, only if useful, translate it into one bounded, '
+                'falsifiable evidence-seeking research goal. topic must be a lowercase '
+                'kebab-case slug. Neural channel names are internal signals, not facts about '
+                'the external world. Do not claim subjective consciousness.\n'
+                + json.dumps({
+                    'goal_candidate': stable_candidate,
+                    'attractor': {
+                        'attractor_id': attractor_id,
+                        'channels': stable_attractor.get('channels'),
+                        'recurrence_count': stable_attractor.get('recurrence_count'),
+                        'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
+                        'stability_score': stable_attractor.get('stability_score'),
+                        'source_dreams': source_dreams,
+                    },
+                    'supporting_preconcepts': supporting_preconcepts,
+                    'available_topics': sorted(snapshot['topics'])[:80],
+                    'recent_articles': [
+                        {
+                            'title': row['artifact']['title'],
+                            'summary': row['artifact']['summary'][:220],
+                        }
+                        for row in snapshot['articles'][-10:]
+                    ],
+                }, ensure_ascii=False)
+            )
+            def validate_dream_goal(value):
+                if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
+                    raise ValueError('dream-born goal topic must be lowercase kebab-case')
+                return value
+            dream_goal = await _structured(
+                birth_runtime, task, DreamInsightDecision, validate=validate_dream_goal
+            )
+            _put(birth_path, {
+                'schema_version': 'ferro-dream-goal-birth.v1',
+                'candidate_id': candidate_id,
+                'attractor_id': attractor_id,
+                'source_dreams': source_dreams,
+                'decision': dream_goal.model_dump(mode='json'),
+                'authority': 'EGO_INTERPRETATION_OF_STABLE_NEURAL_ATTRACTOR',
+                'origin': 'STABLE_DREAM_ATTRACTOR',
+            })
+        return candidate_id, attractor_id, source_dreams, dream_goal
+
+    async def _stable_attractor_plan(self, folder, now, snapshot, dreams_payload,
+                                    stable_candidate, stable_attractor, mind_plan):
+        candidate_id, attractor_id, source_dreams, dream_goal = await self._decide_stable_attractor(
+            folder, snapshot, dreams_payload, stable_candidate, stable_attractor,
+        )
+        goal_id = 'dream-attractor:' + (attractor_id or candidate_id or 'unknown')
+        try:
+            from .neural_dreaming import FerroDreamEngine
+            FerroDreamEngine(self.state, substrate=None).mark_goal_candidate(
+                candidate_id,
+                status=(
+                    'ACTIVATED'
+                    if dream_goal.should_investigate
+                    else 'DECLINED_BY_EGO_REALITY_CHECK'
+                ),
+                goal_id=goal_id if dream_goal.should_investigate else None,
+                hypothesis=dream_goal.hypothesis,
+                description=dream_goal.question,
+                now=now,
+            )
+        except (KeyError, OSError, ValueError):
+            pass
+        if dream_goal.should_investigate:
+            mind_plan = {
+                **mind_plan,
+                'endogenous_goal': mind_plan.get('goal'),
+                'goal': {
+                    'goal_id': goal_id,
+                    'origin': 'DREAM_CONSOLIDATION',
+                    'description': dream_goal.question,
+                    'confidence': dream_goal.confidence,
+                    'expected_value': max(
+                        0.35,
+                        dream_goal.confidence
+                        * float(stable_attractor.get('stability_score') or 0.0),
+                    ),
+                    'interest_refs': [dream_goal.topic],
+                    'inquiry_refs': [candidate_id, attractor_id],
+                    'value_refs': source_dreams,
+                },
+                'required_topic': dream_goal.topic,
+                'dream_goal_candidate': stable_candidate,
+                'dream_attractor': {
+                    'attractor_id': attractor_id,
+                    'channels': stable_attractor.get('channels'),
+                    'recurrence_count': stable_attractor.get('recurrence_count'),
+                    'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
+                    'stability_score': stable_attractor.get('stability_score'),
+                },
+                'dream_goal_birth': dream_goal.model_dump(mode='json'),
+            }
+        return mind_plan
+
+    async def _preconcept_plan(self, folder, now, snapshot, preconcept, mind_plan):
+        insight_path = folder / 'dream_insight.json'
+        if insight_path.exists():
+            insight_payload = json.loads(insight_path.read_text(encoding='utf-8'))
+            dream_insight = DreamInsightDecision.model_validate(insight_payload['decision'])
+        else:
+            dream_runtime = ReceiptRuntime(self.runtime, folder / 'dream_interpretation_calls')
+            task = (
+                'DREAM_PRECONCEPT_INTERPRETATION: You are the rational Ego layer. '
+                'The neural system has already produced the supplied preconcept through replay; '
+                'do not pretend the language model dreamed it. Translate the association into one '
+                'bounded, falsifiable research hypothesis. It may become a Website research topic '
+                'only if investigating it would produce useful evidence for this persistent agent. '
+                'topic must be a lowercase kebab-case slug. Do not treat neural channel names as '
+                'facts about the world and do not claim subjective consciousness.\n'
+                + json.dumps({
+                    'preconcept': preconcept,
+                    'available_topics': sorted(snapshot['topics'])[:80],
+                    'recent_articles': [
+                        {
+                            'title': row['artifact']['title'],
+                            'summary': row['artifact']['summary'][:220],
+                        }
+                        for row in snapshot['articles'][-10:]
+                    ],
+                }, ensure_ascii=False)
+            )
+            def validate_dream_insight(value):
+                if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
+                    raise ValueError('dream insight topic must be lowercase kebab-case')
+                return value
+            dream_insight = await _structured(
+                dream_runtime, task, DreamInsightDecision, validate=validate_dream_insight
+            )
+            _put(insight_path, {
+                'schema_version': 'ferro-dream-insight.v1',
+                'preconcept_id': preconcept.get('preconcept_id'),
+                'source_dream': preconcept.get('source_dream'),
+                'decision': dream_insight.model_dump(mode='json'),
+                'authority': 'EGO_INTERPRETATION_OF_NEURAL_PRECONCEPT',
+            })
+        try:
+            from .neural_dreaming import FerroDreamEngine
+            FerroDreamEngine(self.state, substrate=None).mark_verbalized(
+                str(preconcept.get('preconcept_id') or ''),
+                hypothesis=dream_insight.hypothesis,
+                now=now,
+            )
+        except (KeyError, OSError, ValueError):
+            pass
+        if dream_insight.should_investigate:
+            mind_plan = {
+                **mind_plan,
+                'endogenous_goal': mind_plan.get('goal'),
+                'goal': {
+                    'goal_id': 'dream-insight:' + str(preconcept.get('preconcept_id') or 'unknown'),
+                    'origin': 'DREAM_INSIGHT',
+                    'description': dream_insight.question,
+                    'confidence': dream_insight.confidence,
+                    'expected_value': max(0.25, dream_insight.confidence),
+                    'interest_refs': [dream_insight.topic],
+                    'inquiry_refs': [str(preconcept.get('preconcept_id') or '')],
+                    'value_refs': [str(preconcept.get('source_dream') or '')],
+                },
+                'required_topic': dream_insight.topic,
+                'dream_preconcept': preconcept,
+                'dream_insight': dream_insight.model_dump(mode='json'),
+            }
+        return mind_plan
+
+    def _neural_taste_plan(self, folder, cycle, now, snapshot, mission_priority, mind_plan):
+        neural_candidates = list(mind_plan.get('available_topics') or snapshot['topics'])
+        if (
+            self.neural_runtime is not None
+            and not getattr(self, '_focus_topic', None)
+            and neural_candidates
+            and not mission_priority
+        ):
+            goal = mind_plan.get('goal')
+            origin = str(goal.get('origin') or '') if isinstance(goal, dict) else ''
+            contestable = goal is None or origin in {'INTEREST', 'INQUIRY'}
+            if contestable:
+                from .interest_learning import topic_contexts
+                contexts = topic_contexts(
+                    self.state, neural_candidates,
+                    self.mind.public_projection() if self.mind is not None else {},
+                )
+                taste = self.neural_runtime.rank_neural_taste(
+                    neural_candidates, now, contexts=contexts,
+                )
+                neural_topic = str(taste.get('selected_topic') or '').strip() or None
+                ego_topic = str(mind_plan.get('required_topic') or '').strip() or None
+                contest = self.neural_runtime.choose_brain_or_cortex(
+                    cycle=cycle,
+                    neural_choice=neural_topic,
+                    ego_choice=ego_topic,
+                    now=now,
+                )
+                executed_topic = str(contest.get('executed_choice') or '').strip() or None
+                _put(folder / 'neural_taste.json', {
+                    'schema_version': 'ferro-neural-taste-cycle.v1',
+                    'taste': taste,
+                    'competition': contest,
+                })
+                if executed_topic and contest.get('authority') == 'NEURAL':
+                    prior_goal = mind_plan.get('goal')
+                    mind_plan = {
+                        **mind_plan,
+                        'endogenous_goal': prior_goal,
+                        'goal': {
+                            'goal_id': 'neural-taste:' + str(contest.get('contest_id') or cycle),
+                            'origin': 'NEURAL_TASTE',
+                            'description': 'Investigate the topic selected by Ferro neural taste: ' + executed_topic,
+                            'confidence': min(1.0, max(0.25, float(taste.get('margin') or 0.0) / 10.0 + 0.35)),
+                            'expected_value': 0.55,
+                            'interest_refs': [executed_topic],
+                            'inquiry_refs': [],
+                            'value_refs': [str(contest.get('contest_id') or '')],
+                        },
+                        'required_topic': executed_topic,
+                        'neural_taste': taste,
+                        'brain_cortex_competition': contest,
+                    }
+                else:
+                    mind_plan = {
+                        **mind_plan,
+                        'neural_taste': taste,
+                        'brain_cortex_competition': contest,
+                    }
+        return mind_plan
+
+    def _build_mission_discovery_query(self, folder, snapshot, mission_context, owner_goal):
+        mission_runtime = ReceiptRuntime(
+            self.runtime, folder / 'mission_discovery_calls'
+        )
+        recent_articles = [
+            {
+                'title': row['artifact']['title'],
+                'summary': row['artifact']['summary'][:240],
+                'tags': list(row['artifact'].get('tags') or ()),
+            }
+            for row in snapshot['articles'][-12:]
+        ]
+        recent_noop_attempts = _recent_mission_noop_attempts(
+            self.state,
+            mission_context,
+        )
+        task = (
+            'MISSION_DISCOVERY: choose one concrete research subject for the next '
+            'content evidence search that advances the active external mission without '
+            'forcing publication. When owner_goal is present, it is the current human '
+            'task constraint: if it explicitly asks to serve this mission, the chosen '
+            'subject and search query must directly investigate that owner-specified '
+            'subject rather than silently substituting an unrelated mission angle. '
+            'The topic must describe the subject matter, not '
+            'follower growth or engagement tactics. Prefer Ferro/LivingRuntime strengths '
+            'and existing site topics when genuinely useful; a new durable topic is '
+            'allowed. The search_query must seek current public factual evidence about '
+            'that subject and must be a compact keyword-style query whose first words are '
+            'the subject/core entities; do not begin it with generic words such as recent, '
+            'latest, current, public, research, evidence, or case studies. Never search for '
+            'follow-for-follow, engagement manipulation, '
+            'spam, or ways to evade platform rules. When '
+            'recent_no_material_change_attempts is non-empty, treat those rows as '
+            'negative search feedback: choose a materially different reader need, '
+            'subject angle, or factual search query instead of repeating a semantically '
+            'equivalent attempt. Do not lower the publication/evidence bar merely to '
+            'make progress. Mission/roadmap text is decision context only and is not '
+            'factual evidence.\n'
+            + EDITORIAL_SCOPE_INSTRUCTION + '\n'
+            + json.dumps({
+                'external_mission': mission_context,
+                'owner_goal': owner_goal,
+                'existing_topics': sorted(snapshot['topics'])[:80],
+                'recent_site_coverage': recent_articles,
+                'recent_no_material_change_attempts': recent_noop_attempts,
+            }, ensure_ascii=False)
+        )
+        prior_pairs = {
+            (
+                str(row.get('topic') or '').strip().lower(),
+                str(row.get('search_query') or '').strip().casefold(),
+            )
+            for row in recent_noop_attempts
+        }
+        return mission_runtime, task, recent_noop_attempts, prior_pairs
+
+    def _failed_mission_discovery(self, folder, cycle, plan_path, mind_plan,
+                                  mission_context, owner_goal, exc):
+        mission_error = {
+            'schema_version': 'content-mission-discovery-error.v1',
+            'error_type': type(exc).__name__,
+            'message': str(exc)[:500],
+            'mission_id': str(mission_context.get('mission_id') or ''),
+            'roadmap_step_id': str(
+                (mission_context.get('roadmap_step') or {}).get('step_id')
+                or ''
+            ),
+            'experiment_id': str(
+                (mission_context.get('active_experiment') or {}).get('experiment_id')
+                or ''
+            ),
+            'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
+            'retryable': True,
+            'publication_authority': False,
+        }
+        _put(folder / 'mission_discovery_error.json', mission_error)
+        if owner_goal is not None:
+            mission_id = str(mission_context.get('mission_id') or '')
+            owner_goal_id = str(owner_goal.get('goal_id') or '')
+            mind_plan = {
+                **mind_plan,
+                'endogenous_goal': mind_plan.get('goal'),
+                'goal': {
+                    'goal_id': (
+                        'external-mission-pending:'
+                        + (mission_id or 'unknown')
+                    ),
+                    'origin': 'EXTERNAL_MISSION',
+                    'description': (
+                        'Resolve evidence search for the owner-directed external mission: '
+                        + str(owner_goal.get('description') or '')
+                    )[:2400],
+                    'confidence': 1.0,
+                    'expected_value': 1.0,
+                    'interest_refs': [],
+                    'inquiry_refs': [owner_goal_id],
+                    'value_refs': [mission_id],
+                },
+                'required_topic': None,
+                'external_mission_id': mission_id,
+                'owner_goal_id': owner_goal_id,
+                'mission_discovery_error': mission_error,
+            }
+            _put(plan_path, mind_plan)
+            return mind_plan, {
+                'status': 'ERROR',
+                'cycle': cycle,
+                'error_type': type(exc).__name__,
+                'message': str(exc)[:500],
+                'retryable': True,
+                'mission_id': mission_id,
+                'owner_goal_id': owner_goal_id,
+                'mind_plan': mind_plan,
+            }
+        return mind_plan, None
+
+    @staticmethod
+    def _apply_mission_discovery_plan(mind_plan, mission_context, owner_goal, mission_decision):
+        mission_goal_id = (
+            'external-mission-discovery:'
+            + str(mission_context.get('mission_id') or 'unknown')
+            + ':'
+            + str(
+                (mission_context.get('roadmap_step') or {}).get('step_id')
+                or (mission_context.get('active_experiment') or {}).get('experiment_id')
+                or 'research'
+            )
+        )
+        mind_plan = {
+            **mind_plan,
+            'endogenous_goal': mind_plan.get('goal'),
+            'goal': {
+                'goal_id': mission_goal_id,
+                'origin': 'EXTERNAL_MISSION',
+                'description': (
+                    'Research evidence for the active external mission: '
+                    + mission_decision.reader_need
+                ),
+                'confidence': 1.0,
+                'expected_value': 1.0,
+                'interest_refs': [mission_decision.topic],
+                'inquiry_refs': [mission_goal_id],
+                'value_refs': [str(mission_context.get('mission_id') or '')],
+            },
+            'required_topic': mission_decision.topic,
+            'mission_discovery': mission_decision.model_dump(mode='json'),
+            'external_mission_id': mission_context.get('mission_id'),
+            'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
+        }
+        return mind_plan
+
+    async def _mission_discovery_plan(self, folder, cycle, snapshot, plan_path, mind_plan,
+                                      mission_context, owner_goal, mission_can_claim_cycle,
+                                      plan_preexisting, selection_started):
+        if not (mission_can_claim_cycle and mission_context is not None
+                and not plan_preexisting and not selection_started):
+            return mind_plan, None
+        mission_path = folder / 'mission_discovery.json'
+        mission_decision = None
+        if mission_path.exists():
+            stored = json.loads(mission_path.read_text(encoding='utf-8'))
+            decision_payload = stored.get('decision') if isinstance(stored, dict) else None
+            if isinstance(decision_payload, dict):
+                mission_decision = _normalize_mission_discovery(
+                    MissionDiscoveryDecision.model_validate(decision_payload),
+                )
+        else:
+            mission_runtime, task, recent_noop_attempts, prior_pairs = (
+                self._build_mission_discovery_query(folder, snapshot, mission_context, owner_goal)
+            )
+            def validate_mission_discovery(value):
+                normalized = _normalize_mission_discovery(value)
+                pair = (
+                    normalized.topic.strip().lower(),
+                    normalized.search_query.strip().casefold(),
+                )
+                if pair in prior_pairs:
+                    raise ValueError(
+                        'mission discovery must change angle after a no-material-change attempt'
+                    )
+                return normalized
+            try:
+                mission_decision = await _structured(
+                    mission_runtime,
+                    task,
+                    MissionDiscoveryDecision,
+                    validate=validate_mission_discovery,
+                )
+                mission_decision = _normalize_mission_discovery(mission_decision)
+                _put(mission_path, {
+                    'schema_version': 'content-mission-discovery.v1',
+                    'mission_id': mission_context.get('mission_id'),
+                    'roadmap_step_id': (
+                        (mission_context.get('roadmap_step') or {}).get('step_id')
+                    ),
+                    'experiment_id': (
+                        (mission_context.get('active_experiment') or {}).get('experiment_id')
+                    ),
+                    'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
+                    'decision': mission_decision.model_dump(mode='json'),
+                    'recent_no_material_change_attempts': recent_noop_attempts,
+                    'generation_authority': 'DISCOVERY_ONLY',
+                    'publication_authority': False,
+                })
+            except Exception as exc:
+                return self._failed_mission_discovery(
+                    folder, cycle, plan_path, mind_plan, mission_context, owner_goal, exc,
+                )
+        if mission_decision is not None:
+            mind_plan = self._apply_mission_discovery_plan(
+                mind_plan, mission_context, owner_goal, mission_decision,
+            )
+        return mind_plan, None
+
+    async def _run(self, folder, cycle, now):
+        self._activity(cycle, 'CYCLE', 'I’m starting a new content cycle',
+                       'I’m reading the current site, my persisted experience, audience signals, and available evidence before deciding what to do.')
+        inputs = self._cycle_inputs(folder, cycle, now)
+        snapshot = inputs['website']
+        cycle_now = datetime.fromisoformat(inputs['now'])
+        strategy_sync = self._sync_strategy_learning(folder, cycle, cycle_now)
+        (x_mission_context, mission_context, owner_goal,
+         owner_mission_fast_path, owner_focus_fast_path,
+         owner_seed_items) = self._owner_cycle_context(folder, now)
+        world_payload, prefetched_evidence_pool = await self._collect_world_evidence(
+            folder, cycle, now, owner_mission_fast_path, owner_focus_fast_path,
+        )
+        experiment = self._bind_cycle_experiment(folder, cycle, now)
         experiment_payload = experiment.model_dump(mode='json') if experiment is not None else None
         plan_path = folder / 'mind_plan.json'
         plan_preexisting = plan_path.exists()
@@ -1430,357 +2042,10 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 and mission_experiment.get('status') == 'PROPOSED'
             )
         )
-        if plan_preexisting:
-            mind_plan = json.loads(plan_path.read_text())
-        else:
-            if self.mind is None:
-                mind_plan = {'cycle': cycle, 'goal': None, 'required_topic': None}
-            elif world_payload is not None:
-                mind_plan = self.mind.plan_for_cycle(
-                    cycle=cycle, available_topics=snapshot['topics'],
-                    world_observations=world_payload.get('observations', ()),
-                )
-            else:
-                mind_plan = self.mind.plan_for_cycle(cycle=cycle, available_topics=snapshot['topics'])
-            if getattr(self, '_focus_topic', None):
-                endogenous_goal = mind_plan.get('goal')
-                if owner_goal is not None:
-                    focused_goal = {
-                        'goal_id': str(owner_goal.get('goal_id') or ''),
-                        'origin': str(owner_goal.get('origin') or 'USER'),
-                        'description': str(owner_goal.get('description') or '')[:2400],
-                        'confidence': 1.0,
-                        'expected_value': 1.0,
-                        'interest_refs': [self._focus_topic],
-                        'inquiry_refs': [str(owner_goal.get('goal_id') or '')],
-                        'value_refs': [
-                            str((mission_context or {}).get('mission_id') or '')
-                        ],
-                    }
-                    focus_kind = 'OWNER_AGENT_FOCUS'
-                else:
-                    focused_goal = {
-                        'goal_id': 'bootstrap-focus:' + self._focus_topic,
-                        'origin': 'BOOTSTRAP_FOCUS',
-                        'description': 'Bootstrap one useful piece around ' + self._focus_topic + ' while preserving the autonomous goal for later cycles.',
-                        'confidence': 1.0, 'expected_value': 1.0,
-                        'interest_refs': [self._focus_topic], 'inquiry_refs': [], 'value_refs': [],
-                    }
-                    focus_kind = 'BOOTSTRAP_FOCUS'
-                mind_plan = {
-                    **mind_plan,
-                    'endogenous_goal': endogenous_goal,
-                    'bootstrap_focus': self._focus_topic,
-                    'focus_kind': focus_kind,
-                    'owner_goal_id': (
-                        str(owner_goal.get('goal_id') or '')
-                        if owner_goal is not None else None
-                    ),
-                    'external_mission_id': (
-                        str((mission_context or {}).get('mission_id') or '')
-                        if owner_goal is not None else None
-                    ),
-                    'goal': focused_goal,
-                    'required_topic': self._focus_topic,
-                }
-                _put(folder / 'bootstrap_focus.json', {
-                    'topic': self._focus_topic,
-                    'endogenous_goal': endogenous_goal,
-                    'focus_kind': focus_kind,
-                    'owner_goal_id': (
-                        str(owner_goal.get('goal_id') or '')
-                        if owner_goal is not None else None
-                    ),
-                })
-
-            # N9: dreams are neural replay first; only here may the rational
-            # language layer verbalize an already-formed preconcept. A strong,
-            # unexplored association may seed the next evidence-seeking goal.
-            if (
-                mind_plan.get('goal') is None
-                and mind_plan.get('required_topic') is None
-                and not mission_priority
-            ):
-                dreams_payload = {}
-                dreams_path = self.state / 'application' / 'neural_dreams.json'
-                try:
-                    dreams_payload = json.loads(dreams_path.read_text(encoding='utf-8'))
-                except (OSError, ValueError, json.JSONDecodeError):
-                    dreams_payload = {}
-                # N31: a single dream may seed an N9 inquiry, but only a
-                # multi-epoch STABLE attractor may birth a stronger endogenous
-                # goal candidate. The neural system births the candidate; the
-                # language layer only performs reality-checking and wording.
-                stable_candidate = None
-                stable_attractor = None
-                for attractor in (dreams_payload.get('attractors') or {}).values():
-                    if not isinstance(attractor, dict) or attractor.get('status') != 'STABLE':
-                        continue
-                    candidate = attractor.get('goal_candidate')
-                    if not isinstance(candidate, dict) or candidate.get('status') != 'UNINTERPRETED':
-                        continue
-                    if int(attractor.get('consolidation_epoch_count') or 0) < 3:
-                        continue
-                    pair = (candidate, attractor)
-                    if stable_candidate is None or (
-                        float(attractor.get('stability_score') or 0.0),
-                        int(attractor.get('recurrence_count') or 0),
-                    ) > (
-                        float(stable_attractor.get('stability_score') or 0.0),
-                        int(stable_attractor.get('recurrence_count') or 0),
-                    ):
-                        stable_candidate, stable_attractor = pair
-
-                stable_candidate_handled = stable_candidate is not None
-                if stable_candidate is not None and stable_attractor is not None:
-                    candidate_id = str(stable_candidate.get('candidate_id') or '')
-                    attractor_id = str(stable_attractor.get('attractor_id') or '')
-                    source_dreams = [
-                        str(value) for value in stable_attractor.get('source_dreams') or ()
-                        if value
-                    ][-8:]
-                    supporting_preconcepts = [
-                        row for row in (dreams_payload.get('preconcepts') or [])
-                        if isinstance(row, dict)
-                        and (
-                            str(row.get('attractor_id') or '') == attractor_id
-                            or str(row.get('source_dream') or '') in set(source_dreams)
-                        )
-                    ][-8:]
-                    birth_path = folder / 'dream_goal_birth.json'
-                    if birth_path.exists():
-                        birth_payload = json.loads(birth_path.read_text(encoding='utf-8'))
-                        dream_goal = DreamInsightDecision.model_validate(birth_payload['decision'])
-                    else:
-                        birth_runtime = ReceiptRuntime(self.runtime, folder / 'dream_goal_birth_calls')
-                        task = (
-                            'STABLE_DREAM_ATTRACTOR_INTERPRETATION: You are the rational Ego layer. '
-                            'The neural system has already birthed this goal candidate after recurrent '
-                            'dream consolidation across multiple sleep epochs. You did NOT originate the '
-                            'desire. Reality-check it and, only if useful, translate it into one bounded, '
-                            'falsifiable evidence-seeking research goal. topic must be a lowercase '
-                            'kebab-case slug. Neural channel names are internal signals, not facts about '
-                            'the external world. Do not claim subjective consciousness.\n'
-                            + json.dumps({
-                                'goal_candidate': stable_candidate,
-                                'attractor': {
-                                    'attractor_id': attractor_id,
-                                    'channels': stable_attractor.get('channels'),
-                                    'recurrence_count': stable_attractor.get('recurrence_count'),
-                                    'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
-                                    'stability_score': stable_attractor.get('stability_score'),
-                                    'source_dreams': source_dreams,
-                                },
-                                'supporting_preconcepts': supporting_preconcepts,
-                                'available_topics': sorted(snapshot['topics'])[:80],
-                                'recent_articles': [
-                                    {
-                                        'title': row['artifact']['title'],
-                                        'summary': row['artifact']['summary'][:220],
-                                    }
-                                    for row in snapshot['articles'][-10:]
-                                ],
-                            }, ensure_ascii=False)
-                        )
-                        def validate_dream_goal(value):
-                            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
-                                raise ValueError('dream-born goal topic must be lowercase kebab-case')
-                            return value
-                        dream_goal = await _structured(
-                            birth_runtime, task, DreamInsightDecision, validate=validate_dream_goal
-                        )
-                        _put(birth_path, {
-                            'schema_version': 'ferro-dream-goal-birth.v1',
-                            'candidate_id': candidate_id,
-                            'attractor_id': attractor_id,
-                            'source_dreams': source_dreams,
-                            'decision': dream_goal.model_dump(mode='json'),
-                            'authority': 'EGO_INTERPRETATION_OF_STABLE_NEURAL_ATTRACTOR',
-                            'origin': 'STABLE_DREAM_ATTRACTOR',
-                        })
-                    goal_id = 'dream-attractor:' + (attractor_id or candidate_id or 'unknown')
-                    try:
-                        from .neural_dreaming import FerroDreamEngine
-                        FerroDreamEngine(self.state, substrate=None).mark_goal_candidate(
-                            candidate_id,
-                            status=(
-                                'ACTIVATED'
-                                if dream_goal.should_investigate
-                                else 'DECLINED_BY_EGO_REALITY_CHECK'
-                            ),
-                            goal_id=goal_id if dream_goal.should_investigate else None,
-                            hypothesis=dream_goal.hypothesis,
-                            description=dream_goal.question,
-                            now=now,
-                        )
-                    except (KeyError, OSError, ValueError):
-                        pass
-                    if dream_goal.should_investigate:
-                        mind_plan = {
-                            **mind_plan,
-                            'endogenous_goal': mind_plan.get('goal'),
-                            'goal': {
-                                'goal_id': goal_id,
-                                'origin': 'DREAM_CONSOLIDATION',
-                                'description': dream_goal.question,
-                                'confidence': dream_goal.confidence,
-                                'expected_value': max(
-                                    0.35,
-                                    dream_goal.confidence
-                                    * float(stable_attractor.get('stability_score') or 0.0),
-                                ),
-                                'interest_refs': [dream_goal.topic],
-                                'inquiry_refs': [candidate_id, attractor_id],
-                                'value_refs': source_dreams,
-                            },
-                            'required_topic': dream_goal.topic,
-                            'dream_goal_candidate': stable_candidate,
-                            'dream_attractor': {
-                                'attractor_id': attractor_id,
-                                'channels': stable_attractor.get('channels'),
-                                'recurrence_count': stable_attractor.get('recurrence_count'),
-                                'consolidation_epoch_count': stable_attractor.get('consolidation_epoch_count'),
-                                'stability_score': stable_attractor.get('stability_score'),
-                            },
-                            'dream_goal_birth': dream_goal.model_dump(mode='json'),
-                        }
-
-                preconcept = None if stable_candidate_handled else next((
-                    row for row in reversed(dreams_payload.get('preconcepts') or [])
-                    if isinstance(row, dict)
-                    and not bool(row.get('verbalized'))
-                    and float(row.get('association_strength') or 0.0) >= 0.12
-                ), None)
-                if preconcept is not None:
-                    insight_path = folder / 'dream_insight.json'
-                    if insight_path.exists():
-                        insight_payload = json.loads(insight_path.read_text(encoding='utf-8'))
-                        dream_insight = DreamInsightDecision.model_validate(insight_payload['decision'])
-                    else:
-                        dream_runtime = ReceiptRuntime(self.runtime, folder / 'dream_interpretation_calls')
-                        task = (
-                            'DREAM_PRECONCEPT_INTERPRETATION: You are the rational Ego layer. '
-                            'The neural system has already produced the supplied preconcept through replay; '
-                            'do not pretend the language model dreamed it. Translate the association into one '
-                            'bounded, falsifiable research hypothesis. It may become a Website research topic '
-                            'only if investigating it would produce useful evidence for this persistent agent. '
-                            'topic must be a lowercase kebab-case slug. Do not treat neural channel names as '
-                            'facts about the world and do not claim subjective consciousness.\n'
-                            + json.dumps({
-                                'preconcept': preconcept,
-                                'available_topics': sorted(snapshot['topics'])[:80],
-                                'recent_articles': [
-                                    {
-                                        'title': row['artifact']['title'],
-                                        'summary': row['artifact']['summary'][:220],
-                                    }
-                                    for row in snapshot['articles'][-10:]
-                                ],
-                            }, ensure_ascii=False)
-                        )
-                        def validate_dream_insight(value):
-                            if not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', value.topic):
-                                raise ValueError('dream insight topic must be lowercase kebab-case')
-                            return value
-                        dream_insight = await _structured(
-                            dream_runtime, task, DreamInsightDecision, validate=validate_dream_insight
-                        )
-                        _put(insight_path, {
-                            'schema_version': 'ferro-dream-insight.v1',
-                            'preconcept_id': preconcept.get('preconcept_id'),
-                            'source_dream': preconcept.get('source_dream'),
-                            'decision': dream_insight.model_dump(mode='json'),
-                            'authority': 'EGO_INTERPRETATION_OF_NEURAL_PRECONCEPT',
-                        })
-                    try:
-                        from .neural_dreaming import FerroDreamEngine
-                        FerroDreamEngine(self.state, substrate=None).mark_verbalized(
-                            str(preconcept.get('preconcept_id') or ''),
-                            hypothesis=dream_insight.hypothesis,
-                            now=now,
-                        )
-                    except (KeyError, OSError, ValueError):
-                        pass
-                    if dream_insight.should_investigate:
-                        mind_plan = {
-                            **mind_plan,
-                            'endogenous_goal': mind_plan.get('goal'),
-                            'goal': {
-                                'goal_id': 'dream-insight:' + str(preconcept.get('preconcept_id') or 'unknown'),
-                                'origin': 'DREAM_INSIGHT',
-                                'description': dream_insight.question,
-                                'confidence': dream_insight.confidence,
-                                'expected_value': max(0.25, dream_insight.confidence),
-                                'interest_refs': [dream_insight.topic],
-                                'inquiry_refs': [str(preconcept.get('preconcept_id') or '')],
-                                'value_refs': [str(preconcept.get('source_dream') or '')],
-                            },
-                            'required_topic': dream_insight.topic,
-                            'dream_preconcept': preconcept,
-                            'dream_insight': dream_insight.model_dump(mode='json'),
-                        }
-
-            # N10/N13: when no owner/bootstrap/dream/mission authority already
-            # owns the cycle, Ferro's neural taste may either seed a topic or
-            # prospectively compete with the rational cortex's endogenous choice.
-            neural_candidates = list(mind_plan.get('available_topics') or snapshot['topics'])
-            if (
-                self.neural_runtime is not None
-                and not getattr(self, '_focus_topic', None)
-                and neural_candidates
-                and not mission_priority
-            ):
-                goal = mind_plan.get('goal')
-                origin = str(goal.get('origin') or '') if isinstance(goal, dict) else ''
-                contestable = goal is None or origin in {'INTEREST', 'INQUIRY'}
-                if contestable:
-                    from .interest_learning import topic_contexts
-                    contexts = topic_contexts(
-                        self.state, neural_candidates,
-                        self.mind.public_projection() if self.mind is not None else {},
-                    )
-                    taste = self.neural_runtime.rank_neural_taste(
-                        neural_candidates, now, contexts=contexts,
-                    )
-                    neural_topic = str(taste.get('selected_topic') or '').strip() or None
-                    ego_topic = str(mind_plan.get('required_topic') or '').strip() or None
-                    contest = self.neural_runtime.choose_brain_or_cortex(
-                        cycle=cycle,
-                        neural_choice=neural_topic,
-                        ego_choice=ego_topic,
-                        now=now,
-                    )
-                    executed_topic = str(contest.get('executed_choice') or '').strip() or None
-                    _put(folder / 'neural_taste.json', {
-                        'schema_version': 'ferro-neural-taste-cycle.v1',
-                        'taste': taste,
-                        'competition': contest,
-                    })
-                    if executed_topic and contest.get('authority') == 'NEURAL':
-                        prior_goal = mind_plan.get('goal')
-                        mind_plan = {
-                            **mind_plan,
-                            'endogenous_goal': prior_goal,
-                            'goal': {
-                                'goal_id': 'neural-taste:' + str(contest.get('contest_id') or cycle),
-                                'origin': 'NEURAL_TASTE',
-                                'description': 'Investigate the topic selected by Ferro neural taste: ' + executed_topic,
-                                'confidence': min(1.0, max(0.25, float(taste.get('margin') or 0.0) / 10.0 + 0.35)),
-                                'expected_value': 0.55,
-                                'interest_refs': [executed_topic],
-                                'inquiry_refs': [],
-                                'value_refs': [str(contest.get('contest_id') or '')],
-                            },
-                            'required_topic': executed_topic,
-                            'neural_taste': taste,
-                            'brain_cortex_competition': contest,
-                        }
-                    else:
-                        mind_plan = {
-                            **mind_plan,
-                            'neural_taste': taste,
-                            'brain_cortex_competition': contest,
-                        }
+        mind_plan = await self._choose_mind_plan(
+            folder, cycle, now, snapshot, world_payload, owner_goal, mission_context,
+            mission_priority, plan_path, plan_preexisting,
+        )
 
         required_topic = mind_plan.get('required_topic')
         selection_started = any(
@@ -1798,201 +2063,13 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         ) or (
             mission_priority and goal_origin in {'INTEREST', 'INQUIRY'}
         )
-        if (
-            mission_can_claim_cycle
-            and mission_context is not None
-            and not plan_preexisting
-            and not selection_started
-        ):
-            mission_path = folder / 'mission_discovery.json'
-            mission_decision = None
-            if mission_path.exists():
-                stored = json.loads(mission_path.read_text(encoding='utf-8'))
-                decision_payload = (
-                    stored.get('decision') if isinstance(stored, dict) else None
-                )
-                if isinstance(decision_payload, dict):
-                    mission_decision = _normalize_mission_discovery(
-                        MissionDiscoveryDecision.model_validate(decision_payload)
-                    )
-            else:
-                mission_runtime = ReceiptRuntime(
-                    self.runtime, folder / 'mission_discovery_calls'
-                )
-                recent_articles = [
-                    {
-                        'title': row['artifact']['title'],
-                        'summary': row['artifact']['summary'][:240],
-                        'tags': list(row['artifact'].get('tags') or ()),
-                    }
-                    for row in snapshot['articles'][-12:]
-                ]
-                recent_noop_attempts = _recent_mission_noop_attempts(
-                    self.state,
-                    mission_context,
-                )
-                task = (
-                    'MISSION_DISCOVERY: choose one concrete research subject for the next '
-                    'content evidence search that advances the active external mission without '
-                    'forcing publication. When owner_goal is present, it is the current human '
-                    'task constraint: if it explicitly asks to serve this mission, the chosen '
-                    'subject and search query must directly investigate that owner-specified '
-                    'subject rather than silently substituting an unrelated mission angle. '
-                    'The topic must describe the subject matter, not '
-                    'follower growth or engagement tactics. Prefer Ferro/LivingRuntime strengths '
-                    'and existing site topics when genuinely useful; a new durable topic is '
-                    'allowed. The search_query must seek current public factual evidence about '
-                    'that subject and must be a compact keyword-style query whose first words are '
-                    'the subject/core entities; do not begin it with generic words such as recent, '
-                    'latest, current, public, research, evidence, or case studies. Never search for '
-                    'follow-for-follow, engagement manipulation, '
-                    'spam, or ways to evade platform rules. When '
-                    'recent_no_material_change_attempts is non-empty, treat those rows as '
-                    'negative search feedback: choose a materially different reader need, '
-                    'subject angle, or factual search query instead of repeating a semantically '
-                    'equivalent attempt. Do not lower the publication/evidence bar merely to '
-                    'make progress. Mission/roadmap text is decision context only and is not '
-                    'factual evidence.\n'
-                    + EDITORIAL_SCOPE_INSTRUCTION + '\n'
-                    + json.dumps({
-                        'external_mission': mission_context,
-                        'owner_goal': owner_goal,
-                        'existing_topics': sorted(snapshot['topics'])[:80],
-                        'recent_site_coverage': recent_articles,
-                        'recent_no_material_change_attempts': recent_noop_attempts,
-                    }, ensure_ascii=False)
-                )
-                prior_pairs = {
-                    (
-                        str(row.get('topic') or '').strip().lower(),
-                        str(row.get('search_query') or '').strip().casefold(),
-                    )
-                    for row in recent_noop_attempts
-                }
-                def validate_mission_discovery(value):
-                    normalized = _normalize_mission_discovery(value)
-                    pair = (
-                        normalized.topic.strip().lower(),
-                        normalized.search_query.strip().casefold(),
-                    )
-                    if pair in prior_pairs:
-                        raise ValueError(
-                            'mission discovery must change angle after a no-material-change attempt'
-                        )
-                    return normalized
-                try:
-                    mission_decision = await _structured(
-                        mission_runtime,
-                        task,
-                        MissionDiscoveryDecision,
-                        validate=validate_mission_discovery,
-                    )
-                    mission_decision = _normalize_mission_discovery(mission_decision)
-                    _put(mission_path, {
-                        'schema_version': 'content-mission-discovery.v1',
-                        'mission_id': mission_context.get('mission_id'),
-                        'roadmap_step_id': (
-                            (mission_context.get('roadmap_step') or {}).get('step_id')
-                        ),
-                        'experiment_id': (
-                            (mission_context.get('active_experiment') or {}).get('experiment_id')
-                        ),
-                        'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
-                        'decision': mission_decision.model_dump(mode='json'),
-                        'recent_no_material_change_attempts': recent_noop_attempts,
-                        'generation_authority': 'DISCOVERY_ONLY',
-                        'publication_authority': False,
-                    })
-                except Exception as exc:
-                    mission_error = {
-                        'schema_version': 'content-mission-discovery-error.v1',
-                        'error_type': type(exc).__name__,
-                        'message': str(exc)[:500],
-                        'mission_id': str(mission_context.get('mission_id') or ''),
-                        'roadmap_step_id': str(
-                            (mission_context.get('roadmap_step') or {}).get('step_id')
-                            or ''
-                        ),
-                        'experiment_id': str(
-                            (mission_context.get('active_experiment') or {}).get('experiment_id')
-                            or ''
-                        ),
-                        'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
-                        'retryable': True,
-                        'publication_authority': False,
-                    }
-                    _put(folder / 'mission_discovery_error.json', mission_error)
-                    if owner_goal is not None:
-                        mission_id = str(mission_context.get('mission_id') or '')
-                        owner_goal_id = str(owner_goal.get('goal_id') or '')
-                        mind_plan = {
-                            **mind_plan,
-                            'endogenous_goal': mind_plan.get('goal'),
-                            'goal': {
-                                'goal_id': (
-                                    'external-mission-pending:'
-                                    + (mission_id or 'unknown')
-                                ),
-                                'origin': 'EXTERNAL_MISSION',
-                                'description': (
-                                    'Resolve evidence search for the owner-directed external mission: '
-                                    + str(owner_goal.get('description') or '')
-                                )[:2400],
-                                'confidence': 1.0,
-                                'expected_value': 1.0,
-                                'interest_refs': [],
-                                'inquiry_refs': [owner_goal_id],
-                                'value_refs': [mission_id],
-                            },
-                            'required_topic': None,
-                            'external_mission_id': mission_id,
-                            'owner_goal_id': owner_goal_id,
-                            'mission_discovery_error': mission_error,
-                        }
-                        _put(plan_path, mind_plan)
-                        return {
-                            'status': 'ERROR',
-                            'cycle': cycle,
-                            'error_type': type(exc).__name__,
-                            'message': str(exc)[:500],
-                            'retryable': True,
-                            'mission_id': mission_id,
-                            'owner_goal_id': owner_goal_id,
-                            'mind_plan': mind_plan,
-                        }
-            if mission_decision is not None:
-                mission_goal_id = (
-                    'external-mission-discovery:'
-                    + str(mission_context.get('mission_id') or 'unknown')
-                    + ':'
-                    + str(
-                        (mission_context.get('roadmap_step') or {}).get('step_id')
-                        or (mission_context.get('active_experiment') or {}).get('experiment_id')
-                        or 'research'
-                    )
-                )
-                mind_plan = {
-                    **mind_plan,
-                    'endogenous_goal': mind_plan.get('goal'),
-                    'goal': {
-                        'goal_id': mission_goal_id,
-                        'origin': 'EXTERNAL_MISSION',
-                        'description': (
-                            'Research evidence for the active external mission: '
-                            + mission_decision.reader_need
-                        ),
-                        'confidence': 1.0,
-                        'expected_value': 1.0,
-                        'interest_refs': [mission_decision.topic],
-                        'inquiry_refs': [mission_goal_id],
-                        'value_refs': [str(mission_context.get('mission_id') or '')],
-                    },
-                    'required_topic': mission_decision.topic,
-                    'mission_discovery': mission_decision.model_dump(mode='json'),
-                    'external_mission_id': mission_context.get('mission_id'),
-                    'owner_goal_id': str((owner_goal or {}).get('goal_id') or ''),
-                }
-                required_topic = mission_decision.topic
+        mind_plan, mission_error_result = await self._mission_discovery_plan(
+            folder, cycle, snapshot, plan_path, mind_plan, mission_context, owner_goal,
+            mission_can_claim_cycle, plan_preexisting, selection_started,
+        )
+        if mission_error_result is not None:
+            return mission_error_result
+        required_topic = mind_plan.get('required_topic')
 
         if not plan_preexisting:
             _put(plan_path, mind_plan)

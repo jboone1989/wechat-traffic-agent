@@ -65,14 +65,9 @@ changes during the modularization. Article SQLite remains authoritative;
   per method in these two refactored modules and exercises recovery identity
   and disabled content-pipeline observer behavior.
 - `scripts/audit_function_lengths.py` scans all Ferro production code. At
-  this milestone 144 legacy functions remain above 100 lines; this is an
+  the stage-3 milestone 142 legacy functions remained above 100 lines; this is an
   incremental target, **not** global completion. Most extracted helpers are
   below 50 lines and no touched method exceeds 100.
-- Next genuine hard boundaries: the 2,284-line
-  `ContinuousContentLoop._run` and the 2,485-line
-  `LiveAgentService._app`. Their inputs, outputs and local state must be
-  separated by use case and API route groups, not hidden in one new wrapper.
-
 - `orchestration/resources.py`: the former 313-line resource-review method is
   now a coordinator over model pressure, infrastructure observation, provider
   discovery, evidence verification, provider trials and outcome feedback.
@@ -80,15 +75,39 @@ changes during the modularization. Article SQLite remains authoritative;
   Short-function tests also cover this module. The latest repository audit is
   **142** functions exceeding 100 lines; that backlog is still real.
 
+## Content cognition and public API extraction (stage 4)
+
+- `ContinuousContentLoop._run` went from **2,284** to **1,602** lines without
+  moving the remainder into another monolith. Named, short helpers own
+  resumable cycle inputs, strategy-outcome synchronization, owner seed evidence,
+  world observation and prediction settlement, and Website experiment binding.
+- The goal-formation path now independently handles direct owner focus,
+  stable multi-epoch dream attractors, ordinary preconcept research inquiries
+  and neural taste competition. The external mission discovery path is split
+  into query construction, evidence-aware validation, failure receipts and
+  creation of a bounded goal. All new extracted methods are <=100 lines,
+  with most substantially below 50.
+- `LiveAgentService._app` went from **2,485** to **2,320** lines in this
+  stage. `web_api/route_registry.py` separately declares 26 public and
+  51 operator routes; `web_api/public_views.py` owns public HTML and neural
+  observations; `web_api/catalog.py` reads published articles from SQLite
+  without traversing static JSON inventories.
+- `tests/test_goal_formation_boundaries.py` and
+  `tests/test_web_api_boundaries.py` prove public-route isolation and test
+  the goal formation and mission failure contracts without a full agent
+  startup. These are **incremental** boundaries: operator HTTP handlers,
+  streaming chat and most of the content writer still remain in long
+  functions; no independent deployment or additional process is intended.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:
 
-1. Break the 2,284-line `ContinuousContentLoop._run` into research selection,
+1. Continue breaking the 1,602-line `ContinuousContentLoop._run` into research selection,
    verification, cognition, editorial admission and publication use cases
    with explicit request/result objects. No domain use case reads another
    module's private cycle files.
-2. Separate HTTP/API routing from the 2,485-line `LiveAgentService._app` and
+2. Continue separating HTTP/API handlers from the 2,320-line `LiveAgentService._app` and
    replace direct internal state scans with narrow read interfaces. Site API
    and operator API should have separate application compositions.
 3. Replace the wakeful mixins' implicit shared-`self` dependencies with
