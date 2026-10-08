@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from .market_pipeline import MarketSignalStore
 
@@ -34,15 +33,3 @@ def market_research_candidates(*, state_root: Path, now: datetime, limit: int = 
         })
     return result
 
-
-async def collect_market_evidence(*, now: datetime, state_root: Path,
-                                  baseline_fetcher: Callable[[datetime], Awaitable[list[dict]]]) -> list[dict]:
-    """Composition root combines existing OKX source and independently polled events."""
-    events = market_research_candidates(state_root=state_root, now=now)
-    try:
-        baseline = await baseline_fetcher(now)
-    except Exception:
-        if not events:
-            raise
-        baseline = []
-    return [*events, *baseline][:24]
