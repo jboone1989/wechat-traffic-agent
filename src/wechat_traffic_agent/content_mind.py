@@ -148,9 +148,19 @@ class ContentMind:
 
     def _compact_live_state(self) -> bool:
         before = self.session.snapshot()
+        # VirtualBrain validates causal links when restoring checkpoints.
+        # An inquiry remains live if a settled prediction or worldview
+        # revision still uses its ID as provenance.
+        protected_inquiry_ids = set(self.session.predictive_learning.inquiry_links)
+        for record in self.session.worldview.snapshot().get("history", []):
+            provenance = record.get("provenance") or {}
+            source = str(provenance.get("source_event_id") or "")
+            if source.startswith("inquiry:"):
+                protected_inquiry_ids.add(source[len("inquiry:"):])
         removed_inquiries = self.session.inquiry.compact(
             max_open=32,
             max_resolved=32,
+            protected_ids=protected_inquiry_ids,
         )
         # Interest feedback, developmental history, and other learned state
         # retain provenance links to autobiography event IDs. Until their
