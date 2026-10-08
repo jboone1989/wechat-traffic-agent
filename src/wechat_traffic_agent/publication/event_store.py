@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 
 from .models import PublicationEvent, DistributionTask
 from .errors import NonRetryablePublication
@@ -59,6 +60,19 @@ class PublicationEventStore:
         raw["published_at"] = datetime.fromisoformat(raw["published_at"])
         return PublicationEvent(**raw)
 
+    def subscription_started_at(self, channel: str, *, now=None):
+        """Persist a channel's starting watermark; never backfill old events by accident."""
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,60}", channel):
+            raise ValueError("invalid publication subscriber channel")
+        path = self.distribution / "subscriptions" / f"{channel}.json"
+        with self._lock():
+            if not path.exists():
+                started = now or datetime.now(timezone.utc)
+                if started.utcoffset() is None:
+                    raise ValueError("subscription time must have a timezone")
+                self._save_new(path, {"started_at": started.astimezone(timezone.utc).isoformat()})
+            return datetime.fromisoformat(json.loads(path.read_text())["started_at"])
+
     def find_task(self, task_id: str):
         for folder in (self.queue, self.processing, self.success, self.failed):
             path = folder / f"{task_id}.json"
@@ -81,7 +95,7 @@ class PublicationEventStore:
             self._save_new(path, task.model_dump())
             return path
 
-    def attempt_count(self, *, local_date, timezone_info, channel=None):
+    def attempt_count(self, *, local_date, timezone_info, channel="x"):
         """Count actual dispatch attempts, not successful X posts or queue creations."""
         total = 0
         for folder in (self.queue, self.processing, self.success, self.failed):

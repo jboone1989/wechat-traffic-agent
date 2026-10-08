@@ -94,8 +94,7 @@ class DailyPostingGoal:
         from .publication.event_store import PublicationEventStore
         outbox = PublicationEventStore(self.state_root)
         website_first = any(outbox.events.glob("*.json"))
-        attempted = (outbox.attempt_count(local_date=local.date(), timezone_info=zone, channel="x")
-                     if website_first else 0)
+        attempted = outbox.attempt_count(local_date=local.date(), timezone_info=zone) if website_first else 0
         minimum = int(config["minimum_original_posts"])
         measured = attempted if website_first else len(posts)
         progress = _read(self.root / "progress.json")
@@ -178,15 +177,10 @@ class DailyPostingGoal:
             else:
                 target = operator_root / "mailbox/notifications" / (notification_id + ".json")
                 if not target.exists():
-                    square = row["key"].startswith("distribution:binance_square:")
-                    kind = ("FERRO_WEBSITE" if row["key"].startswith("website:") else
-                            "FERRO_SQUARE_POSTING" if square else "FERRO_X_POSTING")
-                    ref = ("ferro-website:" if kind == "FERRO_WEBSITE" else
-                           "ferro-square-posting:" if square else "ferro-x-posting:")
                     _write(target, {"notification_id": notification_id, "created_at": row["created_at"],
-                        "agent_id": "content-agent", "cycle": 0, "kind": kind,
+                        "agent_id": "content-agent", "cycle": 0, "kind": ("FERRO_WEBSITE" if row["key"].startswith("website:") else "FERRO_X_POSTING"),
                         "title": row["title"], "message": row["message"],
-                        "evidence_refs": [ref + row["event_id"]]})
+                        "evidence_refs": [("ferro-website:" if row["key"].startswith("website:") else "ferro-x-posting:") + row["event_id"]]})
                 row.update(status="ENQUEUED", last_checked_at=now.isoformat(),
                     delivery_status=delivery.get("status", "PENDING"), last_error=delivery.get("last_error"))
             _write(path, row)
@@ -209,28 +203,22 @@ class DailyPostingGoal:
         return {"status": "ENQUEUED", "key": key, "deliveries": deliveries}
 
     def notify_distribution_result(self, *, task, now):
-        """Deliver a channel-specific verified URL or an explicit failed attempt."""
+        """Deliver the real X URL or a distinct, explicit failed attempt to WeCom."""
         config = _read(self.config_path)
         if not config or not config.get("notifications_enabled", True):
             return {"status": "NOTIFICATIONS_DISABLED"}
         status = str(task.status)
         if status not in {"SUCCESS", "RETRY_PENDING", "FAILED_PERMANENT"}:
             return {"status": "NOT_TERMINAL_ATTEMPT"}
-        if task.channel not in {"x", "binance_square"}:
-            raise ValueError("unsupported distribution notification channel")
-        key = ("distribution:" + task.channel + ":" + task.distribution_id + ":" +
-               status + ":" + str(task.attempts))
-        label = "币安广场" if task.channel == "binance_square" else "X"
+        key = "distribution:" + task.distribution_id + ":" + status + ":" + str(task.attempts)
         if status == "SUCCESS":
-            prefix = ("https://www.binance.com/square/post/" if task.channel == "binance_square"
-                      else "https://x.com/")
-            if not str(task.published_url or "").startswith(prefix):
-                raise ValueError("successful distribution requires a verified channel URL")
-            title = "Ferro 官网内容已同步到 " + label
+            if not str(task.published_url or "").startswith("https://x.com/"):
+                raise ValueError("successful X distribution requires a verified X URL")
+            title = "Ferro 官网内容已同步到 X"
             message = ("PublicationEvent: " + task.event_id + "\\n"
                        + task.published_url + "\\n官网首发保持独立。")
         else:
-            title = "Ferro " + label + " 分发失败，官网发布不受影响"
+            title = "Ferro X 分发失败，官网发布不受影响"
             message = ("PublicationEvent: " + task.event_id + "\\n"
                        + "状态: " + status + "; attempt: " + str(task.attempts)
                        + "\\n错误: " + str(task.last_error or "unverified")

@@ -1,64 +1,76 @@
-# Binance Square distribution (opt-in)
+# Binance Square PublicationEvent consumer (opt-in)
 
-Ferro's audited website publication emits one canonical `PublicationEvent`.
-The existing outbox creates one task per selected channel. With Square enabled,
-Ferro queues `binance_square` beside `x`; one research result is reused,
-not re-researched or blindly copied from unrelated accounts.
+Ferro's existing audited website publisher emits immutable `PublicationEvent`
+records. The Binance Square consumer **only reads** those records. It is not
+registered in the producer, X worker, cognitive loop, learning or memory.
 
-The Square adapter composes a short message from the approved title and
-summary, links to the full article and evidence, and adds `$BTC`, `$ETH` etc
-only when the event has an exact known coin symbol. The adapter uses the
-official Square **posting-only** OpenAPI key (not a trading key) and publishes
-via `/bapi/composite/v1/public/pgc/openApi/content/add`.
+```text
+Website -> PublicationEvent (durable log)
+                  |                   |
+            existing X outbox     Binance Square consumer (separate)
+                                      |
+                               channel outbox task
+                                      |
+                               Square OpenAPI
+                                      |
+                             SUCCESS/FAILED receipt
+                                      |
+                             optional operator mailbox
+```
+
+The Square adapter transforms only the approved title/summary + source URL;
+it attaches `$BTC`, `$ETH`, etc only for exact known coin tags in the event.
+No fresh research, LLM, market search, or browser action is launched by the
+consumer. It uses a Square **posting-only** key, not a trading key.
 
 ## Configuration
 
-Obtain the posting-only key from:
+Get the posting key from
 https://www.binance.com/square/creator-center/home
 
-Add the following settings **outside the repository** to the service
-environment (or the private `EnvironmentFile` shown in the sample unit):
+In the independent consumer service's private environment:
 
 ```ini
 CONTENT_BINANCE_SQUARE_ENABLED=1
 CONTENT_BINANCE_SQUARE_WRITES_ENABLED=1
-BINANCE_SQUARE_OPENAPI_KEY=your-square-posting-only-key
+BINANCE_SQUARE_OPENAPI_KEY=your-posting-only-key
+# Optional: share the existing operator mailbox for WeCom notifications
+CONTENT_SQUARE_OPERATOR_STATE_DIR=/path/to/operator/state
 ```
 
-Do not enable without a key. Keep the config file readable only by its owner.
-By default, Square is disabled and existing X behavior is unchanged.
-If enabled but writes are disabled, future audited website events remain
-queued without attempting publication; X distribution stays independent.
+The default is disabled. Enabling the consumer never changes the producer's
+X channels or schedules and never starts another browser.
+
+On its **first enabled run**, the consumer records its activation watermark in
+the shared publication state. It handles events *published after that point*;
+it deliberately does not backfill older website articles. When writes are
+disabled or the key is absent, newly observed events remain queued for later,
+without touching X's queue. Once the key is configured, the consumer processes
+one Square task per invocation.
 
 ## Execution
 
-The existing CHECK_X outbox drain can also process Square tasks. For faster
-Square delivery independent of X cognition or browser health, run
-`scripts/run_square_distribution_worker.py` using the optional oneshot
-systemd timer. It consumes at most one queued Square task per run (two-minute
-interval), with no extra persistent Python worker.
+Run `scripts/run_square_distribution_worker.py` with the same
+`CONTENT_APPLICATION_ROOT` as the website publisher. The optional
+`ferro-square-distribution.service` and `.timer` invoke the one-shot
+consumer every two minutes. They are not installed or enabled automatically.
 
-The supplied `ferro-square-distribution.service` and `.timer` are examples
-and are **not enabled automatically**. Verify the Python environment and
-paths before installing to systemd. Use the same `CONTENT_APPLICATION_ROOT`
-as the main Ferro worker.
+Only this worker imports the Square consumer. The generic event store and
+distribution worker do not import Binance; the X worker is unchanged.
 
-## Receipts and failure semantics
+## Receipts
 
-A successful API response must contain `code="000000"` and a numeric
-`data.id`. Only then does Ferro save a `SUCCESS` outbox receipt with
-`published_post_id` and the public URL:
+The Binance v1 posting OpenAPI receives `contentType=1` and
+`bodyTextOnly`. It must return `code="000000"` with a numeric `data.id`
+to record a confirmed `SUCCESS` and Square post URL. HTTP 5xx, timeouts,
+unreadable API replies and successful API codes without an ID are left for
+manual reconciliation, not blind automatic resubmission. The generic outbox
+also records the verified post ID.
 
-`https://www.binance.com/square/post/{id}`
+When `CONTENT_SQUARE_OPERATOR_STATE_DIR` is set, the consumer adds a
+deduplicated result notification to the existing operator mailbox. It does
+not call the X-specific `DailyPostingGoal` notifier. Square attempts do not
+count towards X's original-post quota.
 
-If a timeout/HTTP 5xx/invalid receipt could hide a successful submission,
-the task becomes `FAILED_PERMANENT` with a reason for manual reconciliation
-and is *not* resent automatically. API rejection (including invalid/expired
-key, sensitive words and daily limit) is also surfaced without blind retries.
-New independent events are unaffected. No publication is claimed without
-a verified post ID.
-
-The official Square posting API handles publication only. Engagement numbers,
-follower growth, cashtag fee rebates, market monitoring, and cross-platform
-X-post importing are separate capabilities; this integration does not claim
-to fetch them or produce them automatically.
+This feature does not fetch engagement metrics, scrape markets, mirror X
+posts or guarantee creator reward eligibility.

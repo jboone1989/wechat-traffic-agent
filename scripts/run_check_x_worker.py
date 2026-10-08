@@ -25,8 +25,9 @@ from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 from wechat_traffic_agent.worker_runtime import WorkerHeartbeat
 from wechat_traffic_agent.x_browser import XBrowserPublisher
 from wechat_traffic_agent.x_social import XAutonomyLoop
+from wechat_traffic_agent.x_browser import x_browser_writes_enabled
 from wechat_traffic_agent.publication.event_store import PublicationEventStore, DistributionWorker
-from wechat_traffic_agent.publication.channel_adapters import active_distribution_adapters
+from wechat_traffic_agent.publication.x_distribution import publish_x
 from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
 
 
@@ -107,14 +108,15 @@ def main() -> int:
                 now=now,
                 relevant_refs=tuple(wake.relevant_refs),
             )
-            # Drain one supported website distribution task; disabled channels
-            # remain queued without blocking enabled channels.
+            # The same independent CHECK_X process drains one website event per
+            # tick. X browser failures remain inside the distribution outbox.
             distribution = None
-            adapters = active_distribution_adapters(state_root)
-            if adapters:
+            if x_browser_writes_enabled():
                 distribution = DistributionWorker(
                     PublicationEventStore(state_root),
-                    adapters,
+                    {"x": lambda event, task: publish_x(
+                        event, task, state_root=state_root
+                    )},
                 ).run_once()
                 if distribution is not None:
                     # Delivery failures are separately recorded by WeCom's durable mailbox.
