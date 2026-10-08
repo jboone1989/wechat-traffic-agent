@@ -94,7 +94,7 @@ def test_unproductive_retries_become_a_human_alert(tmp_path):
     goal.reconcile(NOW+timedelta(minutes=10))
     notes=list((tmp_path/"operator/mailbox/notifications").glob("*.json"))
     assert len(notes)==1
-    assert "需要协助" in json.loads(notes[0].read_text())["title"]
+    assert "自动恢复中" in json.loads(notes[0].read_text())["title"]
     progress=json.loads((goal.root/"progress.json").read_text())
     assert progress["consecutive_no_publication"]==3
     assert progress["next_attempt_at"]==(NOW+timedelta(minutes=15)).isoformat()
@@ -130,7 +130,7 @@ def test_reusing_an_existing_post_does_not_reset_stalled_production(tmp_path):
         goal.observe("CONTENT_COGNITION", {"status":"OK", "x_social_expression":{"status":"ALREADY_EXPRESSED"}}, NOW+timedelta(minutes=5*n))
     goal.reconcile(NOW+timedelta(minutes=10))
     note=json.loads(next((tmp_path/"operator/mailbox/notifications").glob("*.json")).read_text())
-    assert "需要协助" in note["title"]
+    assert "自动恢复中" in note["title"]
 
 def test_publication_survives_more_than_500_later_history_events(tmp_path):
     goal=configured(tmp_path)
@@ -272,3 +272,51 @@ def test_memory_model_download_progress_is_removed_from_operator_alert(tmp_path)
     assert "returncode=137 worker killed" in note["message"]
     assert "Fetching 5 files" not in note["message"]
     assert "unauthenticated requests" not in note["message"]
+
+def test_changing_tracebacks_do_not_flood_wecom(tmp_path):
+    goal = configured(tmp_path)
+    for i in range(12):
+        goal.observe("CONTENT_COGNITION", {
+            "status": "DEGRADED",
+            "continuous_content": {
+                "status": "CHATGPT_UNAVAILABLE",
+                "error_type": "AgentRuntimeChatGPTProviderError",
+                "message": f"browser target {i} vanished; attempt {i}",
+            },
+        }, NOW + timedelta(minutes=i * 5))
+    notices = [
+        json.loads(path.read_text())
+        for path in (goal.root / "notifications").glob("*.json")
+    ]
+    assert len(notices) == 2
+    assert {row["title"] for row in notices} == {
+        "Ferro 下一轮内容生产阻塞",
+        "Ferro 下一轮内容生产自动恢复中",
+    }
+    goal.reconcile(NOW + timedelta(minutes=60))
+    assert len(list((tmp_path / "operator/mailbox/notifications").glob("*.json"))) == 2
+
+
+def test_monitor_stall_only_notifies_once_per_day(tmp_path):
+    goal = configured(tmp_path)
+    for i in range(4):
+        moment = NOW + timedelta(minutes=30 + 20 * i)
+        put(goal.root / "progress.json", {
+            "date": goal.status(moment)["date"], "published": 0,
+            "last_attempt_at": moment.isoformat(),
+            "next_attempt_at": (moment - timedelta(minutes=20)).isoformat(),
+        })
+        goal.reconcile(moment, watch_heartbeat=True)
+    rows = [json.loads(path.read_text()) for path in
+            (goal.root / "notifications").glob("*.json")]
+    assert sum(row["title"] == "Ferro 每日发帖目标停滞" for row in rows) == 1
+
+
+def test_manual_login_urgency_retained(tmp_path):
+    goal = configured(tmp_path)
+    goal.observe("CONTENT_COGNITION", {
+        "status": "LOGIN_REQUIRED", "message": "manual login required",
+    }, NOW)
+    notices = list((goal.root / "notifications").glob("*.json"))
+    assert len(notices) == 1
+    assert "需要协助" in json.loads(notices[0].read_text())["title"]

@@ -225,7 +225,8 @@ class DailyPostingGoal:
                     marker = str(value.get("status") or "")
                     if marker in {"ERROR", "DEGRADED", "RESOURCE_DEFERRED", "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
                                   "X_PUBLICATION_CAPABILITY_UNAVAILABLE", "PUBLICATION_UNVERIFIED",
-                                  "X_RESOURCE_BLOCKED", "HELD_BY_X_SAFETY", "X_OBSERVATION_FAILED"} or marker.endswith(("_UNAVAILABLE", "_FAILED", "_ERROR", "_BLOCKED")):
+                                  "X_RESOURCE_BLOCKED", "HELD_BY_X_SAFETY", "X_OBSERVATION_FAILED",
+                                  "AUTH_REQUIRED", "LOGIN_REQUIRED", "HUMAN_REQUIRED"} or marker.endswith(("_UNAVAILABLE", "_FAILED", "_ERROR", "_BLOCKED")):
                         errors.append({"status": marker, "error_type": value.get("error_type"),
                             "message": compact_error(value, marker)})
                     for item in value.values():
@@ -236,11 +237,38 @@ class DailyPostingGoal:
             scan(result)
             if errors or (status["enabled"] and status["remaining"] and failures >= 3):
                 detail = json.dumps(errors[:3], ensure_ascii=False) if errors else "连续三次生产尝试没有真实发布，可能是选题或证据获取停滞。"
-                key = ("unresolved:" if failures >= 3 else "blocker:") + status["date"] + ":" + sha256(detail.encode()).hexdigest()[:12]
-                if task == "CONTENT_COGNITION":
-                    title = "Ferro 下一轮内容生产需要协助" if failures >= 3 else "Ferro 下一轮内容生产阻塞"
+                # A traceback, changing browser target, or nested diagnostic is
+                # not a new operator incident. Notify once on first occurrence,
+                # then at most once when the same incident becomes persistent.
+                statuses = {item["status"] for item in errors}
+                if statuses & {"CHATGPT_UNAVAILABLE", "OWNER_COGNITION_PROVIDER_UNAVAILABLE",
+                               "X_OBSERVATION_FAILED"}:
+                    incident = "CHATGPT_BROWSER"
+                elif statuses & {"PUBLICATION_UNVERIFIED", "X_PUBLICATION_CAPABILITY_UNAVAILABLE"}:
+                    incident = "X_PUBLICATION"
+                elif statuses & {"X_RESOURCE_BLOCKED", "RESOURCE_DEFERRED"}:
+                    incident = "RESOURCE"
+                elif statuses & {"HELD_BY_X_SAFETY"}:
+                    incident = "X_SAFETY"
+                elif statuses:
+                    incident = sorted(statuses - {"DEGRADED"} or statuses)[0][:80]
                 else:
-                    title = "Ferro 发帖流程需要协助" if failures >= 3 else "Ferro 发帖流程阻塞"
+                    incident = "NO_VERIFIED_PUBLICATION"
+                phase = "persistent" if failures >= 3 else "initial"
+                key = ":".join(("incident", status["date"], task, incident, phase))
+                manual_required = any(
+                    item["status"] in {"AUTH_REQUIRED", "LOGIN_REQUIRED", "HUMAN_REQUIRED"}
+                    or "manual login required" in item["message"].lower()
+                    for item in errors
+                )
+                if task == "CONTENT_COGNITION":
+                    title = ("Ferro 下一轮内容生产需要协助" if manual_required
+                             else "Ferro 下一轮内容生产自动恢复中" if failures >= 3
+                             else "Ferro 下一轮内容生产阻塞")
+                else:
+                    title = ("Ferro 发帖流程需要协助" if manual_required
+                             else "Ferro 发帖流程自动恢复中" if failures >= 3
+                             else "Ferro 发帖流程阻塞")
                 if task == "CONTENT_COGNITION" and status["published"]:
                     publication_note = (
                         f"此前 {status['published']} 条均已验证发布；当前错误发生在后续生产尝试，"
@@ -259,7 +287,8 @@ class DailyPostingGoal:
                         "系统稍后再试，额度恢复后从该请求继续。"
                     )
                 elif failures >= 3:
-                    next_step = "多次自动尝试仍未解决，需要检查对应模型、浏览器或主机通道；待处理工作仍保留。"
+                    next_step = ("需要人工登录或授权以解除阻塞。" if manual_required else
+                                 "自动重试仍未解决，已记录故障类别并继续排查；无需重复人工介入。")
                 elif status["enabled"] and task == "CONTENT_COGNITION":
                     next_step = "当前轮次未完成，5分钟后重试；若持续失败再升级为需要协助。"
                 else:
@@ -287,13 +316,13 @@ class DailyPostingGoal:
                 if watch_heartbeat:
                     heartbeat = _read(self.state_root / "application/ferro-heartbeat.json")
                     if not heartbeat or now - _time(heartbeat["observed_at"]) > timedelta(minutes=5):
-                        self._queue("heartbeat:" + str(heartbeat.get("observed_at")),
+                        self._queue("heartbeat:" + status["date"],
                             "Ferro 服务停止推进",
                             "内容服务心跳超过5分钟没有更新，独立监测仍在运行。请检查 content-agent.service 和主机状态。", now)
                     progress = _read(self.root / "progress.json")
                     due = _time(status["next_attempt_at"])
                     if status["enabled"] and status["remaining"] and now - due > timedelta(minutes=15):
-                        self._queue("stalled:" + str(progress.get("last_attempt_at") or status["date"]),
+                        self._queue("stalled:" + status["date"],
                             "Ferro 每日发帖目标停滞",
                             f"今天已发布 {status['published']}/{status['minimum']}，计划生产超过15分钟仍未完成。"
                             "请检查当前模型、图片生成、X浏览器与自动修复回执。", now)
