@@ -144,6 +144,32 @@ def test_absent_database_is_an_empty_research_feed(tmp_path):
     assert not (Path(tmp_path) / "content/market_signals.sqlite3").exists()
 
 
+@run_coroutine
+async def test_inactive_goal_still_sees_queued_market_research(tmp_path):
+    from wechat_traffic_agent.content_explorer import GoalEvidenceExplorer
+    async def empty_rss(_feeds, now):
+        return {"items": [], "failures": [], "observed_at": now.isoformat()}
+    async def prohibited_market(_now):
+        raise AssertionError("inactive goal must not fetch live market API")
+    async def create_event():
+        store = MarketSignalStore(tmp_path)
+        signal = {"source": "blockbeats-newsflash", "kind": "news", "identity": "fresh",
+                  "title": "New market research", "summary": "Research question grounded in data",
+                  "url": NEWS, "published_at": NOW.isoformat(), "metrics": {}}
+        store.record("blockbeats-newsflash", [], now=NOW)
+        store.record("blockbeats-newsflash", [signal], now=NOW)
+    await create_event()
+    explorer = GoalEvidenceExplorer(
+        state_root=tmp_path, feeds=(), rss_fetcher=empty_rss,
+        market_fetcher=prohibited_market,
+        market_signal_reader=lambda now: market_research_candidates(
+            state_root=tmp_path, now=now),
+    )
+    result = await explorer.collect(now=NOW, active=False)
+    assert len(result["items"]) == 1
+    assert result["items"][0]["source"] == "blockbeats-newsflash"
+
+
 def test_data_capture_never_imports_publisher_or_ferro_cognition():
     root = Path(__file__).resolve().parents[1] / "src/wechat_traffic_agent/sources"
     for filename in ("market_signals.py", "market_pipeline.py", "market_bridge.py"):
