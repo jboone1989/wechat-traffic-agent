@@ -124,7 +124,8 @@ class SquareDraftStore:
             provenance = doc.get("observation_provenance") or {}
             review = provenance.get("review") or {}
             if (not evidence.get("sources") or not all(review.get(key) is True for key in
-                    ("grounded", "has_position", "adds_value", "timely"))
+                    ("grounded", "adds_value", "timely"))
+                    or (provenance.get("format") != "DATA" and review.get("has_position") is not True)
                     or provenance.get("text_sha256") != sha256(doc["body"].encode()).hexdigest()
                     or set(provenance.get("source_ids", [])) != {row["evidence_id"] for row in evidence["sources"]}):
                 raise ValueError("observation lacks matching grounded stance review")

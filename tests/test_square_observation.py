@@ -131,8 +131,8 @@ def test_data_post_admitted_without_body_opinion(tmp_path):
                 thesis="显著涨幅与成交规模值得一起看", reader_question="哪个币发生异动",
                 invalidation="后续窗口更新", value_focus="reader_agency")
         assert "without commentary" in prompt
-        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True,
-                     rationale="Concrete named-asset data is informative.")
+        return model(facts_specific=True, grounded=True, has_position=False, adds_value=True, timely=True,
+                     rationale="Concrete named-asset data is informative without an opinion.")
     explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
     result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
         cycle="data-post", now=now, seed_evidence=[source], structured=structured))
