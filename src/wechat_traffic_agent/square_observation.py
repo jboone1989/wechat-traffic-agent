@@ -38,9 +38,14 @@ class ObservationReview(BaseModel):
     rationale: str
 
 async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed_evidence=None, structured=_structured):
-    existing = next((row for row in SquareDraftStore(state_root).list()
+    store = SquareDraftStore(state_root)
+    existing = next((row for row in store.list()
         if (row.get("observation_provenance") or {}).get("cycle") == cycle), None)
     if existing:
+        if existing["status"] in {"DRAFT", "NEEDS_REVIEW"}:
+            review = (existing.get("observation_provenance") or {}).get("review") or {}
+            existing = store.review(existing["draft_id"], reviewer="ferro-observation-cognition",
+                                    evidence_check=review.get("rationale", ""))
         return {"status": "SQUARE_EXPRESSION_READY", "cycle": cycle,
             "publication_surface": "BINANCE_SQUARE", "draft_id": existing["draft_id"],
             "draft_status": existing["status"], "publication_confirmed": existing["status"] == "SUCCESS"}

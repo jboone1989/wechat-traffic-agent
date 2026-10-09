@@ -104,8 +104,10 @@ class SquareDraftStore:
             raise ValueError("invalid Square text length")
         if len(set(doc.get("symbols", []))) > 3 or any(not re.fullmatch(r"[A-Z][A-Z0-9]{0,14}", symbol) for symbol in doc.get("symbols", [])):
             raise ValueError("unsupported editorial topic")
-        if any(not str(doc.get(key, "")).strip() for key in REVIEW_FIELDS):
-            raise ValueError("editorial review is incomplete")
+        required = ("thesis", "evidence_check", "reviewer") if doc.get("observation_provenance") else REVIEW_FIELDS
+        missing = [key for key in required if not str(doc.get(key) or "").strip()]
+        if missing:
+            raise ValueError("editorial review is incomplete: " + ", ".join(missing))
         if not any("\u4e00" <= char <= "\u9fff" for char in doc["body"]):
             raise ValueError("a Chinese Square draft is required")
         observed = datetime.fromisoformat(doc["observed_at"])

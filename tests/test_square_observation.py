@@ -159,3 +159,39 @@ def test_vague_token_market_commentary_held(tmp_path):
     assert result["status"] == "COGNITION_ONLY"
     assert "concrete source data" in result["rationale"]
     assert not SquareDraftStore(tmp_path).list()
+
+def test_reviewed_data_without_research_fields_resumes_and_publishes(tmp_path):
+    from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftWorker
+    now = datetime.now(timezone.utc)
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            return model(action="SHARE", format="DATA", rationale="Measured move.",
+                body="RLC 现货24小时上涨42%，成交额5240万 USDT。", symbols=["RLC"],
+                source_ids=["rlc-data"], thesis="涨幅与成交规模一起观察", value_focus="reader agency")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="Exact measured asset data.")
+    source = {"evidence_id": "rlc-data", "source_kind": "public-api",
+              "summary": "RLC rolling 24h +42%, turnover 52400000 USDT", "observed_at": now.isoformat()}
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    args = dict(runtime=None, explorer=explorer, state_root=tmp_path, cycle="resume-data",
+                now=now, seed_evidence=[source], structured=structured)
+    result = asyncio.run(prepare_observation(**args))
+    store = SquareDraftStore(tmp_path)
+    draft = store.get(result["draft_id"])
+    assert not draft["reader_question"] and not draft["invalidation"]
+    draft.update(status="DRAFT")
+    store.save(draft)
+    async def no_generation(*args):
+        raise AssertionError("An already reviewed body must not be regenerated")
+    result = asyncio.run(prepare_observation(**dict(args, structured=no_generation)))
+    assert result["draft_status"] == "REVIEWED"
+    calls = []
+    client = SimpleNamespace(key="test", post_text=lambda body: calls.append(body) or "123")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
+        patch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
+        published = SquareDraftWorker(tmp_path, client=client).run_once()
+    assert published["status"] == "SUCCESS"
+    assert len(calls) == 1
