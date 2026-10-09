@@ -173,9 +173,11 @@ def _workspace_enabled_for(
     *,
     force: bool = False,
 ) -> bool:
+    first = str(task or "").lstrip().splitlines()[0].upper()
+    if first.startswith("FERRO_SQUARE_OBSERVATION"):
+        return False
     if force:
         return True
-    first = str(task or "").lstrip().splitlines()[0].upper()
     if any(first.startswith(prefix) for prefix in _WORKSPACE_PREFIXES):
         return True
     frame = context.get("decision_frame") if isinstance(context, Mapping) else None

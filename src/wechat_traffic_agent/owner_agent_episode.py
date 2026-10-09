@@ -504,7 +504,7 @@ class OwnerAgentEpisode:
                 "name": "RUN_CONTENT_PIPELINE",
                 "side_effect": "bounded_existing_publication_gates",
                 "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, X_SHORT_POST, X_LONG_POST, X_ARTICLE, or BINANCE_SQUARE"},
-                "use": "Investigate through Ferro's existing durable inquiry, memory and cognition first. BINANCE_SQUARE projects source-verified learning into native Chinese BTC/ETH copy and runs semantic review before the separate publisher; it can decline expression and requires no website article. All X surfaces retain their original publication gates.",
+                "use": "BINANCE_SQUARE directly expresses verified observations, news, onchain anomalies and partial findings in native Chinese with an author's position and runs semantic review before the separate publisher; it can decline expression and requires no website article. All X surfaces retain their original publication gates.",
             },
             {
                 "name": "WAIT",
@@ -562,7 +562,7 @@ class OwnerAgentEpisode:
         square_daily_goal = (owner_goal.get("daily_posting_contract") or {}).get("target_channel") == "binance_square"
         channel_instruction = (
             "The owner's active daily goal counts verified Binance Square publications. "
-            "Select BINANCE_SQUARE for relevant supported discoveries after inquiry. "
+            "Select BINANCE_SQUARE directly for source-backed timely observations, anomalies and partial findings; full research is optional. "
             "Do not require a website article before each native Square post. Website research and "
             "syndication remain available, but website/X attempts cannot satisfy this Square goal. "
             "Increase coverage through distinct reader questions and real evidence; one study may "
@@ -580,7 +580,7 @@ class OwnerAgentEpisode:
             "The owner's current preferred research expression is native Binance Square BTC/ETH market and contract analysis. "
             "Use BINANCE_SQUARE for a relevant useful discovery after real inquiry; no website article is required. "
             "Pursue substantive questions with durable memory and revise existing understanding, not a scheduled indicator report. "
-            "Choose SEARCH_WORLD or WAIT when the real inquiry needs different evidence. There is no Square publication quota. "
+            "Choose SEARCH_WORLD when a factual assertion lacks evidence. The daily Square target guides opportunities, never repeated filler. "
             "Recent Square publications are experience: avoid repeating their understanding, and explain substantive revisions. "
             if square_priority else
             "Ferro's own website is the authoritative publication surface. For new original content select WEBSITE or AUTO first so the full source-supported article is published and maintained on the owned site. "
@@ -605,7 +605,7 @@ class OwnerAgentEpisode:
             "X is downstream syndication of successfully published website content, not a replacement for website publication. Choosing an X surface is only for explicitly requested legacy work, never permission to bypass evidence, X safety, or publication authority. "
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Previous optional 20/200 advice is not a quota. When owner_goal.daily_posting_contract is present, the user's newer temporary minimum is mandatory until explicitly disabled. "
-            "For that daily contract, research freely within cryptocurrency, AI and finance; select WEBSITE to publish original work first, then derive X posts linking to the verified site URL. X failures must not stall new website publications. "
+            "For a Binance Square daily contract, select BINANCE_SQUARE for meaningful observed events with an author position; research completion and website publication are not prerequisites. Use WEBSITE for mature long or illustrated work, then derive platform expressions. For a website daily contract select WEBSITE first. X failures must not stall new publications. "
             "Use research_trajectory to recognize the same unanswered question across different topic names. "
             "After repeated unfinished investigations, seek a specific new artifact or a useful adjacent question. "
             "A parked inquiry needs its resume_when evidence condition; continue learning elsewhere while it is unavailable. "

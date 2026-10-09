@@ -19,7 +19,7 @@ from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 def validate_mining_tags(body, symbols):
     """Text API supports cashtags; metadata alone creates no reader entry point."""
     tags = set(re.findall(r"(?<![A-Za-z0-9_])\$([A-Z][A-Z0-9]{0,14})(?![A-Za-z0-9_])", body))
-    if not tags or len(tags) > 3 or tags != set(symbols):
+    if len(tags) > 3 or tags != set(symbols):
         raise ValueError("content mining requires 1-3 relevant body cashtags matching symbols")
 
 
@@ -34,7 +34,7 @@ def digest(payload):
 
 def copy_digest(doc):
     return digest({key: doc.get(key) for key in (
-        "body", "evidence_sha256", "observed_at", "symbols", "research_provenance", *REVIEW_FIELDS,
+        "body", "evidence_sha256", "observed_at", "symbols", "research_provenance", "observation_provenance", *REVIEW_FIELDS,
     )})
 
 
@@ -58,11 +58,11 @@ class SquareDraftStore:
         return self.records.put(article_id, "binance_square", doc)
 
     def create(self, *, body, evidence, symbols, reader_question, thesis, invalidation,
-               research_provenance=None, article_id=None):
+               research_provenance=None, article_id=None, observation_provenance=None):
         if not body.strip() or len(body) > MAX_POST_CHARS:
             raise ValueError("Square draft must contain 1-1500 characters")
-        if not set(symbols) or not set(symbols) <= {"BTC", "ETH"}:
-            raise ValueError("Square editorial focus is BTC/ETH")
+        if len(set(symbols)) > 3 or any(not re.fullmatch(r"[A-Z][A-Z0-9]{0,14}", symbol) for symbol in symbols):
+            raise ValueError("invalid Square symbols")
         observed = datetime.fromisoformat(evidence["observed_at"])
         if observed.utcoffset() is None:
             raise ValueError("evidence must have an aware observation time")
@@ -85,13 +85,15 @@ class SquareDraftStore:
                 doc["article_id"] = article_id
             if research_provenance is not None:
                 doc["research_provenance"] = research_provenance
+            if observation_provenance is not None:
+                doc["observation_provenance"] = observation_provenance
             self.save(doc)
             return doc
 
     def validate(self, doc, now):
         if not doc.get("body", "").strip() or len(doc["body"]) > MAX_POST_CHARS:
             raise ValueError("invalid Square text length")
-        if not doc.get("symbols") or not set(doc["symbols"]) <= {"BTC", "ETH"}:
+        if len(set(doc.get("symbols", []))) > 3 or any(not re.fullmatch(r"[A-Z][A-Z0-9]{0,14}", symbol) for symbol in doc.get("symbols", [])):
             raise ValueError("unsupported editorial topic")
         if any(not str(doc.get(key, "")).strip() for key in REVIEW_FIELDS):
             raise ValueError("editorial review is incomplete")
@@ -107,10 +109,19 @@ class SquareDraftStore:
         evidence = json.loads((self.evidence / (evidence_hash + ".json")).read_text())
         if digest(evidence) != evidence_hash or evidence["observed_at"] != doc["observed_at"]:
             raise ValueError("market evidence changed after review")
-        if evidence.get("status") != "OK" or set(evidence.get("metrics", {})) != {"BTCUSDT", "ETHUSDT"}:
-            raise ValueError("incomplete market structure evidence")
-        if evidence["metrics"] != analyze(evidence):
-            raise ValueError("derived market metrics do not match raw source evidence")
+        if evidence.get("kind") == "SOURCE_OBSERVATIONS":
+            provenance = doc.get("observation_provenance") or {}
+            review = provenance.get("review") or {}
+            if (not evidence.get("sources") or not all(review.get(key) is True for key in
+                    ("grounded", "has_position", "adds_value", "timely"))
+                    or provenance.get("text_sha256") != sha256(doc["body"].encode()).hexdigest()
+                    or set(provenance.get("source_ids", [])) != {row["evidence_id"] for row in evidence["sources"]}):
+                raise ValueError("observation lacks matching grounded stance review")
+        else:
+            if evidence.get("status") != "OK" or set(evidence.get("metrics", {})) != {"BTCUSDT", "ETHUSDT"}:
+                raise ValueError("incomplete market structure evidence")
+            if evidence["metrics"] != analyze(evidence):
+                raise ValueError("derived market metrics do not match raw source evidence")
         if doc.get("review_sha256") != copy_digest(doc):
             raise ValueError("copy or editorial assessment changed after review")
         preferences_path = self.root / "editorial_preferences.json"
@@ -124,6 +135,8 @@ class SquareDraftStore:
         preferences = json.loads(preference_path.read_text()) if preference_path.exists() else {}
         provenance = doc.get("research_provenance")
         if not provenance:
+            if doc.get("observation_provenance"):
+                return
             if preferences.get("production_mode") == "COGNITION_LED":
                 raise ValueError("Ferro cognition-led publication requires real research provenance")
             return
