@@ -1,0 +1,17 @@
+[Unit]
+Description=Ferro Binance wallet Smart Money/KOL evidence poll (read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
+Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.23.2/bin:/usr/local/bin:/usr/bin:/bin
+Environment=FERRO_WALLET_TRACKER_MODE=poll
+ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python scripts/run_binance_wallet_tracker.py
+MemoryMax=220M
+TimeoutStartSec=130
+Nice=12

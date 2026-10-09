@@ -278,6 +278,7 @@ class GoalEvidenceExplorer:
                  trading_fetcher: TradingFetcher | None = None,
                  market_fetcher: MarketFetcher | None = None,
                  binance_reader: Callable[[datetime], list[dict[str, Any]]] | None = None,
+                 wallet_reader: Callable[[datetime], list[dict[str, Any]]] | None = None,
                  web_searcher: WebSearcher | None = None) -> None:
         self.state_root = Path(state_root)
         self.feeds = tuple(feeds)
@@ -285,6 +286,7 @@ class GoalEvidenceExplorer:
         self.trading_fetcher = trading_fetcher
         self.market_fetcher = market_fetcher
         self.binance_reader = binance_reader
+        self.wallet_reader = wallet_reader
         self.web_searcher = web_searcher
 
     async def collect(self, *, now: datetime, active: bool) -> dict[str, Any]:
@@ -301,6 +303,11 @@ class GoalEvidenceExplorer:
                 items.extend(self.binance_reader(now))
             except Exception as exc:
                 failures.append({"source": "binance-web3-public", "error_type": type(exc).__name__})
+        if active and self.wallet_reader is not None:
+            try:
+                items.extend(self.wallet_reader(now))
+            except Exception as exc:
+                failures.append({"source": "binance-wallet-tracker", "error_type": type(exc).__name__})
         if active and self.trading_fetcher is not None:
             try:
                 items.extend(await self.trading_fetcher(now))

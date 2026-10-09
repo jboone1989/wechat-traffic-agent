@@ -1,0 +1,11 @@
+[Unit]
+Description=Ferro Binance read-only wallet tracker polling every 30 minutes
+
+[Timer]
+OnBootSec=12min
+OnUnitInactiveSec=30min
+Unit=ferro-binance-wallet-poll.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
