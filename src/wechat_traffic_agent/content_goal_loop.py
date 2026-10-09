@@ -2568,7 +2568,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         if getattr(self, "_publication_surface", "AUTO") == "BINANCE_SQUARE":
             from .square_observation import prepare_observation
             return await prepare_observation(runtime=self.runtime, explorer=self.explorer,
-                state_root=self.state, cycle=cycle, now=now)
+                state_root=self.state, cycle=cycle, now=now,
+                seed_evidence=getattr(self, "_seed_evidence", []))
         goal = await self._cycle_goal_phase(folder, cycle, now)
         if isinstance(goal, dict):
             return goal

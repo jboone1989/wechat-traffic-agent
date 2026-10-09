@@ -35,14 +35,17 @@ class ObservationReview(BaseModel):
     timely: bool
     rationale: str
 
-async def prepare_observation(*, runtime, explorer, state_root, cycle, now, structured=_structured):
+async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed_evidence=None, structured=_structured):
     existing = next((row for row in SquareDraftStore(state_root).list()
         if (row.get("observation_provenance") or {}).get("cycle") == cycle), None)
     if existing:
         return {"status": "SQUARE_EXPRESSION_READY", "cycle": cycle,
             "publication_surface": "BINANCE_SQUARE", "draft_id": existing["draft_id"],
             "draft_status": existing["status"], "publication_confirmed": existing["status"] == "SUCCESS"}
-    items = await collect_altcoin_candidates(state_root, now) if getattr(explorer, "market_fetcher", None) else []
+    items = [dict(row) for row in list(seed_evidence or ())[:8]
+             if isinstance(row, dict) and row.get("evidence_id") and row.get("summary")]
+    if getattr(explorer, "market_fetcher", None):
+        items.extend(await collect_altcoin_candidates(state_root, now))
     for reader in (explorer.binance_reader, explorer.wallet_reader):
         if reader:
             try:

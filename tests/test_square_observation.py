@@ -102,3 +102,17 @@ def test_missing_tag_fixed_before_review_and_duplicate_held(tmp_path):
     assert second["status"] == "COGNITION_ONLY"
     assert "repeats" in second["rationale"]
     assert len(review_calls) == 1
+
+def test_searched_altcoin_evidence_reaches_expression(tmp_path):
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    async def structured(runtime, prompt, model):
+        assert "owner-search:altcoin" in prompt
+        assert "Altcoin upgrade announcement" in prompt
+        return ObservationExpression(action="HOLD", rationale="Need one more fact.")
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="search-alt", now=datetime.now(timezone.utc), structured=structured,
+        seed_evidence=[{"evidence_id": "owner-search:altcoin", "title": "Altcoin upgrade announcement",
+                        "summary": "An observed protocol upgrade."}]))
+    assert result["rationale"] == "Need one more fact."
