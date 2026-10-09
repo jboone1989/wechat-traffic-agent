@@ -23,6 +23,11 @@ def main() -> int:
     note = json.loads(research_note.read_text()) if research_note.exists() else {}
     if note.get("status") == "SUCCESS":
         posted.append({"at": note.get("published_at", ""), "post_id": note.get("post_id"), "url": note.get("url")})
+    drafts = [json.loads(path.read_text()) for path in (ROOT / "square_editorial" / "drafts").glob("*.json")]
+    for draft in drafts:
+        if draft.get("status") == "SUCCESS":
+            posted.append({"at": draft.get("published_at", ""), "post_id": draft.get("post_id"),
+                           "url": draft.get("url")})
     posted.sort(key=lambda row: row.pop("at"))
     print(json.dumps({
         "key_saved": credential.is_file() and credential.stat().st_size > 0,
@@ -31,6 +36,9 @@ def main() -> int:
         ),
         "consumer_enabled": bool(data.get("enabled")),
         "writes_enabled": bool(data.get("writes_enabled")),
+        "publishing_mode": "NATIVE_REVIEWED_DRAFTS",
+        "editorial_counts": {status: sum(d.get("status") == status for d in drafts)
+                             for status in ("DRAFT", "REVIEWED", "NEEDS_REVIEW", "SUCCESS", "UNVERIFIED")},
         "event_count": len(list(event_dir.glob("*.json"))),
         "success_count": len(posted),
         "latest_success": posted[-1] if posted else None,

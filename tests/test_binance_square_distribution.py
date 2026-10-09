@@ -33,11 +33,6 @@ def mock_client(responder):
     ))
 
 
-def test_square_text_preserves_source_without_inventing_tags():
-    text = square_share_text(event())
-    assert text.count("$BTC") == 1 and "$AI" not in text
-    assert "https://example.org/btc-study" in text
-    assert "not proof of causation" in text
 
 
 def test_producer_has_no_binance_dependency(tmp_path, monkeypatch):
@@ -48,69 +43,10 @@ def test_producer_has_no_binance_dependency(tmp_path, monkeypatch):
     assert json.loads(next(store.queue.glob("*.json")).read_text())["channel"] == "x"
 
 
-def test_subscriber_consumes_new_event_without_x_worker(tmp_path, monkeypatch):
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
-    monkeypatch.setenv("BINANCE_SQUARE_OPENAPI_KEY", "test-key")
-    sent = []
-    def responder(request):
-        assert request.headers["X-Square-OpenAPI-Key"] == "test-key"
-        body = json.loads(request.content)
-        assert body["contentType"] == 1
-        assert "$BTC" in body["bodyTextOnly"]
-        sent.append(body)
-        return httpx.Response(200, json={"code": "000000", "data": {"id": "298177291743282"}})
-    client = mock_client(responder)
-    consumer = SquareEventConsumer(tmp_path, publisher=lambda e, t: publish_square(e, t, client=client))
-    consumer.enqueue_events(now=NOW - timedelta(minutes=1))  # subscribe first
-    store = PublicationEventStore(tmp_path)
-    DurablePublicationDispatch(store).record(event())
-    done = consumer.run_once()
-    assert done.status == "SUCCESS"
-    assert done.channel == "binance_square"
-    assert done.published_post_id == "298177291743282"
-    assert done.published_url == "https://www.binance.com/square/post/298177291743282"
-    assert len(sent) == 1
-    assert consumer.run_once() is None
-    assert len(sent) == 1
-    assert len(list(store.queue.glob("*.json"))) == 1  # X queue untouched
 
 
-def test_activating_consumer_never_backfills_old_articles(tmp_path, monkeypatch):
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
-    monkeypatch.delenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", raising=False)
-    store = PublicationEventStore(tmp_path)
-    DurablePublicationDispatch(store).record(event(NOW - timedelta(days=1)))
-    consumer = SquareEventConsumer(tmp_path)
-    assert consumer.run_once(now=NOW) is None
-    assert not any("binance_square" in path.read_text() for path in store.queue.glob("*.json"))
-    DurablePublicationDispatch(store).record(event(NOW + timedelta(seconds=1), "fresh"))
-    assert consumer.enqueue_events(now=NOW + timedelta(days=1)) == 1
-    assert consumer.enqueue_events(now=NOW + timedelta(days=1)) == 0
 
 
-@pytest.mark.parametrize("response", [
-    httpx.Response(200, json={"code": "000000", "data": {}}),
-    httpx.Response(504, json={"code": "000000", "data": {}}),
-    httpx.Response(502, text="<html>bad gateway</html>"),
-])
-def test_ambiguous_receipt_is_not_resubmitted(tmp_path, monkeypatch, response):
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
-    monkeypatch.setenv("BINANCE_SQUARE_OPENAPI_KEY", "test-key")
-    attempts = []
-    def responder(_):
-        attempts.append(1)
-        return response
-    client = mock_client(responder)
-    consumer = SquareEventConsumer(tmp_path, publisher=lambda e, t: publish_square(e, t, client=client))
-    consumer.enqueue_events(now=NOW - timedelta(minutes=1))
-    PublicationEventStore(tmp_path).save_event(event())
-    result = consumer.run_once()
-    assert result.status == "FAILED_PERMANENT"
-    assert result.attempts == 1
-    assert consumer.run_once() is None
-    assert attempts == [1]
 
 
 def test_square_failure_does_not_modify_x_goal(tmp_path):
@@ -147,15 +83,6 @@ def test_square_disabled_does_not_claim_events_or_x_tasks(tmp_path, monkeypatch)
     assert len(list(store.queue.glob("*.json"))) == 1
 
 
-def test_missing_key_never_calls_square_transport(tmp_path, monkeypatch):
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
-    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
-    monkeypatch.delenv("BINANCE_SQUARE_OPENAPI_KEY", raising=False)
-    consumer = SquareEventConsumer(tmp_path, publisher=lambda e, t: pytest.fail("called without key"))
-    consumer.enqueue_events(now=NOW - timedelta(minutes=1))
-    PublicationEventStore(tmp_path).save_event(event())
-    assert consumer.run_once() is None
-    assert len(list(PublicationEventStore(tmp_path).queue.glob("*.json"))) == 1
 
 
 def test_http_timeout_is_explicitly_unverified():
@@ -173,3 +100,33 @@ def test_subscriber_modules_do_not_import_x_or_cognition():
         assert "x_browser" not in source
         assert "daily_posting_goal" not in source
         assert "wakeful_runtime" not in source
+
+
+def test_website_approval_never_creates_square_copy():
+    from wechat_traffic_agent.platforms.binance_square import SquarePublicationRejected
+    with pytest.raises(SquarePublicationRejected, match="reviewed native"):
+        square_share_text(event())
+
+
+def test_retired_consumer_never_queues_new_or_old_website_events(tmp_path, monkeypatch):
+    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
+    monkeypatch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
+    monkeypatch.setenv("BINANCE_SQUARE_OPENAPI_KEY", "test-key")
+    store = PublicationEventStore(tmp_path)
+    DurablePublicationDispatch(store).record(event(NOW - timedelta(days=1), "old"))
+    DurablePublicationDispatch(store).record(event(NOW, "new"))
+    consumer = SquareEventConsumer(tmp_path, publisher=lambda *a: pytest.fail("summary posted"))
+    assert consumer.enqueue_events(now=NOW) == 0
+    assert consumer.run_once(now=NOW) is None
+    assert len(list(store.queue.glob("*.json"))) == 2
+    assert all(json.loads(p.read_text())["channel"] == "x" for p in store.queue.glob("*.json"))
+
+
+@pytest.mark.parametrize("response", [
+    httpx.Response(200, json={"code": "000000", "data": {}}),
+    httpx.Response(504, json={"code": "000000", "data": {}}),
+    httpx.Response(502, text="<html>bad gateway</html>"),
+])
+def test_ambiguous_transport_receipts_remain_unverified(response):
+    with pytest.raises(SquarePublicationUnverified):
+        mock_client(lambda _: response).post_text("已审稿的中文分析")

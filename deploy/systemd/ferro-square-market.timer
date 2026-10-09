@@ -1,0 +1,11 @@
+[Unit]
+Description=Collect Ferro BTC/ETH Square evidence every 10 minutes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=10min
+Persistent=true
+Unit=ferro-square-market.service
+
+[Install]
+WantedBy=timers.target

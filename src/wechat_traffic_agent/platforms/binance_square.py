@@ -37,20 +37,10 @@ def square_writes_enabled() -> bool:
 
 
 def square_share_text(event: PublicationEvent) -> str:
-    """Use the audited article, not new unverified market or investment claims."""
-    if event.visibility != "PUBLIC" or not event.canonical_url.startswith("https://"):
-        raise ValueError("Square syndication requires a public HTTPS article")
-    coins = [str(topic).upper() for topic in event.topics]
-    tags = " ".join("$" + symbol for symbol in dict.fromkeys(coins) if symbol in SUPPORTED_COINS)
-    suffix = "\n\n原文与研究证据：" + event.canonical_url + ("\n" + tags if tags else "")
-    title = " ".join(event.title.split())[:160]
-    summary = " ".join(event.summary.split())
-    budget = MAX_POST_CHARS - len(title) - len(suffix) - 2
-    if not title or budget <= 0:
-        raise ValueError("Square article title or canonical URL is invalid")
-    if len(summary) > budget:
-        summary = summary[:max(0, budget - 1)].rsplit(" ", 1)[0].rstrip(" ,.;") + "…"
-    return (title + ("\n\n" + summary if summary else "") + suffix).strip()
+    """Website approval does not imply Square editorial approval."""
+    raise SquarePublicationRejected(
+        "Website summary syndication retired; use a reviewed native Square draft"
+    )
 
 
 class BinanceSquareClient:

@@ -1,0 +1,13 @@
+[Unit]
+Description=Ferro BTC/ETH market structure evidence (read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
+ExecStart=/home/ubuntu/content-agent-venv-current/bin/python scripts/collect_square_market_structure.py
+TimeoutStartSec=60
+Nice=10

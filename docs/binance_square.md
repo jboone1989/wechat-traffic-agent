@@ -1,76 +1,67 @@
-# Binance Square PublicationEvent consumer (opt-in)
+# Native BTC/ETH Square editorial publishing
 
-Ferro's existing audited website publisher emits immutable `PublicationEvent`
-records. The Binance Square consumer **only reads** those records. It is not
-registered in the producer, X worker, cognitive loop, learning or memory.
+Website summaries are no longer syndicated to Binance Square. The old event
+consumer is inert, and the old summary adapter rejects publication. Website/X
+events and historical Square receipts are preserved.
+
+The scheduled worker reads `square_editorial/drafts`, not website events:
 
 ```text
-Website -> PublicationEvent (durable log)
-                  |                   |
-            existing X outbox     Binance Square consumer (separate)
-                                      |
-                               channel outbox task
-                                      |
-                               Square OpenAPI
-                                      |
-                             SUCCESS/FAILED receipt
-                                      |
-                             optional operator mailbox
+Official public BTC/ETH endpoints -> immutable raw snapshot + aligned metrics
+                                  -> Chinese native draft (DRAFT)
+                                  -> editorial assessment (REVIEWED)
+                                  -> copy/evidence/freshness check
+                                  -> durable PUBLISHING claim -> Square receipt
 ```
 
-The Square adapter transforms only the approved title/summary + source URL;
-it attaches `$BTC`, `$ETH`, etc only for exact known coin tags in the event.
-No fresh research, LLM, market search, or browser action is launched by the
-consumer. It uses a Square **posting-only** key, not a trading key.
+## Evidence and copy
 
-## Configuration
+`collect_square_market_structure.py` collects Binance BTCUSDT and ETHUSDT spot
+24h tickers, USDT perpetual mark/funding, 5m open interest history and 5m klines.
+It retains raw API URLs/responses and derived metrics. All one-hour price/OI
+windows share endpoints; only completed candles contribute to volume. OI is
+base-asset quantity, avoiding price-driven changes in notional OI. Rolling 24h
+spot changes are context, not an explanation of the last hour. Latest funding
+is expressed as a per-period percentage, never annualized or treated as a
+guaranteed next settlement. Missing, stale or misaligned endpoints fail closed.
 
-Get the posting key from
-https://www.binance.com/square/creator-center/home
+`ferro-square-market.timer` collects every ten minutes, without posting or
+trading. This is Binance-only evidence, not a market-wide leverage measure.
 
-In the independent consumer service's private environment:
+Native copy must answer a specific BTC/ETH reader question, state a supported
+thesis and explain observations that would invalidate it. It must be readable
+without clicking Ferro's website. Do not infer net short positions, liquidations
+or new longs solely from OI, funding signs or taker-buy percentages. Avoid fixed
+daily quotas, invented support levels, return promises and forced conclusions
+when the evidence is uninteresting. An editor must assess the argument and
+source-to-claim correspondence; required fields are not a semantic quality score.
 
-```ini
-CONTENT_BINANCE_SQUARE_ENABLED=1
-CONTENT_BINANCE_SQUARE_WRITES_ENABLED=1
-BINANCE_SQUARE_OPENAPI_KEY=your-posting-only-key
-# Optional: share the existing operator mailbox for WeCom notifications
-CONTENT_SQUARE_OPERATOR_STATE_DIR=/path/to/operator/state
-```
+## Preparation and review
 
-The default is disabled. Enabling the consumer never changes the producer's
-X channels or schedules and never starts another browser.
+`square_draft.py create --document copy.json --evidence snapshot.json` stores a
+draft without posting. The document contains `body`, `symbols`, `reader_question`,
+`thesis`, and `invalidation`. Evidence is copied into a content-addressed archive.
 
-On its **first enabled run**, the consumer records its activation watermark in
-the shared publication state. It handles events *published after that point*;
-it deliberately does not backfill older website articles. When writes are
-disabled or the key is absent, newly observed events remain queued for later,
-without touching X's queue. Once the key is configured, the consumer processes
-one Square task per invocation.
+After an actual editorial review, use `square_draft.py review DRAFT_ID --reviewer
+EDITOR --evidence-check NOTES`. Review binds the exact body, symbols, evidence,
+thesis and assessment. Changing any of them requires another review. Market
+evidence expires after twenty minutes; replace expired snapshots and rewrite
+numeric statements before preparing a new draft. A reader-approved style is not
+permanent approval for stale figures or future assertions.
 
-## Execution
+## Publication
 
-Run `scripts/run_square_distribution_worker.py` with the same
-`CONTENT_APPLICATION_ROOT` as the website publisher. The optional
-`ferro-square-distribution.service` and `.timer` invoke the one-shot
-consumer every two minutes. They are not installed or enabled automatically.
+`run_square_distribution_worker.py` loads the existing private posting key and
+flags, then dispatches at most one valid REVIEWED native draft. With no eligible
+copy it reports `WAITING_FOR_EDITORIAL`. Historical website queues are never
+claimed. Enabling a timer does not approve a draft.
 
-Only this worker imports the Square consumer. The generic event store and
-distribution worker do not import Binance; the X worker is unchanged.
+The worker persists PUBLISHING before contacting Square. A numeric post ID with
+API code 000000 creates SUCCESS. Rejection creates REJECTED. Timeouts, malformed
+receipts and crashes after a claim require manual reconciliation; neither
+PUBLISHING nor UNVERIFIED is automatically retried. Editing or reviewing an
+attempted draft is prohibited. The transport uses only the Square posting key.
 
-## Receipts
-
-The Binance v1 posting OpenAPI receives `contentType=1` and
-`bodyTextOnly`. It must return `code="000000"` with a numeric `data.id`
-to record a confirmed `SUCCESS` and Square post URL. HTTP 5xx, timeouts,
-unreadable API replies and successful API codes without an ID are left for
-manual reconciliation, not blind automatic resubmission. The generic outbox
-also records the verified post ID.
-
-When `CONTENT_SQUARE_OPERATOR_STATE_DIR` is set, the consumer adds a
-deduplicated result notification to the existing operator mailbox. It does
-not call the X-specific `DailyPostingGoal` notifier. Square attempts do not
-count towards X's original-post quota.
-
-This feature does not fetch engagement metrics, scrape markets, mirror X
-posts or guarantee creator reward eligibility.
+No engagement analytics transport or autonomous author is implemented here.
+The collector, draft/review tools and gated publishing worker are deployed;
+selection and semantic review are explicit editorial work.
