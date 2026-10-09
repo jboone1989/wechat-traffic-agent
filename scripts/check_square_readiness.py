@@ -17,8 +17,13 @@ def main() -> int:
     for path in success_dir.glob("*.json"):
         item = json.loads(path.read_text(encoding="utf-8"))
         if item.get("channel") == "binance_square" and item.get("status") == "SUCCESS":
-            posted.append({"post_id": item.get("published_post_id"),
+            posted.append({"at": (item.get("attempt_times") or [""])[-1], "post_id": item.get("published_post_id"),
                            "url": item.get("published_url")})
+    research_note = ROOT / "distribution" / "binance_research_note_20261009.json"
+    note = json.loads(research_note.read_text()) if research_note.exists() else {}
+    if note.get("status") == "SUCCESS":
+        posted.append({"at": note.get("published_at", ""), "post_id": note.get("post_id"), "url": note.get("url")})
+    posted.sort(key=lambda row: row.pop("at"))
     print(json.dumps({
         "key_saved": credential.is_file() and credential.stat().st_size > 0,
         "key_owner_only_permissions": (

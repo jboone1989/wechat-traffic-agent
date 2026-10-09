@@ -1,0 +1,10 @@
+[Unit]
+Description=Inspect Ferro Square publication health every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=ferro-square-monitor.service
+
+[Install]
+WantedBy=timers.target

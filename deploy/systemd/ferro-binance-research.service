@@ -9,6 +9,6 @@ User=ubuntu
 WorkingDirectory=/home/ubuntu/content-agent/current
 Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src:/home/ubuntu/agent-runtime/current/src:/home/ubuntu/virtualbrain/current/src
 Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
-ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python scripts/run_binance_research_collector.py
+ExecStart=/home/ubuntu/content-agent-venv-current/bin/python scripts/run_binance_research_collector.py
 TimeoutStartSec=175
 Nice=10

@@ -1,0 +1,11 @@
+[Unit]
+Description=Ferro Square publication receipt and scheduling monitor
+After=ferro-square-distribution.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
+ExecStart=/home/ubuntu/content-agent-venv-current/bin/python scripts/monitor_square_posting.py
+TimeoutStartSec=30

@@ -31,6 +31,16 @@ def load_private_config(state_root: Path) -> None:
             os.environ.setdefault("BINANCE_SQUARE_OPENAPI_KEY", value)
 
 
+def report_status(payload: dict, *, state_root: Path) -> None:
+    path = state_root / "application" / "binance_square_worker.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {**payload, "observed_at": datetime.now(timezone.utc).isoformat()}
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(row, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    print(json.dumps(payload, ensure_ascii=False))
+
+
 def main() -> int:
     raw = os.environ.get("CONTENT_APPLICATION_ROOT", "")
     root = Path("/home/ubuntu/content-agent-state")
@@ -46,14 +56,14 @@ def main() -> int:
         status = ("DISABLED" if not square_enabled() else "WAITING_FOR_WRITES"
                   if not square_writes_enabled() else "WAITING_FOR_KEY"
                   if not os.environ.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip() else "NO_READY_TASK")
-        print(json.dumps({"channel": "binance_square", "status": status}))
+        report_status({"channel": "binance_square", "status": status}, state_root=state_root)
         return 0
-    print(json.dumps({
+    report_status({
         "channel": "binance_square", "status": result.status,
         "event_id": result.event_id, "distribution_id": result.distribution_id,
         "attempts": result.attempts, "url": result.published_url,
         "post_id": result.published_post_id, "error": result.last_error,
-    }, ensure_ascii=False))
+    }, state_root=state_root)
     return 0 if result.status == "SUCCESS" else 1
 
 

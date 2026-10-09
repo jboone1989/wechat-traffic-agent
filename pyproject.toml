@@ -41,3 +41,6 @@ packages = ["src/wechat_traffic_agent"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

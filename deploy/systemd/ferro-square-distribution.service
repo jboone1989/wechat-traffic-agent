@@ -10,5 +10,5 @@ WorkingDirectory=/home/ubuntu/content-agent/current
 Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src:/home/ubuntu/agent-runtime/current/src:/home/ubuntu/virtualbrain/current/src
 Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
 EnvironmentFile=-/home/ubuntu/.config/ferro/binance-square.env
-ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python scripts/run_square_distribution_worker.py
+ExecStart=/home/ubuntu/content-agent-venv-current/bin/python scripts/run_square_distribution_worker.py
 TimeoutStartSec=35
