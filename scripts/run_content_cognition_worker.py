@@ -362,7 +362,9 @@ def main() -> int:
             square_result = asyncio.run(square_syndication.run_once(
                 runtime=publication_runtime, now=now))
             if square_result is not None:
-                print(json.dumps({"square_website_syndication": square_result},
+                summary = {key: square_result.get(key) for key in
+                           ('status', 'cycle', 'draft_id', 'rationale', 'error', 'retry_at')}
+                print(json.dumps({"square_website_syndication": summary},
                                  ensure_ascii=False, default=str), flush=True)
             wake = scheduler.claim_due("CONTENT_COGNITION", now)
             if wake is None:

@@ -4,6 +4,14 @@ Website summaries are no longer syndicated to Binance Square. The old event
 consumer is inert, and the old summary adapter rejects publication. Website/X
 events and historical Square receipts are preserved.
 
+Verified website research can now also produce a native Square adaptation when
+`square_editorial/editorial_preferences.json` enables `syndicate_website`.
+The daily website goal remains active. Successful website publication queues
+that same research cycle; the cognition worker independently assesses relevance,
+writes standalone Chinese copy, and reviews sources and novelty before handing
+it to the existing publisher. Unsuitable content is skipped. Preparation errors
+retain the task for a five-minute retry without republishing the website.
+
 Square is now an expression port of Ferro's existing research agent. The
 owner episode can choose `BINANCE_SQUARE` for a BTC/ETH inquiry, using the same
 durable memory, unfinished questions, source acquisition, reasoning, worldview
