@@ -52,6 +52,10 @@ class ContentCycleCompletion:
             result['mind_experience'] = receipts['mind']
         self._publish(result, artifact=artifact, experience=experience,
                       folder=folder, cycle=cycle, passed=passed)
+        if result.get('status') == 'PUBLISHED':
+            from .square_website_syndication import SquareWebsiteSyndication
+            result['square_syndication'] = SquareWebsiteSyndication(
+                folder.parent.parent.parent.parent).enqueue(folder=folder, result=result)
         outcomes = self.events.emit(ContentCycleSettled(
             cycle, topic, bool(passed), str(result.get('status') or 'UNKNOWN'),
             refs, tuple(process_steps), failure_mode, model_calls,

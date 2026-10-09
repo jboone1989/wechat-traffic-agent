@@ -353,10 +353,17 @@ def main() -> int:
     now = datetime.now(timezone.utc)
     _daily_schedule(posting_goal, scheduler, now)
     heartbeat.write(status="RUNNING")
+    from wechat_traffic_agent.square_website_syndication import SquareWebsiteSyndication
+    square_syndication = SquareWebsiteSyndication(state_root)
 
     try:
         while not stopping:
             now = datetime.now(timezone.utc)
+            square_result = asyncio.run(square_syndication.run_once(
+                runtime=publication_runtime, now=now))
+            if square_result is not None:
+                print(json.dumps({"square_website_syndication": square_result},
+                                 ensure_ascii=False, default=str), flush=True)
             wake = scheduler.claim_due("CONTENT_COGNITION", now)
             if wake is None:
                 heartbeat.write(status="RUNNING", detail="waiting")

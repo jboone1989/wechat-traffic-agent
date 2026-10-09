@@ -77,7 +77,8 @@ class SquareCognitionExpressionService:
         _put(folder / 'square_expression_result.json', result)
         return result
 
-    async def prepare(self, *, runtime, folder, learning, cognition, mind_plan, worldview):
+    async def prepare(self, *, runtime, folder, learning, cognition, mind_plan, worldview,
+                      website_publication=None):
         folder = Path(folder).resolve()
         expected_parent = (self.state_root / 'content' / 'continuous' / 'cycles').resolve()
         if folder.parent != expected_parent:
@@ -105,6 +106,7 @@ class SquareCognitionExpressionService:
                             for row in learning.get('sources', [])],
                 'cognition': cognition, 'worldview_update': worldview,
                 'mind_goal': mind_plan.get('goal'), 'square': context,
+                'website_publication': website_publication,
             }
             choice = await self.structured(runtime,
                 'FERRO_SQUARE_EXPRESSION: Express the discovery from this existing Ferro research episode. '
@@ -113,6 +115,9 @@ class SquareCognitionExpressionService:
                 'Choose SHARE only when the supplied understanding is relevant to BTC/ETH readers and '
                 'adds supported value to recent Square publications. Number-only updates and cosmetic '
                 'rewrites are not progress. CONTINUE_RESEARCH and NOT_FOR_SQUARE are valid outcomes. '
+                'When website_publication is present, adapt the same verified research for Square readers. '
+                'Do not paste a website teaser or require a click to understand the finding. '
+                'The website URL is optional further reading, never evidence for unsupported claims. '
                 'Write Chinese native copy readable on its own, with the relevant supplied public source '
                 'URL and time/scope when those are needed. Use only verified_facts and their supported '
                 'reasoning for factual claims. Distinguish facts, alternative explanations and inference. '

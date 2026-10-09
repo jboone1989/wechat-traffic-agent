@@ -558,7 +558,15 @@ class OwnerAgentEpisode:
         from .square_cognition import square_publication_context
         square_context = square_publication_context(self.state_root, limit=4)
         square_priority = square_context['preferences'].get('production_mode') == 'COGNITION_LED'
+        website_sync = square_context['preferences'].get('syndicate_website', False)
         channel_instruction = (
+            "Publish source-supported original research on WEBSITE first for the current daily goal. "
+            "Suitable published research is then adapted into independently readable Chinese Binance Square copy "
+            "and reviewed against its original sources and recent Square posts before dispatch. "
+            "The daily goal and Square syndication are compatible; do not replace the daily goal with a separate Square task. "
+            "There is no need to restrict all research to BTC/ETH merely to create Square posts. "
+            "Prefer discoveries useful to crypto readers, but skip unsuitable Square adaptations. "
+            if website_sync else
             "The owner's current preferred research expression is native Binance Square BTC/ETH market and contract analysis. "
             "Use BINANCE_SQUARE for a relevant useful discovery after real inquiry; no website article is required. "
             "Pursue substantive questions with durable memory and revise existing understanding, not a scheduled indicator report. "
