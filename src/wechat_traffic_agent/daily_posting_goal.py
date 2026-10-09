@@ -46,6 +46,20 @@ class DailyPostingGoal:
             yield
 
     def publications(self):
+        config = _read(self.config_path)
+        if config.get("target_channel") == "binance_square":
+            rows = {}
+            for path in (self.state_root / "square_editorial/drafts").glob("*.json"):
+                row = _read(path)
+                post_id = str(row.get("post_id") or "")
+                url = str(row.get("url") or "")
+                if (row.get("status") == "SUCCESS" and post_id.isdigit()
+                        and url == "https://www.binance.com/square/post/" + post_id
+                        and row.get("published_at")):
+                    rows[post_id] = {"post_id": post_id, "url": url,
+                        "cycle": (row.get("research_provenance") or {}).get("learning_cycle"),
+                        "format": "SQUARE_SHORT_POST", "published_at": row["published_at"]}
+            return sorted(rows.values(), key=lambda row: row["published_at"])
         rows = {}
         history = self.state_root / "content/x/history.jsonl"
         try:
@@ -93,7 +107,8 @@ class DailyPostingGoal:
         posts = [row for row in self.publications() if _time(row["published_at"]).astimezone(zone).date() == local.date()]
         from .publication.event_store import PublicationEventStore
         outbox = PublicationEventStore(self.state_root)
-        website_first = any(outbox.events.glob("*.json"))
+        square_goal = config.get("target_channel") == "binance_square"
+        website_first = not square_goal and any(outbox.events.glob("*.json"))
         attempted = outbox.attempt_count(local_date=local.date(), timezone_info=zone) if website_first else 0
         minimum = int(config["minimum_original_posts"])
         measured = attempted if website_first else len(posts)
@@ -103,7 +118,8 @@ class DailyPostingGoal:
         return {
             "enabled": bool(config["enabled"]), "temporary": True, "timezone": config["timezone"],
             "date": date, "minimum": minimum, "published": len(posts),
-            "attempted": attempted, "metric": ("DISTRIBUTION_ATTEMPTS" if website_first else "VERIFIED_X_POSTS"),
+            "target_channel": config.get("target_channel", "website"),
+            "attempted": attempted, "metric": ("VERIFIED_SQUARE_POSTS" if square_goal else "DISTRIBUTION_ATTEMPTS" if website_first else "VERIFIED_X_POSTS"),
             "remaining": max(0, minimum - measured), "deadline": midnight.isoformat(),
             "next_attempt_at": next_attempt, "goal_id": "ferro-daily-post:" + date,
             "notifications_enabled": bool(config.get("notifications_enabled", True)),
@@ -113,6 +129,19 @@ class DailyPostingGoal:
         status = self.status(now)
         if not status["enabled"] or not status["remaining"]:
             return None
+        if status.get("target_channel") == "binance_square":
+            return {"goal_id": status["goal_id"], "origin": "USER", "priority": 1.0,
+                "created_at": now.isoformat(), "daily_posting_contract": status,
+                "description": (
+                    f"北京时间 {status['date']} 结束前，币安广场每日目标 {status['minimum']} 篇，"
+                    f"已验证成功 {status['published']} 篇，剩余 {status['remaining']} 篇。"
+                    "以内容挖矿为目标，优先将真实研究发现写成独立可读的中文原生广场帖子。"
+                    "网站研究与同步继续，但官网分发尝试、X帖、草稿及失败不抵扣币安目标。"
+                    "增加不同读者问题的覆盖：及时观察、事件机制、概念辨析、对照解释与判断更新。"
+                    "同一研究可支持多个实质不同的问题，每篇独立审稿；只换标题或数字不算新内容。"
+                    "遵循内容挖矿要求，使用有依据的相关币种标签；不以催促交易、夸大收益凑数。"
+                    "某一问题无证据时继续搜索或换问题；收益以实际返佣反馈判断，不保证百篇即有佣金。"),
+                "reason": "OWNER_REQUIRED_DAILY_SQUARE_TARGET"}
         return {
             "goal_id": status["goal_id"], "origin": "USER", "priority": 1.0,
             "created_at": now.isoformat(), "daily_posting_contract": status,

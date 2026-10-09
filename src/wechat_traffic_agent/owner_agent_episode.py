@@ -559,7 +559,17 @@ class OwnerAgentEpisode:
         square_context = square_publication_context(self.state_root, limit=4)
         square_priority = square_context['preferences'].get('production_mode') == 'COGNITION_LED'
         website_sync = square_context['preferences'].get('syndicate_website', False)
+        square_daily_goal = (owner_goal.get("daily_posting_contract") or {}).get("target_channel") == "binance_square"
         channel_instruction = (
+            "The owner's active daily goal counts verified Binance Square publications. "
+            "Select BINANCE_SQUARE for relevant supported discoveries after inquiry. "
+            "Do not require a website article before each native Square post. Website research and "
+            "syndication remain available, but website/X attempts cannot satisfy this Square goal. "
+            "Increase coverage through distinct reader questions and real evidence; one study may "
+            "support multiple substantially different explanations, never cosmetic variants. "
+            "Use the supplied content mining priorities and native relevant cashtags. "
+            "A missing fact requires research or another question, not invention to meet the count. "
+            if square_daily_goal else
             "Publish source-supported original research on WEBSITE first for the current daily goal. "
             "Suitable published research is then adapted into independently readable Chinese Binance Square copy "
             "and reviewed against its original sources and recent Square posts before dispatch. "
