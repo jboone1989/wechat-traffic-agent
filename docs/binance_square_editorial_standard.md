@@ -14,8 +14,9 @@ engineering logs, click-through dependencies and posts written to fill a quota.
 
 Style acceptance is calibration, not a reusable approval of market numbers.
 Every new draft needs fresh evidence and an actual source-to-claim review.
-The reference remains a draft; this preference update does not publish it or
-approve any future draft automatically.
+The reference has a confirmed Square publication receipt: https://www.binance.com/square/post/375369749478470.
+This preference update does not publish additional content or approve any
+future draft automatically.
 
 ## Accepted example (historical snapshot, not current market data)
 
