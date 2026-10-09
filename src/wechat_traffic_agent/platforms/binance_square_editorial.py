@@ -7,6 +7,7 @@ import fcntl
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 
 from .binance_square import (
     BinanceSquareClient, MAX_POST_CHARS, POST_URL, SquarePublicationRejected,
@@ -25,7 +26,7 @@ def digest(payload):
 
 def copy_digest(doc):
     return digest({key: doc.get(key) for key in (
-        "body", "evidence_sha256", "observed_at", "symbols", *REVIEW_FIELDS,
+        "body", "evidence_sha256", "observed_at", "symbols", "research_provenance", *REVIEW_FIELDS,
     )})
 
 
@@ -54,7 +55,8 @@ class SquareDraftStore:
         temporary.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
         temporary.replace(path)
 
-    def create(self, *, body, evidence, symbols, reader_question, thesis, invalidation):
+    def create(self, *, body, evidence, symbols, reader_question, thesis, invalidation,
+               research_provenance=None):
         if not body.strip() or len(body) > MAX_POST_CHARS:
             raise ValueError("Square draft must contain 1-1500 characters")
         if not set(symbols) or not set(symbols) <= {"BTC", "ETH"}:
@@ -76,6 +78,8 @@ class SquareDraftStore:
                    "evidence_sha256": evidence_hash, "reader_question": reader_question,
                    "thesis": thesis, "invalidation": invalidation, "attempts": 0,
                    "created_at": datetime.now(timezone.utc).isoformat()}
+            if research_provenance is not None:
+                doc["research_provenance"] = research_provenance
             self.save(doc)
             return doc
 
@@ -104,6 +108,35 @@ class SquareDraftStore:
             raise ValueError("derived market metrics do not match raw source evidence")
         if doc.get("review_sha256") != copy_digest(doc):
             raise ValueError("copy or editorial assessment changed after review")
+        self.validate_research(doc)
+
+    def validate_research(self, doc):
+        preference_path = self.root / "editorial_preferences.json"
+        preferences = json.loads(preference_path.read_text()) if preference_path.exists() else {}
+        provenance = doc.get("research_provenance")
+        if not provenance:
+            if preferences.get("production_mode") == "COGNITION_LED":
+                raise ValueError("Ferro cognition-led publication requires real research provenance")
+            return
+        cycle = provenance.get("learning_cycle", "")
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", cycle):
+            raise ValueError("invalid research cycle")
+        folder = self.root.parent / "content" / "continuous" / "cycles" / cycle
+        records = {}
+        for name, field in (("learning_result.json", "learning_sha256"),
+                            ("cognition.json", "cognition_sha256"),
+                            ("square_expression_review.json", "semantic_review_sha256")):
+            records[name] = json.loads((folder / name).read_text())
+            if digest(records[name]) != provenance.get(field):
+                raise ValueError("Ferro research or semantic review changed: " + name)
+        from wechat_traffic_agent.learning_expression_quality import verified_learning_facts
+        if not verified_learning_facts(records["learning_result.json"]):
+            raise ValueError("research has no source-verified discovery")
+        if not records["cognition.json"].get("worth_saying"):
+            raise ValueError("Ferro cognition did not select expression")
+        review = records["square_expression_review.json"]
+        if not review.get("passed") or review.get("text_sha256") != sha256(doc["body"].encode()).hexdigest():
+            raise ValueError("final Square body lacks its matching semantic review")
 
     def review(self, draft_id, *, reviewer, evidence_check, now=None):
         now = now or datetime.now(timezone.utc)

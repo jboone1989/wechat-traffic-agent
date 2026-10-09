@@ -690,7 +690,7 @@ class ContentTaskMethods:
                         "status": "WEBSITE_FIRST", "previous_surface": surface,
                     }
                     surface = "WEBSITE"
-                if surface == "WEBSITE":
+                if surface in {"WEBSITE", "BINANCE_SQUARE"}:
                     content_run_kwargs["publication_surface"] = surface
                 if surface in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}:
                     from wechat_traffic_agent.content_loop import _put
@@ -970,6 +970,8 @@ class ContentTaskMethods:
         if not callable(complete):
             return
         owner_outcome = continuous
+        if continuous.get("publication_surface") == "BINANCE_SQUARE":
+            owner_outcome = {**continuous, **rows.get("binance_square_expression", {})}
         if (continuous.get("status") not in {"ERROR", "RESOURCE_DEFERRED", "ALREADY_PROCESSED"}
                 and continuous.get("publication_surface") in {"X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"}):
             owner_outcome = {

@@ -43,8 +43,10 @@ validation and required fields alone do not establish semantic quality.
 The accepted example has a confirmed publication receipt:
 https://www.binance.com/square/post/375369749478470 . Acceptance of that post
 does not automatically approve future drafts. The publishing worker consumes
-reviewed drafts only; an autonomous selecting/writing/reviewing system has not
-been implemented in this repository.
+reviewed drafts only. New production copy uses the existing Ferro inquiry,
+memory and cognition pipeline through the BINANCE_SQUARE expression port;
+there is no separate timed writer. The historical example remains a quality
+reference, not proof that later outputs will have semantic novelty.
 
 ## Accepted example (historical snapshot, not current market data)
 

@@ -7,6 +7,7 @@ from decimal import Decimal
 from hashlib import sha256
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 
@@ -125,7 +126,33 @@ def save_market_structure(state_root, report):
     archive = folder / (identity + ".json")
     if not archive.exists():
         archive.write_bytes(encoded)
-    temporary = folder / "latest.tmp"
+    temporary = folder / (".latest-" + uuid4().hex + ".tmp")
     temporary.write_bytes(encoded)
     temporary.replace(folder / "latest.json")
     return archive
+
+
+def read_market_structure_candidates(state_root, now):
+    """Expose facts to the shared inquiry/memory pipeline, without selecting a post."""
+    path = Path(state_root) / 'sources' / 'binance_market_structure' / 'latest.json'
+    try:
+        report = json.loads(path.read_text())
+        age = (now - datetime.fromisoformat(report['observed_at'])).total_seconds()
+        if not 0 <= age <= 1200 or report.get('status') != 'OK' or report['metrics'] != analyze(report):
+            return []
+        revision = sha256(json.dumps(report, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        return [{
+            'evidence_id': 'binance-market-structure:' + revision[:24] + ':' + symbol,
+            'source_kind': 'public-api', 'source': 'binance-usdt-perpetual-market-structure',
+            'title': symbol + ' synchronized public market structure observations',
+            'summary': json.dumps({'symbol': symbol, 'observed_at': report['observed_at'],
+                'venue': 'Binance', 'contract': 'USDT perpetual', 'metrics': metrics}, ensure_ascii=False),
+            'evidence_text': json.dumps({'symbol': symbol, 'observed_at': report['observed_at'],
+                'venue': 'Binance', 'contract': 'USDT perpetual', 'metrics': metrics}, ensure_ascii=False),
+            'url': 'https://fapi.binance.com/futures/data/openInterestHist?symbol=' + symbol + '&period=5m',
+            'observed_at': report['observed_at'], 'published_at': None,
+            'source_revision': 'sha256:' + revision,
+            'evidence_refs': ['binance-market-structure:' + revision],
+        } for symbol, metrics in report['metrics'].items()]
+    except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+        return []

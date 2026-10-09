@@ -248,9 +248,13 @@ def test_owner_429_is_bounded_and_duplicate_wake_does_not_retry_api(tmp_path):
     assert first["retry_seconds"] == 300
     assert second["status"] == "OWNER_COGNITION_PROVIDER_UNAVAILABLE"
     assert runtime.calls == 1
-    assert wakeful.goal_followups == [
-        (NOW, 300, ("goal-owner",)),
-    ]
+    # Content work now owns a durable independent scheduler. Preserve the
+    # original contract: one delayed retry and no duplicate provider request.
+    pending = runner.task_scheduler.pending("CONTENT_COGNITION")
+    assert len(pending) == 1
+    assert pending[0].at == NOW + timedelta(seconds=300)
+    assert pending[0].relevant_refs == ("goal-owner",)
+    assert wakeful.goal_followups == []
 
 
 def test_owner_episode_completion_settles_original_scheduler_receipt(tmp_path):

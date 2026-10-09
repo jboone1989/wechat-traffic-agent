@@ -251,6 +251,7 @@ def build_owner_private_context(
     """Collect the same private runtime context used by production owner chat."""
     from .memory_self import ProspectiveSelfMemoryService
     from .owner_reality import build_owner_reality
+    from .square_cognition import square_publication_context
 
     snapshot = snapshot_builder(
         state_root,
@@ -364,6 +365,7 @@ def build_owner_private_context(
         },
         "active_goals": goals,
         "external_missions": missions,
+        "square_research_expression": square_publication_context(state_root, limit=4),
         "memory_self": {
             "current_intent": list(self_memory.current_intent),
             "current_resources": dict(self_memory.current_resources),

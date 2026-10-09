@@ -4,15 +4,31 @@ Website summaries are no longer syndicated to Binance Square. The old event
 consumer is inert, and the old summary adapter rejects publication. Website/X
 events and historical Square receipts are preserved.
 
-The scheduled worker reads `square_editorial/drafts`, not website events:
+Square is now an expression port of Ferro's existing research agent. The
+owner episode can choose `BINANCE_SQUARE` for a BTC/ETH inquiry, using the same
+durable memory, unfinished questions, source acquisition, reasoning, worldview
+assessment and `DECIDE_EXPRESSION` stages as other research. Square bypasses
+Website writing-profile selection and requires no Website article.
 
 ```text
-Official public BTC/ETH endpoints -> immutable raw snapshot + aligned metrics
-                                  -> Chinese native draft (DRAFT)
-                                  -> editorial assessment (REVIEWED)
-                                  -> copy/evidence/freshness check
-                                  -> durable PUBLISHING claim -> Square receipt
+Ferro interests / unresolved question / prior understanding
+  -> shared research + memory retrieval + source-verified facts
+  -> cognition: useful understanding, continue investigation, or no expression
+  -> native Square expression decision + comparison with recent public posts
+  -> independent source/understanding/novelty review
+  -> reviewed draft bound to canonical research/cognition/review receipts
+  -> independent Square publisher -> confirmed receipt
 ```
+
+The ten-minute market timer is a sensor. It does not write content or select a
+post. Its raw observations also enter the shared evidence explorer, so Ferro
+can investigate them with other public sources and its existing memories.
+
+The scheduled publisher only executes reviewed copy in `square_editorial/drafts`.
+It does not choose questions, simulate new learning or auto-approve numerical
+validation. The producer may decline a Square expression even after a useful
+research cycle; further investigation and unpublished understanding remain
+durable in the existing inquiry system.
 
 ## Evidence and copy
 
@@ -44,8 +60,12 @@ required fields are not a semantic quality score.
 draft without posting. The document contains `body`, `symbols`, `reader_question`,
 `thesis`, and `invalidation`. Evidence is copied into a content-addressed archive.
 
-After an actual editorial review, use `square_draft.py review DRAFT_ID --reviewer
-EDITOR --evidence-check NOTES`. Review binds the exact body, symbols, evidence,
+Legacy/manual calibration drafts can still be stored with this CLI. In
+`COGNITION_LED` production mode, bare drafts cannot be approved for dispatch:
+new production copy must come through `SquareCognitionExpressionService` and
+its real source-bound semantic review. For installations without cognition-led
+mode, `square_draft.py review DRAFT_ID --reviewer EDITOR --evidence-check NOTES`
+still records an explicit editorial decision. Review binds the exact body, symbols, evidence,
 thesis and assessment. Changing any of them requires another review. Market
 evidence expires after twenty minutes; replace expired snapshots and rewrite
 numeric statements before preparing a new draft. A reader-approved style is not
@@ -64,9 +84,25 @@ receipts and crashes after a claim require manual reconciliation; neither
 PUBLISHING nor UNVERIFIED is automatically retried. Editing or reviewing an
 attempted draft is prohibited. The transport uses only the Square posting key.
 
-No engagement analytics transport or autonomous author is implemented here.
-The collector, draft/review tools and gated publishing worker are deployed;
-selection and semantic review are explicit editorial work.
+## Cognition provenance and deployment
+
+Runtime preferences select `production_mode=COGNITION_LED` and the native
+Square channel. Existing owner decisions can choose the first-class
+`BINANCE_SQUARE` surface. `SquareCognitionExpressionService` executes inside the
+shared research cycle, after actual inquiry and the decision to express, using
+that cycle's runtime. There is no separate periodically invoked author.
+
+Production admission binds the actual `learning_result.json`, `cognition.json`
+and `square_expression_review.json`. The final review is bound to the exact
+public body. Altered or missing receipts block dispatch even if market numbers
+are valid. Immutable per-cycle preparation preserves idempotency across a crash
+before the result receipt. Publishing remains independent of cognitive work.
+
+Recent successful Square posts enter subsequent owner and expression decisions
+as experience; they are not permanent prose templates or evidence that their
+market interpretation remains true. Semantic novelty is model-assessed, not
+guaranteed by JSON fields. Continuous real research must validate the effect.
+Engagement metrics remain unavailable; receipt success is not audience approval.
 
 ## Editorial quality reference
 

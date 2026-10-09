@@ -282,6 +282,21 @@ class SocialTaskMethods:
     ) -> None:
         """Run idempotent downstream social work for an already-published cycle."""
         cycle = str(continuous.get("cycle") or "")
+        if continuous.get("publication_surface") == "BINANCE_SQUARE":
+            from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
+            identity = continuous.get("draft_id")
+            if identity:
+                try:
+                    draft = json.loads(SquareDraftStore(self.state_root).path(identity).read_text())
+                    rows["binance_square_expression"] = {
+                        "status": "POSTED" if draft['status'] == 'SUCCESS' else 'PUBLICATION_PENDING'
+                            if draft['status'] == 'REVIEWED' else draft['status'],
+                        "draft_id": identity, "draft_status": draft['status'],
+                        "url": draft.get('url'), "post_id": draft.get('post_id'),
+                    }
+                except (OSError, ValueError, KeyError) as exc:
+                    rows["binance_square_expression"] = self._error(exc)
+            return
         # Only publish downstream social extracts from an audited website
         # article. Old owner X-only episodes may still be in the backlog, but
         # they must not preempt new first-party publishing.

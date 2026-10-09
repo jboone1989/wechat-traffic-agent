@@ -21,6 +21,7 @@ from .content_loop import (
 )
 from .content_artifact import ContentKind
 from .sources.binance_web3_public import read_binance_candidates
+from .sources.binance_market_structure import read_market_structure_candidates
 from .sources.binance_wallet_store import read_wallet_candidates
 from .content_explorer import (
     GoalEvidenceExplorer, _normalize_mission_search_query,
@@ -1199,7 +1200,8 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
                 market_fetcher=collect_okx_public_market,
-                binance_reader=lambda now: read_binance_candidates(self.state, now),
+                binance_reader=lambda now: [*read_market_structure_candidates(self.state, now),
+                                           *read_binance_candidates(self.state, now)],
                 wallet_reader=lambda now: read_wallet_candidates(self.state, now),
                 trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
                 web_searcher=web_searcher,
@@ -1228,7 +1230,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         topic = str(focus_topic or '').strip()
         if topic and not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,79}', topic):
             raise ValueError('focus_topic must be a lowercase kebab-case slug')
-        if publication_surface not in {'AUTO', 'WEBSITE', 'X_SHORT_POST', 'X_LONG_POST', 'X_ARTICLE'}:
+        if publication_surface not in {'AUTO', 'WEBSITE', 'X_SHORT_POST', 'X_LONG_POST', 'X_ARTICLE', 'BINANCE_SQUARE'}:
             raise ValueError('unknown publication surface')
         self._publication_surface = publication_surface
         self._focus_topic = topic or None
@@ -2300,6 +2302,16 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         if bound.authority is not None:
             traffic_payload['selected_topic'] = selection.topic
             traffic_payload['selection_authority'] = bound.authority
+
+        if getattr(self, '_publication_surface', 'AUTO') == 'BINANCE_SQUARE':
+            from .square_cognition import SquareCognitionExpressionService
+            if cognition_decision is None:
+                raise ValueError('Square expression requires persisted Ferro cognition')
+            return await SquareCognitionExpressionService(self.state).prepare(
+                runtime=runtime, folder=folder, learning=learning_result,
+                cognition=cognition_decision.model_dump(mode='json'),
+                mind_plan=mind_plan, worldview=worldview_update,
+            )
 
         if getattr(self, '_publication_surface', 'AUTO') in {'X_SHORT_POST', 'X_LONG_POST', 'X_ARTICLE'}:
             from .x_owner_execution import prepare_owner_x_expression

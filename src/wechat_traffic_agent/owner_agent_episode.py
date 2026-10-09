@@ -29,7 +29,7 @@ class OwnerAgentDecision(BaseModel):
         "RUN_CONTENT_PIPELINE",
         "WAIT",
     ]
-    publication_surface: Literal["AUTO", "WEBSITE", "X_SHORT_POST", "X_LONG_POST", "X_ARTICLE"] = "AUTO"
+    publication_surface: Literal["AUTO", "WEBSITE", "X_SHORT_POST", "X_LONG_POST", "X_ARTICLE", "BINANCE_SQUARE"] = "AUTO"
     query: str | None = Field(default=None, max_length=240)
     topic: str | None = Field(
         default=None,
@@ -503,8 +503,8 @@ class OwnerAgentEpisode:
             {
                 "name": "RUN_CONTENT_PIPELINE",
                 "side_effect": "bounded_existing_publication_gates",
-                "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, X_SHORT_POST, X_LONG_POST, or X_ARTICLE"},
-                "use": "Gather evidence and cognition, then publish on the requested surface through existing safety and publication gates. All X surfaces proceed directly to an original X draft without requiring a website article. Native X_ARTICLE includes an original illustrated cover.",
+                "arguments": {"topic": "concrete subject", "publication_surface": "AUTO, WEBSITE, X_SHORT_POST, X_LONG_POST, X_ARTICLE, or BINANCE_SQUARE"},
+                "use": "Investigate through Ferro's existing durable inquiry, memory and cognition first. BINANCE_SQUARE projects source-verified learning into native Chinese BTC/ETH copy and runs semantic review before the separate publisher; it can decline expression and requires no website article. All X surfaces retain their original publication gates.",
             },
             {
                 "name": "WAIT",
@@ -555,6 +555,18 @@ class OwnerAgentEpisode:
 
         mission = dict(mission_context or {})
         current_mind = mission.get("current_mind") if isinstance(mission.get("current_mind"), Mapping) else {}
+        from .square_cognition import square_publication_context
+        square_context = square_publication_context(self.state_root, limit=4)
+        square_priority = square_context['preferences'].get('production_mode') == 'COGNITION_LED'
+        channel_instruction = (
+            "The owner's current preferred research expression is native Binance Square BTC/ETH market and contract analysis. "
+            "Use BINANCE_SQUARE for a relevant useful discovery after real inquiry; no website article is required. "
+            "Pursue substantive questions with durable memory and revise existing understanding, not a scheduled indicator report. "
+            "Choose SEARCH_WORLD or WAIT when the real inquiry needs different evidence. There is no Square publication quota. "
+            "Recent Square publications are experience: avoid repeating their understanding, and explain substantive revisions. "
+            if square_priority else
+            "Ferro's own website is the authoritative publication surface. For new original content select WEBSITE or AUTO first so the full source-supported article is published and maintained on the owned site. "
+        )
         recent_posts = [
             {key: row.get(key) for key in ("recorded_at", "expression_kind", "text", "x_url")}
             for row in XHistoryLedger(self.state_root).recent(limit=100)
@@ -571,7 +583,7 @@ class OwnerAgentEpisode:
             "Use WAIT only when no currently permitted tool can materially advance the commitment or when the next evidence is genuinely time-dependent. "
             "Neural/drive signals are advisory inputs only and never override the owner goal or authorization. "
             "RUN_CONTENT_PIPELINE is one tool among several, not the mandatory path. "
-            "Ferro's own website is the authoritative publication surface. For new original content select WEBSITE or AUTO first so the full source-supported article is published and maintained on the owned site. "
+            + channel_instruction +
             "X is downstream syndication of successfully published website content, not a replacement for website publication. Choosing an X surface is only for explicitly requested legacy work, never permission to bypass evidence, X safety, or publication authority. "
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Previous optional 20/200 advice is not a quota. When owner_goal.daily_posting_contract is present, the user's newer temporary minimum is mandatory until explicitly disabled. "
@@ -607,6 +619,7 @@ class OwnerAgentEpisode:
                     "consecutive_waits": int(state.get("consecutive_waits") or 0),
                     "current_time": datetime.now(timezone.utc).isoformat(),
                     "recent_original_posts": recent_posts,
+                    "square_research_expression": square_context,
                     "research_trajectory": research_trajectory(read_research_state(self.state_root)),
                     "parked_inquiries": parked_inquiries(read_research_state(self.state_root)),
                     "related_memory": self._decision_memory_context(related_memory),

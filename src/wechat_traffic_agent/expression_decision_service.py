@@ -55,6 +55,11 @@ class ExpressionDecisionService:
             for row in XHistoryLedger(self.state_root).recent(limit=100)
             if row.get('event_type') == 'EXPRESSION'
         ][-20:]
+        from .square_cognition import square_publication_context
+        square = square_publication_context(self.state_root)
+        recent.extend({'recorded_at': row.get('published_at'), 'text': row.get('body'),
+                       'expression_kind': 'SQUARE_RESEARCH_EXPRESSION', 'channel': 'binance_square',
+                       'published_url': row.get('url')} for row in square['recent_published'])
         context = {
             'recent_public_expressions': recent, 'source_evidence': request.selected,
             'worldview_decision': request.belief_decision.model_dump(mode='json'),
