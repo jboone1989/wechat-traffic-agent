@@ -29,8 +29,12 @@ class SquareWebsiteSyndication:
         receipt = folder / "square_website_syndication.json"
         if receipt.exists():
             return json.loads(receipt.read_text())
+        publication = result.get("publication") or {}
+        publication = {key: publication.get(key) for key in
+                       ("artifact_id", "site_url", "url", "published_at", "revision")
+                       if publication.get(key) is not None}
         task = {"status": "PENDING", "cycle": folder.name,
-                "publication": result.get("publication"),
+                "publication": publication,
                 "created_at": datetime.now(timezone.utc).isoformat()}
         if not path.exists():
             _replace(path, task)
