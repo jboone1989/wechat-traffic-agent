@@ -1,22 +1,50 @@
-# Ferro Binance Square accepted editorial standard
+# Ferro Binance Square editorial quality reference
 
-The user accepted the following Chinese BTC/ETH market and perpetual-structure
-draft on 2026-10-09 (Asia/Shanghai). Use it as an editorial calibration example.
-Runtime preference record: `square_editorial/editorial_preferences.json`.
+The user accepted the factual BTC/ETH example below on 2026-10-09
+(Asia/Shanghai), then clarified that future posts must avoid template-like
+content. The example calibrates quality only. It is not a house prose format.
+Runtime preferences: `square_editorial/editorial_preferences.json`.
 
-Write a native Chinese post with a specific reader question, concrete evidence,
-a clear interpretation and observations that would change the interpretation.
-Compare price, base-asset OI and volume over aligned completed windows. Explain
-the venue and sampling time. Clearly distinguish facts from interpretation.
-Do not infer net shorts, liquidations or directional new positions from OI,
-funding signs or taker-buy share alone. Avoid website-summary syndication,
-engineering logs, click-through dependencies and posts written to fill a quota.
+## Selection and composition
 
-Style acceptance is calibration, not a reusable approval of market numbers.
-Every new draft needs fresh evidence and an actual source-to-claim review.
-The reference has a confirmed Square publication receipt: https://www.binance.com/square/post/375369749478470.
-This preference update does not publish additional content or approve any
-future draft automatically.
+Start from an actual finding or reader-relevant question. Ask what changed,
+why that change is worth understanding, and what the evidence supports. Choose
+only the metrics needed to explain that finding. A post may focus on one coin;
+neither a BTC/ETH comparison nor a full price/OI/volume/funding dashboard is
+required in every body. Do not rotate predefined formats to simulate variety.
+
+Let the discovery determine length, order and voice. A concise observation,
+an event explanation, a relative-strength comparison, or an update correcting
+an earlier judgment can each be appropriate. These are possibilities, not a
+schedule or mandatory taxonomy. No fixed opening, title formula, paragraph
+order, "my judgment" phrase or "watch these two things" ending is prescribed.
+Internal reader-question/thesis/invalidation metadata records the editorial
+assessment; it must not be printed as compulsory body sections. Descriptive
+posts may record the limits of their observation in the invalidation field,
+without inventing a forecast or padding the text with conditional predictions.
+
+## Evidence and review
+
+Verify sources, symbols, units, venue and sampling time. Align windows when
+comparing price, base-asset OI and volume. Clearly distinguish observation
+from inference. Do not infer net shorts, liquidations or directional new
+positions from OI, funding signs or taker-buy share alone. Recheck every new
+draft's numbers; the example's historical values must never be reused as live
+data. The reviewed-copy binding and freshness checks still apply.
+
+Before approving, compare the candidate with recent published drafts in
+`square_editorial/drafts` (SUCCESS). Identify its new information, new relevant
+question, or substantive revision of an earlier judgment. Updating numbers
+under the same argument is insufficient. Cosmetic paraphrasing is insufficient.
+If the evidence is flat or the argument repeats, skip publication rather than
+fill a quota. Review the reasoning and reader value explicitly; numerical
+validation and required fields alone do not establish semantic quality.
+
+The accepted example has a confirmed publication receipt:
+https://www.binance.com/square/post/375369749478470 . Acceptance of that post
+does not automatically approve future drafts. The publishing worker consumes
+reviewed drafts only; an autonomous selecting/writing/reviewing system has not
+been implemented in this repository.
 
 ## Accepted example (historical snapshot, not current market data)
 

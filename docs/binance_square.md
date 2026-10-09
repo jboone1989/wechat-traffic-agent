@@ -28,13 +28,15 @@ guaranteed next settlement. Missing, stale or misaligned endpoints fail closed.
 `ferro-square-market.timer` collects every ten minutes, without posting or
 trading. This is Binance-only evidence, not a market-wide leverage measure.
 
-Native copy must answer a specific BTC/ETH reader question, state a supported
-thesis and explain observations that would invalidate it. It must be readable
-without clicking Ferro's website. Do not infer net short positions, liquidations
-or new longs solely from OI, funding signs or taker-buy percentages. Avoid fixed
-daily quotas, invented support levels, return promises and forced conclusions
-when the evidence is uninteresting. An editor must assess the argument and
-source-to-claim correspondence; required fields are not a semantic quality score.
+Native copy explains a reader-relevant BTC/ETH finding using selected evidence.
+It must be readable without clicking Ferro's website. Its length, order and
+voice are free. There is no compulsory question-first opening, full indicator
+listing, BTC-versus-ETH paragraph or conditional ending. Internal assessment
+fields are not a required prose outline. Review compares the candidate with
+recent successful posts and rejects number-only updates or cosmetic rewrites.
+Uninteresting or repetitive evidence is a reason to skip. An editor assesses
+the argument, novelty and source-to-claim correspondence; numerical checks and
+required fields are not a semantic quality score.
 
 ## Preparation and review
 
@@ -66,8 +68,8 @@ No engagement analytics transport or autonomous author is implemented here.
 The collector, draft/review tools and gated publishing worker are deployed;
 selection and semantic review are explicit editorial work.
 
-## Accepted editorial calibration
+## Editorial quality reference
 
-See [the user-accepted BTC/ETH example](binance_square_editorial_standard.md)
+See [the quality reference and anti-template guidance](binance_square_editorial_standard.md)
 and `square_editorial/editorial_preferences.json` before drafting or reviewing.
 Style acceptance does not bypass fresh evidence or the reviewed-copy gate.
