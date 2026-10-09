@@ -1,41 +1,35 @@
 #!/usr/bin/env python3
-"""Read-only Binance Square activation check (never prints or loads secret values)."""
+"""Inspect Binance Square readiness without exposing posting credentials."""
 from __future__ import annotations
-
 import json
-import os
 from pathlib import Path
+
+ROOT = Path("/home/ubuntu/content-agent-state")
 
 
 def main() -> int:
-    root = Path(os.environ.get("CONTENT_APPLICATION_ROOT", "/home/ubuntu/content-agent-state"))
-    config_file = Path("/home/ubuntu/.config/ferro/binance-square.env")
-    config_text = config_file.read_text(encoding="utf-8") if config_file.exists() else ""
-    config = {}
-    for line in config_text.splitlines():
-        if "=" in line and not line.lstrip().startswith("#"):
-            name, value = line.split("=", 1)
-            config[name.strip()] = value.strip().strip("'\"")
-    key_present = (
-        bool(os.environ.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip())
-        or bool(config.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip())
-    )
-    state_events = root / "publication" / "events"
-    state = {
-        "state_root_exists": root.is_dir(),
-        "square_publishing_key_configured": key_present,
-        "posting_key_config_present": config_file.exists(),
-        "consumer_enabled": config.get("CONTENT_BINANCE_SQUARE_ENABLED", os.environ.get("CONTENT_BINANCE_SQUARE_ENABLED", "")) == "1",
-        "writes_enabled": config.get("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", os.environ.get("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "")) == "1",
-        "published_event_count": len(list(state_events.glob("*.json"))) if state_events.exists() else 0,
-        "subscriber_started": (root / "distribution" / "subscriptions" / "binance_square.json").is_file(),
-        "existing_square_success_count": sum(
-            1 for file in (root / "distribution" / "success").glob("*.json")
-            if json.loads(file.read_text(encoding="utf-8")).get("channel") == "binance_square"
+    flags = ROOT / ".binance-square-settings.json"
+    data = json.loads(flags.read_text(encoding="utf-8")) if flags.exists() else {}
+    credential = ROOT / ".binance-square-posting.key"
+    event_dir = ROOT / "publication" / "events"
+    success_dir = ROOT / "distribution" / "success"
+    posted = []
+    for path in success_dir.glob("*.json"):
+        item = json.loads(path.read_text(encoding="utf-8"))
+        if item.get("channel") == "binance_square" and item.get("status") == "SUCCESS":
+            posted.append({"post_id": item.get("published_post_id"),
+                           "url": item.get("published_url")})
+    print(json.dumps({
+        "key_saved": credential.is_file() and credential.stat().st_size > 0,
+        "key_owner_only_permissions": (
+            credential.is_file() and (credential.stat().st_mode & 0o077) == 0
         ),
-        "no_secret_values_printed": True,
-    }
-    print(json.dumps(state, sort_keys=True))
+        "consumer_enabled": bool(data.get("enabled")),
+        "writes_enabled": bool(data.get("writes_enabled")),
+        "event_count": len(list(event_dir.glob("*.json"))),
+        "success_count": len(posted),
+        "latest_success": posted[-1] if posted else None,
+    }, ensure_ascii=False))
     return 0
 
 
