@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from wechat_traffic_agent.sources.live_cache import live_cache_root
 
 
 def read_json(path):
@@ -72,7 +75,7 @@ def inspect(root, now):
         issues.append('SQUARE_WORKER_' + worker['status'])
     if not worker.get('observed_at') or (now - datetime.fromisoformat(worker['observed_at'])).total_seconds() > 300:
         issues.append('SQUARE_WORKER_HEARTBEAT_STALE')
-    market = read_json(root / 'sources' / 'binance_market_structure' / 'latest.json')
+    market = read_json(live_cache_root(root) / 'binance_market_structure' / 'latest.json')
     if worker.get('status') == 'WAITING_FOR_EDITORIAL':
         if market.get('status') != 'OK':
             issues.append('BTC_ETH_MARKET_EVIDENCE_INCOMPLETE')

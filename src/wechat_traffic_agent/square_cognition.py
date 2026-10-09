@@ -16,6 +16,7 @@ from .content_loop import _put, _structured
 from .learning_expression_quality import review_learning_expression, verified_learning_facts
 from .platforms.binance_square_editorial import SquareDraftStore, digest
 from .sources.binance_market_structure import collect_market_structure, save_market_structure
+from .sources.live_cache import live_cache_root
 
 
 def square_publication_context(state_root, *, limit=8):
@@ -152,7 +153,7 @@ class SquareCognitionExpressionService:
         provenance = {'learning_cycle': folder.name, 'learning_sha256': digest(learning),
                       'cognition_sha256': digest(cognition),
                       'semantic_review_sha256': digest(json.loads((folder / 'square_expression_review.json').read_text()))}
-        package_path = folder / 'square_expression_package.json'
+        package_path = live_cache_root(self.state_root) / 'square_packages' / (folder.name + '.json')
         if package_path.exists():
             package = json.loads(package_path.read_text())
             if package['research_provenance'] != provenance:

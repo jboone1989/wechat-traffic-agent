@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import httpx
+from .live_cache import live_cache_root
 
 SYMBOLS = ("BTCUSDT", "ETHUSDT")
 
@@ -119,22 +120,18 @@ async def collect_market_structure(*, client=None):
 
 
 def save_market_structure(state_root, report):
-    folder = Path(state_root) / "sources" / "binance_market_structure"
+    folder = live_cache_root(state_root) / "binance_market_structure"
     folder.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(report, sort_keys=True, ensure_ascii=False).encode()
-    identity = sha256(encoded).hexdigest()
-    archive = folder / (identity + ".json")
-    if not archive.exists():
-        archive.write_bytes(encoded)
     temporary = folder / (".latest-" + uuid4().hex + ".tmp")
     temporary.write_bytes(encoded)
     temporary.replace(folder / "latest.json")
-    return archive
+    return folder / "latest.json"
 
 
 def read_market_structure_candidates(state_root, now):
     """Expose facts to the shared inquiry/memory pipeline, without selecting a post."""
-    path = Path(state_root) / 'sources' / 'binance_market_structure' / 'latest.json'
+    path = live_cache_root(state_root) / 'binance_market_structure' / 'latest.json'
     try:
         report = json.loads(path.read_text())
         age = (now - datetime.fromisoformat(report['observed_at'])).total_seconds()

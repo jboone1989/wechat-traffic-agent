@@ -11,6 +11,7 @@ from hashlib import sha256
 import json
 from uuid import uuid4
 from pathlib import Path
+from .live_cache import live_cache_root
 from typing import Any
 
 import httpx
@@ -137,7 +138,7 @@ async def collect_binance_public(client: httpx.AsyncClient | None = None, *, now
 
 
 def save_binance_snapshot(state_root: Path, report: dict) -> Path:
-    path = Path(state_root) / "sources" / "binance_web3" / "latest.json"
+    path = live_cache_root(state_root) / "binance_web3" / "latest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_suffix(".tmp")
     pending.write_text(json.dumps(report, ensure_ascii=False, sort_keys=True), encoding="utf-8")
@@ -146,7 +147,7 @@ def save_binance_snapshot(state_root: Path, report: dict) -> Path:
 
 
 def read_binance_candidates(state_root: Path, now: datetime, max_age_seconds=3600) -> list[dict]:
-    path = Path(state_root) / "sources" / "binance_web3" / "latest.json"
+    path = live_cache_root(state_root) / "binance_web3" / "latest.json"
     if not path.exists():
         return []
     try:

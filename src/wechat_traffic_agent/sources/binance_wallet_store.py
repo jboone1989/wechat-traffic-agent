@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+from .live_cache import live_cache_root
 import sqlite3
 
 OFFICIAL_DOC = ("https://github.com/binance/binance-skills-hub/blob/main/"
@@ -49,7 +50,7 @@ def merge_signal(old: dict, new: dict) -> dict:
 
 class WalletTrackerStore:
     def __init__(self, state_root: Path):
-        self.folder = Path(state_root) / "sources" / "binance_wallet"
+        self.folder = live_cache_root(state_root) / "binance_wallet"
         self.folder.mkdir(parents=True, exist_ok=True)
         self.db = self.folder / "events.sqlite3"
 
@@ -76,7 +77,7 @@ class WalletTrackerStore:
                                    (identity, kind, now.isoformat(),
                                     json.dumps(merged, ensure_ascii=False, sort_keys=True)))
                 counts["updated" if old else "new"] += 1
-            cutoff = (now - timedelta(days=7)).isoformat()
+            cutoff = (now - timedelta(hours=1)).isoformat()
             connection.execute("DELETE FROM events WHERE observed < ?", (cutoff,))
             connection.execute("DELETE FROM events WHERE id IN ("
                                "SELECT id FROM events ORDER BY observed DESC LIMIT -1 OFFSET 3000)")
@@ -131,7 +132,7 @@ def summarized_poll(response, *, max_rows=5) -> dict:
 
 
 def read_wallet_candidates(state_root: Path, now: datetime, *, max_age_seconds=3600) -> list[dict]:
-    folder = Path(state_root) / "sources" / "binance_wallet"
+    folder = live_cache_root(state_root) / "binance_wallet"
     candidates = []
     path = folder / "latest.json"
     if path.exists():

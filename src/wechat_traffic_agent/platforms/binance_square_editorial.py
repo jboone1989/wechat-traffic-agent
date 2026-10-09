@@ -14,6 +14,7 @@ from .binance_square import (
     SquarePublicationUnverified, square_enabled, square_writes_enabled,
 )
 from wechat_traffic_agent.sources.binance_market_structure import analyze
+from wechat_traffic_agent.sources.live_cache import live_cache_root
 
 def validate_mining_tags(body, symbols):
     """Text API supports cashtags; metadata alone creates no reader entry point."""
@@ -41,7 +42,7 @@ class SquareDraftStore:
     def __init__(self, state_root):
         self.root = Path(state_root) / "square_editorial"
         self.drafts = self.root / "drafts"
-        self.evidence = self.root / "evidence"
+        self.evidence = live_cache_root(state_root) / "square_evidence"
 
     @contextmanager
     def lock(self):

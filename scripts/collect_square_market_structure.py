@@ -16,7 +16,7 @@ async def main():
     report = await collect_market_structure()
     path = save_market_structure(root, report)
     print(json.dumps({"status": report["status"], "observed_at": report["observed_at"],
-                      "metrics": report["metrics"], "error": report.get("error"),
+                      "error": report.get("error"),
                       "snapshot": str(path), "publication_authority": False}, ensure_ascii=False))
     return 0 if report["status"] == "OK" else 1
 
