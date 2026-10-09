@@ -20,6 +20,7 @@ from .content_loop import (
     Lesson, ReceiptRuntime, SelfCheck, _put, _replace, _structured, collect_news,
 )
 from .content_artifact import ContentKind
+from .sources.binance_web3_public import read_binance_candidates
 from .content_explorer import (
     GoalEvidenceExplorer, _normalize_mission_search_query,
     collect_okx_public_market, collect_trading_evidence,
@@ -1197,6 +1198,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                 state_root=self.state, feeds=self.feeds,
                 rss_fetcher=lambda feeds, now: self.fetcher(feeds, now),
                 market_fetcher=collect_okx_public_market,
+                binance_reader=lambda now: read_binance_candidates(self.state, now),
                 trading_fetcher=lambda now: collect_trading_evidence(self.state, now),
                 web_searcher=web_searcher,
             )

@@ -1,0 +1,11 @@
+[Unit]
+Description=Ferro Binance public research snapshot (every 20 minutes)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=20min
+Unit=ferro-binance-research.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
