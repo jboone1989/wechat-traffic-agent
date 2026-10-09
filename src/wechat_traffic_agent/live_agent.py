@@ -1,5 +1,6 @@
 """Public, read-only live view and conversation surface for Content Agent."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 import asyncio
 from collections import defaultdict, deque
@@ -99,6 +100,8 @@ def _bounded_owner_prompt_json(value: Any, *, max_chars: int) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):

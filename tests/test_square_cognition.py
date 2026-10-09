@@ -99,11 +99,11 @@ def test_real_research_and_semantic_review_produce_one_bound_draft(tmp_path):
     assert result['publication_confirmed'] is False
     assert result['draft_status'] == 'REVIEWED'
     assert calls == ['compose', 'semantic_review', 'collect']
-    doc = json.loads(SquareDraftStore(tmp_path).path(result['draft_id']).read_text())
+    doc = SquareDraftStore(tmp_path).get(result['draft_id'])
     assert doc['research_provenance']['learning_cycle'] == folder.name
     assert doc['reviewer'] == 'ferro-cognition-expression'
-    assert prepare(run, folder, learning, cognition) == result
-    assert len(list(SquareDraftStore(tmp_path).drafts.glob('*.json'))) == 1
+    assert prepare(run, folder, learning, cognition)['draft_id'] == result['draft_id']
+    assert len(SquareDraftStore(tmp_path).list()) == 1
     assert calls == ['compose', 'semantic_review', 'collect']
 
 
@@ -122,7 +122,7 @@ def test_snapshot_or_repeated_expression_is_not_enough(tmp_path, reason):
         write(folder / 'cognition.json', cognition)
     result = prepare(run, folder, learning, cognition)
     assert result['status'] == 'COGNITION_ONLY'
-    assert not list(SquareDraftStore(tmp_path).drafts.glob('*.json'))
+    assert not SquareDraftStore(tmp_path).list()
     assert 'collect' not in calls
 
 
@@ -152,7 +152,7 @@ def test_changed_brain_or_review_receipt_blocks_transport(tmp_path, monkeypatch,
     monkeypatch.setenv('CONTENT_BINANCE_SQUARE_WRITES_ENABLED', '1')
     assert SquareDraftWorker(tmp_path, client=client).run_once() is None
     assert sent == []
-    assert json.loads(SquareDraftStore(tmp_path).path(result['draft_id']).read_text())['status'] == 'NEEDS_REVIEW'
+    assert SquareDraftStore(tmp_path).get(result['draft_id'])['status'] == 'NEEDS_REVIEW'
 
 
 def test_native_square_surface_is_not_forced_through_website_first():

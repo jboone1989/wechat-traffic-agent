@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -15,6 +14,7 @@ from .binance_square import (
 )
 from wechat_traffic_agent.sources.binance_market_structure import analyze
 from wechat_traffic_agent.sources.live_cache import live_cache_root
+from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 
 def validate_mining_tags(body, symbols):
     """Text API supports cashtags; metadata alone creates no reader entry point."""
@@ -41,30 +41,24 @@ def copy_digest(doc):
 class SquareDraftStore:
     def __init__(self, state_root):
         self.root = Path(state_root) / "square_editorial"
-        self.drafts = self.root / "drafts"
+        self.records = ChannelRecords(state_root)
         self.evidence = live_cache_root(state_root) / "square_evidence"
 
-    @contextmanager
     def lock(self):
-        self.root.mkdir(parents=True, exist_ok=True)
-        with (self.root / ".lock").open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            yield
+        return self.records.transaction()
 
-    def path(self, draft_id):
-        if len(draft_id) != 64 or any(c not in "0123456789abcdef" for c in draft_id):
-            raise ValueError("invalid Square draft ID")
-        return self.drafts / (draft_id + ".json")
+    def get(self, draft_id):
+        return self.records.get("binance_square", draft_id)
+
+    def list(self):
+        return self.records.all("binance_square")
 
     def save(self, doc):
-        path = self.path(doc["draft_id"])
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
-        temporary.replace(path)
+        article_id = doc.get("article_id") or "square-" + doc["draft_id"]
+        return self.records.put(article_id, "binance_square", doc)
 
     def create(self, *, body, evidence, symbols, reader_question, thesis, invalidation,
-               research_provenance=None):
+               research_provenance=None, article_id=None):
         if not body.strip() or len(body) > MAX_POST_CHARS:
             raise ValueError("Square draft must contain 1-1500 characters")
         if not set(symbols) or not set(symbols) <= {"BTC", "ETH"}:
@@ -75,8 +69,9 @@ class SquareDraftStore:
         evidence_hash = digest(evidence)
         identity = digest({"body": body, "evidence_sha256": evidence_hash})
         with self.lock():
-            if self.path(identity).exists():
-                return json.loads(self.path(identity).read_text())
+            existing = self.get(identity)
+            if existing:
+                return existing
             self.evidence.mkdir(parents=True, exist_ok=True)
             evidence_path = self.evidence / (evidence_hash + ".json")
             if not evidence_path.exists():
@@ -86,6 +81,8 @@ class SquareDraftStore:
                    "evidence_sha256": evidence_hash, "reader_question": reader_question,
                    "thesis": thesis, "invalidation": invalidation, "attempts": 0,
                    "created_at": datetime.now(timezone.utc).isoformat()}
+            if article_id is not None:
+                doc["article_id"] = article_id
             if research_provenance is not None:
                 doc["research_provenance"] = research_provenance
             self.save(doc)
@@ -153,7 +150,7 @@ class SquareDraftStore:
     def review(self, draft_id, *, reviewer, evidence_check, now=None):
         now = now or datetime.now(timezone.utc)
         with self.lock():
-            doc = json.loads(self.path(draft_id).read_text())
+            doc = self.get(draft_id)
             if doc["status"] not in {"DRAFT", "NEEDS_REVIEW"}:
                 raise ValueError("attempted or completed drafts cannot be reviewed again")
             doc.update(reviewer=reviewer, evidence_check=evidence_check,
@@ -176,8 +173,7 @@ class SquareDraftWorker:
         # Persist the claim before any network call. A crash remains PUBLISHING and
         # requires reconciliation, never an automatic second submission.
         with self.store.lock():
-            for path in sorted(self.store.drafts.glob("*.json")):
-                doc = json.loads(path.read_text())
+            for doc in sorted(self.store.list(), key=lambda row: row.get("draft_id", "")):
                 if doc.get("status") != "REVIEWED":
                     continue
                 try:

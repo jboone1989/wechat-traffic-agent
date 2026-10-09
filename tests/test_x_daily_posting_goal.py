@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
+from wechat_traffic_agent.publication.cycle_records import write_cycle_record
 from wechat_traffic_agent.x_social import XHistoryLedger
 from wechat_traffic_agent.wakeful_tasks import WakefulContentTaskRunner
 
@@ -25,7 +26,8 @@ def post(root, number, now=NOW, fmt="SHORT_POST", status="POSTED", event="EXPRES
     cycle=f"cycle-{number}"
     receipt={"status":status,"format":fmt,"post_id":str(number),"url":f"https://x.com/ferro/status/{number}",
         "published_at":now.isoformat()}
-    put(root/"content/continuous/cycles"/cycle/"x_browser_publication.json", receipt)
+    if event == "EXPRESSION":
+        write_cycle_record(root/"content/continuous/cycles"/cycle/"x_browser_publication.json", receipt)
     XHistoryLedger(root).append({"cycle":cycle,"event_type":event,"recorded_at":now.isoformat(),
         "x_post_id":str(number),"x_url":receipt["url"]})
     return receipt
@@ -185,12 +187,12 @@ def test_verified_reconciliation_survives_replayed_failed_attempt(tmp_path):
     receipt=post(tmp_path,1,status="PUBLICATION_UNVERIFIED")
     receipt["status"]="POSTED"
     folder=tmp_path/"content/continuous/cycles/cycle-1"
-    put(folder/"x_native_publication_verification.json",receipt)
-    put(folder/"x_social_expression.json",{"status":"PUBLICATION_UNVERIFIED"})
+    write_cycle_record(folder/"x_native_publication_verification.json",receipt)
+    write_cycle_record(folder/"x_social_expression.json",{"status":"PUBLICATION_UNVERIFIED"})
     assert goal.status(NOW)["published"]==1
     assert len(goal.reconcile(NOW)["deliveries"])==1
     receipt["post_id"]="2"
-    put(folder/"x_native_publication_verification.json",receipt)
+    write_cycle_record(folder/"x_native_publication_verification.json",receipt)
     assert goal.status(NOW)["published"]==0
 
 

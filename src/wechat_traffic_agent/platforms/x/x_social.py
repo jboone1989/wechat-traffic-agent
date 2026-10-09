@@ -1,5 +1,6 @@
 """Autonomous X observation, expression and autobiographical lineage."""
 from __future__ import annotations
+from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -290,7 +291,8 @@ def _find_url(value: Any) -> str | None:
     return None
 class XHistoryLedger:
     def __init__(self, state_root: Path) -> None:
-        self.path = Path(state_root) / "content" / "x" / "history.jsonl"
+        self.state_root = Path(state_root)
+        self.path = self.state_root / "content" / "x" / "history.jsonl"
 
     def append(self, payload: dict[str, Any]) -> dict[str, Any]:
         row = {
@@ -298,7 +300,24 @@ class XHistoryLedger:
             "recorded_at": datetime.now(timezone.utc).isoformat(),
             **payload,
         }
-        _append_jsonl(self.path, row)
+        persisted = dict(row)
+        if row.get("event_type") == "EXPRESSION" and row.get("x_post_id") and row.get("cycle"):
+            records = ChannelRecords(self.state_root)
+            with records.transaction():
+                existing = records.get("x", row["cycle"])
+                if existing is None:
+                    from wechat_traffic_agent.publication.cycle_records import read_cycle_record
+                    existing = read_cycle_record(self.state_root / "content/continuous/cycles" / row["cycle"] / "x_browser_publication.json")
+                website = records.get("website_record", row["cycle"])
+                article_id = (existing or website or {}).get("article_id") or "social-" + row["cycle"]
+                fields = {**(existing or {}), "cycle": row["cycle"],
+                          "body": row.get("text") or (existing or {}).get("body") or (existing or {}).get("published_text"), "post_id": row["x_post_id"],
+                          "url": row.get("x_url"), "published_at": row["recorded_at"]}
+                fields.setdefault("status", "POSTED")
+                records.put(article_id, "x", fields)
+            persisted.pop("text", None)
+            persisted["article_id"] = article_id
+        _append_jsonl(self.path, persisted)
         return row
 
     def recent(self, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -313,6 +332,9 @@ class XHistoryLedger:
             except json.JSONDecodeError:
                 continue
             if isinstance(row, dict) and row.get("schema_version") == "content-agent-x-history.v1":
+                if row.get("article_id") and "text" not in row:
+                    publication = ChannelRecords(self.state_root).get("x", row["article_id"]) or {}
+                    row["text"] = publication.get("body") or publication.get("published_text") or ""
                 rows.append(row)
         return rows
 

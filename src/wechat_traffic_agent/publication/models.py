@@ -47,6 +47,8 @@ class DistributionTask:
     published_url: str | None = None
     attempt_times: list[str] = field(default_factory=list)
     published_post_id: str | None = None
+    published_at: str | None = None
+    body: str | None = None
 
     def __post_init__(self):
         if not self.distribution_id or not self.event_id or not self.channel:

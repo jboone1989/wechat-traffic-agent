@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1083,9 +1084,7 @@ def test_social_stage_persists_x_terminal_receipt(tmp_path):
         now=NOW,
     )
 
-    receipt = json.loads(
-        (state_root / "content" / "continuous" / "cycles" / cycle / "x_social_expression.json").read_text()
-    )
+    receipt = read_cycle_record(state_root / "content" / "continuous" / "cycles" / cycle / "x_social_expression.json")
     assert receipt["status"] == "SKIPPED"
     assert rows["x_social_expression"]["reason"] == "low value"
 

@@ -5,6 +5,7 @@ world outcomes to Runtime records, proposes bounded strategy challengers from
 observational evidence, and lets Runtime own experiments/promotion/rollback.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,8 @@ def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
@@ -788,7 +791,7 @@ class ContentEvolutionBridge:
         """
         for cycle in (state.get("assignments") or {}):
             folder = self.state_root / "content" / "continuous" / "cycles" / str(cycle)
-            if (folder / "publication.json").exists():
+            if cycle_record_exists(folder / "publication.json"):
                 return True
         return False
 

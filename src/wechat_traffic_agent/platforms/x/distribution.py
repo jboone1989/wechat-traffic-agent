@@ -25,8 +25,15 @@ def publish_x(event: PublicationEvent, task: DistributionTask, *, state_root: Pa
         raise ValueError("X adapter cannot publish other channels")
     if not x_browser_writes_enabled():
         raise RuntimeError("X publishing is disabled")
+    from wechat_traffic_agent.editorial.channel_records import ChannelRecords
+    records = ChannelRecords(state_root)
+    text = x_share_text(event)
+    with records.transaction():
+        existing = records.get("x", task.distribution_id)
+        if existing:
+            records.put(event.artifact_id, "x", {**existing, "body": text})
     publication = asyncio.run(
-        XBrowserTransportRouter(state_root=Path(state_root)).publish(text=x_share_text(event))
+        XBrowserTransportRouter(state_root=Path(state_root)).publish(text=text)
     )
     post_id = str(publication.post_id or "").strip()
     url = str(publication.url or "").strip()

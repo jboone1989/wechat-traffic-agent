@@ -26,11 +26,7 @@ def square_publication_context(state_root, *, limit=8):
     except (OSError, ValueError):
         preferences = {}
     posts = []
-    for path in (root / 'drafts').glob('*.json'):
-        try:
-            row = json.loads(path.read_text())
-        except (OSError, ValueError):
-            continue
+    for row in SquareDraftStore(state_root).list():
         if row.get('status') == 'SUCCESS':
             posts.append({key: row.get(key) for key in
                           ('draft_id', 'body', 'thesis', 'url', 'published_at', 'research_provenance')})
@@ -75,7 +71,6 @@ class SquareCognitionExpressionService:
                   'publication_surface': 'BINANCE_SQUARE', 'rationale': rationale,
                   'learning': learning, 'cognition': cognition,
                   'next_research_query': (learning or {}).get('next_query')}
-        _put(folder / 'square_expression_result.json', result)
         return result
 
     async def prepare(self, *, runtime, folder, learning, cognition, mind_plan, worldview,
@@ -84,9 +79,13 @@ class SquareCognitionExpressionService:
         expected_parent = (self.state_root / 'content' / 'continuous' / 'cycles').resolve()
         if folder.parent != expected_parent:
             raise ValueError('Square expression must belong to a real Ferro cognition cycle')
-        result_path = folder / 'square_expression_result.json'
-        if result_path.exists():
-            return json.loads(result_path.read_text())
+        store = SquareDraftStore(self.state_root)
+        existing = next((row for row in store.list()
+                         if (row.get('research_provenance') or {}).get('learning_cycle') == folder.name), None)
+        if existing:
+            return {'status': 'SQUARE_EXPRESSION_READY', 'cycle': folder.name,
+                    'publication_surface': 'BINANCE_SQUARE', 'draft_id': existing['draft_id'],
+                    'draft_status': existing['status'], 'publication_confirmed': existing['status'] == 'SUCCESS'}
         if not isinstance(learning, dict) or not cognition.get('worth_saying'):
             return self._no_share(folder, learning, 'No research-backed cognition selected expression.', cognition)
         self._load_canonical(folder, 'learning_result.json', learning)
@@ -168,7 +167,8 @@ class SquareCognitionExpressionService:
         store = SquareDraftStore(self.state_root)
         draft = store.create(body=choice.body, evidence=market, symbols=choice.symbols,
             reader_question=choice.reader_question, thesis=choice.thesis, invalidation=choice.invalidation,
-            research_provenance=provenance)
+            research_provenance=provenance,
+            article_id=(website_publication or {}).get('artifact_id'))
         if draft['status'] in {'DRAFT', 'NEEDS_REVIEW'}:
             try:
                 draft = store.review(draft['draft_id'], reviewer='ferro-cognition-expression',
@@ -184,5 +184,5 @@ class SquareCognitionExpressionService:
                   'cognition': cognition, 'worldview_update': worldview,
                   'learning': learning, 'research_provenance': provenance,
                   'publication_confirmed': False}
-        _put(result_path, result)
+        choice_path.unlink(missing_ok=True)
         return result

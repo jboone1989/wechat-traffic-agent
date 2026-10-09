@@ -1,5 +1,6 @@
 """Prospective Website content-strategy binding and outcome-guided selection."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -124,8 +125,8 @@ def collect_mature_strategy_outcomes(
     """Project attributable mature 24h Website outcomes into cognition-safe records."""
     publications: dict[str, dict[str, Any]] = {}
     root = Path(state_root) / "content" / "continuous" / "cycles"
-    for path in sorted(root.glob("*/publication.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
+    for path in publication_paths(root):
+        raw = read_cycle_record(path)
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         profile = strategy.get("profile") if isinstance(strategy, dict) else None
@@ -183,16 +184,16 @@ def collect_mature_strategy_outcomes(
 def _historical_pageviews(*, state_root: Path, account: str, topic: str, as_of: datetime) -> dict[str, list[float]]:
     publications = {}
     root = Path(state_root) / "content" / "continuous" / "cycles"
-    for path in sorted(root.glob("*/publication.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
+    for path in publication_paths(root):
+        raw = read_cycle_record(path)
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         if isinstance(strategy, dict) and isinstance(strategy.get("strategy_id"), str):
             publications[str(raw.get("revision"))] = strategy["strategy_id"]
     grouped: dict[str, list[float]] = {profile.name: [] for profile in PROFILES}
     strategy_to_profile = {}
-    for path in sorted(root.glob("*/publication.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
+    for path in publication_paths(root):
+        raw = read_cycle_record(path)
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         if isinstance(strategy, dict) and strategy.get("topic") == topic:

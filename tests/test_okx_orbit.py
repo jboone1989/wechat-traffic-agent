@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import asyncio
 import json
 from datetime import datetime, timezone
@@ -46,7 +47,7 @@ def test_okx_orbit_publisher_posts_persisted_draft_once_and_records_receipt(tmp_
     publisher = OKXOrbitPublisher(state_root=tmp_path, transport=transport, enabled=True, writes_enabled=True)
     first = asyncio.run(publisher.after_content_cycle(cycle="v2-test", now=NOW))
     second = asyncio.run(publisher.after_content_cycle(cycle="v2-test", now=NOW))
-    receipt = json.loads((folder / "okx_orbit_publication.json").read_text())
+    receipt = read_cycle_record(folder / "okx_orbit_publication.json")
     assert first["status"] == "POSTED"
     assert second["status"] == "ALREADY_POSTED"
     assert len(transport.calls) == 1
@@ -63,7 +64,7 @@ def test_okx_orbit_publisher_refuses_article_and_missing_session(tmp_path):
     session = asyncio.run(OKXOrbitPublisher(state_root=tmp_path, transport=_NoSession(), enabled=True, writes_enabled=True).after_content_cycle(cycle="session", now=NOW))
     assert article == {"status": "UNSUPPORTED_FORMAT", "cycle": "article", "format": "ARTICLE"}
     assert session["status"] == "SESSION_UNAVAILABLE"
-    assert not (tmp_path / "content/continuous/cycles/session/okx_orbit_publication.json").exists()
+    assert not cycle_record_exists(tmp_path / "content/continuous/cycles/session/okx_orbit_publication.json")
 
 
 def test_okx_orbit_receipt_is_bound_to_exact_draft(tmp_path):

@@ -5,6 +5,7 @@ endpoints, or backfills missed historical metrics. It records only public counte
 observed within a bounded lag after fixed post-age windows mature.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,8 @@ def _aware_utc(value: datetime) -> datetime:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

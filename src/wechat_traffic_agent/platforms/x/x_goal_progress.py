@@ -1,5 +1,6 @@
 """Observed X execution context for autonomous owner-goal choices."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record
 
 from collections import deque
 import json
@@ -8,6 +9,8 @@ from typing import Any
 
 
 def _snapshot(path: Path) -> dict[str, Any]:
+    if path.name in NAMES:
+        return read_cycle_record(path)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:

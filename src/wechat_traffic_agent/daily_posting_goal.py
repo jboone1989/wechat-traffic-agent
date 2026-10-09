@@ -1,5 +1,6 @@
 """Temporary daily original-post goal and durable operator delivery."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -11,6 +12,8 @@ from zoneinfo import ZoneInfo
 
 
 def _read(path):
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -18,6 +21,8 @@ def _read(path):
 
 
 def _write(path, value):
+    if Path(path).name in NAMES:
+        return write_cycle_record(path, value)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -49,10 +54,10 @@ class DailyPostingGoal:
         config = _read(self.config_path)
         if config.get("target_channel") == "binance_square":
             rows = {}
-            for path in (self.state_root / "square_editorial/drafts").glob("*.json"):
-                row = _read(path)
-                post_id = str(row.get("post_id") or "")
-                url = str(row.get("url") or "")
+            from .platforms.binance_square_editorial import SquareDraftStore
+            for row in SquareDraftStore(self.state_root).list():
+                post_id = str(row.get("post_id") or row.get("published_post_id") or "")
+                url = str(row.get("url") or row.get("published_url") or "")
                 if (row.get("status") == "SUCCESS" and post_id.isdigit()
                         and url == "https://www.binance.com/square/post/" + post_id
                         and row.get("published_at")):
@@ -60,40 +65,19 @@ class DailyPostingGoal:
                         "cycle": (row.get("research_provenance") or {}).get("learning_cycle"),
                         "format": "SQUARE_SHORT_POST", "published_at": row["published_at"]}
             return sorted(rows.values(), key=lambda row: row["published_at"])
+        from .editorial.channel_records import ChannelRecords
         rows = {}
-        history = self.state_root / "content/x/history.jsonl"
-        try:
-            stream = history.open(encoding="utf-8")
-        except FileNotFoundError:
+        db_path = self.state_root / "content/automatic_website/articles.sqlite3"
+        if not db_path.is_file():
             return []
-        with stream:
-            items = []
-            for line in stream:
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # A concurrent append may leave its last line incomplete.
-                if isinstance(item, dict) and item.get("schema_version") == "content-agent-x-history.v1":
-                    items.append(item)
-        for item in items:
-            if item.get("event_type") != "EXPRESSION" or not item.get("x_post_id"):
-                continue
-            folder = self.state_root / "content/continuous/cycles" / str(item["cycle"])
-            receipt = _read(folder / "x_browser_publication.json")
-            if receipt.get("status") != "POSTED":
-                receipt = _read(folder / "x_social_expression.json")
-            if receipt.get("status") != "POSTED":
-                receipt = _read(folder / "x_native_publication_verification.json")
-            post_id = str(item["x_post_id"])
-            url = str(receipt.get("url") or "")
-            if (receipt.get("status") != "POSTED" or str(receipt.get("post_id")) != post_id
-                    or not url.startswith("https://x.com/") or post_id not in url):
-                continue
-            rows[post_id] = {
-                "post_id": post_id, "url": url, "cycle": item["cycle"],
-                "format": receipt.get("format") or "SHORT_POST",
-                "published_at": receipt.get("published_at") or item["recorded_at"],
-            }
+        for item in ChannelRecords(self.state_root).all("x"):
+            post_id = str(item.get("post_id") or item.get("published_post_id") or "")
+            url = str(item.get("url") or item.get("published_url") or "")
+            when = item.get("published_at")
+            if (item.get("status") in {"POSTED", "ALREADY_EXPRESSED", "SUCCESS"}
+                    and post_id and url.startswith("https://x.com/") and post_id in url and when):
+                rows[post_id] = {"post_id": post_id, "url": url, "cycle": item.get("cycle"),
+                                "format": item.get("format") or "SHORT_POST", "published_at": when}
         return sorted(rows.values(), key=lambda row: row["published_at"])
 
     def status(self, now):
@@ -108,7 +92,7 @@ class DailyPostingGoal:
         from .publication.event_store import PublicationEventStore
         outbox = PublicationEventStore(self.state_root)
         square_goal = config.get("target_channel") == "binance_square"
-        website_first = not square_goal and any(outbox.events.glob("*.json"))
+        website_first = not square_goal and bool(outbox.list_events())
         attempted = outbox.attempt_count(local_date=local.date(), timezone_info=zone) if website_first else 0
         minimum = int(config["minimum_original_posts"])
         measured = attempted if website_first else len(posts)

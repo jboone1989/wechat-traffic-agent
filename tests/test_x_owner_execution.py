@@ -1,4 +1,5 @@
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import asyncio
 import json
 from types import SimpleNamespace
@@ -93,7 +94,7 @@ def test_mission_binds_owner_x_cognition_without_website_article(tmp_path):
     mission=asyncio.run(coordinator.observe_identity(user=_user(2000),identity_receipt_id="initial",now=clock.now()))
     folder,result=cycle_context(tmp_path,mission["mission_id"])
     assert not (folder/"mission_discovery.json").exists()
-    assert not (folder/"publication.json").exists()
+    assert not cycle_record_exists(folder/"publication.json")
     binding=coordinator.publication_binding(cycle=result["cycle"])
     assert binding["status"] == "BOUND_X_EXPRESSION"
     assert binding["admission"]["source_evidence_id"] == "source-1"
@@ -164,7 +165,7 @@ def test_content_executor_stops_after_real_cognition_for_owner_x(tmp_path):
     assert (folder/"cognition.json").exists()
     assert (folder/"x_expression_context.json").exists()
     assert not (folder/"lesson.json").exists()
-    assert not (folder/"publication.json").exists()
+    assert not cycle_record_exists(folder/"publication.json")
     assert not any("Create one original, useful web-ready content artifact" in task for task in runtime.calls)
 
 

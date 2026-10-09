@@ -5,6 +5,7 @@ attribution is eligible. The evaluator can summarize evidence; it cannot change
 future treatment assignment, publish content, or claim causal improvement.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -206,8 +207,8 @@ class WebsiteExperimentEvaluator:
 
         rows = {}
         root = self.state_root / "content" / "continuous" / "cycles"
-        for path in sorted(root.glob("*/publication.json")):
-            raw = json.loads(path.read_text(encoding="utf-8"))
+        for path in publication_paths(root):
+            raw = read_cycle_record(path)
             attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
             if not isinstance(attr, dict) or attr.get("schema_version") != "website-publication-attribution.v2":
                 continue

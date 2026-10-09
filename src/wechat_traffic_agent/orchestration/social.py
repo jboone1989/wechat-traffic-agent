@@ -1,5 +1,6 @@
 """Wakeful social task logic; the host injects runner components."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 import asyncio
 from contextlib import nullcontext
@@ -54,9 +55,7 @@ class SocialTaskMethods:
             return {"status": "NO_PENDING_PUBLICATION"}
         for folder in folders:
             try:
-                receipt = json.loads(
-                    (folder / "x_social_expression.json").read_text(encoding="utf-8")
-                )
+                receipt = read_cycle_record(folder / "x_social_expression.json")
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if str(receipt.get("status") or "") != "PUBLICATION_UNVERIFIED":
@@ -86,13 +85,7 @@ class SocialTaskMethods:
                     "url": publication.get("url"),
                     "transport": publication.get("source"),
                 }
-                path = folder / "x_social_expression.json"
-                tmp = path.with_suffix(".json.tmp")
-                tmp.write_text(
-                    json.dumps(normalized, ensure_ascii=False, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                )
-                tmp.replace(path)
+                write_cycle_record(folder / "x_social_expression.json", normalized)
                 return {
                     "status": "RECONCILED",
                     "cycle": folder.name,
@@ -219,9 +212,7 @@ class SocialTaskMethods:
                     continue
                 x_receipt_path = folder / "x_social_expression.json"
                 try:
-                    x_receipt = json.loads(
-                        x_receipt_path.read_text(encoding="utf-8")
-                    )
+                    x_receipt = read_cycle_record(x_receipt_path)
                 except (OSError, ValueError, json.JSONDecodeError):
                     x_receipt = {}
                 x_status = str(x_receipt.get("status") or "")
@@ -287,7 +278,7 @@ class SocialTaskMethods:
             identity = continuous.get("draft_id")
             if identity:
                 try:
-                    draft = json.loads(SquareDraftStore(self.state_root).path(identity).read_text())
+                    draft = SquareDraftStore(self.state_root).get(identity)
                     rows["binance_square_expression"] = {
                         "status": "POSTED" if draft['status'] == 'SUCCESS' else 'PUBLICATION_PENDING'
                             if draft['status'] == 'REVIEWED' else draft['status'],
@@ -304,13 +295,13 @@ class SocialTaskMethods:
         if site_publisher is not None:
             folder = Path(self.state_root) / "content" / "continuous" / "cycles" / cycle
             publication_path = folder / "publication.json"
-            if not publication_path.exists():
+            if not cycle_record_exists(publication_path):
                 rows["x_syndication"] = {
                     "status": "WEBSITE_PUBLICATION_REQUIRED", "cycle": cycle,
                 }
                 return
             try:
-                site_receipt = json.loads(publication_path.read_text(encoding="utf-8"))
+                site_receipt = read_cycle_record(publication_path)
             except (ValueError, OSError) as exc:
                 rows["x_syndication"] = self._error(exc)
                 rows["status"] = "DEGRADED"
@@ -414,17 +405,10 @@ class SocialTaskMethods:
                 state_root = getattr(self, "state_root", None)
                 cycle = str(continuous.get("cycle") or "").strip()
                 if state_root is not None and cycle and isinstance(x_result, dict):
-                    receipt = (
-                        Path(state_root) / "content" / "continuous" / "cycles"
-                        / cycle / "x_social_expression.json"
+                    write_cycle_record(
+                        Path(state_root) / "content/continuous/cycles" / cycle / "x_social_expression.json",
+                        x_result,
                     )
-                    receipt.parent.mkdir(parents=True, exist_ok=True)
-                    tmp = receipt.with_suffix(".json.tmp")
-                    tmp.write_text(
-                        json.dumps(x_result, ensure_ascii=False, sort_keys=True) + "\n",
-                        encoding="utf-8",
-                    )
-                    tmp.replace(receipt)
                     if str(x_result.get("status") or "") == "PUBLICATION_UNVERIFIED":
                         rows["x_publication_reconciliation"] = self.task_scheduler.schedule(
                             "CHECK_X",

@@ -6,6 +6,7 @@ experiments from elapsed follower outcomes, and asks Agent Runtime for the next
 advisory experiment.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -48,6 +49,8 @@ def _enum_value(value: Any) -> str:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
@@ -56,6 +59,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    if Path(path).name in NAMES:
+        return write_cycle_record(path, payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(

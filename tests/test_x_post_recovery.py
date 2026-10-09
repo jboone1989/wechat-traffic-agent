@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import json
 import unittest
 from pathlib import Path
@@ -140,6 +141,6 @@ def test_unverified_publication_leaves_cognition_backlog_and_reconciles_in_check
     reconciled=runner._reconcile_x_publication_backlog(now=now)
     assert reconciled["status"]=="RECONCILED"
     assert publisher.calls==[(cycle,now)]
-    receipt=json.loads((folder/"x_social_expression.json").read_text())
+    receipt=read_cycle_record(folder/"x_social_expression.json")
     assert receipt["status"]=="POSTED"
     assert receipt["post_id"]=="123"

@@ -1,5 +1,6 @@
 """Provider-routed X Web publishing with independently verified outcomes."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 import asyncio
 from dataclasses import dataclass
@@ -55,6 +56,8 @@ def x_browser_writes_enabled() -> bool:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
+    if Path(path).name in NAMES:
+        return read_cycle_record(path)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -63,6 +66,8 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    if Path(path).name in NAMES:
+        return write_cycle_record(path, payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")

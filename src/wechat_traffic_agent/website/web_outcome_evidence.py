@@ -5,6 +5,7 @@ ContentMind, or strategy-selection authority. Legacy publications without an
 explicit publication-attribution contract are intentionally ignored.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from collections import Counter
 from dataclasses import dataclass
@@ -187,8 +188,8 @@ class WebsiteOutcomeCollector:
         rows: list[dict] = []
         legacy = 0
         root = self.state_root / "content" / "continuous" / "cycles"
-        for path in sorted(root.glob("*/publication.json")):
-            raw = json.loads(path.read_text(encoding="utf-8"))
+        for path in publication_paths(root):
+            raw = read_cycle_record(path)
             attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
             if not isinstance(attr, dict) or attr.get("schema_version") not in ATTRIBUTION_SCHEMAS:
                 legacy += 1

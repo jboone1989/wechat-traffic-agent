@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, publication_paths
 from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
@@ -91,9 +92,9 @@ def test_future_publication_freezes_activation_time_and_attribution(tmp_path):
     assert attr["topic"] == "rare"
     assert attr["strategy_version"].startswith("lesson:")
     assert attr["published_content_sha256"] == attr["agent_candidate_sha256"]
-    publication_files = list((tmp_path / "state/content/continuous/cycles").glob("*/publication.json"))
+    publication_files = publication_paths(tmp_path / "state/content/continuous/cycles")
     assert len(publication_files) == 1
-    persisted = json.loads(publication_files[0].read_text())
+    persisted = read_cycle_record(publication_files[0])
     assert persisted["outcome_attribution"] == attr
 
 

@@ -1,5 +1,6 @@
 """Prospective predictions for Content Agent actions and their later outcomes."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -143,8 +144,8 @@ def _prediction_id(*, cycle: str, topic: str, strategy_id: str, selected_profile
 def _publication_strategy_index(state_root: Path) -> dict[str, dict[str, str]]:
     index: dict[str, dict[str, str]] = {}
     root = Path(state_root) / "content" / "continuous" / "cycles"
-    for path in sorted(root.glob("*/publication.json")):
-        raw = json.loads(path.read_text(encoding="utf-8"))
+    for path in publication_paths(root):
+        raw = read_cycle_record(path)
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         profile = strategy.get("profile") if isinstance(strategy, dict) else None
@@ -356,12 +357,12 @@ def settle_action_predictions(*, state_root: Path, account: str, as_of: datetime
     for prediction_path in sorted(root.glob("*/action_prediction.json")):
         cycle_root = prediction_path.parent
         publication_path = cycle_root / "publication.json"
-        if not publication_path.exists():
+        if not cycle_record_exists(publication_path):
             continue
         prediction = ContentActionPrediction.model_validate_json(prediction_path.read_text(encoding="utf-8"))
         if mind is not None and hasattr(mind, "register_action_prediction"):
             mind.register_action_prediction(prediction)
-        publication = json.loads(publication_path.read_text(encoding="utf-8"))
+        publication = read_cycle_record(publication_path)
         attr = publication.get("outcome_attribution") if isinstance(publication, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         if not isinstance(strategy, dict):

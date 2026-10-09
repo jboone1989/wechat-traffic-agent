@@ -16,20 +16,20 @@ def test_audited_website_creates_one_canonical_event_and_x_task(tmp_path):
     home = (publisher.public / "current" / "index.html").read_text()
     assert "Featured Research" in home and "What is being tested" in home
     store = PublicationEventStore(tmp_path / "state")
-    events = list(store.events.glob("*.json"))
-    pending = list(store.queue.glob("*.json"))
+    events = store.list_events()
+    pending = [t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]
     assert len(events) == len(pending) == 1
-    event = json.loads(events[0].read_text())
-    task = json.loads(pending[0].read_text())
+    event = events[0]
+    task = {k: v for k, v in pending[0].items() if k != "article_id"}
     assert event["artifact_id"] == result["publication"]["artifact_id"]
     assert event["canonical_url"] == result["publication"]["site_url"]
     assert event["canonical_url"].startswith("https://")
     assert task["event_id"] == event["event_id"]
     assert task["status"] == "PENDING"
     store.enqueue_distribution(DistributionTask(**task))
-    assert len(list(store.queue.glob("*.json"))) == 1
+    assert len([t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]) == 1
     assert asyncio.run(loop.run_once(now=NOW))["status"] == "ALREADY_PROCESSED"
-    assert len(list(store.events.glob("*.json"))) == 1
+    assert len(store.list_events()) == 1
 
 
 def test_failed_website_check_keeps_outbox_empty(tmp_path):
@@ -37,8 +37,8 @@ def test_failed_website_check_keeps_outbox_empty(tmp_path):
     before = (publisher.public / "current").resolve()
     assert asyncio.run(loop.run_once(now=NOW))["status"] == "HELD_BY_CHECKS"
     store = PublicationEventStore(tmp_path / "state")
-    assert not list(store.events.glob("*.json"))
-    assert not list(store.queue.glob("*.json"))
+    assert not store.list_events()
+    assert not [t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]
     assert (publisher.public / "current").resolve() == before
 
 
@@ -53,14 +53,14 @@ def test_x_failure_retries_without_affecting_publication(tmp_path):
     assert failed.status == "RETRY_PENDING"
     assert failed.attempts == 1
     assert "TimeoutError" in failed.last_error
-    assert len(list(store.queue.glob("*.json"))) == 1
+    assert len([t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]) == 1
     posted = DistributionWorker(store, {"x": lambda e, t: {"status": "POSTED", "url": "https://x.com/test/status/123"}}).run_once()
     assert posted.status == "SUCCESS"
     assert posted.attempts == 2
-    assert not list(store.queue.glob("*.json"))
-    assert len(list(store.success.glob("*.json"))) == 1
+    assert not [t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]
+    assert len([t for t in store.list_tasks() if t["status"] == "SUCCESS"]) == 1
     assert (publisher.public / "current").resolve() == before
-    assert len(list(store.events.glob("*.json"))) == 1
+    assert len(store.list_events()) == 1
 
 
 def test_permanent_distribution_failure_does_not_delete_event(tmp_path):
@@ -69,7 +69,7 @@ def test_permanent_distribution_failure_does_not_delete_event(tmp_path):
     store = PublicationEventStore(tmp_path / "state")
     fail = DistributionWorker(store, {"x": lambda e, t: {"status": "UNVERIFIED"}}, max_attempts=1).run_once()
     assert fail.status == "FAILED_PERMANENT"
-    assert len(list(store.failed.glob("*.json"))) == len(list(store.events.glob("*.json"))) == 1
+    assert len([t for t in store.list_tasks() if t["status"] == "FAILED_PERMANENT"]) == len(store.list_events()) == 1
 
 
 def test_private_and_relative_url_cannot_be_distributed(tmp_path):

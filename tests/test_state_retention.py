@@ -1,4 +1,5 @@
 """Ferro must not store completed reasoning inputs or duplicate metric snapshots."""
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -107,7 +108,7 @@ def test_finished_content_cycle_discards_its_large_input_snapshot(tmp_path):
     cycle = tmp_path / "state/content/continuous/cycles" / result["cycle"]
     assert (cycle / "result.json").is_file()
     assert not (cycle / "inputs.json").exists()
-    assert (cycle / "publication.json").is_file()
+    assert cycle_record_exists(cycle / "publication.json")
 
 
 def test_old_retryable_error_drops_input_but_keeps_diagnostic(tmp_path):

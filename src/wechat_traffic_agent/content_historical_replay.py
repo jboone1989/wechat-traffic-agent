@@ -5,6 +5,7 @@ time and later received attributable mature 24h pageviews are replayable. Legacy
 publications without that binding stay excluded rather than being hindsight-labeled.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timezone
 import json
@@ -57,12 +58,12 @@ def build_historical_content_priors(*, state_root: Path, account: str, as_of: da
         raise ValueError("historical replay cutoff must be timezone-aware")
     state_root = Path(state_root)
     publications: dict[str, dict[str, Any]] = {}
-    for path in sorted((state_root / "content/continuous/cycles").glob("*/publication.json")):
+    for path in publication_paths((state_root / "content/continuous/cycles")):
         # A cycle that already had a true prospective action prediction must never
         # be replayed as historical prior; that would count the same outcome twice.
         if (path.parent / "action_prediction.json").exists():
             continue
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_cycle_record(path)
         attr = raw.get("outcome_attribution") if isinstance(raw, dict) else None
         strategy = attr.get("content_strategy") if isinstance(attr, dict) else None
         if not isinstance(strategy, dict) or not isinstance(strategy.get("profile"), dict):

@@ -1,148 +1,118 @@
-"""Small durable filesystem outbox; website receipts are independent of X results."""
-from __future__ import annotations
-
-from contextlib import contextmanager
+"""Channel dispatch operates on fields of the canonical article record."""
 from dataclasses import replace
 from datetime import datetime, timezone
-import fcntl
 import json
-import os
-from pathlib import Path
-import re
-
+from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 from .models import PublicationEvent, DistributionTask
 from .errors import NonRetryablePublication
 
 
 class PublicationEventStore:
     def __init__(self, state_root):
-        root = Path(state_root)
-        self.events = root / "publication" / "events"
-        self.distribution = root / "distribution"
-        self.queue = self.distribution / "queue"
-        self.processing = self.distribution / "processing"
-        self.success = self.distribution / "success"
-        self.failed = self.distribution / "failed"
+        self.records = ChannelRecords(state_root)
 
-    @contextmanager
-    def _lock(self):
-        self.distribution.mkdir(parents=True, exist_ok=True)
-        with (self.distribution / ".lock").open("a") as file:
-            fcntl.flock(file, fcntl.LOCK_EX)
-            yield
+    def list_events(self):
+        return self.records.all("website")
 
-    @staticmethod
-    def _save_new(path, payload):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as file:
-            json.dump(payload, file, sort_keys=True, ensure_ascii=False, indent=2)
-            file.write("\n")
+    def list_tasks(self):
+        with self.records.transaction():
+            return [dict(value, article_id=row["artifact_id"])
+                    for row in self.records.connection.execute("SELECT artifact_id,channel_state_json FROM articles")
+                    for value in json.loads(row["channel_state_json"]).values()
+                    if isinstance(value, dict) and value.get("distribution_id")]
 
-    @staticmethod
-    def _update(path, payload):
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, sort_keys=True, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
+    def save_event(self, event):
+        with self.records.transaction():
+            prior = self.records.get("website", event.event_id)
+            if prior:
+                for key in ("event_id", "artifact_id", "canonical_url", "content_hash"):
+                    if prior.get(key) != getattr(event, key):
+                        raise ValueError("immutable publication event identity conflict: " + key)
+                return event.artifact_id
+            fields = event.model_dump()
+            # Title/summary are already article fields, never duplicate the body.
+            with self.records.repo.connect() as db:
+                row = db.execute("SELECT artifact_id FROM articles WHERE artifact_id=?",
+                                 (event.artifact_id,)).fetchone()
+            if row:
+                fields.pop("title")
+                fields.pop("summary")
+                fields.pop("topics")
+            return self.records.put(event.artifact_id, "website", fields)
 
-    def save_event(self, event: PublicationEvent):
-        path = self.events / f"{event.event_id}.json"
-        try:
-            self._save_new(path, event.model_dump())
-        except FileExistsError:
-            prior = json.loads(path.read_text(encoding="utf-8"))
-            for field in ("event_id", "artifact_id", "canonical_url", "content_hash"):
-                if prior.get(field) != getattr(event, field):
-                    raise ValueError("immutable publication event identity conflict: " + field)
-        return path
-
-    def load_event(self, event_id: str) -> PublicationEvent:
-        raw = json.loads((self.events / f"{event_id}.json").read_text(encoding="utf-8"))
+    def load_event(self, event_id):
+        raw = self.records.get("website", event_id)
+        if raw is None:
+            raise KeyError(event_id)
+        raw = dict(raw)
+        article_id = raw.pop("article_id")
+        with self.records.repo.connect() as db:
+            row = db.execute("SELECT title,summary,content_json FROM articles WHERE artifact_id=?",
+                             (article_id,)).fetchone()
+        content = json.loads(row["content_json"])
+        raw.setdefault("title", row["title"])
+        raw.setdefault("summary", row["summary"])
+        raw.setdefault("topics", content.get("tags", []))
         raw["published_at"] = datetime.fromisoformat(raw["published_at"])
         return PublicationEvent(**raw)
 
-    def subscription_started_at(self, channel: str, *, now=None):
-        """Persist a channel's starting watermark; never backfill old events by accident."""
-        if not re.fullmatch(r"[a-z][a-z0-9_]{0,60}", channel):
-            raise ValueError("invalid publication subscriber channel")
-        path = self.distribution / "subscriptions" / f"{channel}.json"
-        with self._lock():
-            if not path.exists():
-                started = now or datetime.now(timezone.utc)
-                if started.utcoffset() is None:
-                    raise ValueError("subscription time must have a timezone")
-                self._save_new(path, {"started_at": started.astimezone(timezone.utc).isoformat()})
-            return datetime.fromisoformat(json.loads(path.read_text())["started_at"])
+    def subscription_started_at(self, channel, *, now=None):
+        with self.records.transaction():
+            db = self.records.connection
+            db.execute("CREATE TABLE IF NOT EXISTS publication_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+            key = "subscription:" + channel
+            stamp = (now or datetime.now(timezone.utc)).isoformat()
+            db.execute("INSERT OR IGNORE INTO publication_settings VALUES(?,?)", (key, stamp))
+            return datetime.fromisoformat(db.execute("SELECT value FROM publication_settings WHERE key=?",
+                                                     (key,)).fetchone()[0])
 
-    def find_task(self, task_id: str):
-        for folder in (self.queue, self.processing, self.success, self.failed):
-            path = folder / f"{task_id}.json"
-            if path.exists():
-                return path
-        return None
+    def find_task(self, task_id):
+        return next((row for row in self.list_tasks() if row["distribution_id"] == task_id), None)
 
-    def enqueue_distribution(self, task: DistributionTask):
+    def enqueue_distribution(self, task):
         event = self.load_event(task.event_id)
         if event.visibility != "PUBLIC":
             raise ValueError("private/unlisted publication must not be distributed")
-        with self._lock():
+        with self.records.transaction():
             existing = self.find_task(task.distribution_id)
             if existing:
-                recorded = json.loads(existing.read_text(encoding="utf-8"))
-                if (recorded["event_id"], recorded["channel"]) != (task.event_id, task.channel):
+                if (existing["event_id"], existing["channel"]) != (task.event_id, task.channel):
                     raise ValueError("distribution identity conflict")
-                return existing
-            path = self.queue / f"{task.distribution_id}.json"
-            self._save_new(path, task.model_dump())
-            return path
+                return existing["article_id"]
+            return self.records.put(event.artifact_id, task.channel, task.model_dump())
 
     def attempt_count(self, *, local_date, timezone_info, channel="x"):
-        """Count actual dispatch attempts, not successful X posts or queue creations."""
-        total = 0
-        for folder in (self.queue, self.processing, self.success, self.failed):
-            for path in folder.glob("*.json"):
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                if channel is not None and raw.get("channel") != channel:
-                    continue
-                for timestamp in raw.get("attempt_times", []):
-                    if datetime.fromisoformat(timestamp).astimezone(timezone_info).date() == local_date:
-                        total += 1
-        return total
+        return sum(datetime.fromisoformat(t).astimezone(timezone_info).date() == local_date
+                   for row in self.list_tasks() if channel is None or row["channel"] == channel
+                   for t in row.get("attempt_times", []))
 
     def claim_next(self, channels=None):
-        with self._lock():
-            for path in sorted(self.queue.glob("*.json")):
-                raw = json.loads(path.read_text(encoding="utf-8"))
-                task = DistributionTask(**raw)
-                if channels is not None and task.channel not in channels:
+        with self.records.transaction():
+            for row in sorted(self.list_tasks(), key=lambda r: r["distribution_id"]):
+                if (channels is not None and row["channel"] not in channels
+                        or row["status"] not in {"PENDING", "RETRY_PENDING"}):
                     continue
-                if task.status not in {"PENDING", "RETRY_PENDING"}:
-                    raise ValueError("unexpected queued status: " + task.status)
-                target = self.processing / path.name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(path, target)
+                article_id = row.pop("article_id")
+                task = DistributionTask(**row)
                 task = replace(task, status="RUNNING", attempts=task.attempts + 1,
                                attempt_times=[*task.attempt_times, datetime.now(timezone.utc).isoformat()])
-                self._update(target, task.model_dump())
+                self.records.put(article_id, task.channel, task.model_dump())
                 return task
         return None
 
-    def finish(self, task: DistributionTask, *, result_url=None, result_post_id=None,
-               error=None, max_attempts=3):
-        with self._lock():
-            source = self.processing / f"{task.distribution_id}.json"
-            if not source.is_file():
+    def finish(self, task, *, result_url=None, result_post_id=None, error=None, max_attempts=3):
+        with self.records.transaction():
+            row = self.find_task(task.distribution_id)
+            if not row or row["status"] != "RUNNING":
                 raise FileNotFoundError("distribution task not claimed: " + task.distribution_id)
             if result_url:
                 done = replace(task, status="SUCCESS", published_url=result_url,
-                               published_post_id=result_post_id, last_error=None)
-                destination = self.success / source.name
+                               published_post_id=result_post_id, last_error=None,
+                               published_at=datetime.now(timezone.utc).isoformat(), body=row.get("body"))
             else:
                 status = "FAILED_PERMANENT" if task.attempts >= max_attempts else "RETRY_PENDING"
                 done = replace(task, status=status, last_error=error or "distribution unverified")
-                destination = self.failed / source.name if status == "FAILED_PERMANENT" else self.queue / source.name
-            self._update(source, done.model_dump())
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(source, destination)
+            self.records.put(row["article_id"], task.channel, done.model_dump())
             return done
 
 

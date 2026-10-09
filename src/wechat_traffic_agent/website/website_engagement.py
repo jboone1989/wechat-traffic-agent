@@ -4,6 +4,7 @@ Browser-generated visitor/session tokens are HMACed immediately. Raw tokens, IPs
 user agents, referrers and page text are never persisted by this module.
 """
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -233,8 +234,8 @@ class WebsiteEngagementOutcomeCollector:
 
     def _publications(self) -> list[dict]:
         rows=[]; root=self.state_root / "content" / "continuous" / "cycles"
-        for path in sorted(root.glob("*/publication.json")):
-            raw=json.loads(path.read_text(encoding="utf-8")); attr=raw.get("outcome_attribution") if isinstance(raw,dict) else None
+        for path in publication_paths(root):
+            raw=read_cycle_record(path); attr=raw.get("outcome_attribution") if isinstance(raw,dict) else None
             if not isinstance(attr,dict): continue
             required={"published_at","public_route","published_content_sha256","agent_candidate_sha256","topic","title_version","structure_version","strategy_version"}
             if required <= set(attr): rows.append(raw)

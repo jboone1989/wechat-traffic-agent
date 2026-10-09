@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import asyncio
 from datetime import timedelta
 import json
@@ -346,7 +347,7 @@ def test_goal_loop_publishes_noncompliant_treatment_without_enrolling_experiment
     assert "experiment" not in result["publication"]["outcome_attribution"]
     assert (publisher.public / "current").resolve() != before
     cycle = next((worker.root / "cycles").iterdir())
-    assert (cycle / "publication.json").exists()
+    assert cycle_record_exists(cycle / "publication.json")
 
 
 def _record_evaluation_sample(root, *, treatment, index, value, window_hours=24,

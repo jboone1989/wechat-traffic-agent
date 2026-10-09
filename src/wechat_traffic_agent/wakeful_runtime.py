@@ -1,5 +1,6 @@
 """Content Agent adoption of Agent Runtime Wakeful Core + VirtualBrain LIF."""
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import NAMES, read_cycle_record, write_cycle_record, cycle_record_exists, publication_paths
 
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -2304,10 +2305,10 @@ class ContentWakefulRuntime:
         for prediction_path in root.glob("*/action_prediction.json") if root.exists() else ():
             cycle_root = prediction_path.parent
             publication_path = cycle_root / "publication.json"
-            if not publication_path.exists():
+            if not cycle_record_exists(publication_path):
                 continue
             try:
-                publication = json.loads(publication_path.read_text(encoding="utf-8"))
+                publication = read_cycle_record(publication_path)
                 attr = publication.get("outcome_attribution") if isinstance(publication, dict) else None
                 published_at = datetime.fromisoformat(str((attr or {}).get("published_at")).replace("Z", "+00:00"))
                 if published_at.tzinfo is None or published_at.utcoffset() is None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 
 import asyncio
 import json
@@ -110,7 +111,7 @@ def test_premium_long_post_is_published_once_and_bound_to_draft(tmp_path: Path):
     )
     first = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
     second = asyncio.run(publisher.after_content_cycle(cycle="v2-browser", now=NOW))
-    receipt = json.loads((folder / "x_browser_publication.json").read_text())
+    receipt = read_cycle_record(folder / "x_browser_publication.json")
     assert first["status"] == "POSTED"
     assert second["status"] == "ALREADY_POSTED"
     assert len(transport.calls) == 1
@@ -144,7 +145,7 @@ def test_duplicate_reconciliation_records_receipt_without_second_write(tmp_path:
     folder = _draft(tmp_path)
     transport = _Transport(duplicate=True)
     result = asyncio.run(XBrowserPublisher(state_root=tmp_path, transport=transport, enabled=True, writes_enabled=True).after_content_cycle(cycle="v2-browser", now=NOW))
-    receipt = json.loads((folder / "x_browser_publication.json").read_text())
+    receipt = read_cycle_record(folder / "x_browser_publication.json")
     assert result["status"] == "POSTED"
     assert receipt["duplicate_found"] is True
     assert receipt["url"].endswith("/2100431447047741762")
@@ -175,7 +176,7 @@ def test_unverified_browser_write_does_not_create_fake_receipt_or_history(tmp_pa
         ).after_content_cycle(cycle="v2-browser", now=NOW)
     )
     assert result["status"] == "PUBLICATION_UNVERIFIED"
-    assert not (folder / "x_browser_publication.json").exists()
+    assert not cycle_record_exists(folder / "x_browser_publication.json")
     assert XHistoryLedger(tmp_path).recent() == []
     assert growth.calls == []
 
@@ -215,7 +216,7 @@ def test_browser_post_does_not_require_growth_approval_or_baseline(tmp_path: Pat
     assert result["publication"]["mission_baseline"]["status"] == "MEASUREMENT_UNAVAILABLE"
     assert len(transport.calls) == 1
     assert len(growth.calls) == 1
-    assert (tmp_path / "content/continuous/cycles/v2-browser/x_browser_publication.json").exists()
+    assert cycle_record_exists(tmp_path / "content/continuous/cycles/v2-browser/x_browser_publication.json")
 
 
 def test_browser_baseline_error_is_recorded_without_veto(tmp_path: Path):

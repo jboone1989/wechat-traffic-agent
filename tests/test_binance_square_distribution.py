@@ -39,8 +39,8 @@ def test_producer_has_no_binance_dependency(tmp_path, monkeypatch):
     monkeypatch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
     store = PublicationEventStore(tmp_path)
     DurablePublicationDispatch(store).record(event())
-    assert len(list(store.queue.glob("*.json"))) == 1
-    assert json.loads(next(store.queue.glob("*.json")).read_text())["channel"] == "x"
+    assert len(store.list_tasks()) == 1
+    assert store.list_tasks()[0]["channel"] == "x"
 
 
 
@@ -79,8 +79,8 @@ def test_square_disabled_does_not_claim_events_or_x_tasks(tmp_path, monkeypatch)
     store = PublicationEventStore(tmp_path)
     DurablePublicationDispatch(store).record(event())
     assert SquareEventConsumer(tmp_path).run_once() is None
-    assert not (store.distribution / "subscriptions/binance_square.json").exists()
-    assert len(list(store.queue.glob("*.json"))) == 1
+    assert not any(t["channel"] == "binance_square" for t in store.list_tasks())
+    assert len(store.list_tasks()) == 1
 
 
 
@@ -118,8 +118,8 @@ def test_retired_consumer_never_queues_new_or_old_website_events(tmp_path, monke
     consumer = SquareEventConsumer(tmp_path, publisher=lambda *a: pytest.fail("summary posted"))
     assert consumer.enqueue_events(now=NOW) == 0
     assert consumer.run_once(now=NOW) is None
-    assert len(list(store.queue.glob("*.json"))) == 2
-    assert all(json.loads(p.read_text())["channel"] == "x" for p in store.queue.glob("*.json"))
+    assert len(store.list_tasks()) == 2
+    assert all(t["channel"] == "x" for t in store.list_tasks())
 
 
 @pytest.mark.parametrize("response", [

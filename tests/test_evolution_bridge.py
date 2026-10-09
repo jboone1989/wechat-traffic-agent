@@ -1,4 +1,5 @@
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -507,7 +508,7 @@ def test_internal_trial_decision_without_publication_can_be_superseded(
         / prediction.cycle / "action_prediction.json"
     )
     assert prediction_path.exists()
-    assert not (prediction_path.parent / "publication.json").exists()
+    assert not cycle_record_exists(prediction_path.parent / "publication.json")
 
     broad = _broader_strategy_rows(NOW - timedelta(days=2))
     monkeypatch.setattr(

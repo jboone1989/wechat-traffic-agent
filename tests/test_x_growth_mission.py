@@ -1,4 +1,5 @@
 from __future__ import annotations
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -661,7 +662,7 @@ def test_invalid_publication_start_can_be_repaired_to_proposed_with_audit(tmp_pa
     assert persisted["active_experiment"]["status"] == "PROPOSED"
     assert persisted["active_experiment"]["started_at"] is None
     assert "publication_receipt_id" not in persisted["active_experiment"]
-    receipt = json.loads((folder / "x_browser_publication.json").read_text())
+    receipt = read_cycle_record(folder / "x_browser_publication.json")
     assert receipt["mission_experiment_invalidation"]["reason"] == (
         "publication was not actually mission-bound"
     )

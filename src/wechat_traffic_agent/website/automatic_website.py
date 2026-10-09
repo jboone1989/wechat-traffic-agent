@@ -24,6 +24,7 @@ from wechat_traffic_agent.publication.models import PublicationEvent
 from wechat_traffic_agent.publication.dispatch import DurablePublicationDispatch, PublicationSink
 from wechat_traffic_agent.publication.event_store import PublicationEventStore
 from wechat_traffic_agent.content_publication_store import ContentPublicationStore
+from wechat_traffic_agent.publication.cycle_records import write_cycle_record
 
 
 class AutomaticWebsitePublisher:
@@ -232,10 +233,7 @@ class AutomaticWebsitePublisher:
             'site_url': self.config.base_url.rstrip('/') + attribution['public_route'],
             'outcome_attribution': attribution,
         }
-        _write_once(
-            cycle_root / 'publication.json',
-            json.dumps(receipt, sort_keys=True, ensure_ascii=False, indent=2) + '\n',
-        )
+        write_cycle_record(cycle_root / 'publication.json', receipt)
         event = PublicationEvent(
             event_id=event_id, artifact_id=artifact.artifact_id,
             canonical_url=receipt['site_url'], title=artifact.title,

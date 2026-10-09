@@ -1,3 +1,4 @@
+from wechat_traffic_agent.publication.cycle_records import read_cycle_record, cycle_record_exists
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,7 +188,7 @@ class TestGrowthLoop(unittest.TestCase):
             result=asyncio.run(loop._owner_longform(folder=folder,context=context,now=NOW,surface='X_ARTICLE'))
         self.assertEqual(result['status'],'POSTED')
         transport.publish_article.assert_awaited_once()
-        self.assertFalse((folder/'publication.json').exists())
+        self.assertFalse(cycle_record_exists(folder/'publication.json'))
 
     def test_native_longform_publishes_with_one_draft_call_and_no_safety_approval(self):
         class Model:

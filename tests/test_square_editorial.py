@@ -73,7 +73,7 @@ def test_changed_or_expired_evidence_requires_new_review(tmp_path, monkeypatch, 
     run, sent = worker(tmp_path, monkeypatch, httpx.Response(200))
     assert run.run_once(now=now) is None
     assert sent == []
-    assert json.loads(store.path(doc["draft_id"]).read_text())["status"] == "NEEDS_REVIEW"
+    assert store.get(doc["draft_id"])["status"] == "NEEDS_REVIEW"
 
 
 def test_unknown_receipt_and_crash_claim_are_never_retried(tmp_path, monkeypatch):
@@ -95,4 +95,4 @@ def test_missing_key_does_not_claim_reviewed_copy(tmp_path, monkeypatch):
     run.client.key = ""
     assert run.run_once(now=NOW) is None
     assert sent == []
-    assert json.loads(store.path(doc["draft_id"]).read_text())["status"] == "REVIEWED"
+    assert store.get(doc["draft_id"])["status"] == "REVIEWED"

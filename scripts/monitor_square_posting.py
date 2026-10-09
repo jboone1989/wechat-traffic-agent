@@ -8,6 +8,8 @@ import subprocess
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from wechat_traffic_agent.sources.live_cache import live_cache_root
+from wechat_traffic_agent.publication.event_store import PublicationEventStore
+from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
 
 
 def read_json(path):
@@ -34,15 +36,15 @@ def inspect(root, now):
         issues.append('WAITING_FOR_KEY')
     if not flags.get('enabled') or not flags.get('writes_enabled'):
         issues.append('PUBLISHING_DISABLED')
-    tasks = {name: [read_json(path) for path in (distribution / name).glob('*.json')]
-             for name in ('queue', 'processing', 'success', 'failed')}
+    outbox = PublicationEventStore(root)
+    states = {'queue': {'PENDING', 'RETRY_PENDING'}, 'processing': {'RUNNING'},
+              'success': {'SUCCESS'}, 'failed': {'FAILED_PERMANENT'}}
+    tasks = {name: [row for row in outbox.list_tasks() if row['status'] in allowed]
+             for name, allowed in states.items()}
     tasks = {name: [row for row in rows if row.get('channel') == 'binance_square']
              for name, rows in tasks.items()}
     successful = [{'post_id': row.get('published_post_id'), 'url': row.get('published_url')}
                   for row in tasks['success'] if row.get('status') == 'SUCCESS']
-    note = read_json(distribution / 'binance_research_note_20261009.json')
-    if note.get('status') == 'SUCCESS':
-        successful.append({'post_id': note.get('post_id'), 'url': note.get('url')})
     if tasks['failed']:
         issues.append('FAILED_TASK_REQUIRES_REVIEW')
     for task in tasks['processing']:
@@ -59,7 +61,7 @@ def inspect(root, now):
     if units['ferro-square-distribution.service'].get('ExecMainStatus') not in ('0', None):
         issues.append('SQUARE_WORKER_FAILED')
     worker = read_json(root / 'application' / 'binance_square_worker.json')
-    native = [read_json(path) for path in (root / 'square_editorial' / 'drafts').glob('*.json')]
+    native = SquareDraftStore(root).list()
     editorial_counts = {status: sum(row.get('status') == status for row in native)
                         for status in ('DRAFT', 'REVIEWED', 'NEEDS_REVIEW', 'PUBLISHING',
                                        'SUCCESS', 'REJECTED', 'UNVERIFIED')}
@@ -92,7 +94,7 @@ def inspect(root, now):
                             'observed_at': market.get('observed_at'), 'error': market.get('error')},
         'key_saved': key.is_file() and key.stat().st_size > 0,
         'writes_enabled': bool(flags.get('writes_enabled')), 'units': units,
-        'event_count': len(list((root / 'publication' / 'events').glob('*.json'))),
+        'event_count': len(outbox.list_events()),
         'tasks': {name: len(rows) for name, rows in tasks.items()},
         'confirmed_posts': successful, 'latest_worker': worker,
         'engagement': {'status': 'UNAVAILABLE', 'views': None, 'likes': None, 'comments': None,

@@ -27,6 +27,11 @@ class ArticleRepository:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=20000")
             conn.execute("PRAGMA foreign_keys=ON")
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(articles)")}
+            if columns and "channel_state_json" not in columns:
+                conn.execute("ALTER TABLE articles ADD COLUMN channel_state_json TEXT NOT NULL DEFAULT '{}'")
+                conn.execute("ALTER TABLE articles ADD COLUMN record_type TEXT NOT NULL DEFAULT 'website'")
+                conn.commit()
             yield conn
 
     def initialized(self):
@@ -52,6 +57,8 @@ class ArticleRepository:
                 updated_at TEXT NOT NULL,
                 content_json TEXT NOT NULL,
                 content_sha256 TEXT NOT NULL,
+                channel_state_json TEXT NOT NULL DEFAULT '{}',
+                record_type TEXT NOT NULL DEFAULT 'website',
                 published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
                 UNIQUE(kind, slug)
             );
@@ -134,13 +141,13 @@ class ArticleRepository:
     def list_artifacts(self):
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT content_json FROM articles ORDER BY created_at, artifact_id"
+                "SELECT content_json FROM articles WHERE record_type='website' ORDER BY created_at, artifact_id"
             ).fetchall()
         return [ContentArtifact.model_validate_json(row["content_json"]) for row in rows]
 
     def count(self):
         with self.connect() as conn:
-            return conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+            return conn.execute("SELECT COUNT(*) FROM articles WHERE record_type='website'").fetchone()[0]
 
     def insert(self, article):
         with self.connect() as conn:
@@ -150,7 +157,7 @@ class ArticleRepository:
     def get(self, kind, slug):
         with self.connect() as conn:
             row = conn.execute(
-                "SELECT content_json FROM articles WHERE kind=? AND slug=?",
+                "SELECT content_json FROM articles WHERE kind=? AND slug=? AND record_type='website'",
                 (kind, slug),
             ).fetchone()
         return None if row is None else ContentArtifact.model_validate_json(row["content_json"])

@@ -1,9 +1,13 @@
 import json
 from datetime import datetime, timezone
 from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
+from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
 
 
 def put(path, data):
+    if path.parent.name == "drafts":
+        SquareDraftStore(path.parents[2]).save({**data, "draft_id": path.stem})
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data))
 
