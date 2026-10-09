@@ -34,6 +34,7 @@ from .content_action_prediction import bind_action_prediction, forecast_strategy
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
 from .memory_life import MemoryLifeRuntime
+from .learning_transfer import LearningTransfer
 from .models import TopicSignal
 from .public_activity import emit_public_activity
 from .prospective_predictions import (
@@ -1187,6 +1188,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         self.traffic_learning = TrafficLearningContextBuilder(state_root=self.state, account=self.base_url)
         self.predictions = ProspectivePredictionLedger(self.state)
         self.memory_life = MemoryLifeRuntime(self.state)
+        self.learning_transfer = LearningTransfer(self.state)
         if explorer is None:
             web_searcher = None
             x_searcher = None
@@ -2373,7 +2375,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         strategy_service = EditorialStrategyService(
             state_root=self.state, account=self.base_url, mind=self.mind,
             memory_life=self.memory_life, evolution_bridge=self.evolution_bridge,
-            activity=self._activity,
+            activity=self._activity, learning_transfer=self.learning_transfer,
         )
         strategy_result = strategy_service.decide(StrategyDecisionRequest(
             folder, cycle, cycle_now, selection, traffic_context, market_pulse, experiment,
@@ -2552,6 +2554,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         completion = ContentCycleCompletion(
             publisher=self.publisher, mind=self.mind, memory_life=self.memory_life,
             activity=self._activity,
+            learning_transfer=getattr(self, 'learning_transfer', None),
         )
         return completion.complete(
             result, artifact=artifact, experience=experience, folder=folder,

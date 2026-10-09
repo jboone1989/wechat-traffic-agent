@@ -33,11 +33,14 @@ def test_raw_browser_tokens_and_raw_audience_dimensions_are_never_persisted(tmp_
         observed_at=T,
     )
     assert result["status"] == "RECORDED"
-    text = next((tmp_path / "engagement/events").glob("*/*.json")).read_text()
+    import sqlite3
+    with sqlite3.connect(tmp_path / "engagement/events.sqlite3") as conn:
+        text = conn.execute("SELECT payload FROM events").fetchone()[0]
     assert visitor not in text and session not in text
     assert "visitor_hash" in text and "session_hash" in text
-    assert '"acquisition": "x"' in text
-    assert '"device_class": "mobile"' in text
+    saved = json.loads(text)
+    assert saved["acquisition"] == "x"
+    assert saved["device_class"] == "mobile"
     assert "https://x.com/some/private/path" not in text
     assert "Mozilla/5.0" not in text
     assert (store.key_path.stat().st_mode & 0o777) == 0o600

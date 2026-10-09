@@ -166,6 +166,8 @@ def research_trajectory(state: dict, limit: int = 6) -> list[dict]:
         "cycle": row.get("cycle"), "topic": row.get("topic"),
         "question": str((row.get("focus") or {}).get("question") or "")[:400],
         "approach": (row.get("focus") or {}).get("approach"),
+        "search_query": (row.get("focus") or {}).get("search_query"),
+        "method_change": (row.get("focus") or {}).get("method_change"),
         "completion_criterion": (row.get("focus") or {}).get("completion_criterion"),
         "question_status": row.get("question_status", "UNASSESSED"),
         "inquiry_action": row.get("inquiry_action"),
@@ -527,8 +529,16 @@ async def choose_research_focus(*, runtime, folder: Path, topic: str, memory: di
         trajectory = research_trajectory(memory.get("research") or {})
         same = [row for row in trajectory if row["question"].casefold() == value.question.casefold()
                 and row["question_status"] in {"PARTIAL", "BLOCKED", "UNASSESSED"}]
-        if len(same) >= 2 and len(value.method_change.strip()) < 20:
-            raise ValueError("repeated unfinished research requires a concrete method change or a different question")
+        if len(same) >= 2:
+            # A reflection counts as improvement only if it changes the
+            # subsequent acquisition, not just the explanation of failure.
+            previous_queries = {
+                str(row.get("search_query") or "").strip().casefold() for row in same
+            }
+            if value.search_query.strip().casefold() in previous_queries:
+                raise ValueError("repeated unfinished research must change its search query")
+            if len(value.method_change.strip()) < 20:
+                raise ValueError("repeated unfinished research requires a concrete method change")
 
     focus = await memory_decision(
         runtime=runtime, session=session, instruction="PLAN_LEARNING: " + LEARNING_INSTRUCTION +

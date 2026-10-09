@@ -214,3 +214,39 @@ def test_explanation_from_superseded_source_remains_disputed(tmp_path):
     row = {**research_receipt(source()), "answer": "The old implementation restores state from its persisted checkpoint.", "question_status": "ANSWERED"}
     LearningMemoryBridge(service).ingest_research(row)
     assert service.store.get_memory("research-understanding:cycle-1")["status"] == "DISPUTED"
+
+
+def test_unresolved_search_attempt_does_not_become_a_durable_lesson(tmp_path):
+    service = MemoryService(tmp_path)
+    bridge = LearningMemoryBridge(service)
+    attempt = application_receipt(cycle="unresolved-transfer")
+    attempt["assessment"]["status"] = "UNRESOLVED"
+    attempt["assessment"]["rationale"] = "No eligible unseen source was observed."
+    attempt["evidence"] = []
+    bridge.ingest_application(attempt)
+    assert service.store.get_memory("learning-application:unresolved-transfer") is None
+    assert service.store.query_memories(source_type="APPLICATION_RECEIPT", limit=20) == []
+    attempt["assessment"]["status"] = "REFUTED"
+    attempt["assessment"]["correction"] = "This other worker omits the required durable identity."
+    attempt["evidence"] = [{"evidence_id": "new-implementation", "quote": "The save comes after execution."}]
+    bridge.ingest_application(attempt)
+    saved = service.store.get_memory("learning-application:unresolved-transfer")
+    assert saved["kind"] == "LEARNING_APPLICATION_OUTCOME"
+    assert saved["evidence_refs"] == ["new-implementation"]
+
+
+def test_repeat_receipt_does_not_add_a_new_canonical_fact(tmp_path):
+    service = MemoryService(tmp_path)
+    bridge = LearningMemoryBridge(service)
+    raw = source()
+    service.ingest_source(raw, topic="recovery")
+    first = {**research_receipt(raw, cycle="learned"), "progress": "LEARNED"}
+    bridge.ingest_research(first)
+    before = service.store.list_memories(limit=None)
+    duplicate = {**research_receipt(raw, cycle="renamed-source-repeat"),
+                 "progress": "REPEATED", "answer": "This mechanism is already known."}
+    bridge.ingest_research(duplicate)
+    assert service.store.list_memories(limit=None) == before
+    duplicate["progress"] = "UNRESOLVED"
+    bridge.ingest_research(duplicate)
+    assert service.store.list_memories(limit=None) == before

@@ -51,7 +51,8 @@ def _parse_json_object(raw: str) -> dict[str, Any]:
 class FerroExternalEvalContestant:
     """Benchmark-agnostic Ferro bridge backed by isolated persistent state."""
 
-    def __init__(self, *, state_root: Path, provider: Any) -> None:
+    def __init__(self, *, state_root: Path, provider: Any,
+                 memory_enabled: bool = True, retrieval_mode: str = "full") -> None:
         self.state_root = Path(state_root).expanduser().resolve()
         if not (self.state_root / AWE_SENTINEL).is_file():
             raise ValueError(
@@ -59,8 +60,15 @@ class FerroExternalEvalContestant:
                 "production state is intentionally rejected"
             )
         self.provider = provider
+        self.memory_enabled = bool(memory_enabled)
         self.store = CanonicalMemoryStore(self.state_root)
-        self.memory = MemoryRouter(self.state_root, store=self.store)
+        if retrieval_mode not in {"full", "lexical"}:
+            raise ValueError("retrieval_mode must be full or lexical")
+        self.retrieval_mode = retrieval_mode
+        self.memory = MemoryRouter(
+            self.state_root, store=self.store,
+            enable_vectors=(retrieval_mode == "full" and memory_enabled),
+        )
         self.drive = DriveEngine(self.state_root)
         self.self_model = SelfModel(self.state_root)
         self.benchmark_id = ""
@@ -85,7 +93,8 @@ class FerroExternalEvalContestant:
         return {"ok": True, "benchmark_id": self.benchmark_id, "episode_id": self.episode_id}
 
     def _context(self, observation: str) -> dict[str, Any]:
-        recalled = self.memory.recall(observation, limit=8, access_scope=None)
+        recalled = (self.memory.recall(observation, limit=8, access_scope=None)
+                    if self.memory_enabled else [])
         return {
             "identity": "Ferro",
             "benchmark_id": self.benchmark_id,
@@ -365,12 +374,15 @@ __all__ = [
 ]
 
 
-def build_chatgpt_only_provider(*, state_root: Path):
+def build_chatgpt_only_provider(*, state_root: Path, session_id: str | None = None):
     """Build a benchmark provider that cannot silently fall back to API routes."""
     from .agent_runtime_chatgpt import AgentRuntimeChatGPTProvider
     from .llm_audit import audited_provider
 
-    provider = AgentRuntimeChatGPTProvider.from_environment(fallback=None)
+    args = {"fallback": None}
+    if session_id is not None:
+        args["session_id"] = session_id
+    provider = AgentRuntimeChatGPTProvider.from_environment(**args)
     if not provider.available:
         raise RuntimeError(
             "Agent Runtime ChatGPT cognition is unavailable for ChatGPT-only evaluation"

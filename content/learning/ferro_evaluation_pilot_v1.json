@@ -1,0 +1,86 @@
+{
+  "benchmark_id": "ferro-learning-pilot",
+  "version": "v1",
+  "review_status": "PROVISIONAL",
+  "provenance": "Answers are editorial test hypotheses derived from specified Ferro research receipts and require independent expert review before use as evidence of learning benefit.",
+  "cases": [
+    {
+      "case_id": "retention-matrix",
+      "split": "retention",
+      "observation": "A memory-ablation audit offers a four-condition experiment matrix but no trial decisions or results. Which finding is established?",
+      "actions": {
+        "alpha": "Only an experimental design is documented; no behavioral effect has been demonstrated.",
+        "beta": "The matrix proves memory caused a measurable decision shift."
+      },
+      "gold_action": "alpha",
+      "source_refs": [
+        "web:93036043958614f472d36e4720441aa23c71073ec00fb0e9304bf10e8b063f46"
+      ]
+    },
+    {
+      "case_id": "retention-traces",
+      "split": "retention",
+      "observation": "A paper introduces trace-aware evaluation but supplies no controlled reliability comparison with final-answer-only grading. Which inference is justified?",
+      "actions": {
+        "alpha": "Trace-aware grading has been experimentally proven more reliable.",
+        "beta": "It covers additional execution traces but improvement over outcome-only evaluation remains unproven."
+      },
+      "gold_action": "beta",
+      "source_refs": [
+        "web:9956ad5cd0deeee351704a1edfcabf776f5af505116b37752ff617855f138c7e"
+      ]
+    },
+    {
+      "case_id": "near-benchmark",
+      "split": "near_transfer",
+      "observation": "A new memory system describes a dozen retrieval configurations and reports their settings, but it supplies no per-condition metrics. What should an evaluator conclude?",
+      "actions": {
+        "alpha": "Do not attribute improvement to a retrieval configuration until paired results are available.",
+        "beta": "Choose the widest retrieval configuration; more settings necessarily prove improvement."
+      },
+      "gold_action": "alpha",
+      "source_refs": [
+        "web:bf69042a5b42a5ec4dff3eb3ae27cce7baa794a4768779f3bfb40277892a3e3d"
+      ]
+    },
+    {
+      "case_id": "near-comparison",
+      "split": "near_transfer",
+      "observation": "Two AI agents have identical scores, but only one has action logs and measured memory-condition differences. What can be concluded?",
+      "actions": {
+        "alpha": "Identical final scores establish that memory had no effect on any behavior.",
+        "beta": "The measured decision difference may be studied without claiming the overall score improved."
+      },
+      "gold_action": "beta",
+      "source_refs": [
+        "web:93036043958614f472d36e4720441aa23c71073ec00fb0e9304bf10e8b063f46"
+      ]
+    },
+    {
+      "case_id": "far-control",
+      "split": "far_transfer",
+      "observation": "A trading model changes its portfolio decision when its long-term policy memo is hidden, but portfolio returns are not yet available. Which statement best fits the evidence?",
+      "actions": {
+        "alpha": "The memo affected the observed decision; whether it improves investment performance is unresolved.",
+        "beta": "A portfolio decision difference by itself proves positive realized returns."
+      },
+      "gold_action": "alpha",
+      "source_refs": [
+        "web:93036043958614f472d36e4720441aa23c71073ec00fb0e9304bf10e8b063f46"
+      ]
+    },
+    {
+      "case_id": "far-actions",
+      "split": "far_transfer",
+      "observation": "An execution agent advertises rollback checkpoints but an audit only lists code paths; no crash/recovery traces or outcomes are shown. Which claim is supported?",
+      "actions": {
+        "alpha": "The existence of a rollback method proves successful post-crash recovery.",
+        "beta": "Implementation routes exist, but reliable recovery remains unverified until executed and observed."
+      },
+      "gold_action": "beta",
+      "source_refs": [
+        "web:9956ad5cd0deeee351704a1edfcabf776f5af505116b37752ff617855f138c7e"
+      ]
+    }
+  ]
+}

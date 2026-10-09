@@ -15,9 +15,11 @@ from .content_lifecycle_events import (
 
 
 class ContentCycleCompletion:
-    def __init__(self, *, publisher, mind, memory_life, activity):
+    def __init__(self, *, publisher, mind, memory_life, activity,
+                 learning_transfer=None):
         self.publisher = publisher
         self.activity = activity
+        self.learning_transfer = learning_transfer
         self.events = ContentEventRouter()
         self.events.subscribe(DraftChecked, "mind", MindProcessFeedback(mind, activity))
         self.events.subscribe(ContentCycleSettled, "memory_life", MemoryLifeFeedback(memory_life))
@@ -62,4 +64,16 @@ class ContentCycleCompletion:
             observed_at, self.publisher is not None,
         ))
         result['memory_life'] = outcomes['memory_life']
+        if self.learning_transfer is not None:
+            try:
+                result['learning_transfer'] = self.learning_transfer.settle(
+                    cycle=cycle, outcome=str(result.get('status') or 'UNKNOWN'),
+                    evidence_refs=list(refs),
+                    publication_receipt=result.get('publication'),
+                    verified_checks=not bool(passed),
+                )
+            except Exception as exc:
+                result['learning_transfer'] = {
+                    'status': 'ERROR', 'error_type': type(exc).__name__,
+                }
         return result

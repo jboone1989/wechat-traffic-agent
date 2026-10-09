@@ -205,6 +205,7 @@ class MemoryRouter:
         *,
         store: CanonicalMemoryStore | None = None,
         retrieval_models=None,
+        enable_vectors: bool = True,
         weights: RecallWeights | None = None,
         domain_policies: dict[str, dict[str, float]] | None = None,
     ) -> None:
@@ -215,7 +216,10 @@ class MemoryRouter:
         self.last_recall_metrics: dict[str, float] = {}
         self.last_domain_policy_refs: dict[str, str] = {}
         self.fts = MemorySearchIndex(self.store)
-        self.vector = SemanticVectorIndex(self.store, models=retrieval_models)
+        self.vector = (
+            SemanticVectorIndex(self.store, models=retrieval_models)
+            if enable_vectors else None
+        )
 
     def _load_active_weights(self) -> RecallWeights:
         path = self.state_root / "application" / "memory_system" / "active_recall_policy.json"
@@ -287,7 +291,7 @@ class MemoryRouter:
             max(50, int(limit) * int(self.weights.search_multiplier)) * policies["index"]["budget_scale"]
         )))
         lexical = self.fts.search(query, limit=search_limit)
-        vector = self.vector.search(query, limit=search_limit)
+        vector = self.vector.search(query, limit=search_limit) if self.vector else []
         lexical_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(lexical)}
         vector_rank = {memory_id: index + 1 for index, (memory_id, _) in enumerate(vector)}
         structured_relevance = bool(
@@ -341,7 +345,7 @@ class MemoryRouter:
             key=lambda item: (item[0], str(item[1].get("created_at") or "")),
             reverse=True,
         )
-        if candidates:
+        if candidates and self.vector is not None:
             bounded=candidates[:32]
             scores=self.vector.rerank(query,[memory_document(r) for _,r in bounded])
             candidates=[pair for _,pair in sorted(zip(scores,bounded,strict=True),key=lambda p:-p[0])]

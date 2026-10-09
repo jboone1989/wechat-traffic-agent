@@ -122,6 +122,33 @@ def commit_application(folder: Path, focus, memory: dict) -> dict | None:
     return plan
 
 
+def _feedback_summary(receipt: dict) -> dict:
+    """Keep only data necessary for recent feedback.
+
+    Complete learning receipts remain in the durable cycle history and the
+    long-term memory bridge already saved the substantive observation.
+    """
+    assessment = receipt["assessment"]
+    return {
+        "cycle": receipt["cycle"],
+        "topic": receipt["topic"],
+        "checked_at": receipt["checked_at"],
+        "knowledge": {"observation": receipt["knowledge"]["observation"]},
+        "application": {
+            "prediction": receipt["application"]["prediction"],
+            "confidence": receipt["application"]["confidence"],
+        },
+        "assessment": {
+            key: assessment.get(key) for key in
+            ("status", "rationale", "correction", "next_question", "next_query")
+        },
+        "brier_score": receipt.get("brier_score"),
+        "evidence": [
+            {"evidence_id": row["evidence_id"]} for row in (receipt.get("evidence") or [])
+        ],
+    }
+
+
 def _application_state(state_root: Path) -> dict:
     path = Path(state_root) / "content" / "learning" / "applications.json"
     if not path.exists():
@@ -138,7 +165,10 @@ def remember_application(state_root: Path, receipt: dict) -> None:
     LearningMemoryBridge(MemoryService(state_root)).ingest_application(receipt)
     state = _application_state(state_root)
     if not any(row["cycle"] == receipt["cycle"] for row in state["history"]):
-        state["history"] = [*state["history"], receipt][-100:]
+        state["history"] = [
+            *(_feedback_summary(row) for row in state["history"]),
+            _feedback_summary(receipt),
+        ][-100:]
         resolved = [row for row in state["history"]
                     if row["assessment"]["status"] in {"CONFIRMED", "REFUTED"}]
         state["metrics"] = {

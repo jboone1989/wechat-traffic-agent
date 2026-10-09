@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from wechat_traffic_agent.channel_evidence import ChannelEvidence, ChannelEvidenceStore
+from wechat_traffic_agent.website_engagement_sqlite import EngagementEventsTable
 from wechat_traffic_agent.web_editorial import digest
 
 SOURCE = "first-party-engagement:v1"
@@ -147,39 +148,43 @@ class WebsiteEngagementStore:
             raise ValueError("engagement coverage schema mismatch")
         return _utc(datetime.fromisoformat(str(payload["started_at"])))
 
-    def record_payload(self, payload: dict, *, observed_at: datetime, audience_class: Literal["public", "operator"] = "public") -> dict:
+    def _events_db(self) -> EngagementEventsTable:
+        return EngagementEventsTable(self.root)
+
+    def record_payload(self, payload: dict, *, observed_at: datetime,
+                       audience_class: Literal["public", "operator"] = "public") -> dict:
         raw = WebsiteEngagementInput.model_validate(payload)
         observed_at = _utc(observed_at).replace(microsecond=0)
         key = self._key()
-        event = WebsiteEngagementEvent(event_id=raw.event_id, visitor_hash=_hmac_token(key, raw.visitor_token), session_hash=_hmac_token(key, raw.session_token), event_type=raw.event_type, route=raw.route, target_route=raw.target_route, acquisition=raw.acquisition, device_class=raw.device_class, audience_class=audience_class, observed_at=observed_at)
-        path = self.events_root / observed_at.strftime("%Y-%m-%d") / f"{event.event_id}.json"
-        stable = _stable_event(event)
-        if path.exists():
-            existing = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if _stable_event(existing) != stable:
-                raise ValueError("engagement event_id conflicts with existing event")
-            return {"status": "DUPLICATE", "event_id": event.event_id, "publication_authority": False}
-        try:
-            _write_once_json(path, event.model_dump(mode="json"))
-        except FileExistsError:
-            existing = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if _stable_event(existing) != stable:
-                raise ValueError("engagement event_id conflicts with existing event") from None
-            return {"status": "DUPLICATE", "event_id": event.event_id, "publication_authority": False}
-        return {"status": "RECORDED", "event_id": event.event_id, "publication_authority": False}
+        event = WebsiteEngagementEvent(
+            event_id=raw.event_id,
+            visitor_hash=_hmac_token(key, raw.visitor_token),
+            session_hash=_hmac_token(key, raw.session_token),
+            event_type=raw.event_type, route=raw.route,
+            target_route=raw.target_route, acquisition=raw.acquisition,
+            device_class=raw.device_class, audience_class=audience_class,
+            observed_at=observed_at,
+        )
+        status = self._events_db().record(
+            event, decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
+        return {"status": status, "event_id": event.event_id, "publication_authority": False}
 
     def events(self, *, start: datetime, end: datetime) -> list[WebsiteEngagementEvent]:
         start, end = _utc(start), _utc(end)
         if not start < end:
             raise ValueError("engagement event range must be non-empty")
-        rows = []
-        for path in sorted(self.events_root.glob("*/*.json")):
-            row = WebsiteEngagementEvent.model_validate_json(path.read_text(encoding="utf-8"))
-            if path.name != f"{row.event_id}.json":
-                raise ValueError("engagement event filename mismatch")
-            if start <= row.observed_at.astimezone(timezone.utc) < end:
-                rows.append(row)
-        return rows
+        return self._events_db().events(
+            start, end, decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
+
+    def migrate_legacy_events(self) -> dict:
+        return self._events_db().count(
+            decode=WebsiteEngagementEvent.model_validate_json,
+            stable=_stable_event,
+        )
 
 class WebsiteEngagementOutcomeCollector:
     def __init__(self, *, state_root: Path, account: str) -> None:
@@ -204,12 +209,22 @@ class WebsiteEngagementOutcomeCollector:
                 if window_end > now: continue
                 if coverage_start > published_at:
                     coverage_missing.append({"publication_id": publication["revision"], "window": label}); continue
+                # Skip already-recorded metric windows BEFORE producing a
+                # new snapshot. Otherwise each observer tick changes
+                # observed_at and generates another unused JSON file.
+                missing_metrics = [
+                    metric for metric in METRICS
+                    if (publication["revision"], published_at, window_end, metric, SOURCE)
+                    not in existing
+                ]
+                if not missing_metrics:
+                    continue
                 metrics = _metrics_for_route(self.events.events(start=published_at, end=window_end), route=attr["public_route"], window_end=window_end)
                 snapshot = {"schema_version":"website-engagement-snapshot.v1","publication_id":publication["revision"],"artifact_id":publication["artifact_id"],"route":attr["public_route"],"window":label,"window_start":published_at.isoformat(),"window_end":window_end.isoformat(),"observed_at":now.isoformat(),"metrics":metrics,"coverage_start":coverage_start.isoformat(),"privacy":"Only HMACed random visitor/session tokens are persisted; no IP, user-agent, referrer, or page text.","causal_claim":False}
                 snapshot_id = digest(snapshot); _write_once_json(self.snapshot_root / f"{snapshot_id}.json", snapshot)
-                for metric, value in metrics.items():
+                for metric in missing_metrics:
+                    value = metrics[metric]
                     key=(publication["revision"], published_at, window_end, metric, SOURCE)
-                    if key in existing: continue
                     definition, unit = METRICS[metric]
                     row = ChannelEvidence(channel="website",account=self.account,publication_id=publication["revision"],artifact_id=publication["artifact_id"],published_content_sha256=attr["published_content_sha256"],agent_candidate_sha256=attr["agent_candidate_sha256"],topic=attr["topic"],title_version=attr["title_version"],structure_version=attr["structure_version"],strategy_version=attr["strategy_version"],objective="website_engagement",distribution_cohort="first-party-anonymous-events:v1",metric=metric,metric_definition=definition,unit=unit,value=float(value),published_at=published_at,window_start=published_at,window_end=window_end,observed_at=now,revision=1,source=SOURCE,evidence_refs=(f"website-publication:{publication['revision']}",f"website-engagement-snapshot:sha256:{snapshot_id}"))
                     path=self.evidence.record(row); existing.add(key); recorded.append({"publication_id":publication["revision"],"window":label,"metric":metric,"value":value,"evidence_path":str(path)})

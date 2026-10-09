@@ -113,11 +113,13 @@ def test_virtualbrain_life_events_form_idempotent_noncausal_episodes_and_knowled
         "confidence": 0.85,
         "significance": 0.8,
     })
-    assert second["knowledge_memory_ids"]
-    knowledge = life.store.get_memory(second["knowledge_memory_ids"][0])
-    assert knowledge is not None
-    assert knowledge["kind"] == "EXPERIENCE_KNOWLEDGE"
-    assert "calibrated against observed evidence" in knowledge["text"]
+    assert second["knowledge_memory_ids"] == []
+    # A source label alone must not hallucinate a new principle.
+    assert "funding" in episode["text"] or "funding" in str(episode["payload"])
+    assert not life.store.query_memories(
+        memory_types=["SEMANTIC"], statuses=["ACTIVE"],
+        topic="experience-knowledge", limit=20,
+    )
 
 
 def test_reflection_identity_recovers_domain_when_session_strips_metadata(tmp_path):
@@ -215,3 +217,42 @@ def test_virtualbrain_life_history_backfill_is_bounded_and_idempotent(tmp_path):
         memory_types=["EPISODIC"], statuses=["ACTIVE"], topic="virtualbrain-life", limit=20
     )
     assert len(episodes) == 3
+
+
+def test_autobiographical_learning_requires_concrete_observed_lessons(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    specific = (
+        "When USDT deviates from USD, a Coinbase BTC-USD versus Binance "
+        "BTC-USDT gap includes the stablecoin basis; adjust before attributing "
+        "the raw cross-exchange gap to Bitcoin demand."
+    )
+    for index in (1, 2):
+        out = life.observe_life_event({
+            "event_id": f"prediction-outcome:stablecoin-{index}",
+            "summary": f"BTC premium case {index} exposed a USDT basis confound.",
+            "lesson": specific,
+            "evidence_refs": [f"world:usdt-basis:{index}"],
+            "source": "prospective-world-outcome",
+            "domain": "crypto-finance-world",
+            "outcome": 0.0,
+        })
+    assert out["knowledge_memory_ids"]
+    knowledge = life.store.get_memory(out["knowledge_memory_ids"][0])
+    assert "stablecoin basis" in knowledge["text"]
+    assert "world:usdt-basis:2" not in knowledge["text"]  # source is in refs
+    assert knowledge["status"] == "ACTIVE"
+
+
+def test_distinct_reflections_have_distinct_searchable_episode_text(tmp_path):
+    life = MemoryLifeRuntime(tmp_path)
+    samples = (
+        ("reflection:one", "My search missed an explicit formula for the Sharpe correction."),
+        ("reflection:two", "The publication receipt did not confirm the live X reply."),
+    )
+    rows = [life.observe_life_event({"event_id": key, "summary": content})
+            for key, content in samples]
+    remembered = [life.store.get_memory(row["episode_id"]) for row in rows]
+    assert all(r["kind"] == "EPISODE" for r in remembered)
+    assert remembered[0]["text"] != remembered[1]["text"]
+    assert "Sharpe correction" in remembered[0]["text"]
+    assert "publication receipt" in remembered[1]["text"]

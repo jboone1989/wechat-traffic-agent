@@ -109,13 +109,21 @@ class MemoryLifeRuntime:
         )) or [event_id]
         context_topic = str(topic or event.get("topic") or "").strip()
         memory_topic = "virtualbrain-life:" + domain + ((":" + context_topic) if context_topic else "")
-        lesson = ""
-        if source == "prospective-world-outcome":
-            lesson = "Dated world predictions should be calibrated against observed evidence and explicit prediction error."
-        elif source == "content-action-prediction-outcome":
-            lesson = "Content forecasts should be calibrated against mature observed outcomes; prediction error is descriptive, not causal proof."
-        elif source == "website-audience-outcome":
-            lesson = "Mature audience response is descriptive evidence for strategy learning, not causal proof."
+        # An observed event is an episode, NOT automatically a learned rule.
+        # Only a concrete lesson supplied by the outcome evaluator can be
+        # consolidated. Former hard-coded morals caused 156 near-identical
+        # "knowledge" memories regardless of what actually happened.
+        lesson = str(event.get("lesson") or "").strip()
+        if lesson and (
+            len(lesson) < 24
+            or not event.get("evidence_refs")
+            or source not in {
+                "prospective-world-outcome",
+                "content-action-prediction-outcome",
+                "website-audience-outcome",
+            }
+        ):
+            lesson = ""
         provenance = event.get("provenance") if isinstance(event.get("provenance"), Mapping) else {}
         at = str(
             event.get("observed_at")
@@ -127,7 +135,10 @@ class MemoryLifeRuntime:
         salience = self.salience.score(event)
         episode = self.episodes.consolidate(
             [{"event_id": event_id, "actor": "ferro", "text": summary[:1600], "created_at": at}],
-            goal=f"preserve lived experience in {domain}",
+            # Putting the actual observation into the searchable episode
+            # text makes distinct experiences retrievable instead of 1,000+
+            # records sharing an identical generic goal.
+            goal=f"understand {domain}: {summary[:400]}",
             outcome=str(event.get("outcome") if event.get("outcome") is not None else "OBSERVED"),
             lesson=lesson,
             prediction_error=("" if event.get("prediction_error") is None else str(event.get("prediction_error"))),

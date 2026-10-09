@@ -39,10 +39,12 @@ class StrategyDecisionResult:
 
 
 class EditorialStrategyService:
-    def __init__(self, *, state_root, account, mind, memory_life, evolution_bridge, activity):
+    def __init__(self, *, state_root, account, mind, memory_life, evolution_bridge,
+                 activity, learning_transfer=None):
         self.state_root, self.account = state_root, account
         self.mind, self.memory_life = mind, memory_life
         self.evolution_bridge, self.activity = evolution_bridge, activity
+        self.learning_transfer = learning_transfer
 
     def _mind_context(self, request):
         path = request.folder / 'mind_strategy_context.json'
@@ -101,18 +103,29 @@ class EditorialStrategyService:
                 'cycle': request.cycle, 'topic': request.selection.topic,
             },
         )
-        steps = list((process_skill or {}).get('steps') or default_steps)
+        assignment = (
+            self.learning_transfer.assign(
+                cycle=request.cycle, topic=request.selection.topic,
+                candidate=process_skill,
+            )
+            if self.learning_transfer is not None else None
+        )
+        selected = assignment or process_skill or {}
+        steps = list(selected.get('steps') or default_steps)
         _put(request.folder / 'memory_process_variant.json', {
             'status': 'SELECTED' if process_skill is not None else 'BASELINE_NO_PRIOR_PROCEDURE',
             'action': 'content-create-verify-publish',
-            'procedure_id': str((process_skill or {}).get('procedure_id') or ''),
-            'variant_id': str((process_skill or {}).get('variant_id') or ''),
-            'policy_action': str((process_skill or {}).get('policy_action') or 'DIRECT'),
+            'procedure_id': str(selected.get('procedure_id') or ''),
+            'variant_id': str(selected.get('variant_id') or ''),
+            'arm': selected.get('arm'),
+            'candidate_key': selected.get('candidate_key'),
+            'comparison_at_assignment': selected.get('comparison_at_assignment'),
+            'policy_action': str(selected.get('policy_action') or 'DIRECT'),
             'policy_reason': str((process_skill or {}).get('policy_reason') or ''),
             'steps': steps, 'causal_claim': False,
         })
-        retry_once = str((process_skill or {}).get('policy_action') or 'DIRECT') == 'RETRY_ONCE_SAFE'
-        return process_skill, steps, retry_once
+        retry_once = str(selected.get('policy_action') or 'DIRECT') == 'RETRY_ONCE_SAFE'
+        return selected if assignment is not None else process_skill, steps, retry_once
 
     def decide(self, request: StrategyDecisionRequest) -> StrategyDecisionResult:
         context = self._mind_context(request)

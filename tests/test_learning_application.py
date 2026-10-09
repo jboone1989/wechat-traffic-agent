@@ -406,3 +406,26 @@ def test_test_focus_remains_partial_when_prediction_is_unresolved(tmp_path):
     assert result["question_status"] == "PARTIAL"
     assert result["inquiry_action"] == "CONTINUE"
     assert result["application"]["brier_score"] is None
+
+
+def test_recent_application_state_excludes_full_evidence_and_prior_context(tmp_path):
+    from wechat_traffic_agent.learning_application import remember_application
+    receipt = {
+        "cycle": "cycle-1", "topic": "agent-memory", "checked_at": NOW.isoformat(),
+        "knowledge": {"observation": "Observed a timing mismatch.", "quote": "Z" * 90000},
+        "application": {"prediction": "Another implementation repeats the effect.", "confidence": .8},
+        "assessment": {"status": "REFUTED", "rationale": "Timing differs",
+                       "correction": CORRECTION, "next_question": QUESTION,
+                       "next_query": NEXT},
+        "evidence": [{"evidence_id": "source-1", "quote": "Y" * 90000}],
+        "brier_score": .64,
+        "prior_quotes": ["Q" * 90000],
+    }
+    # This test verifies the summary representation; ingestion is verified
+    # in the existing application-memory bridge tests.
+    from wechat_traffic_agent.learning_application import _feedback_summary
+    summary = _feedback_summary(receipt)
+    assert len(json.dumps(summary)) < 1500
+    assert "prior_quotes" not in summary
+    assert "quote" not in summary["evidence"][0]
+    assert summary["knowledge"]["observation"] == receipt["knowledge"]["observation"]

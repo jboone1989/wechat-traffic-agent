@@ -423,6 +423,10 @@ class ContinuousContentLoop:
             (folder / 'waiting_for_chatgpt.json').unlink(missing_ok=True)
             _put(result_path, result)
             (folder / "memory_pending.json").unlink(missing_ok=True)
+            # Once the durable result has been committed, the full prompt
+            # input snapshot is no longer part of recovery. Knowledge and
+            # publication receipts live in their own persistent stores.
+            (folder / "inputs.json").unlink(missing_ok=True)
             return result
 
     async def _run(self, folder, cycle, now):

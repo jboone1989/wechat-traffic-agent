@@ -419,3 +419,32 @@ def test_parse_json_object_tracks_nested_braces_inside_strings():
         """{"kind":"tool","tool_name":"shell","arguments":{"command":"echo '{x}'"}} trailing"""
     )
     assert parsed["arguments"]["command"] == "echo '{x}'"
+
+
+def test_learning_evaluation_uses_its_own_logical_jev_session(monkeypatch, tmp_path):
+    """Separate receipt/target in the SAME browser profile, without API fallback."""
+    import wechat_traffic_agent.agent_runtime_chatgpt as adapter
+    from wechat_traffic_agent.external_eval_contestant import build_chatgpt_only_provider
+    seen = []
+    class Fake:
+        available = True
+    def create(*, fallback=None, session_id=None):
+        seen.append((fallback, session_id))
+        return Fake()
+    monkeypatch.setattr(adapter.AgentRuntimeChatGPTProvider, "from_environment", create)
+    monkeypatch.setattr(
+        "wechat_traffic_agent.llm_audit.audited_provider",
+        lambda p, state_root, scope: p,
+    )
+    build_chatgpt_only_provider(
+        state_root=tmp_path, session_id="ferro-learning-evaluation",
+    )
+    assert seen == [(None, "ferro-learning-evaluation")]
+
+
+def test_learning_driver_does_not_share_production_conversation_id():
+    from pathlib import Path
+    code = (Path(__file__).resolve().parents[1]
+            / "scripts" / "run_learning_evaluation.py").read_text()
+    assert 'session_id="ferro-learning-evaluation"' in code
+    assert 'session_id="chatgpt-cognition"' not in code
