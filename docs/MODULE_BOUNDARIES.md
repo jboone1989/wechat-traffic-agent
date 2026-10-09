@@ -375,6 +375,39 @@ changes during the modularization. Article SQLite remains authoritative;
   failures in repair-signal forwarding, observed before this stage's edits;
   they remain a separate integration blocker, not an accepted success.
 
+## Provider trial feature ports (stage 14)
+
+- `ResourceTrialPolicy` is deterministic selection only: keep genuinely
+  never-tried providers ahead of already-known ones, allow one executor-generation
+  retry of stale failures, observe retry cooling, and exclude incompatible or
+  mathematically inadequate model targets without discarding the provider.
+  It neither reads credentials nor opens network connections.
+- `ProviderTrialExecutor` resolves the requested target and runs a bounded
+  trial. It returns measured observations and canonical trial objects; it
+  cannot decide their success, schedule a retry or persist credentials.
+- `ResourceOutcomeRecorder` exclusively writes existing immutable trial
+  receipts and deduplicated acquisition-outcome records under
+  `application/resource_discovery`. Replays preserve the original outcome
+  timestamp. It exposes the existing read path for downstream planning.
+- `ResourceFeedbackConsumer` independently evaluates persisted model
+  trials, generates provider diagnostics, selects the empirically viable
+  model, and synchronizes the resource pool. It does not invoke the trial
+  executor or alter the publishing pipeline. The resource-policy change is
+  observable on the next discovery/selection pass via saved outcomes.
+- `ResourceTrialCoordinator` composes these four feature ports and handles
+  one bounded candidate at a time. `ContentResourceScout.run_ready_trials()`
+  shrank from 402 to **25 lines**. All new methods are <=100 lines.
+  Credential values are read at the composition root and supplied only to
+  the executor; they are never written to a receipt.
+- `tests/test_resource_trial_ports.py` exercises policy, executor,
+  replay deduplication, independently callable feedback, and import boundaries.
+  Existing provider-trial regression suites continue to exercise rate limits,
+  rotation, stale executor generations and failed target resolution.
+- This adds no process, queue, periodic poller, database, or retry loop. Known
+  unrelated `resource_economy/resource_regulation` pytest failures and a
+  `wakeful_resource_trials` collection error reproduce on the unchanged
+  main branch and remain separate baseline issues.
+
 ## Remaining steps to independently deployable code
 
 These are substantive, not folder moves:

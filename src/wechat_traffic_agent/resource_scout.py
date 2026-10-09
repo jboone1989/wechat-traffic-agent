@@ -22,15 +22,7 @@ from agent_runtime.resource_trials import (
 
 from .nvidia_catalog import classify_nvidia_model
 from .provider_diagnostics import diagnose_provider_trials
-
-
-_REPLAN_OUTCOME_STATUSES = {
-    "NO_VIABLE_MODEL",  # legacy broad status; now interpreted as model-level replan
-    "MODEL_TARGETS_INCOMPATIBLE",
-    "FREE_CANDIDATES_EXHAUSTED",
-    "TEMPORARY_RATE_LIMIT",
-    "TASK_MISMATCH",
-}
+from .resource_trial_policy import REPLAN_OUTCOME_STATUSES as _REPLAN_OUTCOME_STATUSES
 
 
 def _provider_trial_resolver_evidence_ref() -> str:
@@ -56,71 +48,9 @@ def _provider_trial_resolver_evidence_ref() -> str:
     ).hexdigest()
 
 
-def _parse_aware_time(value: Any) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        return None
-    return parsed.astimezone(timezone.utc)
-
-
-def _provider_trial_retry_plan(
-    plan: Any,
-    prior: list[ModelTrial],
-    *,
-    now: datetime,
-) -> Any | None:
-    """Return a bounded retry plan when old failure evidence is no longer decisive."""
-    if not prior:
-        return plan
-    if any(row.status == "COMPLETED" for row in prior):
-        return None
-
-    current_ref = provider_trial_execution_evidence_ref()
-    current = [row for row in prior if current_ref in tuple(row.evidence_refs or ())]
-    # A changed trial executor (headers/protocol semantics/etc.) gets one fresh
-    # evidence opportunity immediately instead of being poisoned by old failures.
-    if not current:
-        return replace(
-            plan,
-            plan_id=f"{plan.plan_id}:executor-refresh",
-            evidence_refs=tuple(dict.fromkeys((*plan.evidence_refs, current_ref))),
-        )
-
-    # Authentication and hard model-removal errors need a credential/model change,
-    # not periodic hammering. Runtime model rotation handles 404/410 separately.
-    terminal_codes = {"HTTP_401", "HTTP_404", "HTTP_410"}
-    if any(str(row.error_code or "").upper() in terminal_codes for row in current):
-        return None
-
-    batch_size = max(1, min(int(plan.max_requests), 3))
-    if len(current) >= batch_size * 3:
-        return None
-    latest = max(
-        (
-            value
-            for value in (
-                _parse_aware_time(row.completed_at or row.started_at)
-                for row in current
-            )
-            if value is not None
-        ),
-        default=None,
-    )
-    point = now.astimezone(timezone.utc)
-    if latest is not None and point - latest < timedelta(hours=6):
-        return None
-    retry_bucket = int(point.timestamp() // int(timedelta(hours=6).total_seconds()))
-    return replace(
-        plan,
-        plan_id=f"{plan.plan_id}:retry:{retry_bucket}",
-        evidence_refs=tuple(dict.fromkeys((*plan.evidence_refs, current_ref))),
-    )
+from .resource_trial_policy import (
+    _parse_aware_time, retry_plan as _provider_trial_retry_plan,
+)
 
 
 def rank_high_capability_model(
@@ -509,406 +439,30 @@ class ContentResourceScout:
         return True
 
     def run_ready_trials(self, *, now: datetime, provider_limit: int = 2) -> dict[str, Any]:
+        from .provider_trial_executor import ProviderTrialExecutor
+        from .resource_trial_policy import ResourceTrialPolicy
+        from .resource_trial_coordinator import ResourceTrialCoordinator
+        from .resource_feedback_consumer import ResourceFeedbackConsumer
         leads = self.scout.provider_leads()
-        verifications = self.scout.provider_verifications()
-        outcomes = self.acquisition_outcomes()
-        available = {item.credential_env for item in leads if os.environ.get(item.credential_env)}
-        plans = plan_provider_trials(
-            leads, verifications, available_credentials=available,
-            acquisition_outcomes=outcomes, limit=max(3, int(provider_limit)),
-        )
-        existing = list(self.scout.model_trials())
-        executed_measurements: list[ProviderTrialMeasurement] = []
-        provider_rows: list[dict[str, Any]] = []
-        replan_required = False
-        expand_during_outage = self._active_free_pool_is_unavailable(now=now)
-        ready = [item for item in plans if item.status == "READY_TO_TRIAL"]
-        resolver_evidence_ref = _provider_trial_resolver_evidence_ref()
-        previously_attempted_leads = {
-            str(row.opportunity_id)
-            for row in existing
-            if str(row.opportunity_id or "")
+        credentials = {
+            lead.credential_env: str(os.environ.get(lead.credential_env) or "")
+            for lead in leads
         }
-        previously_attempted_leads.update(
-            str(row.lead_id)
-            for row in outcomes
-            if str(row.lead_id or "")
-            and (
-                row.status in {
-                    "TRIAL_STARTED",
-                    "TRIAL_SUCCEEDED",
-                    "NO_VIABLE_MODEL",
-                    "AUTHENTICATION_REJECTED",
-                    "PROVIDER_UNAVAILABLE",
-                    "MODEL_TARGETS_INCOMPATIBLE",
-                    "FREE_CANDIDATES_EXHAUSTED",
-                }
-                or (
-                    row.status == "TRIAL_FAILED"
-                    and resolver_evidence_ref in row.evidence_refs
-                )
-            )
-        )
-        current_executor_ref = provider_trial_execution_evidence_ref()
-        stale_failed_leads = {
-            str(row.opportunity_id)
-            for row in existing
-            if str(row.opportunity_id or "")
-        }
-        stale_failed_leads = {
-            lead_id
-            for lead_id in stale_failed_leads
-            if not any(
-                row.opportunity_id == lead_id and row.status == "COMPLETED"
-                for row in existing
-            )
-            and not any(
-                row.opportunity_id == lead_id
-                and current_executor_ref in tuple(row.evidence_refs or ())
-                for row in existing
-            )
-        }
-        # A bounded shortlist must not permanently starve a provider merely
-        # because higher-priority providers already have usable evidence.
-        # Give a provider whose only failures came from an older executor one
-        # refresh opportunity first; then prefer genuinely never-tried leads.
-        # Preserve planner priority within each class.
-        ready.sort(
-            key=lambda item: (
-                0 if item.lead_id not in previously_attempted_leads
-                else 1 if item.lead_id in stale_failed_leads
-                else 2
-            )
-        )
-        ready = ready[: max(1, min(int(provider_limit), 3))]
-        for plan in ready:
-            api_key = str(os.environ.get(plan.credential_env) or "")
-            if not api_key:
-                continue
-            plan_model_rows: dict[str, list[ModelTrial]] = {}
-            for row in existing:
-                if row.opportunity_id == plan.lead_id and row.model_id:
-                    plan_model_rows.setdefault(row.model_id, []).append(row)
-            incompatible_models = {
-                model_id
-                for model_id, rows in plan_model_rows.items()
-                if len(rows) >= max(1, min(int(plan.max_requests), 3))
-                and all(
-                    row.status == "FAILED" and row.error_code in {"HTTP_404", "HTTP_410"}
-                    for row in rows
-                )
-            }
-            runtime_incompatible = self._runtime_incompatible_models(
-                credential_env=plan.credential_env,
-                model_rows=plan_model_rows,
-            )
-            incompatible_models.update(runtime_incompatible)
-            previously_tried_models = set(plan_model_rows)
-            excluded_models: frozenset[str] = frozenset(
-                incompatible_models
-                | (previously_tried_models if expand_during_outage else set())
-            )
-            if plan.credential_env == "OPENROUTER_API_KEY":
-                model_rows: dict[str, list[ModelTrial]] = {}
-                for row in existing:
-                    if row.opportunity_id != plan.lead_id or not row.model_id or row.model_id == "openrouter/free":
-                        continue
-                    model_rows.setdefault(row.model_id, []).append(row)
-                rate_limited_models = {
-                    model_id
-                    for model_id, rows in model_rows.items()
-                    if rows and all(
-                        row.status == "FAILED" and row.error_code == "HTTP_429"
-                        for row in rows
-                    )
-                }
-                quality_impossible_models = set()
-                benchmark_count = max(1, min(int(plan.max_requests), 3))
-                quality_floor = 0.75
-                for model_id, rows in model_rows.items():
-                    completed = [
-                        row for row in rows
-                        if row.status == "COMPLETED" and row.quality_score is not None
-                    ]
-                    if len(rows) < benchmark_count:
-                        continue
-                    remaining = max(0, benchmark_count - len(completed))
-                    best_possible = (
-                        sum(float(row.quality_score) for row in completed) + float(remaining)
-                    ) / float(benchmark_count)
-                    if best_possible < quality_floor:
-                        quality_impossible_models.add(model_id)
-                exhausted_models = (
-                    set(incompatible_models)
-                    | rate_limited_models
-                    | quality_impossible_models
-                )
-                if len(exhausted_models) >= 3:
-                    error_codes = []
-                    if rate_limited_models:
-                        error_codes.append("HTTP_429")
-                    if quality_impossible_models:
-                        error_codes.append("QUALITY_CANNOT_REACH_FLOOR")
-                    refs = tuple(
-                        row.trial_id
-                        for model_id in sorted(exhausted_models)
-                        for row in model_rows[model_id]
-                    )
-                    outcome = self.record_acquisition_outcome(
-                        plan_id=plan.plan_id, lead_id=plan.lead_id, status="FREE_CANDIDATES_EXHAUSTED",
-                        now=now, source="RUNTIME",
-                        detail_summary="bounded free-tier candidate sample exhausted; provider-wide unavailability was not established",
-                        evidence_refs=refs,
-                    )
-                    replan_required = replan_required or bool(outcome.get("created"))
-                    provider_rows.append({
-                        "provider_label": plan.provider_label,
-                        "credential_env": plan.credential_env,
-                        "lead_id": plan.lead_id,
-                        "status": "FREE_TIER_CANDIDATES_EXHAUSTED",
-                        "request_count": 0,
-                        "completed_count": 0,
-                        "trial_ids": list(refs),
-                        "mean_quality": None,
-                        "mean_latency_ms": None,
-                        "observed_cost_total": None,
-                        "cost_observed_for_all_completed": False,
-                        "models": sorted(exhausted_models),
-                        "error_codes": error_codes,
-                    })
-                    continue
-                excluded_models = frozenset(
-                    exhausted_models
-                    | (previously_tried_models if expand_during_outage else set())
-                )
-            try:
-                target = resolve_trial_target(
-                    plan.credential_env, api_key=api_key, exclude_models=excluded_models,
-                )
-            except Exception as exc:  # Provider catalogue failures must not block other candidates.
-                error_code = str(getattr(exc, "code", "") or type(exc).__name__)
-                if error_code == "NO_COMPATIBLE_MODEL" and incompatible_models:
-                    refs = tuple(
-                        row.trial_id
-                        for model_id in sorted(incompatible_models)
-                        for row in plan_model_rows[model_id]
-                    )
-                    outcome = self.record_acquisition_outcome(
-                        plan_id=plan.plan_id,
-                        lead_id=plan.lead_id,
-                        status="MODEL_TARGETS_INCOMPATIBLE",
-                        now=now,
-                        source="RUNTIME",
-                        detail_summary=(
-                            "all currently resolvable compatible model targets were exhausted "
-                            "after excluding model-level 404/410 evidence; provider-wide "
-                            "unavailability was not established"
-                        ),
-                        evidence_refs=refs,
-                    )
-                    replan_required = replan_required or bool(outcome.get("created"))
-                    provider_rows.append({
-                        "provider_label": plan.provider_label,
-                        "credential_env": plan.credential_env,
-                        "lead_id": plan.lead_id,
-                        "status": "PROTOCOL_TARGETS_EXHAUSTED",
-                        "request_count": 0,
-                        "completed_count": 0,
-                        "trial_ids": list(refs),
-                        "mean_quality": None,
-                        "mean_latency_ms": None,
-                        "observed_cost_total": None,
-                        "cost_observed_for_all_completed": False,
-                        "models": sorted(incompatible_models),
-                        "error_codes": ["HTTP_404", "HTTP_410"],
-                    })
-                    continue
-                if error_code == "HTTP_401":
-                    outcome_status = "AUTHENTICATION_REJECTED"
-                elif error_code == "NO_COMPATIBLE_MODEL":
-                    outcome_status = "NO_VIABLE_MODEL"
-                else:
-                    outcome_status = "TRIAL_FAILED"
-                outcome = self.record_acquisition_outcome(
-                    plan_id=plan.plan_id,
-                    lead_id=plan.lead_id,
-                    status=outcome_status,
-                    now=now,
-                    source="RUNTIME",
-                    detail_summary=(
-                        "bounded provider trial target resolution failed "
-                        f"with {error_code}"
-                    ),
-                    evidence_refs=(
-                        f"target-resolution-error:{error_code}",
-                        resolver_evidence_ref,
-                    ),
-                )
-                replan_required = replan_required or bool(outcome.get("created"))
-                provider_rows.append({
-                    "provider_label": plan.provider_label,
-                    "credential_env": plan.credential_env,
-                    "lead_id": plan.lead_id,
-                    "status": (
-                        "AUTHENTICATION_REJECTED"
-                        if outcome_status == "AUTHENTICATION_REJECTED"
-                        else "TARGET_RESOLUTION_FAILED"
-                    ),
-                    "request_count": 0,
-                    "completed_count": 0,
-                    "trial_ids": [],
-                    "mean_quality": None,
-                    "mean_latency_ms": None,
-                    "observed_cost_total": None,
-                    "cost_observed_for_all_completed": False,
-                    "models": [],
-                    "error_codes": [error_code],
-                })
-                continue
-            if target is None:
-                outcome = self.record_acquisition_outcome(
-                    plan_id=plan.plan_id,
-                    lead_id=plan.lead_id,
-                    status="NO_VIABLE_MODEL",
-                    now=now,
-                    source="RUNTIME",
-                    detail_summary="bounded provider trial target resolution returned no candidate",
-                    evidence_refs=("target-resolution:no-candidate",),
-                )
-                replan_required = replan_required or bool(outcome.get("created"))
-                provider_rows.append({
-                    "provider_label": plan.provider_label,
-                    "credential_env": plan.credential_env,
-                    "lead_id": plan.lead_id,
-                    "status": "TARGET_RESOLUTION_FAILED",
-                    "request_count": 0,
-                    "completed_count": 0,
-                    "trial_ids": [],
-                    "mean_quality": None,
-                    "mean_latency_ms": None,
-                    "observed_cost_total": None,
-                    "cost_observed_for_all_completed": False,
-                    "models": [],
-                    "error_codes": ["NO_VIABLE_MODEL"],
-                })
-                continue
-            prior = [
-                row for row in existing
-                if row.opportunity_id == plan.lead_id and row.model_id == target.model
-            ]
-            trial_plan = _provider_trial_retry_plan(plan, prior, now=now)
-            if trial_plan is None:
-                provider_rows.append(self._trial_provider_summary(
-                    plan.provider_label, plan.credential_env, plan.lead_id, prior, status="ALREADY_TRIED"
-                ))
-                continue
-            self.record_acquisition_outcome(
-                plan_id=trial_plan.plan_id, lead_id=plan.lead_id, status="CREDENTIAL_ACQUIRED",
-                now=now, source="ENVIRONMENT",
-                detail_summary=f"credential variable {plan.credential_env} is present",
-                evidence_refs=(f"env-presence:{plan.credential_env}",),
-            )
-            measurements = run_bounded_provider_trial(
-                trial_plan, api_key=api_key, now=now, target=target,
-            )
-            trials = model_trials_from_measurements(measurements)
-            for measurement, trial in zip(measurements, trials):
-                self.scout.record_model_trial(trial)
-                self._persist_trial_receipt(measurement.to_payload())
-                existing.append(trial)
-            executed_measurements.extend(measurements)
-            completed = [row for row in measurements if row.status == "COMPLETED"]
-            mean_quality = (
-                sum(float(row.quality_score or 0.0) for row in completed) / len(completed)
-                if completed else 0.0
-            )
-            outcome_status = (
-                "TRIAL_SUCCEEDED"
-                if len(completed) == len(measurements) and mean_quality >= 0.75
-                else "TRIAL_FAILED"
-            )
-            self.record_acquisition_outcome(
-                plan_id=trial_plan.plan_id, lead_id=plan.lead_id, status=outcome_status, now=now,
-                source="RUNTIME",
-                detail_summary=(
-                    f"bounded synthetic trial completed={len(completed)}/{len(measurements)} "
-                    f"mean_quality={mean_quality:.3f}"
-                ),
-                evidence_refs=tuple(row.trial_id for row in measurements),
-            )
-            provider_rows.append(self._trial_provider_summary(
-                plan.provider_label, plan.credential_env, plan.lead_id, trials,
-                status=outcome_status, measurements=measurements,
-            ))
-        all_trials = self.scout.model_trials()
-        diagnostics: list[dict[str, Any]] = []
-        for lead in leads:
-            if lead.credential_env not in available:
-                continue
-            history = [row for row in all_trials if row.opportunity_id == lead.lead_id]
-            if not history:
-                continue
-            try:
-                diagnostics.append(diagnose_provider_trials(
-                    state_root=self.state_root,
-                    provider_label=lead.provider_label,
-                    credential_env=lead.credential_env,
-                    lead_id=lead.lead_id,
-                    rows=history,
-                    now=now,
-                ))
-            except Exception as exc:  # Diagnostics must not erase the underlying trial evidence.
-                diagnostics.append({
-                    "status": "DIAGNOSTIC_ERROR",
-                    "lead_id": lead.lead_id,
-                    "provider_label": lead.provider_label,
-                    "error_type": type(exc).__name__,
-                })
-        profiles = provider_profiles(all_trials, minimum_quality=0.75, minimum_trials=3)
-        selected = select_provider(profiles, task_class="simple_public_text", quality_floor=0.75)
-        selection = self._persist_provider_selection(now=now, selected=selected, trials=all_trials)
-        from .llm_resources import sync_llm_resource_pool
-        try:
-            pool_sync = sync_llm_resource_pool(state_root=self.state_root, now=now)
-        except Exception as exc:
-            pool_sync = {
-                "status": "SYNC_ERROR",
-                "error_type": type(exc).__name__,
-            }
-        completed_count = sum(1 for row in executed_measurements if row.status == "COMPLETED")
-        failed_count = len(executed_measurements) - completed_count
-        return {
-            "status": "TRIALED" if executed_measurements else ("ALREADY_TRIALED" if provider_rows else "NO_READY_TRIALS"),
-            "executed_request_count": len(executed_measurements),
-            "created_count": len(executed_measurements),
-            "completed_count": completed_count,
-            "failed_count": failed_count,
-            "trial_ids": [row.trial_id for row in executed_measurements],
-            "error_codes": sorted({
-                str(row.error_code or row.error_type)
-                for row in executed_measurements if row.error_code or row.error_type
-            }),
-            "providers": provider_rows,
-            "diagnostics": diagnostics,
-            "empirical_profiles": [
-                {
-                    "lead_id": row.opportunity_id, "model_id": row.model_id,
-                    "task_class": row.task_class, "viable": row.viable,
-                    "mean_quality": row.mean_quality, "mean_latency_ms": row.mean_latency_ms,
-                    "mean_cost": row.mean_cost, "trial_count": row.trial_count,
-                }
-                for row in profiles
-            ],
-            "empirical_selection": None if selected is None else {
-                "lead_id": selected.opportunity_id, "model_id": selected.model_id,
-                "task_class": selected.task_class,
-                "mean_quality": selected.mean_quality, "mean_latency_ms": selected.mean_latency_ms,
-                "mean_cost": selected.mean_cost, "trial_count": selected.trial_count,
-            },
-            "selection": selection,
-            "llm_resource_pool": pool_sync,
-            "replan_required": replan_required,
-        }
+        return ResourceTrialCoordinator(
+            scout=self, policy=ResourceTrialPolicy(),
+            executor=ProviderTrialExecutor(
+                resolve_target=resolve_trial_target,
+                run_trial=run_bounded_provider_trial,
+                to_trials=model_trials_from_measurements,
+            ),
+            recorder=self._outcome_recorder(),
+            feedback=ResourceFeedbackConsumer(
+                state_root=self.state_root, scout=self.scout,
+                persist_selection=self._persist_provider_selection,
+            ),
+            plan_provider_trials=plan_provider_trials,
+            resolver_evidence_ref=_provider_trial_resolver_evidence_ref(),
+        ).run(now=now, provider_limit=provider_limit, credentials=credentials)
 
     def probe_capability_windfall(self, *, now: datetime) -> dict[str, Any]:
         """Backward-compatible name for the cross-provider free-model market."""
@@ -1216,11 +770,15 @@ class ContentResourceScout:
             "llm_resource_pool": pool,
         }
 
+    def _outcome_recorder(self):
+        from .resource_outcome_recorder import ResourceOutcomeRecorder
+        return ResourceOutcomeRecorder(
+            state_root=self.state_root, scout=self.scout,
+            write_json=self._atomic_json,
+        )
+
     def _persist_trial_receipt(self, row: dict[str, Any]) -> None:
-        folder = self.state_root / "application" / "resource_discovery" / "trial_receipts"
-        folder.mkdir(parents=True, exist_ok=True)
-        key = sha256(str(row.get("trial_id") or "").encode()).hexdigest()[:24]
-        self._atomic_json(folder / f"{key}.json", row)
+        self._outcome_recorder()._persist_trial_receipt(row)
 
     def _persist_provider_selection(self, *, now: datetime, selected: Any, trials: list[ModelTrial]) -> dict[str, Any]:
         if selected is None:
@@ -1291,61 +849,14 @@ class ContentResourceScout:
         friction_kind: str = "NONE", source: str = "RUNTIME",
         detail_summary: str = "", evidence_refs: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        if now.tzinfo is None or now.utcoffset() is None:
-            raise ValueError("acquisition outcome time requires timezone")
-        detail = " ".join(str(detail_summary or "").split())[:500]
-        refs = tuple(dict.fromkeys(str(x) for x in evidence_refs if str(x)))
-        digest_input = json.dumps({
-            "plan_id": str(plan_id), "lead_id": str(lead_id), "status": str(status),
-            "friction_kind": str(friction_kind), "source": str(source),
-            "detail_summary": detail, "evidence_refs": refs,
-        }, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        outcome = ResourceAcquisitionOutcome(
-            outcome_id="resource-acquisition-outcome:" + sha256(digest_input.encode()).hexdigest()[:24],
-            plan_id=str(plan_id), lead_id=str(lead_id), status=str(status),
-            observed_at=now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
-            friction_kind=str(friction_kind), source=str(source), detail_summary=detail,
-            evidence_refs=refs,
+        return self._outcome_recorder().record_acquisition_outcome(
+            plan_id=plan_id, lead_id=lead_id, status=status, now=now,
+            friction_kind=friction_kind, source=source,
+            detail_summary=detail_summary, evidence_refs=evidence_refs,
         )
-        folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / (outcome.outcome_id.split(":")[-1] + ".json")
-        if path.exists():
-            try:
-                prior = json.loads(path.read_text(encoding="utf-8"))
-                if str(prior.get("outcome_id") or "") == outcome.outcome_id:
-                    return {
-                        "outcome_id": outcome.outcome_id, "status": outcome.status,
-                        "friction_kind": outcome.friction_kind,
-                        "observed_at": str(prior.get("observed_at") or outcome.observed_at),
-                        "created": False,
-                    }
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                pass
-        self._atomic_json(path, {
-            "outcome_id": outcome.outcome_id, "plan_id": outcome.plan_id,
-            "lead_id": outcome.lead_id, "status": outcome.status,
-            "observed_at": outcome.observed_at, "friction_kind": outcome.friction_kind,
-            "source": outcome.source, "detail_summary": outcome.detail_summary,
-            "evidence_refs": list(outcome.evidence_refs), "schema_version": outcome.schema_version,
-        })
-        return {
-            "outcome_id": outcome.outcome_id, "status": outcome.status,
-            "friction_kind": outcome.friction_kind, "observed_at": outcome.observed_at,
-            "created": True,
-        }
 
     def acquisition_outcomes(self) -> list[ResourceAcquisitionOutcome]:
-        folder = self.state_root / "application" / "resource_discovery" / "acquisition_outcomes"
-        rows: list[ResourceAcquisitionOutcome] = []
-        for path in sorted(folder.glob("*.json")) if folder.exists() else []:
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-                value["evidence_refs"] = tuple(value.get("evidence_refs") or ())
-                rows.append(ResourceAcquisitionOutcome(**value))
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
-                continue
-        return sorted(rows, key=lambda row: (row.observed_at, row.outcome_id))
+        return self._outcome_recorder().acquisition_outcomes()
 
     def local_inference_feasibility(self) -> dict[str, Any]:
         mem_total_gib = mem_available_gib = None
