@@ -18,7 +18,7 @@ def test_observation_review_and_tamper(tmp_path):
                 body="$SOL 服务中断。我的判断是可用性比短期价格更值得关注。",
                 symbols=[" $sol "], source_ids=["source1"], thesis="可用性更值得关注",
                 reader_question="可用性如何影响用户", invalidation="服务公告被更正", value_focus="resilience")
-        return model(grounded=True, has_position=True, adds_value=True, timely=True, rationale="Supported observation and explicit judgment.")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True, rationale="Supported observation and explicit judgment.")
     explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
     result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
         cycle="observation1", now=now, structured=structured))
@@ -87,7 +87,7 @@ def test_missing_tag_fixed_before_review_and_duplicate_held(tmp_path):
                 value_focus="resilience")
         assert "$DOGE" in prompt
         review_calls.append(prompt)
-        return model(grounded=True, has_position=True, adds_value=True, timely=True, rationale="Supported explicit view.")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True, rationale="Supported explicit view.")
     explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
     result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
         cycle="doge1", now=now, structured=structured))
@@ -116,3 +116,46 @@ def test_searched_altcoin_evidence_reaches_expression(tmp_path):
         seed_evidence=[{"evidence_id": "owner-search:altcoin", "title": "Altcoin upgrade announcement",
                         "summary": "An observed protocol upgrade."}]))
     assert result["rationale"] == "Need one more fact."
+
+def test_data_post_admitted_without_body_opinion(tmp_path):
+    now = datetime.now(timezone.utc)
+    source = {"evidence_id": "sol-data", "source_kind": "public-api", "title": "SOL market",
+              "summary": "SOL rolling 24h +12%, turnover 2000000 USDT", "observed_at": now.isoformat()}
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            assert "let concrete numbers stand" in prompt
+            return model(action="SHARE", format="DATA", rationale="Large observed move with liquid turnover.",
+                body="21:38 币安现货24小时：SOL +12%，成交额200万 USDT。", symbols=["SOL"], source_ids=["sol-data"],
+                thesis="显著涨幅与成交规模值得一起看", reader_question="哪个币发生异动",
+                invalidation="后续窗口更新", value_focus="reader_agency")
+        assert "without commentary" in prompt
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True,
+                     rationale="Concrete named-asset data is informative.")
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="data-post", now=now, seed_evidence=[source], structured=structured))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    draft = SquareDraftStore(tmp_path).get(result["draft_id"])
+    assert draft["observation_provenance"]["format"] == "DATA"
+    assert draft["body"].endswith("$SOL")
+    assert "我的判断" not in draft["body"]
+
+def test_vague_token_market_commentary_held(tmp_path):
+    now = datetime.now(timezone.utc)
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    async def structured(runtime, prompt, model):
+        assert model is ObservationExpression
+        return model(action="SHARE", rationale="Market risk appetite commentary",
+            body="部分代币上涨数百甚至数千个百分点，风险也在升温。",
+            symbols=[], source_ids=["web3-data"], thesis="风险在升温", reader_question="什么风险",
+            invalidation="风险下降", value_focus="resilience")
+    source = {"evidence_id": "web3-data", "source_kind": "public-api", "summary": "SOL priceChangePercent 12"}
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="vague-post", now=now, seed_evidence=[source], structured=structured))
+    assert result["status"] == "COGNITION_ONLY"
+    assert "concrete source data" in result["rationale"]
+    assert not SquareDraftStore(tmp_path).list()
