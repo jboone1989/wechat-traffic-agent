@@ -1,0 +1,468 @@
+"""X publishing through Agent Runtime's persistent X browser profile."""
+from __future__ import annotations
+
+import asyncio
+import json
+import importlib.util
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+from typing import Any
+
+from agent_runtime.integrations import (
+    BrowserHarnessProvider,
+    BrowserHarnessRuntime,
+    BrowserPolicy,
+)
+
+from wechat_traffic_agent.browser_runtime import (
+    BrowserRuntimeUnavailable,
+    BrowserTaskResult,
+    BrowserTelemetryLedger,
+)
+from wechat_traffic_agent.x_browser import (
+    XBrowserPublicationUnverified,
+    XBrowserPublishResult,
+    X_COMPOSE_URL,
+    _normalize_text,
+)
+from wechat_traffic_agent.x_jev_transaction import jev_x_identity, jev_x_transaction, jev_x_reconcile
+
+
+class LocalHarnessXTransport:
+    """Single X Web transport over Agent Runtime; never starts its own Chrome."""
+
+    provider_name = "JEV_AGENT_RUNTIME"
+
+    def __init__(
+        self,
+        *,
+        state_root: Path,
+        timeout_ms: int = 30_000,
+        expected_handle: str = "",
+    ) -> None:
+        self.state_root = Path(state_root)
+        self.timeout_ms = int(timeout_ms)
+        self.expected_handle = str(expected_handle).strip().lstrip("@")
+        self.telemetry = BrowserTelemetryLedger(self.state_root)
+        self.browser = self._provider()
+        self.account_id = str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip()
+
+    @classmethod
+    def from_environment(cls, *, state_root: Path, account_id: str | None = None) -> "LocalHarnessXTransport":
+        transport = cls(
+            state_root=state_root,
+            timeout_ms=int(os.environ.get("CONTENT_X_BROWSER_TIMEOUT_MS", "30000")),
+            expected_handle=str(os.environ.get("CONTENT_X_USERNAME") or ""),
+        )
+        if account_id:
+            from wechat_traffic_agent.browser_accounts import x_account_binding
+            record, context = x_account_binding(state_root, account_id)
+            transport.browser = transport.browser.for_account(context)
+            transport.expected_handle = record.identity
+            transport.account_id = context
+        return transport
+
+    @staticmethod
+    def _profile_state_path() -> Path:
+        return Path(
+            os.environ.get(
+                "AGENT_RUNTIME_X_PROFILE_STATE",
+                "~/.local/state/agent-runtime/browser/profiles/x/runtime.json",
+            )
+        ).expanduser()
+
+    @classmethod
+    def _cdp_url(cls) -> str:
+        try:
+            state = json.loads(cls._profile_state_path().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BrowserRuntimeUnavailable(
+                "Agent Runtime X browser profile is unavailable"
+            ) from exc
+        port = state.get("cdp_port") if isinstance(state, dict) else None
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise BrowserRuntimeUnavailable(
+                "Agent Runtime X browser profile has no valid CDP port"
+            )
+        return f"http://127.0.0.1:{port}"
+
+    @staticmethod
+    def _harness_executable() -> str:
+        explicit = str(os.environ.get("AGENT_RUNTIME_BROWSER_HARNESS") or "").strip()
+        if explicit:
+            return explicit
+        found = shutil.which("browser-harness")
+        if found:
+            return found
+        candidate = Path(sys.executable).with_name("browser-harness")
+        if candidate.is_file():
+            return str(candidate)
+        candidate = Path.home() / "browser-use-venv" / "bin" / "browser-harness"
+        if candidate.is_file():
+            return str(candidate)
+        raise BrowserRuntimeUnavailable("browser-harness executable is unavailable")
+
+    @classmethod
+    def _provider(cls) -> BrowserHarnessProvider:
+        return BrowserHarnessProvider(
+            policy=BrowserPolicy(
+                max_sessions=2,
+                timeout_seconds=30.0,
+                max_text_chars=100_000,
+                max_elements=300,
+                max_input_chars=25_000,
+                allowed_hosts=frozenset({"x.com", "www.x.com"}),
+            ),
+            runtime=BrowserHarnessRuntime(
+                executable=cls._harness_executable(),
+                state_dir=Path(
+                    os.environ.get(
+                        "AGENT_RUNTIME_BROWSER_STATE",
+                        "~/.local/state/agent-runtime/browser-harness",
+                    )
+                ).expanduser(),
+                cdp_url=cls._cdp_url(),
+                account_id=str(os.environ.get("AGENT_RUNTIME_X_ACCOUNT_ID") or "default").strip(),
+            ),
+        )
+
+    async def publish(self, *, text: str) -> XBrowserPublishResult:
+        started = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(self._publish_sync, text)
+        except Exception as exc:
+            self.telemetry.append(
+                task_type="X_PUBLISH",
+                site="x.com",
+                result=BrowserTaskResult(
+                    provider=self.provider_name,
+                    status="FAILED",
+                    elapsed_ms=round((time.perf_counter() - started) * 1000),
+                    action_count=0,
+                    failure_reason=type(exc).__name__,
+                    failure_detail=str(exc),
+                ),
+            )
+            raise
+        self.telemetry.append(
+            task_type="X_PUBLISH",
+            site="x.com",
+            result=BrowserTaskResult(
+                provider=self.provider_name,
+                status="COMPLETED",
+                elapsed_ms=round((time.perf_counter() - started) * 1000),
+                action_count=1,
+                final_url=result.url,
+            ),
+        )
+        return result
+
+    def _run_jev_sync(self, script: str, *, refresh_target: bool = False) -> dict[str, Any]:
+        import fcntl
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        with (self.state_root / "x_jev_session.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if refresh_target:
+                self._rebind_x_tab()
+            result = self._run_jev_locked(script)
+            self._retire_replaced_x_tabs()
+            return result
+
+    def _retirement_path(self) -> Path:
+        return self.state_root / ("x_retired_targets_" + self.account_id + ".json")
+
+    def _retire_replaced_x_tabs(self) -> None:
+        path = self._retirement_path()
+        if not path.exists():
+            return
+        retirement = json.loads(path.read_text(encoding="utf-8"))
+        old_targets = retirement["target_ids"]
+        if not old_targets:
+            return
+        active_target = self.browser._load_target_id("ferro-x-publish")
+        # Never close a target still owned by another persisted Runtime session.
+        for binding_path in Path(self.browser.runtime.state_dir).rglob("*.json"):
+            binding = json.loads(binding_path.read_text(encoding="utf-8"))
+            if isinstance(binding, dict) and binding.get("target_id") in old_targets:
+                raise BrowserRuntimeUnavailable("Retired X target still has a persisted task binding")
+        body = self.browser._run(
+            "ferro-x-publish",
+            "from urllib.parse import urlsplit\n"
+            + f"active_target = {active_target!r}\n"
+            + f"old_targets = {old_targets!r}\n"
+            + "targets = {row['targetId']: row for row in list_tabs(include_chrome=False)}\n"
+            + "assert active_target in targets, 'replacement X target disappeared'\n"
+            + "assert urlsplit(targets[active_target]['url']).hostname in ('x.com','www.x.com'), 'replacement is not an X page'\n"
+            + "retired = []\n"
+            + "for target in old_targets:\n"
+            + "    assert target != active_target, 'cannot retire the active X target'\n"
+            + "    if target in targets:\n"
+            + "        assert urlsplit(targets[target]['url']).hostname in ('x.com','www.x.com'), 'retired target is no longer an X page'\n"
+            + "        assert cdp('Target.closeTarget', targetId=target).get('success'), 'retired X target did not close'\n"
+            + "    retired.append(target)\n"
+            + "print(" + repr(self.browser._RESULT_PREFIX) + " + json.dumps({'retired':retired}))",
+            timeout_seconds=20,
+        )
+        if body.get("retired") != old_targets:
+            raise BrowserRuntimeUnavailable("Retired X target cleanup receipt is incomplete")
+        from wechat_traffic_agent.x_browser import _write_json
+        _write_json(path, {"target_ids": [], "last_retired": old_targets,
+                          "active_target_id": active_target, "retired_at": time.time()})
+
+    def _rebind_x_tab(self) -> None:
+        # Keep the authenticated browser, and replace only Runtime's owned tab binding.
+        previous_target = self.browser._load_target_id("ferro-x-publish")
+        body = self.browser._run(
+            "ferro-x-publish",
+            "target_id = new_tab('https://x.com/home')\n"
+            + "print(" + repr(self.browser._RESULT_PREFIX)
+            + " + json.dumps({'target_id':target_id}))",
+            timeout_seconds=20,
+        )
+        target_id = str(body.get("target_id") or "")
+        if not target_id:
+            raise BrowserRuntimeUnavailable("X renderer recovery returned no target")
+        from wechat_traffic_agent.x_browser import _write_json
+        path = self._retirement_path()
+        retirement = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"target_ids": []}
+        if previous_target and previous_target != target_id:
+            retirement["target_ids"] = list(dict.fromkeys([*retirement["target_ids"], previous_target]))
+        # Record cleanup before changing the durable binding, so a process
+        # restart cannot forget the retired renderer.
+        _write_json(path, retirement)
+        self.browser._save_target_id("ferro-x-publish", target_id)
+
+    def _run_jev_locked(self, script: str) -> dict[str, Any]:
+        try:
+            return self._run_jev_once(script)
+        except BrowserRuntimeUnavailable as exc:
+            # Focus setup precedes the supplied transaction: no script action has run.
+            if not any(marker in str(exc) for marker in (
+                    "Emulation.setFocusEmulationEnabled timed out", "Page.enable timed out")):
+                raise
+            self._rebind_x_tab()
+            return self._run_jev_once(script)
+
+    def _run_jev_once(self, script: str) -> dict[str, Any]:
+        session_id = "ferro-x-publish"
+        try:
+            # Reuse the user's authenticated tab without forcing a home reload.
+            # A persisted, live target needs no legacy page-script probe. That
+            # probe can retain a stale evaluation session after a host restart;
+            # Jev attaches a fresh CDP session and verifies the page/account.
+            if not self._bound_x_tab_is_live(session_id):
+                self.browser.adopt_existing_tab(
+                    session_id, "https://x.com/", open_if_missing=True
+                )
+            spec = importlib.util.find_spec("jev_ultrafast")
+            if spec is None or spec.origin is None:
+                raise BrowserRuntimeUnavailable("jev-ultrafast is unavailable in the X execution environment")
+            body = self.browser.run_jev_session_script(
+                session_id,
+                script,
+                package_root=Path(spec.origin).parent.parent,
+                timeout_seconds=max(45.0, min(180.0, self.timeout_ms / 1000 + 45.0)),
+            )
+        except (LookupError, RuntimeError, ValueError) as exc:
+            raise BrowserRuntimeUnavailable(
+                f"Agent Runtime X transaction failed: {exc}"
+            ) from exc
+        return body
+
+    def _bound_x_tab_is_live(self, session_id: str) -> bool:
+        import urllib.request
+        from urllib.parse import urlsplit
+        load_target = getattr(self.browser, "_load_target_id", None)
+        if not callable(load_target):
+            return False
+        target_id = load_target(session_id)
+        if not target_id:
+            return False
+        try:
+            with urllib.request.urlopen(self._cdp_url()+"/json/list", timeout=5) as response:
+                targets = json.load(response)
+            return any(row.get("id")==target_id and row.get("type")=="page"
+                and urlsplit(str(row.get("url") or "")).scheme=="https"
+                and urlsplit(str(row.get("url") or "")).hostname in {"x.com","www.x.com"}
+                for row in targets)
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
+
+    async def publish_article(self, *, title, text, image_path, transaction_path, prepare_only=False, inline_images=()):
+        from wechat_traffic_agent.x_jev_article import jev_x_article, jev_x_article_reconcile
+        from wechat_traffic_agent.x_browser import _read_json, _write_json
+        import hashlib
+        transaction_path=Path(transaction_path)
+        hashes=[hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in [image_path,*[r['path'] for r in inline_images]]]
+        digest=hashlib.sha256(json.dumps([title,text,hashes],ensure_ascii=False).encode()).hexdigest()
+        previous=_read_json(transaction_path)
+        if previous and previous.get("digest")!=digest:
+            raise ValueError("Article transaction draft binding mismatch")
+        if previous.get("status")=="POSTED":
+            return self._verified_result(previous)
+        if previous.get("attempted") or previous.get("status")=="SUBMIT_PENDING":
+            body=await asyncio.to_thread(self._run_jev_sync,jev_x_article_reconcile(title=title,text=text,
+                draft_url=str(previous.get("draft_url") or ""),cover_source=previous.get("cover_source") or [],
+                expected_handle=self.expected_handle,public_url=str(previous.get("public_url") or "")))
+            _write_json(transaction_path,{**previous,**body,"digest":digest})
+            return self._verified_result(body)
+        _write_json(transaction_path,{**previous,"digest":digest,"status":"PREPARING"})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_article(title=title,text=text,image_path=str(image_path),
+            expected_handle=self.expected_handle,draft_url=str(previous.get("draft_url") or ""),prepare_only=prepare_only,
+            checkpoint_path=str(transaction_path),inline_images=inline_images))
+        _write_json(transaction_path,{**_read_json(transaction_path),**body,"digest":digest})
+        if prepare_only and body.get("status")=="DRAFT_PREPARED":
+            return body
+        return self._verified_result(body)
+
+    async def discover(self, *, source="MENTIONS", query=None, max_results=20):
+        from urllib.parse import quote
+        from wechat_traffic_agent.x_jev_social import jev_x_discover
+        urls = {"MENTIONS": "https://x.com/notifications/mentions", "HOME": "https://x.com/home"}
+        if source == "SEARCH":
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("X SEARCH requires an agent-generated query")
+            url = "https://x.com/search?q=" + quote(query.strip(), safe="") + "&f=live"
+        elif source in urls:
+            url = urls[source]
+        else:
+            raise ValueError("Unknown X discovery source")
+        body = await asyncio.to_thread(self._run_jev_sync, jev_x_discover(url, max_results))
+        if body.get("status") != "OBSERVED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        return body["posts"]
+
+    async def reply(self, *, text, target_url):
+        from wechat_traffic_agent.x_jev_social import jev_x_reply
+        if not text.strip() or len(text)>280:
+            raise ValueError("X reply must contain 1-280 characters")
+        import hashlib
+        from wechat_traffic_agent.x_browser import _read_json, _write_json
+        account_id = self.account_id
+        binding = target_url+"\n"+text
+        if account_id != "default":
+            binding = account_id+"\n"+self.expected_handle.casefold()+"\n"+binding
+        digest=hashlib.sha256(binding.encode()).hexdigest()
+        path=self.state_root/"content"/"x"/"reply-transactions"/(digest+".json")
+        prior=_read_json(path)
+        if prior.get("status")=="POSTED":
+            return self._verified_result(prior)
+        reconcile_only=bool(prior.get("attempted") or prior.get("status")=="SUBMIT_PENDING")
+        _write_json(path,{**prior,"status":"PREPARING","text":text,"target_url":target_url})
+        body=await asyncio.to_thread(self._run_jev_sync,jev_x_reply(text,target_url,self.expected_handle,reconcile_only=reconcile_only,checkpoint_path=str(path)))
+        _write_json(path,{**_read_json(path),**body,"text":text,"target_url":target_url})
+        return self._verified_result(body)
+
+    def _verified_result(self, body):
+        if body.get("status")=="PUBLICATION_UNVERIFIED":
+            raise XBrowserPublicationUnverified(str(body.get("detail") or body))
+        if body.get("status")!="POSTED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        handle=str(body.get("handle") or "")
+        if self.expected_handle and handle.casefold()!=self.expected_handle.casefold():
+            raise BrowserRuntimeUnavailable("X transaction identity mismatch")
+        return XBrowserPublishResult(post_id=str(body["post_id"]),url=str(body["url"]),handle=handle,
+            duplicate_found=bool(body.get("duplicate_found")),provider=self.provider_name,
+            observed_text=body.get("published_text"),verified_links=tuple(body.get("verified_links") or ()))
+
+    async def identity(self) -> dict[str, Any]:
+        body = await asyncio.to_thread(
+            self._run_jev_sync, jev_x_identity(self.expected_handle)
+        )
+        if body.get("status") != "IDENTITY_OBSERVED":
+            raise BrowserRuntimeUnavailable(str(body.get("detail") or body))
+        return dict(body["user"])
+
+    def _publish_sync(self, text: str) -> XBrowserPublishResult:
+        import hashlib, fcntl
+        digest = hashlib.sha256(json.dumps(
+            [self.account_id, self.expected_handle.casefold(), text],
+            ensure_ascii=False).encode()).hexdigest()
+        lock_path = self.state_root / "content/x/post-transactions" / (digest + ".lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._publish_transaction_sync(text)
+
+    def _publish_transaction_sync(self, text: str) -> XBrowserPublishResult:
+        if not text.strip() or len(text) > 25_000:
+            raise ValueError("X post must contain 1-25000 characters")
+        import hashlib
+        from wechat_traffic_agent.x_browser import _read_json, _write_json
+        digest = hashlib.sha256(json.dumps(
+            [self.account_id, self.expected_handle.casefold(), text],
+            ensure_ascii=False).encode()).hexdigest()
+        checkpoint = self.state_root / "content/x/post-transactions" / (digest + ".json")
+        previous = _read_json(checkpoint)
+        if previous.get("status") == "POSTED":
+            return self._verified_result(previous)
+        try:
+            if previous.get("attempted") or previous.get("status") == "SUBMIT_PENDING":
+                body = self._run_jev_sync(jev_x_reconcile(text, self.expected_handle))
+            else:
+                _write_json(checkpoint, {**previous, "status": "PREPARING",
+                    "account_id": self.account_id, "expected_handle": self.expected_handle,
+                    "text_sha256": hashlib.sha256(text.encode()).hexdigest()})
+                body = self._run_jev_sync(jev_x_transaction(
+                    text, self.expected_handle, str(checkpoint)))
+        except subprocess.TimeoutExpired:
+            persisted = _read_json(checkpoint)
+            if not persisted.get("attempted"):
+                raise
+            # The durable submit checkpoint survives process timeout. Recovery
+            # only observes the post; it never composes or submits again.
+            body = self._run_jev_sync(
+                jev_x_reconcile(text, self.expected_handle), refresh_target=True)
+
+        if (body.get("status") == "PUBLICATION_UNVERIFIED"
+                and body.get("stage") == "verify"
+                and "Runtime.evaluate timed out" in str(body.get("detail") or "")):
+            # A submit may already have committed. Rebind and observe only; never click again.
+            body = self._run_jev_sync(
+                jev_x_reconcile(text, self.expected_handle), refresh_target=True,
+            )
+
+        persisted = _read_json(checkpoint)
+        _write_json(checkpoint, {**persisted, **body,
+            "attempted": bool(persisted.get("attempted") or body.get("attempted"))})
+        status = str(body.get("status") or "")
+        if status == "PUBLICATION_UNVERIFIED":
+            raise XBrowserPublicationUnverified(
+                f"Jev X {body.get('stage', 'transaction')} failed "
+                f"(attempted={body.get('attempted', False)}): "
+                + str(body.get("detail") or "X publication was not verified")
+            )
+        if status != "POSTED":
+            raise BrowserRuntimeUnavailable(
+                f"Jev X {body.get('stage', 'transaction')} failed: "
+                + str(body.get("detail") or body)
+            )
+        handle = str(body.get("handle") or "")
+        if self.expected_handle and handle.casefold() != self.expected_handle.casefold():
+            raise BrowserRuntimeUnavailable(
+                f"Agent Runtime X profile authenticated as @{handle}, expected @{self.expected_handle}"
+            )
+        return XBrowserPublishResult(
+            post_id=str(body.get("post_id") or ""),
+            url=str(body.get("url") or ""),
+            handle=handle,
+            duplicate_found=bool(body.get("duplicate_found")),
+            provider=self.provider_name,
+            observed_text=body.get("published_text"),
+            verified_links=tuple(body.get("verified_links") or ()),
+        )
+
+    @staticmethod
+    def _transaction_script(text: str, expected_handle: str = "") -> str:
+        return jev_x_transaction(text, expected_handle)
+
+
+def build_agent_runtime_x_browser() -> BrowserHarnessProvider:
+    return LocalHarnessXTransport._provider()
+
+
+__all__ = ["LocalHarnessXTransport", "build_agent_runtime_x_browser"]

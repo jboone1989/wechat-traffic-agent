@@ -14,6 +14,7 @@ from urllib.parse import quote, urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..content_artifact import ContentArtifact, ContentKind
+from ..editorial.routing import _route_for
 
 
 _TAG_SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -723,16 +724,6 @@ def assess_adsense_readiness(
         external_dependencies=tuple(external_dependencies),
         warnings=tuple(warnings),
     )
-
-
-def _route_for(item: ContentArtifact) -> str:
-    prefix = {
-        ContentKind.RESEARCH: "research",
-        ContentKind.NOTE: "notes",
-        ContentKind.GUIDE: "guides",
-        ContentKind.ARTICLE: "articles",
-    }[item.kind]
-    return f"/{prefix}/{item.slug}/"
 
 
 def _tag_slug(tag: str) -> str:

@@ -188,7 +188,7 @@ def test_immature_or_incomplete_log_window_never_becomes_zero(tmp_path):
 
 
 def test_website_outcome_collector_has_no_control_authority():
-    source = (Path(__file__).resolve().parents[1] / "src/wechat_traffic_agent/web_outcome_evidence.py").read_text()
+    source = (Path(__file__).resolve().parents[1] / "src/wechat_traffic_agent/website/web_outcome_evidence.py").read_text()
     assert "from .content_mind" not in source
     assert "from .strategy_learning" not in source
     assert "import ContentMind" not in source

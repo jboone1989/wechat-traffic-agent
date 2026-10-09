@@ -20,30 +20,6 @@ OBSERVATION_SCHEMA = "ferro-interoceptive-observation.v1"
 RECOVERY_HEALTHY_STREAK = 3
 MAX_RECENT_OBSERVATIONS = 48
 
-_HARD_FAILURE = frozenset({"ERROR", "FAILED", "FATAL"})
-_IGNORE_STATUSES = frozenset({
-    "", "OK", "HEALTHY", "SUCCESS", "SUCCEEDED", "COMPLETED", "OBSERVED",
-    "SETTLED", "VERIFIED", "ADOPTED", "PUBLISHED", "NOOP",
-    "SHUTDOWN_CHECKPOINT", "CANCELLED",
-})
-_TASK_SUBSYSTEMS = {
-    "CONTENT_COGNITION": "cognition",
-    "VERIFY_PREDICTION": "prediction",
-    "CHECK_OUTCOMES": "prediction",
-    "OBSERVE_WORLD": "world_model",
-    "CHECK_X": "social_perception",
-    "RESOURCE_REVIEW": "resources",
-    "REFLECT": "self_reflection",
-    "NEURAL_INTEROCEPTION": "interoception",
-    "NEURAL_PLAY": "neural",
-    "NEURAL_DREAM": "neural",
-    "NEURAL_TRANSFER": "neural",
-    "NEURAL_DEVELOPMENT": "neural",
-    "NEURAL_DEVELOPMENT_TRANSFER": "neural",
-    "NEURAL_EVOLUTION_CONSOLIDATION": "neural",
-}
-
-
 def _atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -79,227 +55,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _bounded(value: Any, default: float = 0.0) -> float:
-    if isinstance(value, bool):
-        return default
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _status_rows(value: Any, *, path: str = "result", depth: int = 0) -> list[tuple[str, str]]:
-    if depth > 7:
-        return []
-    rows: list[tuple[str, str]] = []
-    if isinstance(value, Mapping):
-        status = str(value.get("status") or "").strip().upper()
-        if status:
-            rows.append((path, status))
-        for key, child in value.items():
-            if key in {"interoception", "maintenance_observation", "capability_contracts"}:
-                continue
-            if isinstance(child, (Mapping, list, tuple)):
-                rows.extend(_status_rows(child, path=f"{path}.{key}", depth=depth + 1))
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(list(value)[:64]):
-            rows.extend(_status_rows(child, path=f"{path}[{index}]", depth=depth + 1))
-    return rows
-
-
-def _numeric_rows(
-    value: Any,
-    wanted: frozenset[str],
-    *,
-    path: str = "result",
-    depth: int = 0,
-) -> list[tuple[str, str, float]]:
-    if depth > 7:
-        return []
-    rows: list[tuple[str, str, float]] = []
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            if key in {"interoception", "maintenance_observation", "capability_contracts"}:
-                continue
-            if key in wanted and isinstance(child, (int, float)) and not isinstance(child, bool):
-                rows.append((path, key, float(child)))
-            if isinstance(child, (Mapping, list, tuple)):
-                rows.extend(_numeric_rows(child, wanted, path=f"{path}.{key}", depth=depth + 1))
-    elif isinstance(value, (list, tuple)):
-        for index, child in enumerate(list(value)[:64]):
-            rows.extend(_numeric_rows(child, wanted, path=f"{path}[{index}]", depth=depth + 1))
-    return rows
-
-
-def _has_retryable(value: Any, *, depth: int = 0) -> bool:
-    if depth > 7:
-        return False
-    if isinstance(value, Mapping):
-        if value.get("retryable") is True:
-            return True
-        return any(
-            _has_retryable(child, depth=depth + 1)
-            for key, child in value.items()
-            if key not in {"interoception", "maintenance_observation", "capability_contracts"}
-            and isinstance(child, (Mapping, list, tuple))
-        )
-    if isinstance(value, (list, tuple)):
-        return any(_has_retryable(child, depth=depth + 1) for child in list(value)[:64])
-    return False
-
-
-def _subsystem(task: str, status_rows: Sequence[tuple[str, str]]) -> str:
-    blob = " ".join(path.lower() + " " + status.lower() for path, status in status_rows)
-    for token, domain in (
-        ("context", "context"),
-        ("memory", "memory"),
-        ("chatgpt", "cognition_provider"),
-        ("provider", "cognition_provider"),
-        ("browser", "network"),
-        ("network", "network"),
-        ("self_repair", "self_repair"),
-        ("repair", "self_repair"),
-        ("prediction", "prediction"),
-        ("resource", "resources"),
-    ):
-        if token in blob:
-            return domain
-    return _TASK_SUBSYSTEMS.get(str(task or "").upper(), str(task or "unknown").lower())
-
-
-def classify_task_result(task: str, result: Mapping[str, Any]) -> dict[str, Any]:
-    """Classify a task result without deciding whether the process survived.
-
-    A task may be operationally successful yet pathologically dependent on a
-    fallback or retry.  Those conditions remain visible here.
-    """
-    task = str(task or "UNKNOWN").upper()
-    primary = str(result.get("status") or "").strip().upper()
-    statuses = _status_rows(result)
-    symptoms: list[dict[str, Any]] = []
-
-    def add(kind: str, severity: float, path: str, detail: str) -> None:
-        symptoms.append({
-            "kind": kind,
-            "severity": round(_bounded(severity), 6),
-            "path": path,
-            "detail": detail[:240],
-        })
-
-    for path, status in statuses:
-        if status in _IGNORE_STATUSES:
-            continue
-        if status in _HARD_FAILURE:
-            add("hard_error", 0.86, path, status)
-        elif status == "DEGRADED":
-            add("degraded", 0.58, path, status)
-        elif status == "CHATGPT_UNAVAILABLE" or status == "UNAVAILABLE":
-            add("unavailable", 0.50, path, status)
-        elif "FALLBACK" in status:
-            add("fallback_dependency", 0.34, path, status)
-        elif "RETRY" in status:
-            add("retry_dependency", 0.28, path, status)
-        elif status in {"RESOURCE_DEFERRED", "DEFERRED"}:
-            add("deferred", 0.18, path, status)
-        elif status == "CAPABILITY_UNAVAILABLE" or status.endswith("_CAPABILITY_UNAVAILABLE"):
-            add("capability_gap", 0.16, path, status)
-        elif "STALLED" in status or "NO_MATERIAL_CHANGE" in status:
-            add("goal_stall", 0.36, path, status)
-
-    if _has_retryable(result):
-        add("retry_dependency", 0.30, "result", "retryable=true")
-
-    if task == "CONTENT_COGNITION" and primary in {
-        "COGNITION_ONLY", "DEFERRED", "RESOURCE_DEFERRED",
-    }:
-        add("goal_stall", 0.30, "result.status", primary)
-
-    contract_subsystem = ""
-    contract_report = (
-        result.get("capability_contracts")
-        if isinstance(result.get("capability_contracts"), Mapping)
-        else {}
-    )
-    contract_violations = [
-        row for row in list(contract_report.get("violations") or [])
-        if isinstance(row, Mapping)
-    ]
-    for index, row in enumerate(contract_violations[:16]):
-        kind = str(row.get("kind") or "unknown")
-        severity = _bounded(row.get("severity"), 0.45)
-        subsystem_name = str(row.get("subsystem") or "capability")
-        if not contract_subsystem or severity >= max(
-            [
-                _bounded(v.get("severity"), 0.0)
-                for v in contract_violations[:index]
-                if isinstance(v, Mapping)
-            ]
-            or [0.0]
-        ):
-            contract_subsystem = subsystem_name
-        add(
-            "contract_" + kind,
-            severity,
-            f"result.capability_contracts.violations[{index}]",
-            str(row.get("observed") or row.get("contract") or kind),
-        )
-
-    prediction_error = 0.0
-    for path, key, value in _numeric_rows(result, frozenset({"prediction_error"})):
-        error = _bounded(value)
-        prediction_error = max(prediction_error, error)
-        if error >= 0.25:
-            add(
-                "prediction_error",
-                min(0.72, 0.16 + 0.62 * error),
-                f"{path}.{key}",
-                f"{error:.6f}",
-            )
-
-    negative_world_utility = 0.0
-    for path, key, value in _numeric_rows(result, frozenset({"world_utility"})):
-        if value < -0.05:
-            magnitude = _bounded(abs(value))
-            negative_world_utility = max(negative_world_utility, magnitude)
-            add(
-                "negative_world_utility",
-                min(0.82, 0.30 + 0.52 * magnitude),
-                f"{path}.{key}",
-                f"{value:.6f}",
-            )
-
-    # Stable de-duplication keeps the highest severity for each symptom/path pair.
-    deduped: dict[tuple[str, str], dict[str, Any]] = {}
-    for row in symptoms:
-        key = (str(row["kind"]), str(row["path"]))
-        prior = deduped.get(key)
-        if prior is None or float(row["severity"]) > float(prior["severity"]):
-            deduped[key] = row
-    symptoms = sorted(
-        deduped.values(),
-        key=lambda row: (-float(row["severity"]), str(row["kind"]), str(row["path"])),
-    )
-
-    base_severity = float(symptoms[0]["severity"]) if symptoms else 0.0
-    if len(symptoms) > 1:
-        base_severity = min(1.0, base_severity + 0.06 * min(4, len(symptoms) - 1))
-    subsystem = contract_subsystem or _subsystem(task, statuses)
-    primary_symptom = str(symptoms[0]["kind"]) if symptoms else "healthy"
-    return {
-        "task": task,
-        "primary_status": primary,
-        "abnormal": bool(symptoms),
-        "primary_symptom": primary_symptom,
-        "subsystem": subsystem,
-        "base_severity": round(base_severity, 6),
-        "prediction_error": round(prediction_error, 6),
-        "negative_world_utility": round(negative_world_utility, 6),
-        "symptoms": symptoms[:16],
-        "status_evidence": [
-            {"path": path, "status": status}
-            for path, status in statuses[:32]
-        ],
-    }
+from .interoception_task_classifier import _bounded, classify_task_result
 
 
 def _empty_projection(now: datetime | None = None) -> dict[str, Any]:
@@ -398,92 +154,10 @@ class InteroceptiveFaultSystem:
         state = self.projection(now=now)
         recent_same_task = self._same_task_recent(state, task)
 
-        from .fast_decision import FastDecisionError
-
-        try:
-            l1_health = self._l1().assess_health(
-                task=task,
-                deterministic=classification,
-                recent_observations=recent_same_task,
-            )
-        except FastDecisionError as exc:
-            l1_health = {
-                "schema_version": "ferro-l1-health.v1",
-                "status": "ERROR",
-                "health_state": "UNKNOWN",
-                "subsystem": "interoception",
-                "error_type": type(exc).__name__,
-                "message": str(exc)[:400],
-            }
-            symptoms = list(classification.get("symptoms") or [])
-            symptoms.append({
-                "kind": "l1_diagnosis_failure",
-                "severity": 0.48,
-                "path": "interoception.l1_health",
-                "detail": str(exc)[:240],
-            })
-            classification = {
-                **classification,
-                "abnormal": True,
-                "primary_symptom": (
-                    classification.get("primary_symptom")
-                    if classification.get("primary_symptom") != "healthy"
-                    else "l1_diagnosis_failure"
-                ),
-                "subsystem": (
-                    classification.get("subsystem")
-                    if classification.get("primary_symptom") != "healthy"
-                    else "interoception"
-                ),
-                "base_severity": max(
-                    float(classification.get("base_severity") or 0.0),
-                    0.48,
-                ),
-                "symptoms": symptoms[:16],
-            }
-        else:
-            health_state = str(l1_health.get("health_state") or "UNKNOWN")
-            if health_state in {"DEGRADED", "STUCK", "BROKEN"}:
-                severity_floor = {
-                    "DEGRADED": 0.42,
-                    "STUCK": 0.58,
-                    "BROKEN": 0.82,
-                }[health_state]
-                symptom_name = "l1_" + health_state.lower()
-                symptoms = list(classification.get("symptoms") or [])
-                if not any(
-                    str(row.get("kind") or "") == symptom_name
-                    for row in symptoms
-                    if isinstance(row, Mapping)
-                ):
-                    symptoms.append({
-                        "kind": symptom_name,
-                        "severity": severity_floor,
-                        "path": "interoception.l1_health",
-                        "detail": (
-                            f"{health_state}: "
-                            f"{str(l1_health.get('subsystem') or 'unknown')}"
-                        ),
-                    })
-                classification = {
-                    **classification,
-                    "abnormal": True,
-                    "primary_symptom": (
-                        classification.get("primary_symptom")
-                        if classification.get("primary_symptom") != "healthy"
-                        else symptom_name
-                    ),
-                    "subsystem": str(
-                        l1_health.get("subsystem")
-                        or classification.get("subsystem")
-                        or "unknown"
-                    ),
-                    "base_severity": max(
-                        float(classification.get("base_severity") or 0.0),
-                        severity_floor,
-                    ),
-                    "symptoms": symptoms[:16],
-                }
+        from .interoception_health_assessment import enrich_l1_health
+        classification, l1_health = enrich_l1_health(
+            task, classification, recent_same_task, l1=self._l1(),
+        )
 
         consecutive_abnormal = 0
         for row in reversed(recent_same_task):
@@ -511,89 +185,16 @@ class InteroceptiveFaultSystem:
         else:
             distress = max(0.0, old_distress * 0.68)
 
-        episode_id: str | None = None
-        episode_payload: dict[str, Any] | None = None
-        should_diagnose = False
-        if classification["abnormal"]:
-            # Any new pathology means the capability has not yet recovered.
-            # Reset recovery evidence for every still-open episode of this task,
-            # not only the newly observed symptom signature.
-            for open_path, open_episode in self._open_episodes():
-                if str(open_episode.get("task") or "") != task:
-                    continue
-                open_episode["healthy_streak"] = 0
-                open_episode["last_recurrence_at"] = now.isoformat()
-                if str(open_episode.get("status") or "") == "RECOVERING":
-                    open_episode["status"] = "OPEN"
-                _atomic_json(open_path, open_episode)
-
-            episode_id, episode_path = self._episode_path(task, subsystem, primary_symptom)
-            previous = _read_json(episode_path) or {}
-            previous_status = str(previous.get("status") or "")
-            occurrences = int(previous.get("occurrences") or 0) + 1
-            should_diagnose = (
-                not previous.get("diagnosis_requested_at")
-                and (
-                    severity >= 0.45
-                    or (occurrences >= 3 and severity >= 0.30)
-                )
-            )
-            episode_payload = {
-                "schema_version": EPISODE_SCHEMA,
-                "episode_id": episode_id,
-                "status": (
-                    previous_status
-                    if previous_status in {"DIAGNOSING", "REPAIR_PROPOSED", "REPAIR_REQUESTED"}
-                    else "OPEN"
-                ),
-                "task": task,
-                "subsystem": subsystem,
-                "primary_symptom": primary_symptom,
-                "first_seen_at": previous.get("first_seen_at") or now.isoformat(),
-                "last_seen_at": now.isoformat(),
-                "occurrences": occurrences,
-                "max_severity": round(max(float(previous.get("max_severity") or 0.0), severity), 6),
-                "current_severity": round(severity, 6),
-                "healthy_streak": 0,
-                "symptoms": classification["symptoms"],
-                "l1_health": dict(l1_health),
-                "latest_observation_id": observation_id,
-                "evidence_refs": list(dict.fromkeys([
-                    *[str(x) for x in previous.get("evidence_refs") or () if str(x)],
-                    observation_id,
-                    f"wakeful-task:{task}:{cycle}:result",
-                ]))[-24:],
-                "diagnosis_requested_at": (
-                    now.isoformat()
-                    if should_diagnose
-                    else previous.get("diagnosis_requested_at")
-                ),
-                "recovered_at": None,
-            }
-            _atomic_json(episode_path, episode_payload)
-        else:
-            for episode_path, previous in self._open_episodes():
-                if str(previous.get("task") or "") != task:
-                    continue
-                healthy_streak = int(previous.get("healthy_streak") or 0) + 1
-                previous["healthy_streak"] = healthy_streak
-                previous["last_healthy_at"] = now.isoformat()
-                previous["recovery_evidence_refs"] = list(dict.fromkeys([
-                    *[str(x) for x in previous.get("recovery_evidence_refs") or () if str(x)],
-                    observation_id,
-                    f"wakeful-task:{task}:{cycle}:result",
-                ]))[-16:]
-                if healthy_streak >= RECOVERY_HEALTHY_STREAK:
-                    previous["status"] = "RECOVERED_VERIFIED"
-                    previous["recovered_at"] = now.isoformat()
-                    previous["recovery_verification"] = {
-                        "required_consecutive_healthy": RECOVERY_HEALTHY_STREAK,
-                        "observed_consecutive_healthy": healthy_streak,
-                        "latest_result_status": classification["primary_status"],
-                    }
-                else:
-                    previous["status"] = "RECOVERING"
-                _atomic_json(episode_path, previous)
+        from .interoception_episode_ledger import InteroceptionEpisodeLedger
+        episode_id, episode_payload, should_diagnose = InteroceptionEpisodeLedger(
+            open_episodes=self._open_episodes, episode_path=self._episode_path,
+            read_json=_read_json, write_json=_atomic_json,
+            episode_schema=EPISODE_SCHEMA, recovery_streak=RECOVERY_HEALTHY_STREAK,
+        ).update(
+            task=task, now=now, subsystem=subsystem, primary_symptom=primary_symptom,
+            severity=severity, classification=classification,
+            l1_health=l1_health, observation_id=observation_id, cycle=cycle,
+        )
 
         observation = {
             "schema_version": OBSERVATION_SCHEMA,
@@ -611,104 +212,24 @@ class InteroceptiveFaultSystem:
             "l1_health": dict(l1_health),
         }
 
-        recent = [
-            dict(row)
-            for row in list(state.get("recent_observations") or [])
-            if isinstance(row, Mapping)
-        ]
-        recent.append(observation)
-        recent = recent[-MAX_RECENT_OBSERVATIONS:]
-
-        active = [payload for _path, payload in self._open_episodes()]
-        fault_scores: dict[str, dict[str, Any]] = {}
-        for payload in active:
-            domain = str(payload.get("subsystem") or "unknown")
-            severity_value = _bounded(
-                payload.get("current_severity"),
-                _bounded(payload.get("max_severity")),
-            )
-            occurrences = max(1, int(payload.get("occurrences") or 1))
-            confidence = min(0.98, 0.45 + 0.09 * min(5, occurrences) + 0.30 * severity_value)
-            prior = fault_scores.get(domain)
-            row = {
-                "subsystem": domain,
-                "confidence": round(confidence, 6),
-                "severity": round(severity_value, 6),
-                "episode_ids": [str(payload.get("episode_id") or "")],
-                "reason": str(payload.get("primary_symptom") or "unlocalized"),
-            }
-            if prior is None:
-                fault_scores[domain] = row
-            else:
-                prior["confidence"] = round(max(float(prior["confidence"]), confidence), 6)
-                prior["severity"] = round(max(float(prior["severity"]), severity_value), 6)
-                prior["episode_ids"] = list(dict.fromkeys([
-                    *list(prior.get("episode_ids") or []),
-                    str(payload.get("episode_id") or ""),
-                ]))[:8]
-
-        suspected = sorted(
-            fault_scores.values(),
-            key=lambda row: (-float(row["confidence"]), -float(row["severity"]), str(row["subsystem"])),
-        )[:8]
-        active_ids = [
-            str(payload.get("episode_id") or "")
-            for payload in active
-            if str(payload.get("episode_id") or "")
-        ]
-        symptom_names = list(dict.fromkeys(
-            str(payload.get("primary_symptom") or "")
-            for payload in active
-            if str(payload.get("primary_symptom") or "")
-        ))[:12]
-        if active and distress < max(_bounded(row.get("current_severity")) for row in active):
-            distress = max(_bounded(row.get("current_severity")) for row in active)
-        status = (
-            "ILL" if distress >= 0.55 or any(float(row["severity"]) >= 0.60 for row in suspected)
-            else "WATCH" if active or distress >= 0.20
-            else "HEALTHY"
+        from .interoception_state_projection import compose_interoception_state
+        new_state = compose_interoception_state(
+            previous_state=state, observation=observation,
+            active=[payload for _path, payload in self._open_episodes()],
+            distress=distress, l1_health=l1_health, now=now,
+            bounded=_bounded, schema=STATE_SCHEMA,
+            recent_limit=MAX_RECENT_OBSERVATIONS,
         )
-        new_state = {
-            "schema_version": STATE_SCHEMA,
-            "status": status,
-            "updated_at": now.isoformat(),
-            "distress": round(distress, 6),
-            "confidence_in_self": round(max(0.0, 1.0 - 0.80 * distress), 6),
-            "active_episode_ids": active_ids,
-            "suspected_faults": suspected,
-            "symptoms": symptom_names,
-            "latest_observation_id": observation_id,
-            "l1_health": dict(l1_health),
-            "recent_observations": recent,
-        }
         _atomic_json(self.state_path, new_state)
         _atomic_json(self.root / "latest_observation.json", observation)
 
-        diagnostic_failure = None
-        diagnosis_active = bool(
-            episode_payload
-            and episode_payload.get("diagnosis_requested_at")
+        from .interoception_diagnosis_receipt import diagnostic_failure_receipt
+        diagnosis_active, diagnostic_failure = diagnostic_failure_receipt(
+            task=task, classification=classification, episode_payload=episode_payload,
+            episode_id=episode_id, observation_id=observation_id,
+            primary_symptom=primary_symptom, subsystem=subsystem,
+            severity=severity, should_diagnose=should_diagnose,
         )
-        if diagnosis_active and episode_id:
-            diagnostic_failure = {
-                "status": "ERROR",
-                "task": task,
-                "cycle": observation_id,
-                "error_type": "INTEROCEPTIVE_FAULT",
-                "message": f"interoceptive {primary_symptom} in {subsystem}; task={task}",
-                "failure_site": f"interoception:{subsystem}",
-                "interoceptive_episode_id": episode_id,
-                "severity": round(severity, 6),
-                # Keep the concrete evidence that produced the body signal.
-                # Self-maintenance and the bounded repair planner need the
-                # original result path/status instead of only the coarse
-                # subsystem label ("network", "provider", ...).
-                "symptoms": [dict(row) for row in classification["symptoms"][:16]],
-                "status_evidence": [
-                    dict(row) for row in classification["status_evidence"][:32]
-                ],
-                "diagnostic_recurrence": not should_diagnose,
-            }
         return {
             "status": "SYMPTOM_OBSERVED" if classification["abnormal"] else "HEALTHY_OBSERVED",
             "observation": observation,

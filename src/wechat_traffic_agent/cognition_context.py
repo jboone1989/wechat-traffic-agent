@@ -276,184 +276,34 @@ def build_ferro_cognition_context(
         if (domain_runtime := getattr(application, "domain_runtime", None)) is not None
         else {"active": [], "recent_experiments": []}
     )
-    if owner_scope:
-        scoped_goal_id = str(owner_scope.get("goal_id") or "")
-        scoped_mission_id = str(owner_scope.get("mission_id") or "")
-        active = [
-            row for row in list(mission_state.get("active") or [])
-            if (
-                (scoped_goal_id and str(row.get("goal_id") or "") == scoped_goal_id)
-                or (
-                    scoped_mission_id
-                    and str(row.get("mission_id") or "") == scoped_mission_id
-                )
-            )
-        ]
-        active_mission_ids = {
-            str(row.get("mission_id") or "")
-            for row in active
-            if str(row.get("mission_id") or "")
-        }
-        mission_state = {
-            "active": active,
-            "recent_experiments": [
-                row for row in list(mission_state.get("recent_experiments") or [])
-                if str(row.get("mission_id") or "") in active_mission_ids
-            ],
-        }
-    # The owner controller prompt contains generic orchestration words such as
-    # "current", "evidence", "goal" and "action".  Using the whole prompt as
-    # a memory-retrieval query made unrelated rates/crypto memories look
-    # relevant.  Owner retrieval is anchored only to the actual objective,
-    # mission and bounded topic.  Ordinary cognition still uses its prompt.
-    if owner_mode:
-        query_parts = [
-            str((owner_scope or {}).get("description") or ""),
-            str((owner_scope or {}).get("topic") or ""),
-            *[
-                " ".join(
-                    (
-                        str(row.get("description") or ""),
-                        str(row.get("metric") or ""),
-                    )
-                )
-                for row in mission_state.get("active") or []
-            ],
-        ]
-    else:
-        query_parts = [
-            str(prompt),
-            *[
-                str(row.get("description") or "")
-                for row in mission_state.get("active") or []
-            ],
-        ]
-    query_context = " ".join(part for part in query_parts if part.strip())
+    from .cognition_scope_planner import CognitionScopePlanner
+    scope = CognitionScopePlanner().prepare(
+        owner_scope=owner_scope, owner_mode=owner_mode, prompt=prompt,
+        mission_state=mission_state, current_intent=packet.current_intent,
+        projection=projection, compact_latest_plan=_compact_latest_plan,
+    )
+    mission_state, query_context = scope.missions, scope.query
+    intents, latest_plan = scope.intents, scope.latest_plan
 
-    neural_life = wake.get("neural_life") if isinstance(wake, Mapping) else {}
-    if not isinstance(neural_life, Mapping):
-        neural_life = {}
-    compact_neural_life = {
-        key: neural_life.get(key)
-        for key in ("affect", "body", "drives", "intention", "last_authority_action")
-        if neural_life.get(key) is not None
-    }
-
+    from .cognition_environment_reader import CognitionEnvironmentReader
+    environment = CognitionEnvironmentReader(
+        build_behavior=build_behavioral_state, build_phenotype=build_phenotype_prior,
+        compact_behavior=compact_behavioral_state_for_prompt,
+        compact_phenotype=compact_phenotype_prior_for_prompt,
+    ).collect(application=application, domain_runtime=domain_runtime, wake=wake)
     app_runtime = getattr(application, "runtime", None)
-    app_caps = (
-        list(app_runtime.available_capabilities())
-        if app_runtime is not None and callable(getattr(app_runtime, "available_capabilities", None))
-        else []
+    capabilities, app_caps, domain_caps, manifest_caps = (
+        environment.capabilities, environment.application_capabilities,
+        environment.domain_capabilities, environment.manifest_capabilities,
     )
-    domain_caps = (
-        list(domain_runtime.capability_inventory.usable_ids())
-        if domain_runtime is not None
-        and getattr(domain_runtime, "capability_inventory", None) is not None
-        else []
+    capability_beliefs = environment.capability_beliefs
+    social_projection, relationship_rows = (
+        environment.social_projection, environment.relationships,
     )
-    manifest = getattr(domain_runtime, "agent_manifest", None)
-    manifest_caps = list(getattr(manifest, "capabilities", ()) or ())
-    capabilities = sorted(set(str(item) for item in [*app_caps, *domain_caps, *manifest_caps] if str(item).strip()))
-
-    self_projection = (
-        wake.get("self_model")
-        if isinstance(wake.get("self_model"), Mapping)
-        else {}
+    full_behavioral_state, full_phenotype_prior = (
+        environment.full_behavior, environment.full_phenotype,
     )
-    capability_beliefs = []
-    for capability, raw in (self_projection.get("capability_beliefs") or {}).items():
-        if not isinstance(raw, Mapping):
-            continue
-        capability_beliefs.append({
-            "capability": str(capability),
-            "confidence": raw.get("confidence"),
-            "attempts": int(raw.get("attempts") or 0),
-            "successes": int(raw.get("successes") or 0),
-            "failures": int(raw.get("failures") or 0),
-            "last_verified": raw.get("last_verified"),
-            "source": raw.get("source"),
-        })
-    capability_beliefs.sort(
-        key=lambda row: (
-            -int(row.get("attempts") or 0),
-            -float(row.get("confidence") or 0.0),
-            str(row.get("capability") or ""),
-        )
-    )
-
-    social_projection = (
-        wake.get("neural_social")
-        if isinstance(wake.get("neural_social"), Mapping)
-        else {}
-    )
-    full_behavioral_state = build_behavioral_state(wake)
-    full_phenotype_prior = build_phenotype_prior(full_behavioral_state)
-    behavioral_state = compact_behavioral_state_for_prompt(full_behavioral_state)
-    phenotype_prior = compact_phenotype_prior_for_prompt(full_phenotype_prior)
-    relationship_rows = [
-        dict(row)
-        for row in list(social_projection.get("recent_relationships") or ())
-        if isinstance(row, Mapping)
-    ][:8]
-
-    intents = list(packet.current_intent)
-    owner_goal_ids: set[str] = set()
-    if owner_mode:
-        owner_goal_ids = (
-            {str(owner_scope.get("goal_id") or "")}
-            if owner_scope and str(owner_scope.get("goal_id") or "")
-            else {
-                str(row.get("goal_id") or "")
-                for row in mission_state.get("active") or []
-                if str(row.get("goal_id") or "")
-            }
-        )
-        scoped_intents = []
-        for row in intents:
-            if str(row.get("goal_id") or "") not in owner_goal_ids:
-                continue
-            item = dict(row)
-            kind = str(item.get("kind") or "")
-            if kind == "GOAL":
-                item["authority"] = "OWNER_OBJECTIVE"
-            else:
-                continue
-            scoped_intents.append(item)
-        intents = scoped_intents
-        # Keep one owner objective in current_intent. The bound mission is
-        # already present in missions.active with metric/trajectory/constraints;
-        # repeating it here makes one objective look like competing intents.
-
-    latest_plan = _compact_latest_plan(projection.get("latest_plan"))
-    if owner_mode and isinstance(latest_plan, Mapping):
-        plan_goal = (
-            latest_plan.get("goal")
-            if isinstance(latest_plan.get("goal"), Mapping)
-            else {}
-        )
-        plan_goal_id = str(
-            latest_plan.get("owner_goal_id")
-            or plan_goal.get("goal_id")
-            or ""
-        )
-        if owner_goal_ids and plan_goal_id not in owner_goal_ids:
-            latest_plan = None
-    if owner_mode:
-        # Current mission rows remain bounded, while durable historical outcomes
-        # are retrieved globally through MemoryRouter and full life history.
-        compact_experiments = []
-        for row in list(mission_state.get("recent_experiments") or [])[-2:]:
-            if not isinstance(row, Mapping):
-                continue
-            compact_experiments.append({
-                **dict(row),
-                "strategy": _clip(row.get("strategy"), 800),
-                "expected_effect": _clip(row.get("expected_effect"), 500),
-            })
-        mission_state = {
-            **mission_state,
-            "recent_experiments": compact_experiments,
-        }
+    behavioral_state, phenotype_prior = environment.behavior, environment.phenotype
 
     state_root = (
         getattr(mind, "state_root", None)
@@ -492,130 +342,21 @@ def build_ferro_cognition_context(
         now=now,
         budget_chars=12_000 if owner_mode else 18_000,
     )
-    selected = (
-        decision_context.get("selected")
-        if isinstance(decision_context.get("selected"), Mapping)
-        else {}
+    from .cognition_selected_projection import project_selected_cognition
+    views = project_selected_cognition(decision_context, projection)
+    selected_current_intent, selected_mission_state, mind_section = (
+        views.current_intent, views.missions, views.mind,
     )
-
-    selected_current_intent = [
-        dict(row)
-        for row in list(selected.get("goal") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_missions = [
-        dict(row)
-        for row in list(selected.get("mission") or [])
-        if isinstance(row, Mapping) and row.get("mission_id")
-    ]
-    selected_experiments = [
-        dict(row)
-        for row in list(selected.get("experiment") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_mission_state = {
-        "active": selected_missions,
-        "recent_experiments": selected_experiments,
-    }
-    selected_plan = next(
-        (
-            dict(row)
-            for row in list(selected.get("plan") or [])
-            if isinstance(row, Mapping)
-        ),
-        None,
+    recent_experience, retrieved_memory, selected_resources = (
+        views.experience, views.memory, views.resources,
     )
-    selected_strategy_topics = [
-        str(row.get("topic") or "")
-        for row in list(selected.get("strategy") or [])
-        if isinstance(row, Mapping) and str(row.get("topic") or "")
-    ]
-    mind_section = {
-        "mind_schema": projection.get("mind_schema"),
-        "mind_tick": projection.get("mind_tick"),
-        "interests": [
-            dict(row)
-            for row in list(selected.get("interest") or [])
-            if isinstance(row, Mapping)
-        ],
-        "open_inquiries": [
-            dict(row)
-            for row in list(selected.get("inquiry") or [])
-            if isinstance(row, Mapping)
-        ],
-        "beliefs": [
-            dict(row)
-            for row in list(selected.get("belief") or [])
-            if isinstance(row, Mapping)
-        ],
-        "recent_belief_changes": [
-            dict(row)
-            for row in list(selected.get("belief_change") or [])
-            if isinstance(row, Mapping)
-        ],
-        "latest_plan": selected_plan,
-        "strategy_learning": {
-            "outcome_count": int(
-                ((projection.get("strategy_learning") or {}).get("outcome_count") or 0)
-            ),
-            "topics": selected_strategy_topics,
-        },
-        "learning_boundary": _clip(projection.get("learning_boundary"), 1200),
-    }
-    recent_experience = [
-        dict(row)
-        for row in list(selected.get("experience") or [])
-        if isinstance(row, Mapping)
-    ]
-    retrieved_memory = [
-        dict(row)
-        for row in list(selected.get("memory") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_resources = next(
-        (
-            dict(row)
-            for row in list(selected.get("resource") or [])
-            if isinstance(row, Mapping)
-        ),
-        {},
+    selected_capabilities, selected_capability_beliefs = (
+        views.capabilities, views.capability_beliefs,
     )
-    selected_capabilities = [
-        str(row)
-        for row in list(selected.get("capability") or [])
-        if str(row)
-    ]
-    selected_capability_beliefs = [
-        dict(row)
-        for row in list(selected.get("capability_belief") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_relationships = [
-        dict(row)
-        for row in list(selected.get("relationship") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_commitments = [
-        dict(row)
-        for row in list(selected.get("commitment") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_operational = next(
-        (
-            dict(row)
-            for row in list(selected.get("operational") or [])
-            if isinstance(row, Mapping)
-        ),
-        {},
+    selected_relationships, selected_commitments = (
+        views.relationships, views.commitments,
     )
-    selected_internal = [
-        dict(row)
-        for row in list(selected.get("internal") or [])
-        if isinstance(row, Mapping)
-    ]
-    selected_neural_life: dict[str, Any] = {}
-    for row in selected_internal:
-        selected_neural_life.update(row)
+    selected_operational, selected_neural_life = views.operational, views.neural_life
 
     raw_interoception = read_interoceptive_projection(state_root)
     interoception = {
@@ -634,49 +375,8 @@ def build_ferro_cognition_context(
         if raw_interoception.get(key) is not None
     }
 
-    selected_fact_index = [
-        {
-            "context_id": row.get("context_id"),
-            "source": row.get("source"),
-            "kind": row.get("kind"),
-        }
-        for row in list(decision_context.get("selected_facts") or [])
-        if isinstance(row, Mapping)
-    ]
-    llm_decision_context = {
-        "schema_version": decision_context.get("schema_version"),
-        "role": "SEED_WORKSPACE_NOT_REASONING_BOUNDARY",
-        "model_may_reframe": True,
-        "fact_index": selected_fact_index,
-        "candidate_count": int(decision_context.get("candidate_count") or 0),
-        "selected_count": int(decision_context.get("selected_count") or 0),
-        "selected_chars_estimate": int(
-            decision_context.get("selected_chars_estimate") or 0
-        ),
-        "budget_chars": int(decision_context.get("budget_chars") or 0),
-        "selection_policy_ref": decision_context.get("selection_policy_ref"),
-        "memory_router": dict(decision_context.get("memory_router") or {}),
-        "always_on_sources": ["phenotype_prior", "behavioral_state", "interoception"],
-    }
-    selection_summary = {
-        "retrieval_policy": "decision_conditioned_context_retrieval_v1",
-        "information_need_ids": [
-            str(row.get("need_id") or "")
-            for row in list(decision_context.get("information_needs") or [])
-            if isinstance(row, Mapping)
-        ],
-        "candidate_count": int(decision_context.get("candidate_count") or 0),
-        "selected_count": int(decision_context.get("selected_count") or 0),
-        "excluded_count": int(decision_context.get("excluded_count") or 0),
-        "selected_sources": list(decision_context.get("selected_sources") or []),
-        "selection_policy_ref": decision_context.get("selection_policy_ref"),
-        "selected_facts": selected_fact_index[:16],
-        "rejected_candidates": list(
-            decision_context.get("rejected_candidates") or []
-        )[:16],
-        "memory_router": dict(decision_context.get("memory_router") or {}),
-        "always_on_sources": ["phenotype_prior", "behavioral_state", "interoception"],
-    }
+    from .cognition_selection_receipts import selection_receipts
+    llm_decision_context, selection_summary = selection_receipts(decision_context)
 
     core_sections = {
         "continuity": {
@@ -741,175 +441,25 @@ def build_ferro_cognition_context(
         selection_summary=selection_summary,
     )
 
-    selected_application_caps = [
-        str(item) for item in app_caps if str(item) in selected_capabilities
-    ]
-    selected_domain_caps = [
-        str(item) for item in domain_caps if str(item) in selected_capabilities
-    ]
-    selected_manifest_caps = [
-        str(item) for item in manifest_caps if str(item) in selected_capabilities
-    ]
-    internal_selected = bool(selected_neural_life)
+    from .cognition_snapshot_presentation import build_cognition_snapshot
+    snapshot = build_cognition_snapshot(
+        now=now, application=application, app_runtime=app_runtime,
+        projection=projection, wake=wake, environment=environment, views=views,
+        metadata=metadata, llm_decision_context=llm_decision_context,
+        selection_summary=selection_summary, interoception=interoception,
+        owner_mode=owner_mode,
+    )
 
-    snapshot = {
-        "continuity": {
-            "schema_version": "ferro-cognition-snapshot.v1",
-            "as_of": now.astimezone(timezone.utc).replace(microsecond=0).isoformat(),
-            "subject_id": getattr(
-                getattr(application, "subject", None), "subject_id", None
-            ),
-            "subject_tick": int(
-                getattr(getattr(application, "subject", None), "tick", 0) or 0
-            ),
-            "application_cycle": int(getattr(app_runtime, "cycle", 0) or 0),
-            "mind_tick": int(projection.get("mind_tick") or 0),
-            "agent_runtime_cycle_is_host_internal": True,
-        },
-        "decision_frame": metadata["decision_frame"],
-        "decision_context": llm_decision_context,
-        "context_receipt": {
-            key: metadata["context_receipt"].get(key)
-            for key in (
-                "schema_version",
-                "receipt_id",
-                "decision_type",
-                "selected_chars_estimate",
-                "candidate_counts",
-                "downstream_budget_chars",
-                "budget_utilization_estimate",
-                "selection_policy",
-            )
-            if metadata["context_receipt"].get(key) is not None
-        } | {
-            "selection_summary": {
-                "retrieval_policy": selection_summary["retrieval_policy"],
-                "selected_sources": selection_summary["selected_sources"],
-                "always_on_sources": selection_summary["always_on_sources"],
-            }
-        },
-        "current_intent": selected_current_intent,
-        "open_loops": metadata["open_loops"],
-        "missions": selected_mission_state,
-        "commitments": selected_commitments,
-        "mind": mind_section,
-        "recent_experience": recent_experience,
-        "retrieved_memory": retrieved_memory,
-        "resources": selected_resources,
-        "capabilities": {
-            "available": selected_capabilities,
-            "application": selected_application_caps,
-            "domain_reasoning": selected_domain_caps,
-            "manifest": selected_manifest_caps,
-            "evidence_bound_beliefs": selected_capability_beliefs,
-        },
-        "social_context": {
-            "relationship_count": int(
-                social_projection.get("relationship_count") or 0
-            ),
-            "recent_relationships": selected_relationships,
-            "authority": "PERSISTED_NEURAL_SOCIAL_STATE",
-        },
-        "operational_state": selected_operational,
-        "neural_state": {
-            "life": selected_neural_life,
-            "control_signals": (
-                []
-                if owner_mode or not internal_selected
-                else list(wake.get("neural_control_signals") or [])[-6:]
-            ),
-            "feedback": (
-                []
-                if owner_mode or not internal_selected
-                else list(wake.get("neural_feedback") or [])[-6:]
-            ),
-            "control_authority": "ADVISORY_SIGNAL_ONLY",
-        },
-        "interoception": interoception,
-        "phenotype_prior": phenotype_prior,
-        "behavioral_state": behavioral_state,
-        "epistemic_contract": metadata["epistemic_contract"],
-    }
-
-    if state_root is not None:
-        contract_snapshot = {
-            **snapshot,
-            "phenotype_prior": full_phenotype_prior,
-            "behavioral_state": full_behavioral_state,
-            "context_receipt": metadata["context_receipt"],
-        }
-        contract_report = CapabilityContractMonitor(state_root).observe_context(
-            contract_snapshot,
-            now=now,
-        )
-        snapshot["capability_contracts"] = contract_report
-        if contract_report.get("violations") and not contract_report.get("duplicate"):
-            sensed = InteroceptiveFaultSystem(state_root).observe(
-                "CONTENT_COGNITION",
-                {
-                    "task": "CONTENT_COGNITION",
-                    "status": "OK",
-                    "cycle": contract_report.get("observation_id"),
-                    "capability_contracts": contract_report,
-                },
-                now=now,
-            )
-            diagnostic_failure = sensed.get("diagnostic_failure")
-            if bool(sensed.get("should_diagnose")) and isinstance(diagnostic_failure, dict):
-                top_contract = next(
-                    (
-                        row
-                        for row in list(contract_report.get("violations") or [])
-                        if isinstance(row, Mapping)
-                    ),
-                    {},
-                )
-                contract_subsystem = str(top_contract.get("subsystem") or "context")
-                failure_site = (
-                    "behavioral_state.py:capability_contract"
-                    if contract_subsystem == "neural"
-                    else "cognition_context.py:capability_contract"
-                )
-                from .self_maintenance import SelfMaintenanceService
-
-                maintenance = SelfMaintenanceService(
-                    state_root=state_root,
-                    evolution_runtime=domain_runtime,
-                    capability_runtime=app_runtime,
-                )
-                snapshot["capability_contract_diagnosis"] = maintenance.ingest_failure(
-                    {
-                        **diagnostic_failure,
-                        "task": "CONTENT_COGNITION",
-                        "error_type": "CAPABILITY_CONTRACT_VIOLATION",
-                        "failure_site": failure_site,
-                        "message": (
-                            "capability contract violation: "
-                            + str(top_contract.get("kind") or "unknown")
-                            + "; expected="
-                            + str(top_contract.get("expected") or "")[:300]
-                            + "; observed="
-                            + str(top_contract.get("observed") or "")[:400]
-                        ),
-                    },
-                    now=now,
-                )
-            updated_interoception = dict(sensed.get("projection") or {})
-            snapshot["interoception"] = {
-                key: updated_interoception.get(key)
-                for key in (
-                    "schema_version",
-                    "status",
-                    "updated_at",
-                    "distress",
-                    "confidence_in_self",
-                    "active_episode_ids",
-                    "suspected_faults",
-                    "symptoms",
-                    "latest_observation_id",
-                )
-                if updated_interoception.get(key) is not None
-            }
+    from .cognition_contract_observer import CognitionContractObserver
+    CognitionContractObserver(
+        state_root=state_root, monitor_factory=CapabilityContractMonitor,
+        fault_factory=InteroceptiveFaultSystem,
+    ).observe(
+        snapshot, full_phenotype_prior=full_phenotype_prior,
+        full_behavioral_state=full_behavioral_state,
+        context_receipt=metadata["context_receipt"],
+        now=now, domain_runtime=domain_runtime, app_runtime=app_runtime,
+    )
     return snapshot
 
 

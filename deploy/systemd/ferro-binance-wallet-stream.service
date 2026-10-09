@@ -1,0 +1,24 @@
+[Unit]
+Description=Ferro Binance Smart Money WebSocket research stream (opt-in, read-only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
+Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src
+Environment=PATH=/home/ubuntu/.nvm/versions/node/v22.23.2/bin:/usr/local/bin:/usr/bin:/bin
+Environment=FERRO_WALLET_TRACKER_MODE=stream
+Environment=FERRO_WALLET_WS_SCOPE=smy
+Environment=FERRO_WALLET_WS_SECONDS=0
+ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python scripts/run_binance_wallet_tracker.py
+Restart=on-failure
+RestartSec=20
+MemoryMax=220M
+CPUQuota=30%
+Nice=12
+
+[Install]
+WantedBy=multi-user.target

@@ -737,375 +737,54 @@ class ContentWakefulRuntime:
                 ):
                     self.core.cancel(planned.wake_id)
 
-        if self.neural_life.should_stimulate(now):
-            substrate = getattr(self.core.reflex, "substrate", None)
-            aux_channels = set(getattr(substrate, "aux_channels", ()) or ())
-            if substrate is not None and aux_channels:
-                raw_currents = {
-                    key: value
-                    for key, value in _connectome_body_currents(
-                        projection,
-                        recent_stimulus_kinds=tuple(wakeful["recent_stimulus_kinds"]),
-                    ).items()
-                    if key in aux_channels and value > 0.0
-                }
-                if raw_currents:
-                    try:
-                        substrate.stimulate(
-                            raw_currents,
-                            now,
-                            source_event_id=f"body-sense:{int(now.timestamp() // 240)}",
-                            feedback_eligible=False,
-                        )
-                    except Exception as exc:
-                        record_error = getattr(substrate, "record_error", None)
-                        if callable(record_error):
-                            record_error(exc, now)
-            drives = projection.get("drives") or {}
-            mapping = {
-                "survival": ("resource_pressure", "INTEROCEPTION_SURVIVAL"),
-                "reproduction": ("social_attention", "INTEROCEPTION_REPRODUCTION"),
-                "evolution": ("curiosity", "INTEROCEPTION_EVOLUTION"),
-            }
-            for drive_name, (channel, kind) in mapping.items():
-                magnitude = max(0.0, min(1.0, float(drives.get(drive_name) or 0.0)))
-                if magnitude < 0.05:
-                    continue
-                event_id = f"interoception:{drive_name}:{int(now.timestamp() // 240)}"
-                self.core.emit(StimulusEvent(
-                    event_id=event_id,
-                    source="ferro-nervous-system",
-                    kind=kind,
-                    observed_at=now,
-                    salience=magnitude,
-                    novelty=0.12,
-                    urgency=magnitude,
-                    persistence=0.90,
-                    payload_ref=f"neural-drive:{drive_name}",
-                    attention_channel=channel,
-                ), enqueue=False)
-            self.neural_life.mark_stimulated(now)
+        from .neural_stimulus_dispatcher import NeuralStimulusDispatcher
+        NeuralStimulusDispatcher(
+            core=self.core, life=self.neural_life, dream=self.dream_engine,
+            body_currents=_connectome_body_currents,
+            stimulus_type=StimulusEvent,
+        ).emit(now, projection, wakeful)
 
-        dream_influence = self.dream_engine.claim_waking_influence(now=now)
-        if dream_influence is not None:
-            base_magnitude = max(
-                0.0,
-                min(1.0, float(dream_influence.get("magnitude") or 0.0)),
-            )
-            for index, channel in enumerate(dream_influence.get("channels") or ()):
-                if index >= 3:
-                    break
-                magnitude = max(0.05, base_magnitude * (1.0 - 0.15 * index))
-                self.core.emit(StimulusEvent(
-                    event_id=(
-                        f"dream-consolidation:{dream_influence.get('attractor_id')}:"
-                        f"{int(now.timestamp() // 21600)}:{index}"
-                    ),
-                    source="ferro-dream-engine",
-                    kind="DREAM_CONSOLIDATION",
-                    observed_at=now,
-                    salience=magnitude,
-                    novelty=0.35,
-                    urgency=max(0.20, magnitude * 0.65),
-                    persistence=0.92,
-                    payload_ref=str(dream_influence.get("attractor_id") or ""),
-                    attention_channel=str(channel),
-                ), enqueue=False)
+        from .neural_authority_coordinator import NeuralAuthorityCoordinator
+        projection = NeuralAuthorityCoordinator(
+            core=self.core, life=self.neural_life,
+            brain_cortex=self.brain_cortex, personality=self.neural_personality,
+            brain_lab=self.brain_lab, social=self.neural_social,
+            motor=self.neural_motor, regulator=self.resource_regulator,
+            planned_wake=PlannedWake,
+            x_enabled=os.environ.get("CONTENT_X_ENABLED", "").lower()
+            in {"1", "true", "yes", "on"},
+        ).refresh(now, projection, owner_control_active)
+        from .neural_development_sensors import NeuralDevelopmentSensors
+        NeuralDevelopmentSensors(
+            core=self.core, agency=self.developmental_agency,
+            transfer=self.neural_transfer, motor=self.neural_motor,
+            history=self.developmental_history, extensions=self.neural_extensions,
+            stimulus_type=StimulusEvent,
+        ).observe(now, projection)
+        from .neural_development_scheduler import NeuralDevelopmentScheduler
+        NeuralDevelopmentScheduler(
+            core=self.core, agency=self.developmental_agency,
+            transfer=self.developmental_world_transfer,
+            evolution=self.open_ended_evolution, planned_wake=PlannedWake,
+        ).refresh(now, owner_control_active)
 
-        recommendation = self.neural_life.authority_recommendation(now)
-        if recommendation is not None and not owner_control_active:
-            task = str(recommendation["task"])
-            if task == "CHECK_X" and os.environ.get("CONTENT_X_ENABLED", "").lower() not in {"1", "true", "yes", "on"}:
-                task = "CONTENT_COGNITION"
-                recommendation = {**recommendation, "task": task}
-            existing = [
-                wake for wake in self.core.snapshot().pending_plans
-                if wake.task == task and wake.at <= now + timedelta(minutes=15)
-            ]
-            if not existing:
-                self.core.schedule(PlannedWake(
-                    wake_id=f"neural:{str(recommendation['intention']).lower()}",
-                    at=now + timedelta(seconds=5),
-                    reason=str(recommendation["reason"]),
-                    task=task,
-                    relevant_refs=(f"neural-intention:{recommendation['intention']}",),
-                    preemptible=True,
-                ))
-                self.neural_life.mark_authority_action(now, recommendation)
-                projection = self.neural_life.projection()
-        scoreboard = self.brain_cortex.projection().get("scoreboard") or {}
-        executed = sum(int((row or {}).get("executed") or 0) for row in scoreboard.values())
-        neural_executed = int((scoreboard.get("NEURAL") or {}).get("executed") or 0)
-        authority_fraction = (neural_executed / executed) if executed else 0.5
-        self.neural_personality.refresh(
-            now=now,
-            neural_life=projection,
-            brain_lab=self.brain_lab.projection(),
-            social=self.neural_social.projection(),
-            neural_authority_fraction=authority_fraction,
-        )
-        intention = (projection.get("intention") or {}).get("name")
-        pressure = self.resource_regulator.pressure(now)
-        if owner_control_active:
-            motor = {
-                "status": "INHIBITED_OWNER_GOAL_CONTROL",
-                "task": None,
-            }
-        else:
-            motor = (
-                self.neural_motor.select(neural_life=projection, now=now)
-                if intention != "REST" and pressure not in {"CONSERVE", "CRITICAL", "UNKNOWN"}
-                else {"status": "INHIBITED", "task": None}
-            )
-        motor_task = str(motor.get("task") or "")
-        if motor_task:
-            target_at = now + timedelta(seconds=5)
-            existing = next(
-                (
-                    wake for wake in self.core.snapshot().pending_plans
-                    if wake.wake_id == f"motor:{motor.get('decision_id')}"
-                ),
-                None,
-            )
-            if existing is None:
-                self.core.schedule(PlannedWake(
-                    wake_id=f"motor:{motor.get('decision_id')}",
-                    at=target_at,
-                    reason=f"{motor.get('authority') or 'NEURAL_MOTOR'} selected {motor_task} via {motor.get('motor_id') or 'motor unit'}",
-                    task=motor_task,
-                    relevant_refs=(
-                        str(motor.get("decision_id") or ""),
-                        str(motor.get("motor_id") or ""),
-                    ),
-                    preemptible=True,
-                ))
-        agency = self.developmental_agency.refresh(
-            now=now,
-            neural_life=projection,
-            neural_transfer=self.neural_transfer.projection(),
-            neural_motor=self.neural_motor.projection(),
-            developmental_history=self.developmental_history.projection(),
-        )
-        for need in agency.get("needs") or ():
-            if need.get("status") != "ACTIVE":
-                continue
-            pressure = max(0.0, min(1.0, float(need.get("neural_pressure") or 0.0)))
-            channels = [str(value) for value in need.get("pressure_channels") or () if value]
-            if pressure < 0.25 or not channels:
-                continue
-            self.core.emit(StimulusEvent(
-                event_id=f"development-need:{need.get('need_id')}:{int(now.timestamp() // 1800)}",
-                source="ferro-developmental-agency",
-                kind="DEVELOPMENT_NEED",
-                observed_at=now,
-                salience=pressure,
-                novelty=0.55,
-                urgency=max(pressure, float(need.get("severity") or 0.0)),
-                persistence=0.95,
-                payload_ref=str(need.get("need_id") or ""),
-                attention_channel=channels[0],
-            ), enqueue=False)
-
-        extension_projection = self.neural_extensions.refresh(
-            now=now,
-            agency=agency,
-            motor_cortex=self.neural_motor,
-        )
-        for sample in self.neural_extensions.sample_active_sensors(now=now):
-            currents = sample.get("currents") if isinstance(sample.get("currents"), dict) else {}
-            for index, (channel, current) in enumerate(
-                sorted(currents.items(), key=lambda item: (-float(item[1]), item[0]))
-            ):
-                if index >= 3 or float(current) <= 0.0:
-                    continue
-                magnitude = max(0.05, min(0.9, float(current)))
-                self.core.emit(StimulusEvent(
-                    event_id=(
-                        f"self-sensor:{sample.get('sensor_id')}:"
-                        f"{int(now.timestamp() // 300)}:{index}"
-                    ),
-                    source="ferro-neural-self-extension",
-                    kind="SELF_EXTENDED_SENSOR",
-                    observed_at=now,
-                    salience=magnitude,
-                    novelty=0.62,
-                    urgency=max(0.18, magnitude * 0.55),
-                    persistence=0.88,
-                    payload_ref=str(sample.get("extension_id") or ""),
-                    attention_channel=str(channel),
-                ), enqueue=False)
-
-        candidate_world = self.developmental_agency.next_candidate_world()
-        architecture_revalidation_world = (
-            self.developmental_world_transfer.architecture_revalidation_candidate(
-                now=now
-            )
-        )
-        if (
-            not owner_control_active
-            and architecture_revalidation_world is not None
-            and self.developmental_world_transfer.pending(now=now) is None
-        ):
-            target_at = now + timedelta(seconds=10)
-            if not any(
-                wake.task == "NEURAL_DEVELOPMENT_TRANSFER"
-                and wake.at <= target_at
-                for wake in self.core.snapshot().pending_plans
-            ):
-                self.core.schedule(PlannedWake(
-                    wake_id="content:NEURAL_DEVELOPMENT_TRANSFER",
-                    at=target_at,
-                    reason=(
-                        "revalidate selected developmental architecture against "
-                        f"baseline on {architecture_revalidation_world.get('world_id')}"
-                    ),
-                    task="NEURAL_DEVELOPMENT_TRANSFER",
-                    relevant_refs=(
-                        str(architecture_revalidation_world.get("need_id") or ""),
-                        str(architecture_revalidation_world.get("proposal_id") or ""),
-                        str(architecture_revalidation_world.get("world_id") or ""),
-                        "architecture-post-selection-revalidation",
-                    ),
-                    preemptible=False,
-                ))
-        elif (
-            not owner_control_active
-            and candidate_world is not None
-            and int(candidate_world.get("trial_count") or 0) == 0
-        ):
-            target_at = now + timedelta(seconds=10)
-            if not any(
-                wake.task == "NEURAL_DEVELOPMENT" and wake.at <= target_at
-                for wake in self.core.snapshot().pending_plans
-            ):
-                self.core.schedule(PlannedWake(
-                    wake_id="content:NEURAL_DEVELOPMENT",
-                    at=target_at,
-                    reason=f"test Ferro-born world {candidate_world.get('world_id')} for {candidate_world.get('need_id')}",
-                    task="NEURAL_DEVELOPMENT",
-                    relevant_refs=(
-                        str(candidate_world.get("need_id") or ""),
-                        str(candidate_world.get("proposal_id") or ""),
-                        str(candidate_world.get("world_id") or ""),
-                    ),
-                    preemptible=True,
-                ))
-        elif (
-            not owner_control_active
-            and candidate_world is not None
-            and self.developmental_world_transfer.pending() is None
-        ):
-            evaluation = (
-                self.developmental_world_transfer.projection()
-                .get("worlds", {})
-                .get(str(candidate_world.get("world_id") or ""), {})
-            )
-            if not bool(evaluation.get("causal_claim_ready")):
-                target_at = now + timedelta(seconds=10)
-                if not any(
-                    wake.task == "NEURAL_DEVELOPMENT_TRANSFER" and wake.at <= target_at
-                    for wake in self.core.snapshot().pending_plans
-                ):
-                    self.core.schedule(PlannedWake(
-                        wake_id="content:NEURAL_DEVELOPMENT_TRANSFER",
-                        at=target_at,
-                        reason=(
-                            f"prospectively test real-world transfer of "
-                            f"{candidate_world.get('world_id')}"
-                        ),
-                        task="NEURAL_DEVELOPMENT_TRANSFER",
-                        relevant_refs=(
-                            str(candidate_world.get("need_id") or ""),
-                            str(candidate_world.get("proposal_id") or ""),
-                            str(candidate_world.get("world_id") or ""),
-                        ),
-                        preemptible=False,
-                    ))
-
-        evolution = self.open_ended_evolution.refresh(now=now)
-        consolidation = self.open_ended_evolution.next_consolidation()
-        if consolidation is not None and not owner_control_active:
-            target_at = now + timedelta(seconds=10)
-            if not any(
-                wake.task == "NEURAL_EVOLUTION_CONSOLIDATION"
-                and wake.at <= target_at
-                for wake in self.core.snapshot().pending_plans
-            ):
-                self.core.schedule(PlannedWake(
-                    wake_id="content:NEURAL_EVOLUTION_CONSOLIDATION",
-                    at=target_at,
-                    reason=(
-                        f"consolidate adopted Ferro-born world "
-                        f"{consolidation.get('world_id')} until real neural emergence "
-                        "or bounded budget exhaustion"
-                    ),
-                    task="NEURAL_EVOLUTION_CONSOLIDATION",
-                    relevant_refs=(
-                        str(consolidation.get("cycle_id") or ""),
-                        str(consolidation.get("need_id") or ""),
-                        str(consolidation.get("proposal_id") or ""),
-                        str(consolidation.get("world_id") or ""),
-                    ),
-                    preemptible=True,
-                ))
-
-        current_snap = self.core.snapshot()
-        cortex = self.cortex_continuity.observe(
-            neural_graph=dict(current_snap.neural_state),
-            motor=self.neural_motor.projection(),
-            personality=self.neural_personality.projection(),
-            observed_at=now,
-        )
-        self.longitudinal_individuality.observe(
-            now=now,
-            personality=self.neural_personality.projection(),
-            social_state=dict(self.neural_social.state),
-            motor_state=dict(self.neural_motor.state),
-            dream_state=dict(self.dream_engine.state),
-            cortex=cortex,
-            neural_graph=dict(current_snap.neural_state),
-        )
+        from .neural_continuity_coordinator import NeuralContinuityCoordinator
         from .organism_closure import refresh_organism_closure
-        closure = refresh_organism_closure(
-            now=now, snapshot=current_snap, neural_life=projection,
-            personality=self.neural_personality.projection(), cortex=cortex,
-            continuity=self.cortex_continuity.projection(),
-            resource_pressure=self.resource_regulator.pressure(now),
-            organism_state=self.organism_state, drive_system=self.drive_system,
-            developmental_history=self.developmental_history,
+        self._world_learning_due_signature = NeuralContinuityCoordinator(
+            core=self.core, cortex=self.cortex_continuity,
+            individuality=self.longitudinal_individuality,
+            motor=self.neural_motor, personality=self.neural_personality,
+            social=self.neural_social, dream=self.dream_engine,
+            resource_regulator=self.resource_regulator, organism_state=self.organism_state,
+            drive_system=self.drive_system, developmental_history=self.developmental_history,
             autonomous_life=self.autonomous_life, self_model=self.self_model,
-            world_learning=self.world_learning,
-            active_user_goal_count=len(self._active_user_goal_ids()),
+            world_learning=self.world_learning, active_goal_count=lambda: len(self._active_user_goal_ids()),
+            ensure_goal_wakes=self._ensure_autonomous_goal_wakes,
+            planned_wake=PlannedWake, organism_closure=refresh_organism_closure,
+        ).refresh(
+            now=now, projection=projection, owner_control_active=owner_control_active,
+            previous_signature=self._world_learning_due_signature,
         )
-        # Durable active goals remain obligations across process restarts.
-        # Rebuild missing scheduler wakes even when autonomous_life.tick()
-        # returned COOLDOWN rather than a newly-created goal this cycle.
-        if not owner_control_active:
-            self._ensure_autonomous_goal_wakes(now)
-        due_rows = self.world_learning.due(now)
-        due_signature = tuple(
-            (
-                str(row.get("action_id") or ""),
-                str(row.get("window") or ""),
-                str(row.get("due_at") or ""),
-            )
-            for row in due_rows
-        )
-        if due_signature and due_signature != self._world_learning_due_signature:
-            if not any(
-                wake.task == "CHECK_OUTCOMES"
-                and wake.at <= now + timedelta(minutes=5)
-                for wake in self.core.snapshot().pending_plans
-            ):
-                self.core.schedule(PlannedWake(
-                    wake_id="content:CHECK_OUTCOMES", at=now + timedelta(seconds=10),
-                    reason="settle newly matured delayed world-learning outcomes",
-                    task="CHECK_OUTCOMES", preemptible=False,
-                ))
-        self._world_learning_due_signature = due_signature
-        persist = getattr(self.core, "_persist", None)
-        if callable(persist):
-            persist()
         return projection
 
     def rank_neural_taste(self, topics, now: datetime | None = None) -> dict:

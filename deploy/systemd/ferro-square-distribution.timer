@@ -1,0 +1,10 @@
+[Unit]
+Description=Try one ready Ferro Binance Square publication every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=ferro-square-distribution.service
+
+[Install]
+WantedBy=timers.target

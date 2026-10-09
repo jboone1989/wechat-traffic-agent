@@ -8,8 +8,10 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 
 from .models import PublicationEvent, DistributionTask
+from .errors import NonRetryablePublication
 
 
 class PublicationEventStore:
@@ -58,6 +60,19 @@ class PublicationEventStore:
         raw["published_at"] = datetime.fromisoformat(raw["published_at"])
         return PublicationEvent(**raw)
 
+    def subscription_started_at(self, channel: str, *, now=None):
+        """Persist a channel's starting watermark; never backfill old events by accident."""
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,60}", channel):
+            raise ValueError("invalid publication subscriber channel")
+        path = self.distribution / "subscriptions" / f"{channel}.json"
+        with self._lock():
+            if not path.exists():
+                started = now or datetime.now(timezone.utc)
+                if started.utcoffset() is None:
+                    raise ValueError("subscription time must have a timezone")
+                self._save_new(path, {"started_at": started.astimezone(timezone.utc).isoformat()})
+            return datetime.fromisoformat(json.loads(path.read_text())["started_at"])
+
     def find_task(self, task_id: str):
         for folder in (self.queue, self.processing, self.success, self.failed):
             path = folder / f"{task_id}.json"
@@ -80,22 +95,26 @@ class PublicationEventStore:
             self._save_new(path, task.model_dump())
             return path
 
-    def attempt_count(self, *, local_date, timezone_info):
+    def attempt_count(self, *, local_date, timezone_info, channel="x"):
         """Count actual dispatch attempts, not successful X posts or queue creations."""
         total = 0
         for folder in (self.queue, self.processing, self.success, self.failed):
             for path in folder.glob("*.json"):
                 raw = json.loads(path.read_text(encoding="utf-8"))
+                if channel is not None and raw.get("channel") != channel:
+                    continue
                 for timestamp in raw.get("attempt_times", []):
                     if datetime.fromisoformat(timestamp).astimezone(timezone_info).date() == local_date:
                         total += 1
         return total
 
-    def claim_next(self):
+    def claim_next(self, channels=None):
         with self._lock():
             for path in sorted(self.queue.glob("*.json")):
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 task = DistributionTask(**raw)
+                if channels is not None and task.channel not in channels:
+                    continue
                 if task.status not in {"PENDING", "RETRY_PENDING"}:
                     raise ValueError("unexpected queued status: " + task.status)
                 target = self.processing / path.name
@@ -107,13 +126,15 @@ class PublicationEventStore:
                 return task
         return None
 
-    def finish(self, task: DistributionTask, *, result_url=None, error=None, max_attempts=3):
+    def finish(self, task: DistributionTask, *, result_url=None, result_post_id=None,
+               error=None, max_attempts=3):
         with self._lock():
             source = self.processing / f"{task.distribution_id}.json"
             if not source.is_file():
                 raise FileNotFoundError("distribution task not claimed: " + task.distribution_id)
             if result_url:
-                done = replace(task, status="SUCCESS", published_url=result_url, last_error=None)
+                done = replace(task, status="SUCCESS", published_url=result_url,
+                               published_post_id=result_post_id, last_error=None)
                 destination = self.success / source.name
             else:
                 status = "FAILED_PERMANENT" if task.attempts >= max_attempts else "RETRY_PENDING"
@@ -134,7 +155,7 @@ class DistributionWorker:
         self.max_attempts = max_attempts
 
     def run_once(self):
-        task = self.store.claim_next()
+        task = self.store.claim_next(channels=self.adapters.keys())
         if task is None:
             return None
         try:
@@ -146,6 +167,11 @@ class DistributionWorker:
             url = outcome.get("url")
             if not isinstance(url, str) or not url.startswith("https://"):
                 raise RuntimeError("POSTED receipt must include a verified HTTPS URL")
-            return self.store.finish(task, result_url=url, max_attempts=self.max_attempts)
+            return self.store.finish(task, result_url=url,
+                                     result_post_id=str(outcome.get("post_id") or "") or None,
+                                     max_attempts=self.max_attempts)
+        except NonRetryablePublication as exc:
+            return self.store.finish(task, error=f"{type(exc).__name__}: {exc}",
+                                     max_attempts=task.attempts)
         except Exception as exc:
             return self.store.finish(task, error=f"{type(exc).__name__}: {exc}", max_attempts=self.max_attempts)
