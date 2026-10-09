@@ -65,3 +65,9 @@ attempted draft is prohibited. The transport uses only the Square posting key.
 No engagement analytics transport or autonomous author is implemented here.
 The collector, draft/review tools and gated publishing worker are deployed;
 selection and semantic review are explicit editorial work.
+
+## Accepted editorial calibration
+
+See [the user-accepted BTC/ETH example](binance_square_editorial_standard.md)
+and `square_editorial/editorial_preferences.json` before drafting or reviewing.
+Style acceptance does not bypass fresh evidence or the reviewed-copy gate.
