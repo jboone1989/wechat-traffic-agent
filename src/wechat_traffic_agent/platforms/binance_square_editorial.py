@@ -16,9 +16,17 @@ from wechat_traffic_agent.sources.binance_market_structure import analyze
 from wechat_traffic_agent.sources.live_cache import live_cache_root
 from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 
+def normalize_symbols(symbols):
+    """Accept ticker notation from models without changing the asset identity."""
+    values = list(dict.fromkeys(str(value).strip().removeprefix("$").upper() for value in symbols))
+    if len(values) > 3 or any(not re.fullmatch(r"[A-Z0-9]{1,15}", value) for value in values):
+        raise ValueError("invalid Square symbols")
+    return values
+
+
 def validate_mining_tags(body, symbols):
     """Text API supports cashtags; metadata alone creates no reader entry point."""
-    tags = set(re.findall(r"(?<![A-Za-z0-9_])\$([A-Z][A-Z0-9]{0,14})(?![A-Za-z0-9_])", body))
+    tags = set(re.findall(r"(?<![A-Za-z0-9_])\$([A-Z0-9]{1,15})(?![A-Za-z0-9_])", body))
     if len(tags) > 3 or tags != set(symbols):
         raise ValueError("content mining requires 1-3 relevant body cashtags matching symbols")
 
@@ -59,6 +67,7 @@ class SquareDraftStore:
 
     def create(self, *, body, evidence, symbols, reader_question, thesis, invalidation,
                research_provenance=None, article_id=None, observation_provenance=None):
+        symbols = normalize_symbols(symbols)
         if not body.strip() or len(body) > MAX_POST_CHARS:
             raise ValueError("Square draft must contain 1-1500 characters")
         if len(set(symbols)) > 3 or any(not re.fullmatch(r"[A-Z][A-Z0-9]{0,14}", symbol) for symbol in symbols):

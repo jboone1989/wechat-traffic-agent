@@ -577,7 +577,7 @@ class OwnerAgentEpisode:
             "There is no need to restrict all research to BTC/ETH merely to create Square posts. "
             "Prefer discoveries useful to crypto readers, but skip unsuitable Square adaptations. "
             if website_sync else
-            "The owner's current preferred research expression is native Binance Square BTC/ETH market and contract analysis. "
+            "The owner's current preferred research expression is native Binance Square crypto observations, including altcoin market moves, onchain activity, token news, policy and macro consequences. BTC/ETH are not mandatory subjects. "
             "Use BINANCE_SQUARE for a relevant useful discovery after real inquiry; no website article is required. "
             "Pursue substantive questions with durable memory and revise existing understanding, not a scheduled indicator report. "
             "Choose SEARCH_WORLD when a factual assertion lacks evidence. The daily Square target guides opportunities, never repeated filler. "
