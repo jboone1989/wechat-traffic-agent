@@ -15,6 +15,13 @@ from .binance_square import (
 )
 from wechat_traffic_agent.sources.binance_market_structure import analyze
 
+def validate_mining_tags(body, symbols):
+    """Text API supports cashtags; metadata alone creates no reader entry point."""
+    tags = set(re.findall(r"(?<![A-Za-z0-9_])\$([A-Z][A-Z0-9]{0,14})(?![A-Za-z0-9_])", body))
+    if not tags or len(tags) > 3 or tags != set(symbols):
+        raise ValueError("content mining requires 1-3 relevant body cashtags matching symbols")
+
+
 MAX_EVIDENCE_AGE_SECONDS = 1200
 REVIEW_FIELDS = ("reader_question", "thesis", "invalidation", "evidence_check", "reviewer")
 
@@ -108,6 +115,10 @@ class SquareDraftStore:
             raise ValueError("derived market metrics do not match raw source evidence")
         if doc.get("review_sha256") != copy_digest(doc):
             raise ValueError("copy or editorial assessment changed after review")
+        preferences_path = self.root / "editorial_preferences.json"
+        preferences = json.loads(preferences_path.read_text()) if preferences_path.exists() else {}
+        if preferences.get("content_mining", {}).get("objective") == "WRITE_TO_EARN":
+            validate_mining_tags(doc["body"], doc["symbols"])
         self.validate_research(doc)
 
     def validate_research(self, doc):
