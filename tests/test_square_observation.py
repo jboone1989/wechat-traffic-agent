@@ -195,3 +195,35 @@ def test_reviewed_data_without_research_fields_resumes_and_publishes(tmp_path):
         published = SquareDraftWorker(tmp_path, client=client).run_once()
     assert published["status"] == "SUCCESS"
     assert len(calls) == 1
+
+def test_rejected_candidate_changes_asset_in_same_cycle(tmp_path):
+    now = datetime.now(timezone.utc)
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    choices, reviews = [], []
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            assert "Do not append generic disclaimers" in prompt
+            symbol = "RLC" if not choices else "KAIA"
+            if choices:
+                assert "RLC repeats the already published snapshot" in prompt
+                assert "rlc-data" in prompt
+            choices.append(symbol)
+            return model(action="SHARE", format="DATA", rationale="Observed move",
+                body=symbol+" 现货24小时涨12%，成交额200万 USDT。",
+                symbols=[symbol], source_ids=[symbol.lower()+"-data"],
+                thesis="具体资产的异动", value_focus="reader agency")
+        reviews.append(prompt)
+        first = len(reviews) == 1
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=not first,
+                     timely=True, rationale="RLC repeats the already published snapshot" if first else "New asset data.")
+    sources = [{"evidence_id": symbol.lower()+"-data", "source_kind": "public-api",
+                "summary": symbol+" 24h +12%, turnover 2000000 USDT", "observed_at": now.isoformat()}
+               for symbol in ("RLC", "KAIA")]
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="switch-asset", now=now, seed_evidence=sources, structured=structured))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    assert choices == ["RLC", "KAIA"]
+    assert len(SquareDraftStore(tmp_path).list()) == 1
+    assert SquareDraftStore(tmp_path).get(result["draft_id"])["symbols"] == ["KAIA"]

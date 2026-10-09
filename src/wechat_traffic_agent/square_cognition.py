@@ -29,7 +29,7 @@ def square_publication_context(state_root, *, limit=8):
     for row in SquareDraftStore(state_root).list():
         if row.get('status') == 'SUCCESS':
             posts.append({key: row.get(key) for key in
-                          ('draft_id', 'body', 'thesis', 'url', 'published_at', 'research_provenance')})
+                          ('draft_id', 'body', 'thesis', 'url', 'published_at', 'research_provenance', 'symbols', 'observation_provenance')})
     posts.sort(key=lambda row: row.get('published_at') or '')
     return {'preferences': preferences, 'recent_published': posts[-limit:],
             'channel': 'binance_square', 'feedback_status': 'ENGAGEMENT_UNAVAILABLE'}
