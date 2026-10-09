@@ -60,18 +60,61 @@ transient and are separately observed.
 4. Ensure the active release is `8e07021-modular` or later before attributing
    memory reductions to code deletion; older releases are not representative.
 
-### Change status
+### Live memory limit — applied and verified
 
-- Proposed drop-in: `deploy/systemd/ferro-memory-budget.conf` (repo only).
-- Live runtime change was **not applied**. The connector rejected the
-  direct `systemctl set-property` command as **hard-denied**, so an
-  authorized host administrator must apply it. Do not claim deployment.
-- Authorized host command (does not require service restart):
+The operator applied the approved systemd memory adjustment. Live cgroup
+values were **verified** after the change:
 
-```bash
-sudo systemctl set-property content-agent.service MemoryHigh=1280M MemoryMax=1536M
-systemctl show content-agent.service -p MemoryHigh -p MemoryMax -p MemoryCurrent
-```
+- `MemoryHigh=1342177280` bytes = **1280 MiB**.
+- `MemoryMax=1610612736` bytes = **1536 MiB**.
+- `MemorySwapMax=268435456` bytes = **256 MiB** (unchanged).
 
-- To maintain `MemorySwapMax=256M`, leave the existing live setting
-  unchanged (or verify it with the same read-only tool).
+Later measurement on the modular release showed a service charge around
+**1006 MiB** (no longer pinned to the 1 GiB limit), around **272 MiB
+reclaimable kernel slab** and **279 MiB file cache**. Prior `memory.max`
+events are cumulative since this service started, not evidence of continuing
+limit violations after the increase. Host `MemAvailable` remained around
+1.5–1.7 GiB during investigation. Do not widen MemoryMax to 2 GiB merely
+because reclaimable caches are present.
+
+### Browser / cache investigation — 2026-10-09 03:00–03:06 UTC
+
+- **Verified same persistent browser endpoint:** both X and ChatGPT
+  `runtime.json` metadata point to **CDP port 9600**. The profile labels
+  are logical session groups, not separate Chrome processes proven by name.
+- **CLI helpers versus browser instances:** `browser-harness` launches a
+  command subprocess, which spawns `browser_harness.daemon`. Sampling most
+  often saw one parent–child pair; one sampling interval observed a peak of
+  **two concurrent calls (four helper processes)** under the same content
+  cognition parent. That does **not** establish a duplicate persistent Chrome.
+  The Agent Runtime adapter explicitly supplies an existing CDP endpoint
+  and does not start a second browser on account creation.
+- **Kernel accounting:** old/new cgroup statistics repeatedly showed
+  `slab_reclaimable` around **272 MiB** and `file` around **279 MiB**.
+  Slab can be reclaimed under pressure; these values are **not** equivalent
+  to a 272 MiB userspace leak. Root-only `/proc/slabinfo` and slab sysfs
+  details were unavailable through this connector, so attribution to
+  `dentry`, overlayfs, sockets or specific files is **unproven**.
+- **State-event receipts:** the acknowledged receipt folder held about
+  **17,000 JSON files**, occupying **23.4 MiB** on disk. A dry-run of
+  `compact_state_event_receipts.py` against 24-hour-old records reported
+  **0 eligible cleanups / 0 estimated bytes reclaimed**. These records
+  may contribute to filesystem metadata churn, but cannot explain all
+  charged slab without kernel cache attribution.
+- **Browser Harness historical artifacts:** around 71 old rejected
+  conversation snapshots (~8.36 MiB) and 23 old outbound files
+  (~1.45 MiB). These were inventoried by filename and file size only;
+  content was **not** read or removed.
+- The browser account/login state, historical receipts, and kernel cache
+  were left untouched. No speculative `drop_caches`, process kills, or
+  multiple-service reconfiguration.
+
+Reproduce using `python scripts/diagnose_ferro_slab.py` (read-only;
+prints no profile credentials or process command-line tokens) alongside
+`python scripts/profile_ferro_memory.py`. This script samples helper
+processes for eight seconds and reports only metadata, not session content.
+
+**Outcome:** the cgroup cap is now properly adjusted, and no redundant
+persistent browser was established. The precise creator of the reclaimable
+slab remains an open investigation, not a justification for deleting files
+or restarting production Ferro.
