@@ -96,6 +96,8 @@ class FakeRouter:
 
 @pytest.fixture
 def x_enabled(monkeypatch):
+    FakeRouter.calls = []
+    FakeRouter.fail_first = False
     from wechat_traffic_agent.platforms.x import x_browser
     monkeypatch.setattr(x_browser, "x_browser_writes_enabled", lambda: True)
     monkeypatch.setattr(x_browser, "XBrowserTransportRouter", FakeRouter)
@@ -136,7 +138,6 @@ def test_publishes_verified_article(tmp_path, x_enabled, monkeypatch):
     store_article(tmp_path, artifact)
     store = PublicationEventStore(tmp_path)
     event = make_event(store, artifact, "e1", "h1")
-    FakeRouter.calls = []
     row = x_article_distribution.publish_x_article(
         event, DistributionTask("t1", "e1", "x_article"),
         state_root=tmp_path, model_runtime=FakeRuntime())
@@ -155,7 +156,6 @@ def test_image_plan_drafted_once_across_retries(tmp_path, x_enabled, monkeypatch
     store_article(tmp_path, artifact)
     store = PublicationEventStore(tmp_path)
     event = make_event(store, artifact, "e1", "h1")
-    FakeRouter.calls = []
     FakeRouter.fail_first = True
     runtime = FakeRuntime()
     task = DistributionTask("t1", "e1", "x_article")
@@ -173,7 +173,6 @@ def test_revised_event_reuses_original_receipt(tmp_path, x_enabled, monkeypatch)
     store = PublicationEventStore(tmp_path)
     first = make_event(store, artifact, "e1", "h1")
     second = make_event(store, artifact, "e2", "h2")
-    FakeRouter.calls = []
     runtime = FakeRuntime()
     x_article_distribution.publish_x_article(
         first, DistributionTask("t1", "e1", "x_article"),
@@ -243,10 +242,31 @@ def test_inline_caption_and_credits_are_injected(tmp_path, x_enabled, monkeypatc
     store_article(tmp_path, artifact)
     store = PublicationEventStore(tmp_path)
     event = make_event(store, artifact, "e1", "h1")
-    FakeRouter.calls = []
     x_article_distribution.publish_x_article(
         event, DistributionTask("t1", "e1", "x_article"),
         state_root=tmp_path, model_runtime=FakeRuntime())
     text = FakeRouter.calls[0]["text"]
     assert "Something concrete and supported.\n\nFigure 1: flow" in text
     assert "Image credits:\nPhoto by Someone, CC BY 4.0" in text
+
+
+def test_ambiguous_anchor_is_not_retryable(tmp_path, x_enabled, monkeypatch):
+    async def media_bad_anchor(*, draft, folder, **kwargs):
+        cover = folder / "cover.png"
+        cover.write_bytes(b"png")
+        return {"cover": {"path": str(cover), "attribution": None},
+                "inline": [{"path": str(folder / "inline.png"), "caption": "Figure 1: flow",
+                            "alt_text": "Diagram", "after_text": "sentence not in article",
+                            "attribution": None}]}
+
+    monkeypatch.setattr(x_article_distribution, "prepare_article_media", media_bad_anchor)
+    artifact = make_artifact()
+    store_article(tmp_path, artifact)
+    store = PublicationEventStore(tmp_path)
+    event = make_event(store, artifact, "e1", "h1")
+    with pytest.raises(NonRetryablePublication, match="anchor"):
+        x_article_distribution.publish_x_article(
+            event, DistributionTask("t1", "e1", "x_article"),
+            state_root=tmp_path, model_runtime=FakeRuntime())
+    assert FakeRouter.calls == []
+    assert not (tmp_path / "content/x_article_distribution/art-1/publication_receipt.json").exists()
