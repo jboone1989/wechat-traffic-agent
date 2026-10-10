@@ -242,6 +242,20 @@ class OwnerAgentEpisode:
                 if isinstance(current_mind.get("resource_awareness"), Mapping)
                 else None
             ),
+            "positions": {
+                "open": [
+                    {key: row.get(key)
+                     for key in ("position_id", "topic", "proposition", "falsifier", "age_days")}
+                    for row in list((current_mind.get("positions") or {}).get("open") or ())[:5]
+                    if isinstance(row, Mapping)
+                ],
+                "recent_resolutions": [
+                    {key: row.get(key)
+                     for key in ("position_id", "topic", "status", "resolution")}
+                    for row in list((current_mind.get("positions") or {}).get("recent_resolutions") or ())[:3]
+                    if isinstance(row, Mapping)
+                ],
+            },
             "strategy_learning": {
                 "outcome_count": (
                     (current_mind.get("strategy_learning") or {}).get("outcome_count")
@@ -606,6 +620,7 @@ class OwnerAgentEpisode:
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Previous optional 20/200 advice is not a quota. When owner_goal.daily_posting_contract is present, the user's newer temporary minimum is mandatory until explicitly disabled. "
             "For a Binance Square daily contract, select BINANCE_SQUARE for meaningful observed events with an author position; research completion and website publication are not prerequisites. Use WEBSITE for mature long or illustrated work, then derive platform expressions. For a website daily contract select WEBSITE first. X failures must not stall new publications. "
+            "When an open_position's falsifier is testable with current public data, verifying that position outranks starting a new topic: choose RUN_CONTENT_PIPELINE now and let the expression resolve it. "
             "Use research_trajectory to recognize the same unanswered question across different topic names. "
             "After repeated unfinished investigations, seek a specific new artifact or a useful adjacent question. "
             "A parked inquiry needs its resume_when evidence condition; continue learning elsewhere while it is unavailable. "
