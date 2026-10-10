@@ -522,3 +522,107 @@ def test_same_asset_three_posts_in_a_row_rejected(tmp_path):
         structured=structured, mind=mind))
     assert result["status"] == "COGNITION_ONLY"
     assert "streak" in result["rationale"]
+
+
+class _RewardFailureMind(_ResolvingMind):
+    """Ledger-backed mind whose interest-reward persistence is down."""
+
+    def observe_learning_interest(self, **kwargs):
+        raise ValueError("virtualbrain persistence down")
+
+
+def _seed_source(now, evidence_id="sol-data"):
+    return {"evidence_id": evidence_id, "source_kind": "public-api",
+            "summary": "SOL staking inflows 120000 SOL over rolling 24h window",
+            "observed_at": now.isoformat()}
+
+
+def _resolving_structured(row):
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            assert "positions_open" in prompt and "pos-x" in prompt
+            return model(action="SHARE", rationale="Testing my own commitment.",
+                body="SOL 质押过去24小时流入 120,000 SOL，没有回落，我此前判断的证伪条件没有触发，判断维持。",
+                symbols=["SOL"], source_ids=["sol-data"],
+                thesis="质押流入持续", invalidation="流入回落", value_focus="accountability",
+                position_update=model.PositionUpdate(position_id=row["position_id"],
+                                                     verdict="CONFIRMED", resolution="流入未回落"))
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="Direct test of the committed position.")
+    return structured
+
+
+def _run_observation(tmp_path, now, cycle, source, structured, mind):
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    return asyncio.run(prepare_observation(runtime=None, explorer=explorer,
+        state_root=tmp_path, cycle=cycle, now=now, seed_evidence=[source],
+        structured=structured, mind=mind))
+
+
+def test_abandoned_race_still_posts_and_registers_new_position(tmp_path):
+    # A position can cross the 5-day abandon boundary between projection and
+    # transition: the transition must fail without dropping the NEW commitment.
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    row = ledger.register(topic="sol-staking", proposition="质押流入持续",
+                          falsifier="流入回落", evidence_refs=(), draft_id="seed",
+                          now=now - timedelta(days=6))
+    mind = _ResolvingMind(_projection_with_open_position(), ledger)
+    result = _run_observation(tmp_path, now, "pos-abandoned", _seed_source(now),
+                              _resolving_structured(row), mind)
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    stored = ledger.get(row["position_id"])
+    assert stored["status"] == "ABANDONED"
+    open_rows = ledger.open_positions(now=now + timedelta(minutes=1))
+    assert [row["topic"] for row in open_rows] == ["sol"]
+    assert open_rows[0]["falsifier"] == "流入回落"
+
+
+def test_corrupt_ledger_state_does_not_block_posting(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    ledger.path.write_bytes(b"\x00\x01 not json at all")
+    mind = _ResolvingMind(_projection_with_open_position(), ledger)
+    result = _run_observation(tmp_path, now, "pos-corrupt", _seed_source(now),
+                              _resolving_structured({"position_id": "pos-x"}), mind)
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    assert ledger.get("pos-x") is None
+
+
+def test_empty_invalidation_registers_no_position(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    mind = _ResolvingMind({"beliefs": [], "interests": [], "open_inquiries": [],
+                           "positions": {"open": [], "recent_resolutions": []}}, ledger)
+    source = {"evidence_id": "sol-data", "source_kind": "public-api",
+              "summary": "SOL rolling 24h +12%, turnover 2000000 USDT",
+              "observed_at": now.isoformat()}
+
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            return model(action="SHARE", rationale="r",
+                body="SOL 过去24小时上涨 12%，成交额 2,000,000 USDT。",
+                symbols=["SOL"], source_ids=["sol-data"], thesis="t", invalidation="",
+                value_focus="v")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="ok")
+
+    result = _run_observation(tmp_path, now, "pos-empty-inval", source, structured, mind)
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    assert ledger.open_positions(now=now + timedelta(minutes=1)) == []
+
+
+def test_reward_failure_does_not_lose_the_transition(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    row = ledger.register(topic="sol-staking", proposition="质押流入持续",
+                          falsifier="流入回落", evidence_refs=(), draft_id="seed", now=now)
+    mind = _RewardFailureMind(_projection_with_open_position(), ledger)
+    result = _run_observation(tmp_path, now, "pos-reward-fail", _seed_source(now),
+                              _resolving_structured(row), mind)
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    stored = ledger.get(row["position_id"])
+    assert stored["status"] == "CONFIRMED"
+    assert stored["resolution"] == "流入未回落"

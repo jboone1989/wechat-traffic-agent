@@ -120,13 +120,14 @@ def _position_topic(choice):
 def _record_position_outcome(mind, choice, draft, selected, cycle, now):
     """Resolve a declared position_update and/or register the new falsifiable position.
 
-    Ledger faults must never block posting: everything is swallowed here.
+    Ledger faults must never block posting: each operation is isolated and swallowed,
+    so one failing (e.g. the ABANDONED race) never drops the other commitment.
     """
     if mind is None or not hasattr(mind, "positions"):
         return
-    try:
-        ledger = mind.positions
-        if choice.position_update is not None:
+    ledger = mind.positions
+    if choice.position_update is not None:
+        try:
             target = ledger.get(choice.position_update.position_id)
             if target and target.get("status") == "OPEN":
                 ledger.transition(choice.position_update.position_id,
@@ -139,15 +140,18 @@ def _record_position_outcome(mind, choice, draft, selected, cycle, now):
                         topic=str(target.get("topic")),
                         reward={"kind": "position-resolution", "utility": 1.0},
                         evidence_refs=[row["evidence_id"] for row in selected])
-                except (ValueError, RuntimeError):
-                    pass
-        if choice.invalidation.strip():
+                except Exception as exc:
+                    logger.warning("position interest reward failed: %r", exc)
+        except Exception as exc:
+            logger.warning("position ledger transition failed: %r", exc)  # 账本故障不拦发帖
+    if choice.invalidation.strip():
+        try:
             ledger.register(topic=_position_topic(choice), proposition=choice.thesis.strip(),
                 falsifier=choice.invalidation.strip(),
                 evidence_refs=[row["evidence_id"] for row in selected],
                 draft_id=draft["draft_id"], now=now)
-    except (ValueError, OSError):
-        pass  # 账本故障不拦发帖
+        except Exception as exc:
+            logger.warning("position ledger register failed: %r", exc)  # 账本故障不拦发帖
 
 async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed_evidence=None,
                               structured=_structured, mind=None):
