@@ -27,7 +27,7 @@ from wechat_traffic_agent.x_browser import XBrowserPublisher
 from wechat_traffic_agent.x_social import XAutonomyLoop
 from wechat_traffic_agent.x_browser import x_browser_writes_enabled
 from wechat_traffic_agent.publication.event_store import PublicationEventStore, DistributionWorker
-from wechat_traffic_agent.publication.x_distribution import publish_x
+from wechat_traffic_agent.platforms.x.x_article_distribution import publish_x_article
 from wechat_traffic_agent.daily_posting_goal import DailyPostingGoal
 
 
@@ -114,8 +114,9 @@ def main() -> int:
             if x_browser_writes_enabled():
                 distribution = DistributionWorker(
                     PublicationEventStore(state_root),
-                    {"x": lambda event, task: publish_x(
-                        event, task, state_root=state_root
+                    {"x_article": lambda event, task: publish_x_article(
+                        event, task, state_root=state_root,
+                        model_runtime=cognition_runtime
                     )},
                 ).run_once()
                 if distribution is not None:
