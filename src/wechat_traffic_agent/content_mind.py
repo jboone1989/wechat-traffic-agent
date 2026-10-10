@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from .memory_life import MemoryLifeRuntime
 from .memory_prior import MemoryDecisionPrior
-from .position_ledger import PositionLedger
+from .position_ledger import PositionLedger, parse_iso_ts
 
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
@@ -24,24 +24,26 @@ MAX_EVENT_IDS = 512
 MAX_STRATEGY_OUTCOMES = 512
 MIN_STRATEGY_PROFILE_SAMPLES = 2
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
-
-
-def _parse_optional_iso(value: Any) -> datetime | None:
-    try:
-        parsed = datetime.fromisoformat(str(value))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
+SALIENCE_HALF_LIFE_HOURS = 48.0
 
 
 def _decayed_salience(raw: float, last_observed_at: Any, now: datetime) -> float:
-    observed = _parse_optional_iso(last_observed_at)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    observed = parse_iso_ts(last_observed_at)
     if observed is None:
         return float(raw)
     hours = (now - observed).total_seconds() / 3600.0
     if hours <= 0.0:
         return float(raw)
-    return float(raw) * (0.5 ** (hours / 48.0))
+    return float(raw) * (0.5 ** (hours / SALIENCE_HALF_LIFE_HOURS))
+
+
+def _age_days(created_at: Any, now: datetime) -> float | None:
+    created = parse_iso_ts(created_at)
+    if created is None:
+        return None
+    return round((now - created).total_seconds() / 86400.0, 2)
 
 
 class ContentMind:
@@ -1051,14 +1053,20 @@ class ContentMind:
 
     def public_projection(self, now: datetime | None = None) -> dict[str, Any]:
         """Return bounded inspectable state for later public presentation."""
-        now = now or datetime.now(timezone.utc)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
         snapshot = self.session.snapshot()
         interests = []
         latest_exposure = {}
         for event in snapshot["interests"].get("history", []):
             name = str(event.get("name") or "")
             provenance = event.get("provenance") or {}
-            observed = provenance.get("observed_at")
+            # VirtualBrain stamps provenance.observed_at with the event tick string
+            # (virtualbrain/research/autobiography.py), never parseable ISO; ingested_at
+            # is the ISO wall-clock ingestion time, the only decay-usable timestamp here.
+            observed = provenance.get("ingested_at")
             if name and observed:
                 latest_exposure[name] = max(latest_exposure.get(name, ""), str(observed))
         for name, state in snapshot["interests"]["items"].items():
@@ -1146,8 +1154,8 @@ class ContentMind:
             "positions": {
                 "open": [
                     {"position_id": row["position_id"], "topic": row["topic"],
-                     "proposition": row["proposition"], "falsifier": row["falsifier"],
-                     "age_days": round((now - (_parse_optional_iso(row["created_at"]) or now)).total_seconds() / 86400.0, 2)}
+                     "proposition": row["proposition"], "falsifier": row.get("falsifier"),
+                     "age_days": _age_days(row.get("created_at"), now)}
                     for row in self.positions.open_positions(now=now)
                 ],
                 "recent_resolutions": [

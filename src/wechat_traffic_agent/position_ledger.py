@@ -14,7 +14,7 @@ RESOLUTION_WINDOW = timedelta(days=7)
 _TERMINAL = {"CONFIRMED", "REFUTED", "ABANDONED"}
 
 
-def _parse_ts(value: Any) -> datetime | None:
+def parse_iso_ts(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
@@ -67,7 +67,7 @@ class PositionLedger:
                 return False
         if row.get("status") == "OPEN" and not str(row.get("falsifier") or "").strip():
             return False
-        return _parse_ts(row.get("created_at")) is not None
+        return parse_iso_ts(row.get("created_at")) is not None
 
     def get(self, position_id: str) -> dict[str, Any] | None:
         for row in self._load():
@@ -81,6 +81,7 @@ class PositionLedger:
         topic, proposition, falsifier = topic.strip(), proposition.strip(), falsifier.strip()
         if not topic or not proposition or not falsifier:
             raise ValueError("position requires topic, proposition and falsifier")
+        self._sweep(now)
         rows = [row for row in self._load() if self._valid(row)]
         digest = hashlib.sha1(f"{topic}:{proposition}".encode("utf-8")).hexdigest()[:12]
         row = {
@@ -99,6 +100,7 @@ class PositionLedger:
                    now: datetime) -> dict[str, Any]:
         if verdict not in {"CONFIRMED", "REFUTED", "ABANDONED"}:
             raise ValueError("verdict must be CONFIRMED, REFUTED or ABANDONED")
+        self._sweep(now)
         rows = self._load()
         for row in rows:
             if row.get("position_id") != position_id:
@@ -118,12 +120,15 @@ class PositionLedger:
             return dict(row)
         raise ValueError(f"position {position_id} not found")
 
-    def _sweep(self, rows: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    def _sweep(self, now: datetime) -> None:
+        """Expire stale OPEN positions. Write-path only; reads must stay pure."""
+        now = _aware(now)
+        rows = self._load()
         changed = False
         for row in rows:
             if row.get("status") != "OPEN":
                 continue
-            created = _parse_ts(row.get("created_at"))
+            created = parse_iso_ts(row.get("created_at"))
             if created and now - created > ABANDON_AFTER:
                 row["status"] = "ABANDONED"
                 row["resolution"] = "no verification within 5 days"
@@ -131,11 +136,10 @@ class PositionLedger:
                 changed = True
         if changed:
             self._save(rows)
-        return rows
 
     def open_positions(self, *, now: datetime, limit: int = 8) -> list[dict[str, Any]]:
         now = _aware(now)
-        rows = [row for row in self._sweep(self._load(), now) if row.get("status") == "OPEN"]
+        rows = [row for row in self._load() if row.get("status") == "OPEN"]
         rows.sort(key=lambda row: str(row.get("created_at") or ""))
         return [dict(row) for row in rows[:limit]]
 
@@ -145,7 +149,7 @@ class PositionLedger:
         for row in self._load():
             if row.get("status") not in {"CONFIRMED", "REFUTED"}:
                 continue
-            updated = _parse_ts(row.get("updated_at"))
+            updated = parse_iso_ts(row.get("updated_at"))
             if updated and now - updated <= RESOLUTION_WINDOW:
                 rows.append((str(row.get("updated_at")), dict(row)))
         rows.sort(key=lambda pair: pair[0], reverse=True)

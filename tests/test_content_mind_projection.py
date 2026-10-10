@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from wechat_traffic_agent.content_mind import ContentMind
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
@@ -37,19 +39,18 @@ def test_decay_math_half_life():
     from wechat_traffic_agent.content_mind import _decayed_salience
     fresh = NOW - timedelta(minutes=10)
     assert _decayed_salience(1.0, fresh.isoformat(), NOW) >= 0.99
-    assert _decayed_salience(1.0, (NOW - timedelta(hours=48)).isoformat(), NOW) <= 0.51
+    assert _decayed_salience(1.0, (NOW - timedelta(hours=48)).isoformat(), NOW) == pytest.approx(0.5, rel=1e-3)
     assert _decayed_salience(1.0, (NOW - timedelta(hours=96)).isoformat(), NOW) <= 0.26
     assert _decayed_salience(0.8, None, NOW) == 0.8          # 无历史不衰减
     assert _decayed_salience(0.8, "not-a-date", NOW) == 0.8  # 坏时间戳不衰减
     assert _decayed_salience(1.0, (NOW + timedelta(hours=5)).isoformat(), NOW) == 1.0  # 未来时间戳钳制
 
 
-def test_missing_history_no_decay(tmp_path: Path):
+def test_decay_applies_through_projection(tmp_path: Path):
     mind = _mind(tmp_path)
     mind.observe_learning_interest(cycle="c1", topic="t1",
-                                   reward={"utility": 0.3, "kind": "research"},
+                                   reward={"utility": 0.5, "kind": "research"},
                                    evidence_refs=("r",))
-    projection = mind.public_projection(now=NOW)
-    for row in projection["interests"]:
-        if row.get("last_observed_at") is None:
-            assert row["decayed_salience"] == row["salience"]
+    later = datetime.now(timezone.utc) + timedelta(hours=96)
+    rows = {row["name"]: row for row in mind.public_projection(now=later)["interests"]}
+    assert rows["t1"]["decayed_salience"] < rows["t1"]["salience"] * 0.3

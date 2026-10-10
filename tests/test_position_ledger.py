@@ -59,16 +59,24 @@ def test_transition_requires_open_position_and_resolution_for_refuted(tmp_path: 
                           evidence_refs=(), draft_id="d", now=NOW)
 
 
-def test_open_positions_sweeps_expired_after_five_days(tmp_path: Path):
+def test_write_triggers_sweep_reads_stay_pure(tmp_path: Path):
     ledger = _ledger(tmp_path)
     row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
                           draft_id="d", now=NOW)
     later = NOW + timedelta(days=6)
-    open_rows = ledger.open_positions(now=later)
-    assert open_rows == []
+    # 读是纯读：过期 OPEN 原样返回，文件字节不变
+    assert [r["position_id"] for r in ledger.open_positions(now=later)] == [row["position_id"]]
+    before = ledger.path.read_bytes()
+    assert ledger.get(row["position_id"])["status"] == "OPEN"
+    assert ledger.recent_resolutions(now=later) == []
+    assert ledger.path.read_bytes() == before
+    # 写入口触发 sweep：第二次 register 时旧 OPEN 被放弃并持久化
+    ledger.register(topic="t2", proposition="p2", falsifier="f2", evidence_refs=(),
+                    draft_id="d2", now=later)
     stored = ledger.get(row["position_id"])
     assert stored["status"] == "ABANDONED"
     assert "5 days" in stored["resolution"]
+    assert [r["position_id"] for r in ledger.open_positions(now=later)] != [row["position_id"]]
     # 已放弃的不能再转移
     with pytest.raises(ValueError):
         ledger.transition(stored["position_id"], verdict="CONFIRMED", resolution="x",
