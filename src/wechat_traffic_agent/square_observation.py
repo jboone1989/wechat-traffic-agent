@@ -17,6 +17,11 @@ from .sources.binance_alt_market import collect_altcoin_candidates
 
 logger = logging.getLogger(__name__)
 
+class PositionUpdate(BaseModel):
+    position_id: str
+    verdict: Literal["CONFIRMED", "REFUTED"]
+    resolution: str = ""
+
 class ObservationExpression(BaseModel):
     action: Literal["SHARE", "HOLD"]
     format: Literal["OBSERVATION", "DATA"] = "OBSERVATION"
@@ -28,11 +33,16 @@ class ObservationExpression(BaseModel):
     reader_question: str = ""
     invalidation: str = ""
     value_focus: str = ""
+    position_update: PositionUpdate | None = None
 
     @field_validator("symbols", mode="before")
     @classmethod
     def canonical_symbols(cls, value):
         return normalize_symbols(value)
+
+# Expose PositionUpdate on the model so prompt handlers can build it as
+# ObservationExpression.PositionUpdate(...) alongside the expression choice.
+ObservationExpression.PositionUpdate = PositionUpdate
 
 class ObservationReview(BaseModel):
     facts_specific: bool
@@ -89,6 +99,55 @@ def _recent_formats(context, *, limit=6):
         formats.append(str(provenance.get("format")
                            or ("RESEARCH" if post.get("research_provenance") else "OBSERVATION")))
     return formats[-limit:]
+
+def _repeat_topic_streak(recent_published, symbols, *, streak=3):
+    # recent_published is oldest-first (square_publication_context sorts by published_at
+    # ascending and keeps the tail), so the most recent streak posts are the last ones.
+    current = {str(s).upper() for s in (symbols or ())}
+    if not current or len(recent_published) < streak:
+        return False
+    for post in recent_published[-streak:]:
+        if not current & {str(s).upper() for s in (post.get("symbols") or ())}:
+            return False
+    return True
+
+def _position_topic(choice):
+    symbols = [str(s).lower() for s in (choice.symbols or [])]
+    if symbols:
+        return "+".join(symbols)
+    return re.sub(r"[^a-z0-9]+", "-", str(choice.value_focus or "").lower()).strip("-")[:60]
+
+def _record_position_outcome(mind, choice, draft, selected, cycle, now):
+    """Resolve a declared position_update and/or register the new falsifiable position.
+
+    Ledger faults must never block posting: everything is swallowed here.
+    """
+    if mind is None or not hasattr(mind, "positions"):
+        return
+    try:
+        ledger = mind.positions
+        if choice.position_update is not None:
+            target = ledger.get(choice.position_update.position_id)
+            if target and target.get("status") == "OPEN":
+                ledger.transition(choice.position_update.position_id,
+                    verdict=choice.position_update.verdict,
+                    resolution=choice.position_update.resolution,
+                    evidence_refs=[row["evidence_id"] for row in selected],
+                    draft_id=draft["draft_id"], now=now)
+                try:
+                    mind.observe_learning_interest(cycle=cycle,
+                        topic=str(target.get("topic")),
+                        reward={"kind": "position-resolution", "utility": 1.0},
+                        evidence_refs=[row["evidence_id"] for row in selected])
+                except (ValueError, RuntimeError):
+                    pass
+        if choice.invalidation.strip():
+            ledger.register(topic=_position_topic(choice), proposition=choice.thesis.strip(),
+                falsifier=choice.invalidation.strip(),
+                evidence_refs=[row["evidence_id"] for row in selected],
+                draft_id=draft["draft_id"], now=now)
+    except (ValueError, OSError):
+        pass  # 账本故障不拦发帖
 
 async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed_evidence=None,
                               structured=_structured, mind=None):
@@ -148,7 +207,7 @@ async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed
     for attempt in range(2):
         result = await _attempt_observation(runtime=runtime, state_root=state_root, cycle=cycle,
             now=now, items=items, context=context, result=result, feedback=feedback, structured=structured,
-            mind_context=mind_context, recent_formats=recent_formats)
+            mind_context=mind_context, recent_formats=recent_formats, mind=mind)
         if result["status"] == "SQUARE_EXPRESSION_READY":
             return result
         feedback[-1]["rationale"] = result.get("rationale", "")
@@ -156,7 +215,7 @@ async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed
 
 
 async def _attempt_observation(*, runtime, state_root, cycle, now, items, context, result, feedback, structured,
-                               mind_context=None, recent_formats=None):
+                               mind_context=None, recent_formats=None, mind=None):
     mind_context = mind_context or {}
     mind_instruction = (
         "mind_context is this agent's actual Virtual Brain state: its interests, open questions and held worldview beliefs. "
@@ -234,6 +293,8 @@ async def _attempt_observation(*, runtime, state_root, cycle, now, items, contex
         if old and SequenceMatcher(None, _structure_fingerprint(body),
                                    _structure_fingerprint(old)).ratio() >= .5:
             return {**result, "rationale": "Final copy repeats the opening structure of a recent publication."}
+    if _repeat_topic_streak(context["recent_published"], choice.symbols):
+        return {**result, "rationale": "Same asset streak: last three publications already cover it; choose another subject."}
     review = await structured(runtime,
         "FERRO_SQUARE_OBSERVATION_REVIEW: Review this final Chinese post against the supplied exact sources. "
         "grounded requires every factual assertion supported and inferences identified; source IDs alone "
@@ -254,6 +315,7 @@ async def _attempt_observation(*, runtime, state_root, cycle, now, items, contex
     draft = store.create(body=choice.body, evidence=evidence, symbols=choice.symbols,
         reader_question=choice.reader_question, thesis=choice.thesis, invalidation=choice.invalidation,
         observation_provenance=provenance)
+    _record_position_outcome(mind, choice, draft, selected, cycle, datetime.now(timezone.utc))
     draft = store.review(draft["draft_id"], reviewer="ferro-observation-cognition", evidence_check=review.rationale)
     return {**result, "status": "SQUARE_EXPRESSION_READY", "draft_id": draft["draft_id"],
             "draft_status": draft["status"], "publication_confirmed": False}

@@ -1,8 +1,9 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from types import SimpleNamespace
 import pytest
+from wechat_traffic_agent.position_ledger import PositionLedger
 from wechat_traffic_agent.square_observation import (
     prepare_observation, ObservationExpression, ObservationReview, _structure_fingerprint,
     _mind_context,
@@ -361,3 +362,163 @@ def test_mind_context_drops_stale_open_positions():
     }
     ctx = _mind_context(_FakeMind(projection))
     assert [row["position_id"] for row in ctx["positions_open"]] == ["pos-fresh", "pos-unknown"]
+
+
+class _ResolvingMind:
+    """FakeMind that records learning-interest calls, backed by a real ledger."""
+
+    def __init__(self, projection, ledger):
+        self._projection = projection
+        self.positions = ledger
+        self.learning_calls = []
+
+    def public_projection(self):
+        return self._projection
+
+    def observe_learning_interest(self, *, cycle, topic, reward, evidence_refs):
+        self.learning_calls.append({"cycle": cycle, "topic": topic,
+                                    "utility": reward.get("utility")})
+        return {"status": "OBSERVED", "preference_updated": True}
+
+
+def _projection_with_open_position():
+    return {"beliefs": [], "interests": [], "open_inquiries": [],
+            "positions": {"open": [{"position_id": "pos-x", "topic": "sol-staking",
+                                    "proposition": "质押流入持续", "falsifier": "流入回落",
+                                    "age_days": 2.0}],
+                          "recent_resolutions": []}}
+
+
+def test_position_update_resolves_open_position_and_rewards_topic(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    row = ledger.register(topic="sol-staking", proposition="质押流入持续",
+                          falsifier="流入回落", evidence_refs=(), draft_id="seed", now=now)
+    mind = _ResolvingMind(_projection_with_open_position(), ledger)
+    source = {"evidence_id": "sol-data", "source_kind": "public-api",
+              "summary": "SOL staking inflows 120000 SOL over rolling 24h window",
+              "observed_at": now.isoformat()}
+
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            assert "positions_open" in prompt and "pos-x" in prompt
+            return model(action="SHARE", rationale="Testing my own commitment.",
+                body="SOL 质押过去24小时流入 120,000 SOL，没有回落，我此前判断的证伪条件没有触发，判断维持。",
+                symbols=["SOL"], source_ids=["sol-data"],
+                thesis="质押流入持续", invalidation="流入回落", value_focus="accountability",
+                position_update=model.PositionUpdate(position_id=row["position_id"],
+                                                     verdict="CONFIRMED", resolution="流入未回落"))
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="Direct test of the committed position.")
+
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer,
+        state_root=tmp_path, cycle="pos-resolve", now=now, seed_evidence=[source],
+        structured=structured, mind=mind))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    stored = ledger.get(row["position_id"])
+    assert stored["status"] == "CONFIRMED"
+    assert mind.learning_calls == [{"cycle": "pos-resolve", "topic": "sol-staking", "utility": 1.0}]
+
+
+def test_position_update_ignored_for_unknown_or_non_open(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    mind = _ResolvingMind(_projection_with_open_position(), ledger)
+    source = {"evidence_id": "sol-data", "source_kind": "public-api",
+              "summary": "SOL staking inflows 120000 SOL over rolling 24h window",
+              "observed_at": now.isoformat()}
+
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            return model(action="SHARE", rationale="r",
+                body="SOL 质押过去24小时流入 120,000 SOL，规模维持。",
+                symbols=["SOL"], source_ids=["sol-data"], thesis="t", invalidation="f",
+                value_focus="v",
+                position_update=model.PositionUpdate(position_id="pos-gone",
+                                                     verdict="REFUTED", resolution="x"))
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="ok")
+
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer,
+        state_root=tmp_path, cycle="pos-gone-cycle", now=now, seed_evidence=[source],
+        structured=structured, mind=mind))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"  # 未知 position 不拦帖
+    assert ledger.get("pos-gone") is None
+    assert mind.learning_calls == []
+
+
+def test_new_invalidation_registers_position(tmp_path):
+    now = datetime.now(timezone.utc)
+    ledger = PositionLedger(tmp_path / "cm")
+    mind = _ResolvingMind({"beliefs": [], "interests": [], "open_inquiries": [],
+                           "positions": {"open": [], "recent_resolutions": []}}, ledger)
+    source = {"evidence_id": "sol-data", "source_kind": "public-api",
+              "summary": "SOL staking inflows 120000 SOL over rolling 24h window",
+              "observed_at": now.isoformat()}
+
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            return model(action="SHARE", rationale="r",
+                body="SOL 质押过去24小时流入 120,000 SOL，判断：流入将维持。",
+                symbols=["SOL"], source_ids=["sol-data"], thesis="流入将维持",
+                invalidation="流入回落至 50,000 SOL 以下", value_focus="v")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="ok")
+
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer,
+        state_root=tmp_path, cycle="pos-reg-cycle", now=now, seed_evidence=[source],
+        structured=structured, mind=mind))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    open_rows = ledger.open_positions(now=now + timedelta(minutes=1))
+    assert len(open_rows) == 1
+    assert open_rows[0]["topic"] == "sol"
+    assert open_rows[0]["falsifier"] == "流入回落至 50,000 SOL 以下"
+
+
+def test_same_asset_three_posts_in_a_row_rejected(tmp_path):
+    now = datetime.now(timezone.utc)
+    store = SquareDraftStore(tmp_path)
+    for i in range(3):
+        draft = store.create(
+            body=f"XYZ 第{i}条观察，走势与资金数据持续。",
+            evidence={"kind": "SOURCE_OBSERVATIONS", "observed_at": now.isoformat(), "sources": []},
+            symbols=["XYZ"], reader_question="", thesis="t", invalidation="",
+            observation_provenance={"format": "OBSERVATION", "cycle": f"old-{i}"})
+        draft.update(status="SUCCESS", published_at=now.isoformat())
+        store.save(draft)
+    mind = _ResolvingMind({"beliefs": [], "interests": [], "open_inquiries": [],
+                           "positions": {"open": [], "recent_resolutions": []}},
+                          PositionLedger(tmp_path / "cm"))
+    source = {"evidence_id": "xyz-new", "source_kind": "public-api",
+              "summary": "XYZ rolling 24h +2%, turnover 3000000 USDT", "observed_at": now.isoformat()}
+
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            return model(action="SHARE", rationale="r",
+                body="XYZ 过去24小时上涨 2%，成交额 3,000,000 USDT。",
+                symbols=["XYZ"], source_ids=["xyz-new"], thesis="t", invalidation="",
+                value_focus="v")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True,
+                     timely=True, rationale="ok")
+
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer,
+        state_root=tmp_path, cycle="streak-cycle", now=now, seed_evidence=[source],
+        structured=structured, mind=mind))
+    assert result["status"] == "COGNITION_ONLY"
+    assert "streak" in result["rationale"]
