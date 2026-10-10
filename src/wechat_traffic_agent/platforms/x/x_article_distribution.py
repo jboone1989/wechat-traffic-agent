@@ -66,6 +66,8 @@ async def _article_image_plan(runtime, artifact: ContentArtifact, artifact_dir: 
         _image_plan_prompt(artifact), ArticleImagePlan,
         validate=checked, max_tokens=2000)
     images = [image.model_dump(mode="json") for image in plan.images]
-    plan_path.write_text(json.dumps(images, ensure_ascii=False, indent=2) + "\n",
-                         encoding="utf-8")
+    payload = json.dumps(images, ensure_ascii=False, indent=2) + "\n"
+    pending = artifact_dir / "image_plan.json.pending"
+    pending.write_text(payload, encoding="utf-8")
+    pending.replace(plan_path)
     return images
