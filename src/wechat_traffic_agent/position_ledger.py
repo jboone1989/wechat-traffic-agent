@@ -1,9 +1,9 @@
 """Committed falsifiable positions: continuity and accountability for published claims."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -20,6 +20,10 @@ def _parse_ts(value: Any) -> datetime | None:
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 class PositionLedger:
@@ -78,7 +82,7 @@ class PositionLedger:
         if not topic or not proposition or not falsifier:
             raise ValueError("position requires topic, proposition and falsifier")
         rows = [row for row in self._load() if self._valid(row)]
-        digest = re.sub(r"[^a-z0-9]", "", f"{topic}:{proposition}".lower())[:24]
+        digest = hashlib.sha1(f"{topic}:{proposition}".encode("utf-8")).hexdigest()[:12]
         row = {
             "position_id": "pos-" + digest + "-" + now.strftime("%Y%m%d%H%M%S"),
             "topic": topic, "proposition": proposition, "falsifier": falsifier,
@@ -130,11 +134,13 @@ class PositionLedger:
         return rows
 
     def open_positions(self, *, now: datetime, limit: int = 8) -> list[dict[str, Any]]:
+        now = _aware(now)
         rows = [row for row in self._sweep(self._load(), now) if row.get("status") == "OPEN"]
         rows.sort(key=lambda row: str(row.get("created_at") or ""))
         return [dict(row) for row in rows[:limit]]
 
     def recent_resolutions(self, *, now: datetime, limit: int = 5) -> list[dict[str, Any]]:
+        now = _aware(now)
         rows = []
         for row in self._load():
             if row.get("status") not in {"CONFIRMED", "REFUTED"}:

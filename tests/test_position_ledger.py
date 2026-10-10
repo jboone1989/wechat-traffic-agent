@@ -85,6 +85,16 @@ def test_recent_resolutions_returns_terminal_within_window(tmp_path: Path):
     assert ledger.recent_resolutions(now=NOW + timedelta(days=8)) == []
 
 
+def test_chinese_content_distinct_ids_same_second(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    a = ledger.register(topic="质押", proposition="流入将持续", falsifier="流入回落",
+                        evidence_refs=(), draft_id="d1", now=NOW)
+    b = ledger.register(topic="费率", proposition="符号将转正", falsifier="维持负值",
+                        evidence_refs=(), draft_id="d2", now=NOW)
+    assert a["position_id"] != b["position_id"]
+    assert not a["position_id"].startswith("pos--")
+
+
 def test_corrupt_and_malformed_entries_are_skipped(tmp_path: Path):
     root = tmp_path / "content_mind"
     root.mkdir(parents=True)
