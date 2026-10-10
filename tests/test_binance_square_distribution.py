@@ -40,7 +40,7 @@ def test_producer_has_no_binance_dependency(tmp_path, monkeypatch):
     store = PublicationEventStore(tmp_path)
     DurablePublicationDispatch(store).record(event())
     assert len(store.list_tasks()) == 1
-    assert store.list_tasks()[0]["channel"] == "x"
+    assert store.list_tasks()[0]["channel"] == "x_article"
 
 
 
@@ -119,7 +119,7 @@ def test_retired_consumer_never_queues_new_or_old_website_events(tmp_path, monke
     assert consumer.enqueue_events(now=NOW) == 0
     assert consumer.run_once(now=NOW) is None
     assert len(store.list_tasks()) == 2
-    assert all(t["channel"] == "x" for t in store.list_tasks())
+    assert all(t["channel"] == "x_article" for t in store.list_tasks())
 
 
 @pytest.mark.parametrize("response", [

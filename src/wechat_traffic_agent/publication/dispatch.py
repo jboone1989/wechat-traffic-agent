@@ -20,7 +20,7 @@ class PublicationSink(Protocol):
 @dataclass
 class DurablePublicationDispatch:
     store: PublicationEventStore
-    channels: tuple[str, ...] = ("x",)
+    channels: tuple[str, ...] = ("x_article",)
 
     def record(self, event: PublicationEvent) -> None:
         self.store.save_event(event)
