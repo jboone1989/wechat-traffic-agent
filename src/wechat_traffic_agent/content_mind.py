@@ -980,7 +980,7 @@ class ContentMind:
         feedback = (
             {"name": topic, "novelty": 1.0 if before is None else
              max(0.0, 1.0 - float(before.familiarity)),
-             "effort": 0.0, "learning_rate": 0.15}
+             "effort": 0.0, "learning_rate": 0.2}
             if utility > 0.0 else None
         )
         self.session.ingest_life_experience(

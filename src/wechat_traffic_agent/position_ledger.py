@@ -147,7 +147,7 @@ class PositionLedger:
         now = _aware(now)
         rows = []
         for row in self._load():
-            if row.get("status") not in {"CONFIRMED", "REFUTED"}:
+            if row.get("status") not in {"CONFIRMED", "REFUTED", "ABANDONED"}:
                 continue
             updated = parse_iso_ts(row.get("updated_at"))
             if updated and now - updated <= RESOLUTION_WINDOW:

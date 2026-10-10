@@ -83,6 +83,23 @@ def test_write_triggers_sweep_reads_stay_pure(tmp_path: Path):
                           evidence_refs=(), draft_id="d", now=later)
 
 
+def test_abandoned_positions_surface_in_recent_resolutions(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
+                          draft_id="d", now=NOW)
+    later = NOW + timedelta(days=6)
+    # 写入口触发 sweep：过期 OPEN 被放弃，原因需出现在 recent_resolutions
+    ledger.register(topic="t2", proposition="p2", falsifier="f2", evidence_refs=(),
+                    draft_id="d2", now=later)
+    rows = ledger.recent_resolutions(now=later)
+    assert len(rows) == 1
+    assert rows[0]["position_id"] == row["position_id"]
+    assert rows[0]["status"] == "ABANDONED"
+    assert rows[0]["resolution"] == "no verification within 5 days"
+    # 7 天窗口对 ABANDONED 同样生效
+    assert ledger.recent_resolutions(now=later + timedelta(days=8)) == []
+
+
 def test_recent_resolutions_returns_terminal_within_window(tmp_path: Path):
     ledger = _ledger(tmp_path)
     row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
