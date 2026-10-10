@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from .memory_life import MemoryLifeRuntime
 from .memory_prior import MemoryDecisionPrior
+from .position_ledger import PositionLedger
 
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
@@ -23,6 +24,24 @@ MAX_EVENT_IDS = 512
 MAX_STRATEGY_OUTCOMES = 512
 MIN_STRATEGY_PROFILE_SAMPLES = 2
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
+
+
+def _parse_optional_iso(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _decayed_salience(raw: float, last_observed_at: Any, now: datetime) -> float:
+    observed = _parse_optional_iso(last_observed_at)
+    if observed is None:
+        return float(raw)
+    hours = (now - observed).total_seconds() / 3600.0
+    if hours <= 0.0:
+        return float(raw)
+    return float(raw) * (0.5 ** (hours / 48.0))
 
 
 class ContentMind:
@@ -50,6 +69,7 @@ class ContentMind:
         self._observed_event_ids: list[str] = []
         self._strategy_outcomes: dict[str, dict[str, Any]] = {}
         self._inquiry_topics: dict[str, str] = {}
+        self.positions = PositionLedger(self.root)
         had_checkpoint = self.checkpoint_path.exists()
         self._restore()
         self._life_memory_last_sync = self._sync_life_memory(
@@ -1029,8 +1049,9 @@ class ContentMind:
             "interest": interest.__dict__ if interest else None,
         }
 
-    def public_projection(self) -> dict[str, Any]:
+    def public_projection(self, now: datetime | None = None) -> dict[str, Any]:
         """Return bounded inspectable state for later public presentation."""
+        now = now or datetime.now(timezone.utc)
         snapshot = self.session.snapshot()
         interests = []
         latest_exposure = {}
@@ -1045,7 +1066,10 @@ class ContentMind:
                 "name": name, **{k: float(v) for k, v in state.items()},
                 "last_observed_at": latest_exposure.get(name),
             })
-        interests.sort(key=lambda row: (-row["salience"], -row["preference"], row["name"]))
+        for row in interests:
+            row["decayed_salience"] = round(
+                _decayed_salience(row["salience"], row.get("last_observed_at"), now), 6)
+        interests.sort(key=lambda row: (-row["decayed_salience"], -row["preference"], row["name"]))
         inquiries = [
             {"inquiry_id": key, "question": value.get("question"), "origin": value.get("origin"),
              "status": value.get("status")}
@@ -1119,6 +1143,20 @@ class ContentMind:
             "beliefs": beliefs[:8],
             "recent_belief_changes": recent_belief_changes,
             "latest_plan": deepcopy(latest_plan),
+            "positions": {
+                "open": [
+                    {"position_id": row["position_id"], "topic": row["topic"],
+                     "proposition": row["proposition"], "falsifier": row["falsifier"],
+                     "age_days": round((now - (_parse_optional_iso(row["created_at"]) or now)).total_seconds() / 86400.0, 2)}
+                    for row in self.positions.open_positions(now=now)
+                ],
+                "recent_resolutions": [
+                    {"position_id": row["position_id"], "topic": row["topic"],
+                     "proposition": row["proposition"], "status": row["status"],
+                     "resolution": row.get("resolution")}
+                    for row in self.positions.recent_resolutions(now=now)
+                ],
+            },
             "resource_awareness": {
                 "current": current_resource,
                 "observation_count": len(resource_states),
