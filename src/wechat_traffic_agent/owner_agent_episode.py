@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .content_service import _extract_json
+from .position_ledger import ABANDON_AFTER
 
 
 ToolExecutor = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -208,6 +209,9 @@ class OwnerAgentEpisode:
     @staticmethod
     def _decision_mind_context(current_mind: Mapping[str, Any]) -> dict[str, Any]:
         """Expose topic/learning state, not the full ContentMind projection."""
+        positions = current_mind.get("positions")
+        if not isinstance(positions, Mapping):
+            positions = {}
         return {
             "mind_tick": current_mind.get("mind_tick"),
             "interests": [
@@ -245,16 +249,20 @@ class OwnerAgentEpisode:
             "positions": {
                 "open": [
                     {key: row.get(key)
-                     for key in ("position_id", "topic", "proposition", "falsifier", "age_days")}
-                    for row in list((current_mind.get("positions") or {}).get("open") or ())[:5]
+                     for key in ("position_id", "topic", "proposition", "falsifier", "age_days")
+                     if row.get(key) is not None}
+                    for row in positions.get("open") or ()
                     if isinstance(row, Mapping)
-                ],
+                    and (row.get("age_days") is None
+                         or timedelta(days=row["age_days"]) <= ABANDON_AFTER)
+                ][:5],
                 "recent_resolutions": [
                     {key: row.get(key)
-                     for key in ("position_id", "topic", "status", "resolution")}
-                    for row in list((current_mind.get("positions") or {}).get("recent_resolutions") or ())[:3]
+                     for key in ("position_id", "topic", "status", "resolution")
+                     if row.get(key) is not None}
+                    for row in positions.get("recent_resolutions") or ()
                     if isinstance(row, Mapping)
-                ],
+                ][:3],
             },
             "strategy_learning": {
                 "outcome_count": (
@@ -620,7 +628,7 @@ class OwnerAgentEpisode:
             "Current x_execution transport/capability evidence supersedes old roadmap/API assumptions; X actions use Jev pages only. "
             "Previous optional 20/200 advice is not a quota. When owner_goal.daily_posting_contract is present, the user's newer temporary minimum is mandatory until explicitly disabled. "
             "For a Binance Square daily contract, select BINANCE_SQUARE for meaningful observed events with an author position; research completion and website publication are not prerequisites. Use WEBSITE for mature long or illustrated work, then derive platform expressions. For a website daily contract select WEBSITE first. X failures must not stall new publications. "
-            "When an open_position's falsifier is testable with current public data, verifying that position outranks starting a new topic: choose RUN_CONTENT_PIPELINE now and let the expression resolve it. "
+            "When a recent position in current_mind.positions.open has a falsifier testable with current public data, testing that position outranks starting a new topic: choose RUN_CONTENT_PIPELINE now and let the expression resolve it. "
             "Use research_trajectory to recognize the same unanswered question across different topic names. "
             "After repeated unfinished investigations, seek a specific new artifact or a useful adjacent question. "
             "A parked inquiry needs its resume_when evidence condition; continue learning elsewhere while it is unavailable. "
