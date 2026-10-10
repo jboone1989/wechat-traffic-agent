@@ -1,8 +1,96 @@
 import asyncio
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from types import SimpleNamespace
 import pytest
-from wechat_traffic_agent.square_observation import prepare_observation, ObservationExpression, ObservationReview
+from wechat_traffic_agent.square_observation import (
+    prepare_observation, ObservationExpression, ObservationReview, _structure_fingerprint,
+    _mind_context,
+)
+
+
+class _FakeMind:
+    def __init__(self, projection):
+        self._projection = projection
+
+    def public_projection(self):
+        return self._projection
+
+
+def test_structure_fingerprint_ignores_numbers_and_tickers():
+    data_a = _structure_fingerprint("币安现货数据显示，SOLUSDT 过去24小时明显上涨。\n\n• 最新价格：100 USDT\n• 24小时涨幅：+12%")
+    data_b = _structure_fingerprint("币安现货数据显示，OGNUSDT 过去24小时明显上涨。\n\n• 最新价格：0.03 USDT\n• 24小时涨幅：+11%")
+    prose = _structure_fingerprint("我认为服务可用性比短期价格更值得关注，这是判断的关键所在。")
+    assert SequenceMatcher(None, data_a, data_b).ratio() > 0.7
+    assert SequenceMatcher(None, data_a, prose).ratio() < 0.5
+
+
+def test_structural_repeat_of_recent_data_post_held(tmp_path):
+    now = datetime.now(timezone.utc)
+    store = SquareDraftStore(tmp_path)
+    published = store.create(
+        body="币安现货数据显示，XYZUSDT 过去24小时明显上涨。\n\n截至 2026-10-10 13:20 UTC 观察（滚动24小时窗口）：\n\n"
+             "• XYZUSDT 最新价格：1.23 USDT\n• 24小时涨幅：+12.3%\n• 24小时成交额：5,000,000 USDT\n\n"
+             "放量配合价格上行，属于典型的资金参与形态，这类标的的波动往往在数据窗口结束后仍会延续一段时间，"
+             "值得继续观察后续成交变化，看看参与体量是否能维持今天的规模。\n\n$XYZ",
+        evidence={"kind": "SOURCE_OBSERVATIONS", "observed_at": now.isoformat(), "sources": []},
+        symbols=["XYZ"], reader_question="", thesis="异动观察", invalidation="",
+        observation_provenance={"format": "DATA", "cycle": "old-cycle"})
+    draft = store.get(published["draft_id"])
+    draft.update(status="SUCCESS", published_at=now.isoformat())
+    store.save(draft)
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            assert "recent_formats" in prompt
+            assert "DATA" in prompt
+            return model(action="SHARE", format="DATA", rationale="Another uncovered mover.",
+                body="币安现货数据显示，ABCUSDT 过去24小时明显上涨。\n\n截至 2026-10-10 14:25 UTC 观察（滚动24小时窗口）：\n\n"
+                     "• ABCUSDT 最新价格：2.34 USDT\n• 24小时涨幅：+11.5%\n• 24小时成交额：6,000,000 USDT\n\n"
+                     "这一波动此前没有被今日的帖子覆盖，涨幅与成交额的配合意味着并非无量冲高，"
+                     "后续值得跟踪价格能否在窗口结束后站稳，以及成交是否会快速萎缩。\n\n$ABC",
+                symbols=["ABC"], source_ids=["abc-data"], thesis="异动观察", value_focus="reader agency")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True,
+                     rationale="Concrete new asset data.")
+    source = {"evidence_id": "abc-data", "source_kind": "public-api",
+              "summary": "ABC rolling 24h +11.5%, turnover 6000000 USDT", "observed_at": now.isoformat()}
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="struct-repeat", now=now, seed_evidence=[source], structured=structured))
+    assert result["status"] == "COGNITION_ONLY"
+    assert "structure" in result["rationale"]
+
+
+def test_mind_context_reaches_expression_prompt(tmp_path):
+    now = datetime.now(timezone.utc)
+    source = {"evidence_id": "sol-news", "title": "Solana staking change",
+              "summary": "Solana staking inflows doubled after the network upgrade.", "observed_at": now.isoformat()}
+    async def rss(feeds, now):
+        return {"observed_at": now.isoformat(), "items": []}
+    prompts = []
+    async def structured(runtime, prompt, model):
+        if model is ObservationExpression:
+            prompts.append(prompt)
+            assert "mind_context" in prompt
+            assert "staking inflows doubled" in prompt
+            return model(action="SHARE", rationale="Connects to a held belief.",
+                body="Solana 升级后质押流入翻倍，这支持我此前对网络升级的判断。", symbols=["SOL"],
+                source_ids=["sol-news"], thesis="网络升级与质押流入", reader_question="流入能否持续",
+                invalidation="流入回落", value_focus="explanatory_progress")
+        return model(facts_specific=True, grounded=True, has_position=True, adds_value=True, timely=True,
+                     rationale="Connects the observation to the agent's held belief.")
+    mind = _FakeMind({
+        "interests": [{"name": "staking", "salience": 0.8}],
+        "open_inquiries": [{"inquiry_id": "i1", "question": "Are staking flows sustainable?", "status": "OPEN"}],
+        "beliefs": [{"proposition": "staking inflows doubled after the network upgrade",
+                     "stance": 0.6, "confidence": 0.5, "revision_count": 1}],
+    })
+    explorer = SimpleNamespace(binance_reader=None, wallet_reader=None, feeds=(), rss_fetcher=rss)
+    result = asyncio.run(prepare_observation(runtime=None, explorer=explorer, state_root=tmp_path,
+        cycle="mind-ctx", now=now, seed_evidence=[source], structured=structured, mind=mind))
+    assert result["status"] == "SQUARE_EXPRESSION_READY"
+    assert prompts and "mind_context" in prompts[0]
 from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
 from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop
 from wechat_traffic_agent.behavioral_state import build_behavioral_state, compact_behavioral_state_for_prompt
@@ -227,3 +315,32 @@ def test_rejected_candidate_changes_asset_in_same_cycle(tmp_path):
     assert choices == ["RLC", "KAIA"]
     assert len(SquareDraftStore(tmp_path).list()) == 1
     assert SquareDraftStore(tmp_path).get(result["draft_id"])["symbols"] == ["KAIA"]
+
+
+def test_mind_context_carries_positions_and_interest_terrain():
+    projection = {
+        "beliefs": [{"proposition": "B", "stance": 0.4, "confidence": 0.6}],
+        "interests": [
+            {"name": "sol-staking", "salience": 1.0, "decayed_salience": 0.9, "preference": 0.7},
+            {"name": "eth-btc", "salience": 1.0, "decayed_salience": 0.2, "preference": 0.5},
+        ],
+        "open_inquiries": [{"question": "q?", "origin": "self_question"}],
+        "positions": {
+            "open": [{"position_id": "pos-1", "topic": "sol-staking",
+                      "proposition": "质押流入持续", "falsifier": "流入回落", "age_days": 1.5}],
+            "recent_resolutions": [{"position_id": "pos-0", "topic": "t", "proposition": "p",
+                                    "status": "REFUTED", "resolution": "错在 X"}],
+        },
+    }
+    ctx = _mind_context(_FakeMind(projection))
+    assert ctx["positions_open"][0]["position_id"] == "pos-1"
+    assert ctx["recent_resolutions"][0]["status"] == "REFUTED"
+    assert ctx["interest_terrain"][0]["name"] == "sol-staking"
+    assert ctx["interest_terrain"][0]["decayed_salience"] == 0.9
+
+
+def test_mind_context_without_positions_key_is_empty():
+    ctx = _mind_context(_FakeMind({"beliefs": [], "interests": [], "open_inquiries": []}))
+    assert ctx["positions_open"] == []
+    assert ctx["recent_resolutions"] == []
+    assert ctx["interest_terrain"] == []
