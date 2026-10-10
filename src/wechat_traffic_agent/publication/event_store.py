@@ -81,7 +81,7 @@ class PublicationEventStore:
                 return existing["article_id"]
             return self.records.put(event.artifact_id, task.channel, task.model_dump())
 
-    def attempt_count(self, *, local_date, timezone_info, channel="x"):
+    def attempt_count(self, *, local_date, timezone_info, channel=None):
         return sum(datetime.fromisoformat(t).astimezone(timezone_info).date() == local_date
                    for row in self.list_tasks() if channel is None or row["channel"] == channel
                    for t in row.get("attempt_times", []))

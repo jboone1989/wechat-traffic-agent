@@ -49,12 +49,12 @@ def test_x_failure_retries_without_affecting_publication(tmp_path):
     store = PublicationEventStore(tmp_path / "state")
     def timeout(event, task):
         raise TimeoutError("X unavailable")
-    failed = DistributionWorker(store, {"x": timeout}).run_once()
+    failed = DistributionWorker(store, {"x_article": timeout}).run_once()
     assert failed.status == "RETRY_PENDING"
     assert failed.attempts == 1
     assert "TimeoutError" in failed.last_error
     assert len([t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]) == 1
-    posted = DistributionWorker(store, {"x": lambda e, t: {"status": "POSTED", "url": "https://x.com/test/status/123"}}).run_once()
+    posted = DistributionWorker(store, {"x_article": lambda e, t: {"status": "POSTED", "url": "https://x.com/test/status/123"}}).run_once()
     assert posted.status == "SUCCESS"
     assert posted.attempts == 2
     assert not [t for t in store.list_tasks() if t["status"] in {"PENDING", "RETRY_PENDING"}]
@@ -67,7 +67,7 @@ def test_permanent_distribution_failure_does_not_delete_event(tmp_path):
     _, loop, _ = setup(tmp_path)
     assert asyncio.run(loop.run_once(now=NOW))["status"] == "PUBLISHED"
     store = PublicationEventStore(tmp_path / "state")
-    fail = DistributionWorker(store, {"x": lambda e, t: {"status": "UNVERIFIED"}}, max_attempts=1).run_once()
+    fail = DistributionWorker(store, {"x_article": lambda e, t: {"status": "UNVERIFIED"}}, max_attempts=1).run_once()
     assert fail.status == "FAILED_PERMANENT"
     assert len([t for t in store.list_tasks() if t["status"] == "FAILED_PERMANENT"]) == len(store.list_events()) == 1
 
@@ -99,7 +99,7 @@ def test_daily_distribution_attempts_replace_x_success_quota(tmp_path):
     store = PublicationEventStore(tmp_path / "state")
     def timeout(event, task):
         raise TimeoutError("channel unavailable")
-    assert DistributionWorker(store, {"x": timeout}).run_once().status == "RETRY_PENDING"
+    assert DistributionWorker(store, {"x_article": timeout}).run_once().status == "RETRY_PENDING"
     status = goal.status(datetime.now(timezone.utc))
     assert status["attempted"] == 1
     assert status["published"] == 0
@@ -149,3 +149,14 @@ def test_distribution_receipt_and_failure_notifications_are_deduplicated(tmp_pat
     done = DistributionTask("dist-1", "event-1", "x", "SUCCESS", 2, None, "https://x.com/ferro/status/123")
     goal.notify_distribution_result(task=done, now=NOW)
     assert len(list((tmp_path / "operator" / "mailbox" / "notifications").glob("*.json"))) == 2
+
+
+def test_attempt_count_covers_all_channels_by_default(tmp_path):
+    from datetime import datetime, timezone
+    store = PublicationEventStore(tmp_path)
+    store.save_event(PublicationEvent("id", "a", "https://example.org/a/", "title", "", [], NOW, "hash"))
+    store.enqueue_distribution(DistributionTask("id-x", "id", "x_article"))
+    store.claim_next(channels={"x_article"})
+    count = store.attempt_count(local_date=datetime.now(timezone.utc).date(),
+                                timezone_info=timezone.utc)
+    assert count == 1
