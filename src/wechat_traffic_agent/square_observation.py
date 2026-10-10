@@ -1,7 +1,8 @@
 """Direct, source-grounded Square observations without a research prerequisite."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import logging
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -9,9 +10,12 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 from .content_loop import _structured
 from .content_explorer import _rss_candidate
+from .position_ledger import ABANDON_AFTER
 from .square_cognition import square_publication_context
 from .platforms.binance_square_editorial import SquareDraftStore, normalize_symbols, validate_mining_tags
 from .sources.binance_alt_market import collect_altcoin_candidates
+
+logger = logging.getLogger(__name__)
 
 class ObservationExpression(BaseModel):
     action: Literal["SHARE", "HOLD"]
@@ -45,13 +49,18 @@ def _structure_fingerprint(body, *, window=60):
     s = re.sub(r"\$?[A-Za-z]{2,}[A-Za-z0-9]*", "T", s)
     return re.sub(r"[\s,。;;::、•·\-—()()%+，：]", "", s)[:window]
 
+def _bounded_text(row, fields, *, limit=300):
+    # Cap free-text position fields; structured fields (ids, topics, ages) stay intact.
+    return {**row, **{field: row[field][:limit] for field in fields if isinstance(row.get(field), str)}}
+
 def _mind_context(mind):
     """Project the agent's mind state for the expression prompt; degrade to {} on any failure."""
     if mind is None:
         return {}
     try:
         projection = mind.public_projection()
-    except Exception:
+    except Exception as exc:
+        logger.warning("mind projection unavailable: %r", exc)
         return {}
     beliefs = [{"proposition": row.get("proposition"), "stance": row.get("stance"),
                 "confidence": row.get("confidence")}
@@ -64,8 +73,11 @@ def _mind_context(mind):
     questions = [str(row.get("question"))[:300]
                  for row in projection.get("open_inquiries", ())[:5] if row.get("question")]
     positions = projection.get("positions") or {}
-    positions_open = [dict(row) for row in (positions.get("open") or ())[:6]]
-    resolutions = [dict(row) for row in (positions.get("recent_resolutions") or ())[:4]]
+    positions_open = [_bounded_text(row, ("proposition", "falsifier"))
+                      for row in (positions.get("open") or ())[:6]
+                      if row.get("age_days") is None or timedelta(days=row["age_days"]) <= ABANDON_AFTER]
+    resolutions = [_bounded_text(row, ("proposition", "resolution"))
+                   for row in (positions.get("recent_resolutions") or ())[:4]]
     return {"beliefs": beliefs, "interests": interests, "open_questions": questions,
             "interest_terrain": terrain, "positions_open": positions_open,
             "recent_resolutions": resolutions}
@@ -152,8 +164,9 @@ async def _attempt_observation(*, runtime, state_root, cycle, now, items, contex
         "when one does, make that connection the agent's own first-person view in the body and say which belief or question it bears on. "
         "positions_open are this agent's own published, falsifiable commitments. interest_terrain ranks what it keeps returning to "
         "(decayed_salience falls when a topic is left alone). recent_resolutions are how its past commitments ended. "
+        "age_days is how long ago the position was published; null means unknown. "
         "If a supplied observation tests an open position - its falsifier condition is now checkable with the supplied evidence - "
-        "verifying that position outranks new topics: select the testing evidence, make the verdict explicit in the body, "
+        "testing that position outranks new topics: select the testing evidence, make the verdict explicit in the body, "
         "and declare position_update with position_id and verdict CONFIRMED or REFUTED plus a one-sentence resolution (required when REFUTED: what was wrong). "
         "Confirming or refuting your own published claim is learning progress, not failure; silently dropping it is the only wrong outcome. "
         "Write the body as the same continuous person: it may reference its earlier position by viewpoint, not by id. "

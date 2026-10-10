@@ -74,6 +74,7 @@ def test_mind_context_reaches_expression_prompt(tmp_path):
             prompts.append(prompt)
             assert "mind_context" in prompt
             assert "staking inflows doubled" in prompt
+            assert "Are staking flows sustainable?" in prompt
             return model(action="SHARE", rationale="Connects to a held belief.",
                 body="Solana 升级后质押流入翻倍，这支持我此前对网络升级的判断。", symbols=["SOL"],
                 source_ids=["sol-news"], thesis="网络升级与质押流入", reader_question="流入能否持续",
@@ -344,3 +345,19 @@ def test_mind_context_without_positions_key_is_empty():
     assert ctx["positions_open"] == []
     assert ctx["recent_resolutions"] == []
     assert ctx["interest_terrain"] == []
+
+
+def test_mind_context_drops_stale_open_positions():
+    projection = {
+        "beliefs": [], "interests": [], "open_inquiries": [],
+        "positions": {
+            "open": [
+                {"position_id": "pos-stale", "topic": "t", "proposition": "p", "age_days": 6.0},
+                {"position_id": "pos-fresh", "topic": "t", "proposition": "p", "age_days": 1.0},
+                {"position_id": "pos-unknown", "topic": "t", "proposition": "p", "age_days": None},
+            ],
+            "recent_resolutions": [],
+        },
+    }
+    ctx = _mind_context(_FakeMind(projection))
+    assert [row["position_id"] for row in ctx["positions_open"]] == ["pos-fresh", "pos-unknown"]
