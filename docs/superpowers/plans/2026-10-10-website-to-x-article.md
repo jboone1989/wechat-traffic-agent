@@ -39,7 +39,7 @@ import pytest
 
 from wechat_traffic_agent.content_artifact import ContentArtifact, ContentKind, ContentSection
 from wechat_traffic_agent.editorial.channel_records import ChannelRecords
-from wechat_traffic_agent.publication import x_article_distribution
+from wechat_traffic_agent.platforms.x import x_article_distribution
 from wechat_traffic_agent.publication.errors import NonRetryablePublication
 from wechat_traffic_agent.publication.event_store import PublicationEventStore
 from wechat_traffic_agent.publication.models import DistributionTask, PublicationEvent
@@ -142,6 +142,9 @@ EOF
 追加到 `tests/test_x_article_distribution.py`：
 
 ```python
+import asyncio
+
+
 class FakeRuntime:
     def __init__(self, response='{"images": []}'):
         self.response = response
@@ -159,11 +162,11 @@ def test_image_plan_validated_then_cached(tmp_path):
     artifact = make_artifact()
     folder = tmp_path / "art-1"
     folder.mkdir()
-    plan = x_article_distribution._article_image_plan(runtime, artifact, folder)
+    plan = asyncio.run(x_article_distribution._article_image_plan(runtime, artifact, folder))
     assert plan[0]["mode"] == "GENERATE"
     assert runtime.calls == 1
     assert json.loads((folder / "image_plan.json").read_text(encoding="utf-8"))[0]["mode"] == "GENERATE"
-    x_article_distribution._article_image_plan(runtime, artifact, folder)
+    asyncio.run(x_article_distribution._article_image_plan(runtime, artifact, folder))
     assert runtime.calls == 1
 
 
@@ -174,9 +177,11 @@ def test_image_plan_two_covers_rejected_and_not_cached(tmp_path):
     folder = tmp_path / "art-1"
     folder.mkdir()
     with pytest.raises(ValueError, match="COVER"):
-        x_article_distribution._article_image_plan(runtime, make_artifact(), folder)
+        asyncio.run(x_article_distribution._article_image_plan(runtime, make_artifact(), folder))
     assert not (folder / "image_plan.json").exists()
 ```
+
+（`import asyncio` 放在测试文件顶部 import 区；`_article_image_plan` 是 async——`_structured` 为 async def。）
 
 注意：`_structured` 对 ValueError 会做一次修复重调（FakeRuntime 返回同样的坏响应），最终仍抛 ValueError——两个 COVER 的断言不受影响。
 
@@ -210,7 +215,7 @@ def _image_plan_prompt(artifact: ContentArtifact) -> str:
                      ensure_ascii=False))
 
 
-def _article_image_plan(runtime, artifact: ContentArtifact, artifact_dir: Path) -> list[dict]:
+async def _article_image_plan(runtime, artifact: ContentArtifact, artifact_dir: Path) -> list[dict]:
     plan_path = artifact_dir / "image_plan.json"
     if plan_path.exists():
         return json.loads(plan_path.read_text(encoding="utf-8"))
@@ -220,7 +225,7 @@ def _article_image_plan(runtime, artifact: ContentArtifact, artifact_dir: Path) 
         if sum(1 for image in plan.images if image.role == "COVER") > 1:
             raise ValueError("an X Article has at most one COVER image")
 
-    plan = _structured(
+    plan = await _structured(
         ReceiptRuntime(runtime, artifact_dir / "image-plan-model-calls"),
         _image_plan_prompt(artifact), ArticleImagePlan,
         validate=checked, max_tokens=2000)
@@ -475,7 +480,7 @@ def publish_x_article(event: PublicationEvent, task: DistributionTask, *,
     artifact = _load_artifact(Path(state_root), event.artifact_id)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     text = render_article_text(artifact)
-    images = _article_image_plan(model_runtime, artifact, artifact_dir)
+    images = asyncio.run(_article_image_plan(model_runtime, artifact, artifact_dir))
     media = asyncio.run(prepare_article_media(
         draft={"title": artifact.title, "images": images}, folder=artifact_dir))
     for image in media["inline"]:
