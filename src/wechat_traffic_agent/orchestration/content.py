@@ -893,7 +893,7 @@ class ContentTaskMethods:
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 prior = {}
-            if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY"}:
+            if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY", "SQUARE_EXPRESSION_READY"}:
                 self._run_social_stage(
                     rows=rows,
                     continuous=prior,

@@ -273,7 +273,8 @@ class SocialTaskMethods:
     ) -> None:
         """Run idempotent downstream social work for an already-published cycle."""
         cycle = str(continuous.get("cycle") or "")
-        if continuous.get("publication_surface") == "BINANCE_SQUARE":
+        square_surface = continuous.get("publication_surface") == "BINANCE_SQUARE"
+        if square_surface:
             from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
             identity = continuous.get("draft_id")
             if identity:
@@ -287,12 +288,12 @@ class SocialTaskMethods:
                     }
                 except (OSError, ValueError, KeyError) as exc:
                     rows["binance_square_expression"] = self._error(exc)
-            return
         # Only publish downstream social extracts from an audited website
         # article. Old owner X-only episodes may still be in the backlog, but
-        # they must not preempt new first-party publishing.
+        # they must not preempt new first-party publishing. Owner-reviewed
+        # Square cycles skip this lane and flow straight to the X hook below.
         site_publisher = getattr(getattr(self, "continuous_loop", None), "publisher", None)
-        if site_publisher is not None:
+        if site_publisher is not None and not square_surface:
             folder = Path(self.state_root) / "content" / "continuous" / "cycles" / cycle
             publication_path = folder / "publication.json"
             if not cycle_record_exists(publication_path):
@@ -348,7 +349,7 @@ class SocialTaskMethods:
                 return
         direct_x = continuous.get("status") == "X_EXPRESSION_READY"
         social_loop = getattr(self, "social_expression_loop", None)
-        if social_loop is not None and not direct_x:
+        if social_loop is not None and not direct_x and not square_surface:
             try:
                 rows["social_expression_drafts"] = self._run_async(
                     social_loop.after_content_cycle(result=continuous, now=now)
@@ -362,7 +363,7 @@ class SocialTaskMethods:
             ("x_browser_publication", getattr(self, "x_browser_publisher", None)),
             ("okx_orbit_publication", getattr(self, "okx_orbit_publisher", None)),
         ):
-            if publisher is None or direct_x:
+            if publisher is None or direct_x or square_surface:
                 continue
             # Original short posts use the Jev autonomy lane and its independent safety decision.
             if name == "x_browser_publication" and getattr(self, "x_loop", None) is not None:

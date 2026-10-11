@@ -1,7 +1,7 @@
 """Content research selection contract."""
 from __future__ import annotations
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, field_validator
 from .content_loop import Contract
 
 class EvidenceSelection(Contract):
@@ -11,6 +11,16 @@ class EvidenceSelection(Contract):
     related_ids: tuple[str, ...] = Field(max_length=3)
     reader_question: str = Field(min_length=10, max_length=400)
     gap: str = Field(min_length=10, max_length=500)
+
+    @field_validator("gap", mode="before")
+    @classmethod
+    def _clamp_gap(cls, v):
+        return v[:500] if isinstance(v, str) else v
+
+    @field_validator("reader_question", mode="before")
+    @classmethod
+    def _clamp_reader_question(cls, v):
+        return v[:400] if isinstance(v, str) else v
 
 
 class WorldviewDecision(Contract):

@@ -28,7 +28,7 @@ class SocialAttentionDecision(BaseModel):
     category: Literal["QUESTION", "REBUTTAL", "EVIDENCE", "SPAM", "REACTION", "OTHER"]
     valuable_evidence: bool
     summary: str = Field(min_length=5, max_length=400)
-    reply_text: str | None = Field(default=None, max_length=280)
+    reply_text: str | None = Field(default=None, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
     @model_validator(mode="after")
     def validate_reply(self) -> "SocialAttentionDecision":
@@ -41,13 +41,13 @@ class SocialAttentionDecision(BaseModel):
 
 class XReplyDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    reply_text: str = Field(min_length=1, max_length=280)
+    reply_text: str = Field(min_length=1, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
 
 class XPostDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    post_text: str = Field(min_length=1, max_length=280)
+    post_text: str = Field(min_length=1, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
 
@@ -57,7 +57,7 @@ class XResearchPostDraft(XPostDraft):
     title: str | None = Field(default=None, min_length=5, max_length=100)
     cover_caption: str | None = Field(default=None, max_length=64)
     images: tuple[ArticleImageSpec, ...] = Field(default=(), max_length=8)
-    post_text: str = Field(min_length=20, max_length=8000)
+    post_text: str = Field(min_length=20, max_length=25000)
 
     @model_validator(mode="after")
     def short_post_bounds(self):
@@ -112,7 +112,7 @@ PUBLIC_RESEARCH_WRITING_INSTRUCTIONS = (
 class XExpressionDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     action: Literal["POST", "SKIP"]
-    post_text: str | None = Field(default=None, max_length=280)
+    post_text: str | None = Field(default=None, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
     @model_validator(mode="after")
@@ -664,7 +664,8 @@ class XAutonomyLoop:
             prompt = (
                 "X_REPLY_DRAFT: The bounded JEV L1 router has already decided to REPLY. "
                 "Write only the reply wording; do not reconsider IGNORE/INVESTIGATE/REPLY. "
-                "Keep it <=280 characters. Use only the supplied public mention and durable public persona. "
+                "Length follows the content: keep it as short as the substance allows, and use the space the substance requires. "
+                "Use only the supplied public mention and durable public persona. "
                 "Keep factual claims grounded in the supplied evidence; do not invent observations. "
                 "If the mention asserts an unverified fact, phrase the reply so it does not adopt that fact as true. Return JSON only.\n"
                 + json.dumps({
@@ -803,6 +804,21 @@ class XAutonomyLoop:
         draft = _read_json(Path(str(result.get("draft_path")))) if result.get("draft_path") else {}
         artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
         publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+        square_draft: dict[str, Any] = {}
+        if result.get("publication_surface") == "BINANCE_SQUARE" and result.get("draft_id"):
+            try:
+                from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
+                doc = SquareDraftStore(self.state_root).get(str(result["draft_id"]))
+                if isinstance(doc, dict) and doc.get("body"):
+                    artifact = {"title": str(doc.get("thesis") or ""), "body": str(doc["body"])}
+                    square_draft = {
+                        "draft_id": str(result["draft_id"]),
+                        "draft_status": str(doc.get("status") or ""),
+                        "symbols": list(doc.get("symbols") or []),
+                        "url": doc.get("url"), "post_id": doc.get("post_id"),
+                    }
+            except Exception:  # noqa: BLE001  草稿缺失不拦表达
+                square_draft = {}
         from wechat_traffic_agent.x_owner_execution import owner_x_publication_request
         owner_request = owner_x_publication_request(folder)
         x_expression = _read_json(folder / "x_expression_context.json") if owner_request else {}
@@ -812,6 +828,7 @@ class XAutonomyLoop:
             "learning": _read_json(folder / "learning_result.json"),
             "cycle": cycle, "cognition": cognition, "worldview": worldview, "prediction": prediction,
             "mind_plan": plan, "artifact": artifact, "publication": publication,
+            "square_draft": square_draft,
         }
     async def after_content_cycle(self, *, result: dict[str, Any], now: datetime) -> dict[str, Any]:
         if not x_publication_enabled():
@@ -834,15 +851,16 @@ class XAutonomyLoop:
             and bool(mission_binding.get("bound"))
             and str(mission_binding.get("status") or "") == "BOUND_X_EXPRESSION"
         )
+        square_ready = result_status == "SQUARE_EXPRESSION_READY"
         if (
-            (result_status != "PUBLISHED" and not x_only_admitted and not owner_directed_x)
-            or not cognition.get("worth_saying")
+            (result_status != "PUBLISHED" and not square_ready and not x_only_admitted and not owner_directed_x)
+            or (not cognition.get("worth_saying") and not square_ready)
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
         if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
         from wechat_traffic_agent.learning_expression_quality import learning_required_for_sharing
-        if not context.get("learning") and learning_required_for_sharing(self.state_root):
+        if not square_ready and not context.get("learning") and learning_required_for_sharing(self.state_root):
             return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
                     "reason": "NO_VERIFIED_LEARNING_RECORD"}
         owner_surface=str((context.get("owner_publication_request") or {}).get("decision",{}).get("publication_surface") or "")
@@ -902,7 +920,9 @@ class XAutonomyLoop:
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
-            "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
+            "Keep factual claims grounded in the supplied evidence and preserve uncertainty. "
+            "Length follows the evidence: write the shortest text that carries the actual learning, "
+            "and take more length only when the reasoning needs development. Return JSON only.\n"
             + json.dumps({**_expression_model_context(context), "public_url": public_url,
                           "recent_shares": _expression_recent_shares(self.history),
                           "public_persona": _expression_persona(self.state_root),
@@ -925,7 +945,7 @@ class XAutonomyLoop:
                 "Write the post; do not reconsider whether to POST or SKIP. Any earlier format selection is provisional."
             ).replace(
                 "Max 280 characters including any URL.",
-                "Return format SHORT_POST (up to 280 characters), LONG_POST or ARTICLE (up to 8000). "
+                "Return format SHORT_POST (up to 280 characters), LONG_POST or ARTICLE (up to 25000). "
                 "For ARTICLE include title, optional cover_caption and images. "
                 "Choose the space needed for a useful explanation; do not pad."
             )
@@ -1144,7 +1164,7 @@ class XAutonomyLoop:
                 "Do not force every explanation to end in an unresolved forecast. "
                 "Do not replace the discovery with generic evidence reminders or a repeated slogan. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
-                "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
+                "optional cover_caption <=64 characters, text 20-25000 characters, intent, style_observation_ids [], rationale. "
                 "Depth must follow evidence quality. A source used in a short post may support this richer explanation only when it adds useful supported context; preserve attribution and do not pad or repeat a prior post. "
                 "For ARTICLE, choose images: each has role COVER or INLINE, mode GRAPHIC/GENERATE/SEARCH, alt_text, caption, "
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
@@ -1263,7 +1283,8 @@ class XAutonomyLoop:
         prompt = (
             "X_PREDICTION_OUTCOME: One or more previously dated predictions now have a matured recorded outcome. "
             "Write a concise correction/update only if the supplied settlement supports one. Clearly label the result as CONFIRMED, REFUTED, or INCONCLUSIVE exactly as recorded; do not reinterpret it. "
-            "No investment advice or invented facts. Max 280 characters. Return JSON only.\n"
+            "No investment advice or invented facts. "
+            "Concise by evidence: settle the outcome in as few words as it needs. Return JSON only.\n"
             + json.dumps({"settlements": terminal, "cycle_context": _expression_model_context(context)}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XExpressionDecision)
