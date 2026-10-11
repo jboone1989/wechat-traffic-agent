@@ -20,6 +20,7 @@ from wechat_traffic_agent.x_mcp import x_publication_enabled, x_writes_enabled
 from wechat_traffic_agent.public_persona import public_persona_projection, record_public_interaction
 from wechat_traffic_agent.x_growth_mission import follower_count_from_user, x_growth_mission_context
 from wechat_traffic_agent.l1_decisions import FerroL1Decisions
+from wechat_traffic_agent.position_ledger import topic_matches
 from wechat_traffic_agent.x_article_media import ArticleImageSpec
 
 logger = logging.getLogger(__name__)
@@ -747,6 +748,14 @@ class XAutonomyLoop:
             logger.warning("x expression mind context unavailable: %r", exc)
             return {}
 
+    def _attach_verified_post(self, *, text: str, post_id: str, now: datetime) -> None:
+        """跨面足迹：X 帖核验通过后回记到 topic 命中的 OPEN 立场（零 LLM）。"""
+        if not text or not post_id:
+            return
+        for row in self.positions.open_positions(now=now):
+            if topic_matches(str(row.get("topic") or ""), text):
+                self.positions.attach_post(str(row["position_id"]), post_id, surface="x")
+
     def _l1_x_strategy(
         self,
         *,
@@ -1099,6 +1108,10 @@ class XAutonomyLoop:
                     "message": str(exc)[:300],
                 }
         self._clear_publication_blocker(now=now, receipt_id=publication_receipt_id)
+        try:
+            self._attach_verified_post(text=decision.post_text, post_id=post_id, now=now)
+        except Exception as exc:
+            logger.warning("x cross-surface position attach failed: %r", exc)
         handle = str(me.get("username") or "").lstrip("@")
         url = publication_url or (
             f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
@@ -1241,6 +1254,13 @@ class XAutonomyLoop:
         if result.get("status") in {"POSTED","ALREADY_POSTED"}:
             receipt_id=f"x-browser-publication:{cycle}:{publication['post_id']}"
             self._clear_publication_blocker(now=now,receipt_id=receipt_id)
+            try:
+                saved_draft=_read_json(path)
+                x_draft=(saved_draft.get("drafts") or {}).get("x") or {}
+                longform_text=((str(x_draft.get("title") or "")+"\n") if x_draft.get("title") else "")+str(x_draft.get("text") or "")
+                self._attach_verified_post(text=longform_text, post_id=str(publication["post_id"]), now=now)
+            except Exception as exc:
+                logger.warning("x cross-surface position attach failed: %r", exc)
             return {**result,"status":"POSTED" if result['status']=='POSTED' else "ALREADY_EXPRESSED",
                 "post_id":publication["post_id"],"url":publication["url"],"receipt_id":receipt_id,
                 "format":fmt,"owner_execution_request":context.get("owner_publication_request")}

@@ -56,3 +56,17 @@ def test_after_content_cycle_attaches_mind_context(tmp_path: Path, monkeypatch):
     outcome = asyncio.run(loop.after_content_cycle(result={"status": "PUBLISHED"}, now=NOW))
     assert outcome["status"] == "NO_EXPRESSION"
     assert "mind" in loop._last_expression_context
+
+
+def test_attach_verified_post_matches_topic_and_is_benign(tmp_path: Path):
+    loop = _loop(tmp_path)
+    row = loop.positions.register(topic="sol-staking", proposition="流入持续",
+                                  falsifier="流入回落", evidence_refs=(),
+                                  draft_id="d1", now=NOW)
+    loop._attach_verified_post(text="SOL staking inflows remain strong", post_id="123", now=NOW)
+    loop._attach_verified_post(text="eth gas fees dropped hard", post_id="456", now=NOW)
+    posts = loop.positions.get(row["position_id"])["post_ids"]
+    assert {"id": "123", "surface": "x"} in posts
+    assert {"id": "456", "surface": "x"} not in posts
+    loop._attach_verified_post(text="", post_id="789", now=NOW)
+    assert loop.positions.get(row["position_id"])["post_ids"] == posts
