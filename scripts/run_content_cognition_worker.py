@@ -72,8 +72,13 @@ def _daily_schedule(
     now: datetime,
 ) -> dict:
     status = posting_goal.status(now)
-    if not status.get("enabled") or not status.get("remaining"):
+    if not status.get("enabled"):
         return status
+    # Schedule even once the daily minimum is met: next_attempt_at carries
+    # the goal-met hourly cadence set by DailyPostingGoal.observe, and this
+    # is the only place a due CONTENT_COGNITION plan is (re)created between
+    # boots — returning early here would strand the worker with nothing due
+    # and no path to re-plan until the next restart.
     at = datetime.fromisoformat(
         str(status["next_attempt_at"]).replace("Z", "+00:00")
     ).astimezone(timezone.utc)

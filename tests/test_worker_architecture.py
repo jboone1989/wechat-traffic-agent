@@ -119,3 +119,48 @@ def test_social_drafting_uses_publication_runtime_not_full_cognition():
                    and node.func.id == "load_independent_ferro_cognition_runtime")
     session = next(kw.value for kw in factory.keywords if kw.arg == "session_id")
     assert session.value == "ferro-x-expression"
+
+
+def test_daily_schedule_keeps_planning_after_daily_minimum_is_met():
+    import importlib.util
+    from datetime import datetime, timezone
+
+    spec = importlib.util.spec_from_file_location(
+        "rccw_under_test", ROOT / "scripts" / "run_content_cognition_worker.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    planned = []
+
+    class Scheduler:
+        def schedule(self, task, at, **kwargs):
+            planned.append((task, at, kwargs))
+
+    class Goal:
+        def __init__(self, status):
+            self._status = status
+
+        def status(self, now):
+            return self._status
+
+    now = datetime(2026, 10, 2, 20, tzinfo=timezone.utc)
+    next_at = datetime(2026, 10, 2, 21, tzinfo=timezone.utc)
+    met = {
+        "enabled": True,
+        "remaining": 0,
+        "next_attempt_at": next_at.isoformat(),
+        "goal_id": "ferro-daily-post:2026-10-03",
+    }
+    module._daily_schedule(Goal(met), Scheduler(), now)
+    assert len(planned) == 1
+    task, at, kwargs = planned[0]
+    assert task == "CONTENT_COGNITION"
+    assert at == next_at
+    assert kwargs["preemptible"] is False
+    assert kwargs["relevant_refs"] == ("ferro-daily-post:2026-10-03",)
+
+    planned.clear()
+    disabled = dict(met, enabled=False)
+    assert module._daily_schedule(Goal(disabled), Scheduler(), now) is disabled
+    assert planned == []
