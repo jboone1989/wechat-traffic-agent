@@ -112,7 +112,13 @@ def test_x_adapter_uses_canonical_url_and_existing_browser_transport(tmp_path, m
     event = PublicationEvent("id", "a", "https://example.org/research/example/", "Study " * 60,
                              "Only supported research findings.", ["AI"], NOW, "hash")
     message = x_share_text(event)
-    assert event.canonical_url in message and len(message) <= 280
+    assert event.canonical_url in message and len(message) <= 25_000
+    assert event.title.strip() in message
+    huge = PublicationEvent("id", "a", event.canonical_url, "Study " * 6000,
+                            "Only supported research findings.", ["AI"], NOW, "hash")
+    truncated = x_share_text(huge)
+    assert truncated.endswith(event.canonical_url) and "…" in truncated
+    assert len(truncated) <= 25_000
     called = []
     class Result:
         post_id = "321"

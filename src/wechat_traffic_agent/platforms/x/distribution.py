@@ -9,8 +9,9 @@ from wechat_traffic_agent.publication.models import PublicationEvent, Distributi
 
 def x_share_text(event: PublicationEvent) -> str:
     """Link to the canonical article, never synthesize another research claim."""
+    from wechat_traffic_agent.platforms.x.x_browser import X_PREMIUM_LONG_POST_MAX_CHARS
     suffix = "\n\n" + event.canonical_url
-    budget = 280 - len(suffix)
+    budget = X_PREMIUM_LONG_POST_MAX_CHARS - len(suffix)
     if budget < 20:
         raise ValueError("canonical URL is too long for an X post")
     lead = " ".join((event.title + " — " + event.summary).split())
