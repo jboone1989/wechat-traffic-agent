@@ -32,7 +32,7 @@
 
 ### ② 跨面记账
 
-- 账本 `post_ids` 条目支持 `{"id": <hash>, "surface": "square"|"x"}`；`_load()` 把裸字符串归一化为 surface="square"，存储格式随每次写回收敛为 dict（`public_projection` 不投影 post_ids，LLM payload 不受格式影响；回滚时旧代码读 dict 仅损失 dedup 精度，无害）。
+- 账本 `post_ids` 条目支持 `{"id": <hash>, "surface": "square"|"x"}`；`_load()` 把裸字符串归一化为 surface="square"，存储格式随每次写回收敛为 dict（`public_projection` 不投影 post_ids，LLM payload 不受格式影响）。回滚代价须明确：**读兼容、写结算不兼容**——旧代码读 dict 条目无损，但旧 `transition` 用 `list(dict.fromkeys(...))` 去重，对不可哈希的 dict 条目抛 TypeError，CONFIRMED/REFUTED 结算静默失败（square_observation 吞异常只打 warning），立场滞留 OPEN 直到 5 天 ABANDON。回滚即立场结算停摆，须与盘上 schema=2 一并评估。
 - 新增 `attach_post(position_id, post_id, surface)`：幂等（同 id+surface 不重复）。
 - 挂接点（已定）：X 发布核验通过路径（x_social.py:1034-1046 拿到 post_id 后），用与③同一套**零 LLM** topic 匹配器比对发帖文本与账本立场，命中即 `attach_post(position_id, publication.post_id, surface="x")`。`run_check_x_worker` 侧不挂接（对账扇出不产生新立场足迹）。
 

@@ -16,13 +16,17 @@ try:
 except ImportError:  # Windows 开发/测试环境：只有进程内锁
     fcntl = None
 
-LEDGER_SCHEMA = 1
+LEDGER_SCHEMA = 2
 ABANDON_AFTER = timedelta(days=5)
 RESOLUTION_WINDOW = timedelta(days=7)
 EVIDENCE_CAP = 10
 _TERMINAL = {"CONFIRMED", "REFUTED", "ABANDONED"}
 
-_WRITE_LOCK = threading.RLock()
+# 不变量：公共写方法（register/transition/attach_post/append_evidence）禁止互相调用。
+# _locked 里 flock 绑定在每次 os.open 的新 fd 上，同线程重入拿到的第二把 flock 与第一把
+# 互斥（Linux 直接死锁，Windows 本地 fcntl=None 测不出来）。用 Lock 而非 RLock 让重入
+# 在开发机上立刻以 "thread.error: cannot acquire an already held lock" 暴露，而非留到产线死锁。
+_WRITE_LOCK = threading.Lock()
 
 
 def parse_iso_ts(value: Any) -> datetime | None:
@@ -109,7 +113,8 @@ class PositionLedger:
                 continue
             if item["status"] not in {"OPEN"} | _TERMINAL:
                 continue
-            item["post_ids"] = [e for e in (_post_entry(v) for v in (item.get("post_ids") or [])) if e]
+            raw = item.get("post_ids")
+            item["post_ids"] = [e for e in (_post_entry(v) for v in (raw if isinstance(raw, list) else [])) if e]
             clean.append(item)
         return clean
 
@@ -148,7 +153,7 @@ class PositionLedger:
                 "topic": topic, "proposition": proposition, "falsifier": falsifier,
                 "status": "OPEN", "created_at": now.isoformat(), "updated_at": now.isoformat(),
                 "evidence_refs": [str(ref) for ref in evidence_refs],
-                "post_ids": [_post_entry(draft_id)], "resolution": None,
+                "post_ids": [e for e in (_post_entry(draft_id),) if e], "resolution": None,
                 "source": source,
             }
             rows.append(row)

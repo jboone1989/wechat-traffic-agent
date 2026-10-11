@@ -199,8 +199,10 @@ def test_append_evidence_caps_fifo_and_keeps_string_refs(tmp_path: Path):
     assert dicts[0]["ref"] == "x-post:2"
     assert dicts[-1]["ref"] == "x-post:11"
     ledger.append_evidence(pid, {"ref": "x-post:11", "at": NOW.isoformat(), "note": "dup"})
-    assert len([r for r in ledger.get(pid)["evidence_refs"] if isinstance(r, dict)]) == 10
-    assert len(strings) == 1  # 字符串证据从不被淘汰
+    refs_after = ledger.get(pid)["evidence_refs"]
+    assert len([r for r in refs_after if isinstance(r, dict)]) == 10
+    # 字符串证据从不被淘汰：重复 append 之后重新取回条目验证（局部 strings 在 append 前捕获，恒真无断言力）
+    assert [r for r in refs_after if isinstance(r, str)] == ["web:s1"]
 
 
 def test_append_evidence_requires_ref_and_bounds_note(tmp_path: Path):
