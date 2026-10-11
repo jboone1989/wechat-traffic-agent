@@ -64,9 +64,7 @@ class XResearchPostDraft(XPostDraft):
     post_text: str = Field(min_length=20, max_length=25000)
 
     @model_validator(mode="after")
-    def short_post_bounds(self):
-        if self.format == "SHORT_POST" and len(self.post_text) > 280:
-            raise ValueError("Use LONG_POST to preserve an explanation exceeding 280 characters")
+    def article_shape(self):
         if self.format == "ARTICLE" and not self.title:
             raise ValueError("Native X Article requires a title")
         if self.images and self.format != "ARTICLE":
@@ -973,10 +971,11 @@ class XAutonomyLoop:
                 "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format.",
                 "Write the post; do not reconsider whether to POST or SKIP. Any earlier format selection is provisional."
             ).replace(
-                "Max 280 characters including any URL.",
-                "Return format SHORT_POST (up to 280 characters), LONG_POST or ARTICLE (up to 25000). "
+                "Length follows the evidence: write the shortest text that carries the actual learning, "
+                "and take more length only when the reasoning needs development.",
+                "Return format SHORT_POST, LONG_POST or ARTICLE, each up to 25000 characters. "
                 "For ARTICLE include title, optional cover_caption and images. "
-                "Choose the space needed for a useful explanation; do not pad."
+                "Choose the form and the space the explanation actually needs; do not pad."
             )
             prompt = prompt.replace(
                 "The durable owner controller explicitly requested an original SHORT_POST on X in this cycle.",

@@ -106,9 +106,11 @@ def test_partial_research_promotes_short_selection_to_long_in_one_draft_call(tmp
     assert browser.calls == [explanation]
 
 
-def test_short_research_format_still_enforces_actual_character_limit():
-    with pytest.raises(ValueError, match="Use LONG_POST"):
-        XResearchPostDraft(format="SHORT_POST",post_text="x"*281,rationale="A supported explanation.")
+def test_short_research_format_accepts_premium_length():
+    draft = XResearchPostDraft(format="SHORT_POST",
+        post_text="A supported explanation that carries the reasoning in more than the legacy short-post budget. " * 5,
+        rationale="The explanation stays short-form while taking the space the reasoning needs.")
+    assert draft.format == "SHORT_POST" and len(draft.post_text) > 280
 
 
 def test_learning_reaches_reasoning_with_a_large_history_archive(tmp_path):

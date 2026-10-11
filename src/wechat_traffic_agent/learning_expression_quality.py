@@ -131,8 +131,10 @@ async def review_learning_expression(*, runtime, folder: Path, learning: dict,
             contract, validate=validate)
         # The writer must preserve native paragraph layout even when the model
         # overlooks presentation while finding a useful fact in a wall of text.
+        # Short-post length, not the provisional format label, decides whether
+        # structure is required.
         readable_presentation = (
-            format_name not in {"LONG_POST", "ARTICLE"}
+            len(text) <= 280
             or len([part for part in re.split(r"\n\s*\n", text.strip()) if part.strip()]) >= 2
             or len(re.findall(r"(?m)^\s*(?:[-•] |\d+[.)] )", text)) >= 2
         )

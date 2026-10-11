@@ -100,6 +100,18 @@ def test_developed_numbered_comparison_does_not_require_blank_line_paragraphs(tm
     assert checked["passed"] and checked["readable_presentation"]
 
 
+def test_long_short_post_wall_still_requires_readable_presentation(tmp_path):
+    folder, _ = cycle_context(tmp_path)
+    value = learning(folder)
+    wall = (ANCHOR + " Identity is a label for the operation, not its result, so the restarted worker must "
+            "check the earlier outcome before deciding to retry the payment request. " * 3).strip()
+    model = _ModelRuntime([review()])
+    checked = asyncio.run(review_learning_expression(runtime=model, folder=folder, learning=value,
+        text=wall, recent_shares=[], label="short-wall", format_name="SHORT_POST"))
+    assert checked["readable_presentation"] is False and checked["passed"] is False
+    assert "presentation_feedback" in checked
+
+
 def test_shared_structured_helper_preserves_public_prose_and_budget_on_schema_repair():
     from wechat_traffic_agent.content_loop import _structured
     class Runtime:
