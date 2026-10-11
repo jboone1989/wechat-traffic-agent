@@ -25,7 +25,7 @@ _TERMINAL = {"CONFIRMED", "REFUTED", "ABANDONED"}
 # 不变量：公共写方法（register/transition/attach_post/append_evidence）禁止互相调用。
 # _locked 里 flock 绑定在每次 os.open 的新 fd 上，同线程重入拿到的第二把 flock 与第一把
 # 互斥（Linux 直接死锁，Windows 本地 fcntl=None 测不出来）。用 Lock 而非 RLock 让重入
-# 在开发机上立刻以 "thread.error: cannot acquire an already held lock" 暴露，而非留到产线死锁。
+# 在开发机上立刻以 "RuntimeError: cannot acquire an already held lock" 暴露，而非留到产线死锁。
 _WRITE_LOCK = threading.Lock()
 
 
