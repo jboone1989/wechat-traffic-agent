@@ -254,6 +254,24 @@ def test_empty_belief_registry_requires_null_reference():
         contract.model_validate(step("LEARNED", DETAIL, related="invented belief"))
 
 
+def test_empty_quote_supply_keeps_decision_contract_legal_for_first_action_turn():
+    # A recovered session can reach its first decision with zero working
+    # quotes; the model must still be able to answer via a search action
+    # instead of the contract construction crashing on Literal[()]. The
+    # sentinel placeholder stays unbindable at the host binding layer.
+    from wechat_traffic_agent.learning_research import (
+        _research_choice_contract, _bind_research_choice)
+    registry = {"primary": {"evidence_id": "primary"}}
+    contract = _research_choice_contract(set(), {}, registry)
+    choice = {**step("UNRESOLVED", DETAIL), "evidence_id": "source-0",
+              "related_proposition": None, "facts": []}
+    assert contract.model_validate(choice).facts == ()
+    cited = contract.model_validate({**choice, "facts": [
+        {"source_quote_id": "NO_QUOTE_SUPPLIED", "observation": "No quote exists to cite here."}]})
+    with pytest.raises(KeyError):
+        _bind_research_choice(cited, {}, registry, set())
+
+
 def test_research_reads_method_passages_beyond_search_summary(tmp_path):
     body = "Background context without the mechanism. " * 70
     mechanism = "The worker stores a tool invocation ID before execution and reconciles it after restart."

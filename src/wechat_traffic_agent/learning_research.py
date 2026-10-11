@@ -252,7 +252,11 @@ def _research_choice_contract(known: set[str], quotes: dict, registry: dict):
     citation = create_model(
         "ResearchCitation",
         __config__=ConfigDict(extra="forbid", frozen=True),
-        source_quote_id=(Literal[tuple(quotes)], Field(
+        # A recovered session can reach its first decision with no working
+        # quotes; keep the contract constructible so the model can act
+        # (search) instead of crashing on Literal[()]. The sentinel never
+        # binds: _bind_research_choice rejects it like any unknown quote.
+        source_quote_id=(Literal[tuple(quotes) or ("NO_QUOTE_SUPPLIED",)], Field(
             description="Select an exact source excerpt ID; the host retrieves the original text.")),
         observation=(str, Field(min_length=10, max_length=600)),
     )
