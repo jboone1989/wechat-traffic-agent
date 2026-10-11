@@ -153,12 +153,14 @@ class DailyPostingGoal:
         if not status["enabled"]:
             wakeful.core.cancel(wake_id)
             return status
-        if status["remaining"]:
-            # Keep overdue work at its original due time so repeated waits cannot
-            # move it behind a continually replenished internal-task backlog.
-            at = _time(status["next_attempt_at"])
-        else:
-            at = _time(status["deadline"])
+        # Keep overdue work at its original due time so repeated waits cannot
+        # move it behind a continually replenished internal-task backlog. This
+        # includes the goal-met case: next_attempt_at keeps the hourly cadence
+        # running all day instead of parking until the midnight deadline, so
+        # afternoon/evening events still reach Square/X. Goal-met wakes are not
+        # owner-classified, so resource-pressure and neural-REST admission
+        # delay still applies to them.
+        at = _time(status["next_attempt_at"])
         existing = next((row for row in wakeful.core.snapshot().pending_plans if row.wake_id == wake_id), None)
         if existing is None or existing.at != at or status["goal_id"] not in existing.relevant_refs:
             wakeful.core.schedule(PlannedWake(wake_id=wake_id, at=at,
@@ -264,7 +266,13 @@ class DailyPostingGoal:
                 succeeded = count > previous_count or contains_status(result, "POSTED")
                 failures = 0 if succeeded or not status["enabled"] or not status["remaining"] else (int(progress.get("consecutive_no_publication", 0)) + 1 if progress.get("date") == status["date"] else 1)
                 left = max(60, int((_time(status["deadline"]) - now).total_seconds()))
-                delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
+                if status["remaining"]:
+                    delay = min(3600, left // (status["remaining"] + 1)) if succeeded else 300
+                else:
+                    # Goal met: steady hourly cadence regardless of outcome, so a
+                    # cycle that legitimately publishes nothing (COGNITION_ONLY)
+                    # cannot turn the rest of the day into a 5-minute retry loop.
+                    delay = 3600
                 _write(self.root / "progress.json", {
                     "date": status["date"], "published": status["published"], "attempted": status["attempted"], "count": count,
                     "last_attempt_at": now.isoformat(), "next_attempt_at": (now + timedelta(seconds=max(60, delay))).isoformat(),

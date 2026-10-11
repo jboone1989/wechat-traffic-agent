@@ -79,7 +79,7 @@ def test_website_publication_notifies_without_x_post_and_deduplicates(tmp_path):
     goal.notify_website_publication(**{**args, "content_sha256": "content-updated"})
     assert len(list((tmp_path / "operator/mailbox/notifications").glob("*.json"))) == 2
 
-def test_minimum_met_resets_next_day_without_stopping_autonomous_posts(tmp_path, monkeypatch):
+def test_met_goal_keeps_hourly_cadence_instead_of_parking_until_midnight(tmp_path, monkeypatch):
     # Only the external wake envelope is replaced; exercise the real quota scheduler.
     class Wake:
         def __init__(self, **values): self.__dict__.update(values)
@@ -98,7 +98,10 @@ def test_minimum_met_resets_next_day_without_stopping_autonomous_posts(tmp_path,
     for n in range(1,22): post(tmp_path,n)
     assert goal.owner_goal(NOW) is None
     goal.schedule(wakeful,NOW)
-    assert core.plans[0].at==datetime(2026,10,3,16,tzinfo=timezone.utc)
+    assert core.plans[0].at==NOW
+    goal.observe("CONTENT_COGNITION",{"status":"OK"},NOW)
+    goal.schedule(wakeful,NOW)
+    assert core.plans[0].at==NOW+timedelta(hours=1)
     assert goal.status(NOW)["published"]==21
 
 def test_disabling_temporary_minimum_preserves_link_notifications(tmp_path):
