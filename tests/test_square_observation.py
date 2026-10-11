@@ -639,3 +639,15 @@ def test_public_mind_context_is_shared_entrypoint():
     }
     ctx = public_mind_context(_FakeMind(projection))
     assert ctx["positions_open"][0]["source"] == "x"
+
+
+def test_public_mind_context_none_mind_degrades_to_empty():
+    assert public_mind_context(None) == {}
+
+
+def test_public_mind_context_projection_failure_degrades_to_empty():
+    class _FailingMind:
+        def public_projection(self):
+            raise RuntimeError("virtualbrain persistence down")
+
+    assert public_mind_context(_FailingMind()) == {}

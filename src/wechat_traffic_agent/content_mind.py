@@ -55,7 +55,7 @@ def _bounded_text(row: Mapping[str, Any], fields: tuple[str, ...], *, limit: int
 
 
 def public_mind_context(mind: Any) -> dict[str, Any]:
-    """Project the agent's mind state for expression prompts (Square and X); degrade to {} on any failure."""
+    """Project the agent's mind state for expression prompts (Square and X); degrade to {} when projection fails."""
     if mind is None:
         return {}
     try:
