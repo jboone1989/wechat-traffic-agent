@@ -27,6 +27,7 @@ from wechat_traffic_agent.x_browser import (
     XBrowserPublicationUnverified,
     XBrowserPublishResult,
     X_COMPOSE_URL,
+    X_PREMIUM_LONG_POST_MAX_CHARS,
     _normalize_text,
 )
 from wechat_traffic_agent.x_jev_transaction import jev_x_identity, jev_x_transaction, jev_x_reconcile
@@ -338,8 +339,8 @@ class LocalHarnessXTransport:
 
     async def reply(self, *, text, target_url):
         from wechat_traffic_agent.x_jev_social import jev_x_reply
-        if not text.strip() or len(text)>280:
-            raise ValueError("X reply must contain 1-280 characters")
+        if not text.strip() or len(text)>X_PREMIUM_LONG_POST_MAX_CHARS:
+            raise ValueError(f"X reply must contain 1-{X_PREMIUM_LONG_POST_MAX_CHARS} characters")
         import hashlib
         from wechat_traffic_agent.x_browser import _read_json, _write_json
         account_id = self.account_id

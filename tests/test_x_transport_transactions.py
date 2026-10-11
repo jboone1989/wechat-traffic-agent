@@ -45,7 +45,7 @@ class TransactionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             folder=Path(root)
             class Transport(LocalHarnessXTransport):
-                def __init__(self):self.state_root=folder;self.expected_handle='ferro';self.calls=0
+                def __init__(self):self.state_root=folder;self.expected_handle='ferro';self.account_id='default';self.calls=0
                 def _run_jev_sync(self,script):
                     self.calls+=1
                     if self.calls==1:raise RuntimeError('Browser stopped before input')
@@ -60,3 +60,22 @@ class TransactionTests(unittest.TestCase):
             asyncio.run(transport.reply(**kwargs))
             self.assertTrue(transport.retry_allowed)
             self.assertEqual(transport.calls,2)
+
+    def test_premium_length_reply_passes_the_gate(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder=Path(root)
+            class Transport(LocalHarnessXTransport):
+                def __init__(self):self.state_root=folder;self.expected_handle='ferro';self.account_id='default';self.calls=0
+                def _run_jev_sync(self,script):
+                    self.calls+=1
+                    return {'status':'POSTED','post_id':'789','url':'https://x.com/ferro/status/789',
+                            'handle':'ferro','duplicate_found':False}
+            transport=Transport()
+            long_reply=('Identity is a label for the operation, not its result; the restarted worker '
+                        'must check the recorded outcome before deciding to retry the payment. '*5).strip()
+            self.assertGreater(len(long_reply),280)
+            asyncio.run(transport.reply(text=long_reply,target_url='https://x.com/reader/status/123'))
+            self.assertEqual(transport.calls,1)
+            with self.assertRaises(ValueError):
+                asyncio.run(transport.reply(text='x'*25001,target_url='https://x.com/reader/status/123'))
+            self.assertEqual(transport.calls,1)
