@@ -3,10 +3,10 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from types import SimpleNamespace
 import pytest
+from wechat_traffic_agent.content_mind import public_mind_context
 from wechat_traffic_agent.position_ledger import PositionLedger
 from wechat_traffic_agent.square_observation import (
     prepare_observation, ObservationExpression, ObservationReview, _structure_fingerprint,
-    _mind_context,
 )
 
 
@@ -334,7 +334,7 @@ def test_mind_context_carries_positions_and_interest_terrain():
                                     "status": "REFUTED", "resolution": "错在 X"}],
         },
     }
-    ctx = _mind_context(_FakeMind(projection))
+    ctx = public_mind_context(_FakeMind(projection))
     assert ctx["positions_open"][0]["position_id"] == "pos-1"
     assert ctx["recent_resolutions"][0]["status"] == "REFUTED"
     assert ctx["interest_terrain"][0]["name"] == "sol-staking"
@@ -342,7 +342,7 @@ def test_mind_context_carries_positions_and_interest_terrain():
 
 
 def test_mind_context_without_positions_key_is_empty():
-    ctx = _mind_context(_FakeMind({"beliefs": [], "interests": [], "open_inquiries": []}))
+    ctx = public_mind_context(_FakeMind({"beliefs": [], "interests": [], "open_inquiries": []}))
     assert ctx["positions_open"] == []
     assert ctx["recent_resolutions"] == []
     assert ctx["interest_terrain"] == []
@@ -360,7 +360,7 @@ def test_mind_context_drops_stale_open_positions():
             "recent_resolutions": [],
         },
     }
-    ctx = _mind_context(_FakeMind(projection))
+    ctx = public_mind_context(_FakeMind(projection))
     assert [row["position_id"] for row in ctx["positions_open"]] == ["pos-fresh", "pos-unknown"]
 
 
@@ -626,3 +626,16 @@ def test_reward_failure_does_not_lose_the_transition(tmp_path):
     stored = ledger.get(row["position_id"])
     assert stored["status"] == "CONFIRMED"
     assert stored["resolution"] == "流入未回落"
+
+
+def test_public_mind_context_is_shared_entrypoint():
+    projection = {
+        "beliefs": [], "interests": [], "open_inquiries": [],
+        "interest_terrain": [],
+        "positions": {"open": [{
+            "position_id": "pos-x", "topic": "t", "proposition": "p", "falsifier": "f",
+            "age_days": 1.0, "source": "x",
+        }], "recent_resolutions": []},
+    }
+    ctx = public_mind_context(_FakeMind(projection))
+    assert ctx["positions_open"][0]["source"] == "x"

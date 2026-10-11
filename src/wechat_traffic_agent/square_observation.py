@@ -1,5 +1,5 @@
 """Direct, source-grounded Square observations without a research prerequisite."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import logging
@@ -8,9 +8,9 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 from pydantic import BaseModel, Field, field_validator
+from .content_mind import public_mind_context
 from .content_loop import _structured
 from .content_explorer import _rss_candidate
-from .position_ledger import ABANDON_AFTER
 from .square_cognition import square_publication_context
 from .platforms.binance_square_editorial import SquareDraftStore, normalize_symbols, validate_mining_tags
 from .sources.binance_alt_market import collect_altcoin_candidates
@@ -58,39 +58,6 @@ def _structure_fingerprint(body, *, window=60):
     s = re.sub(r"\d+(?:\.\d+)?", "T", str(body))
     s = re.sub(r"\$?[A-Za-z]{2,}[A-Za-z0-9]*", "T", s)
     return re.sub(r"[\s,。;;::、•·\-—()()%+，：]", "", s)[:window]
-
-def _bounded_text(row, fields, *, limit=300):
-    # Cap free-text position fields; structured fields (ids, topics, ages) stay intact.
-    return {**row, **{field: row[field][:limit] for field in fields if isinstance(row.get(field), str)}}
-
-def _mind_context(mind):
-    """Project the agent's mind state for the expression prompt; degrade to {} on any failure."""
-    if mind is None:
-        return {}
-    try:
-        projection = mind.public_projection()
-    except Exception as exc:
-        logger.warning("mind projection unavailable: %r", exc)
-        return {}
-    beliefs = [{"proposition": row.get("proposition"), "stance": row.get("stance"),
-                "confidence": row.get("confidence")}
-               for row in projection.get("beliefs", ())[:8] if row.get("proposition")]
-    terrain = [{"name": row.get("name"), "decayed_salience": row.get("decayed_salience"),
-                "preference": row.get("preference")}
-               for row in projection.get("interests", ())[:5]
-               if row.get("name") and row.get("decayed_salience") is not None]
-    interests = [str(row.get("name")) for row in projection.get("interests", ())[:8] if row.get("name")]
-    questions = [str(row.get("question"))[:300]
-                 for row in projection.get("open_inquiries", ())[:5] if row.get("question")]
-    positions = projection.get("positions") or {}
-    positions_open = [_bounded_text(row, ("proposition", "falsifier"))
-                      for row in (positions.get("open") or ())[:6]
-                      if row.get("age_days") is None or timedelta(days=row["age_days"]) <= ABANDON_AFTER]
-    resolutions = [_bounded_text(row, ("proposition", "resolution"))
-                   for row in (positions.get("recent_resolutions") or ())[:4]]
-    return {"beliefs": beliefs, "interests": interests, "open_questions": questions,
-            "interest_terrain": terrain, "positions_open": positions_open,
-            "recent_resolutions": resolutions}
 
 def _recent_formats(context, *, limit=6):
     formats = []
@@ -206,7 +173,7 @@ async def prepare_observation(*, runtime, explorer, state_root, cycle, now, seed
     except (OSError, ValueError):
         feedback = []
     # A rejected candidate should not consume another whole scheduling interval.
-    mind_context = _mind_context(mind)
+    mind_context = public_mind_context(mind)
     recent_formats = _recent_formats(context)
     for attempt in range(2):
         result = await _attempt_observation(runtime=runtime, state_root=state_root, cycle=cycle,

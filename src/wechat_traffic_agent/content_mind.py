@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 from statistics import median
@@ -12,7 +13,9 @@ from typing import Any, Iterable, Mapping
 
 from .memory_life import MemoryLifeRuntime
 from .memory_prior import MemoryDecisionPrior
-from .position_ledger import PositionLedger, parse_iso_ts
+from .position_ledger import ABANDON_AFTER, PositionLedger, parse_iso_ts
+
+logger = logging.getLogger(__name__)
 
 MIND_SCHEMA = "content-mind:v1"
 # ContractV1AgencySession only accepts capability-backed experience authorities from
@@ -44,6 +47,41 @@ def _age_days(created_at: Any, now: datetime) -> float | None:
     if created is None:
         return None
     return round((now - created).total_seconds() / 86400.0, 2)
+
+
+def _bounded_text(row: Mapping[str, Any], fields: tuple[str, ...], *, limit: int = 300) -> dict[str, Any]:
+    # Cap free-text position fields; structured fields (ids, topics, ages) stay intact.
+    return {**row, **{field: row[field][:limit] for field in fields if isinstance(row.get(field), str)}}
+
+
+def public_mind_context(mind: Any) -> dict[str, Any]:
+    """Project the agent's mind state for expression prompts (Square and X); degrade to {} on any failure."""
+    if mind is None:
+        return {}
+    try:
+        projection = mind.public_projection()
+    except Exception as exc:
+        logger.warning("mind projection unavailable: %r", exc)
+        return {}
+    beliefs = [{"proposition": row.get("proposition"), "stance": row.get("stance"),
+                "confidence": row.get("confidence")}
+               for row in projection.get("beliefs", ())[:8] if row.get("proposition")]
+    terrain = [{"name": row.get("name"), "decayed_salience": row.get("decayed_salience"),
+                "preference": row.get("preference")}
+               for row in projection.get("interests", ())[:5]
+               if row.get("name") and row.get("decayed_salience") is not None]
+    interests = [str(row.get("name")) for row in projection.get("interests", ())[:8] if row.get("name")]
+    questions = [str(row.get("question"))[:300]
+                 for row in projection.get("open_inquiries", ())[:5] if row.get("question")]
+    positions = projection.get("positions") or {}
+    positions_open = [_bounded_text(row, ("proposition", "falsifier"))
+                      for row in (positions.get("open") or ())[:6]
+                      if row.get("age_days") is None or timedelta(days=row["age_days"]) <= ABANDON_AFTER]
+    resolutions = [_bounded_text(row, ("proposition", "resolution"))
+                   for row in (positions.get("recent_resolutions") or ())[:4]]
+    return {"beliefs": beliefs, "interests": interests, "open_questions": questions,
+            "interest_terrain": terrain, "positions_open": positions_open,
+            "recent_resolutions": resolutions}
 
 
 class ContentMind:
