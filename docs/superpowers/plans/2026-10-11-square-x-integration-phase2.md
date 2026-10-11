@@ -1183,26 +1183,35 @@ ssh ubuntu@43.133.181.149 'cd content-agent/current && git diff -- <file> | head
 
 若服务器脏版本含本地没有的线上改动：先在本地把该改动合入对应文件（跑测试），再部署合并后的版本。**零重叠确认后才进入 Step 4。**
 
+**对账结果（2026-10-11 执行时实测）**：服务器 HEAD 05c99a1 是本地 main 祖先。六个服务器脏/未跟踪 payload 文件中五个（content_mind/square_observation/position_ledger/test_publication_outbox）工作版逐字节等于一期部署版 448780f——零服务器侧漂移，叠加即纯升级。两处例外：
+- `x_social.py`：服务器脏版 = 一期版 + c3f0814 的 Premium 放行改动（合同 25000×5 + 4 处措辞），措辞与 main 逐串一致（子集关系已验证）——main 覆盖即纯升级，无需合并。
+- `x_local_browser.py`：服务器脏版 = 一期版 + fcntl→portable_flock 垫片（配套 untracked portable_flock.py，用户未提交 WIP 的线上部署形态）。main 版含 c18cccd 回复门修复且用 fcntl——Linux 上 fcntl 与垫片功能等价，覆盖无功能回退；垫片属 Windows 本地测试用，继续留在用户 WIP。
+未入 payload 的服务器脏文件（content_loop/content_goal_loop/daily_posting_goal/run_check_x_worker 等）不触碰。
+
+**部署清单（修订，含 Task 2.5 热修 4 文件 + chip 会话 Premium 统一 3 提交随行）**——源文件 14：position_ledger.py、content_mind.py、square_observation.py、platforms/x/x_social.py、platforms/x/x_local_browser.py、platforms/x/distribution.py、orchestration/social.py、orchestration/content.py、learning_expression_quality.py、content_goal_contracts.py、memory_service.py、learning_research.py、evidence_choice_service.py、scripts/run_content_agent.py；测试 9：test_position_ledger.py、test_square_observation.py、test_x_social_mind.py、test_x_social_square_gate.py、test_content_contracts_clamp.py、test_learning_reasoning.py、test_reader_first_expression.py、test_x_transport_transactions.py、test_publication_outbox.py（test_x_social.py 自一期未变，服务器已是新版）。
+
 - [ ] **Step 4: 叠加部署（LF blob + md5 双侧核对）**
 
 本机逐文件导出 LF blob 并算 md5：
 
 ```bash
 cd D:/ferro/wechat-traffic-agent && mkdir -p /tmp/phase2-deploy/src/wechat_traffic_agent/platforms/x /tmp/phase2-deploy/scripts
-for f in src/wechat_traffic_agent/position_ledger.py src/wechat_traffic_agent/content_mind.py src/wechat_traffic_agent/square_observation.py src/wechat_traffic_agent/platforms/x/x_social.py src/wechat_traffic_agent/orchestration/social.py src/wechat_traffic_agent/orchestration/content.py scripts/run_content_agent.py; do git -c core.autocrlf=false show "main:$f" > "/tmp/phase2-deploy/$f"; done
+for f in src/wechat_traffic_agent/position_ledger.py src/wechat_traffic_agent/content_mind.py src/wechat_traffic_agent/square_observation.py src/wechat_traffic_agent/platforms/x/x_social.py src/wechat_traffic_agent/platforms/x/x_local_browser.py src/wechat_traffic_agent/platforms/x/distribution.py src/wechat_traffic_agent/orchestration/social.py src/wechat_traffic_agent/orchestration/content.py src/wechat_traffic_agent/learning_expression_quality.py src/wechat_traffic_agent/content_goal_contracts.py src/wechat_traffic_agent/memory_service.py src/wechat_traffic_agent/learning_research.py src/wechat_traffic_agent/evidence_choice_service.py scripts/run_content_agent.py; do git -c core.autocrlf=false show "main:$f" > "/tmp/phase2-deploy/$f"; done
 cd /tmp/phase2-deploy && find . -type f -exec md5sum {} \;
 ```
 
 scp 到服务器解到 `current`（保持相对路径），逐文件 `md5sum` 核对一致：
 
 ```bash
-scp -r /tmp/phase2-deploy/src /tmp/phase2-deploy/scripts ubuntu@43.133.181.149:content-agent/current/
+scp -r /tmp/phase2-deploy/src /tmp/phase2-deploy/scripts /tmp/phase2-deploy/tests ubuntu@43.133.181.149:content-agent/current/
 ```
+
+（tests/ 目录导出同样的 LF blob：`for f in tests/test_position_ledger.py tests/test_square_observation.py tests/test_x_social_mind.py tests/test_x_social_square_gate.py tests/test_content_contracts_clamp.py tests/test_learning_reasoning.py tests/test_reader_first_expression.py tests/test_x_transport_transactions.py tests/test_publication_outbox.py; do git -c core.autocrlf=false show "main:$f" > "/tmp/phase2-deploy/$f"; done`，先 `mkdir -p /tmp/phase2-deploy/tests`。）
 
 - [ ] **Step 5: 服务器测试 + 重启**
 
 ```bash
-ssh ubuntu@43.133.181.149 'cd content-agent/current && PYTHONPATH=current/src content-agent-venv-current/bin/python -m pytest tests/test_position_ledger.py tests/test_square_observation.py tests/test_x_social.py tests/test_x_social_square_gate.py tests/test_content_contracts_clamp.py -q 2>&1 | tail -5'
+ssh ubuntu@43.133.181.149 'cd content-agent/current && PYTHONPATH=current/src content-agent-venv-current/bin/python -m pytest tests/test_position_ledger.py tests/test_square_observation.py tests/test_x_social.py tests/test_x_social_mind.py tests/test_x_social_square_gate.py tests/test_content_contracts_clamp.py tests/test_learning_reasoning.py tests/test_reader_first_expression.py tests/test_x_transport_transactions.py tests/test_publication_outbox.py -q 2>&1 | tail -5'
 ```
 
 通过后重启并验证：
