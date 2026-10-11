@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from wechat_traffic_agent.position_ledger import PositionLedger
+from wechat_traffic_agent.position_ledger import PositionLedger, topic_matches
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 
@@ -22,7 +23,7 @@ def test_register_creates_open_position(tmp_path: Path):
                           draft_id="d1", now=NOW)
     assert row["status"] == "OPEN"
     assert row["position_id"].startswith("pos-")
-    assert row["post_ids"] == ["d1"]
+    assert row["post_ids"] == [{"id": "d1", "surface": "square"}]
     assert ledger.open_positions(now=NOW)[0]["position_id"] == row["position_id"]
 
 
@@ -137,3 +138,108 @@ def test_corrupt_and_malformed_entries_are_skipped(tmp_path: Path):
     assert [r["position_id"] for r in rows] == ["pos-ok"]
     ledger.register(topic="t2", proposition="p2", falsifier="f2", evidence_refs=(),
                     draft_id="d", now=NOW)  # 原子写不因坏行失败
+
+
+def test_register_records_source_and_normalized_post_ids(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
+                          draft_id="d1", now=NOW, source="x")
+    assert row["source"] == "x"
+    assert row["post_ids"] == [{"id": "d1", "surface": "square"}]
+    row2 = ledger.register(topic="t2", proposition="p2", falsifier="f2", evidence_refs=(),
+                           draft_id="d2", now=NOW)
+    assert row2["source"] == "square"
+
+
+def test_attach_post_is_idempotent_and_tolerates_legacy_strings(tmp_path: Path):
+    root = tmp_path / "content_mind"
+    root.mkdir(parents=True)
+    (root / "positions.json").write_text(json.dumps({"positions": [
+        {"position_id": "pos-legacy", "topic": "t", "proposition": "p", "falsifier": "f",
+         "status": "OPEN", "created_at": NOW.isoformat(), "updated_at": NOW.isoformat(),
+         "evidence_refs": [], "post_ids": ["legacy-draft"], "resolution": None}]}),
+        encoding="utf-8")
+    ledger = PositionLedger(root)
+    ledger.attach_post("pos-legacy", "x-post:1", surface="x")
+    row = ledger.get("pos-legacy")
+    assert row["post_ids"] == [{"id": "legacy-draft", "surface": "square"},
+                               {"id": "x-post:1", "surface": "x"}]
+    ledger.attach_post("pos-legacy", "x-post:1", surface="x")
+    assert len(ledger.get("pos-legacy")["post_ids"]) == 2
+    with pytest.raises(ValueError):
+        ledger.attach_post("pos-missing", "x-post:2", surface="x")
+
+
+def test_transition_keeps_dict_entries_and_dedups(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
+                          draft_id="d1", now=NOW)
+    pid = row["position_id"]
+    ledger.attach_post(pid, "x-post:9", surface="x")
+    done = ledger.transition(pid, verdict="CONFIRMED", resolution="结算数据符合",
+                             evidence_refs=("web:e2",), draft_id="d2", now=NOW)
+    assert done["post_ids"] == [{"id": "d1", "surface": "square"},
+                                {"id": "x-post:9", "surface": "x"},
+                                {"id": "d2", "surface": "square"}]
+
+
+def test_append_evidence_caps_fifo_and_keeps_string_refs(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f",
+                          evidence_refs=("web:s1",), draft_id="d1", now=NOW)
+    pid = row["position_id"]
+    for i in range(12):
+        ledger.append_evidence(pid, {"source": "x_observe", "ref": f"x-post:{i}",
+                                     "at": NOW.isoformat(), "note": f"n{i}"})
+    refs = ledger.get(pid)["evidence_refs"]
+    strings = [r for r in refs if isinstance(r, str)]
+    dicts = [r for r in refs if isinstance(r, dict)]
+    assert strings == ["web:s1"]
+    assert len(dicts) == 10
+    assert dicts[0]["ref"] == "x-post:2"
+    assert dicts[-1]["ref"] == "x-post:11"
+    ledger.append_evidence(pid, {"ref": "x-post:11", "at": NOW.isoformat(), "note": "dup"})
+    assert len([r for r in ledger.get(pid)["evidence_refs"] if isinstance(r, dict)]) == 10
+    assert len(strings) == 1  # 字符串证据从不被淘汰
+
+
+def test_append_evidence_requires_ref_and_bounds_note(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
+                          draft_id="d", now=NOW)
+    with pytest.raises(ValueError):
+        ledger.append_evidence(row["position_id"], {"note": "no ref"})
+    ledger.append_evidence(row["position_id"], {"source": "x_observe", "ref": "x-post:1",
+                                                "at": NOW.isoformat(), "note": "长" * 300})
+    assert len(ledger.get(row["position_id"])["evidence_refs"][-1]["note"]) == 120
+
+
+def test_topic_matches_tokens_and_chinese():
+    assert topic_matches("sol-staking", "SOL staking inflows doubled")
+    assert topic_matches("质押", "SOL 质押流入持续扩张")
+    assert topic_matches("strk+费率", "strk funding rate flipped positive")
+    assert not topic_matches("sol-staking", "eth gas fees dropped")
+    assert not topic_matches("", "anything")
+
+
+def test_writes_serialize_under_lock(tmp_path: Path):
+    ledger = _ledger(tmp_path)
+    row = ledger.register(topic="t", proposition="p", falsifier="f", evidence_refs=(),
+                          draft_id="d", now=NOW)
+    pid = row["position_id"]
+    errors: list[Exception] = []
+
+    def worker(i: int) -> None:
+        try:
+            for j in range(5):
+                ledger.attach_post(pid, f"post-{i}-{j}", surface="x")
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert len(ledger.get(pid)["post_ids"]) == 21  # 1 注册 + 4*5，零丢失

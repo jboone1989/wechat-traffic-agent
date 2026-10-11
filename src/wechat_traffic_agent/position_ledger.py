@@ -4,14 +4,25 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
+
+try:
+    import fcntl
+except ImportError:  # Windows 开发/测试环境：只有进程内锁
+    fcntl = None
 
 LEDGER_SCHEMA = 1
 ABANDON_AFTER = timedelta(days=5)
 RESOLUTION_WINDOW = timedelta(days=7)
+EVIDENCE_CAP = 10
 _TERMINAL = {"CONFIRMED", "REFUTED", "ABANDONED"}
+
+_WRITE_LOCK = threading.RLock()
 
 
 def parse_iso_ts(value: Any) -> datetime | None:
@@ -26,6 +37,36 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _post_entry(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        pid = str(value.get("id") or "").strip()
+        return {"id": pid, "surface": str(value.get("surface") or "square")} if pid else None
+    text = str(value or "").strip()
+    return {"id": text, "surface": "square"} if text else None
+
+
+def _dedup(values: list[Any]) -> list[Any]:
+    # dict 不可哈希，不能用 dict.fromkeys；条目混合 str/dict。
+    seen: set[str] = set()
+    out: list[Any] = []
+    for value in values:
+        key = (json.dumps(value, sort_keys=True, ensure_ascii=False)
+               if isinstance(value, dict) else str(value))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def topic_matches(topic: str, text: str) -> bool:
+    tokens = [t for t in re.split(r"[^0-9a-z一-鿿]+", str(topic).casefold()) if t]
+    if not tokens:
+        return False
+    hay = str(text).casefold()
+    return any(token in hay for token in tokens)
+
+
 class PositionLedger:
     """OPEN -> CONFIRMED | REFUTED | ABANDONED; terminal states are final."""
 
@@ -33,6 +74,22 @@ class PositionLedger:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "positions.json"
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        with _WRITE_LOCK:
+            if fcntl is None:
+                yield
+                return
+            handle = os.open(self.root / "positions.lock", os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                os.close(handle)
 
     def _load(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -52,6 +109,7 @@ class PositionLedger:
                 continue
             if item["status"] not in {"OPEN"} | _TERMINAL:
                 continue
+            item["post_ids"] = [e for e in (_post_entry(v) for v in (item.get("post_ids") or [])) if e]
             clean.append(item)
         return clean
 
@@ -77,48 +135,99 @@ class PositionLedger:
 
     def register(self, *, topic: str, proposition: str, falsifier: str,
                  evidence_refs: tuple[str, ...] | list[str], draft_id: str,
-                 now: datetime) -> dict[str, Any]:
+                 now: datetime, source: str = "square") -> dict[str, Any]:
         topic, proposition, falsifier = topic.strip(), proposition.strip(), falsifier.strip()
         if not topic or not proposition or not falsifier:
             raise ValueError("position requires topic, proposition and falsifier")
-        self._sweep(now)
-        rows = [row for row in self._load() if self._valid(row)]
-        digest = hashlib.sha1(f"{topic}:{proposition}".encode("utf-8")).hexdigest()[:12]
-        row = {
-            "position_id": "pos-" + digest + "-" + now.strftime("%Y%m%d%H%M%S"),
-            "topic": topic, "proposition": proposition, "falsifier": falsifier,
-            "status": "OPEN", "created_at": now.isoformat(), "updated_at": now.isoformat(),
-            "evidence_refs": [str(ref) for ref in evidence_refs],
-            "post_ids": [str(draft_id)], "resolution": None,
-        }
-        rows.append(row)
-        self._save(rows)
-        return dict(row)
+        with self._locked():
+            self._sweep(now)
+            rows = [row for row in self._load() if self._valid(row)]
+            digest = hashlib.sha1(f"{topic}:{proposition}".encode("utf-8")).hexdigest()[:12]
+            row = {
+                "position_id": "pos-" + digest + "-" + now.strftime("%Y%m%d%H%M%S"),
+                "topic": topic, "proposition": proposition, "falsifier": falsifier,
+                "status": "OPEN", "created_at": now.isoformat(), "updated_at": now.isoformat(),
+                "evidence_refs": [str(ref) for ref in evidence_refs],
+                "post_ids": [_post_entry(draft_id)], "resolution": None,
+                "source": source,
+            }
+            rows.append(row)
+            self._save(rows)
+            return dict(row)
 
     def transition(self, position_id: str, *, verdict: str, resolution: str,
                    evidence_refs: tuple[str, ...] | list[str], draft_id: str,
                    now: datetime) -> dict[str, Any]:
         if verdict not in {"CONFIRMED", "REFUTED", "ABANDONED"}:
             raise ValueError("verdict must be CONFIRMED, REFUTED or ABANDONED")
-        self._sweep(now)
-        rows = self._load()
-        for row in rows:
-            if row.get("position_id") != position_id:
-                continue
-            if row.get("status") != "OPEN":
-                raise ValueError(f"position {position_id} is {row.get('status')}, not OPEN")
-            if verdict == "REFUTED" and not str(resolution or "").strip():
-                raise ValueError("REFUTED requires a resolution explaining what was wrong")
-            row["status"] = verdict
-            row["resolution"] = str(resolution or "").strip() or None
-            row["updated_at"] = now.isoformat()
-            row["evidence_refs"] = list(dict.fromkeys(
-                [*row.get("evidence_refs", []), *(str(ref) for ref in evidence_refs)]))
-            if str(draft_id):
-                row["post_ids"] = list(dict.fromkeys([*row.get("post_ids", []), str(draft_id)]))
-            self._save(rows)
-            return dict(row)
-        raise ValueError(f"position {position_id} not found")
+        with self._locked():
+            self._sweep(now)
+            rows = self._load()
+            for row in rows:
+                if row.get("position_id") != position_id:
+                    continue
+                if row.get("status") != "OPEN":
+                    raise ValueError(f"position {position_id} is {row.get('status')}, not OPEN")
+                if verdict == "REFUTED" and not str(resolution or "").strip():
+                    raise ValueError("REFUTED requires a resolution explaining what was wrong")
+                row["status"] = verdict
+                row["resolution"] = str(resolution or "").strip() or None
+                row["updated_at"] = now.isoformat()
+                row["evidence_refs"] = _dedup([
+                    *row.get("evidence_refs", []), *(str(ref) for ref in evidence_refs)])
+                if str(draft_id):
+                    row["post_ids"] = _dedup([
+                        *row.get("post_ids", []),
+                        {"id": str(draft_id), "surface": "square"}])
+                self._save(rows)
+                return dict(row)
+            raise ValueError(f"position {position_id} not found")
+
+    def attach_post(self, position_id: str, post_id: str, *, surface: str = "square") -> dict[str, Any]:
+        entry = _post_entry({"id": post_id, "surface": surface})
+        if entry is None:
+            raise ValueError("attach_post requires a non-empty post_id")
+        with self._locked():
+            rows = [row for row in self._load() if self._valid(row)]
+            for row in rows:
+                if row.get("position_id") != position_id:
+                    continue
+                key = json.dumps(entry, sort_keys=True, ensure_ascii=False)
+                existing = [
+                    json.dumps(e, sort_keys=True, ensure_ascii=False)
+                    for e in row.get("post_ids", [])
+                ]
+                if key not in existing:
+                    row["post_ids"] = [*row.get("post_ids", []), entry]
+                    self._save(rows)
+                return dict(row)
+            raise ValueError(f"position {position_id} not found")
+
+    def append_evidence(self, position_id: str, entry: Mapping[str, Any],
+                        *, cap: int = EVIDENCE_CAP) -> dict[str, Any]:
+        item = {
+            "source": str(entry.get("source") or "x_observe"),
+            "ref": str(entry.get("ref") or "").strip(),
+            "at": str(entry.get("at") or ""),
+            "note": str(entry.get("note") or "")[:120],
+        }
+        if not item["ref"]:
+            raise ValueError("evidence entry requires ref")
+        with self._locked():
+            rows = [row for row in self._load() if self._valid(row)]
+            for row in rows:
+                if row.get("position_id") != position_id:
+                    continue
+                refs = row.get("evidence_refs", [])
+                strings = [r for r in refs if not isinstance(r, dict)]
+                dicts = _dedup([r for r in refs if isinstance(r, dict)])
+                key = json.dumps(item, sort_keys=True, ensure_ascii=False)
+                if key not in {json.dumps(r, sort_keys=True, ensure_ascii=False) for r in dicts}:
+                    dicts = [*dicts, item][-cap:]
+                row["evidence_refs"] = [*strings, *dicts]
+                self._save(rows)
+                return dict(row)
+            raise ValueError(f"position {position_id} not found")
 
     def _sweep(self, now: datetime) -> None:
         """Expire stale OPEN positions. Write-path only; reads must stay pure."""
