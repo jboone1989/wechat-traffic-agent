@@ -126,6 +126,18 @@ class XExpressionDecision(BaseModel):
         return self
 
 
+class XNativePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    topic: str = Field(min_length=1)
+    proposition: str = Field(min_length=1)
+    falsifier: str = Field(min_length=1)
+
+
+class XPositionScan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    position: XNativePosition | None = None
+
+
 def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
     """Keep publication facts once; execution receipts stay in the cycle ledger."""
     projected = dict(context)
@@ -603,6 +615,20 @@ class XAutonomyLoop:
                 handled += 1
             except Exception as exc:
                 failures.append({"post_id":post_id,"error_type":type(exc).__name__,"detail":str(exc)[:300]})
+        if fresh:
+            try:
+                self._backfill_position_evidence(mentions=fresh, now=now)
+            except Exception as exc:
+                logger.warning("x position evidence backflow failed: %r", exc)
+            try:
+                scan = await self._scan_native_position(mentions=fresh[:10], cycle=cycle, now=now)
+            except Exception as exc:
+                logger.warning("x native position scan failed: %r", exc)
+                scan = None
+            try:
+                self._register_scanned_position(scan, cycle=cycle, now=now)
+            except Exception as exc:
+                logger.warning("x native position registration failed: %r", exc)
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})
         replies = [
             {key: row.get(key) for key in ("x_post_id", "x_url", "target_post_id", "runtime_receipt_id")}
@@ -753,6 +779,52 @@ class XAutonomyLoop:
         for row in self.positions.open_positions(now=now):
             if topic_matches(str(row.get("topic") or ""), text):
                 self.positions.attach_post(str(row["position_id"]), post_id, surface="x")
+
+    def _backfill_position_evidence(self, *, mentions: list[dict[str, Any]], now: datetime) -> None:
+        """零 LLM：观察命中的 OPEN 立场追加 x_observe 证据；永不触发状态转移。"""
+        for row in self.positions.open_positions(now=now):
+            topic = str(row.get("topic") or "")
+            if not topic:
+                continue
+            for mention in mentions:
+                text = str(mention.get("summary") or "")
+                post_id = str(mention.get("evidence_id") or "").removeprefix("x-post:")
+                if not text or not post_id or not topic_matches(topic, text):
+                    continue
+                self.positions.append_evidence(str(row["position_id"]), {
+                    "source": "x_observe", "ref": f"x-post:{post_id}",
+                    "at": now.isoformat(), "note": text[:120],
+                })
+
+    async def _scan_native_position(self, *, mentions: list[dict[str, Any]],
+                                    cycle: str, now: datetime) -> XPositionScan:
+        runtime = ReceiptRuntime(self.model_runtime,
+                                 self.root / "social-model-calls" / cycle / "position-scan")
+        prompt = (
+            "X_POSITION_SCAN: Review these newly observed public X posts. "
+            "If — and only if — they jointly support a NEW falsifiable position worth committing "
+            "(a concrete claim with a measurable falsification line, not duplicating any open "
+            "position below), return its topic, proposition and falsifier; otherwise return "
+            '{"position": null}. Be conservative: at most one position, only when the evidence '
+            "is specific and current. Return JSON only.\n"
+            + json.dumps({
+                "posts": [{"summary": str(m.get("summary") or "")[:300]} for m in mentions],
+                "open_positions": [
+                    {"topic": r.get("topic"), "proposition": str(r.get("proposition"))[:200]}
+                    for r in self.positions.open_positions(now=now)
+                ],
+            }, ensure_ascii=False)
+        )
+        return await _structured(runtime, prompt, XPositionScan, max_tokens=800)
+
+    def _register_scanned_position(self, scan: XPositionScan | None, *, cycle: str,
+                                   now: datetime) -> dict[str, Any] | None:
+        native = getattr(scan, "position", None)
+        if native is None:
+            return None
+        return self.positions.register(topic=native.topic, proposition=native.proposition,
+                                       falsifier=native.falsifier, evidence_refs=(),
+                                       draft_id=cycle, now=now, source="x")
 
     def _l1_x_strategy(
         self,

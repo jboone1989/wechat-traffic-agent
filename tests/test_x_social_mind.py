@@ -70,3 +70,40 @@ def test_attach_verified_post_matches_topic_and_is_benign(tmp_path: Path):
     assert {"id": "456", "surface": "x"} not in posts
     loop._attach_verified_post(text="", post_id="789", now=NOW)
     assert loop.positions.get(row["position_id"])["post_ids"] == posts
+
+
+def test_position_evidence_backflow_matches_and_caps(tmp_path: Path):
+    loop = _loop(tmp_path)
+    row = loop.positions.register(topic="sol-staking", proposition="流入持续",
+                                  falsifier="流入回落", evidence_refs=(),
+                                  draft_id="d1", now=NOW)
+    mentions = [
+        {"evidence_id": "x-post:a1", "summary": "SOL staking inflows at record high"},
+        {"evidence_id": "x-post:b2", "summary": "unrelated eth chatter"},
+    ]
+    loop._backfill_position_evidence(mentions=mentions, now=NOW)
+    refs = loop.positions.get(row["position_id"])["evidence_refs"]
+    dicts = [r for r in refs if isinstance(r, dict)]
+    assert len(dicts) == 1
+    assert dicts[0]["source"] == "x_observe"
+    assert dicts[0]["ref"] == "x-post:a1"
+    assert len(dicts[0]["note"]) <= 120
+    assert loop.positions.get(row["position_id"])["status"] == "OPEN"  # 证据不触发转移
+    loop._backfill_position_evidence(mentions=[], now=NOW)  # 空观察不炸
+
+
+def test_register_scanned_position_registers_with_source_x_or_skips(tmp_path: Path):
+    from wechat_traffic_agent.platforms.x.x_social import XNativePosition, XPositionScan
+    loop = _loop(tmp_path)
+    assert loop._register_scanned_position(None, cycle="c1", now=NOW) is None
+    assert loop._register_scanned_position(XPositionScan(), cycle="c1", now=NOW) is None
+    row = loop._register_scanned_position(
+        XPositionScan(position=XNativePosition(topic="strk", proposition="费率将转正",
+                                               falsifier="费率持续为负")), cycle="c1", now=NOW)
+    assert row["source"] == "x"
+    assert row["status"] == "OPEN"
+
+
+def test_position_scan_models_are_conservative_by_default():
+    from wechat_traffic_agent.platforms.x.x_social import XPositionScan
+    assert XPositionScan.model_validate({}).position is None
