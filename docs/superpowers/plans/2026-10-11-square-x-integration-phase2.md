@@ -546,6 +546,156 @@ EOF
 
 ---
 
+### Task 2.5: Square→X 表达门放行 + LLM 合同超长热修（Task 0 结论落地）
+
+**Files:**
+- Modify: `src/wechat_traffic_agent/orchestration/social.py:276-397`（3 个守卫，不重排缩进）
+- Modify: `src/wechat_traffic_agent/orchestration/content.py:896`（replay 集 +1）
+- Modify: `src/wechat_traffic_agent/platforms/x/x_social.py`（门 :838-842、learning 门 :845-848、`_cycle_context` :795-816）
+- Modify: `src/wechat_traffic_agent/content_goal_contracts.py`（EvidenceSelection clamp）
+- Modify: `src/wechat_traffic_agent/memory_service.py:73-79`（Prefix clamp + prompt 预算）
+- Modify: `src/wechat_traffic_agent/evidence_choice_service.py:97-134`（prompt 预算 + recoverable +string_too_long）
+- Modify: `src/wechat_traffic_agent/learning_research.py`（why_interested clamp + prompt 预算）
+- Test: `tests/test_x_social_square_gate.py`（新）、`tests/test_content_contracts_clamp.py`（新）
+
+**背景（来自 Task 0 结论，必读）**：当前 Square 发布形态是 owner 周期（`v2-owner-*` 目录，只有 result.json，status `COGNITION_ONLY→SQUARE_EXPRESSION_READY`，draft 在 SquareDraftStore）。四处拦截点：social.py:290 早退、content.py:896 replay 集、x_social.py:838-842 门（status + worth_saying）、x_social.py:846 learning 门（服务器 `require_learning_discovery: true` 恒拦）。以下是唯一注入面分析后确定的修复，全部改动不得触碰 website 周期既有行为。
+
+#### Part A：Square→X 放行
+
+- [ ] **A1. social.py 三个守卫**（BINANCE_SQUARE 周期跳过 website 中段、直达 x_loop 钩子）：
+
+```python
+# :276 起，BINANCE_SQUARE 分支：把 `return` 改为记录标志（receipt 记录逻辑不变）
+        cycle = str(continuous.get("cycle") or "")
+        square_surface = continuous.get("publication_surface") == "BINANCE_SQUARE"
+        if square_surface:
+            # …原 receipt 记录代码原样保留…
+            # （原 :290 的 `return` 删除）
+# :295 网站中段守卫：
+        if site_publisher is not None and not square_surface:
+# :351 social_expression_drafts 守卫：
+        if social_loop is not None and not direct_x and not square_surface:
+# :365 publisher 循环守卫：
+            if publisher is None or direct_x or square_surface:
+                continue
+```
+
+- [ ] **A2. content.py:896** replay 集加 SQUARE_EXPRESSION_READY：
+
+```python
+            if str(prior.get("status") or "").upper() in {"PUBLISHED", "X_EXPRESSION_READY", "SQUARE_EXPRESSION_READY"}:
+```
+
+- [ ] **A3. x_social.py 门 + learning 豁免**（`after_content_cycle` :838-848）：
+
+```python
+        square_ready = result_status == "SQUARE_EXPRESSION_READY"
+        if (
+            (result_status != "PUBLISHED" and not square_ready and not x_only_admitted and not owner_directed_x)
+            or (not cognition.get("worth_saying") and not square_ready)
+        ):
+            return {"status": "NO_EXPRESSION", "cycle": cycle}
+        if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
+            return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
+        from wechat_traffic_agent.learning_expression_quality import learning_required_for_sharing
+        if not square_ready and not context.get("learning") and learning_required_for_sharing(self.state_root):
+            return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
+                    "reason": "NO_VERIFIED_LEARNING_RECORD"}
+```
+
+理由：SQUARE_EXPRESSION_READY 本身就是 owner 编辑评审（result.rationale 为完整审稿意见）对 worth_saying 与质量的裁决，Square 编辑门是该内容的在效质量闸；learning-first 策略继续约束 website/X 原创周期不变。
+
+- [ ] **A4. x_social.py `_cycle_context` 装载 Square 草稿**（artifact 是 X_EXPRESSION_DRAFT prompt 的素材来源，owner 周期原本为空）：
+
+```python
+        draft = _read_json(Path(str(result.get("draft_path")))) if result.get("draft_path") else {}
+        artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
+        publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+        square_draft: dict[str, Any] = {}
+        if result.get("publication_surface") == "BINANCE_SQUARE" and result.get("draft_id"):
+            try:
+                from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
+                doc = SquareDraftStore(self.state_root).get(str(result["draft_id"]))
+                if isinstance(doc, dict) and doc.get("body"):
+                    artifact = {"title": str(doc.get("thesis") or ""), "body": str(doc["body"])}
+                    square_draft = {
+                        "draft_id": str(result["draft_id"]),
+                        "draft_status": str(doc.get("status") or ""),
+                        "symbols": list(doc.get("symbols") or []),
+                        "url": doc.get("url"), "post_id": doc.get("post_id"),
+                    }
+            except Exception:  # noqa: BLE001  草稿缺失不拦表达（红线：容错）
+                square_draft = {}
+        # 返回 dict 追加一项： "square_draft": square_draft,
+```
+
+- [ ] **A5. 核验 `_publish_prediction_outcome` 与 `_l1_x_strategy` 对空 prediction/worldview/cognition 的容忍**：读这两个函数，确认缺失文件路径走 `_read_json`→`{}` 后无 KeyError/AttributeError；若会炸，加与既有风格一致的 `.get(...)` 守卫并在 PR 说明。不改其他行为。
+
+- [ ] **A6. 测试（tests/test_x_social_square_gate.py，tmp_path 造状态树 + stub model_runtime）**：
+
+```python
+# 1) owner Square 周期过门：result={"status":"SQUARE_EXPRESSION_READY","cycle":c,
+#    "draft_id":<预先用 SquareDraftStore.create 存的草稿>,"publication_surface":"BINANCE_SQUARE"}
+#    周期目录无 cognition.json；stub 模型返回合法短帖 JSON →
+#    断言返回 status=="PUBLICATION_UNVERIFIED" 或草稿持久化成功（非 NO_EXPRESSION/HELD/SKIPPED），
+#    且 x_expression_context_projection payload 含 artifact.body 与 square_draft.draft_id。
+# 2) COGNITION_ONLY 拒绝：status 非 SQUARE_EXPRESSION_READY/PUBLISHED → NO_EXPRESSION。
+# 3) learning 豁免：square_ready 且 sharing_policy=require_learning_discovery:true 且无
+#    learning_result.json → 不返回 HELD_BY_LEARNING_QUALITY。
+# 4) social.py 守卫：BINANCE_SQUARE 周期 + x_loop stub → x_loop.after_content_cycle 被调用一次；
+#    social_expression_loop/x_browser_publisher stub 若被调用即 raise（断言未触发）。
+# 5) website 周期不回归：status=PUBLISHED + publication.json 完备 + publication_event_id →
+#    行为与改前一致（x_syndication QUEUED + 早退保留）。
+# 6) content.py replay：prior status=SQUARE_EXPRESSION_READY → _run_social_stage 被调（stub）。
+```
+
+#### Part B：LLM 合同超长热修（既有弱点，一期放大；根因②）
+
+- [ ] **B1. clamp 校验器（确定性，防周期死亡）**——超长的是生成散文非事实引文，schema 上限已两次呈现给模型（prompt 内嵌 model_json_schema + 修复重试），clamp 语义安全：
+
+```python
+# content_goal_contracts.py EvidenceSelection（顶部补 import：from pydantic import field_validator）：
+    @field_validator("gap", mode="before")
+    @classmethod
+    def _clamp_gap(cls, v): return v[:500] if isinstance(v, str) else v
+    @field_validator("reader_question", mode="before")
+    @classmethod
+    def _clamp_reader_question(cls, v): return v[:400] if isinstance(v, str) else v
+# memory_service.py Prefix：
+    @field_validator("prefix", mode="before")
+    @classmethod
+    def _clamp_prefix(cls, v): return v[:240] if isinstance(v, str) else v
+# learning_research.py：TaskResearchFocus 由 create_model 生成（:152）——在基模型（定义 why_interested 的那个）
+# 上加同款 field_validator（截断 600）；若基模型不便加，则 create_model 后重新绑定加过 validator 的模型。
+# 实现者读文件后选侵入最小的一种。
+```
+
+- [ ] **B2. prompt 数字预算**（降低 clamp 触发频率）：三处 prompt 各加一句预算——evidence_choice_service.py SELECT_EVIDENCE（:97-114 prompt 文本末尾）加 `gap 不超过500字、reader_question 不超过400字，写短写具体。`；memory_service.py contextualize prompt（:88 附近）加 `prefix 必须不超过240字。`；learning_research.py 含 why_interested 的 prompt（grep 定位）加 `why_interested 不超过600字。`
+
+- [ ] **B3. evidence_choice_service.py `recoverable_selection_errors`（:118-125）追加 `"string_too_long"`**——clamp 后不应再触发，纯纵深防御，让其余合同的超长也走确定性兜底而非炸周期。
+
+- [ ] **B7. 测试（tests/test_content_contracts_clamp.py）**：
+
+```python
+# EvidenceSelection(gap="x"*600, 其余合法字段) 构造成功且 len(gap)==500；
+# reader_question 同理 400；Prefix(prefix="y"*300) → 240；
+# TaskResearchFocus(why_interested="z"*700) → 600；
+# validate_selection 收到仅含 string_too_long 的 ValidationError → 不 raise（走兜底路径标记）。
+```
+
+- [ ] **Step: 提交**
+
+```bash
+cd D:/ferro/wechat-traffic-agent && git add src/wechat_traffic_agent/orchestration/social.py src/wechat_traffic_agent/orchestration/content.py src/wechat_traffic_agent/platforms/x/x_social.py src/wechat_traffic_agent/content_goal_contracts.py src/wechat_traffic_agent/memory_service.py src/wechat_traffic_agent/evidence_choice_service.py src/wechat_traffic_agent/learning_research.py tests/test_x_social_square_gate.py tests/test_content_contracts_clamp.py && git commit -m "$(cat <<'EOF'
+fix: 放行 Square→X 表达门 + LLM 合同超长热修（Task 0 根因①②）
+
+Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+EOF
+)"
+```
+
+---
+
 ### Task 3: X 表达注入 live mind（唯一注入面 = 主进程 after_content_cycle/_owner_longform）
 
 **Files:**
@@ -1025,7 +1175,7 @@ cd D:/ferro/wechat-traffic-agent && PYTHONPATH="src;D:/ferro/agent-runtime/src;D
 ssh ubuntu@43.133.181.149 'cd content-agent/current && git status --porcelain'
 ```
 
-对 5 个目标文件（`src/wechat_traffic_agent/position_ledger.py`、`content_mind.py`、`square_observation.py`、`platforms/x/x_social.py`、`scripts/run_content_agent.py`）逐一：
+对 7 个目标文件（`src/wechat_traffic_agent/position_ledger.py`、`content_mind.py`、`square_observation.py`、`platforms/x/x_social.py`、`orchestration/social.py`、`orchestration/content.py`、`scripts/run_content_agent.py`）逐一：
 
 ```bash
 ssh ubuntu@43.133.181.149 'cd content-agent/current && git diff -- <file> | head -100'
@@ -1039,7 +1189,7 @@ ssh ubuntu@43.133.181.149 'cd content-agent/current && git diff -- <file> | head
 
 ```bash
 cd D:/ferro/wechat-traffic-agent && mkdir -p /tmp/phase2-deploy/src/wechat_traffic_agent/platforms/x /tmp/phase2-deploy/scripts
-for f in src/wechat_traffic_agent/position_ledger.py src/wechat_traffic_agent/content_mind.py src/wechat_traffic_agent/square_observation.py src/wechat_traffic_agent/platforms/x/x_social.py scripts/run_content_agent.py; do git -c core.autocrlf=false show "main:$f" > "/tmp/phase2-deploy/$f"; done
+for f in src/wechat_traffic_agent/position_ledger.py src/wechat_traffic_agent/content_mind.py src/wechat_traffic_agent/square_observation.py src/wechat_traffic_agent/platforms/x/x_social.py src/wechat_traffic_agent/orchestration/social.py src/wechat_traffic_agent/orchestration/content.py scripts/run_content_agent.py; do git -c core.autocrlf=false show "main:$f" > "/tmp/phase2-deploy/$f"; done
 cd /tmp/phase2-deploy && find . -type f -exec md5sum {} \;
 ```
 
@@ -1052,7 +1202,7 @@ scp -r /tmp/phase2-deploy/src /tmp/phase2-deploy/scripts ubuntu@43.133.181.149:c
 - [ ] **Step 5: 服务器测试 + 重启**
 
 ```bash
-ssh ubuntu@43.133.181.149 'cd content-agent/current && PYTHONPATH=current/src content-agent-venv-current/bin/python -m pytest tests/test_position_ledger.py tests/test_square_observation.py tests/test_x_social.py -q 2>&1 | tail -5'
+ssh ubuntu@43.133.181.149 'cd content-agent/current && PYTHONPATH=current/src content-agent-venv-current/bin/python -m pytest tests/test_position_ledger.py tests/test_square_observation.py tests/test_x_social.py tests/test_x_social_square_gate.py tests/test_content_contracts_clamp.py -q 2>&1 | tail -5'
 ```
 
 通过后重启并验证：
@@ -1073,6 +1223,29 @@ ssh ubuntu@43.133.181.149 'sudo -n systemctl restart content-agent.service && sl
 
 ---
 
-## Task 0 结论
+## Task 0 结论（2026-10-11，已本地逐项复核）
 
-（待 Task 0 执行后填写）
+**判定：(b) 存在代码 bug，X 线当前无法发帖，修完才可承载。** 不是登录态/浏览器问题（观察路径健康、env 三开关全 ON、publication_blocker 已清空）。
+
+### 根因①（主）：Square 早退挡断 X 表达链
+
+- 2026-10-08 22:30 起 X 无新帖。commit `3bcf322`（10-09 23:44 部署）在 `orchestration/social.py:276-290` 加了 `publication_surface == "BINANCE_SQUARE"` 早退 `return`，位于 `x_loop.after_content_cycle` 钩子（:398-411）之前——Square 周期永远到不了 X 表达。
+- **当前 Square 发布形态已迁移为 owner 周期**：服务器实测（10-11 12:16-12:50 持续活动），`content/continuous/cycles/v2-owner-*/result.json` 是唯一活跃形态，字段仅 `{cycle, draft_id, draft_status, publication_confirmed, publication_surface, rationale, status}`，status 流转 `COGNITION_ONLY → SQUARE_EXPRESSION_READY`，目录内**只有 result.json**（无 cognition.json / learning_result.json / mind_plan.json）。调用链：`content.py:410` → `_run_social_stage`（social.py:267）→ 早退。
+- 拦截点共四处（修复须全覆盖，见 Task 2.5）：
+  1. social.py:290 早退（未到 x_loop）；
+  2. content.py:896 replay 集 `{PUBLISHED, X_EXPRESSION_READY}` 不含 SQUARE_EXPRESSION_READY（中断周期无法恢复重放）；
+  3. x_social.py:838-842 门 `result_status != "PUBLISHED"` 不认 SQUARE_EXPRESSION_READY，且 `cognition.get("worth_saying")` 对 owner 周期恒空（无 cognition.json）；
+  4. x_social.py:846 learning 门：服务器 `sharing_policy.json` `require_learning_discovery: true` → `learning_required_for_sharing()` 恒 True，owner 周期无 learning_result.json → 恒 HELD_BY_LEARNING_QUALITY。
+- 旁证：旧 continuous 周期（v2-1789999200，10-08）status=PUBLISHED + cognition.worth_saying=True + mind_plan 存在——旧形态能过门，所以 3bcf322 之前 X 正常；形态迁移 + 早退共同造成静默。
+
+### 根因②（次）：LLM 输出合同超长爆发（既有弱点被放大）
+
+- error_diagnostic.json 按日直方图：Contexts.prefixes>240 ~55 次、EvidenceSelection.gap>500 ~60 次、TaskResearchFocus.why_interested>600 ~4 次，全部集中在 10-11 02:45 部署后；但同类错误 10-06/07 已存在（1-4 次/日）——是既有合同弱点，一期更丰富的 prompt 放大了它。10-10 低活动是资金闸（另一已修问题），非健康基线。
+- 机制：`_structured`（content_loop.py:293-306）prompt 已内嵌完整 `model_json_schema()`（含 max_length）+ 一次修复重试；模型连续两次超长时 ValidationError 上抛杀死周期。EvidenceSelection 有确定性兜底（content_goal_loop.py:1135-1169）但 `recoverable_selection_errors`（evidence_choice_service.py:118-125）不含 string_too_long，走不到兜底。
+- 处置：随 Task 2.5 一并热修（数字预算 + string_too_long 入可恢复集 + prose 字段 clamp 校验器）。
+
+### 处置
+
+- 新增 **Task 2.5：Square→X 表达门放行 + LLM 合同超长热修**（全文见上文插入节），执行顺序在 Task 2 之后、Task 3 之前。
+- Task 6 部署文件清单追加：`orchestration/social.py`、`orchestration/content.py`（服务器脏文件对账范围同步扩大，`x_social.py` 已知为脏文件需先对账）。
+- X 线可承载发帖 = Task 2.5 部署后实测首个 owner Square 周期产出 x_social_expression 非跳过记录。
