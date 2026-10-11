@@ -5,6 +5,7 @@ from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,8 @@ from wechat_traffic_agent.public_persona import public_persona_projection, recor
 from wechat_traffic_agent.x_growth_mission import follower_count_from_user, x_growth_mission_context
 from wechat_traffic_agent.l1_decisions import FerroL1Decisions
 from wechat_traffic_agent.x_article_media import ArticleImageSpec
+
+logger = logging.getLogger(__name__)
 
 
 class SocialAttentionDecision(BaseModel):
@@ -367,7 +370,8 @@ class XAutonomyLoop:
                  growth_mission: Any | None = None,
                  social_observer: Any | None = None,
                  social_context_provider: Any | None = None,
-                 l1_decisions: Any | None = None) -> None:
+                 l1_decisions: Any | None = None,
+                 mind: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
@@ -384,6 +388,10 @@ class XAutonomyLoop:
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
         self.history = XHistoryLedger(self.state_root)
+        self.mind = mind
+        from wechat_traffic_agent.position_ledger import PositionLedger
+        self.positions = PositionLedger(self.state_root / "application" / "content_mind")
+        self._last_expression_context: dict[str, Any] = {}
     def _l1(self):
         if self.l1_decisions is None:
             self.l1_decisions = FerroL1Decisions(state_root=self.state_root)
@@ -729,6 +737,16 @@ class XAutonomyLoop:
             self._activity(cycle=cycle,title="Replied on X",detail=decision.reply_text)
         return True
 
+    def _mind_context(self) -> dict[str, Any]:
+        if self.mind is None:
+            return {}
+        try:
+            from wechat_traffic_agent.content_mind import public_mind_context
+            return public_mind_context(self.mind)
+        except Exception as exc:
+            logger.warning("x expression mind context unavailable: %r", exc)
+            return {}
+
     def _l1_x_strategy(
         self,
         *,
@@ -836,6 +854,8 @@ class XAutonomyLoop:
         folder, context = self._cycle_context(result)
         if folder is None:
             return {"status": "NO_CYCLE"}
+        context["mind"] = self._mind_context()
+        self._last_expression_context = context
         await self._publish_prediction_outcome(folder=folder, context=context, now=now)
         cognition = context.get("cognition") or {}
         cycle = str(context.get("cycle") or "")
@@ -1130,6 +1150,7 @@ class XAutonomyLoop:
         """Execute Ferro's selected X format without a website publication prerequisite."""
         from wechat_traffic_agent.social_expression import ChannelSocialDraft
         from wechat_traffic_agent.x_browser import XBrowserPublisher
+        context = {**context, "mind": self._mind_context()}
         cycle=folder.name
         fmt="ARTICLE" if surface=="X_ARTICLE" else "LONG_POST"
         if self.history.has_event(cycle=cycle,event_type="EXPRESSION"):
