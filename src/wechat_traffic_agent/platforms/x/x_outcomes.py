@@ -306,11 +306,45 @@ class XOutcomeCollector:
                 "content_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "topic":str(cognition.get("topic") or cognition.get("category") or "public_cognition"),
                 "structure_version":f"x:{kind}:v1", "strategy_version":"x-autonomy:jev:v1"})
+        rows.extend(_omnipost_syndications(self.state_root, seen))
         return rows
 
     @staticmethod
     def _report(status: str, **extra: Any) -> dict[str, Any]:
         return {"status":status,"source":SOURCE,"publication_authority":False,"learning_authority":False,"causal_claim":False,**extra}
+
+def _syndication_topic(state_root: Path, doc: dict[str, Any]) -> str:
+    """Topic of the Ferro cycle behind a Square draft, else its first symbol."""
+    cycle=str((doc.get("research_provenance") or {}).get("learning_cycle")
+              or (doc.get("observation_provenance") or {}).get("cycle") or "")
+    if re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", cycle):
+        cognition=_read_json(state_root/"content"/"continuous"/"cycles"/cycle/"cognition.json")
+        if str(cognition.get("topic") or "").strip():
+            return str(cognition["topic"]).strip()
+    symbols=doc.get("symbols") or []
+    return str(symbols[0]) if symbols else "unknown"
+
+
+def _omnipost_syndications(state_root: Path, seen: set[str]) -> list[dict[str, Any]]:
+    """X posts that omnipost cross-posted from reviewed Square drafts."""
+    from wechat_traffic_agent.editorial.channel_records import ChannelRecords
+    rows=[]
+    for doc in ChannelRecords(state_root).all("binance_square"):
+        receipt=doc.get("x_syndication") or {}
+        post_id=str(receipt.get("post_id") or ""); url=str(receipt.get("url") or "")
+        text=str(doc.get("body") or "")
+        if (receipt.get("status")!="SUCCESS" or not post_id or post_id in seen or not text.strip()
+                or _post_id_from_url(url)!=post_id):
+            continue
+        seen.add(post_id)
+        rows.append({"publication_id":f"x:{post_id}", "post_id":post_id, "url":url,
+            "published_at":_published_at_from_status_id(post_id),
+            "account":url.split("/status/",1)[0], "artifact_id":str(doc.get("draft_id") or post_id),
+            "content_sha256":hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "topic":_syndication_topic(state_root, doc),
+            "structure_version":"x:OMNIPOST_SYNDICATION:v1",
+            "strategy_version":"square-omnipost-syndication:v1"})
+    return rows
 
 __all__=[
     "LocalHarnessXMetricsTransport","MAX_CAPTURE_LAG","METRICS","SOURCE","WINDOWS",

@@ -127,3 +127,38 @@ def test_no_x_publication_has_no_outcome_authority(tmp_path: Path):
         "status": "NO_ELIGIBLE_PUBLICATIONS", "source": SOURCE,
         "publication_authority": False, "learning_authority": False, "causal_claim": False,
     }
+
+
+def _omnipost_square_doc(root: Path, *, post_id: str, status: str = "SUCCESS", cycle: str = "v2-owner-syn") -> None:
+    from wechat_traffic_agent.editorial.channel_records import ChannelRecords
+    _write(root / "content/continuous/cycles" / cycle / "cognition.json", {"topic": "onchain-flows"})
+    records = ChannelRecords(root)
+    with records.transaction():
+        records.put("square-d1", "binance_square", {
+            "draft_id": "d1", "status": "SUCCESS", "body": "链上资金流向的观察，正文。$BTC",
+            "symbols": ["BTC"], "observation_provenance": {"cycle": cycle},
+            "x_syndication": {"status": status, "post_id": post_id,
+                              "url": f"https://x.com/agent/status/{post_id}"},
+        })
+
+
+def test_omnipost_cross_posted_x_is_collected_with_cycle_topic(tmp_path: Path):
+    root = tmp_path / "state"
+    post_id = _snowflake(NOW - timedelta(hours=24, minutes=5))
+    _omnipost_square_doc(root, post_id=post_id)
+    transport = _Transport(XPublicMetrics(views=40, replies=1, reposts=0, likes=2))
+    result = asyncio.run(XOutcomeCollector(state_root=root, transport=transport).collect(now=NOW))
+    assert result["status"] == "RECORDED"
+    assert transport.calls == [f"https://x.com/agent/status/{post_id}"]
+    rows = ChannelEvidenceStore(root / "content/channel_evidence").as_of(NOW)
+    assert {row.topic for row in rows} == {"onchain-flows"}
+    assert {row.structure_version for row in rows} == {"x:OMNIPOST_SYNDICATION:v1"}
+
+
+def test_unverified_omnipost_x_receipt_is_not_collected(tmp_path: Path):
+    root = tmp_path / "state"
+    _omnipost_square_doc(root, post_id=_snowflake(NOW - timedelta(hours=24, minutes=5)), status="UNVERIFIED")
+    result = asyncio.run(XOutcomeCollector(
+        state_root=root, transport=_Transport(XPublicMetrics(views=1, replies=0, reposts=0, likes=0))
+    ).collect(now=NOW))
+    assert result["status"] == "NO_ELIGIBLE_PUBLICATIONS"

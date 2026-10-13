@@ -167,3 +167,26 @@ def test_omnipost_missing_platform_result_maps_rejected(tmp_path, monkeypatch):
     result = run.run_once(now=NOW)
     assert result["status"] == "REJECTED"
     assert result["error"] == "omnipost failed"
+
+
+def test_omnipost_x_cross_post_receipt_is_kept_on_square_record(tmp_path, monkeypatch):
+    store, doc = prepared(tmp_path)
+    review(store, doc)
+    run, calls = omnipost_worker(tmp_path, monkeypatch, {
+        "binance_square": {"platform": "binance_square", "status": "ok", "url": "u", "ref": "1", "message": ""},
+        "x": {"platform": "x", "status": "ok", "url": "https://x.com/a/status/42", "ref": "42", "message": ""},
+    })
+    result = run.run_once(now=NOW)
+    assert result["status"] == "SUCCESS" and result["post_id"] == "1"
+    saved = store.get(doc["draft_id"])["x_syndication"]
+    assert saved["status"] == "SUCCESS" and saved["post_id"] == "42"
+    assert saved["url"] == "https://x.com/a/status/42" and saved["published_at"]
+
+
+def test_square_only_publish_has_no_x_receipt(tmp_path, monkeypatch):
+    store, doc = prepared(tmp_path)
+    review(store, doc)
+    run, _ = omnipost_worker(tmp_path, monkeypatch, {"binance_square": {
+        "platform": "binance_square", "status": "ok", "url": "u", "ref": "1", "message": ""}})
+    run.run_once(now=NOW)
+    assert "x_syndication" not in store.get(doc["draft_id"])

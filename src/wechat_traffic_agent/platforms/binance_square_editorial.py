@@ -214,7 +214,12 @@ class SquareDraftWorker:
             markdown=body, platforms=self.omnipost_platforms,
             min_interval_minutes=self.omnipost_min_interval or None)
         results = payload.get("results") or {}
-        return map_omnipost_result(results.get("binance_square", {}))
+        mapped = map_omnipost_result(results.get("binance_square", {}))
+        # omnipost may cross-post the same body to X; keep that receipt on the Square
+        # record so X outcome collection can find the post without a Square→X import.
+        if isinstance(results.get("x"), dict):
+            mapped["x_syndication"] = map_omnipost_result(results["x"])
+        return mapped
 
     def run_once(self, *, now=None):
         if not square_enabled() or not square_writes_enabled():
@@ -243,8 +248,11 @@ class SquareDraftWorker:
             # 传输层失败（连接/协议/工具错）结果未知：按 UNVERIFIED 处理，禁自动重发
             doc.update(status="UNVERIFIED", error=str(exc))
         else:
+            published_at = datetime.now(timezone.utc).isoformat()
             if mapped.get("status") == "SUCCESS":
-                mapped["published_at"] = datetime.now(timezone.utc).isoformat()
+                mapped["published_at"] = published_at
+            if (mapped.get("x_syndication") or {}).get("status") == "SUCCESS":
+                mapped["x_syndication"]["published_at"] = published_at
             doc.update(mapped)
         with self.store.lock():
             self.store.save(doc)
