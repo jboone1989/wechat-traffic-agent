@@ -278,11 +278,15 @@ def test_reviewed_data_without_research_fields_resumes_and_publishes(tmp_path):
     result = asyncio.run(prepare_observation(**dict(args, structured=no_generation)))
     assert result["draft_status"] == "REVIEWED"
     calls = []
-    client = SimpleNamespace(key="test", post_text=lambda body: calls.append(body) or "123")
+    def fake_publish(**kwargs):
+        calls.append(kwargs)
+        return {"job_id": "j", "results": {"binance_square": {
+            "platform": "binance_square", "status": "ok", "url": "u", "ref": "123", "message": ""}}}
     with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("wechat_traffic_agent.platforms.omnipost_client.omnipost_publish", fake_publish)
         patch.setenv("CONTENT_BINANCE_SQUARE_ENABLED", "1")
         patch.setenv("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
-        published = SquareDraftWorker(tmp_path, client=client).run_once()
+        published = SquareDraftWorker(tmp_path).run_once()
     assert published["status"] == "SUCCESS"
     assert len(calls) == 1
 

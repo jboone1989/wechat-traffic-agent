@@ -303,6 +303,10 @@ def _find_url(value: Any) -> str | None:
             if found:
                 return found
     return None
+
+X_EXPRESSION_SILENCE_FLOOR_HOURS = 24.0
+
+
 class XHistoryLedger:
     def __init__(self, state_root: Path) -> None:
         self.state_root = Path(state_root)
@@ -844,7 +848,7 @@ class XAutonomyLoop:
             and str(strategy.get("schema_version") or "")
             == "ferro-l1-x-strategy.v1"
         ):
-            return dict(strategy)
+            return self._apply_silence_floor(dict(strategy), now=now)
         strategy_path = folder / "x_l1_strategy.json"
         persisted = _read_json(strategy_path)
         if (
@@ -852,7 +856,7 @@ class XAutonomyLoop:
             and str(persisted.get("schema_version") or "")
             == "ferro-l1-x-strategy.v1"
         ):
-            return persisted
+            return self._apply_silence_floor(persisted, now=now)
 
         l1 = self._l1()
         evidence = (
@@ -886,8 +890,53 @@ class XAutonomyLoop:
                 as_of=now,
             ),
         )
+        strategy = self._apply_silence_floor(strategy, now=now)
         _write_json(strategy_path, strategy)
         return strategy
+
+    def _apply_silence_floor(self, strategy: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+        """A HOLDing L1 may not keep X silent past the fan-out floor.
+
+        The local timing model held 100 of its first 102 decisions while the
+        owner contract expects original posts to keep flowing; when no verified
+        expression exists within the floor window, timing reverts to POST_NOW
+        with an explicit authority marker instead of failing silently.
+        """
+        if str(strategy.get("post_timing") or "") != "HOLD":
+            return strategy
+        if str(strategy.get("interaction_mode") or "ORIGINAL") != "ORIGINAL":
+            return strategy
+        silence_hours = self._hours_since_last_expression(now=now)
+        if silence_hours is not None and silence_hours < X_EXPRESSION_SILENCE_FLOOR_HOURS:
+            return strategy
+        return {
+            **strategy,
+            "post_timing": "POST_NOW",
+            "selection_authority": "FERRO_X_SILENCE_FLOOR",
+            "silence_floor": {
+                "threshold_hours": X_EXPRESSION_SILENCE_FLOOR_HOURS,
+                "hours_since_last_expression": silence_hours,
+            },
+        }
+
+    def _hours_since_last_expression(self, *, now: datetime) -> float | None:
+        for row in reversed(self.history.recent(limit=300)):
+            if row.get("event_type") != "EXPRESSION":
+                continue
+            if not (row.get("x_post_id") or row.get("article_id")):
+                continue
+            raw = str(row.get("recorded_at") or "")
+            try:
+                recorded = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if recorded.tzinfo is None:
+                recorded = recorded.replace(tzinfo=timezone.utc)
+            return max(
+                0.0,
+                (now.astimezone(timezone.utc) - recorded.astimezone(timezone.utc)).total_seconds() / 3600.0,
+            )
+        return None
 
     def _cycle_context(self, result: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
         cycle = str(result.get("cycle") or "")

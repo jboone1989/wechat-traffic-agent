@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -21,6 +21,16 @@ class _L1:
         return {
             "schema_version": "ferro-l1-x-strategy.v1", "status": "SELECTED",
             "post_timing": "POST_NOW", "x_format": "SHORT_POST",
+            "exploration_mode": "EXPLOIT", "angle": "EVIDENCE_FIRST",
+            "interaction_mode": "ORIGINAL", "provider": "TEST", "model": "test",
+        }
+
+
+class _HoldingL1:
+    def choose_x_strategy(self, **kwargs):
+        return {
+            "schema_version": "ferro-l1-x-strategy.v1", "status": "SELECTED",
+            "post_timing": "HOLD", "x_format": "SHORT_POST",
             "exploration_mode": "EXPLOIT", "angle": "EVIDENCE_FIRST",
             "interaction_mode": "ORIGINAL", "provider": "TEST", "model": "test",
         }
@@ -74,14 +84,14 @@ def _square_result(tmp_path: Path, cycle: str, status: str) -> dict:
             "publication_surface": "BINANCE_SQUARE", "draft_status": doc["status"]}
 
 
-def _loop(tmp_path: Path, model):
+def _loop(tmp_path: Path, model, l1=None):
     return XAutonomyLoop(
         runtime=SimpleNamespace(),
         model_runtime=model,
         state_root=tmp_path,
         base_url="",
         browser_publish_transport=_BrowserTransport(),
-        l1_decisions=_L1(),
+        l1_decisions=l1 or _L1(),
     )
 
 
@@ -123,6 +133,40 @@ def test_learning_first_policy_does_not_hold_square_reviewed_cycles(tmp_path: Pa
     result = _square_result(tmp_path, "v2-owner-square-learning", "SQUARE_EXPRESSION_READY")
     outcome = asyncio.run(_loop(tmp_path, _Model()).after_content_cycle(result=result, now=NOW))
     assert outcome["status"] == "POSTED"
+
+
+def test_silence_floor_publishes_when_l1_holds_past_24h(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-owner-silence-floor"
+    result = _square_result(tmp_path, cycle, "SQUARE_EXPRESSION_READY")
+    outcome = asyncio.run(
+        _loop(tmp_path, _Model(), l1=_HoldingL1()).after_content_cycle(result=result, now=NOW))
+    assert outcome["status"] == "POSTED"
+    drafts = json.loads(
+        (tmp_path / "content/continuous/cycles" / cycle / "social_expression_drafts.json").read_text(encoding="utf-8"))
+    strategy = drafts["x_strategy"]
+    assert strategy["post_timing"] == "POST_NOW"
+    assert strategy["selection_authority"] == "FERRO_X_SILENCE_FLOOR"
+    assert strategy["silence_floor"]["hours_since_last_expression"] is None
+    row = XHistoryLedger(tmp_path).recent()[-1]
+    assert row["event_type"] == "EXPRESSION" and row["cycle"] == cycle
+
+
+def test_silence_floor_respects_recent_expression_and_keeps_hold(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("CONTENT_X_WRITES_ENABLED", "1")
+    cycle = "v2-owner-hold-respected"
+    result = _square_result(tmp_path, cycle, "SQUARE_EXPRESSION_READY")
+    XHistoryLedger(tmp_path).append({
+        "event_type": "EXPRESSION", "cycle": "v2-owner-prior", "x_post_id": "p0",
+        "x_url": "https://x.com/agent/status/p0",
+        "recorded_at": (NOW - timedelta(hours=2)).isoformat(),
+    })
+    outcome = asyncio.run(
+        _loop(tmp_path, _Model(), l1=_HoldingL1()).after_content_cycle(result=result, now=NOW))
+    assert outcome["status"] == "SKIPPED"
+    assert outcome["reason"] == "L1_X_STRATEGY"
+    assert outcome["x_strategy"]["post_timing"] == "HOLD"
+    assert outcome["x_strategy"].get("selection_authority") is None
 
 
 def _runner(tmp_path: Path, **components) -> SimpleNamespace:

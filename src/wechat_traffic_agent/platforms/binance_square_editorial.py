@@ -5,13 +5,11 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import re
 
-from .binance_square import (
-    BinanceSquareClient, MAX_POST_CHARS, POST_URL, SquarePublicationRejected,
-    SquarePublicationUnverified, square_enabled, square_writes_enabled,
-)
+from .binance_square import MAX_POST_CHARS, square_enabled, square_writes_enabled
 from wechat_traffic_agent.sources.binance_market_structure import analyze
 from wechat_traffic_agent.sources.live_cache import live_cache_root
 from wechat_traffic_agent.editorial.channel_records import ChannelRecords
@@ -187,12 +185,39 @@ class SquareDraftStore:
 
 
 class SquareDraftWorker:
-    def __init__(self, state_root, *, client=None):
+    def __init__(self, state_root):
         self.store = SquareDraftStore(state_root)
-        self.client = client or BinanceSquareClient()
+        # 发布经 omnipost MCP；ferro 只消费回执。平台清单与限速由 env 决定。
+        self.omnipost_platforms = [
+            platform.strip() for platform in
+            os.environ.get("CONTENT_SQUARE_OMNIPOST_PLATFORMS", "binance_square").split(",")
+            if platform.strip()
+        ]
+        try:
+            # per-platform 限速（分钟）："x:10,binance_square:0" → {"x": 10.0}
+            self.omnipost_min_interval = {
+                parts[0].strip(): float(parts[1])
+                for parts in (
+                    item.split(":", 1) for item in
+                    os.environ.get("CONTENT_SQUARE_OMNIPOST_MIN_INTERVAL", "").split(",")
+                    if item.strip()
+                ) if len(parts) == 2
+            }
+        except ValueError:
+            self.omnipost_min_interval = {}
+
+    def _publish_via_omnipost(self, body):
+        from .omnipost_client import map_omnipost_result, omnipost_publish
+
+        payload = omnipost_publish(
+            title=body.strip().split("\n", 1)[0][:40] or "Ferro 周期观察",
+            markdown=body, platforms=self.omnipost_platforms,
+            min_interval_minutes=self.omnipost_min_interval or None)
+        results = payload.get("results") or {}
+        return map_omnipost_result(results.get("binance_square", {}))
 
     def run_once(self, *, now=None):
-        if not square_enabled() or not square_writes_enabled() or not self.client.key.strip():
+        if not square_enabled() or not square_writes_enabled():
             return None
         now = now or datetime.now(timezone.utc)
         # Persist the claim before any network call. A crash remains PUBLISHING and
@@ -213,13 +238,14 @@ class SquareDraftWorker:
             else:
                 return None
         try:
-            post_id = self.client.post_text(doc["body"])
-            doc.update(status="SUCCESS", post_id=post_id, url=POST_URL + post_id,
-                       published_at=datetime.now(timezone.utc).isoformat())
-        except SquarePublicationRejected as exc:
-            doc.update(status="REJECTED", error=str(exc))
+            mapped = self._publish_via_omnipost(doc["body"])
         except Exception as exc:
+            # 传输层失败（连接/协议/工具错）结果未知：按 UNVERIFIED 处理，禁自动重发
             doc.update(status="UNVERIFIED", error=str(exc))
+        else:
+            if mapped.get("status") == "SUCCESS":
+                mapped["published_at"] = datetime.now(timezone.utc).isoformat()
+            doc.update(mapped)
         with self.store.lock():
             self.store.save(doc)
         return doc

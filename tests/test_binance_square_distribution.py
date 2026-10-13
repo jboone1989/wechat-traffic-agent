@@ -3,12 +3,8 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
-import httpx
 import pytest
 
-from wechat_traffic_agent.platforms.binance_square import (
-    BinanceSquareClient, SquarePublicationUnverified, publish_square, square_share_text,
-)
 from wechat_traffic_agent.platforms.binance_square_consumer import SquareEventConsumer
 from wechat_traffic_agent.platforms.binance_square_notifications import notify_square_distribution
 from wechat_traffic_agent.publication.dispatch import DurablePublicationDispatch
@@ -26,11 +22,6 @@ def event(when=NOW, event_id="event1"):
         ["BTC", "AI", "BTC"], when, "sha256:sample",
     )
 
-
-def mock_client(responder):
-    return BinanceSquareClient(key="test-key", client=httpx.Client(
-        transport=httpx.MockTransport(responder),
-    ))
 
 
 
@@ -85,12 +76,6 @@ def test_square_disabled_does_not_claim_events_or_x_tasks(tmp_path, monkeypatch)
 
 
 
-def test_http_timeout_is_explicitly_unverified():
-    def timeout(_):
-        raise httpx.ReadTimeout("ambiguous")
-    with pytest.raises(SquarePublicationUnverified):
-        mock_client(timeout).post_text("BTC research")
-
 
 def test_subscriber_modules_do_not_import_x_or_cognition():
     root = Path(__file__).resolve().parents[1]
@@ -101,11 +86,6 @@ def test_subscriber_modules_do_not_import_x_or_cognition():
         assert "daily_posting_goal" not in source
         assert "wakeful_runtime" not in source
 
-
-def test_website_approval_never_creates_square_copy():
-    from wechat_traffic_agent.platforms.binance_square import SquarePublicationRejected
-    with pytest.raises(SquarePublicationRejected, match="reviewed native"):
-        square_share_text(event())
 
 
 def test_retired_consumer_never_queues_new_or_old_website_events(tmp_path, monkeypatch):
@@ -120,13 +100,3 @@ def test_retired_consumer_never_queues_new_or_old_website_events(tmp_path, monke
     assert consumer.run_once(now=NOW) is None
     assert len(store.list_tasks()) == 2
     assert all(t["channel"] == "x_article" for t in store.list_tasks())
-
-
-@pytest.mark.parametrize("response", [
-    httpx.Response(200, json={"code": "000000", "data": {}}),
-    httpx.Response(504, json={"code": "000000", "data": {}}),
-    httpx.Response(502, text="<html>bad gateway</html>"),
-])
-def test_ambiguous_transport_receipts_remain_unverified(response):
-    with pytest.raises(SquarePublicationUnverified):
-        mock_client(lambda _: response).post_text("已审稿的中文分析")

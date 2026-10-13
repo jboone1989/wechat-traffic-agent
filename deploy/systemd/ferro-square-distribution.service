@@ -11,4 +11,5 @@ Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src:/home/ubuntu/agent
 Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
 EnvironmentFile=-/home/ubuntu/.config/ferro/binance-square.env
 ExecStart=/home/ubuntu/content-agent-venv-current/bin/python scripts/run_square_distribution_worker.py
-TimeoutStartSec=35
+# X 双发经 omnipost 比单广场慢几秒，25s MCP 超时 + 余量
+TimeoutStartSec=60

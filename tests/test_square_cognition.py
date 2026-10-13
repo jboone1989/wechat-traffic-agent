@@ -5,11 +5,9 @@ from hashlib import sha256
 import json
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from test_binance_market_structure import market_report, NOW
-from wechat_traffic_agent.platforms.binance_square import BinanceSquareClient
 from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore, SquareDraftWorker
 from wechat_traffic_agent.sources.binance_market_structure import analyze, read_market_structure_candidates, save_market_structure
 from wechat_traffic_agent.square_cognition import SquareCognitionExpressionService, SquareResearchExpression
@@ -144,13 +142,14 @@ def test_changed_brain_or_review_receipt_blocks_transport(tmp_path, monkeypatch,
     record['unexpected_change'] = True
     write(folder / file, record)
     sent = []
-    def handle(request):
-        sent.append(request)
-        return httpx.Response(200, json={'code': '000000', 'data': {'id': '123'}})
-    client = BinanceSquareClient(key='test', client=httpx.Client(transport=httpx.MockTransport(handle)))
+    def fake_publish(**kwargs):
+        sent.append(kwargs)
+        return {"job_id": "j", "results": {"binance_square": {
+            "platform": "binance_square", "status": "ok", "url": "u", "ref": "123", "message": ""}}}
+    monkeypatch.setattr('wechat_traffic_agent.platforms.omnipost_client.omnipost_publish', fake_publish)
     monkeypatch.setenv('CONTENT_BINANCE_SQUARE_ENABLED', '1')
     monkeypatch.setenv('CONTENT_BINANCE_SQUARE_WRITES_ENABLED', '1')
-    assert SquareDraftWorker(tmp_path, client=client).run_once() is None
+    assert SquareDraftWorker(tmp_path).run_once() is None
     assert sent == []
     assert SquareDraftStore(tmp_path).get(result['draft_id'])['status'] == 'NEEDS_REVIEW'
 
