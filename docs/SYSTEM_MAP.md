@@ -44,6 +44,21 @@
 而 `omnipost_client.py`、`neural_pulse_source.py`、`portable_flock.py`、`sensory_stream.py`
 在 GitHub 任何分支上都不存在。同步时需要逐文件比对，不能直接覆盖。
 
+### 与 main 逐文件比对结果（git blob 哈希）
+
+58 个线上改动文件中，**40 个与 main 完全一致**（已通过后续提交合入），只有 18 个需要同步：
+
+- 只在线上存在（5）：`platforms/omnipost_client.py`、`neural_pulse_source.py`、`portable_flock.py`、
+  `sensory_stream.py`、`tests/test_omnipost_client.py`
+- 与 main 不同（13）：`deploy/systemd/ferro-square-distribution.service`、
+  `scripts/check_square_readiness.py`、`scripts/monitor_square_posting.py`、
+  `scripts/run_square_distribution_worker.py`、`platforms/binance_square.py`、
+  `platforms/binance_square_editorial.py`、`platforms/x/x_social.py`，以及测试
+  `test_article_channel_records.py`、`test_square_cognition.py`、`test_square_editorial.py`、
+  `test_square_monitor.py`、`test_square_observation.py`、`test_x_social_square_gate.py`
+
+也就是说，未同步的部分集中在 **Square 发布链路改走 omnipost** 这一件事上。
+
 ## 4. systemd 配置的偏差
 
 - `content-agent.service` 叠了 14 个 drop-in，其中 **5 个各自覆盖了 `ExecStart` / `WorkingDirectory`**
