@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect Binance Square readiness without exposing posting credentials."""
+"""Inspect Binance Square readiness."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -10,7 +10,6 @@ ROOT = Path("/home/ubuntu/content-agent-state")
 def main() -> int:
     flags = ROOT / ".binance-square-settings.json"
     data = json.loads(flags.read_text(encoding="utf-8")) if flags.exists() else {}
-    credential = ROOT / ".binance-square-posting.key"
     from wechat_traffic_agent.publication.event_store import PublicationEventStore
     from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
     store = PublicationEventStore(ROOT)
@@ -21,10 +20,6 @@ def main() -> int:
               for d in drafts if d.get("status") == "SUCCESS"]
     posted.sort(key=lambda row: row.pop("at"))
     print(json.dumps({
-        "key_saved": credential.is_file() and credential.stat().st_size > 0,
-        "key_owner_only_permissions": (
-            credential.is_file() and (credential.stat().st_mode & 0o077) == 0
-        ),
         "consumer_enabled": bool(data.get("enabled")),
         "writes_enabled": bool(data.get("writes_enabled")),
         "publishing_mode": "NATIVE_REVIEWED_DRAFTS",

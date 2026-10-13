@@ -16,7 +16,7 @@ from wechat_traffic_agent.publication.models import DistributionTask
 
 
 def load_private_config(state_root: Path) -> None:
-    """Read saved posting-only access, without commands, logs or hard-coded credentials."""
+    """Read saved opt-in flags, without commands, logs or hard-coded credentials."""
     flags = state_root / ".binance-square-settings.json"
     if flags.is_file():
         settings = json.loads(flags.read_text(encoding="utf-8"))
@@ -24,12 +24,6 @@ def load_private_config(state_root: Path) -> None:
             os.environ.setdefault("CONTENT_BINANCE_SQUARE_ENABLED", "1")
         if settings.get("writes_enabled"):
             os.environ.setdefault("CONTENT_BINANCE_SQUARE_WRITES_ENABLED", "1")
-    credential = state_root / ".binance-square-posting.key"
-    if credential.is_file():
-        credential.chmod(0o600)
-        value = credential.read_text(encoding="utf-8").strip()
-        if value:
-            os.environ.setdefault("BINANCE_SQUARE_OPENAPI_KEY", value)
 
 
 def report_status(payload: dict, *, state_root: Path) -> None:
@@ -61,8 +55,7 @@ def main() -> int:
             now=datetime.now(timezone.utc))
     if result is None:
         status = ("DISABLED" if not square_enabled() else "WAITING_FOR_WRITES"
-                  if not square_writes_enabled() else "WAITING_FOR_KEY"
-                  if not os.environ.get("BINANCE_SQUARE_OPENAPI_KEY", "").strip() else "WAITING_FOR_EDITORIAL")
+                  if not square_writes_enabled() else "WAITING_FOR_EDITORIAL")
         report_status({"channel": "binance_square", "status": status}, state_root=state_root)
         return 0
     report_status({

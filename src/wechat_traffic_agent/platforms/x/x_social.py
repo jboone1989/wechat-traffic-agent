@@ -5,6 +5,7 @@ from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,10 @@ from wechat_traffic_agent.x_mcp import x_publication_enabled, x_writes_enabled
 from wechat_traffic_agent.public_persona import public_persona_projection, record_public_interaction
 from wechat_traffic_agent.x_growth_mission import follower_count_from_user, x_growth_mission_context
 from wechat_traffic_agent.l1_decisions import FerroL1Decisions
+from wechat_traffic_agent.position_ledger import topic_matches
 from wechat_traffic_agent.x_article_media import ArticleImageSpec
+
+logger = logging.getLogger(__name__)
 
 
 class SocialAttentionDecision(BaseModel):
@@ -28,7 +32,7 @@ class SocialAttentionDecision(BaseModel):
     category: Literal["QUESTION", "REBUTTAL", "EVIDENCE", "SPAM", "REACTION", "OTHER"]
     valuable_evidence: bool
     summary: str = Field(min_length=5, max_length=400)
-    reply_text: str | None = Field(default=None, max_length=280)
+    reply_text: str | None = Field(default=None, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
     @model_validator(mode="after")
     def validate_reply(self) -> "SocialAttentionDecision":
@@ -41,13 +45,13 @@ class SocialAttentionDecision(BaseModel):
 
 class XReplyDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    reply_text: str = Field(min_length=1, max_length=280)
+    reply_text: str = Field(min_length=1, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
 
 class XPostDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    post_text: str = Field(min_length=1, max_length=280)
+    post_text: str = Field(min_length=1, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
 
@@ -57,12 +61,10 @@ class XResearchPostDraft(XPostDraft):
     title: str | None = Field(default=None, min_length=5, max_length=100)
     cover_caption: str | None = Field(default=None, max_length=64)
     images: tuple[ArticleImageSpec, ...] = Field(default=(), max_length=8)
-    post_text: str = Field(min_length=20, max_length=8000)
+    post_text: str = Field(min_length=20, max_length=25000)
 
     @model_validator(mode="after")
-    def short_post_bounds(self):
-        if self.format == "SHORT_POST" and len(self.post_text) > 280:
-            raise ValueError("Use LONG_POST to preserve an explanation exceeding 280 characters")
+    def article_shape(self):
         if self.format == "ARTICLE" and not self.title:
             raise ValueError("Native X Article requires a title")
         if self.images and self.format != "ARTICLE":
@@ -112,7 +114,7 @@ PUBLIC_RESEARCH_WRITING_INSTRUCTIONS = (
 class XExpressionDecision(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     action: Literal["POST", "SKIP"]
-    post_text: str | None = Field(default=None, max_length=280)
+    post_text: str | None = Field(default=None, max_length=25000)
     rationale: str = Field(min_length=10, max_length=500)
 
     @model_validator(mode="after")
@@ -122,6 +124,18 @@ class XExpressionDecision(BaseModel):
         if self.action == "SKIP" and self.post_text is not None:
             raise ValueError("SKIP must not contain post_text")
         return self
+
+
+class XNativePosition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    topic: str = Field(min_length=1)
+    proposition: str = Field(min_length=1)
+    falsifier: str = Field(min_length=1)
+
+
+class XPositionScan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    position: XNativePosition | None = None
 
 
 def _expression_model_context(context: dict[str, Any]) -> dict[str, Any]:
@@ -289,6 +303,10 @@ def _find_url(value: Any) -> str | None:
             if found:
                 return found
     return None
+
+X_EXPRESSION_SILENCE_FLOOR_HOURS = 24.0
+
+
 class XHistoryLedger:
     def __init__(self, state_root: Path) -> None:
         self.state_root = Path(state_root)
@@ -367,7 +385,8 @@ class XAutonomyLoop:
                  growth_mission: Any | None = None,
                  social_observer: Any | None = None,
                  social_context_provider: Any | None = None,
-                 l1_decisions: Any | None = None) -> None:
+                 l1_decisions: Any | None = None,
+                 mind: Any | None = None) -> None:
         self.runtime = runtime
         self.model_runtime = model_runtime
         self.browser_mentions_observer = browser_mentions_observer
@@ -384,6 +403,10 @@ class XAutonomyLoop:
         self.base_url = base_url.rstrip("/")
         self.root = self.state_root / "content" / "x"
         self.history = XHistoryLedger(self.state_root)
+        self.mind = mind
+        from wechat_traffic_agent.position_ledger import PositionLedger
+        self.positions = PositionLedger(self.state_root / "application" / "content_mind")
+        self._last_expression_context: dict[str, Any] = {}
     def _l1(self):
         if self.l1_decisions is None:
             self.l1_decisions = FerroL1Decisions(state_root=self.state_root)
@@ -596,6 +619,20 @@ class XAutonomyLoop:
                 handled += 1
             except Exception as exc:
                 failures.append({"post_id":post_id,"error_type":type(exc).__name__,"detail":str(exc)[:300]})
+        if fresh:
+            try:
+                self._backfill_position_evidence(mentions=fresh, now=now)
+            except Exception as exc:
+                logger.warning("x position evidence backflow failed: %r", exc)
+            try:
+                scan = await self._scan_native_position(mentions=fresh[:10], cycle=cycle, now=now)
+            except Exception as exc:
+                logger.warning("x native position scan failed: %r", exc)
+                scan = None
+            try:
+                self._register_scanned_position(scan, cycle=cycle, now=now)
+            except Exception as exc:
+                logger.warning("x native position registration failed: %r", exc)
         _write_json(self.seen_path, {"schema_version": "content-agent-x-seen.v1", "ids": sorted(seen)[-2000:]})
         replies = [
             {key: row.get(key) for key in ("x_post_id", "x_url", "target_post_id", "runtime_receipt_id")}
@@ -664,7 +701,8 @@ class XAutonomyLoop:
             prompt = (
                 "X_REPLY_DRAFT: The bounded JEV L1 router has already decided to REPLY. "
                 "Write only the reply wording; do not reconsider IGNORE/INVESTIGATE/REPLY. "
-                "Keep it <=280 characters. Use only the supplied public mention and durable public persona. "
+                "Length follows the content: keep it as short as the substance allows, and use the space the substance requires. "
+                "Use only the supplied public mention and durable public persona. "
                 "Keep factual claims grounded in the supplied evidence; do not invent observations. "
                 "If the mention asserts an unverified fact, phrase the reply so it does not adopt that fact as true. Return JSON only.\n"
                 + json.dumps({
@@ -728,6 +766,70 @@ class XAutonomyLoop:
             self._activity(cycle=cycle,title="Replied on X",detail=decision.reply_text)
         return True
 
+    def _mind_context(self) -> dict[str, Any]:
+        if self.mind is None:
+            return {}
+        try:
+            from wechat_traffic_agent.content_mind import public_mind_context
+            return public_mind_context(self.mind)
+        except Exception as exc:
+            logger.warning("x expression mind context unavailable: %r", exc)
+            return {}
+
+    def _attach_verified_post(self, *, text: str, post_id: str, now: datetime) -> None:
+        """跨面足迹：X 帖核验通过后回记到 topic 命中的 OPEN 立场（零 LLM）。"""
+        if not text or not post_id:
+            return
+        for row in self.positions.open_positions(now=now):
+            if topic_matches(str(row.get("topic") or ""), text):
+                self.positions.attach_post(str(row["position_id"]), post_id, surface="x")
+
+    def _backfill_position_evidence(self, *, mentions: list[dict[str, Any]], now: datetime) -> None:
+        """零 LLM：观察命中的 OPEN 立场追加 x_observe 证据；永不触发状态转移。"""
+        for row in self.positions.open_positions(now=now):
+            topic = str(row.get("topic") or "")
+            if not topic:
+                continue
+            for mention in mentions:
+                text = str(mention.get("summary") or "")
+                post_id = str(mention.get("evidence_id") or "").removeprefix("x-post:")
+                if not text or not post_id or not topic_matches(topic, text):
+                    continue
+                self.positions.append_evidence(str(row["position_id"]), {
+                    "source": "x_observe", "ref": f"x-post:{post_id}",
+                    "at": now.isoformat(), "note": text[:120],
+                })
+
+    async def _scan_native_position(self, *, mentions: list[dict[str, Any]],
+                                    cycle: str, now: datetime) -> XPositionScan:
+        runtime = ReceiptRuntime(self.model_runtime,
+                                 self.root / "social-model-calls" / cycle / "position-scan")
+        prompt = (
+            "X_POSITION_SCAN: Review these newly observed public X posts. "
+            "If — and only if — they jointly support a NEW falsifiable position worth committing "
+            "(a concrete claim with a measurable falsification line, not duplicating any open "
+            "position below), return its topic, proposition and falsifier; otherwise return "
+            '{"position": null}. Be conservative: at most one position, only when the evidence '
+            "is specific and current. Return JSON only.\n"
+            + json.dumps({
+                "posts": [{"summary": str(m.get("summary") or "")[:300]} for m in mentions],
+                "open_positions": [
+                    {"topic": r.get("topic"), "proposition": str(r.get("proposition"))[:200]}
+                    for r in self.positions.open_positions(now=now)
+                ],
+            }, ensure_ascii=False)
+        )
+        return await _structured(runtime, prompt, XPositionScan, max_tokens=800)
+
+    def _register_scanned_position(self, scan: XPositionScan | None, *, cycle: str,
+                                   now: datetime) -> dict[str, Any] | None:
+        native = getattr(scan, "position", None)
+        if native is None:
+            return None
+        return self.positions.register(topic=native.topic, proposition=native.proposition,
+                                       falsifier=native.falsifier, evidence_refs=(),
+                                       draft_id=cycle, now=now, source="x")
+
     def _l1_x_strategy(
         self,
         *,
@@ -746,7 +848,7 @@ class XAutonomyLoop:
             and str(strategy.get("schema_version") or "")
             == "ferro-l1-x-strategy.v1"
         ):
-            return dict(strategy)
+            return self._apply_silence_floor(dict(strategy), now=now)
         strategy_path = folder / "x_l1_strategy.json"
         persisted = _read_json(strategy_path)
         if (
@@ -754,7 +856,7 @@ class XAutonomyLoop:
             and str(persisted.get("schema_version") or "")
             == "ferro-l1-x-strategy.v1"
         ):
-            return persisted
+            return self._apply_silence_floor(persisted, now=now)
 
         l1 = self._l1()
         evidence = (
@@ -788,8 +890,53 @@ class XAutonomyLoop:
                 as_of=now,
             ),
         )
+        strategy = self._apply_silence_floor(strategy, now=now)
         _write_json(strategy_path, strategy)
         return strategy
+
+    def _apply_silence_floor(self, strategy: dict[str, Any], *, now: datetime) -> dict[str, Any]:
+        """A HOLDing L1 may not keep X silent past the fan-out floor.
+
+        The local timing model held 100 of its first 102 decisions while the
+        owner contract expects original posts to keep flowing; when no verified
+        expression exists within the floor window, timing reverts to POST_NOW
+        with an explicit authority marker instead of failing silently.
+        """
+        if str(strategy.get("post_timing") or "") != "HOLD":
+            return strategy
+        if str(strategy.get("interaction_mode") or "ORIGINAL") != "ORIGINAL":
+            return strategy
+        silence_hours = self._hours_since_last_expression(now=now)
+        if silence_hours is not None and silence_hours < X_EXPRESSION_SILENCE_FLOOR_HOURS:
+            return strategy
+        return {
+            **strategy,
+            "post_timing": "POST_NOW",
+            "selection_authority": "FERRO_X_SILENCE_FLOOR",
+            "silence_floor": {
+                "threshold_hours": X_EXPRESSION_SILENCE_FLOOR_HOURS,
+                "hours_since_last_expression": silence_hours,
+            },
+        }
+
+    def _hours_since_last_expression(self, *, now: datetime) -> float | None:
+        for row in reversed(self.history.recent(limit=300)):
+            if row.get("event_type") != "EXPRESSION":
+                continue
+            if not (row.get("x_post_id") or row.get("article_id")):
+                continue
+            raw = str(row.get("recorded_at") or "")
+            try:
+                recorded = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if recorded.tzinfo is None:
+                recorded = recorded.replace(tzinfo=timezone.utc)
+            return max(
+                0.0,
+                (now.astimezone(timezone.utc) - recorded.astimezone(timezone.utc)).total_seconds() / 3600.0,
+            )
+        return None
 
     def _cycle_context(self, result: dict[str, Any]) -> tuple[Path | None, dict[str, Any]]:
         cycle = str(result.get("cycle") or "")
@@ -803,6 +950,21 @@ class XAutonomyLoop:
         draft = _read_json(Path(str(result.get("draft_path")))) if result.get("draft_path") else {}
         artifact = draft.get("artifact") if isinstance(draft.get("artifact"), dict) else {}
         publication = result.get("publication") if isinstance(result.get("publication"), dict) else {}
+        square_draft: dict[str, Any] = {}
+        if result.get("publication_surface") == "BINANCE_SQUARE" and result.get("draft_id"):
+            try:
+                from wechat_traffic_agent.platforms.binance_square_editorial import SquareDraftStore
+                doc = SquareDraftStore(self.state_root).get(str(result["draft_id"]))
+                if isinstance(doc, dict) and doc.get("body"):
+                    artifact = {"title": str(doc.get("thesis") or ""), "body": str(doc["body"])}
+                    square_draft = {
+                        "draft_id": str(result["draft_id"]),
+                        "draft_status": str(doc.get("status") or ""),
+                        "symbols": list(doc.get("symbols") or []),
+                        "url": doc.get("url"), "post_id": doc.get("post_id"),
+                    }
+            except Exception:  # noqa: BLE001  草稿缺失不拦表达
+                square_draft = {}
         from wechat_traffic_agent.x_owner_execution import owner_x_publication_request
         owner_request = owner_x_publication_request(folder)
         x_expression = _read_json(folder / "x_expression_context.json") if owner_request else {}
@@ -812,6 +974,7 @@ class XAutonomyLoop:
             "learning": _read_json(folder / "learning_result.json"),
             "cycle": cycle, "cognition": cognition, "worldview": worldview, "prediction": prediction,
             "mind_plan": plan, "artifact": artifact, "publication": publication,
+            "square_draft": square_draft,
         }
     async def after_content_cycle(self, *, result: dict[str, Any], now: datetime) -> dict[str, Any]:
         if not x_publication_enabled():
@@ -819,6 +982,8 @@ class XAutonomyLoop:
         folder, context = self._cycle_context(result)
         if folder is None:
             return {"status": "NO_CYCLE"}
+        context["mind"] = self._mind_context()
+        self._last_expression_context = context
         await self._publish_prediction_outcome(folder=folder, context=context, now=now)
         cognition = context.get("cognition") or {}
         cycle = str(context.get("cycle") or "")
@@ -834,15 +999,16 @@ class XAutonomyLoop:
             and bool(mission_binding.get("bound"))
             and str(mission_binding.get("status") or "") == "BOUND_X_EXPRESSION"
         )
+        square_ready = result_status == "SQUARE_EXPRESSION_READY"
         if (
-            (result_status != "PUBLISHED" and not x_only_admitted and not owner_directed_x)
-            or not cognition.get("worth_saying")
+            (result_status != "PUBLISHED" and not square_ready and not x_only_admitted and not owner_directed_x)
+            or (not cognition.get("worth_saying") and not square_ready)
         ):
             return {"status": "NO_EXPRESSION", "cycle": cycle}
         if self.history.has_event(cycle=cycle, event_type="EXPRESSION"):
             return {"status": "ALREADY_EXPRESSED", "cycle": cycle}
         from wechat_traffic_agent.learning_expression_quality import learning_required_for_sharing
-        if not context.get("learning") and learning_required_for_sharing(self.state_root):
+        if not square_ready and not context.get("learning") and learning_required_for_sharing(self.state_root):
             return {"status": "HELD_BY_LEARNING_QUALITY", "cycle": cycle,
                     "reason": "NO_VERIFIED_LEARNING_RECORD"}
         owner_surface=str((context.get("owner_publication_request") or {}).get("decision",{}).get("publication_surface") or "")
@@ -902,7 +1068,9 @@ class XAutonomyLoop:
             "For a worldview formation or revision, leave a clear public trace of what changed and uncertainty. "
             "Preserve the supplied public_persona voice and LivingRuntime affiliation. When relevant, show what persistent-agent continuity enables, but do not force promotion into unrelated market observations. "
             "x_growth_mission and x_l1_strategy are strategy context, not factual evidence. "
-            "Keep factual claims grounded in the supplied evidence and preserve uncertainty. Max 280 characters including any URL. Return JSON only.\n"
+            "Keep factual claims grounded in the supplied evidence and preserve uncertainty. "
+            "Length follows the evidence: write the shortest text that carries the actual learning, "
+            "and take more length only when the reasoning needs development. Return JSON only.\n"
             + json.dumps({**_expression_model_context(context), "public_url": public_url,
                           "recent_shares": _expression_recent_shares(self.history),
                           "public_persona": _expression_persona(self.state_root),
@@ -924,10 +1092,11 @@ class XAutonomyLoop:
                 "Write only the post text; do not reconsider whether to POST or SKIP and do not choose another format.",
                 "Write the post; do not reconsider whether to POST or SKIP. Any earlier format selection is provisional."
             ).replace(
-                "Max 280 characters including any URL.",
-                "Return format SHORT_POST (up to 280 characters), LONG_POST or ARTICLE (up to 8000). "
+                "Length follows the evidence: write the shortest text that carries the actual learning, "
+                "and take more length only when the reasoning needs development.",
+                "Return format SHORT_POST, LONG_POST or ARTICLE, each up to 25000 characters. "
                 "For ARTICLE include title, optional cover_caption and images. "
-                "Choose the space needed for a useful explanation; do not pad."
+                "Choose the form and the space the explanation actually needs; do not pad."
             )
             prompt = prompt.replace(
                 "The durable owner controller explicitly requested an original SHORT_POST on X in this cycle.",
@@ -1059,6 +1228,10 @@ class XAutonomyLoop:
                     "message": str(exc)[:300],
                 }
         self._clear_publication_blocker(now=now, receipt_id=publication_receipt_id)
+        try:
+            self._attach_verified_post(text=decision.post_text, post_id=post_id, now=now)
+        except Exception as exc:
+            logger.warning("x cross-surface position attach failed: %r", exc)
         handle = str(me.get("username") or "").lstrip("@")
         url = publication_url or (
             f"https://x.com/{handle}/status/{post_id}" if handle and post_id else None
@@ -1110,6 +1283,7 @@ class XAutonomyLoop:
         """Execute Ferro's selected X format without a website publication prerequisite."""
         from wechat_traffic_agent.social_expression import ChannelSocialDraft
         from wechat_traffic_agent.x_browser import XBrowserPublisher
+        context = {**context, "mind": self._mind_context()}
         cycle=folder.name
         fmt="ARTICLE" if surface=="X_ARTICLE" else "LONG_POST"
         if self.history.has_event(cycle=cycle,event_type="EXPRESSION"):
@@ -1144,7 +1318,7 @@ class XAutonomyLoop:
                 "Do not force every explanation to end in an unresolved forecast. "
                 "Do not replace the discovery with generic evidence reminders or a repeated slogan. "
                 "Return a ChannelSocialDraft JSON: channel X, format "+fmt+", title for ARTICLE (5-100 characters), "
-                "optional cover_caption <=64 characters, text 20-8000 characters, intent, style_observation_ids [], rationale. "
+                "optional cover_caption <=64 characters, text 20-25000 characters, intent, style_observation_ids [], rationale. "
                 "Depth must follow evidence quality. A source used in a short post may support this richer explanation only when it adds useful supported context; preserve attribution and do not pad or repeat a prior post. "
                 "For ARTICLE, choose images: each has role COVER or INLINE, mode GRAPHIC/GENERATE/SEARCH, alt_text, caption, "
                 "prompt for actual ChatGPT image generation or query for licensed Commons image search. "
@@ -1200,6 +1374,13 @@ class XAutonomyLoop:
         if result.get("status") in {"POSTED","ALREADY_POSTED"}:
             receipt_id=f"x-browser-publication:{cycle}:{publication['post_id']}"
             self._clear_publication_blocker(now=now,receipt_id=receipt_id)
+            try:
+                saved_draft=_read_json(path)
+                x_draft=(saved_draft.get("drafts") or {}).get("x") or {}
+                longform_text=((str(x_draft.get("title") or "")+"\n") if x_draft.get("title") else "")+str(x_draft.get("text") or "")
+                self._attach_verified_post(text=longform_text, post_id=str(publication["post_id"]), now=now)
+            except Exception as exc:
+                logger.warning("x cross-surface position attach failed: %r", exc)
             return {**result,"status":"POSTED" if result['status']=='POSTED' else "ALREADY_EXPRESSED",
                 "post_id":publication["post_id"],"url":publication["url"],"receipt_id":receipt_id,
                 "format":fmt,"owner_execution_request":context.get("owner_publication_request")}
@@ -1263,7 +1444,8 @@ class XAutonomyLoop:
         prompt = (
             "X_PREDICTION_OUTCOME: One or more previously dated predictions now have a matured recorded outcome. "
             "Write a concise correction/update only if the supplied settlement supports one. Clearly label the result as CONFIRMED, REFUTED, or INCONCLUSIVE exactly as recorded; do not reinterpret it. "
-            "No investment advice or invented facts. Max 280 characters. Return JSON only.\n"
+            "No investment advice or invented facts. "
+            "Concise by evidence: settle the outcome in as few words as it needs. Return JSON only.\n"
             + json.dumps({"settlements": terminal, "cycle_context": _expression_model_context(context)}, ensure_ascii=False)
         )
         decision = await _structured(model_runtime, prompt, XExpressionDecision)

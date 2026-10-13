@@ -6,12 +6,14 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('square_monitor', Path(__file__).parents[1] / 'scripts/monitor_square_posting.py')
 monitor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(monitor)
+from wechat_traffic_agent.publication.event_store import PublicationEventStore
+from wechat_traffic_agent.publication.models import DistributionTask, PublicationEvent
+
 NOW = datetime(2026, 10, 9, 8, tzinfo=timezone.utc)
 
 
 def configure(root, monkeypatch):
     (root / '.binance-square-settings.json').write_text('{"enabled":true,"writes_enabled":true}')
-    (root / '.binance-square-posting.key').write_text('test-key')
     (root / 'application').mkdir()
     (root / 'application/binance_square_worker.json').write_text(json.dumps({'status':'NO_READY_TASK','observed_at': NOW.isoformat()}))
     monkeypatch.setattr(monitor, 'unit_state', lambda name: {'ActiveState':'active', 'ExecMainStatus':'0'})
@@ -33,15 +35,17 @@ def test_x_failures_do_not_degrade_square(tmp_path, monkeypatch):
     assert monitor.inspect(tmp_path, NOW)['status'] == 'OK'
 
 
-def test_stalled_unknown_submission_requires_reconciliation(tmp_path, monkeypatch):
+def test_stalled_running_task_requires_reconciliation(tmp_path, monkeypatch):
     configure(tmp_path, monkeypatch)
-    processing = tmp_path / 'distribution/processing'
-    processing.mkdir(parents=True)
-    (processing / 'square.json').write_text(json.dumps({'channel':'binance_square', 'status':'RUNNING',
-        'attempt_times': [(NOW - timedelta(minutes=4)).isoformat()]}))
+    store = PublicationEventStore(tmp_path)
+    store.save_event(PublicationEvent('event1', 'artifact1', 'https://example.org/btc-study',
+        'BTC funding research', 'Leverage increased per source comparison, not proof of causation.',
+        ['BTC', 'AI', 'BTC'], NOW, 'sha256:sample'))
+    store.enqueue_distribution(DistributionTask('sq1', 'event1', 'binance_square', status='RUNNING',
+        attempt_times=[(NOW - timedelta(minutes=4)).isoformat()]))
     report = monitor.inspect(tmp_path, NOW)
     assert 'UNVERIFIED_PROCESSING_TASK_REQUIRES_RECONCILIATION' in report['issues']
-    assert (processing / 'square.json').exists()
+    assert store.find_task('sq1')['status'] == 'RUNNING'
 
 
 def test_timer_and_stale_worker_are_detected(tmp_path, monkeypatch):

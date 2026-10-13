@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -6,8 +7,17 @@ import pytest
 from wechat_traffic_agent.editorial.channel_records import ChannelRecords
 from wechat_traffic_agent.publication.cycle_records import read_cycle_record, write_cycle_record
 from wechat_traffic_agent.publication.event_store import PublicationEventStore
-from wechat_traffic_agent.publication.models import DistributionTask
-from test_binance_square_distribution import event
+from wechat_traffic_agent.publication.models import DistributionTask, PublicationEvent
+
+NOW = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+
+
+def event(when=NOW, event_id="event1"):
+    return PublicationEvent(
+        event_id, "artifact-" + event_id, "https://example.org/btc-study", "BTC funding research",
+        "The source-based comparison suggests leverage increased, not proof of causation.",
+        ["BTC", "AI", "BTC"], when, "sha256:sample",
+    )
 
 def migration():
     path = Path(__file__).resolve().parents[1] / "scripts/migrate_publication_records.py"

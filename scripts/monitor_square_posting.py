@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect Square scheduling and receipts without posting or exposing keys."""
+"""Inspect Square scheduling and receipts without posting."""
 from datetime import datetime, timezone
 import json
 import os
@@ -30,10 +30,7 @@ def unit_state(name):
 def inspect(root, now):
     distribution = root / 'distribution'
     flags = read_json(root / '.binance-square-settings.json')
-    key = root / '.binance-square-posting.key'
     issues = []
-    if not key.is_file() or key.stat().st_size == 0:
-        issues.append('WAITING_FOR_KEY')
     if not flags.get('enabled') or not flags.get('writes_enabled'):
         issues.append('PUBLISHING_DISABLED')
     outbox = PublicationEventStore(root)
@@ -73,7 +70,7 @@ def inspect(root, now):
         elif row.get('status') == 'PUBLISHING' and (
                 now - datetime.fromisoformat(row['attempted_at'])).total_seconds() > 120:
             issues.append('UNVERIFIED_NATIVE_DRAFT_REQUIRES_RECONCILIATION')
-    if worker.get('status') in ('DISABLED', 'WAITING_FOR_WRITES', 'WAITING_FOR_KEY'):
+    if worker.get('status') in ('DISABLED', 'WAITING_FOR_WRITES'):
         issues.append('SQUARE_WORKER_' + worker['status'])
     if not worker.get('observed_at') or (now - datetime.fromisoformat(worker['observed_at'])).total_seconds() > 300:
         issues.append('SQUARE_WORKER_HEARTBEAT_STALE')
@@ -92,7 +89,6 @@ def inspect(root, now):
                       'authoring_status': 'EXPLICIT_EDITORIAL_WORK'},
         'market_evidence': {'status': market.get('status', 'UNAVAILABLE'),
                             'observed_at': market.get('observed_at'), 'error': market.get('error')},
-        'key_saved': key.is_file() and key.stat().st_size > 0,
         'writes_enabled': bool(flags.get('writes_enabled')), 'units': units,
         'event_count': len(outbox.list_events()),
         'tasks': {name: len(rows) for name, rows in tasks.items()},
