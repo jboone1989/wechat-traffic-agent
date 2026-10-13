@@ -107,8 +107,10 @@ def test_changed_x_draft_cannot_inherit_post_outcomes(tmp_path: Path):
     payload["drafts"]["x"]["text"] += " changed"
     _write(path, payload)
     collector = XOutcomeCollector(state_root=root, transport=_Transport(XPublicMetrics(1, 0, 0, 0)))
-    with pytest.raises(ValueError, match="draft binding mismatch"):
-        asyncio.run(collector.collect(now=NOW))
+    result = asyncio.run(collector.collect(now=NOW))
+    assert result["status"] == "NO_ELIGIBLE_PUBLICATIONS"
+    assert [row["reason"] for row in result["rejected"]] == ["X publication receipt draft binding mismatch"]
+    assert ChannelEvidenceStore(root / "content/channel_evidence").as_of(NOW) == []
 
 def test_x_receipt_url_must_match_post_id(tmp_path: Path):
     root, cycle, _ = _state(tmp_path)
@@ -116,8 +118,9 @@ def test_x_receipt_url_must_match_post_id(tmp_path: Path):
     payload = json.loads(path.read_text())
     payload["post_id"] = _snowflake(NOW - timedelta(hours=24, minutes=6))
     _write(path, payload)
-    with pytest.raises(ValueError, match="URL/post id mismatch"):
-        asyncio.run(XOutcomeCollector(state_root=root, transport=_Transport(XPublicMetrics(1, 0, 0, 0))).collect(now=NOW))
+    result = asyncio.run(XOutcomeCollector(state_root=root, transport=_Transport(XPublicMetrics(1, 0, 0, 0))).collect(now=NOW))
+    assert result["status"] == "NO_ELIGIBLE_PUBLICATIONS"
+    assert [row["reason"] for row in result["rejected"]] == ["X publication receipt URL/post id mismatch"]
 
 def test_no_x_publication_has_no_outcome_authority(tmp_path: Path):
     result = asyncio.run(XOutcomeCollector(
@@ -162,3 +165,48 @@ def test_unverified_omnipost_x_receipt_is_not_collected(tmp_path: Path):
         state_root=root, transport=_Transport(XPublicMetrics(views=1, replies=0, reposts=0, likes=0))
     ).collect(now=NOW))
     assert result["status"] == "NO_ELIGIBLE_PUBLICATIONS"
+
+
+def test_one_bad_receipt_does_not_block_other_posts(tmp_path: Path):
+    root, cycle, _ = _state(tmp_path)
+    path = root / "content/continuous/cycles" / cycle / "social_expression_drafts.json"
+    payload = json.loads(path.read_text())
+    payload["drafts"]["x"]["text"] += " changed"
+    _write(path, payload)
+    good_id = _snowflake(NOW - timedelta(hours=24, minutes=5))
+    _omnipost_square_doc(root, post_id=good_id)
+    transport = _Transport(XPublicMetrics(views=9, replies=0, reposts=0, likes=1))
+    result = asyncio.run(XOutcomeCollector(state_root=root, transport=transport).collect(now=NOW))
+    assert result["status"] == "RECORDED"
+    assert len(result["rejected"]) == 1
+    assert transport.calls == [f"https://x.com/agent/status/{good_id}"]
+
+
+class _FlakyTransport(_Transport):
+    async def collect(self, *, url: str) -> XPublicMetrics:
+        self.calls.append(url)
+        if len(self.calls) == 1:
+            raise TimeoutError("renderer timed out")
+        return self.metrics
+
+
+def test_one_unreadable_post_does_not_cost_others_their_window(tmp_path: Path):
+    root, _cycle, first_id = _state(tmp_path)
+    _omnipost_square_doc(root, post_id=_snowflake(NOW - timedelta(hours=24, minutes=4)))
+    transport = _FlakyTransport(XPublicMetrics(views=5, replies=0, reposts=0, likes=0))
+    result = asyncio.run(XOutcomeCollector(state_root=root, transport=transport).collect(now=NOW))
+    assert len(transport.calls) == 2
+    assert result["status"] == "RECORDED"
+    assert [row["error"].split(":")[0] for row in result["failed"]] == ["TimeoutError"]
+    assert len(result["recorded"]) == 4
+
+
+def test_all_reads_failing_is_reported_as_transport_failure(tmp_path: Path):
+    root, _cycle, _ = _state(tmp_path)
+    class _Down(_Transport):
+        async def collect(self, *, url: str) -> XPublicMetrics:
+            raise RuntimeError("browser down")
+    result = asyncio.run(XOutcomeCollector(
+        state_root=root, transport=_Down(XPublicMetrics(0, 0, 0, 0))).collect(now=NOW))
+    assert result["status"] == "TRANSPORT_FAILED"
+    assert result["recorded"] == []

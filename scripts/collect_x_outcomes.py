@@ -12,5 +12,7 @@ def state_root():
     return Path(raw).expanduser().resolve() if raw else (ROOT/"state/content_application").resolve()
 def main():
     result=asyncio.run(XOutcomeCollector(state_root=state_root()).collect(now=datetime.now(timezone.utc).replace(microsecond=0)))
-    print(json.dumps(result,ensure_ascii=False,sort_keys=True)); return 0
+    print(json.dumps(result,ensure_ascii=False,sort_keys=True))
+    # Fail the oneshot unit when no post could be read, so a broken browser shows up in systemd.
+    return 1 if result.get("status")=="TRANSPORT_FAILED" else 0
 if __name__=="__main__": raise SystemExit(main())

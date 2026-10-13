@@ -188,13 +188,14 @@ class XOutcomeCollector:
         self.max_capture_lag=max_capture_lag
         self.store=ChannelEvidenceStore(self.state_root/"content"/"channel_evidence")
         self.snapshot_root=self.state_root/"content"/"channel_evidence_sources"
+        self._rejected: list[dict[str, str]]=[]
 
     async def collect(self, *, now: datetime) -> dict[str, Any]:
-        now=_aware_utc(now); publications=self._publications()
+        now=_aware_utc(now); self._rejected=[]; publications=self._publications()
         if not publications:
-            return self._report("NO_ELIGIBLE_PUBLICATIONS")
+            return self._report("NO_ELIGIBLE_PUBLICATIONS",**({"rejected":self._rejected} if self._rejected else {}))
         existing={(r.publication_id,r.window_start,r.window_end,r.metric,r.source) for r in self.store.as_of(now)}
-        recorded=[]; missed=[]; pending=0
+        recorded=[]; missed=[]; failed=[]; pending=0
         for publication in publications:
             published_at=publication["published_at"]
             for label,delta in WINDOWS:
@@ -205,7 +206,13 @@ class XOutcomeCollector:
                     pending+=1; continue
                 if now > window_end+self.max_capture_lag:
                     missed.append({"publication_id":publication["publication_id"],"window":label}); continue
-                metrics=await self.transport.collect(url=publication["url"])
+                try:
+                    metrics=await self.transport.collect(url=publication["url"])
+                except Exception as exc:
+                    # One unreadable post must not cost every other post its window.
+                    failed.append({"publication_id":publication["publication_id"],"window":label,
+                                   "error":f"{type(exc).__name__}: {exc}"[:300]})
+                    continue
                 snapshot={
                     "schema_version":SNAPSHOT_SCHEMA,"publication_id":publication["publication_id"],
                     "post_id":publication["post_id"],"url":publication["url"],"window":label,
@@ -231,8 +238,14 @@ class XOutcomeCollector:
                     )
                     path=self.store.record(row); existing.add((row.publication_id,row.window_start,row.window_end,row.metric,row.source))
                     recorded.append({"publication_id":publication["publication_id"],"window":label,"metric":metric,"value":value,"evidence_path":str(path)})
-        status="RECORDED" if recorded else "MISSED_WINDOW" if missed else "NO_MATURE_WINDOWS"
-        return self._report(status,eligible=len(publications),pending=pending,recorded=recorded,missed=missed)
+        status=("RECORDED" if recorded else "TRANSPORT_FAILED" if failed
+                else "MISSED_WINDOW" if missed else "NO_MATURE_WINDOWS")
+        return self._report(status,eligible=len(publications),pending=pending,recorded=recorded,missed=missed,
+                            failed=failed,rejected=self._rejected)
+
+    def _reject(self, post_id: str, reason: str) -> None:
+        """A receipt that fails its binding is excluded, never attributed and never fatal."""
+        self._rejected.append({"post_id":post_id,"reason":reason})
 
     def _publications(self) -> list[dict[str, Any]]:
         rows=[]; root=self.state_root/"content"/"continuous"/"cycles"
@@ -252,9 +265,9 @@ class XOutcomeCollector:
             post_id=str(receipt.get("post_id") or ""); url=str(receipt.get("url") or "")
             if not post_id or not url: continue
             if receipt.get("draft_sha256") != _draft_sha256(cycle=cycle_dir.name,draft=draft):
-                raise ValueError("X publication receipt draft binding mismatch")
+                self._reject(post_id,"X publication receipt draft binding mismatch"); continue
             if _post_id_from_url(url) != post_id:
-                raise ValueError("X publication receipt URL/post id mismatch")
+                self._reject(post_id,"X publication receipt URL/post id mismatch"); continue
             published_at=(datetime.fromisoformat(str(receipt["published_at"])) if draft.get("format")=="ARTICLE"
                           else _published_at_from_status_id(post_id))
             format_name=str(draft.get("format") or "SHORT_POST"); intent=str(draft.get("intent") or "UNKNOWN")
@@ -286,9 +299,9 @@ class XOutcomeCollector:
                 if event.get("runtime_receipt_id")!=receipt.get("receipt_id"):
                     continue
                 if receipt.get("content_sha256") and receipt["content_sha256"]!=hashlib.sha256(text.encode("utf-8")).hexdigest():
-                    raise ValueError("X autonomous publication content binding mismatch")
+                    self._reject(post_id,"X autonomous publication content binding mismatch"); continue
                 if receipt.get("text") and receipt["text"]!=text:
-                    raise ValueError("X autonomous publication text binding mismatch")
+                    self._reject(post_id,"X autonomous publication text binding mismatch"); continue
                 kind="SHORT_POST"
             elif event.get("event_type")=="REPLY":
                 if not event.get("publication_verified") or not event.get("target_post_id"):
