@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
@@ -67,6 +68,8 @@ class AgentRuntimeChatGPTProvider:
     ) -> "AgentRuntimeChatGPTProvider":
         if fallback is not None:
             raise ValueError("Ferro ChatGPT fallback providers are not supported")
+        if cognition_provider_mode() == "api":
+            return ApiModelCognitionProvider.from_environment()  # type: ignore[return-value]
         try:
             provider = ChatGPTBrowserProvider.from_environment(
                 session_id=session_id,
@@ -173,7 +176,73 @@ class AgentRuntimeChatGPTProvider:
         yield await self.complete(prompt, **kwargs)
 
 
+def cognition_provider_mode() -> str:
+    """FERRO_COGNITION_PROVIDER=api routes Ferro cognition to an Anthropic-compatible API."""
+    return "api" if os.environ.get("FERRO_COGNITION_PROVIDER", "").strip().lower() == "api" else "chatgpt"
+
+
+class ApiModelCognitionProvider:
+    """Ferro cognition over an Anthropic-compatible HTTP API (DeepSeek, Zhipu GLM, ...).
+
+    Configured by Agent Runtime's DEEPSEEK_API_KEY / DEEPSEEK_BASE_URL / DEEPSEEK_MODEL.
+    It is a drop-in for AgentRuntimeChatGPTProvider: same methods, same error type,
+    and no browser, so a stopped ChatGPT profile cannot stall cognition.
+    """
+
+    provider_name = "api-anthropic-compatible"
+    _PRIVATE_KWARGS = ("_continue_cognition_episode", "_routing_task_class")
+
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+        self.model_name = str(getattr(provider, "model", "") or "unknown")
+        self.timeout_seconds = float(getattr(provider, "timeout_seconds", 180.0))
+        self.max_tokens = int(os.environ.get("FERRO_API_MAX_TOKENS") or 4096)
+        self.last_provenance: dict[str, Any] | None = None
+
+    @classmethod
+    def from_environment(cls) -> "ApiModelCognitionProvider":
+        from agent_runtime.llm.deepseek import DeepSeekAnthropicProvider, LLMProviderError
+        try:
+            return cls(DeepSeekAnthropicProvider.from_environment())
+        except (LLMProviderError, OSError, ValueError) as exc:
+            raise AgentRuntimeChatGPTProviderError(str(exc)) from exc
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    def _kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        result = {key: value for key, value in kwargs.items() if key not in self._PRIVATE_KWARGS}
+        result.setdefault("max_tokens", self.max_tokens)
+        return result
+
+    def _record_provenance(self) -> None:
+        self.last_provenance = {"provider": self.provider_name, "model": self.model_name,
+                                "url": None, "assistant_message_count": None}
+
+    async def complete(self, prompt: str, **kwargs: Any) -> str:
+        try:
+            text = await self._provider.complete(prompt, **self._kwargs(kwargs))
+        except Exception as exc:  # provider errors must look like any other cognition outage
+            raise AgentRuntimeChatGPTProviderError(f"{type(exc).__name__}: {exc}") from exc
+        self._record_provenance()
+        return text
+
+    async def structured(self, prompt: str, schema: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        try:
+            value = await self._provider.structured(prompt, schema, **self._kwargs(kwargs))
+        except Exception as exc:
+            raise AgentRuntimeChatGPTProviderError(f"{type(exc).__name__}: {exc}") from exc
+        self._record_provenance()
+        return value
+
+    async def stream(self, prompt: str, **kwargs: Any) -> AsyncIterator[str]:
+        yield await self.complete(prompt, **kwargs)
+
+
 __all__ = [
+    "ApiModelCognitionProvider",
+    "cognition_provider_mode",
     "cognition_routing_task_class",
     "AgentRuntimeChatGPTProvider",
     "AgentRuntimeChatGPTProviderError",
