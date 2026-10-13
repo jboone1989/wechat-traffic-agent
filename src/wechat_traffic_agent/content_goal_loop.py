@@ -30,6 +30,7 @@ from .content_explorer import (
 from .content_service import ContentAgent
 from .cognition_context import owner_cognition_scope
 from .content_strategy import bind_content_strategy, collect_mature_strategy_outcomes, strategy_instruction
+from .social_performance import x_mature_audience_outcomes
 from .content_action_prediction import bind_action_prediction, forecast_strategy_candidates
 from .draft_inbox import ContentDraftInbox, ContentDraftRecord
 from .evidence_floor import EvidenceFloorPlan, artifact_risk_cues, evaluate_evidence_floor, planned_risk_cues
@@ -1344,6 +1345,27 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
                     )
         return strategy_sync
 
+    def _sync_x_audience_learning(self, folder, cycle, cycle_now):
+        if self.mind is None or not hasattr(self.mind, 'observe_x_audience_outcomes'):
+            return None
+        sync_path = folder / 'x_audience_learning_sync.json'
+        if sync_path.exists():
+            return json.loads(sync_path.read_text(encoding='utf-8'))
+        # Reader response is a secondary interest signal; a bad row must not stall the cycle.
+        try:
+            outcomes = x_mature_audience_outcomes(state_root=self.state, as_of=cycle_now)
+            sync = self.mind.observe_x_audience_outcomes(outcomes)
+        except Exception as exc:
+            sync = {'status': 'ERROR', 'error_type': type(exc).__name__, 'error': str(exc)[:500]}
+        _put(sync_path, sync)
+        if sync.get('applied'):
+            self._activity(
+                cycle, 'LEARN', 'Readers’ response to my X posts nudged my interests',
+                f"Applied {len(sync['applied'])} mature 24h X audience outcome(s) to topic preference.",
+                status='completed',
+            )
+        return sync
+
     def _owner_cycle_context(self, folder, now):
         x_mission_context = x_growth_mission_context(self.state)
         mission_context = _active_mission_discovery_context(x_mission_context)
@@ -2066,6 +2088,7 @@ class ContinuousContentLoop(_BaseContinuousContentLoop):
         snapshot = inputs['website']
         cycle_now = datetime.fromisoformat(inputs['now'])
         strategy_sync = self._sync_strategy_learning(folder, cycle, cycle_now)
+        self._sync_x_audience_learning(folder, cycle, cycle_now)
         (x_mission_context, mission_context, owner_goal,
          owner_mission_fast_path, owner_focus_fast_path,
          owner_seed_items) = self._owner_cycle_context(folder, now)

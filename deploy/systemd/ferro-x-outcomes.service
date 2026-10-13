@@ -1,0 +1,13 @@
+[Unit]
+Description=Collect fixed-age public X engagement counters for Ferro posts
+Wants=agent-runtime-operator.service network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/content-agent/current
+Environment=CONTENT_APPLICATION_ROOT=/home/ubuntu/content-agent-state
+Environment=PYTHONPATH=/home/ubuntu/content-agent/current/src:/home/ubuntu/agent-runtime/current/src:/home/ubuntu/virtualbrain/current/src
+ExecStart=/home/ubuntu/content-agent-prod-venv-connectome-ffc4c726-c7d266d4-d2f4fd8c/bin/python /home/ubuntu/content-agent/current/scripts/collect_x_outcomes.py
+TimeoutStartSec=300

@@ -459,3 +459,52 @@ def test_content_mind_compacts_hot_state_and_archives_overflow(tmp_path: Path):
     restarted = ContentMind(root=root, subject_id="content-agent")
     assert len(restarted.session.inquiry.inquiries) == len(inquiries)
     assert len(restarted.session.goal_proposals.snapshot()["proposals"]) == 16
+
+
+def _audience(outcome_id: str, topic: str, score: float, baseline: float | None) -> dict:
+    return {"outcome_id": outcome_id, "topic": topic, "engagement_score": score,
+            "baseline_engagement_score": baseline, "observed_at": "2026-10-12T00:00:00+00:00",
+            "evidence_refs": [f"x-publication:{outcome_id}"]}
+
+
+def test_x_reader_response_nudges_topic_preference_relative_to_own_median(tmp_path: Path):
+    root = tmp_path / "state"
+    mind = ContentMind(root=root, subject_id="content-agent")
+
+    result = mind.observe_x_audience_outcomes([
+        _audience("hit", "onchain", 30.0, 10.0),
+        _audience("flop", "macro", 2.0, 10.0),
+        _audience("median", "rates", 10.0, 10.0),
+        _audience("generic", "public_cognition", 50.0, 10.0),
+    ])
+
+    assert result["status"] == "OBSERVED"
+    assert result["causal_claim"] is False
+    by_topic = {row["topic"]: row for row in result["applied"]}
+    assert by_topic["onchain"]["relative_reward"] == 0.75
+    assert by_topic["onchain"]["interest"]["preference"] > 0.5
+    assert by_topic["macro"]["interest"]["preference"] < 0.5
+    assert by_topic["rates"]["interest"]["preference"] == 0.5
+    assert by_topic["public_cognition"]["preference_updated"] is False
+    assert mind.session.interests.get("public_cognition") is None
+
+    restarted = ContentMind(root=root, subject_id="content-agent")
+    assert restarted.session.interests.get("onchain") == mind.session.interests.get("onchain")
+    duplicate = restarted.observe_x_audience_outcomes([_audience("hit", "onchain", 30.0, 10.0)])
+    assert duplicate["status"] == "NO_NEW_OUTCOMES"
+    assert duplicate["duplicates"] == 1
+
+
+def test_x_reader_response_moves_preference_less_than_research_progress(tmp_path: Path):
+    audience_mind = ContentMind(root=tmp_path / "a", subject_id="content-agent")
+    research_mind = ContentMind(root=tmp_path / "r", subject_id="content-agent")
+
+    audience = audience_mind.observe_x_audience_outcomes([_audience("best", "onchain", 1000.0, 0.0)])
+    research = research_mind.observe_learning_interest(
+        cycle="v2-1", topic="onchain",
+        reward={"utility": 1.0, "kind": "TESTED_LEARNING"}, evidence_refs=("web:r1",),
+    )
+
+    audience_gain = audience["applied"][0]["interest"]["preference"] - 0.5
+    research_gain = research["interest"]["preference"] - 0.5
+    assert 0.0 < audience_gain < research_gain

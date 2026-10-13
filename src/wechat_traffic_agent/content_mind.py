@@ -26,6 +26,11 @@ MAX_PLANS = 32
 MAX_EVENT_IDS = 512
 MAX_STRATEGY_OUTCOMES = 512
 MIN_STRATEGY_PROFILE_SAMPLES = 2
+# Reader response moves preference at ~30% of the research path's rate (0.2).
+X_AUDIENCE_LEARNING_RATE = 0.06
+# With effort 0.5 the preference target is (reward + 0.5) / 2, so a median post (reward 0.5) is neutral.
+X_AUDIENCE_EFFORT = 0.5
+GENERIC_AUDIENCE_TOPICS = frozenset({"unknown", "public_cognition"})
 MIN_PERSISTENT_WORLD_INTEREST_IMPORTANCE = 0.7
 SALIENCE_HALF_LIFE_HOURS = 48.0
 
@@ -999,7 +1004,7 @@ class ContentMind:
         self, *, cycle: str, topic: str, reward: Mapping[str, Any],
         evidence_refs: Iterable[str],
     ) -> dict[str, Any]:
-        """Only research progress, never content-process success, changes preference."""
+        """Research progress, never content-process success, is the primary preference signal."""
         event_id = f"interest-learning:{cycle}"
         if event_id in self._observed_event_ids:
             interest = self.session.interests.get(topic)
@@ -1036,6 +1041,81 @@ class ContentMind:
         return {"status": "OBSERVED", "reward_kind": reward.get("kind"),
                 "preference_updated": feedback is not None,
                 "interest": interest.__dict__ if interest else None}
+
+    def observe_x_audience_outcomes(self, outcomes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        """Let mature X reader response nudge topic preference, secondary to research progress.
+
+        Reward is the post's weighted engagement relative to the account's own recent median,
+        so a small account is not judged by absolute counts. The interest learning rate is a
+        fraction of the research path's, and the moderate effort keeps an average post neutral.
+        """
+        applied: list[dict[str, Any]] = []
+        duplicates = 0
+        rows = sorted(
+            (dict(raw) for raw in outcomes if isinstance(raw, Mapping)),
+            key=lambda row: (str(row.get("observed_at") or ""), str(row.get("outcome_id") or "")),
+        )
+        for row in rows:
+            outcome_id = str(row.get("outcome_id") or "").strip()
+            topic = str(row.get("topic") or "").strip()
+            refs = list(dict.fromkeys(
+                str(ref).strip() for ref in row.get("evidence_refs", ()) if str(ref).strip()
+            ))
+            score = row.get("engagement_score")
+            baseline = row.get("baseline_engagement_score")
+            if not outcome_id or not topic or not refs:
+                raise ValueError("X audience outcome requires id, topic, and evidence_refs")
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or score < 0:
+                raise ValueError("X audience outcome requires a non-negative engagement score")
+            if baseline is not None and (
+                isinstance(baseline, bool) or not isinstance(baseline, (int, float)) or baseline < 0
+            ):
+                raise ValueError("X audience baseline must be a non-negative number or None")
+            event_id = "x-audience-outcome:" + outcome_id
+            if event_id in self._observed_event_ids:
+                duplicates += 1
+                continue
+            score = float(score)
+            if baseline is None or (baseline == 0.0 and score == 0.0):
+                reward = 0.5
+            elif baseline == 0.0:
+                reward = 1.0
+            else:
+                reward = score / (score + float(baseline))
+            feedback = (
+                None if topic in GENERIC_AUDIENCE_TOPICS else
+                {"name": topic, "novelty": 0.0, "effort": X_AUDIENCE_EFFORT,
+                 "learning_rate": X_AUDIENCE_LEARNING_RATE}
+            )
+            self.session.ingest_life_experience(
+                {
+                    "event_id": event_id, "tick": int(self.session.tick),
+                    "summary": (
+                        f"Readers responded to my X post on {topic} with engagement score "
+                        f"{score:g} against my recent median {'unknown' if baseline is None else f'{float(baseline):g}'}."
+                    ),
+                    "evidence_refs": refs, "significance": 0.25,
+                    "source": "x-audience-outcome", "confidence": 1.0,
+                    "outcome": reward, "domain": "content-audience",
+                    "identity_relevance": 0.25, "emotional_intensity": 0.0,
+                },
+                authority_id=AUTHORITY_ID, interest_feedback=feedback,
+            )
+            self._observed_event_ids.append(event_id)
+            self._observed_event_ids = self._observed_event_ids[-MAX_EVENT_IDS:]
+            interest = self.session.interests.get(topic)
+            applied.append({
+                "outcome_id": outcome_id, "topic": topic, "engagement_score": score,
+                "baseline_engagement_score": baseline, "relative_reward": reward,
+                "preference_updated": feedback is not None,
+                "interest": interest.__dict__ if interest else None,
+            })
+        if applied:
+            self._persist()
+        return {
+            "status": "OBSERVED" if applied else "NO_NEW_OUTCOMES",
+            "applied": applied, "duplicates": duplicates, "causal_claim": False,
+        }
 
     def observe_process_experience(
         self,

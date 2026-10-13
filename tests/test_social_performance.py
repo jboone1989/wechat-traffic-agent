@@ -117,3 +117,109 @@ def test_okx_rows_never_enter_x_performance_context(tmp_path: Path):
     context = x_social_performance_context(state_root=tmp_path, as_of=NOW)
     assert context["status"] == "INSUFFICIENT_SAMPLES"
     assert context["variants"] == []
+
+
+def _x_row(*, publication: str, topic: str, metric: str, value: float | None,
+           observed_hours_ago: float, account: str = "https://x.com/agent") -> ChannelEvidence:
+    observed = NOW - timedelta(hours=observed_hours_ago)
+    published = observed - timedelta(hours=24, minutes=5)
+    base = _row(publication=publication, structure="x:SHORT_POST:v1", metric=metric, value=0)
+    return base.model_copy(update={
+        "channel": "x", "account": account, "source": X_SOURCE, "topic": topic,
+        "objective": f"x_{metric}", "distribution_cohort": "x-public-post:fixed-age-window:v1",
+        "value": value, "published_at": published, "window_start": published,
+        "window_end": published + timedelta(hours=24), "observed_at": observed,
+        "evidence_refs": (f"x-publication:{publication}",),
+    })
+
+
+def _x_post(store: ChannelEvidenceStore, publication: str, topic: str, *, likes, reposts, replies,
+            views=100, observed_hours_ago: float = 1, account: str = "https://x.com/agent") -> None:
+    for metric, value in (("views", views), ("likes", likes), ("reposts", reposts), ("replies", replies)):
+        store.record(_x_row(publication=publication, topic=topic, metric=metric, value=value,
+                            observed_hours_ago=observed_hours_ago, account=account))
+
+
+def test_x_context_aggregates_by_topic_and_exposes_compact_observations(tmp_path: Path):
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    _x_post(store, "a1", "onchain", likes=4, reposts=1, replies=2, observed_hours_ago=30)
+    _x_post(store, "a2", "onchain", likes=6, reposts=1, replies=0, observed_hours_ago=20)
+    _x_post(store, "b1", "macro", likes=1, reposts=0, replies=0, observed_hours_ago=10)
+
+    context = x_social_performance_context(state_root=tmp_path, as_of=NOW)
+
+    topics = {row["topic"]: row for row in context["topic_variants"]}
+    assert topics["onchain"]["samples"] == 2
+    assert topics["onchain"]["eligible_for_topic_guidance"] is True
+    # likes + 2*reposts + 3*replies: (4+2+6 + 6+2+0) / 2
+    assert topics["onchain"]["mean_engagement_score_24h"] == 10.0
+    assert topics["macro"]["eligible_for_topic_guidance"] is False
+    assert context["sample_count"] == 3
+    assert any(line.startswith("topic onchain:") for line in context["observations"])
+    assert not any(line.startswith("topic macro:") for line in context["observations"])
+    assert context["factual_authority"] is False
+    assert context["causal_claim"] is False
+
+
+def test_x_audience_outcomes_use_own_prior_median_and_recent_lookback(tmp_path: Path):
+    from wechat_traffic_agent.social_performance import x_mature_audience_outcomes
+
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    _x_post(store, "old", "macro", likes=2, reposts=0, replies=0, observed_hours_ago=200)
+    _x_post(store, "p1", "macro", likes=4, reposts=0, replies=0, observed_hours_ago=12)
+    _x_post(store, "p2", "onchain", likes=3, reposts=1, replies=3, observed_hours_ago=2)
+    _x_post(store, "other", "onchain", likes=90, reposts=0, replies=0, observed_hours_ago=3,
+            account="https://x.com/someone-else")
+
+    outcomes = {row["publication_id"]: row for row in x_mature_audience_outcomes(state_root=tmp_path, as_of=NOW)}
+
+    assert "old" not in outcomes  # outside the 24h lookback, but still part of the baseline
+    assert outcomes["p1"]["baseline_engagement_score"] == 2.0
+    assert outcomes["p2"]["engagement_score"] == 14.0
+    assert outcomes["p2"]["baseline_engagement_score"] == 3.0  # median(2, 4); other accounts excluded
+    assert outcomes["other"]["baseline_engagement_score"] is None
+    assert outcomes["p2"]["outcome_id"] == "x-audience-24h:p2"
+
+
+def test_x_audience_outcome_with_unknown_counter_is_not_scored(tmp_path: Path):
+    from wechat_traffic_agent.social_performance import x_mature_audience_outcomes
+
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    _x_post(store, "p1", "macro", likes=5, reposts=None, replies=1)
+
+    assert x_mature_audience_outcomes(state_root=tmp_path, as_of=NOW) == []
+
+
+def test_cycle_sync_feeds_mature_x_outcomes_to_mind_once_and_survives_errors(tmp_path: Path):
+    from types import SimpleNamespace
+    from wechat_traffic_agent.content_goal_loop import ContinuousContentLoop as ContentGoalLoop
+
+    store = ChannelEvidenceStore(tmp_path / "content/channel_evidence")
+    _x_post(store, "p1", "onchain", likes=4, reposts=0, replies=1)
+    received, activity = [], []
+
+    class Mind:
+        def observe_x_audience_outcomes(self, outcomes):
+            received.append(list(outcomes))
+            return {"status": "OBSERVED", "applied": [{"outcome_id": "x"}]}
+
+    loop = SimpleNamespace(mind=Mind(), state=tmp_path,
+                           _activity=lambda *args, **kwargs: activity.append(args))
+    folder = tmp_path / "cycle"
+    folder.mkdir()
+    first = ContentGoalLoop._sync_x_audience_learning(loop, folder, "v2-1", NOW)
+    again = ContentGoalLoop._sync_x_audience_learning(loop, folder, "v2-1", NOW)
+    assert first == again
+    assert len(received) == 1 and received[0][0]["outcome_id"] == "x-audience-24h:p1"
+    assert len(activity) == 1
+
+    class BrokenMind:
+        def observe_x_audience_outcomes(self, outcomes):
+            raise ValueError("bad row")
+
+    loop.mind = BrokenMind()
+    broken_folder = tmp_path / "cycle-2"
+    broken_folder.mkdir()
+    result = ContentGoalLoop._sync_x_audience_learning(loop, broken_folder, "v2-2", NOW)
+    assert result["status"] == "ERROR"
+    assert result["error_type"] == "ValueError"
