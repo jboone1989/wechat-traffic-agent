@@ -165,3 +165,24 @@ information style / interaction style：
 闭环：experiment 存档 → 手工回填带 `experiment_id` / `variable_under_test` 的
 observations → `--history history.json --audience-key silver` 传入 → 学习器影响
 下一次变量选择，选择理由写进当期 `experiment.json` 可审计。
+
+## Public news source: AIHot
+
+The website collects public RSS feeds, deduplicates articles and publishes editorially
+selected events. Ferro should consume that single normalized news source instead of
+maintaining a second set of subscriptions:
+
+```sh
+CONTENT_NEWS_AGGREGATOR_URL=https://YOUR-AIHOT-ORIGIN
+CONTENT_NEWS_FEEDS=
+```
+
+With `CONTENT_NEWS_AGGREGATOR_URL` set, the continuous content loop reads
+`/api/v1/items?mode=selected&window=7d&by=published` with bounded pagination.
+Source names and original publisher URLs are retained; the API's summaries are
+discovery leads, not independent proof. If the site is temporarily unavailable, the
+reader records an explicit failure and does **not** silently fall back to scraping RSS.
+Ferro can still research a question by following original sources or using web
+search; the website replaces *routine news subscriptions*, not primary-evidence
+research. Do not enable this setting on production Ferro until the AIHot endpoint
+returns recent, valid selected items.
