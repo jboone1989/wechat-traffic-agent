@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import asyncio
 import hashlib
 import json
+import os
 import re
 import urllib.request
 from pathlib import Path
@@ -193,7 +194,11 @@ def _web_candidate(row: dict[str, Any]) -> dict[str, Any]:
 
 
 async def collect_okx_public_market(now: datetime) -> list[dict[str, Any]]:
-    """Collect a small, public, no-auth OKX market snapshot as bounded evidence."""
+    """Collect public spot snapshots; AIHot becomes the canonical provider when configured."""
+    site = os.environ.get("CONTENT_NEWS_AGGREGATOR_URL", "").strip()
+    if site:
+        from .site_news import collect_site_spot_market
+        return await collect_site_spot_market(site, now)
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("OKX market timestamp must be timezone-aware")
     endpoint = "https://www.okx.com/api/v5/market/tickers?instType=SPOT"
