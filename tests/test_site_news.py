@@ -75,3 +75,36 @@ def test_content_loop_uses_site_with_no_local_rss(monkeypatch):
     result = asyncio.run(content_loop.collect_news([], NOW))
     assert result["signal_kind"] == "site"
     assert called == ["https://news.example"]
+
+
+def test_site_market_aggregates_binance_okx_and_preserves_provenance(monkeypatch):
+    from wechat_traffic_agent.site_news import collect_site_spot_market
+    from wechat_traffic_agent.content_explorer import collect_okx_public_market
+    import os
+    calls = []
+    def handler(req):
+        asset = req.url.params["asset"]
+        calls.append(asset)
+        return httpx.Response(200, json={
+            "schemaVersion": 1, "asset": asset, "quote": "USDT", "observedAt": NOW.isoformat(),
+            "observations": [
+                {"exchange": "Binance", "priceUsdt": 100, "change24hPercent": 1.5,
+                 "exchangeAt": NOW.isoformat(), "sourceUrl": "https://data-api.binance.vision/api/v3/ticker/24hr"},
+                {"exchange": "OKX", "priceUsdt": 101, "change24hPercent": 2,
+                 "exchangeAt": NOW.isoformat(), "sourceUrl": "https://www.okx.com/api/v5/market/ticker"}
+            ], "errors": []
+        })
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await collect_site_spot_market("https://news.example", NOW, client=client)
+    results = asyncio.run(run())
+    assert calls == ["BTC", "ETH", "SOL", "XRP", "BNB"]
+    assert len(results) == 1
+    assert "BTC Binance" in results[0]["summary"]
+    assert "BNB OKX" in results[0]["summary"]
+    assert results[0]["source_kind"] == "public-api"
+    async def stub(base_url, now):
+        return results
+    monkeypatch.setenv("CONTENT_NEWS_AGGREGATOR_URL", "https://news.example")
+    monkeypatch.setattr("wechat_traffic_agent.site_news.collect_site_spot_market", stub)
+    assert asyncio.run(collect_okx_public_market(NOW)) == results
