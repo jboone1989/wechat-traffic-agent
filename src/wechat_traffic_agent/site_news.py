@@ -107,3 +107,55 @@ async def collect_site_news(
         "observed_at": now.isoformat(),
         "signal_kind": "AIHot selected publisher coverage; summaries are research leads, not primary evidence",
     }
+
+
+async def collect_site_spot_market(base_url: str, now: datetime, *, client: httpx.AsyncClient | None = None) -> list[dict]:
+    """Collect five major assets from AIHot's normalized, exchange-attributed spot API."""
+    origin = _site_origin(base_url)
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False)
+    assets = ("BTC", "ETH", "SOL", "XRP", "BNB")
+    rows = []
+    try:
+        for asset in assets:
+            endpoint = origin + "/api/market/spot"
+            response = await http.get(endpoint, params={"asset": asset}, headers={"Accept": "application/json"})
+            response.raise_for_status()
+            data = response.json()
+            if not isinstance(data, dict) or data.get("schemaVersion") != 1 or data.get("asset") != asset:
+                raise ValueError("invalid AIHot market schema")
+            quotes = data.get("observations")
+            if not isinstance(quotes, list) or len(quotes) == 0:
+                raise ValueError("missing market quotes for " + asset)
+            for quote in quotes:
+                if not isinstance(quote, dict) or quote.get("exchange") not in ("Binance", "OKX"):
+                    raise ValueError("invalid market quote")
+                price = float(quote["priceUsdt"])
+                move = float(quote["change24hPercent"])
+                if not 0 < price < 10_000_000 or not -100 <= move <= 1000:
+                    raise ValueError("market price or move out of range")
+                source_url = str(quote["sourceUrl"])
+                if urlsplit(source_url).scheme != "https":
+                    raise ValueError("market provenance must be HTTPS")
+                rows.append({
+                    "asset": asset, "exchange": quote["exchange"], "price": price,
+                    "change": move, "at": str(quote["exchangeAt"]), "source_url": source_url,
+                })
+    finally:
+        if own:
+            await http.aclose()
+    revision = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+    summaries = [f'{r["asset"]} {r["exchange"]}: {r["price"]:g} USDT, 24h {r["change"]:+.2f}%'
+                 for r in rows]
+    return [{
+        "evidence_id": "aihot-market:" + revision[:32],
+        "source_kind": "public-api",
+        "source": "AIHot spot markets (Binance and OKX)",
+        "title": "Major crypto spot market snapshot",
+        "summary": "; ".join(summaries)[:2000],
+        "url": origin + "/api/market/spot?asset=BTC",
+        "observed_at": now.isoformat(),
+        "source_revision": "sha256:" + revision,
+        "evidence_refs": ("aihot-market:sha256:" + revision,),
+        "published_at": None,
+    }]
