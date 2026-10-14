@@ -186,3 +186,11 @@ Ferro can still research a question by following original sources or using web
 search; the website replaces *routine news subscriptions*, not primary-evidence
 research. Do not enable this setting on production Ferro until the AIHot endpoint
 returns recent, valid selected items.
+
+When the AIHot site has deployed the archive-search extension, Ferro also searches
+`/api/v1/items?mode=all&q=subject&window=365d&by=published` for historical,
+publicly retained source material while researching a topic. It then combines these
+source-attributed leads with live external research; losing the site endpoint does not
+block live web search. These leads are not causal inferences or independently verified
+facts. AIHot stores what happened; Ferro decides which question is worth studying.
+

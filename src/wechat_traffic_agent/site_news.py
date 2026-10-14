@@ -159,3 +159,66 @@ async def collect_site_spot_market(base_url: str, now: datetime, *, client: http
         "evidence_refs": ("aihot-market:sha256:" + revision,),
         "published_at": None,
     }]
+
+
+async def search_site_archive(
+    base_url: str,
+    query: str,
+    now: datetime,
+    *,
+    window: str = "365d",
+    client: httpx.AsyncClient | None = None,
+) -> list[dict]:
+    """Return the site's public, cross-publisher research leads without treating them as verified findings."""
+    origin = _site_origin(base_url)
+    subject = " ".join(query.split())[:200]
+    if not 2 <= len(subject) <= 200 or window not in ("30d", "90d", "365d"):
+        raise ValueError("a specific query and supported history window are required")
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False)
+    try:
+        response = await http.get(
+            origin + "/api/v1/items",
+            params={"q": subject, "mode": "all", "window": window, "by": "published", "limit": "20"},
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        if len(response.content) > 1_000_000:
+            raise ValueError("AIHot research response exceeds size budget")
+        payload = response.json()
+    finally:
+        if own:
+            await http.aclose()
+    if not isinstance(payload, dict) or payload.get("schemaVersion") != 1 or not isinstance(payload.get("items"), list):
+        raise ValueError("unexpected AIHot research schema")
+    leads = []
+    for entry in payload["items"][:20]:
+        if not isinstance(entry, dict):
+            continue
+        ident = str(entry.get("id") or "")[:80]
+        title = str(entry.get("title") or "").strip()[:300]
+        summary = str(entry.get("summary") or "").strip()[:2000]
+        src = entry.get("source")
+        links = entry.get("links")
+        origin_url = str(links.get("original") or "") if isinstance(links, dict) else ""
+        if not ident or not title or not summary or urlsplit(origin_url).scheme not in ("http", "https"):
+            continue
+        publisher = str(src.get("name") or "Publisher")[:200] if isinstance(src, dict) else "Publisher"
+        revision = hashlib.sha256(json.dumps(
+            {"id": ident, "title": title, "summary": summary, "published": entry.get("publishedAt")},
+            sort_keys=True, ensure_ascii=False,
+        ).encode()).hexdigest()
+        leads.append({
+            "evidence_id": "aihot-archive:" + ident,
+            "source_kind": "web-search",
+            "source": publisher,
+            "title": title,
+            "summary": summary,
+            "url": origin_url,
+            "observed_at": now.isoformat(),
+            "source_revision": "sha256:" + revision,
+            "evidence_refs": ("aihot-public-item:" + ident,),
+            "published_at": entry.get("publishedAt") or entry.get("discoveredAt"),
+            "search_query": subject,
+        })
+    return leads
