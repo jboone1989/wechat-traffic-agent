@@ -327,7 +327,10 @@ class GoalEvidenceExplorer:
         }
 
     async def search_web(self, *, goal_topic: str, now: datetime) -> dict[str, Any]:
-        if not goal_topic or self.web_searcher is None:
+        if not goal_topic:
+            return {"items": [], "failures": [], "query": None}
+        site = os.environ.get("CONTENT_NEWS_AGGREGATOR_URL", "").strip()
+        if self.web_searcher is None and not site:
             return {"items": [], "failures": [], "query": None}
         normalized_topic = " ".join(goal_topic.replace("-", " ").split())
         crypto_terms = {"crypto", "bitcoin", "btc", "ethereum", "eth", "solana", "sol"}
@@ -337,15 +340,21 @@ class GoalEvidenceExplorer:
             if words & crypto_terms
             else normalized_topic + " evidence implementation"
         )
-        try:
-            rows = await self.web_searcher(query, now)
-            items = [_web_candidate(row) for row in rows[:12]]
-            unique = {row["evidence_id"]: row for row in items}
-            return {"items": list(unique.values()), "failures": [], "query": query}
-        except Exception as exc:
-            return {"items": [], "failures": [{
-                "source": "runtime:web.search", "error_type": type(exc).__name__}],
-                "query": query}
+        items, failures = [], []
+        if site:
+            try:
+                from .site_news import search_site_archive
+                items.extend(await search_site_archive(site, normalized_topic[:200], now))
+            except Exception as exc:
+                failures.append({"source": "aihot:archive", "error_type": type(exc).__name__})
+        if self.web_searcher is not None:
+            try:
+                rows = await self.web_searcher(query, now)
+                items.extend(_web_candidate(row) for row in rows[:12])
+            except Exception as exc:
+                failures.append({"source": "runtime:web.search", "error_type": type(exc).__name__})
+        unique = {row["evidence_id"]: row for row in items}
+        return {"items": list(unique.values())[:24], "failures": failures, "query": query}
 
     async def search_web_query(
         self,
