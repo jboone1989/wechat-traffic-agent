@@ -127,7 +127,14 @@ def parse_feed(raw: bytes, source: str, now: datetime) -> list[dict]:
 
 
 async def collect_news(urls, now):
-    """Fetch only operator-configured feeds; never follow URLs found in source text."""
+    """AIHot is the sole routine news collector when a site endpoint is configured.
+
+    The legacy RSS path is retained only for installations not yet migrated.
+    """
+    site = os.environ.get("CONTENT_NEWS_AGGREGATOR_URL", "").strip()
+    if site:
+        from .site_news import collect_site_news
+        return await collect_site_news(site, now)
     rows, failures = [], []
     async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client:
         for url in urls:
@@ -309,8 +316,10 @@ async def _structured(runtime, task, contract, validate=None, *, max_tokens=2400
 class ContinuousContentLoop:
     def __init__(self, *, runtime, state_root, artifacts_path, site_root, base_url, curriculum_path,
                  feeds, interval_hours=6, fetcher=collect_news, publisher=None, mind=None):
-        if not 1 <= interval_hours <= 168 or not 1 <= len(feeds) <= 4:
-            raise ValueError('require 1..168 hour interval and 1..4 operator feeds')
+        if not 1 <= interval_hours <= 168:
+            raise ValueError("require 1..168 hour interval")
+        if not os.environ.get("CONTENT_NEWS_AGGREGATOR_URL", "").strip() and not 1 <= len(feeds) <= 4:
+            raise ValueError("require 1..4 operator feeds without a site news endpoint")
         self.runtime, self.state = runtime, Path(state_root)
         self.artifacts_path, self.site_root, self.base_url = Path(artifacts_path), Path(site_root), base_url
         self.curriculum_path, self.feeds = Path(curriculum_path), tuple(feeds)
