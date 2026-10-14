@@ -62,3 +62,16 @@ def test_endpoint_rejects_arbitrary_urls_and_credentials():
     for url in ("http://news.example", "https://news.example/api/v1/items", "https://user:pass@news.example", "https://news.example/?q=evil"):
         with pytest.raises(ValueError):
             _site_origin(url)
+
+
+def test_content_loop_uses_site_with_no_local_rss(monkeypatch):
+    from wechat_traffic_agent import content_loop, site_news
+    called = []
+    async def fake_site(base_url, now):
+        called.append(base_url)
+        return {"items": [], "failures": [], "observed_at": now.isoformat(), "signal_kind": "site"}
+    monkeypatch.setenv("CONTENT_NEWS_AGGREGATOR_URL", "https://news.example")
+    monkeypatch.setattr(site_news, "collect_site_news", fake_site)
+    result = asyncio.run(content_loop.collect_news([], NOW))
+    assert result["signal_kind"] == "site"
+    assert called == ["https://news.example"]
