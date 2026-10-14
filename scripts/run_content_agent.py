@@ -677,7 +677,7 @@ def _run_initialized_agent(args, state_root: Path, heartbeat) -> int:
         continuous_loop = ContinuousContentLoop(runtime=app.domain_runtime, state_root=state_root,
             artifacts_path=ROOT / "content/starter", site_root=Path(os.environ["CONTENT_WEB_SITE_ROOT"]),
             base_url=os.environ["CONTENT_WEB_BASE_URL"], curriculum_path=ROOT / "content/learning/writing-practice.md",
-            feeds=json.loads(os.environ["CONTENT_NEWS_FEEDS"]), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
+            feeds=json.loads(os.environ.get("CONTENT_NEWS_FEEDS", "[]")), interval_hours=int(os.environ.get("CONTENT_CONTINUOUS_INTERVAL_HOURS", "6")),
             publisher=publisher, mind=content_mind, capability_runtime=app.runtime,
             website_experiments=_enabled("CONTENT_WEBSITE_EXPERIMENTS_ENABLED"),
             neural_runtime=wakeful_runtime, evolution_bridge=content_evolution_bridge)
