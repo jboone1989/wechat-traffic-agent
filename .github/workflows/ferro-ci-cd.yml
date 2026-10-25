@@ -16,7 +16,7 @@ concurrency:
 jobs:
   verify:
     name: Ferro code and offline regressions
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FERRO_ACTIONS_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +40,7 @@ jobs:
     name: Immutable Ferro source release
     needs: verify
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FERRO_ACTIONS_RUNNER || 'ubuntu-latest' }}
     permissions:
       contents: read
     steps:
@@ -68,7 +68,7 @@ jobs:
     needs: [verify, package]
     if: github.ref == 'refs/heads/main' && vars.FERRO_CD_ENABLED == 'true'
     environment: ferro-production
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FERRO_ACTIONS_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       contents: read
