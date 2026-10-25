@@ -272,6 +272,38 @@ class FerroNeuralRuntime:
             enqueue=False,
         )
 
+    def emit_eventgraph_item(self, *, item: Mapping[str, Any],
+                             changed_at: str, evidence_ref: str) -> dict:
+        """Let Ferro's real nervous system decide whether a new fact needs thought."""
+        event_id = "eventgraph:" + hashlib.sha256(
+            (str(item.get("id") or "") + "\\0" + changed_at).encode()
+        ).hexdigest()[:24]
+        now = datetime.now(timezone.utc)
+        category = str(item.get("category") or "").lower()
+        market_relevant = any(term in category for term in (
+            "finance", "crypto", "market", "金融", "加密",
+        ))
+        signal = self.core.emit(StimulusEvent(
+            event_id=event_id,
+            source="eventgraph",
+            kind="MATERIAL_MARKET_EVENT" if market_relevant else "NETWORK_EVIDENCE",
+            observed_at=now,
+            salience=0.72 if market_relevant else 0.60,
+            novelty=0.75,
+            urgency=0.45,
+            persistence=0.70,
+            payload_ref=evidence_ref,
+        ), enqueue=False)
+        triggered = any(
+            row.source_event_id == event_id
+            for row in self.core.snapshot().cognition_triggers
+        )
+        return {
+            "event_id": event_id,
+            "attention_channel": signal.channel,
+            "cognition_triggered": triggered,
+        }
+
     def emit_x_mentions(
         self, *, count: int, observed_at: datetime | None = None
     ) -> None:
