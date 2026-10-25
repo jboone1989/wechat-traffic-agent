@@ -25,7 +25,8 @@ class EventGraphResearch:
 
     async def run(self, *, evidence_ref: str, runtime: Any) -> dict:
         digest = evidence_ref.removeprefix("eventgraph-event:")
-        if not evidence_ref.startswith("eventgraph-event:") or len(digest) != 24:
+        if (not evidence_ref.startswith("eventgraph-event:") or len(digest) != 24
+                or any(char not in "0123456789abcdef" for char in digest)):
             raise ValueError("invalid EventGraph event reference")
         outfile = self.root / (digest + ".json")
         if outfile.exists():
@@ -58,6 +59,8 @@ class EventGraphResearch:
                 mcp, "livingruntime_search",
                 {"q": title[:160], "window": "90d", "limit": 15},
             )
+            if search.get("status") == "UNAVAILABLE":
+                raise RuntimeError("EventGraph MCP search unavailable; research deferred")
             hot = await self._tool(
                 mcp, "livingruntime_get_hot_topics", {"limit": 10},
             )
@@ -139,7 +142,10 @@ class EventGraphResearch:
 
     @staticmethod
     async def _tool(mcp: Any, name: str, args: dict) -> dict:
-        result = await mcp.call_tool(name, args)
+        try:
+            result = await mcp.call_tool(name, args)
+        except Exception:
+            return {"status": "UNAVAILABLE", "tool": name}
         if getattr(result, "is_error", False):
             return {"status": "UNAVAILABLE", "tool": name}
         structured = getattr(result, "structured_content", None)
