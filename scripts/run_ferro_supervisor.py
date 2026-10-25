@@ -41,6 +41,8 @@ def _worker_specs() -> list[tuple[str, str]]:
         ("reflect", "scripts/run_reflect_worker.py"),
         ("self-repair", "scripts/run_self_repair_worker.py"),
     ]
+    if os.environ.get("CONTENT_NEWS_AGGREGATOR_URL", "").strip():
+        specs.append(("eventgraph-research", "scripts/run_eventgraph_research_worker.py"))
     if _enabled("CONTENT_X_ENABLED", default=False):
         specs.insert(2, ("check-x", "scripts/run_check_x_worker.py"))
     return specs
