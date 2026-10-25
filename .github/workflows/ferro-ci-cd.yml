@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           git archive --format=tar HEAD | gzip -9 > ferro-release.tgz
-          tar -tzf ferro-release.tgz | grep -qx 'deploy/ci-release.sh'
+          tar -tzf ferro-release.tgz | grep -x 'deploy/ci-release.sh' > /dev/null
           sha256sum ferro-release.tgz > ferro-release.tgz.sha256
       - uses: actions/upload-artifact@v4
         with:
