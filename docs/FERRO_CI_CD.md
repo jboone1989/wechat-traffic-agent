@@ -25,6 +25,24 @@ infrastructure is required. Source code is delivered to the existing
 release-based runtime. The running Python environment and external state
 storage are not replaced by the workflow.
 
+## GitHub Actions runner selection
+
+The repository can use a standard GitHub-hosted runner by default, or a
+**self-hosted** runner by setting the repository variable
+`FERRO_ACTIONS_RUNNER=self-hosted`. For a self-hosted choice, register
+a Linux x64 Actions runner **to this Ferro repository**, independently
+from any EventGraph runner. A runner registered only to EventGraph will
+not pick up Ferro jobs.
+
+On October 25–26, 2026, the repo's new test workflow and existing
+workflows finished within seconds with zero runner time and no
+executed steps. This appears to be GitHub-hosted runner allocation,
+possibly an account Actions spending limit or billing restriction.
+It is not evidence of Python test failure. If this remains the case,
+enable a free self-hosted runner for Ferro rather than repeatedly
+retrying hosted jobs. The pipeline must actually run and pass before
+considering CI operational.
+
 ## One-time GitHub configuration
 
 Use repository **Settings → Secrets and variables → Actions**.
