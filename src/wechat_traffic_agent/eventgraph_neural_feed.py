@@ -70,7 +70,7 @@ class EventGraphChangeSensor:
             value = json.loads(self.cursor_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        return value.get("cursor") if isinstance(value.get("cursor"), str) else None
+        return value.get("cursor") if isinstance(value, dict) and isinstance(value.get("cursor"), str) else None
 
     def _reset_to_snapshot(self) -> str:
         # One item is sufficient: snapshot.cursor is a ledger watermark, not
