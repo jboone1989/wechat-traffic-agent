@@ -1,0 +1,124 @@
+name: Ferro CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ferro-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Ferro code and offline regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install lightweight test requirements
+        run: python -m pip install "pytest>=8,<10"
+      - name: Compile all tracked Ferro Python code
+        run: python -m compileall -q src scripts tests
+      - name: Validate native release script
+        run: bash -n deploy/ci-release.sh
+      - name: Run offline deterministic regressions
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q -p no:cacheprovider tests/test_near_copy.py tests/test_research_dream.py
+
+  package:
+    name: Immutable Ferro source release
+    needs: verify
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Package only committed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar HEAD | gzip -9 > ferro-release.tgz
+          tar -tzf ferro-release.tgz | grep -qx 'deploy/ci-release.sh'
+          sha256sum ferro-release.tgz > ferro-release.tgz.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ferro-release
+          path: |
+            ferro-release.tgz
+            ferro-release.tgz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    name: Activate Ferro on configured host
+    needs: [verify, package]
+    if: github.ref == 'refs/heads/main' && vars.FERRO_CD_ENABLED == 'true'
+    environment: ferro-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: ferro-release
+          path: .
+      - name: Validate release checksum
+        run: sha256sum --check ferro-release.tgz.sha256
+      - name: Upload and atomically activate release
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ vars.FERRO_SSH_HOST }}
+          DEPLOY_USER: ${{ vars.FERRO_SSH_USER }}
+          DEPLOY_PORT: ${{ vars.FERRO_SSH_PORT }}
+          DEPLOY_ROOT: ${{ vars.FERRO_DEPLOY_ROOT }}
+          DEPLOY_UNIT: ${{ vars.FERRO_SYSTEMD_UNIT }}
+          DEPLOY_SCOPE: ${{ vars.FERRO_SYSTEMD_SCOPE }}
+          DEPLOY_PYTHON: ${{ vars.FERRO_PYTHON }}
+          SSH_PRIVATE_KEY: ${{ secrets.FERRO_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FERRO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for key in DEPLOY_HOST DEPLOY_USER DEPLOY_ROOT DEPLOY_UNIT DEPLOY_SCOPE DEPLOY_PYTHON SSH_PRIVATE_KEY SSH_KNOWN_HOSTS; do
+            [[ -n "${!key}" ]] || { echo "Missing Ferro CD setting: $key" >&2; exit 2; }
+          done
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 2
+          [[ "$DEPLOY_USER" =~ ^[a-zA-Z0-9._-]+$ ]] || exit 2
+          [[ "$DEPLOY_ROOT" =~ ^/[a-zA-Z0-9/._-]+$ && "$DEPLOY_ROOT" != "/" ]] || exit 2
+          [[ "$DEPLOY_UNIT" =~ ^[a-zA-Z0-9_.@-]+\.service$ ]] || exit 2
+          [[ "$DEPLOY_SCOPE" == system || "$DEPLOY_SCOPE" == user ]] || exit 2
+          [[ "$DEPLOY_PYTHON" =~ ^/[a-zA-Z0-9/._-]+$ ]] || exit 2
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]] || exit 2
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ferro_cd"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ferro_cd" "$HOME/.ssh/known_hosts"
+          unset SSH_PRIVATE_KEY SSH_KNOWN_HOSTS
+          SSH_OPTS=(-i "$HOME/.ssh/id_ferro_cd" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15)
+          TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          ssh "${SSH_OPTS[@]}" -p "$DEPLOY_PORT" "$TARGET" \
+            "test -d '$DEPLOY_ROOT' && mkdir -p '$DEPLOY_ROOT/incoming'"
+          scp "${SSH_OPTS[@]}" -P "$DEPLOY_PORT" \
+            ferro-release.tgz "$TARGET:$DEPLOY_ROOT/incoming/ferro-$GITHUB_SHA.tgz"
+          ssh "${SSH_OPTS[@]}" -p "$DEPLOY_PORT" "$TARGET" \
+            "bash -s -- '$GITHUB_SHA' '$DEPLOY_ROOT' '$DEPLOY_UNIT' '$DEPLOY_SCOPE' '$DEPLOY_PYTHON'" \
+            < deploy/ci-release.sh
