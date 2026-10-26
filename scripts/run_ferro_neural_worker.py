@@ -12,7 +12,6 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from wechat_traffic_agent.ferro_neural_runtime import FerroNeuralRuntime
 from wechat_traffic_agent.state_events import FerroStateEventApplier, FerroStateEventBus
 from wechat_traffic_agent.task_scheduler import IndependentTaskScheduler
 from wechat_traffic_agent.worker_runtime import WorkerHeartbeat
@@ -27,7 +26,37 @@ def _state_root() -> Path:
     )
 
 
+_PROJECTION_EVENTS = frozenset({
+    "BEHAVIORAL_PROJECTION", "PUBLIC_SNAPSHOT", "BRAIN_LAB_PROJECTION",
+    "BRAIN_LAB_LIVE_PROJECTION", "DREAM_PROJECTION",
+})
+
+
+def _process_event(bus, applier, neural, scheduler, path, event) -> None:
+    try:
+        result = applier.apply(event)
+    except Exception as exc:
+        result = {
+            "status": "ERROR", "error_type": type(exc).__name__,
+            "message": str(exc)[:500],
+        }
+
+    # Do not turn read-only projections or failed event applications into wakes.
+    if result.get("status") != "ERROR" and event.get("kind") not in _PROJECTION_EVENTS:
+        triggers = neural.core.snapshot().cognition_triggers
+        if triggers:
+            scheduler.schedule(
+                "CONTENT_COGNITION", datetime.now(timezone.utc),
+                reason="Ferro neural state crossed cognition threshold",
+                relevant_refs=tuple(row.trigger_id for row in triggers[-8:]),
+            )
+    # Ack AFTER the wake is durable. A failed schedule leaves the input to replay.
+    bus.acknowledge(path, result)
+
+
 def main() -> int:
+    from wechat_traffic_agent.ferro_neural_runtime import FerroNeuralRuntime
+
     state_root = _state_root()
     heartbeat = WorkerHeartbeat(state_root, "ferro-neural")
     bus = FerroStateEventBus(state_root)
@@ -50,27 +79,7 @@ def main() -> int:
             did_work = False
             for path, event in bus.pending():
                 did_work = True
-                try:
-                    result = applier.apply(event)
-                except Exception as exc:
-                    result = {
-                        "status": "ERROR",
-                        "error_type": type(exc).__name__,
-                        "message": str(exc)[:500],
-                    }
-                bus.acknowledge(path, result)
-
-                snapshot = neural.core.snapshot()
-                if snapshot.cognition_triggers:
-                    scheduler.schedule(
-                        "CONTENT_COGNITION",
-                        datetime.now(timezone.utc),
-                        reason="Ferro neural state crossed cognition threshold",
-                        relevant_refs=tuple(
-                            trigger.trigger_id
-                            for trigger in snapshot.cognition_triggers[-8:]
-                        ),
-                    )
+                _process_event(bus, applier, neural, scheduler, path, event)
 
             now = time.monotonic()
             if now >= next_heartbeat:
