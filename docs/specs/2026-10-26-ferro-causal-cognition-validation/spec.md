@@ -87,3 +87,38 @@ T1-T5 优先通过现有 pytest、tmp_path、真实 FilePlanStore 和故障注�
 ## 停止条件
 
 T1-T5 证明丢任务或旧触发重复时，先修复既有链路，暂停所有新神经能力；B 无法显示可靠增益时，不继续扩张 Ferro 神经模块；如果单一实例和简单文件计划仍适用，不升级消息基础设施。
+
+## 7. 独立反方意见与后续核对（2026-10-26）
+
+Claude 已通过现有 GitHub 原生 CLI 审查工作流在 [Issue #292 的评论](https://github.com/jboone1989/wechat-traffic-agent/issues/292) 提出独立意见。**审查范围仅是 Issue 正文和评论，没有直接读取三个仓库源文件及 PR diff**；不能把该评论表述为全面代码复审。Codex 之前读过 Ferro checkout 和 Runtime 摘录。两者共同强调先证明神经影响了实际选择，再讨论系统迁移，但各自证据级别不同。
+
+### 已执行的实证与修复
+
+- **T4 真实复现 → 修复**：[失败 Actions #40276541114](https://github.com/jboone1989/wechat-traffic-agent/actions/runs/40276541114) （3 测试，2 fail）证明新的事件引用和旧的每日目标不可抢占属性会在共享 wake ID 下丢失。[PR #294](https://github.com/jboone1989/wechat-traffic-agent/pull/294) 已合并 main，复验 [#40276677870](https://github.com/jboone1989/wechat-traffic-agent/actions/runs/40276677870) 全通过。只验证顺序合并，**不代表已经解决跨进程并发写入竞争**。
+- **T2/T5 局部修复**：[PR #295](https://github.com/jboone1989/wechat-traffic-agent/pull/295) 已合并 main，神经 Worker 改为排程持久化后再确认输入事件，并阻止只读投影将存量神经触发器排为新任务。临时真实事件目录 + 调度器的故障注入 [Actions #40277094477](https://github.com/jboone1989/wechat-traffic-agent/actions/runs/40277094477) 通过。**不代表整个神经系统或生产效果已经验证**。
+- Ferro 和 Agent Runtime 仓库已转 Public；Ferro GitHub-hosted Runner 实际运行了测试；VM13 生产服务未更新。
+- T3 领取后崩溃丢任务、FilePlanStore 多进程同时写同一 ID 的竞争仍待处理，不应为了“绿色测试”藏起风险。
+
+### T1 新发现：事件来源未必流向选题
+
+源码可追踪：
+
+1. `run_ferro_neural_worker.py` 发出的 `CONTENT_COGNITION` wake 主要带 `trigger.trigger_id`（形如 `cog:...`），而非完整的候选文章/事实来源。
+2. `run_content_cognition_worker.py:383-387` 将 `wake.relevant_refs` 传给 `WakefulContentTaskRunner.run`；
+3. `wakeful_tasks.py:629-633` 再传给 `ContentTaskMethods._content`；
+4. `orchestration/content.py:380` 转给 `_start_owner_content`，进而由 `orchestration/owner.py:78-174::_active_owner_goal_context` 使用：此函数的 `preferred_ids` **只匹配 Agent Runtime 的已有 `goal_id`**，不认识 `cog:` 触发 ID 或 EventGraph 事件 ID；**如果每日发帖目标激活，在第 85–87 行直接返回，甚至跳过 preferred_ids**。
+5. `_content_execution_options` 在检查的调用链中拿到的是 `focus_topic`、`owner_goal`、`owner_seed_evidence` 等，而非任意新事件的 `relevant_refs`。
+
+因此：**已经修复的 wake 引用不丢失，只保证调度记录的正确性，绝不等于事件能改变选题。** 最小新的验收测试 T8：隔离状态下投递一个真正能影响选题的 `NETWORK_EVIDENCE`（及其可查询的 source ref），保持同一日目标和其他输入不变；比较有无事件时传入研究阶段的有效 `topic/evidence_refs`。输出必须含原始 event/source ID，并可连接到最终文章引用；不得以“触发了 `CONTENT_COGNITION`”冒充通过。如果事件没有改变研究输入，先修**现有单条上下文传递链**，不要新增总线/知识库。
+
+### 便宜的神经因果门槛（优先于昂贵 A/B）
+
+先做**只读因果计数**：现网 `CONTENT_COGNITION` 每次由神经阈值、明确截止时间、人工目标、恢复重试中哪一种原因触发？统计事件来源、选题及结果是否相关联。在隔离目录回放相同历史事件，比较业务规则门控与现有神经门控选出的事件集合，不调用模型、不触发对外发帖。如果神经未实际运行、没有独立选择变化、或收益仍不可区分，则**冻结在 Ferro 中进一步产品化，而不是删除独立的 VirtualBrain 研究仓库**。若确实产生不同决策，才进入质量及成本的后续实验。
+
+### EventGraph 接入策略
+
+EventGraph 已提供只读的 `/api/mcp`，现有 MCP 工具覆盖热点、搜索、事件时间线、事件关系图与证据包，当前不是 server-push 订阅。优先在 Ferro 以低成本拉取**变化元数据**识别重大新事件，再直接消费 `get_story` / `get_evidence_bundle` 等权威事实；只有新且值得进一步研究时才唤醒模型。不要复制 EventGraph 采集、去重、图数据库或者重建另一套 MCP；“0.5 秒本地扫描文件”并非真正的问题。
+
+### 本轮决定
+
+先验证 **T3、跨进程竞争、T8 事件→研究输入的因果接线、生产触发来源计数**；暂不全面改造 Agent Runtime、VirtualBrain，也不进行完整的线上神经 A/B。任何抽取必须同时证明通用需求、第二非 Ferro 消费者、稳定契约和明确的删除/减少代码收益。
