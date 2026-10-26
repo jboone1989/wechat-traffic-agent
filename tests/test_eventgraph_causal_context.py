@@ -77,6 +77,9 @@ class EventGraphCausalContextTests(TestCase):
                 "story": {**story()["story"], "reports": []}
             })
         self.assertIsNone(load_eventgraph_context(("cog:unrelated",), fetch=lambda _: story()))
+        another = "eventgraph:bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+        with self.assertRaisesRegex(ValueError, "separate cognition wakes"):
+            load_eventgraph_context((REF, another), fetch=lambda _: story())
 
     def test_event_changes_research_input_under_daily_goal(self):
         with patch("wechat_traffic_agent.eventgraph_context.load_eventgraph_context",
