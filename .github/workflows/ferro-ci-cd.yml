@@ -27,8 +27,20 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install lightweight test requirements
         run: python -m pip install "pytest>=8,<10"
+      - name: Checkout public Agent Runtime for actual wake plan integration
+        uses: actions/checkout@v4
+        with:
+          repository: jboone1989/agent-runtime
+          path: .ci-agent-runtime
+          persist-credentials: false
+      - name: Install wake scheduler test dependencies
+        run: python -m pip install -e .ci-agent-runtime
       - name: Compile all tracked Ferro Python code
         run: python -m compileall -q src scripts tests
+      - name: Verify event/deadline evidence delivery using real plan store
+        env:
+          PYTHONPATH: src
+        run: python -m pytest -q --noconftest -p no:cacheprovider tests/test_causal_wake_scheduling.py
       - name: Validate native release script
         run: bash -n deploy/ci-release.sh
       - name: Run offline deterministic regressions
