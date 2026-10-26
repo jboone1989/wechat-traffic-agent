@@ -120,3 +120,23 @@ def test_ranked_eventgraph_story_wakes_without_neural_threshold(tmp_path):
     (wake,) = scheduler.pending("CONTENT_COGNITION")
     assert wake.relevant_refs == (story_ref,)
     assert wake.reason == "EventGraph story changed"
+
+def test_multiple_new_eventgraph_stories_get_distinct_cognition_wakes(tmp_path):
+    from types import SimpleNamespace
+    bus = FerroStateEventBus(tmp_path)
+    scheduler = IndependentTaskScheduler(tmp_path)
+    ids = (
+        "eventgraph:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "eventgraph:bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+    )
+    brain = SimpleNamespace(core=SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(cognition_triggers=()),
+    ))
+    for ref in ids:
+        bus.emit("NETWORK_EVIDENCE", {"evidence_ref": ref})
+    for path, event in bus.pending():
+        worker._process_event(bus, Applier(), brain, scheduler, path, event)
+    wakes = scheduler.pending("CONTENT_COGNITION")
+    assert len(wakes) == 2
+    assert {w.relevant_refs for w in wakes} == {(ids[0],), (ids[1],)}
+    assert len({w.wake_id for w in wakes}) == 2
