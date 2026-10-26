@@ -64,6 +64,7 @@ def _process_event(bus, applier, neural, scheduler, path, event) -> None:
                     *(row.trigger_id for row in triggers[-8:]),
                     *((story_ref,) if story_ref else ()),
                 ),
+                wake_id=("content:CONTENT_COGNITION:" + story_ref) if story_ref else None,
             )
     # Ack AFTER the wake is durable. A failed schedule leaves the input to replay.
     bus.acknowledge(path, result)
