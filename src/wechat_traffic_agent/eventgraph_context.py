@@ -35,8 +35,8 @@ def load_eventgraph_context(
     if not ids:
         return None
 
-    # One event per cognition cycle. Other refs stay in the wake for later
-    # attribution; do not claim that multiple stories were researched.
+    if len(ids) > 1:
+        raise ValueError("multiple EventGraph stories must have separate cognition wakes")
     story_id = ids[0]
     if fetch is None:
         url = (base_url or os.environ.get("EVENTGRAPH_API_BASE_URL") or "").strip()
