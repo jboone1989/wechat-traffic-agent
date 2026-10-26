@@ -94,3 +94,49 @@ def test_failed_event_does_not_schedule_stale_cognition(tmp_path):
     assert bus.pending() == ()
     receipt = bus.result(event["event_id"])
     assert receipt["status"] == "ERROR"
+
+def test_eventgraph_ref_survives_neural_wake_to_content_plan(tmp_path):
+    from datetime import datetime, timezone
+    bus = FerroStateEventBus(tmp_path)
+    scheduler = IndependentTaskScheduler(tmp_path)
+    story_ref = "eventgraph:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    bus.emit("NETWORK_EVIDENCE", {"evidence_ref": story_ref})
+    path, event = bus.pending()[0]
+    worker._process_event(bus, Applier(), Neural(), scheduler, path, event)
+    (wake,) = scheduler.pending("CONTENT_COGNITION")
+    assert story_ref in wake.relevant_refs
+
+def test_ranked_eventgraph_story_wakes_without_neural_threshold(tmp_path):
+    from types import SimpleNamespace
+    bus = FerroStateEventBus(tmp_path)
+    scheduler = IndependentTaskScheduler(tmp_path)
+    story_ref = "eventgraph:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    bus.emit("NETWORK_EVIDENCE", {"evidence_ref": story_ref})
+    path, event = bus.pending()[0]
+    quiet_brain = SimpleNamespace(core=SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(cognition_triggers=()),
+    ))
+    worker._process_event(bus, Applier(), quiet_brain, scheduler, path, event)
+    (wake,) = scheduler.pending("CONTENT_COGNITION")
+    assert wake.relevant_refs == (story_ref,)
+    assert wake.reason == "EventGraph story changed"
+
+def test_multiple_new_eventgraph_stories_get_distinct_cognition_wakes(tmp_path):
+    from types import SimpleNamespace
+    bus = FerroStateEventBus(tmp_path)
+    scheduler = IndependentTaskScheduler(tmp_path)
+    ids = (
+        "eventgraph:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "eventgraph:bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+    )
+    brain = SimpleNamespace(core=SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(cognition_triggers=()),
+    ))
+    for ref in ids:
+        bus.emit("NETWORK_EVIDENCE", {"evidence_ref": ref})
+    for path, event in bus.pending():
+        worker._process_event(bus, Applier(), brain, scheduler, path, event)
+    wakes = scheduler.pending("CONTENT_COGNITION")
+    assert len(wakes) == 2
+    assert {w.relevant_refs for w in wakes} == {(ids[0],), (ids[1],)}
+    assert len({w.wake_id for w in wakes}) == 2

@@ -12,6 +12,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from wechat_traffic_agent.eventgraph_context import is_eventgraph_ref
 from wechat_traffic_agent.state_events import FerroStateEventApplier, FerroStateEventBus
 from wechat_traffic_agent.task_scheduler import IndependentTaskScheduler
 from wechat_traffic_agent.worker_runtime import WorkerHeartbeat
@@ -44,11 +45,26 @@ def _process_event(bus, applier, neural, scheduler, path, event) -> None:
     # Do not turn read-only projections or failed event applications into wakes.
     if result.get("status") != "ERROR" and event.get("kind") not in _PROJECTION_EVENTS:
         triggers = neural.core.snapshot().cognition_triggers
-        if triggers:
+        evidence_ref = str((event.get("payload") or {}).get("evidence_ref") or "")
+        story_ref = (
+            evidence_ref if event.get("kind") == "NETWORK_EVIDENCE"
+            and is_eventgraph_ref(evidence_ref) else ""
+        )
+        # A newly changed, ranked EventGraph story is a business wake even if
+        # the experimental neural gate did not fire. Preserve neural triggers
+        # separately so their incremental contribution remains measurable.
+        if triggers or story_ref:
             scheduler.schedule(
                 "CONTENT_COGNITION", datetime.now(timezone.utc),
-                reason="Ferro neural state crossed cognition threshold",
-                relevant_refs=tuple(row.trigger_id for row in triggers[-8:]),
+                reason=(
+                    "EventGraph story changed" if story_ref
+                    else "Ferro neural state crossed cognition threshold"
+                ),
+                relevant_refs=(
+                    *(row.trigger_id for row in triggers[-8:]),
+                    *((story_ref,) if story_ref else ()),
+                ),
+                wake_id=("content:CONTENT_COGNITION:" + story_ref) if story_ref else None,
             )
     # Ack AFTER the wake is durable. A failed schedule leaves the input to replay.
     bus.acknowledge(path, result)

@@ -375,6 +375,14 @@ class ContentTaskMethods:
         self._maintain_content_site(rows, now)
         if result is None or not result.generation_ready:
             return rows
+        from wechat_traffic_agent.eventgraph_context import load_eventgraph_context
+        event_context = load_eventgraph_context(relevant_refs)
+        if event_context is not None and focus_topic is None:
+            focus_topic = event_context["topic"]
+            rows["eventgraph_research_input"] = {
+                "story_ref": event_context["story_ref"],
+                "source_count": event_context["source_count"],
+            }
         if self.continuous_loop is not None:
             self._recover_social_stage_backlog(rows=rows, now=now)
         owner = self._start_owner_content(rows, now, focus_topic, relevant_refs)
@@ -382,6 +390,8 @@ class ContentTaskMethods:
             return rows
         (focus_topic, owner_goal, owner_cycle_id, owner_active,
          owner_bound, owner_seed, control) = owner
+        if event_context is not None and focus_topic == event_context["topic"]:
+            owner_seed = [*event_context["evidence"], *owner_seed]
         self._observe_site_editorial(rows, now)
         if self.continuous_loop is None:
             return rows

@@ -40,7 +40,7 @@ jobs:
       - name: Verify event/deadline evidence delivery using real plan store
         env:
           PYTHONPATH: src
-        run: python -m pytest -q --noconftest -p no:cacheprovider tests/test_causal_wake_scheduling.py tests/test_neural_worker_event_delivery.py
+        run: python -m pytest -q --noconftest -p no:cacheprovider tests/test_causal_wake_scheduling.py tests/test_neural_worker_event_delivery.py tests/test_eventgraph_causal_context.py tests/test_smoke_eventgraph_evidence.py tests/test_eventgraph_poll_watch.py
       - name: Validate native release script
         run: bash -n deploy/ci-release.sh
       - name: Run offline deterministic regressions
