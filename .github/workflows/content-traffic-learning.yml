@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   traffic-learning:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.FERRO_ACTIONS_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
