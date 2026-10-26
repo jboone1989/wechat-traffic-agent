@@ -34,7 +34,7 @@ jobs:
       - name: Run offline deterministic regressions
         env:
           PYTHONPATH: src
-        run: python -m pytest -q -p no:cacheprovider tests/test_near_copy.py tests/test_research_dream.py
+        run: python -m pytest -q --noconftest -p no:cacheprovider tests/test_near_copy.py tests/test_research_dream.py
 
   package:
     name: Immutable Ferro source release
