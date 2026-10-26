@@ -37,13 +37,29 @@ class IndependentTaskScheduler:
             preemptible=preemptible,
         )
         existing = self.store.get(wake.wake_id)
-        if existing is not None and existing.at <= wake.at:
-            return {
-                "status": "EARLIER_ALREADY_SCHEDULED",
-                "task": task,
-                "at": existing.at.isoformat(),
-                "wake_id": existing.wake_id,
-            }
+        if existing is not None:
+            # A deadline and an event may target the same task. Keep both
+            # causes even when the earlier deadline wins the execution time.
+            wake = PlannedWake(
+                wake_id=wake.wake_id,
+                at=min(existing.at, wake.at),
+                reason=existing.reason if existing.at <= wake.at else wake.reason,
+                task=task,
+                relevant_refs=tuple(dict.fromkeys(
+                    (*existing.relevant_refs, *wake.relevant_refs)
+                )),
+                cancel_conditions=tuple(dict.fromkeys(
+                    (*existing.cancel_conditions, *wake.cancel_conditions)
+                )),
+                preemptible=existing.preemptible and wake.preemptible,
+            )
+            if wake == existing:
+                return {
+                    "status": "EARLIER_ALREADY_SCHEDULED",
+                    "task": task,
+                    "at": existing.at.isoformat(),
+                    "wake_id": existing.wake_id,
+                }
         self.store.schedule(wake)
         return {
             "status": "SCHEDULED",
